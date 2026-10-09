@@ -10,13 +10,16 @@ const link = {
 	access: 'password',
 	hasPassword: true,
 	expiresAt: '',
-	createdAt: '2026-09-28T00:00:00Z'
+	createdAt: '2026-09-28T00:00:00Z',
+	source: '/api/v1/files/Go-Live-Checklist.md',
+	live: false,
+	contentHash: 'h1'
 };
 vi.mock('$lib/api/gocliRequest', () => ({
 	default: {
-		get: async (url: string, params?: unknown) => (calls.push({ method: 'GET', url, params }), { share: link }),
-		put: async (url: string, body?: unknown) => (calls.push({ method: 'PUT', url, body }), { share: link }),
-		delete: async (url: string, params?: unknown) => (calls.push({ method: 'DELETE', url, params }), { share: null })
+		get: async (url: string, params?: unknown) => (calls.push({ method: 'GET', url, params }), { share: link, outdated: true }),
+		put: async (url: string, body?: unknown) => (calls.push({ method: 'PUT', url, body }), { share: link, outdated: false }),
+		delete: async (url: string, params?: unknown) => (calls.push({ method: 'DELETE', url, params }), { outdated: false })
 	}
 }));
 
@@ -30,21 +33,28 @@ describe('share by link', () => {
 	});
 
 	it('finds the file’s link by its Work-panel reference, encoded whole', async () => {
-		expect(await loadShareLink(artifact)).toEqual(link);
+		expect(await loadShareLink(artifact)).toEqual({ share: link, outdated: true });
 		expect(calls).toEqual([
 			{ method: 'GET', url: '/api/v1/neboai/share', params: { artifact: encodeURIComponent(artifact) } }
 		]);
 	});
 
 	it('creates or changes the link with one PUT; a password goes only with a password link', async () => {
-		await saveShareLink(artifact, 'password', 'hunter22', '');
-		await saveShareLink(artifact, 'password', '', '');
-		await saveShareLink(artifact, 'link', 'ignored', '2026-10-05T12:00:00Z');
+		await saveShareLink(artifact, 'password', 'hunter22', '', true);
+		await saveShareLink(artifact, 'password', '', '', true);
+		await saveShareLink(artifact, 'link', 'ignored', '2026-10-05T12:00:00Z', false);
 		expect(calls).toEqual([
-			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'password', expiresAt: '', password: 'hunter22' } },
+			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'password', expiresAt: '', live: true, password: 'hunter22' } },
 			// Saving without a new password keeps the one the link has.
-			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'password', expiresAt: '' } },
-			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'link', expiresAt: '2026-10-05T12:00:00Z' } }
+			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'password', expiresAt: '', live: true } },
+			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'link', expiresAt: '2026-10-05T12:00:00Z', live: false } }
+		]);
+	});
+
+	it('puts the file as it is now behind a link that keeps its version', async () => {
+		await saveShareLink(artifact, 'link', '', '', false, true);
+		expect(calls).toEqual([
+			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'link', expiresAt: '', live: false, newVersion: true } }
 		]);
 	});
 

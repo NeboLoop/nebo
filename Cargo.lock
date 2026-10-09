@@ -6206,6 +6206,7 @@ dependencies = [
  "nebo-updater",
  "nebo-voice",
  "nebo-workflow",
+ "notify",
  "open",
  "pulldown-cmark",
  "rand 0.8.5",

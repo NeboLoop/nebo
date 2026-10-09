@@ -1430,6 +1430,9 @@ pub struct ShareLinkQuery {
 pub struct ShareLinkResponse {
     /// The file's live link; none when it has no link (or it was turned off).
     pub share: Option<comm::api_types::FileShare>,
+    /// The file changed since the version its link opens (a link that
+    /// keeps its version; a live one catches up by itself).
+    pub outdated: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1445,6 +1448,13 @@ pub struct SetShareLinkRequest {
     /// RFC 3339; empty = never.
     #[serde(default)]
     pub expires_at: String,
+    /// The link follows the file (each new version goes behind it) or keeps
+    /// this version. Absent keeps the link's; a new link is live.
+    #[serde(default)]
+    pub live: Option<bool>,
+    /// Put the file as it is now behind the link, live or not.
+    #[serde(default)]
+    pub new_version: bool,
 }
 
 /// Only files in this bot's Work panel can be shared: a link makes a file
@@ -1480,6 +1490,24 @@ fn share_error(e: comm::CommError) -> (axum::http::StatusCode, Json<ErrorRespons
     }
 }
 
+/// The Work-panel file behind a reference.
+fn work_file(artifact: &str) -> Result<std::path::PathBuf, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let files_dir = config::files_dir().map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
+    crate::chat_dispatch::artifact_local_path(&files_dir, artifact).ok_or_else(|| to_error_response(NeboError::NotFound))
+}
+
+/// The link as the dialog shows it: and whether the file moved on from it.
+async fn share_response(artifact: &str, share: Option<comm::api_types::FileShare>) -> ShareLinkResponse {
+    crate::live_shares::remember(artifact, share.as_ref()).await;
+    let mut outdated = false;
+    if let Some(s) = share.as_ref().filter(|s| !s.live)
+        && let Ok(path) = work_file(artifact)
+    {
+        outdated = crate::live_shares::file_hash(&path).await.is_some_and(|h| h != s.content_hash);
+    }
+    ShareLinkResponse { share, outdated }
+}
+
 /// GET /api/v1/neboai/share?artifact= — the file's live link, if it has one.
 pub async fn share_link(
     State(state): State<AppState>,
@@ -1488,11 +1516,12 @@ pub async fn share_link(
     let artifact = shareable_artifact(&q.artifact)?;
     let api = build_api_client(&state).map_err(to_error_response)?;
     let share = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next();
-    Ok(Json(ShareLinkResponse { share }))
+    Ok(Json(share_response(artifact, share).await))
 }
 
 /// PUT /api/v1/neboai/share — give the file a link with these settings: the
-/// link it has is changed; a file with none is uploaded and gets one.
+/// link it has is changed; a file with none is uploaded and gets one. A
+/// live link (and `newVersion`) gets the file as it is now.
 pub async fn set_share_link(
     State(state): State<AppState>,
     Json(body): Json<SetShareLinkRequest>,
@@ -1503,10 +1532,19 @@ pub async fn set_share_link(
         access: body.access.clone(),
         password: body.password.clone(),
         expires_at: body.expires_at.clone(),
+        live: body.live,
+        ..Default::default()
     };
     if let Some(existing) = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next() {
-        let share = api.update_file_share(&existing.id, &settings).await.map_err(share_error)?;
-        return Ok(Json(ShareLinkResponse { share: Some(share) }));
+        let mut share = api.update_file_share(&existing.id, &settings).await.map_err(share_error)?;
+        if share.live || body.new_version {
+            let path = work_file(artifact)?;
+            share = crate::live_shares::push_version(&state, &api, &share, &path).await.map_err(|e| {
+                warn!(error = %e, "share link: new version failed");
+                to_error_response(NeboError::Internal("Could not upload this file. Try again.".into()))
+            })?;
+        }
+        return Ok(Json(share_response(artifact, Some(share)).await));
     }
 
     if !state.comm_manager.is_connected().await {
@@ -1514,22 +1552,20 @@ pub async fn set_share_link(
             "Connect to NeboAI to share.".into(),
         )));
     }
-    let files_dir = config::data_dir()
-        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?
-        .join("files");
-    let path = crate::chat_dispatch::artifact_local_path(&files_dir, artifact)
-        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+    let path = work_file(artifact)?;
+    let hash = crate::live_shares::file_hash(&path).await.ok_or_else(|| to_error_response(NeboError::NotFound))?;
     let uploaded = crate::chat_dispatch::upload_local_file(&state.comm_manager, &path)
         .await
         .map_err(|e| {
             warn!(error = %e, "share link: upload failed");
             to_error_response(NeboError::Internal("Could not upload this file. Try again.".into()))
         })?;
+    let settings = comm::api_types::FileShareSettings { content_hash: hash, ..settings };
     let share = api
         .create_file_share(&uploaded.file_id, artifact, &settings)
         .await
         .map_err(share_error)?;
-    Ok(Json(ShareLinkResponse { share: Some(share) }))
+    Ok(Json(share_response(artifact, Some(share)).await))
 }
 
 /// DELETE /api/v1/neboai/share?artifact= — turn the file's link off. The
@@ -1543,7 +1579,7 @@ pub async fn turn_off_share_link(
     for share in api.file_shares(artifact).await.map_err(share_error)? {
         api.revoke_file_share(&share.id).await.map_err(share_error)?;
     }
-    Ok(Json(ShareLinkResponse { share: None }))
+    Ok(Json(share_response(artifact, None).await))
 }
 
 fn callback_html(_email: &str, err_msg: &str) -> Html<String> {

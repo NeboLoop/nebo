@@ -1,7 +1,8 @@
 <!--
   Share Artifact Modal — shares a Work-panel file by link
   (https://neboai.com/s/<token>): who can open it (anyone with the link,
-  a password, or only you), an optional expiry, copy, and turn off. The bot
+  a password, or only you), an optional expiry, whether the link follows the
+  file or keeps this version, copy, and turn off. The bot
   uploads the file through the one upload path and the hub keeps the link;
   see $lib/chat/shareLink.
 -->
@@ -9,7 +10,7 @@
 <script lang="ts">
   import { t, locale } from 'svelte-i18n';
   import type { FileShare } from '$lib/api/neboComponents';
-  import { expiresAtFor, loadShareLink, saveShareLink, turnOffShareLink, type ShareAccess, type ShareExpiry } from '$lib/chat/shareLink';
+  import { expiresAtFor, loadShareLink, saveShareLink, turnOffShareLink, type ShareAccess, type ShareExpiry, type ShareState } from '$lib/chat/shareLink';
   import { addToast } from '$lib/stores/toast';
 
   interface Props {
@@ -27,16 +28,21 @@
   let access = $state<ShareAccess>('link');
   let password = $state('');
   let expiry = $state<ShareExpiry>('never');
+  let live = $state(true);
+  let outdated = $state(false);
 
   $effect(() => {
     if (show) load();
   });
 
-  function adopt(s: FileShare | null) {
+  function adopt(st: ShareState) {
+    const s = st.share;
     share = s;
+    outdated = st.outdated;
     access = s?.access ?? 'link';
     password = '';
     expiry = s?.expiresAt ? 'keep' : 'never';
+    live = s?.live ?? true;
   }
 
   async function load() {
@@ -44,7 +50,7 @@
     try {
       adopt(await loadShareLink(url));
     } catch (e) {
-      adopt(null);
+      adopt({ share: null, outdated: false });
       addToast(e instanceof Error ? e.message : $t('chat.shareFailed'), 'error');
     } finally {
       loading = false;
@@ -57,6 +63,11 @@
     { value: 'private', label: $t('chat.shareAccessPrivate'), hint: $t('chat.shareAccessPrivateHint') },
   ]);
 
+  const updateOptions: { value: boolean; label: string; hint: string }[] = $derived([
+    { value: true, label: $t('chat.shareLive'), hint: $t('chat.shareLiveHint') },
+    { value: false, label: $t('chat.shareSnapshot'), hint: $t('chat.shareSnapshotHint') },
+  ]);
+
   const keptDate = $derived(
     share?.expiresAt ? new Date(share.expiresAt).toLocaleDateString($locale ?? undefined, { dateStyle: 'medium' }) : ''
   );
@@ -64,15 +75,19 @@
   // A password link needs one to exist: typed now, or already on the link.
   const needsPassword = $derived(access === 'password' && !password && !share?.hasPassword);
   const changed = $derived(
-    !share || access !== share.access || password !== '' || expiresAtFor(expiry, share.expiresAt) !== share.expiresAt
+    !share ||
+      access !== share.access ||
+      password !== '' ||
+      live !== share.live ||
+      expiresAtFor(expiry, share.expiresAt) !== share.expiresAt
   );
 
-  async function save() {
-    if (saving || needsPassword || !changed) return;
+  async function save(newVersion = false) {
+    if (saving || needsPassword || (!changed && !newVersion)) return;
     saving = true;
     try {
       const created = !share;
-      adopt(await saveShareLink(url, access, password, expiresAtFor(expiry, share?.expiresAt ?? '')));
+      adopt(await saveShareLink(url, access, password, expiresAtFor(expiry, share?.expiresAt ?? ''), live, newVersion));
       if (created) await copy();
     } catch (e) {
       addToast(e instanceof Error ? e.message : $t('chat.shareFailed'), 'error');
@@ -96,7 +111,7 @@
     saving = true;
     try {
       await turnOffShareLink(url);
-      adopt(null);
+      adopt({ share: null, outdated: false });
       addToast($t('chat.shareTurnedOff'), 'success');
     } catch (e) {
       addToast(e instanceof Error ? e.message : $t('chat.shareFailed'), 'error');
@@ -158,6 +173,27 @@
             />
           {/if}
 
+          <fieldset class="flex flex-col gap-1">
+            <legend class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('chat.shareUpdates')}</legend>
+            {#each updateOptions as opt (opt.value)}
+              <label
+                class="flex items-start gap-3 w-full px-3 py-2 rounded-lg cursor-pointer transition-colors {live === opt.value ? 'bg-primary/10 border border-primary/40' : 'bg-base-200/50 border border-transparent hover:bg-base-200'}"
+              >
+                <input type="radio" class="radio radio-sm radio-primary mt-0.5" name="share-updates" value={opt.value} bind:group={live} />
+                <span class="flex flex-col">
+                  <span class="text-sm font-medium">{opt.label}</span>
+                  <span class="text-xs text-base-content/60">{opt.hint}</span>
+                </span>
+              </label>
+            {/each}
+            {#if share && !share.live && outdated}
+              <div class="flex items-center gap-2 px-3 pt-1">
+                <span class="text-xs text-base-content/70 flex-1">{$t('chat.shareOutdated')}</span>
+                <button class="btn btn-xs btn-outline" disabled={saving || needsPassword} onclick={() => save(true)}>{$t('chat.shareNewVersion')}</button>
+              </div>
+            {/if}
+          </fieldset>
+
           <label class="flex items-center gap-3">
             <span class="text-sm flex-1">{$t('chat.shareExpires')}</span>
             <select class="select select-sm select-bordered text-sm" bind:value={expiry}>
@@ -177,7 +213,7 @@
             <button class="btn btn-sm btn-ghost text-error" disabled={saving} onclick={turnOff}>{$t('chat.shareTurnOff')}</button>
           {/if}
           <div class="flex-1"></div>
-          <button class="btn btn-sm btn-primary" disabled={saving || needsPassword || !changed} onclick={save}>
+          <button class="btn btn-sm btn-primary" disabled={saving || needsPassword || !changed} onclick={() => save()}>
             {#if saving}<span class="loading loading-spinner loading-xs"></span>{/if}
             {share ? $t('chat.shareSave') : $t('chat.shareCreate')}
           </button>

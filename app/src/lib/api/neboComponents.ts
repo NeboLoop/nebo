@@ -1225,6 +1225,7 @@ export interface Setting {
 
 export interface ShareLinkResponse {
 	share?: FileShare
+	outdated: boolean
 }
 
 export interface SkillSecretInfo {
@@ -2758,6 +2759,11 @@ export interface FileShare {
 	/** RFC 3339; empty = never. */
 	expiresAt: string
 	createdAt: string
+	/** The Work-panel reference of the file. */
+	source: string
+	/** The link follows its file; otherwise it keeps the version it has. */
+	live: boolean
+	contentHash: string
 }
 
 export interface ImportItem {
