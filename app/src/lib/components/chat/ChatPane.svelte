@@ -1676,14 +1676,14 @@
       <!-- What the run has made so far, shown the moment each call ends,
            until the turn's own attachments carry it at the run's end. -->
       {@const made = unkept ? artifactsToAttachments(tools.flatMap((tl) => (tl.status === 'success' ? (tl.files ?? []) : []))) : []}
-      <div class="max-w-[640px] my-1.5">
+      <div class="chat-activity max-w-[640px]">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-xs text-base-content/70 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/90 transition-colors"
+          class="flex max-w-full min-w-0 items-center gap-1.5 whitespace-nowrap text-xs text-base-content/70 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/90 transition-colors"
           aria-expanded={open}
           onclick={() => (activityOpen[keyId] = !open)}
         >
-          <span class="truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
+          <span class="min-w-0 truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 

@@ -170,6 +170,16 @@
   color: transparent;
   animation: nebo-shimmer 1.8s linear infinite;
 }
+/* The folded activity line sits apart from the answer by exactly the
+   space between two of its paragraphs (prose-sm: 1.1428571em of 0.875rem
+   = 1rem = 4 spacing steps). At the top of a turn the turn's own margin
+   already separates it from the message above. */
+.chat-activity {
+  margin-block: calc(var(--spacing) * 4);
+}
+.chat-activity:first-child {
+  margin-top: 0;
+}
 @media (prefers-reduced-motion: reduce) {
   .activity-live { animation: none; color: inherit; background-image: none; }
 }
