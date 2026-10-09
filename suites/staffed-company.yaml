@@ -95,3 +95,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc84-a-pick-for-the-owner-is-the-ask-card-and-only-a-tapped-option-is-a-pick.yaml
   - ../fixtures/staffed-company/conversation/sc85-an-owner-message-sent-while-busy-is-named-from-shown-to-taken-in.yaml
   - ../fixtures/staffed-company/conversation/sc86-an-in-app-card-is-skipped-by-the-owners-spoken-skip.yaml
+  - ../fixtures/staffed-company/conversation/sc93-every-file-a-turn-hands-over-rides-its-final-reply.yaml

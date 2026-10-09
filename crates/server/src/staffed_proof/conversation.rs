@@ -3892,3 +3892,74 @@ async fn an_apps_own_files_never_ride_its_replies_as_cards() {
         "the app's own files never do: {attached:?}"
     );
 }
+
+/// Every file a turn hands the owner rides its final reply, in order, from
+/// whichever step made it (live 2026-10-09: a turn rendered a reel, then
+/// its cover, and the reply carried only the cover; a turn that rendered a
+/// reel early carried no card at all): the reel from the first step and
+/// the cover from a later one, after text of its own, are both on the
+/// reply that ends the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_file_a_turn_hands_over_rides_its_final_reply() {
+    let nebo = session().await;
+    let agent = nebo.hire("Proof Deliverables", json!({ "workflows": {} })).await;
+    nebo.activate(&agent).await;
+    nebo.store()
+        .set_permission_mode(&types::permissions::Scope::Employee(agent.clone()), types::permissions::Mode::FullAccess)
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(out.path().join("deliver")).unwrap();
+    let (reel, cover) = (out.path().join("deliver/proof-reel.mp4"), out.path().join("deliver/proof-cover.jpg"));
+    std::fs::write(&reel, b"\x00\x00\x00\x18ftypmp42 reel").unwrap();
+    std::fs::write(&cover, b"\xff\xd8\xff cover").unwrap();
+    let (reel_path, cover_path) = (reel.to_string_lossy().to_string(), cover.to_string_lossy().to_string());
+    let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![Box::new(move |t| {
+        if !t.opener().contains("MARK-DELIVER") {
+            return None;
+        }
+        Some(match steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Step::call(vec![("share_file", json!({ "paths": [reel_path] }))]),
+            1 => {
+                let mut step = Step::call(vec![("share_file", json!({ "paths": [cover_path] }))]);
+                step.events.insert(0, ai::StreamEvent::text("The reel is done; now its cover."));
+                step
+            }
+            _ => Step::say("DELIVER-DONE"),
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let opened = nebo.post_ok(&format!("/agents/{agent}/chats"), &json!({})).await;
+    let thread = opened["sessionKey"].as_str().expect("thread").to_string();
+    rig.owner_writes(&thread, &agent, None, "MARK-DELIVER make the reel and its cover").await;
+    rig.until(30, "the turn ends", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.contains("DELIVER-DONE"))
+    })
+    .await;
+    let chat_id = thread.rsplit(':').next().unwrap().to_string();
+    let mut cards: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        let reply = nebo
+            .store()
+            .get_chat_messages(&chat_id)
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .expect("the final reply");
+        assert!(reply.content.contains("DELIVER-DONE"), "the final reply is the turn's last: {}", reply.content);
+        let meta: Value = serde_json::from_str(reply.metadata.as_deref().unwrap_or("{}")).unwrap_or_default();
+        cards = meta["artifacts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|a| a.as_str().map(|u| u.rsplit('/').next().unwrap_or(u).to_string()))
+            .collect();
+        if !cards.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(cards, vec!["proof-reel.mp4", "proof-cover.jpg"], "{}", tool_results(&rig, &thread));
+}
