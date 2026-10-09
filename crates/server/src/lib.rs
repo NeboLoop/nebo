@@ -7062,7 +7062,7 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
                     "transcribed, but no speech was found in it. Say so rather than \
                      guessing at its contents.",
                 ),
-                Ok(text) => format!("{}\n{}", audio("transcript follows"), text),
+                Ok(text) => crate::attachments::transcript(filename, size, &text),
                 Err(e) => {
                     tracing::warn!(file = %filename, error = %e, "transcription failed");
                     audio(&format!(
