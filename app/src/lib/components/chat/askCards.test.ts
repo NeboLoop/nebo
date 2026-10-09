@@ -90,6 +90,20 @@ describe('ask cards', () => {
 		expect(html).toMatch(/ask-receipt-chosen[^>]*>[\s\S]*?Run a spring promo/);
 	});
 
+	it('a long list asked as a select is a dropdown of the same options; the receipt is the same', () => {
+		const select = [{ type: 'options' as const, style: 'select' as const, options: ['Acme', 'Globex', 'Initech', 'Hooli', 'Stark', 'Wayne'] }];
+		const open = render(AskWidget, { props: { requestId: 'r1', prompt: 'Which brand?', widgets: select, onSubmit: () => {} } }).body;
+		expect(open).toContain('ask-select');
+		expect(open).toMatch(/<option[^>]*value=""[^>]*>Choose one…<\/option>/);
+		expect(open).toMatch(/<option[^>]*value="Hooli"/);
+		expect(open).not.toContain('btn-outline');
+		const done = render(AskWidget, { props: { requestId: 'r1', prompt: 'Which brand?', widgets: select, response: 'Hooli', onSubmit: () => {} } }).body;
+		expect(summary(done)).toBe('Asked · Which brand? → Hooli');
+		// Without `style`, the same options are buttons, as before.
+		expect(ask()).toContain('btn-outline');
+		expect(ask()).not.toContain('ask-select');
+	});
+
 	it('skipped and cancelled questions read as such', () => {
 		expect(summary(ask(SKIP_VALUE))).toBe("Skipped · What's the most important thing to fix this month?");
 		expect(summary(ask(undefined, { cancelled: true }))).toBe("Cancelled · What's the most important thing to fix this month?");
