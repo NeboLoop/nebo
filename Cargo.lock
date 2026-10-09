@@ -5803,6 +5803,7 @@ dependencies = [
  "nebo-config",
  "nebo-server",
  "notify-rust",
+ "objc2-foundation",
  "objc2-web-kit",
  "open",
  "serde",
