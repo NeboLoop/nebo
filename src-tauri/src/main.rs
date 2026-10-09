@@ -487,6 +487,25 @@ fn allow_element_fullscreen<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
     });
 }
 
+/// Keep macOS from napping Nebo while its window is hidden or covered. App
+/// Nap moved the whole process (server included) to background priority 4
+/// with throttled I/O and coalesced timers; under load it got no CPU for
+/// minutes: no answer on :27895, even /health, and the NeboAI write loop
+/// exited on "sleep drift" (60-182 s, 2026-10-07..09). Held for the life of
+/// the process. `UserInitiatedAllowingIdleSystemSleep` lets the Mac idle-sleep
+/// as before: no power assertion, never keeps it awake.
+#[cfg(target_os = "macos")]
+fn hold_app_nap_opt_out() {
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    let activity = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+        NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
+        &NSString::from_str("Nebo serves the local API and runs agents in the background"),
+    );
+    // Never ended: the activity lasts as long as the process.
+    std::mem::forget(activity);
+    tracing::info!("App Nap opt-out held (idle system sleep still allowed)");
+}
+
 #[cfg(not(target_os = "macos"))]
 fn allow_element_fullscreen<R: tauri::Runtime>(_webview: &tauri::Webview<R>) {}
 
@@ -837,6 +856,9 @@ fn main() {
     cfg.auth.access_expire = settings.access_expire;
     cfg.auth.refresh_token_expire = settings.refresh_token_expire;
     config::ensure_data_dir().expect("failed to create data directory");
+
+    #[cfg(target_os = "macos")]
+    hold_app_nap_opt_out();
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");

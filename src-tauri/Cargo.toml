@@ -49,3 +49,5 @@ anyhow = { workspace = true }
 # WebKit on macOS ships with it off.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "objc2-app-kit"] }
+# The App Nap opt-out (`hold_app_nap_opt_out`).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
