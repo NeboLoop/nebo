@@ -717,19 +717,17 @@ pub(crate) fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::
 }
 
 /// GET /api/v1/neboai/janus/usage — Janus usage stats.
-/// Returns cached data if available, otherwise fetches directly from Janus.
+/// Read from Janus (which reads the credit balance from NeboAI), so the page
+/// shows a plan or credit bought since the last request; the cache, which
+/// only completions update, answers when Janus cannot be reached.
 pub async fn janus_usage(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    // Try in-memory cache first
-    let cached = state.janus_usage.read().await.clone();
-    if let Some(ref u) = cached {
-        return Ok(Json(janus_usage_response(u)));
-    }
-
-    // No cache — fetch from Janus directly
     match fetch_janus_usage(&state).await {
         Ok(u) => Ok(Json(janus_usage_response(&u))),
         Err(e) => {
             warn!("failed to fetch janus usage: {e}");
+            if let Some(ref u) = *state.janus_usage.read().await {
+                return Ok(Json(janus_usage_response(u)));
+            }
             // Return zeros rather than error so the page still renders
             Ok(Json(serde_json::json!({
                 "session": { "limitCredits": 0, "remainingCredits": 0, "usedCredits": 0, "percentUsed": 0 },

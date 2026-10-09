@@ -1898,8 +1898,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     };
     let napp_registry = Arc::new(napp::Registry::new(napp_config, port));
 
-    // Plan tier — updated by NeboAI AUTH_OK handler, read by ExecuteTool
-    let plan_tier = Arc::new(tokio::sync::RwLock::new("free".to_string()));
+    // Plan tier — "" until read from NeboAI on connect (codes::sync_plan),
+    // then kept by the hub's tokenRefresh; read by ExecuteTool and the
+    // account status.
+    let plan_tier = Arc::new(tokio::sync::RwLock::new(String::new()));
 
     // Initialize OS-level sandbox for script execution (macOS Seatbelt / Linux bubblewrap)
     let sandbox_manager = {
@@ -4925,13 +4927,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                         }
                     }
 
-                    // Update in-memory plan tier so account_status reads the fresh value
-                    *state.plan_tier.write().await = plan.to_string();
-
-                    // Notify UI
-                    state
-                        .hub
-                        .broadcast("plan_changed", serde_json::json!({"plan": plan}));
+                    // The plan account_status reads; the UI hears of a change.
+                    codes::apply_plan(&state, plan).await;
                 }
             }
         }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
   import FeedbackModal from '$lib/components/FeedbackModal.svelte';
 
@@ -29,6 +30,12 @@
     } catch {
       // Keep mock data
     }
+  });
+
+  // A plan bought (or ended) while the app is open: the hub's tokenRefresh
+  // reaches the server, which announces it here.
+  onWsEvent<{ plan?: string }>('plan_changed', (d) => {
+    if (d?.plan) planName = d.plan;
   });
 
   const menuItems = [
