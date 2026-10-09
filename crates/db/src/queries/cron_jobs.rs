@@ -400,6 +400,30 @@ mod tests {
         store.create_cron_job("paused", "0 9 * * *", "", "agent", Some("x"), None, None, false, Some("emp"), None, None).unwrap();
     }
 
+    /// The engine lists the enabled schedules every tick (5 s); each job's
+    /// derived columns must seek engine_runs, never scan it. Scanning it once
+    /// per subquery per job outlasted the tick on a long-used desktop and
+    /// held SQLite's page cache until the server stopped answering
+    /// (2026-10-09).
+    #[test]
+    fn listing_enabled_jobs_seeks_engine_runs() {
+        let store = temp_store();
+        let conn = store.conn().unwrap();
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {} WHERE j.enabled = 1 ORDER BY j.name", super::JOB_SELECT))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let on_runs: Vec<&String> = plan.iter().filter(|step| step.contains(" r ") || step.ends_with(" r")).collect();
+        assert_eq!(on_runs.len(), 3, "one step per subquery: {plan:#?}");
+        for step in on_runs {
+            assert!(step.starts_with("SEARCH r USING") && step.contains("idx_engine_runs_external_ref"), "{step} in {plan:#?}");
+        }
+    }
+
     /// A job's last run, run count, last error and history are its engine
     /// runs — nothing is stamped on the job row.
     #[test]
