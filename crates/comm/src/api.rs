@@ -2445,16 +2445,25 @@ mod tests {
         let settings = crate::api_types::FileShareSettings {
             access: "password".into(),
             password: "hunter22".into(),
-            expires_at: String::new(),
+            ..Default::default()
         };
         let made = api.create_file_share("f1", "/api/v1/files/Go-Live Checklist.md", &settings).await.unwrap();
         assert_eq!(made.id, "s1");
         let keep = crate::api_types::FileShareSettings { access: "password".into(), ..Default::default() };
         api.update_file_share("s1", &keep).await.unwrap();
         api.revoke_file_share("s1").await.unwrap();
+        // A new version behind the same link, and whether it follows the file.
+        let version = crate::api_types::FileShareSettings {
+            access: "link".into(),
+            live: Some(false),
+            file_id: "f2".into(),
+            content_hash: "h2".into(),
+            ..Default::default()
+        };
+        api.update_file_share("s1", &version).await.unwrap();
 
         let seen = seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 4, "{seen:#?}");
+        assert_eq!(seen.len(), 5, "{seen:#?}");
         assert!(seen[0].starts_with("GET /api/v1/shares?source=%2Fapi%2Fv1%2Ffiles%2FGo-Live%20Checklist.md "), "{}", seen[0]);
         assert!(seen[1].starts_with("POST /api/v1/shares "), "{}", seen[1]);
         let created: serde_json::Value = serde_json::from_str(seen[1].split_once("HTTP/1.1 ").unwrap().1).unwrap();
@@ -2464,6 +2473,8 @@ mod tests {
         let updated: serde_json::Value = serde_json::from_str(seen[2].split_once("HTTP/1.1 ").unwrap().1).unwrap();
         assert_eq!(updated, serde_json::json!({"access": "password"}));
         assert!(seen[3].starts_with("DELETE /api/v1/shares/s1 "), "{}", seen[3]);
+        let version: serde_json::Value = serde_json::from_str(seen[4].split_once("HTTP/1.1 ").unwrap().1).unwrap();
+        assert_eq!(version, serde_json::json!({"access": "link", "live": false, "fileId": "f2", "contentHash": "h2"}));
     }
 
     // A connection cut before the body's declared length is a failed

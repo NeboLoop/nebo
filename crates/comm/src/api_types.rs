@@ -952,6 +952,13 @@ pub struct FileShare {
     /// RFC 3339; empty = never.
     pub expires_at: String,
     pub created_at: String,
+    /// What the bot calls the file (its Work-panel reference).
+    pub source: String,
+    /// The link follows its file: each new version goes behind it.
+    /// Otherwise it keeps the version it has.
+    pub live: bool,
+    /// The bot's hash of the version the link opens now.
+    pub content_hash: String,
 }
 
 /// A link opened (`POST /api/v1/shares/open`): `state` is ok, password,
@@ -968,7 +975,10 @@ pub struct OpenedFileShare {
 }
 
 /// Who can open a link and until when. An empty `password` on a password
-/// link keeps the one it has; an empty `expires_at` means never.
+/// link keeps the one it has; an empty `expires_at` means never; no `live`
+/// keeps the link's (a new link is live). `file_id` (from the one upload
+/// path) puts a new version of the file behind the link; `content_hash` is
+/// that version's hash.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FileShareSettings {
@@ -977,6 +987,12 @@ pub struct FileShareSettings {
     pub password: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub expires_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<bool>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub file_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub content_hash: String,
 }
 
 // ── Feedback to the NeboAI team ──────────────────────────────────────

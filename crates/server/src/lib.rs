@@ -22,6 +22,7 @@ mod heartbeat;
 mod workforce_reporter;
 pub mod import;
 pub(crate) mod linked_apps;
+mod live_shares;
 pub mod local_access;
 pub mod middleware;
 mod mail_intake;
@@ -3426,6 +3427,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Files handed to the owner that no message shows any more go
     // (`shared_files`).
     shared_files::spawn_sweep(state.store.clone());
+    live_shares::spawn(state.clone());
 
     // Once per start: turn off what NeboAI withdrew while this bot could
     // not hear it (`revocation::spawn_sweep`).
