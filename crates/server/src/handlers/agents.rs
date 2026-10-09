@@ -4710,9 +4710,15 @@ fn per_employee_needs(
 /// each naming who is on the other side (`with`). Every row says which it is
 /// (`kind`: `owner`, `colleague` or `team`), from the ONE key classifier
 /// (`types::keyparser::conversation_of`).
+///
+/// `chats` pages the way GET /api/v1/chats does: `limit` and `offset`, with
+/// `total` the count of all the owner's conversations. With no `limit` the
+/// whole list comes back, as it did before paging. `teammates` comes whole
+/// with the first page (`offset` 0) and empty with the ones after it.
 pub async fn list_agent_chats(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(page): Query<AgentChatsQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let session_prefix = types::keyparser::agent_session_prefix(&id);
 
@@ -4762,14 +4768,24 @@ pub async fn list_agent_chats(
     let now = chrono::Utc::now().timestamp();
     let zone = tools::owner_clock::OwnerZone::of(&state.store);
     let employee = state.store.get_agent(&id).ok().flatten().map(|a| a.name).unwrap_or_default();
+    // Classify first, so only the rows on this page read their status.
+    let (owned, others): (Vec<_>, Vec<_>) = enriched_chats
+        .iter()
+        .filter_map(|row| {
+            let conversation =
+                row.0.session_name.as_deref().and_then(types::keyparser::conversation_of)?;
+            Some((row, conversation))
+        })
+        .partition(|(_, c)| *c == types::keyparser::Conversation::Owner);
+    let total = owned.len();
+    let shown = owned
+        .into_iter()
+        .skip(page.offset)
+        .take(page.limit.unwrap_or(usize::MAX))
+        .chain(others.into_iter().filter(|_| page.offset == 0));
     let mut chats = Vec::new();
     let mut teammates = Vec::new();
-    for (chat, msg_count, last_content) in &enriched_chats {
-        let Some(conversation) =
-            chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
-        else {
-            continue;
-        };
+    for ((chat, msg_count, last_content), conversation) in shown {
         // The enriched row's last content is the fallback for a thread
         // whose newest rows could not be read.
         let status = thread_status(&state.store, &chat.id);
@@ -4802,13 +4818,20 @@ pub async fn list_agent_chats(
         }
     }
 
-    let total = chats.len();
     Ok(Json(serde_json::json!({
         "chats": chats,
         "teammates": teammates,
         "activeChatId": active_chat_id,
         "total": total,
     })))
+}
+
+/// GET /api/v1/agents/{id}/chats paging: no `limit` is the whole list.
+#[derive(Debug, Default, Deserialize)]
+pub struct AgentChatsQuery {
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: usize,
 }
 
 /// A conversation's title as the owner sees it. A chat the runner made for
