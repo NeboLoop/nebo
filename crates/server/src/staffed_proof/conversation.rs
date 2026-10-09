@@ -1759,6 +1759,17 @@ async fn a_colleagues_thread_is_never_the_employees_own_chat() {
     assert_eq!(session_names(&listed["teammates"]), vec![colleague.clone()], "{listed}");
     assert_eq!(listed["teammates"][0]["kind"], "colleague", "{listed}");
     assert_eq!(listed["teammates"][0]["with"], "Proof Peer Sender", "{listed}");
+
+    // Paged, the owner's conversations come a page at a time, the total
+    // counts them all, and the teammates come with the first page only.
+    let first = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1")).await;
+    assert_eq!(session_names(&first["chats"]), vec![own.clone()], "{first}");
+    assert_eq!(session_names(&first["teammates"]), vec![colleague.clone()], "{first}");
+    assert_eq!(first["total"], 1, "{first}");
+    let next = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1&offset=1")).await;
+    assert!(session_names(&next["chats"]).is_empty(), "{next}");
+    assert!(session_names(&next["teammates"]).is_empty(), "{next}");
+    assert_eq!(next["total"], 1, "{next}");
     assert_eq!(
         nebo.state.store.get_latest_agent_chat(&coder).unwrap().and_then(|c| c.session_name).as_deref(),
         Some(own.as_str()),
