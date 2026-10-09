@@ -1076,120 +1076,133 @@ impl Loader {
             const STORM_THRESHOLD: u32 = 20;
             const STORM_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
 
-            while let Some(result) = rx.recv().await {
-                match result {
-                    Ok(event) => {
-                        let dominated = matches!(
-                            event.kind,
-                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                        );
-                        if !dominated {
+            // Setting up the watch is not instant (seconds, on a loaded
+            // machine), and nothing written to the trees before it is in
+            // place is ever reported: a skill written then stayed out of the
+            // catalog until some later write fired the watcher. The boot's
+            // load ran before the watch began, so the first pass looks once
+            // without waiting for an event, the way an event would, and finds
+            // whatever landed meanwhile.
+            let mut look_now = true;
+            loop {
+                let paths: Vec<std::path::PathBuf> = if std::mem::take(&mut look_now) {
+                    Vec::new()
+                } else {
+                    let event = match rx.recv().await {
+                        None => return,
+                        Some(Ok(event)) => event,
+                        Some(Err(e)) => {
+                            warn!(error = %e, "filesystem watch error");
                             continue;
                         }
+                    };
+                    let dominated = matches!(
+                        event.kind,
+                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                    );
+                    if !dominated {
+                        continue;
+                    }
 
-                        let relevant = event.paths.iter().any(|p| {
-                            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            if name.eq_ignore_ascii_case("skill.md") || name.ends_with(".napp") {
-                                return true;
-                            }
-                            // Inside an employee package only what lives under
-                            // skills/ counts. The rest of a package (AGENT.md,
-                            // agent.json, the seat's context) is written by
-                            // other subsystems — and one of the resource-dir
-                            // names below is "agents", which every path in the
-                            // agents tree matches. Without this gate a settings
-                            // save would reload every skill in the install.
-                            if agent_dirs.iter().any(|root| p.starts_with(root))
-                                && !p.ancestors().any(|a| {
-                                    a.file_name().and_then(|n| n.to_str()) == Some("skills")
-                                })
-                            {
-                                return false;
-                            }
-                            // Trigger reload when resource files change
-                            p.ancestors().any(|a| {
-                                a.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .map(|n| {
-                                        matches!(
-                                            n,
-                                            "scripts"
-                                                | "references"
-                                                | "assets"
-                                                | "examples"
-                                                | "agents"
-                                                | "core"
-                                        )
-                                    })
-                                    .unwrap_or(false)
+                    let relevant = event.paths.iter().any(|p| {
+                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        if name.eq_ignore_ascii_case("skill.md") || name.ends_with(".napp") {
+                            return true;
+                        }
+                        // Inside an employee package only what lives under
+                        // skills/ counts. The rest of a package (AGENT.md,
+                        // agent.json, the seat's context) is written by
+                        // other subsystems — and one of the resource-dir
+                        // names below is "agents", which every path in the
+                        // agents tree matches. Without this gate a settings
+                        // save would reload every skill in the install.
+                        if agent_dirs.iter().any(|root| p.starts_with(root))
+                            && !p.ancestors().any(|a| {
+                                a.file_name().and_then(|n| n.to_str()) == Some("skills")
                             })
-                        });
-                        if !relevant {
-                            continue;
+                        {
+                            return false;
                         }
-
-                        // Skip reload while paused (extraction in progress)
-                        if watcher_paused.load(Ordering::Relaxed) {
-                            continue;
-                        }
-
-                        // Coalesce a burst into one reload — but never DROP the
-                        // event. An edit that lands inside the debounce window
-                        // waits the window out; discarding it left the change on
-                        // disk and the old procedure in memory until some
-                        // unrelated write happened to trigger the next reload.
-                        if let Some(remaining) = debounce.checked_sub(last_reload.elapsed()) {
-                            tokio::time::sleep(remaining).await;
-                            // Whatever piled up while waiting is covered by the
-                            // reload below.
-                            while rx.try_recv().is_ok() {}
-                        }
-
-                        // Storm breaker: inside a cooldown, drop events outright.
-                        if let Some(until) = storm_until {
-                            if std::time::Instant::now() < until {
-                                continue;
-                            }
-                            storm_until = None;
-                            window_start = std::time::Instant::now();
-                            window_reloads = 0;
-                            info!("skills watcher: storm cooldown over, resuming reloads");
-                        }
-                        if window_start.elapsed() > STORM_WINDOW {
-                            window_start = std::time::Instant::now();
-                            window_reloads = 0;
-                        }
-                        window_reloads += 1;
-                        if window_reloads >= STORM_THRESHOLD {
-                            let culprits: Vec<String> = event
-                                .paths
-                                .iter()
-                                .map(|p| p.display().to_string())
-                                .collect();
-                            warn!(
-                                reloads = window_reloads,
-                                window_secs = STORM_WINDOW.as_secs(),
-                                cooldown_secs = STORM_COOLDOWN.as_secs(),
-                                last_event_paths = ?culprits,
-                                "skills watcher: reload storm — something keeps writing inside a \
-                                 watched tree; pausing reloads (fix the writer, not the watcher)"
-                            );
-                            storm_until = Some(std::time::Instant::now() + STORM_COOLDOWN);
-                            continue;
-                        }
-                        last_reload = std::time::Instant::now();
-
-                        debug!("skills directory changed, reloading");
-                        // The same scan the boot runs — sealed skills, the
-                        // disabled-plugin gate, every tier. A second copy of
-                        // the loader here drifted and dropped sealed skills.
-                        let count = this.reload_from_disk().await;
-                        info!(count, "reloaded skills after filesystem change");
+                        // Trigger reload when resource files change
+                        p.ancestors().any(|a| {
+                            a.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| {
+                                    matches!(
+                                        n,
+                                        "scripts"
+                                            | "references"
+                                            | "assets"
+                                            | "examples"
+                                            | "agents"
+                                            | "core"
+                                    )
+                                })
+                                .unwrap_or(false)
+                        })
+                    });
+                    if !relevant {
+                        continue;
                     }
-                    Err(e) => {
-                        warn!(error = %e, "filesystem watch error");
-                    }
+                    event.paths
+                };
+
+                // Skip reload while paused (extraction in progress)
+                if watcher_paused.load(Ordering::Relaxed) {
+                    continue;
                 }
+
+                // Coalesce a burst into one reload — but never DROP the
+                // event. An edit that lands inside the debounce window
+                // waits the window out; discarding it left the change on
+                // disk and the old procedure in memory until some
+                // unrelated write happened to trigger the next reload.
+                if let Some(remaining) = debounce.checked_sub(last_reload.elapsed()) {
+                    tokio::time::sleep(remaining).await;
+                    // Whatever piled up while waiting is covered by the
+                    // reload below.
+                    while rx.try_recv().is_ok() {}
+                }
+
+                // Storm breaker: inside a cooldown, drop events outright.
+                if let Some(until) = storm_until {
+                    if std::time::Instant::now() < until {
+                        continue;
+                    }
+                    storm_until = None;
+                    window_start = std::time::Instant::now();
+                    window_reloads = 0;
+                    info!("skills watcher: storm cooldown over, resuming reloads");
+                }
+                if window_start.elapsed() > STORM_WINDOW {
+                    window_start = std::time::Instant::now();
+                    window_reloads = 0;
+                }
+                window_reloads += 1;
+                if window_reloads >= STORM_THRESHOLD {
+                    let culprits: Vec<String> = paths
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    warn!(
+                        reloads = window_reloads,
+                        window_secs = STORM_WINDOW.as_secs(),
+                        cooldown_secs = STORM_COOLDOWN.as_secs(),
+                        last_event_paths = ?culprits,
+                        "skills watcher: reload storm — something keeps writing inside a \
+                         watched tree; pausing reloads (fix the writer, not the watcher)"
+                    );
+                    storm_until = Some(std::time::Instant::now() + STORM_COOLDOWN);
+                    continue;
+                }
+                last_reload = std::time::Instant::now();
+
+                debug!("skills directory changed, reloading");
+                // The same scan the boot runs — sealed skills, the
+                // disabled-plugin gate, every tier. A second copy of
+                // the loader here drifted and dropped sealed skills.
+                let count = this.reload_from_disk().await;
+                info!(count, "reloaded skills after filesystem change");
             }
         })
     }
@@ -2476,6 +2489,33 @@ Triage instructions.
             seen, "Second wording",
             "the watcher must reload a package's own procedure when it changes"
         );
+    }
+
+    /// A skill written after the boot's load and before the folder watch is
+    /// in place joins the catalog anyway: the watch looks once when it
+    /// starts. Nothing is written after `watch()`, so no filesystem event
+    /// ever names it; before, it stayed out until some later write.
+    #[tokio::test]
+    async fn a_skill_written_before_the_watch_is_in_place_is_found() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let loader = Arc::new(Loader::new(installed.path().to_path_buf(), user.path().to_path_buf()));
+        loader.load_all().await;
+        assert!(loader.get("notes", None).await.is_none());
+
+        create_skill_md(user.path(), "notes", &package_skill_md("notes", "Written meanwhile"));
+        let handle = loader.watch();
+
+        let mut found = false;
+        for _ in 0..160 {
+            if loader.get("notes", None).await.is_some() {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(125)).await;
+        }
+        handle.abort();
+        assert!(found, "the watch never found the skill written before it was in place");
     }
 
     const SEALED_ARTIFACT_ID: &str = "0b7e5c2a-sealed-closer";

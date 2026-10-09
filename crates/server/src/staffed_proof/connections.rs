@@ -1026,6 +1026,109 @@ async fn a_restored_cloud_bot_fetches_the_plugin_packages_its_state_left_out() {
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
 
+/// A restored cloud bot's settings came back with its state, and its
+/// plugins' packages are fetched minutes after it starts. A plugin fetched
+/// then runs with the owner's stored settings, the secret ones decrypted,
+/// exactly as one present at startup does: before, it ran with no
+/// credentials until the next restart (odoo, quickbooks on a restored bot).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plugin_fetched_after_startup_runs_with_its_stored_settings() {
+    const CODE: &str = "PLUG-REST-0SET";
+    const SLUG: &str = "restored-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Restored Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Plugin,
+        CODE,
+        &crate::handlers::ws::EventOrigin::unclaimed("restore-proof"),
+    )
+    .await;
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the code installed the plugin");
+
+    // Restored: the settings are in the database as the owner saved them
+    // (the key encrypted at rest), the package is not on disk, and the
+    // process that starts holds nothing for the plugin.
+    let sealed = auth::credential::encrypt("ledger-key-123").unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "LEDGER_API_KEY", &sealed, true).unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "LEDGER_REGION", "eu", false).unwrap();
+    let slug_dir = nebo.state.plugin_store.plugins_dir().join(SLUG);
+    for name in napp::plugin::package_entries(&slug_dir) {
+        let p = slug_dir.join(name);
+        if p.is_dir() { std::fs::remove_dir_all(p).unwrap() } else { std::fs::remove_file(p).unwrap() }
+    }
+    nebo.state.plugin_store.set_env_vars(SLUG, Default::default());
+    assert!(nebo.state.plugin_store.auth_env_layers(SLUG).1.is_empty());
+
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![], &[], true, Duration::ZERO).expect("no pass was running").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the cloud bot's pass fetched the package");
+    let env = nebo.state.plugin_store.resolved_auth_env(SLUG);
+    assert_eq!(env.get("LEDGER_API_KEY").map(String::as_str), Some("ledger-key-123"), "the key, decrypted: {env:?}");
+    assert_eq!(env.get("LEDGER_REGION").map(String::as_str), Some("eu"));
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = std::fs::remove_dir_all(&slug_dir);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// A plugin copied in by hand after startup, with settings already stored
+/// for it, gets them as a plugin present at startup does: the secret one
+/// decrypted, and one its manifest declares secret but still stored in the
+/// clear encrypted at rest first. With both in place it is ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plugin_copied_in_after_startup_gets_its_stored_settings_sealed() {
+    const SLUG: &str = "late-books";
+    let nebo = session().await;
+    nebo.store().upsert_installed_plugin(SLUG, "Late Books", "0.1.0", "", "", "", "unverified").unwrap();
+    let sealed = auth::credential::encrypt("books-key-456").unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "BOOKS_API_KEY", &sealed, true).unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "BOOKS_TOKEN", "books-token-789", false).unwrap();
+
+    let dir = nebo.home.join("user").join("plugins").join(SLUG).join("0.1.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.json"),
+        json!({
+            "id": SLUG, "slug": SLUG, "name": "Late Books", "version": "0.1.0", "platforms": {},
+            "auth": { "type": "env", "env": { "BOOKS_API_KEY": "", "BOOKS_TOKEN": "" } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let bin = dir.join(SLUG);
+    std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    nebo.wait_until(30, "the hot-loaded plugin to be ready", || nebo.state.plugin_store.is_ready(SLUG)).await;
+    let env = nebo.state.plugin_store.resolved_auth_env(SLUG);
+    assert_eq!(env.get("BOOKS_API_KEY").map(String::as_str), Some("books-key-456"), "{env:?}");
+    assert_eq!(env.get("BOOKS_TOKEN").map(String::as_str), Some("books-token-789"), "{env:?}");
+    let token = nebo
+        .store()
+        .list_plugin_settings_by_slug(SLUG)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.setting_key == "BOOKS_TOKEN")
+        .unwrap();
+    assert_eq!(token.is_secret, 1, "the declared secret is marked secret");
+    assert!(auth::credential::is_encrypted(&token.setting_value), "and is no longer in the clear at rest");
+
+    let _ = std::fs::remove_dir_all(nebo.home.join("user").join("plugins").join(SLUG));
+    nebo.wait_until(30, "the removed plugin to leave", || nebo.state.plugin_store.resolve(SLUG, "*").is_none()).await;
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+}
+
 /// A cloud bot's pass waits out its spread before it fetches anything, and
 /// a request that needs a default meanwhile does not wait for it: the safety
 /// net installs it on the spot, once.
