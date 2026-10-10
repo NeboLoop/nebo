@@ -1103,6 +1103,36 @@ fn extract_base_command(command: &str) -> String {
         .to_string()
 }
 
+/// The program a shell call's exit code comes from, and the exit-code
+/// convention to read it by. The shell reports the status of the last
+/// command it ran (`policy::exit_command`): the last stage of a pipeline,
+/// the right side of the last `&&`/`||`, so `cat f | grep x` exiting 1 is
+/// grep's "no matches". After `&&` the code may be the step before it
+/// failing (`cd d && grep x` exits 1 when `d` is missing), so there the
+/// default applies: nonzero is an error. The convention is the program's
+/// name, `git diff` and `git grep` by their subcommand, or empty for the
+/// default. A script the reader can't parse falls back to the last stage
+/// split on `|`.
+fn exit_program(command: &str) -> (String, String) {
+    let Some((sub, operator)) = crate::policy::exit_command(command) else {
+        let base = extract_base_command(command);
+        return (base.clone(), base);
+    };
+    let words: Vec<&str> = sub.words().iter().map(|w| w.as_deref().unwrap_or("")).collect();
+    let program = words
+        .first()
+        .and_then(|w| std::path::Path::new(w).file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let convention = match (program.as_str(), words.get(1).copied()) {
+        _ if operator.as_deref() == Some("&&") => String::new(),
+        ("git", Some(sub @ ("diff" | "grep"))) => format!("git {sub}"),
+        _ => program.clone(),
+    };
+    (program, convention)
+}
+
 /// Interpret a command's exit code using command-specific semantics.
 /// Returns (is_error, optional_message).
 /// The follow/watch flag in a command that would never terminate on its own,
@@ -1320,10 +1350,10 @@ fn holds_a_file(dir: &std::path::Path) -> bool {
 /// replaces grep's "no matches" and find's "inaccessible" (there was nothing
 /// to match against).
 fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_searched: Option<&str>) -> (bool, Option<String>) {
-    let base = extract_base_command(command);
-    match base.as_str() {
+    let (base, convention) = exit_program(command);
+    match convention.as_str() {
         // grep/rg: 0=matches found, 1=no matches, 2+=error
-        "grep" | "rg" | "egrep" | "fgrep" => {
+        "grep" | "rg" | "egrep" | "fgrep" | "git grep" => {
             if let (1, Some(note)) = (exit_code, nothing_searched) {
                 (false, Some(note.to_string()))
             } else if exit_code == 1 {
@@ -1333,7 +1363,7 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_sear
             }
         }
         // diff: 0=identical, 1=differences found, 2+=error
-        "diff" | "colordiff" => {
+        "diff" | "colordiff" | "git diff" => {
             if exit_code == 1 {
                 (false, Some("Files differ.".to_string()))
             } else {
@@ -1442,6 +1472,33 @@ mod tests {
             Some("foo-x")
         );
         assert_eq!(missing_command_name("grep: x: No such file"), None);
+    }
+
+    /// The exit code is read by the convention of the command it came from:
+    /// the last one run. A search's 1 is "no matches", not an error,
+    /// wherever the search stands in a pipeline or after `;`/`||`; after
+    /// `&&` it may be the step before failing, so it is an error.
+    #[test]
+    fn the_exit_code_is_read_by_the_last_command_run() {
+        use super::interpret_exit_code;
+        let error = |cmd: &str, code: i32| interpret_exit_code(cmd, code, "", None).0;
+        assert!(!error("cat f | grep x", 1), "a pipeline's code is its last stage's");
+        assert!(error("cd d && grep x", 1), "after && the step before may have failed");
+        assert!(!error("cd d; grep x f", 1));
+        assert!(!error("grep x f 2>/dev/null", 1));
+        assert!(!error("timeout 5 rg x", 1), "a wrapper runs the search");
+        assert!(!error("/usr/bin/grep x f", 1));
+        assert!(error("grep x f", 2), "2 is grep's error");
+        assert!(error("grep x f | wc -l", 1), "wc's 1 is an error");
+        assert!(!error("git diff --exit-code", 1), "files differ");
+        assert!(!error("ls && test -f x || [ -d y ]", 1), "condition is false");
+        assert!(!error("cat a | diff - b", 1));
+        assert!(error("cat f | sort", 1));
+        let (_, said) = interpret_exit_code("cat f | grep x", 1, "", None);
+        assert!(said.is_some_and(|s| s.starts_with("No matches found")));
+        let (failed, said) = interpret_exit_code("cd d && find x", 1, "", Some("Nothing was searched."));
+        assert!(failed, "after && the default applies");
+        assert_eq!(said.as_deref(), Some("Nothing was searched."), "the nothing-searched note stays");
     }
 
     use super::*;

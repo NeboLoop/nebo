@@ -545,6 +545,45 @@ pub fn shell_commands(script: &str) -> Option<Vec<ShellCommand>> {
     Some(commands)
 }
 
+/// The simple command whose status a bash script exits with, and the
+/// operator just before it (`&&`, `||`, `|`, `|&`, `;`), `None` when nothing
+/// runs before it. That is the last command of the last statement: the
+/// right side of the last `&&`/`||`, the last stage of a pipeline. `None`
+/// when the grammar rejects the script or it ends in anything but a simple
+/// command (a subshell, a loop, `! cmd`): its status is not one program's.
+pub fn shell_exit_command(script: &str) -> Option<(ShellCommand, Option<String>)> {
+    let tree = parse(script, Lang::Bash).ok()?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let mut node = root;
+    let mut operator: Option<String> = None;
+    loop {
+        match node.kind() {
+            "command" => return Some((shell_command(node, script), operator)),
+            "redirected_statement" => node = node.child_by_field_name("body")?,
+            "program" | "list" | "pipeline" => {
+                let mut cursor = node.walk();
+                let children: Vec<Node> = node.children(&mut cursor).collect();
+                let at = children
+                    .iter()
+                    .rposition(|c| c.is_named() && !matches!(c.kind(), "comment" | "heredoc_body"))?;
+                // The nearest operator wins: in `cd d && cat f | grep x`
+                // grep follows the pipe.
+                match children[..at].iter().rev().find(|c| c.kind() != "comment") {
+                    Some(before) if !before.is_named() => operator = Some(node_text(*before, script).to_string()),
+                    // Statements on their own lines.
+                    Some(_) => operator = Some(";".to_string()),
+                    None => {}
+                }
+                node = children[at];
+            }
+            _ => return None,
+        }
+    }
+}
+
 fn shell_command(node: Node, script: &str) -> ShellCommand {
     let mut writes = false;
     let mut around = Some(node);
@@ -927,5 +966,27 @@ mod tests {
     fn query_invalid_syntax_is_an_error() {
         let err = query("fn a() {}", Lang::Rust, "(function_item").unwrap_err();
         assert!(matches!(err, Error::Query(_)), "{err:?}");
+    }
+
+    /// The command a script's status comes from, and what joins it to the
+    /// command before: the last stage of a pipeline, the right side of the
+    /// last `&&`/`||`, the last statement.
+    #[test]
+    fn the_exit_command_is_the_last_one_run() {
+        let exit = |s: &str| {
+            shell_exit_command(s).map(|(c, op)| (c.words.into_iter().flatten().collect::<Vec<_>>().join(" "), op))
+        };
+        let pair = |c: &str, op: Option<&str>| Some((c.to_string(), op.map(str::to_string)));
+        assert_eq!(exit("grep x f"), pair("grep x f", None));
+        assert_eq!(exit("cat f | grep x"), pair("grep x", Some("|")));
+        assert_eq!(exit("cd d && grep x f"), pair("grep x f", Some("&&")));
+        assert_eq!(exit("grep x f || echo none"), pair("echo none", Some("||")));
+        assert_eq!(exit("cd d; grep x f"), pair("grep x f", Some(";")));
+        assert_eq!(exit("cd d\ngrep x f"), pair("grep x f", Some(";")));
+        assert_eq!(exit("cd d && cat f | grep x 2>/dev/null"), pair("grep x", Some("|")));
+        assert_eq!(exit("a && b || grep x f # look"), pair("grep x f", Some("||")));
+        assert_eq!(exit("(cd d && grep x f)"), None, "a subshell's status is not one program's");
+        assert_eq!(exit("! grep x f"), None);
+        assert_eq!(exit("grep 'x"), None, "does not parse");
     }
 }
