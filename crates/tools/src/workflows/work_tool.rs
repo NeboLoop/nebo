@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use super::authoring::{AUTHORING_RULES, WORKED_EXAMPLE};
 use super::manager::{Lifetime, SaveOptions, WorkflowManager};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -38,6 +39,7 @@ const KINDS: &[Kind] = &[
 
 /// Workflows belong to an employee; this is how every workflow tool says so.
 const EMPLOYEE_NOTE: &str = "Workflows belong to an employee: yours by default; `employee` names another's (when the owner changes an employee's duties, the workflow goes on that employee, never on you).";
+
 
 impl Kind {
     fn name(self) -> &'static str {
@@ -81,9 +83,11 @@ impl Kind {
                 "Creates a workflow: work the engine carries until it has an outcome, through waits, answers and restarts.\n\
                 When to use: the owner gives a direction that spans employees, teams or days (\"have marketing work with sales and bring me a recommendation\"). Make it temporary: its activities ask each employee or team, wait for the results, follow up on a stated day, and bring one outcome back. You hear the outcome; don't track it by hand.\n\
                 When not to use: a quick question you can answer from a coworker or two in this conversation (send_message, or a helper with delegate), or a single step you can take yourself.\n\
-                - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"run\", \"intent\": \"what this accomplishes\", \"steps\": [\"concrete step\"], \"tools\": [\"send_message\"]}}]}}. Leave out the trigger for a workflow run by hand.\n\
-                - Activities are the only executable unit; each runs its intent and steps on its own. A top-level `steps` array is one activity.\n\
-                - Each activity's `tools` lists every tool it calls, by exact name (`plugin__<slug>` for a plugin, `send_message` to ask a coworker). It runs with only those, plus exit, emit_event and message_owner: a tool it doesn't list is refused. A scheduling tool is refused in every workflow.\n\
+                - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"read\", \"type\": \"command\", \"params\": {{\"skill\": \"<slug>\", \"command\": \"${{plugin.<SLUG>_BIN}} <command> --json\"}}}}, {{\"id\": \"write-up\", \"tools\": [], \"intent\": \"what this accomplishes from {{{{nodes.read.items}}}}\", \"steps\": [\"concrete step\"]}}], \"connections\": [{{\"from\": \"__trigger__\", \"to\": \"read\"}}, {{\"from\": \"read\", \"to\": \"write-up\"}}]}}. Leave out the trigger for a workflow run by hand.\n\
+                - Activities (actions) are the only executable unit; each runs its intent and steps on its own. Each activity's `tools` lists every tool it calls, by exact name (`plugin__<slug>` for a plugin, `send_message` to ask a coworker). It runs with only those, plus exit, emit_event and message_owner: a tool it doesn't list is refused. A scheduling tool is refused in every workflow.\n\
+                - Design them by these rules before you write the JSON:\n\
+                {AUTHORING_RULES}\n\
+                {WORKED_EXAMPLE}\n\
                 - The name goes in `name`, or as \"name\" inside the definition.\n\
                 - `lifetime: \"temporary\"` makes it for one piece of work: it runs once (at once when it has no trigger; on its first fire otherwise), and after it ends and its outcome reaches the owner it is deleted. Its runs, receipts and cost stay, and you hear the outcome. Left out, it is saved and runs on its trigger until deleted.\n\
                 - \"Tell me when the order ships\": a temporary workflow with {{\"trigger\": {{\"type\": \"event\", \"sources\": [\"<the event>\"]}}}}. It fires once, reports and disappears; nothing polls.\n\
@@ -94,7 +98,7 @@ impl Kind {
                 Example: owner, after that outcome: \"Give me this report every Monday at 8.\" → create_workflow(name: \"Weekly marketing budget\", from_run: \"<its run id>\", definition: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 8 * * MON\"}}}}). Nothing is rebuilt."
             ),
             Kind::Update => format!(
-                "Replaces an existing workflow's definition (same shape as create_workflow; not a partial patch). Its run history stays attached. `lifetime: \"saved\"` keeps a temporary workflow for good. {EMPLOYEE_NOTE}"
+                "Replaces an existing workflow's definition (same shape and design rules as create_workflow; not a partial patch). Its run history stays attached. `lifetime: \"saved\"` keeps a temporary workflow for good. {EMPLOYEE_NOTE}"
             ),
             Kind::Delete => format!("Deletes a workflow by name, with its trigger. {EMPLOYEE_NOTE}"),
             Kind::Run => format!(
@@ -785,6 +789,32 @@ pub(crate) mod tests {
         ] {
             assert!(d.contains(words), "missing {words:?} in: {d}");
         }
+    }
+
+    /// The authoring eval's input (`make eval-authoring`): these tools'
+    /// definitions exactly as the model is shown them, one file each in the
+    /// `AUTHORING_EXPORT` folder.
+    #[test]
+    #[ignore = "writes the authoring surfaces for make eval-authoring"]
+    fn export_authoring_surfaces() {
+        let dir = std::path::PathBuf::from(std::env::var("AUTHORING_EXPORT").expect("AUTHORING_EXPORT names the folder"));
+        for kind in [Kind::Create, Kind::Update] {
+            let def = serde_json::json!({"name": kind.name(), "description": kind.description(), "input_schema": kind.schema()});
+            std::fs::write(dir.join(format!("{}.json", kind.name())), serde_json::to_string_pretty(&def).unwrap()).unwrap();
+        }
+    }
+
+    /// create_workflow carries the one design rule set and its worked
+    /// example; the example is a definition (the authoring eval validates
+    /// and scores it, `make eval-authoring`).
+    #[test]
+    fn create_workflow_carries_the_design_rules_and_example() {
+        let d = Kind::Create.description();
+        assert!(d.contains(AUTHORING_RULES) && d.contains(WORKED_EXAMPLE), "{d}");
+        let json = &WORKED_EXAMPLE[WORKED_EXAMPLE.find('{').unwrap()..];
+        let def: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert!(def["activities"].as_array().unwrap().len() >= 5 && def["connections"].is_array());
+        assert!(Kind::Update.description().contains("design rules"));
     }
 
     /// A status answer for a run in flight says checking again is useless,

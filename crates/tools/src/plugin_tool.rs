@@ -1136,7 +1136,8 @@ impl PluginRunner {
                 result.push_str(&format!(
                     "\nAn employee can run on these through a watch trigger in its agent.json \
                      (create_employee with agent_json):\n  \
-                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}",
+                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}\n\
+                     Its activities follow create_workflow's design rules: a code check first, AI only when there is work.",
                     slug
                 ));
                 ToolResult::ok(result)

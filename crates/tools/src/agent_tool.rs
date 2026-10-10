@@ -3772,6 +3772,11 @@ impl PersonaTool {
                 "activities": activities
             });
 
+            // A duty in stages wires them as a workflow does (typed steps,
+            // forks, joins, loops); without connections they run in order.
+            if let Some(conns) = auto.get("connections").filter(|c| c.as_array().is_some_and(|a| !a.is_empty())) {
+                binding["connections"] = conns.clone();
+            }
             if let Some(desc) = auto["description"].as_str() {
                 binding["description"] = serde_json::Value::String(desc.to_string());
             }
@@ -4507,6 +4512,33 @@ export default function App({ label }: Props = { label: "hi" }) { return <div>{l
         assert_eq!(valid["workflows"]["inbox"]["trigger"]["sources"], json!(["email.received"]));
         assert_eq!(valid["workflows"]["brief"]["trigger"]["type"], "schedule");
         assert!(PersonaTool::validated_frontmatter(&valid.to_string()).is_ok());
+    }
+
+    /// A steps duty's declared `tools` become its one activity's toolset,
+    /// an empty declaration included; an undeclared duty declares nothing.
+    #[test]
+    fn a_steps_duty_carries_its_declared_tools() {
+        use serde_json::json;
+        let built = PersonaTool::build_agent_json_from_automations(&[
+            json!({"name": "digest", "schedule": "weekdays at 9am", "steps": ["Read the sales sheet"], "tools": ["plugin__sheets"]}),
+            json!({"name": "think", "schedule": "weekdays at 9am", "steps": ["Weigh it"], "tools": []}),
+            json!({"name": "plain", "schedule": "weekdays at 9am", "steps": ["Brief"]}),
+        ])
+        .unwrap();
+        assert_eq!(built["workflows"]["digest"]["activities"][0]["tools"], json!(["plugin__sheets"]));
+        assert_eq!(built["workflows"]["think"]["activities"][0]["tools"], json!([]));
+        assert!(built["workflows"]["plain"]["activities"][0].get("tools").is_none());
+
+        // A staged duty keeps its wiring and its typed steps.
+        let staged = PersonaTool::build_agent_json_from_automations(&[json!({
+            "name": "chase", "schedule": "weekdays at 9am",
+            "activities": [{"id": "read", "type": "command", "params": {"command": "x --json"}}, {"id": "write", "tools": [], "intent": "From {{nodes.read.items}}"}],
+            "connections": [{"from": "__trigger__", "to": "read"}, {"from": "read", "to": "write"}]
+        })])
+        .unwrap();
+        assert_eq!(staged["workflows"]["chase"]["connections"].as_array().unwrap().len(), 2);
+        assert_eq!(staged["workflows"]["chase"]["activities"][0]["type"], "command");
+        assert!(PersonaTool::validated_frontmatter(&staged.to_string()).is_ok());
     }
 
     #[test]
