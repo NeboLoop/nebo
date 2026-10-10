@@ -7,12 +7,15 @@ import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
 import type { UploadedAttachment } from '$lib/types/attachment';
 import type { Fold } from '$lib/chat/turnBlocks';
+import { isCallName } from '$lib/chat/callLabel';
 
 // --- Metadata shapes embedded in API ChatMessage.metadata ---
 interface ToolCallMeta {
   name: string;
   input?: string | Record<string, unknown>;
   status?: string;
+  /** The call's structured name, `{kind, params}` (added on read). */
+  call?: unknown;
 }
 
 interface ContentBlockMeta {
@@ -151,6 +154,12 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       });
       continue;
     }
+    // The error a run ended on stays where it happened in the thread.
+    if (m.role === 'system' && meta?.runError === true) {
+      open = null;
+      result.push({ type: 'runError' as const, id: m.id, content: m.content, time: formatTime(m.createdAt) });
+      continue;
+    }
     if (m.role !== 'assistant') continue;
 
     const toolCalls: ToolCallMeta[] = meta?.toolCalls || [];
@@ -188,6 +197,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         name: tc.name || 'tool',
         label: tc.name || 'tool',
         ...(outcomesById.has(callId) ? { outcome: outcomesById.get(callId) } : {}),
+        ...(isCallName(tc.call) ? { call: tc.call } : {}),
         ...(durationsById.has(callId) ? { durationMs: durationsById.get(callId) } : {}),
         status: tc.status === 'error' ? 'error' : 'success',
         request,

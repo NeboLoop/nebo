@@ -438,7 +438,7 @@ impl DynTool for HelperTool {
     }
 
     fn activity(&self, input: &Value) -> String {
-        let desc = input["description"].as_str().unwrap_or("");
+        let desc = crate::humanize::cap(input["description"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP);
         match self.op {
             HelperOp::Delegate => format!("starting a helper: {desc}"),
             HelperOp::SendMessage => format!("messaging {}", self.helpers.recipient_label(input)),
@@ -446,7 +446,7 @@ impl DynTool for HelperTool {
     }
 
     fn outcome(&self, input: &Value) -> String {
-        let desc = input["description"].as_str().unwrap_or("");
+        let desc = crate::humanize::cap(input["description"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP);
         match self.op {
             HelperOp::Delegate => format!("Started a helper: {desc}"),
             HelperOp::SendMessage => format!("Messaged {}", self.helpers.recipient_label(input)),

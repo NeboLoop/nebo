@@ -228,11 +228,24 @@ fn build_ui_tool_calls(
                 "id": id,
                 "name": name,
                 "input": input_str,
-                "status": status
+                "status": status,
+                "call": tools::humanize::call(name, &input),
             })
         })
         .collect();
     Some((ui_calls, calls))
+}
+
+/// A stored call's structured name (`tools::humanize::call`), from its
+/// name and its input, which a row may keep as a JSON string.
+fn ui_call(name: Option<&serde_json::Value>, input: Option<&serde_json::Value>) -> serde_json::Value {
+    let name = name.and_then(|v| v.as_str()).unwrap_or("");
+    let input = match input {
+        Some(serde_json::Value::String(raw)) => serde_json::from_str(raw).unwrap_or(serde_json::Value::Null),
+        Some(v) => v.clone(),
+        None => serde_json::Value::Null,
+    };
+    serde_json::json!(tools::humanize::call(name, &input))
 }
 
 /// Build default contentBlocks: text first, then tools (fallback for old messages).
@@ -411,6 +424,10 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
                     for tc in tcs.iter_mut() {
                         if let Some(obj) = tc.as_object_mut() {
                             obj.remove("output");
+                            if !obj.contains_key("call") {
+                                let call = ui_call(obj.get("name"), obj.get("input"));
+                                obj.insert("call".into(), call);
+                            }
                         }
                     }
                 }
@@ -1131,6 +1148,9 @@ mod transcript_metadata_tests {
         assert_eq!(calls[0]["id"], "t1");
         assert_eq!(calls[0]["status"], "error");
         assert_eq!(calls[1]["status"], "complete");
+        // Each call carries its structured name for the clients to word.
+        assert_eq!(calls[0]["call"], serde_json::json!({"kind": "action", "params": {"verb": "read", "noun": "file"}}));
+        assert_eq!(calls[1]["call"], serde_json::json!({"kind": "tool", "params": {"name": "web"}}));
         let blocks = meta["contentBlocks"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], "Done.");
@@ -1145,7 +1165,7 @@ mod transcript_metadata_tests {
     fn preexisting_tool_call_metadata_has_outputs_stripped() {
         let mut assistant = msg("assistant", "Done.");
         assistant.metadata = Some(
-            r#"{"toolCalls":[{"id":"t1","status":"complete","output":"HUGE BLOB"}]}"#.to_string(),
+            r#"{"toolCalls":[{"id":"t1","name":"read_file","input":"{\"path\":\"/a/b.txt\"}","status":"complete","output":"HUGE BLOB"}]}"#.to_string(),
         );
         let mut messages = vec![assistant];
         build_message_metadata(&mut messages);
@@ -1155,6 +1175,8 @@ mod transcript_metadata_tests {
         assert_eq!(call["id"], "t1");
         assert_eq!(call["status"], "complete");
         assert!(call.get("output").is_none());
+        // A row stored before calls had a structured name gets one on read.
+        assert_eq!(call["call"], serde_json::json!({"kind": "read", "params": {"path": "/a/b.txt"}}));
     }
 
     /// Persisted contentBlocks (the streamed block order) win over the
