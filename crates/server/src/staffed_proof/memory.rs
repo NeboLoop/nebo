@@ -217,17 +217,28 @@ async fn the_words_the_model_reads_name_the_scope_the_row_is_in() {
         assert!(!said.contains(other), "{marker} never names the other scope: {said}");
     }
 
-    // Not the owner's own turn: a coworker's message, a workflow step.
-    for origin in [Origin::Comm, Origin::Workflow] {
-        let mut ctx = Nebo::ctx(&clerk, origin);
-        ctx.user_id = private.clone();
-        let key = format!("team/mem4-unattended-{origin:?}").to_lowercase();
-        let refused = nebo
-            .tool(&ctx, "remember", json!({ "key": key, "value": "Vendor list moved to the shared drive.", "scope": "local" }))
-            .await;
-        assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{origin:?}: {}", refused.content);
-        assert!(rows(&nebo, &key).is_empty(), "{origin:?}: nothing landed anywhere");
-    }
+    // Not the owner's own turn: a coworker's message is refused.
+    let mut ctx = Nebo::ctx(&clerk, Origin::Comm);
+    ctx.user_id = private.clone();
+    let key = "team/mem4-unattended-comm";
+    let refused = nebo
+        .tool(&ctx, "remember", json!({ "key": key, "value": "Vendor list moved to the shared drive.", "scope": "local" }))
+        .await;
+    assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{}", refused.content);
+    assert!(rows(&nebo, key).is_empty(), "nothing landed anywhere");
+
+    // A workflow step keeps its state for the employee's later runs: local
+    // memory is untouched, the employee's own memory has it, and the words
+    // say which.
+    let mut ctx = Nebo::ctx(&clerk, Origin::Workflow);
+    ctx.user_id = private.clone();
+    let key = "team/mem4-unattended-workflow";
+    let kept = nebo
+        .tool(&ctx, "remember", json!({ "key": key, "value": "Vendor list moved to the shared drive.", "scope": "local" }))
+        .await;
+    assert!(!kept.is_error && kept.content.contains("kept in this employee's own memory"), "{}", kept.content);
+    let stored: Vec<String> = rows(&nebo, key).into_iter().map(|(u, _)| u).collect();
+    assert_eq!(stored, vec![private.clone()], "the employee's own memory, never local");
 }
 
 /// With no global store (this Nebo is not enrolled in one), nothing the model
