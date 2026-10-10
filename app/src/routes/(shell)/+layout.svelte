@@ -457,6 +457,7 @@
           isApp: a.isApp ?? false,
           ownApp: (a.isApp ?? false) && a.source !== 'installed',
           appWindow: a.appWindow,
+          starters: a.starters ?? [],
           kind: a.kind,
           offline: a.offline ?? false,
           loopExposed: a.loopExposed ?? false,

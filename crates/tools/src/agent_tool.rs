@@ -4084,6 +4084,7 @@ impl PersonaTool {
             id: r.id.clone(),
             name: r.name.clone(),
             description: r.description.clone(),
+            starters: napp::agent::parse_agent(&r.agent_md).map(|d| d.starters).unwrap_or_default(),
             body: Self::agent_body(&r.agent_md),
         };
         let config = if !r.frontmatter.is_empty() {
@@ -4458,6 +4459,7 @@ mod tests {
                 id: String::new(),
                 name: name.to_string(),
                 description: String::new(),
+                starters: Vec::new(),
                 body: PersonaTool::agent_body(agent_md),
             },
             config: None,
