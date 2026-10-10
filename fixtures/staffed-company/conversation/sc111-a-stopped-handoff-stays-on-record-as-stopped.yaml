@@ -1,0 +1,8 @@
+id: sc111-a-stopped-handoff-stays-on-record-as-stopped
+name: "SC111 — A stopped hand-off stays on record as stopped"
+description: |
+  The owner stops a hand-off while its employee works: the receiving run stops and the
+  hand-off is recorded stopped, never left running and never rewritten by a late answer.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_stopped_handoff_stays_on_record_as_stopped
+conversation: []

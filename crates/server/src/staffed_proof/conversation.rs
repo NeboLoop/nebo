@@ -700,8 +700,11 @@ async fn a_handoff_chain_traces_as_one_tree() {
     let below = child().unwrap();
     assert_eq!((below.from_agent_id.as_str(), below.to_agent_id.as_str()), (mid.as_str(), leaf.as_str()));
     assert!(below.ask.contains("MARK-CH2"), "{}", below.ask);
+    rig.until(30, "Mid's hand-off runs while Mid waits on Leaf", || {
+        nebo.store().get_handoff(&top_id).unwrap().is_some_and(|h| h.status == "running")
+    })
+    .await;
     let top = nebo.store().get_handoff(&top_id).unwrap().unwrap();
-    assert_eq!(top.status, "running", "Mid waits on Leaf: {top:?}");
     assert_eq!(top.to_agent_id, mid);
     assert_eq!(top.parent_id, None);
     let live = crate::handoff::receiver_sessions(&nebo.state);
@@ -735,7 +738,10 @@ async fn a_stopped_handoff_stays_on_record_as_stopped() {
     assert!(!sent.is_error, "{}", sent.content);
     let id = sent.payload.as_ref().and_then(|p| p["handoffId"].as_str()).unwrap().to_string();
     rig.until(30, "the clerk is working", || rig.company.calls_naming("MARK-STOP") > 0).await;
-    assert_eq!(nebo.store().get_handoff(&id).unwrap().unwrap().status, "running");
+    rig.until(30, "the hand-off is running", || {
+        nebo.store().get_handoff(&id).unwrap().is_some_and(|h| h.status == "running")
+    })
+    .await;
 
     crate::handoff::stop(&nebo.state, &id).await.unwrap();
     let h = nebo.store().get_handoff(&id).unwrap().unwrap();
