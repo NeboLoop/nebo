@@ -109,21 +109,39 @@ pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 /// when its depth was lost somewhere.
 pub(crate) const AGENT_TRIGGERS_PER_5_MIN: usize = 6;
 
+/// How many messages an employee's own work (its workflows, schedules and
+/// the owner's requests: handoff depth 0) may send one colleague in five
+/// minutes. No chain runs on these, so the chain backstop above is the
+/// wrong ceiling: a hub-and-spoke team whose four workflows each report to
+/// one manager sent 13 messages that the 6 refused (bake-off 2026-10-10).
+/// This is a volume ceiling only, the size the workroom gives a mission.
+pub(crate) const OWN_WORK_MESSAGES_PER_5_MIN: usize = 30;
+
 /// One more agent-set-off piece of work on `rail`, when fewer than `cap`
 /// were in the last five minutes: counted and allowed. The ONE rate
 /// ceiling on agent-to-agent chains, for the loop channel and the
 /// coworker rail alike.
 pub(crate) async fn agent_trigger_allowed(state: &AppState, rail: &str, cap: usize) -> bool {
     let mut triggers = state.channel_agent_triggers.lock().await;
+    trigger_counted(&mut triggers, rail, cap, std::time::Instant::now())
+}
+
+/// [`agent_trigger_allowed`] over the counts themselves, at `now`.
+pub(crate) fn trigger_counted(
+    triggers: &mut std::collections::HashMap<String, std::collections::VecDeque<std::time::Instant>>,
+    rail: &str,
+    cap: usize,
+    now: std::time::Instant,
+) -> bool {
     let entry = triggers.entry(rail.to_string()).or_default();
-    let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
+    let cutoff = now.checked_sub(std::time::Duration::from_secs(300)).unwrap_or(now);
     while entry.front().is_some_and(|t| *t < cutoff) {
         entry.pop_front();
     }
     if entry.len() >= cap {
         return false;
     }
-    entry.push_back(std::time::Instant::now());
+    entry.push_back(now);
     true
 }
 

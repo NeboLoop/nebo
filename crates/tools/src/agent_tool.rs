@@ -2130,6 +2130,14 @@ impl PersonaTool {
                             activity["tools"] = tools.clone();
                         }
                     }
+                    // The delivery the duty owes is its last activity's: the
+                    // report goes out when the work before it is done.
+                    if let Some(required) = update_obj.get("requires_tools").filter(|t| t.is_array())
+                        && let Some(last) =
+                            existing_binding.get_mut("activities").and_then(|a| a.as_array_mut()).and_then(|a| a.last_mut())
+                    {
+                        last["requires_tools"] = required.clone();
+                    }
 
                     // Update trigger if any trigger field is provided
                     let has_trigger_change = update_obj["schedule"].is_string()
@@ -3762,6 +3770,9 @@ impl PersonaTool {
                 if let Some(tools) = auto.get("tools").filter(|t| t.is_array()) {
                     activity["tools"] = tools.clone();
                 }
+                if let Some(required) = auto.get("requires_tools").filter(|t| t.is_array()) {
+                    activity["requires_tools"] = required.clone();
+                }
                 vec![activity]
             } else {
                 vec![]
@@ -4539,6 +4550,26 @@ export default function App({ label }: Props = { label: "hi" }) { return <div>{l
         assert_eq!(staged["workflows"]["chase"]["connections"].as_array().unwrap().len(), 2);
         assert_eq!(staged["workflows"]["chase"]["activities"][0]["type"], "command");
         assert!(PersonaTool::validated_frontmatter(&staged.to_string()).is_ok());
+    }
+
+    /// Bake-off 2026-10-10: a weekly forecast said "sent to the owner" with
+    /// no send at all, and the builder had no way to say the step owes the
+    /// send. An automation's `requires_tools` reaches its activity, and
+    /// through agent.json the engine's contract.
+    #[test]
+    fn an_automations_required_delivery_reaches_its_step() {
+        use serde_json::json;
+        let built = PersonaTool::build_agent_json_from_automations(&[json!({
+            "name": "weekly-forecast", "schedule": "0 7 * * MON", "steps": ["Build the forecast", "Send it with message_owner"],
+            "tools": ["message_owner"], "requires_tools": ["message_owner"]
+        })])
+        .unwrap();
+        let activity = &built["workflows"]["weekly-forecast"]["activities"][0];
+        assert_eq!(activity["requires_tools"], json!(["message_owner"]));
+        let config = napp::agent::parse_agent_config(&built.to_string()).unwrap();
+        let def: serde_json::Value =
+            serde_json::from_str(&config.workflows["weekly-forecast"].to_workflow_json("weekly-forecast")).unwrap();
+        assert_eq!(def["activities"][0]["requires_tools"], json!(["message_owner"]));
     }
 
     #[test]

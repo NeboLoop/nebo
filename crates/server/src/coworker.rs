@@ -78,6 +78,29 @@ impl CoworkerRail for CoworkerRailImpl {
     }
 }
 
+/// The rail a message from `from` to `to` is counted on, and its ceiling
+/// per five minutes. A message sent from a turn a colleague's message set
+/// off (handoff depth 1 and on) is part of a chain, held to the chain
+/// backstop [`crate::AGENT_TRIGGERS_PER_5_MIN`]. One from the employee's
+/// own work (depth 0: its workflows, its schedules, the owner's runs) sets
+/// no chain going, so it gets the volume ceiling
+/// [`crate::OWN_WORK_MESSAGES_PER_5_MIN`], counted apart.
+pub(crate) fn coworker_rail(from: &str, to: &str, handoff_depth: u8) -> (String, usize) {
+    if handoff_depth == 0 {
+        (format!("coworker-own:{from}:{to}"), crate::OWN_WORK_MESSAGES_PER_5_MIN)
+    } else {
+        (format!("coworker:{from}:{to}"), crate::AGENT_TRIGGERS_PER_5_MIN)
+    }
+}
+
+/// What a sender is told when a rail's ceiling refuses its message.
+fn rail_refusal(to_name: &str, cap: usize) -> String {
+    format!(
+        "Not sent: you have messaged {to_name} {cap} times in the last five minutes. This message was not \
+         delivered; don't say it was. Finish with what you have, or report back to whoever asked you."
+    )
+}
+
 pub(crate) async fn send_coworker_message(
     state: AppState,
     msg: CoworkerMessage,
@@ -149,19 +172,15 @@ pub(crate) async fn send_coworker_message(
         }
     }
 
-    // The ceiling on a chain the owner did not start himself: an
-    // employee's own messages to one colleague set work off at most
-    // `AGENT_TRIGGERS_PER_5_MIN` times in five minutes. His own request,
-    // passed straight on, is never held back.
+    // The ceiling on messages to one colleague (`coworker_rail`): a chain
+    // the owner did not start himself is held to the chain backstop, an
+    // employee's own work to a volume ceiling. His own request, passed
+    // straight on, is never held back.
     let owners_own = msg.handoff_depth == 0 && authority.owners_request().is_some();
     if msg.team.is_none() && !owners_own {
-        let rail = format!("coworker:{}:{}", msg.from_agent_id, to_id);
-        if !crate::agent_trigger_allowed(&state, &rail, crate::AGENT_TRIGGERS_PER_5_MIN).await {
-            return Err(format!(
-                "Not sent: you have messaged {to_name} {} times in the last five minutes. Finish with what you have, \
-                 or report back to whoever asked you.",
-                crate::AGENT_TRIGGERS_PER_5_MIN
-            ));
+        let (rail, cap) = coworker_rail(&msg.from_agent_id, &to_id, msg.handoff_depth);
+        if !crate::agent_trigger_allowed(&state, &rail, cap).await {
+            return Err(rail_refusal(&to_name, cap));
         }
     }
 
@@ -1102,9 +1121,37 @@ pub(crate) fn origin_matter_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        coworker_thread_keys, named, parse_team_envelope, team_context, team_envelope,
+        coworker_rail, coworker_thread_keys, named, parse_team_envelope, rail_refusal, team_context, team_envelope,
         OWNER,
     };
+
+    /// Bake-off 2026-10-10: a hub-and-spoke team (four workflows reporting
+    /// to one manager) was refused at the 7th message in five minutes,
+    /// though no chain was running. An employee's own work (depth 0) now
+    /// sends 7, and up to 30; a chain a colleague set off (depth 1) still
+    /// stops at 6, and the two are counted apart.
+    #[test]
+    fn own_work_reaches_a_hub_and_a_chain_still_stops_at_six() {
+        let mut counts = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        let send = |counts: &mut _, depth: u8| {
+            let (rail, cap) = coworker_rail("analyst", "manager", depth);
+            crate::trigger_counted(counts, &rail, cap, now)
+        };
+        for i in 0..7 {
+            assert!(send(&mut counts, 0), "own work, message {} goes through", i + 1);
+        }
+        for _ in 7..crate::OWN_WORK_MESSAGES_PER_5_MIN {
+            assert!(send(&mut counts, 0));
+        }
+        assert!(!send(&mut counts, 0), "the volume ceiling holds at 30");
+        for i in 0..crate::AGENT_TRIGGERS_PER_5_MIN {
+            assert!(send(&mut counts, 1), "chain message {} goes through", i + 1);
+        }
+        assert!(!send(&mut counts, 1), "a chain stops at 6");
+        let said = rail_refusal("Sales Floor Manager", 6);
+        assert!(said.starts_with("Not sent:") && said.contains("don't say it was"), "{said}");
+    }
     use types::provenance::ProvenanceClass;
 
     fn employee(id: &str, name: &str) -> db::models::Agent {

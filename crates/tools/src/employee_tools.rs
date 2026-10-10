@@ -86,6 +86,10 @@ fn draft_param() -> serde_json::Value {
 /// lists (`workflow::engine::scoped_activity_tools`).
 const AUTOMATION_TOOLS: &str = "Every tool the steps call, by exact name (plugin__<slug> for a plugin, e.g. plugin__odoo; read_file, run_command, send_message, push_notification). It runs with only these, plus exit, emit_event and message_owner; anything else is refused. Scheduling tools are refused in every automation.";
 
+/// What an automation's `requires_tools` say: the delivery the step owes,
+/// checked before it may finish (`turn_end::WorkflowContractCheck`).
+const AUTOMATION_REQUIRES_TOOLS: &str = "Tools that must succeed before the step may finish. Set it for a step whose job is to deliver, e.g. [\"message_owner\"] for a report the owner always gets; leave it out when sending depends on what the step finds.";
+
 /// One recurring or triggered duty, the item `automations` and
 /// `add_automations` take.
 fn automation_item() -> serde_json::Value {
@@ -100,6 +104,7 @@ fn automation_item() -> serde_json::Value {
             "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Instead of a schedule: the events that start it, e.g. \"email.received\"." },
             "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps, run in order in one run: what to do, with which tool or data, producing what." },
             "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
+            "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS },
             "activities": {
                 "type": "array",
                 "description": "Instead of steps, for a duty in stages, designed by create_workflow's rules: each stage runs on its own. Stages may be typed exactly as in create_workflow (command, condition, loop, expert, with params).",
@@ -112,7 +117,8 @@ fn automation_item() -> serde_json::Value {
                         "intent": { "type": "string", "description": "What this stage accomplishes, in a line." },
                         "steps": { "type": "array", "items": { "type": "string" } },
                         "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills this stage may use." },
-                        "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS }
+                        "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
+                        "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS }
                     },
                     "required": ["id"]
                 }
@@ -338,6 +344,7 @@ impl Kind {
                             "description": { "type": "string" },
                             "steps": { "type": "array", "items": { "type": "string" } },
                             "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
+                            "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS },
                             "schedule": { "type": "string" },
                             "interval": { "type": "string" },
                             "window": { "type": "string" },
