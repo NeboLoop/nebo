@@ -2198,6 +2198,18 @@ async fn step_events(
         st.reminders.add(&TurnEvent::HelperTypes(delta));
     }
 
+    // The employee's own background work, so it neither starts a second
+    // helper or schedule for the same thing nor reports unfinished work as
+    // done. Chat turns only: a helper or workflow step is itself the work.
+    if matches!(cx.request.mode, TurnMode::Chat)
+        && let Some(note) = h.background_note()
+    {
+        let now = note(cx.agent_id().to_string(), cx.request.session_key.clone()).await;
+        if let Some(event) = events::background_event(&now, conversation, st.step == 1) {
+            st.reminders.add(&event);
+        }
+    }
+
     let task_tools_declared = declared.iter().any(|d| events::TASK_TOOLS.contains(&d.name.as_str()));
     if task_tools_declared && events::task_reminder_due(conversation) {
         let tasks = h
@@ -2475,7 +2487,7 @@ async fn checkpoint(
 async fn running_work(cx: &TurnContext) -> Vec<compact::restore::RunningWork> {
     let h = &cx.harness;
     let mut running = h.goal_observer().map(|o| o.background(&cx.session_id)).unwrap_or_default();
-    for (session, caller) in h.tools.process_registry().running_for(&cx.request.session_key).await {
+    for (session, caller) in h.tools.process_registry().running_for(Some(&cx.request.session_key)).await {
         running.push(compact::restore::RunningWork {
             id: session.id.clone(),
             description: caller.description,

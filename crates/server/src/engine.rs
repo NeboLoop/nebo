@@ -2479,7 +2479,7 @@ mod tests {
     /// A job whose floor is `floor`: one consumed timer at that moment, the
     /// way a job that has fired before carries its floor.
     fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
+        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -2596,7 +2596,7 @@ mod tests {
 
         // Rescheduled: the pending timer is replaced by one on the new schedule.
         tick(&s, local(2026, 8, 24, 9, 0, 6), &idle, &no_steer);
-        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
+        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let r = tick(&s, local(2026, 8, 24, 9, 0, 11), &idle, &no_steer);
         assert_eq!(r.armed, 1);
         let pending = s.engine_pending_timers("binding").unwrap();
@@ -2651,7 +2651,7 @@ mod tests {
     /// An employee's own job at `schedule`, with its floor consumed like
     /// [`job`]'s.
     fn employee_job(s: &Store, name: &str, schedule: &str, task_type: &str, command: &str, agent: &str, message: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None, None).unwrap();
+        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -3389,7 +3389,7 @@ mod tests {
         let t = now();
         s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
         let job = s
-            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None, None)
+            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, ""))
             .unwrap();
         let key = db::cron_ref(job.id);
         past_fire(&s, "prev", &key, "emp", t, 120, "done", "The engagement-desk workflow no longer exists.\nDetails follow.");
@@ -3418,14 +3418,14 @@ mod tests {
         // A failed last run is a change.
         let s2 = store();
         s2.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
-        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         past_fire(&s2, "prev", &db::cron_ref(job2.id), "emp", t, 120, "failed", "");
         let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s2, &fire2, None, t).unwrap().flags.last_run_failed);
 
         // No run on record: a first run.
         let s3 = store();
-        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None, None).unwrap();
+        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false, false).unwrap()).unwrap().unwrap();
         let b3 = triage_binding(&s3, &fire3, None, t).unwrap();
         assert!(b3.flags.first_run && b3.since_last_run.is_none());
@@ -3436,13 +3436,13 @@ mod tests {
     fn triage_does_not_apply_without_an_employee_to_a_run_now_or_to_a_shell_job() {
         let s = store();
         let t = now();
-        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None, None).unwrap();
+        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let fire = s.engine_get_run(&s.queue_cron_run(&shell, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None, None).unwrap();
+        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let manual = s.engine_get_run(&s.queue_cron_run(&agent, true, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &manual, None, t).is_none());
         // The main agent's heartbeat has no employee id.

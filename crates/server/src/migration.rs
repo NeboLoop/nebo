@@ -1041,7 +1041,7 @@ mod tests {
         let store = db::Store::new(&tmp.path().join("nebo.db").to_string_lossy()).unwrap();
         let add = |name: &str, schedule: &str, task_type: &str| {
             store
-                .create_cron_job(name, schedule, "", task_type, Some("x"), None, None, true, Some("assistant"), None, None)
+                .create_cron_job(name, schedule, "", task_type, Some("x"), None, None, true, Some("assistant"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, ""))
                 .unwrap();
         };
         // Rewritten: a nonzero first field can only be the minute.

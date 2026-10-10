@@ -4499,6 +4499,29 @@ pub async fn update_agent_workflow(
     })))
 }
 
+/// Switch workflow binding `binding_name` of employee `id` off, as the
+/// toggle does: its schedule goes and its triggers stop.
+pub(crate) async fn switch_binding_off(state: &AppState, id: &str, binding_name: &str) -> Result<(), types::NeboError> {
+    state.store.set_agent_workflow_active(id, binding_name, false)?;
+    binding_switched(state, id, binding_name, false).await;
+    Ok(())
+}
+
+/// A binding was switched on or off: make it so now.
+async fn binding_switched(state: &AppState, id: &str, binding_name: &str, is_active: bool) {
+    if !is_active {
+        // Remove the cron row — the worker won't prune rows for disabled
+        // bindings, and a lingering row is misleading even though the
+        // scheduler gates on is_active.
+        workflow::triggers::unregister_single_agent_trigger(id, binding_name, &state.store);
+    }
+
+    // The worker owns live trigger registration — restart it so the toggle
+    // takes effect immediately: ON starts heartbeat/watch/folder loops and
+    // event subs; OFF tears them down (worker start skips inactive bindings).
+    restart_agent_worker_if_active(state, id).await;
+}
+
 /// POST /agents/{id}/workflows/{binding_name}/toggle — toggle a workflow binding on/off.
 pub async fn toggle_agent_workflow(
     State(state): State<AppState>,
@@ -4515,18 +4538,7 @@ pub async fn toggle_agent_workflow(
         .store
         .toggle_agent_workflow(&id, &binding_name)
         .map_err(to_error_response)?;
-
-    if !is_active {
-        // Remove the cron row — the worker won't prune rows for disabled
-        // bindings, and a lingering row is misleading even though the
-        // scheduler gates on is_active.
-        workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-    }
-
-    // The worker owns live trigger registration — restart it so the toggle
-    // takes effect immediately: ON starts heartbeat/watch/folder loops and
-    // event subs; OFF tears them down (worker start skips inactive bindings).
-    restart_agent_worker_if_active(&state, &id).await;
+    binding_switched(&state, &id, &binding_name, is_active).await;
 
     Ok(Json(serde_json::json!({
         "bindingName": binding_name,

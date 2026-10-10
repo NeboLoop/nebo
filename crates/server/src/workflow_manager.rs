@@ -59,6 +59,9 @@ pub struct WorkflowManagerImpl {
     config: config::Config,
     /// Active run cancellation tokens, keyed by run_id.
     active_runs: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
+    /// Model turns each running run has used of its budget (used, cap),
+    /// keyed by run_id, as its progress last told; gone when the run ends.
+    turns: Arc<std::sync::Mutex<HashMap<String, (u32, u32)>>>,
     /// Maps agent_id → list of active run_ids, for cancelling all runs when an agent stops.
     agent_runs: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
     /// Event bus for emitting workflow lifecycle events.
@@ -110,6 +113,7 @@ impl WorkflowManagerImpl {
             hub,
             config,
             active_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_bus,
             skill_loader,
@@ -119,6 +123,12 @@ impl WorkflowManagerImpl {
             agent_workers: std::sync::OnceLock::new(),
             harness: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The model turns run `run_id` has used of its budget, (used, cap),
+    /// while it runs and has spent some.
+    pub fn turns_used(&self, run_id: &str) -> Option<(u32, u32)> {
+        self.turns.lock().unwrap_or_else(|e| e.into_inner()).get(run_id).copied()
     }
 
     /// Wire in the harness the workflow tune takes its build lane from.
@@ -1465,6 +1475,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             }
 
             // Clone Arcs for the spawned task
+            let run_turns = self.turns.clone();
             let store = self.store.clone();
             let providers = self.providers.clone();
             let decide = self.decide.clone();
@@ -1657,6 +1668,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     let agent_id_for_progress = agent_id_owned.clone();
                     let run_id = run_id_clone.clone();
                     let binding = binding_name.clone();
+                    let turns = run_turns.clone();
                     tokio::spawn(async move {
                         while let Some(progress) = progress_rx.recv().await {
                             match progress {
@@ -1693,8 +1705,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                                         }),
                                     );
                                 }
+                                workflow::WorkflowProgress::Turns { used, cap } => {
+                                    turns.lock().unwrap_or_else(|e| e.into_inner()).insert(run_id.clone(), (used, cap));
+                                }
                             }
                         }
+                        // The run ended: its sender is gone with it.
+                        turns.lock().unwrap_or_else(|e| e.into_inner()).remove(&run_id);
                     });
                 }
 

@@ -100,6 +100,44 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	// One piece of background work (crates/server/src/background.rs).
+	"BackgroundTask": `export type BackgroundKind = 'agent' | 'shell' | 'workflow' | 'monitor' | 'loop'
+
+export type BackgroundSource = 'helper' | 'turn' | 'workflow' | 'timer' | 'watch' | 'heartbeat' | 'shell' | 'handoff'
+
+export type BackgroundStatus = 'running' | 'waiting' | 'scheduled' | 'watching' | 'degraded'
+
+export type BackgroundAction = 'stop' | 'cancel' | 'approve' | 'pause' | 'delete' | 'off'
+
+export interface BackgroundTask {
+	id: string
+	kind: BackgroundKind
+	source: BackgroundSource
+	agentId: string
+	employee: string
+	title: string
+	detail: string
+	status: BackgroundStatus
+	wait: string | null
+	trigger: string | null
+	startedAt: number | null
+	lastActivityAt: number | null
+	nextRunAt: number | null
+	createdBy: string
+	sourceRunId: string | null
+	sessionKey: string | null
+	fromAgentId: string | null
+	fromSessionKey: string | null
+	turnsUsed: number | null
+	turnsCap: number | null
+	actions: BackgroundAction[]
+}`,
+	// A piece of background work that ended, and how.
+	"FinishedTask": `export interface FinishedTask {
+	task: BackgroundTask
+	outcome: 'done' | 'failed' | 'stopped' | 'removed'
+	endedAt: number
+}`,
 	// One row of a team's "who's working" strip (GET /teams/{id}/working).
 	"TeamWorkEntry": `export interface TeamWorkEntry {
 	kind: 'member' | 'helper'

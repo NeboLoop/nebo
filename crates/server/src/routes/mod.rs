@@ -7,6 +7,7 @@
 mod agent;
 mod apps;
 mod artifact_updates;
+mod background;
 mod auth;
 mod browser;
 mod desktop;
@@ -69,6 +70,7 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(provider::routes())
         .merge(skills::routes())
         .merge(tasks::routes())
+        .merge(background::routes())
         .merge(import::routes())
         .merge(integrations::routes())
         .merge(browser::routes())

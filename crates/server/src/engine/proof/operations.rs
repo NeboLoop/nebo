@@ -12,7 +12,7 @@ pub(super) fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
 /// A scheduled job whose floor is `floor`: one consumed timer at that
 /// moment, the way a job that has fired before carries its floor.
 pub(super) fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> db::models::CronJob {
-    let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
+    let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
     let target = cron_target(&j);
     let Enqueued::Inserted(id) = s
         .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -33,7 +33,7 @@ fn sweep_and_report(s: &Store, overlap: Option<OverlapPolicy>, floor: i64) -> (d
     s.upsert_agent_workflow("ops", "sweep", "schedule", "0 0 * * * *", None, None, None, Some(r#"[{"id":"a","intent":"Sweep the inbox"}]"#), None, false).unwrap();
     let make = |name: &str, task_type: &str, command: &str, message: Option<&str>| {
         let j = s
-            .create_cron_job(name, "0 0 * * * *", command, task_type, message, None, None, true, Some("ops"), None, overlap)
+            .create_cron_job(name, "0 0 * * * *", command, task_type, message, None, None, true, Some("ops"), None, overlap, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, ""))
             .unwrap();
         let target = cron_target(&j);
         let Enqueued::Inserted(id) = s

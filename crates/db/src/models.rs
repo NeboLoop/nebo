@@ -326,6 +326,15 @@ pub struct CronJob {
     /// What a fire does while the last one is still going: `skip`,
     /// `buffer_one` or `allow_all` ([`OverlapPolicy`]).
     pub overlap_policy: String,
+    /// Who made it ([`ScheduleCreator`]); `unknown` for a schedule made
+    /// before this was kept.
+    pub created_by: String,
+    /// The run that made it, when a run did (a turn's run id).
+    pub created_by_run: Option<String>,
+    /// The conversation (session key) it was made in, when it was.
+    pub created_in: Option<String>,
+    /// Why it exists, in a few words.
+    pub reason: String,
 }
 
 impl CronJob {
@@ -333,6 +342,58 @@ impl CronJob {
     /// values, so a row always reads as one of them.
     pub fn overlap(&self) -> OverlapPolicy {
         OverlapPolicy::parse(&self.overlap_policy).unwrap_or(OverlapPolicy::Skip)
+    }
+}
+
+/// Who made a schedule: the `created_by` a schedule row carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleCreator {
+    /// The owner, in the app or over the API.
+    Owner,
+    /// An employee, in a conversation.
+    Chat,
+    /// A workflow binding's schedule trigger.
+    Workflow,
+    /// A scheduled turn.
+    Schedule,
+    /// Nebo itself (housekeeping it sets up).
+    System,
+}
+
+impl ScheduleCreator {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScheduleCreator::Owner => "owner",
+            ScheduleCreator::Chat => "chat",
+            ScheduleCreator::Workflow => "workflow",
+            ScheduleCreator::Schedule => "schedule",
+            ScheduleCreator::System => "system",
+        }
+    }
+}
+
+/// Who made a schedule, from which run and conversation, and why. Every
+/// schedule is created with one; re-registering an existing schedule keeps
+/// the provenance it was made with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleProvenance {
+    pub created_by: ScheduleCreator,
+    pub run_id: Option<String>,
+    pub session_key: Option<String>,
+    pub reason: String,
+}
+
+impl ScheduleProvenance {
+    /// Made by `created_by` for `reason`, outside any run.
+    pub fn new(created_by: ScheduleCreator, reason: impl Into<String>) -> Self {
+        Self { created_by, run_id: None, session_key: None, reason: reason.into() }
+    }
+
+    /// Made by the run `run_id` in the conversation `session_key`.
+    pub fn in_run(mut self, run_id: Option<&str>, session_key: &str) -> Self {
+        self.run_id = run_id.filter(|r| !r.is_empty()).map(str::to_string);
+        self.session_key = Some(session_key).filter(|k| !k.is_empty()).map(str::to_string);
+        self
     }
 }
 
@@ -773,6 +834,24 @@ pub struct WorkflowRun {
     pub output: Option<String>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
+}
+
+/// A workflow run that is still going (queued, running, interrupted or
+/// waiting), with what it last did and, when it waits, on what.
+#[derive(Debug, Clone)]
+pub struct LiveWorkflowRun {
+    pub run: WorkflowRun,
+    /// The engine's state: queued | running | waiting | interrupted.
+    pub state: String,
+    /// When a step of it last started or ended (unix seconds).
+    pub last_activity: Option<i64>,
+    /// The kind of event its live wait is woken by (`approval`,
+    /// `expert_reply`, `answer`, `signal`), when it waits.
+    pub wait_kind: Option<String>,
+    /// Why it waits, as the wait recorded it.
+    pub wait_reason: Option<String>,
+    /// When the wait gives up (unix seconds), if it does.
+    pub wait_deadline: Option<i64>,
 }
 
 /// A run stranded by process death, as returned by the boot sweep (WS4).

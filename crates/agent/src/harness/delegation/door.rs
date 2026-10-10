@@ -203,7 +203,7 @@ impl SubAgentOrchestrator for HelperDoor {
             let turn = parent_turn(&parent);
             let running = self
                 .helpers
-                .list(&turn.session_key)
+                .list(Some(&turn.session_key))
                 .iter()
                 .any(|h| h.task_id == task_id && h.running);
             let said = self
@@ -227,7 +227,7 @@ impl SubAgentOrchestrator for HelperDoor {
     fn list_active(&self, caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
         let listed = self
             .helpers
-            .list(caller)
+            .list(Some(caller))
             .into_iter()
             .map(|h| (h.task_id, h.description, if h.running { "running" } else { "finished" }.to_string()))
             .collect();

@@ -726,8 +726,8 @@ mod tests {
     async fn deleting_a_schedule_stops_its_running_turn() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(&dir.path().join("w.db").to_string_lossy()).unwrap());
-        let job = store.create_cron_job("retry", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
-        let kept = store.create_cron_job("kept", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let job = store.create_cron_job("retry", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
+        let kept = store.create_cron_job("kept", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let (turn, other) = (tokio_util::sync::CancellationToken::new(), tokio_util::sync::CancellationToken::new());
         let _w1 = ScheduleWatch::start(store.clone(), job.id, turn.clone());
         let _w2 = ScheduleWatch::start(store.clone(), kept.id, other.clone());

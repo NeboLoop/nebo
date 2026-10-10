@@ -168,7 +168,7 @@ pub(crate) fn withdraw(state: &AppState, post_id: &str, agent_id: &str) {
 /// nothing left to answer.
 pub(crate) fn turn_ended(state: &AppState, seat_session: &str, reply: &str, provenance: &[ProvenanceClass], depth: u8) {
     let out = state.store.open_asks(seat_session).unwrap_or(0);
-    let helping = state.helpers.list(seat_session).iter().any(|h| h.running);
+    let helping = state.helpers.list(Some(seat_session)).iter().any(|h| h.running);
     if out > 0 || helping {
         return;
     }

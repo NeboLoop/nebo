@@ -666,16 +666,12 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     }));
                                 }
                                 "cancel_all" => {
-                                    // Workflow runs aren't in the run registry: their activity
-                                    // turns stop with their run's token (2026-10-08: an
+                                    // The one stop for everything: helpers, every turn,
+                                    // workflow runs (not in the run registry: 2026-10-08 an
                                     // emergency stop counted 0 while a workflow step kept
-                                    // calling Odoo).
-                                    let count = apply_cancel_all(&state.helpers, &state.run_registry).await
-                                        + tools::workflows::WorkflowManager::cancel_all_runs(&*state.workflow_manager).await;
+                                    // calling Odoo) and background commands.
+                                    let count = crate::background::stop_everything(&state).await;
                                     info!(count, "emergency cancel_all");
-                                    state.hub.broadcast("chat_cancelled", serde_json::json!({
-                                        "session_id": "all",
-                                    }));
                                 }
                                 "restore_version" => {
                                     // Restore an earlier version of a work document: append a
@@ -1444,7 +1440,7 @@ async fn apply_cancel(
 /// The owner's emergency stop — the `cancel_all` message, the ONE way to
 /// stop everything: every helper of every session, then every run on the
 /// bot. Returns how many runs were cancelled.
-async fn apply_cancel_all(
+pub(crate) async fn apply_cancel_all(
     helpers: &agent::harness::delegation::Helpers,
     registry: &crate::run_registry::RunRegistry,
 ) -> usize {
