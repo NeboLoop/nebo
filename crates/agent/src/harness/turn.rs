@@ -730,6 +730,17 @@ fn build_model(h: &Harness, chosen: &str, linked: bool) -> Option<TurnModel> {
     turn_model(h, chosen, Some(Lane::Build)).ok()
 }
 
+impl Harness {
+    /// The model and provider effort background build work runs on (a
+    /// workflow tune rewriting a workflow from its runs): the build lane of
+    /// the bot's intelligence pack, when it pins one; `None` keeps the
+    /// caller's default. The same lane a turn moves to when it builds
+    /// (`build_model`).
+    pub fn build_lane(&self) -> Option<(String, Option<types::packs::ProviderEffort>)> {
+        build_model(self, "", false).map(|m| (m.model, m.effort))
+    }
+}
+
 /// The owner's workspace keeps the history of its files
 /// (`tools::workspace_history`): a turn looks at it when it starts, before
 /// each tool round (a round can overwrite what an earlier one made) and when
@@ -3407,6 +3418,19 @@ mod tests {
         assert_eq!(lane_of(&seat), Some(Lane::Workflow));
         seat.model_override = "janus/nebo-1-medium".into();
         assert_eq!(lane_of(&seat), None, "the step's own model");
+    }
+
+    /// Background build work (a workflow tune) runs on the build lane like a
+    /// turn that builds: Deep on a bot that never chose a pack, the pinned
+    /// level of a chosen pack, and nothing for a model the owner chose.
+    #[tokio::test]
+    async fn background_build_work_runs_on_the_build_lane() {
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        h.selector.set_task_routing([("general".to_string(), "janus/nebo-1".to_string())].into());
+        assert_eq!(h.build_lane(), Some(("janus/nebo-1-pro".to_string(), None)), "Nebo AI builds on Deep");
+        h.selector.set_task_routing([("general".to_string(), "anthropic/claude-x".to_string())].into());
+        assert_eq!(h.build_lane(), None, "a model the owner chose stays his");
     }
 
     /// A turn that starts building moves to the build lane's model from its

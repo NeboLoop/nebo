@@ -2291,6 +2291,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
         workflow_loop,
     ));
+    workflow_manager.set_harness(harness.clone());
     // Register the workflow tools now that the manager exists
     tool_registry
         .register_workflows(workflow_manager.clone() as Arc<dyn tools::WorkflowManager>)

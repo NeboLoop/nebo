@@ -83,6 +83,9 @@ pub struct WorkflowManagerImpl {
     /// a new binding's live triggers (event/heartbeat/watch/folder) register
     /// immediately — schedule triggers fire via the cron scheduler regardless.
     agent_workers: std::sync::OnceLock<Arc<agent::AgentWorkerRegistry>>,
+    /// Late-injected harness: the workflow tune rewrites workflows, which is
+    /// build work, and runs on its build lane (`Harness::build_lane`).
+    harness: std::sync::OnceLock<agent::harness::Harness>,
 }
 
 impl WorkflowManagerImpl {
@@ -114,7 +117,13 @@ impl WorkflowManagerImpl {
             binding_semaphores: Arc::new(std::sync::Mutex::new(HashMap::new())),
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_workers: std::sync::OnceLock::new(),
+            harness: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Wire in the harness the workflow tune takes its build lane from.
+    pub fn set_harness(&self, harness: agent::harness::Harness) {
+        let _ = self.harness.set(harness);
     }
 
     /// Wire in the agent worker registry once it has been constructed (it
@@ -1143,11 +1152,13 @@ impl WorkflowManager for WorkflowManagerImpl {
         &'a self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
+            let build = self.harness.get().and_then(|h| h.build_lane());
             workflow_tuning_sweep(
                 &self.store,
                 &self.providers,
                 (&self.tools, &self.hub),
                 &self.config.neboai.api_url,
+                build,
             )
             .await;
         })
@@ -2999,6 +3010,46 @@ pub(crate) fn current_binding_json(store: &db::Store, agent_id: &str, binding: &
         .unwrap_or_default()
 }
 
+/// The tune's model call. A tune rewrites a workflow, which is build work:
+/// with the bot's build lane (`Harness::build_lane`) it runs on that lane's
+/// model (`lane`: the model's name on its provider, and its effort) and
+/// reaches Janus as the `build` purpose; without one it runs on the default
+/// provider's model as before.
+fn tune_request(
+    agent_id: &str,
+    report: String,
+    system: &str,
+    build: Option<&(String, Option<types::packs::ProviderEffort>)>,
+) -> ai::ChatRequest {
+    ai::ChatRequest {
+        tool_credential: None,
+        chat_id: String::new(),
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
+        tool_choice: Default::default(),
+        messages: vec![ai::Message {
+            role: "user".into(),
+            content: report,
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: 1500,
+        temperature: 0.0,
+        system: system.to_string(),
+        model: build.map(|(model, _)| model.clone()).unwrap_or_default(),
+        enable_thinking: false,
+        effort: build.and_then(|(_, effort)| *effort),
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+        trace: ai::RequestTrace {
+            agent_id: agent_id.to_string(),
+            ..ai::RequestTrace::new(if build.is_some() { "build" } else { "workflow_tune" })
+        },
+    }
+}
+
 /// Weekly workflow tuning pass. For each agent with learning enabled and
 /// clear evidence of trouble (2+ failed runs in the last 7 days), an aux
 /// model reads the stats, recent errors, definitions, and outcome history,
@@ -3014,6 +3065,7 @@ async fn workflow_tuning_sweep(
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     registry_hub: (&Arc<tools::Registry>, &Arc<ClientHub>),
     neboai_api_url: &str,
+    build: Option<(String, Option<types::packs::ProviderEffort>)>,
 ) {
     let (_registry, hub) = registry_hub;
     const WEEK_SECS: i64 = 7 * 24 * 3600;
@@ -3094,40 +3146,23 @@ async fn workflow_tuning_sweep(
             serde_json::to_string_pretty(&workflows_json).unwrap_or_default()
         );
 
-        let provider = {
+        // The build lane's model on its own provider (`provider/model`), as a
+        // turn sends it; else the default provider's own model.
+        let (provider, lane) = {
             let guard = providers.read().await;
-            match ai::default_provider(&guard) {
-                Some(p) => p,
-                None => return,
+            let on_lane = build.as_ref().and_then(|(model, effort)| {
+                let (id, name) = model.split_once('/')?;
+                guard.iter().find(|p| p.id() == id).map(|p| (p.clone(), (name.to_string(), *effort)))
+            });
+            match on_lane {
+                Some((p, lane)) => (p, Some(lane)),
+                None => match ai::default_provider(&guard) {
+                    Some(p) => (p, None),
+                    None => return,
+                },
             }
         };
-        let req = ai::ChatRequest {
-            tool_credential: None,
-            chat_id: String::new(),
-            ask_channels: None,
-            permission_mode: None,
-            linked_context: None,
-            tool_choice: Default::default(),
-            messages: vec![ai::Message {
-                role: "user".into(),
-                content: report,
-                ..Default::default()
-            }],
-            tools: vec![],
-            max_tokens: 1500,
-            temperature: 0.0,
-            system: TUNER_SYSTEM.to_string(),
-            model: String::new(),
-            enable_thinking: false,
-            effort: None,
-            metadata: None,
-            cache_breakpoints: vec![],
-            cancel_token: None,
-            trace: ai::RequestTrace {
-                agent_id: agent.id.clone(),
-                ..ai::RequestTrace::new("workflow_tune")
-            },
-        };
+        let req = tune_request(&agent.id, report, TUNER_SYSTEM, lane.as_ref());
         let mut rx = match provider.stream(&req).await {
             Ok(rx) => rx,
             Err(e) => {
@@ -3451,6 +3486,23 @@ mod run_end_tests {
         let rows = store.list_user_notifications(&user, 10, 0).unwrap();
         let row = rows.iter().find(|n| n.id == "wf-fail:run-1").unwrap();
         assert_eq!(row.action_url.as_deref(), Some("/emp/runs/run-1"));
+    }
+}
+
+#[cfg(test)]
+mod tune_tests {
+    /// A workflow tune rewrites a workflow: build work. With the bot's build
+    /// lane it runs on that lane's model at its effort and reaches Janus as
+    /// the `build` purpose; without one it keeps the default model and its
+    /// own purpose.
+    #[test]
+    fn a_workflow_tune_runs_on_the_build_lane() {
+        let lane = ("nebo-1-pro".to_string(), Some(types::packs::ProviderEffort::High));
+        let on_lane = super::tune_request("emp", "report".into(), "tune", Some(&lane));
+        assert_eq!((on_lane.model.as_str(), on_lane.effort, on_lane.trace.purpose), ("nebo-1-pro", lane.1, "build"));
+        assert_eq!(on_lane.trace.agent_id, "emp");
+        let default = super::tune_request("emp", "report".into(), "tune", None);
+        assert_eq!((default.model.as_str(), default.effort, default.trace.purpose), ("", None, "workflow_tune"));
     }
 }
 
