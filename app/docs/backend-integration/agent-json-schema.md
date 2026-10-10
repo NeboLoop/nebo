@@ -239,7 +239,7 @@ interface WorkflowActivity {
 - **Description:** If/else branching
 - **Default skills:** none
 - **Parameters:**
-  - `expression`: string (JavaScript expression)
+  - `expression`: string. In `expression` mode: comparisons (`==`, `!=`, `>=`, `<=`, `>`, `<`) joined by `&&`, `||`, `!` and parentheses. Names are `inputs.<field>`, `nodes.<step>.<field>`, `item.<field>`, or a bare `<field>` of the one step feeding the condition. Text is quoted (`kind == 'won'`); an unquoted word is a name. A condition that does not parse is refused at save, and a name that does not resolve fails the step (use mode `exists` to test presence).
   - `mode`: `"expression"` | `"contains"` | `"exists"` | `"regex"`
 - **Branching:** YES — outputs `"True"` and `"False"` branches
 
@@ -297,7 +297,7 @@ interface WorkflowActivity {
 - **Default skills:** none
 - **Parameters:**
   - `operation`: `"map"` | `"filter"` | `"reduce"` | `"pick"` | `"template"`
-  - `expression`: string (JavaScript expression)
+  - `expression`: string. In `expression` mode: comparisons (`==`, `!=`, `>=`, `<=`, `>`, `<`) joined by `&&`, `||`, `!` and parentheses. Names are `inputs.<field>`, `nodes.<step>.<field>`, `item.<field>`, or a bare `<field>` of the one step feeding the condition. Text is quoted (`kind == 'won'`); an unquoted word is a name. A condition that does not parse is refused at save, and a name that does not resolve fails the step (use mode `exists` to test presence).
 - **Branching:** no
 
 ---
@@ -381,7 +381,7 @@ interface WorkflowConnection {
           "id": "check-urgency",
           "type": "condition",
           "intent": "Check if urgent findings exist",
-          "params": { "expression": "data.findings.some(f => f.urgency === 'high')", "mode": "expression" }
+          "params": { "expression": "high_urgency_count > 0", "mode": "expression" }
         },
         {
           "id": "urgent-alert",

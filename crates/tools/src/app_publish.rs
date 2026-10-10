@@ -1774,7 +1774,19 @@ impl Publisher {
         let Some(draft) = draft else {
             return ToolResult::error("There is no listing yet. Draft it first with app_listing.");
         };
-        let todo = problems(&draft, &self.categories().await);
+        let mut todo = problems(&draft, &self.categories().await);
+        // A listing ships its workflows: one that is certainly broken
+        // (unparseable condition, `${nodes...}`, data from a step that is not
+        // upstream, an unreachable step) is not published.
+        if let Ok(config) = napp::agent::parse_agent_config(&app.frontmatter) {
+            let issues = napp::workflow_check::check_agent(&config);
+            todo.extend(
+                issues
+                    .iter()
+                    .filter(|i| i.severity == napp::workflow_check::Severity::Error)
+                    .map(|i| i.to_string()),
+            );
+        }
         if !todo.is_empty() {
             return ToolResult::error(format!("Not ready to submit:\n- {}", todo.join("\n- ")));
         }

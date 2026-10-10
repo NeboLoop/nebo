@@ -1396,6 +1396,12 @@ async fn handle_agent_code(
             match napp::agent::parse_agent_config(&tc_str) {
                 Ok(agent_config) => {
                     info!(agent = %artifact_name, workflows = agent_config.workflows.len(), "processing workflow bindings from typeConfig");
+                    // Install does not refuse an employee over its author's
+                    // wiring defects: the owner cannot fix them, and a broken
+                    // step fails loudly with the same message when it runs.
+                    for issue in napp::workflow_check::check_agent(&agent_config) {
+                        warn!(agent = %artifact_name, %issue, "installed workflow check");
+                    }
                     let _ = crate::handlers::agents::process_agent_bindings(
                         &artifact_id,
                         &agent_config,
