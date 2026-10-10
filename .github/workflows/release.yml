@@ -862,11 +862,55 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      # With signing on, Tauri signs every file it packs (nebo.exe, the
+      # sidecars, the uninstaller, the NSIS plugin DLLs) through
+      # `bundle.windows.signCommand` BEFORE packing, and the installer after:
+      # the sign-windows job below reaches only the files outside the
+      # installer, so without this the nebo.exe a customer runs was unsigned
+      # (confirmed 2026-10-10 on Nebo-0.16.15-setup.exe). The command is
+      # scripts/windows-sign.ps1, the same Trusted Signing account as the
+      # sidecar step above, which also installed the module it calls.
       - name: Build Tauri desktop app
         shell: bash
+        env:
+          SIGN: ${{ vars.AZURE_SIGNING_ENABLED }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          # The sidecars were signed above; Tauri's "already signed?" check
+          # needs signtool, which the box doesn't have. Signing them again
+          # is harmless.
+          TAURI_SKIP_SIDECAR_SIGNATURE_CHECK: "true"
         run: |
           rm -rf "$CARGO_TARGET_DIR/release/bundle"
-          cargo tauri build --bundles nsis
+          if [ "$SIGN" = "true" ]; then
+            # Forward slashes (cygpath -m): valid for Windows and in JSON as is.
+            SIGNER="$(cygpath -m "$GITHUB_WORKSPACE/scripts/windows-sign.ps1")"
+            printf '{"bundle":{"windows":{"signCommand":{"cmd":"pwsh","args":["-NoProfile","-ExecutionPolicy","Bypass","-File","%s","%%1"]}}}}' "$SIGNER" \
+              > "$RUNNER_TEMP/tauri.sign.json"
+            cat "$RUNNER_TEMP/tauri.sign.json"
+            cargo tauri build --bundles nsis --config "$(cygpath -m "$RUNNER_TEMP/tauri.sign.json")"
+          else
+            cargo tauri build --bundles nsis
+          fi
+
+      # The nebo.exe inside the installer is the one customers run: prove it
+      # is signed, from the installer itself (7-Zip reads NSIS).
+      - name: Verify the installer's nebo.exe is signed
+        if: vars.AZURE_SIGNING_ENABLED == 'true'
+        shell: bash
+        run: |
+          NSIS=$(ls "$CARGO_TARGET_DIR"/release/bundle/nsis/*.exe | head -1)
+          rm -rf "$RUNNER_TEMP/nsis-x" && 7z x -y -o"$RUNNER_TEMP/nsis-x" "$NSIS" > /dev/null
+          for f in "$NSIS" "$RUNNER_TEMP/nsis-x/nebo.exe"; do
+            [ -f "$f" ] || { echo "::error::missing $f in the installer"; exit 1; }
+            status=$(pwsh -NoProfile -Command "(Get-AuthenticodeSignature -FilePath '$(cygpath -w "$f")').Status")
+            echo "$f: $status"
+            [ "$status" = "Valid" ] || { echo "::error::$f is not signed ($status)"; exit 1; }
+          done
 
       - name: Extract binary and installer
         shell: bash
