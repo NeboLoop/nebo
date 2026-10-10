@@ -1,6 +1,10 @@
 mod apply;
 pub mod push;
 
+/// The Windows update helper, for the test that runs it on Windows.
+#[cfg(target_os = "windows")]
+pub use apply::{WindowsHelper, build_windows_helper};
+
 pub use push::{Announcement, Nudge};
 
 use std::borrow::Cow;
