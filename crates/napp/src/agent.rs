@@ -1056,9 +1056,40 @@ pub struct AgentDef {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// `starters:` — a few asks a newcomer can tap to start a chat with the
+    /// employee ("Landing page for my business"). Shown on an empty chat.
+    /// Only plain, non-empty lines count, at most [`MAX_STARTERS`]; anything
+    /// else in the list is skipped, never an error.
+    #[serde(default, deserialize_with = "starter_lines")]
+    pub starters: Vec<String>,
     /// Markdown body after the frontmatter (not from YAML).
     #[serde(skip)]
     pub body: String,
+}
+
+/// The most starters an empty chat shows.
+pub const MAX_STARTERS: usize = 4;
+
+/// Reads `starters:` leniently: a malformed list never stops the employee
+/// from loading, it only shows fewer starters.
+fn starter_lines<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    let mut lines: Vec<String> = Vec::new();
+    if let serde_yaml::Value::Sequence(items) = value {
+        for item in items {
+            let Some(line) = item.as_str().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")) else { continue };
+            if !line.is_empty() && !lines.contains(&line) {
+                lines.push(line);
+            }
+            if lines.len() == MAX_STARTERS {
+                break;
+            }
+        }
+    }
+    Ok(lines)
 }
 
 /// Parse an AGENT.md file.
@@ -1074,6 +1105,7 @@ pub fn parse_agent(content: &str) -> Result<AgentDef, NappError> {
             id: String::new(),
             name: String::new(),
             description: String::new(),
+            starters: Vec::new(),
             body: content.trim().to_string(),
         });
     }
@@ -1610,6 +1642,21 @@ mod tests {
         assert_eq!(def.id, "sales-sdr");
         assert_eq!(def.name, "Sales SDR");
         assert!(def.body.contains("Body text."));
+    }
+
+    /// `starters:` in AGENT.md's frontmatter: plain lines, tidied, at most
+    /// four; anything else in the list is skipped and never fails the file.
+    #[test]
+    fn starters_are_read_from_the_frontmatter() {
+        let content = "---\nname: Design Studio\nstarters:\n  - Landing page for my business\n  - \"  Instagram post   for a sale \"\n  - \"\"\n  - { nested: map }\n  - 42\n  - Landing page for my business\n  - 5-slide pitch deck\n  - Flyer for an event\n  - One too many\n---\n# Design Studio\n";
+        let def = parse_agent(content).unwrap();
+        assert_eq!(
+            def.starters,
+            vec!["Landing page for my business", "Instagram post for a sale", "5-slide pitch deck", "Flyer for an event"]
+        );
+        assert!(parse_agent("---\nname: A\n---\nBody").unwrap().starters.is_empty(), "none declared");
+        assert!(parse_agent("---\nname: A\nstarters: just one line\n---\nBody").unwrap().starters.is_empty(), "not a list");
+        assert!(parse_agent("# Prose only").unwrap().starters.is_empty());
     }
 
     #[test]

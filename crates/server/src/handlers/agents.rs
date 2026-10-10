@@ -455,6 +455,8 @@ fn roster(
             "source": source,
             "version": loaded.version,
             "isApp": loaded.is_app,
+            // AGENT.md's `starters:`: the asks an empty chat offers.
+            "starters": loaded.agent_def.starters,
             "isEnabled": db_row.map(|r| r.is_enabled != 0).unwrap_or(true),
             "inputValues": db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
             "installedAt": db_row.map(|r| r.installed_at),
@@ -556,6 +558,7 @@ fn roster(
             "version": serde_json::Value::Null,
             "isApp": r.is_app.unwrap_or(0) != 0,
             "appWindow": app_window,
+            "starters": napp::agent::parse_agent(&r.agent_md).map(|d| d.starters).unwrap_or_default(),
             "isEnabled": r.is_enabled != 0,
             "inputValues": r.input_values,
             "installedAt": r.installed_at,
@@ -6035,6 +6038,34 @@ mod roster_tests {
         assert_eq!(ada["isolated"], true);
         assert_eq!(ada["latestPreview"], "The report is ready.");
         assert_eq!(body["unreadSessions"], serde_json::json!(["agent:e1:web"]));
+    }
+
+    /// Each row carries its employee's `starters:` from AGENT.md, for a
+    /// loaded employee and a database-only one alike; none declared is an
+    /// empty list.
+    #[test]
+    fn roster_rows_carry_the_employees_starters() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let pkg = dir.path().join("Studio");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("AGENT.md"),
+            "---\nname: Studio\nstarters:\n  - Landing page for my business\n  - Instagram post\n---\n# Studio\n",
+        )
+        .unwrap();
+        let loaded = napp::agent_loader::load_from_dir(&pkg, napp::AgentSource::User).unwrap();
+        store
+            .create_agent("e2", None, "Clerk", "", "---\nname: Clerk\nstarters:\n  - File my receipts\n---\nBody", "{}", None, None)
+            .unwrap();
+        store.create_agent("e3", None, "Plain", "", "Just prose.", "{}", None, None).unwrap();
+
+        let rows = store.list_agents(1000, 0).unwrap();
+        let body = super::roster(&store, vec![loaded], rows, HashMap::new(), HashMap::new(), HashMap::new());
+        let row = |name: &str| body["agents"].as_array().unwrap().iter().find(|a| a["name"] == name).cloned().unwrap();
+        assert_eq!(row("Studio")["starters"], serde_json::json!(["Landing page for my business", "Instagram post"]));
+        assert_eq!(row("Clerk")["starters"], serde_json::json!(["File my receipts"]));
+        assert_eq!(row("Plain")["starters"], serde_json::json!([]));
     }
 }
 

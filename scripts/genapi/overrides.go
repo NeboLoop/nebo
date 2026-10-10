@@ -178,6 +178,8 @@ export interface RunDisplay {
 	source: string
 	version?: string
 	isApp: boolean
+	/** AGENT.md's starters: asks an empty chat offers to tap (at most 4). */
+	starters: string[]
 	isEnabled: boolean
 	inputValues: string
 	installedAt?: number

@@ -118,7 +118,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -158,6 +158,8 @@
     emptyIcon?: string;
     emptyTitle?: string;
     emptyDesc?: string;
+    /** Shown under the empty chat's greeting: the employee's starter asks. */
+    emptyActions?: Snippet;
     allAgents?: AgentInfo[];
     activityStatus?: string;
     /** When the running turn started (ms); 0 while none runs. */
@@ -1687,6 +1689,7 @@
       {#if emptyDesc}
         <div class="text-sm text-base-content/70 text-center max-w-[320px] leading-relaxed">{emptyDesc}</div>
       {/if}
+      {#if emptyActions}{@render emptyActions()}{/if}
     </div>
   {:else}
   <div class="flex-1 relative min-h-0">

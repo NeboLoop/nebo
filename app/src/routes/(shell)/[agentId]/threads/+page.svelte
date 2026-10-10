@@ -95,6 +95,9 @@
     }
   }
 
+  // AGENT.md's `starters:` — tapping one sends it as the chat's first message.
+  const starters = $derived(agent?.starters ?? []);
+
   // ?ask= — a starter prompt from a pane CTA lands in the composer, then the
   // param is cleared so refresh doesn't re-insert it.
   const askPrefill = $derived($page.url.searchParams.get('ask') ?? '');
@@ -140,4 +143,16 @@
   ondismisserror={() => chat.dismissError()}
 >
   {#snippet flowsPane()}<FlowsPane onask={ctx.askEmployee} />{/snippet}
+  {#snippet emptyActions()}
+    {#if starters.length}
+      <div class="flex flex-col items-center gap-2 w-full max-w-md">
+        <div class="text-xs text-base-content/60">{$t('chat.startersLabel')}</div>
+        <div class="flex flex-wrap justify-center gap-2">
+          {#each starters as ask (ask)}
+            <button type="button" class="btn btn-sm btn-outline rounded-full font-normal h-auto min-h-8 py-1.5 whitespace-normal text-left" disabled={chat.isLoading} onclick={() => handleSend(ask)}>{ask}</button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+  {/snippet}
 </ChatPane>

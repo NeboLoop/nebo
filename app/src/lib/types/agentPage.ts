@@ -141,6 +141,8 @@ export interface AgentDisplay {
 	ownApp?: boolean
 	/** Apps only: how the page asks to be shown (fullscreen, orientation, motion). */
 	appWindow?: AppWindow
+	/** AGENT.md's starters: asks an empty chat offers to tap. */
+	starters?: string[]
 	/** "linked" for an employee hired from a linked bot. */
 	kind?: string
 	/** Linked employees only: the linked bot cannot be reached right now. */
