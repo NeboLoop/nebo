@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Terjadwal",
 		"laneCommunication": "Komunikasi",
 		"laneHelpers": "Pembantu",
+		"laneBuild": "Pembuatan",
+		"laneWorkflow": "Alur kerja",
 		"laneByWork": "Dipilih berdasarkan pekerjaan",
 		"routeJanus": "Dialihkan melalui Janus",
 		"routeJanusHint": "Janus memilih tingkat untuk setiap langkah di seluruh model paket ini untuk menekan tagihan Anda. Kunci Anda ikut di setiap permintaan dan tidak pernah disimpan. Biaya perutean: {fee}.",

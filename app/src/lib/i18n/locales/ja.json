@@ -4078,6 +4078,8 @@
 		"laneScheduled": "スケジュール済み",
 		"laneCommunication": "コミュニケーション",
 		"laneHelpers": "ヘルパー",
+		"laneBuild": "作成",
+		"laneWorkflow": "ワークフロー",
 		"laneByWork": "作業内容で選択",
 		"routeJanus": "Janus経由にする",
 		"routeJanusHint": "Janusは、料金を抑えるためにこのパックのモデル間で各ステップのレベルを選びます。あなたのキーは各リクエストとともに送られ、保存されることはありません。ルーティング料金: {fee}。",

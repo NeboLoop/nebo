@@ -5356,7 +5356,7 @@ pub async fn start_workflow_chat(
 
     // Create a dedicated help session scoped to this agent + workflow builder
     let session_key =
-        types::keyparser::build_agent_session_key(&id, "help:workflow");
+        types::keyparser::build_agent_session_key(&id, types::keyparser::WORKFLOW_BUILDER);
 
     let session = state
         .harness

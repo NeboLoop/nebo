@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Theo lịch",
 		"laneCommunication": "Giao tiếp",
 		"laneHelpers": "Trợ lý",
+		"laneBuild": "Xây dựng",
+		"laneWorkflow": "Quy trình",
 		"laneByWork": "Chọn theo công việc",
 		"routeJanus": "Định tuyến qua Janus",
 		"routeJanusHint": "Janus chọn mức cho mỗi bước trong số các mô hình của gói này để giảm hóa đơn của bạn. Khóa của bạn đi cùng mỗi yêu cầu và không bao giờ được lưu trữ. Phí định tuyến: {fee}.",

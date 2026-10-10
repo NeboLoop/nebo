@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Scheduled",
 		"laneCommunication": "Communication",
 		"laneHelpers": "Helpers",
+		"laneBuild": "Building",
+		"laneWorkflow": "Workflows",
 		"laneByWork": "Chosen by the work",
 		"routeJanus": "Route through Janus",
 		"routeJanusHint": "Janus picks the level for each step across this pack's models to lower your bill. Your keys go with each request and are never stored. Routing fee: {fee}.",

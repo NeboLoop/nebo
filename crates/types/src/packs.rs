@@ -82,7 +82,7 @@ pub struct PackLevels {
     pub decisions: Option<String>,
 }
 
-/// Background work pinned to an Effort level. Absent: the work chooses.
+/// Kinds of work pinned to an Effort level. Absent: the work chooses.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackLanes {
@@ -94,15 +94,26 @@ pub struct PackLanes {
     pub communication: Option<Effort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Effort>,
+    /// Designing employees and workflows: the steps that write them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<Effort>,
+    /// A workflow's steps as they run, unless the step names its own model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Effort>,
 }
 
-/// Background work a pack can pin to a level.
+/// Work a pack can pin to a level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
     Heartbeat,
     Scheduled,
     Communication,
     Helpers,
+    /// Writing an employee or a workflow (`create_employee`,
+    /// `create_workflow`, the workflow builder).
+    Build,
+    /// Running a workflow's steps.
+    Workflow,
 }
 
 impl PackLanes {
@@ -113,6 +124,8 @@ impl PackLanes {
             Lane::Scheduled => self.scheduled,
             Lane::Communication => self.communication,
             Lane::Helpers => self.helpers,
+            Lane::Build => self.build,
+            Lane::Workflow => self.workflow,
         }
     }
 }
@@ -186,6 +199,13 @@ pub const NEBO_AI_ID: &str = "nebo-ai";
 /// `nebo-1-flash` Fast, `nebo-1-medium` Balanced, `nebo-1-pro` Deep) and its
 /// Auto alias `nebo-1`, today's default model. Max runs on `nebo-1-pro`
 /// until Janus has a real Max.
+///
+/// Its lanes are the model bake-off's split (2026-10-09): employees and
+/// workflows are written on Deep, and their workflows run on Fast. A build's
+/// steps reach Janus as the `build` purpose, which Janus serves on its
+/// strongest model when it can, else on Deep, at Deep's rate. Deep at its
+/// own effort, not Max's: Max's thinking budget is more than Nebo's output
+/// cap, which Deep's qwen models refuse (live 2026-10-10).
 pub fn nebo_ai() -> Pack {
     let janus = |m: &str| Some(format!("janus/{m}"));
     Pack {
@@ -205,7 +225,7 @@ pub fn nebo_ai() -> Pack {
         fallback: false,
         built_in: true,
         route_through_janus: false,
-        lanes: PackLanes::default(),
+        lanes: PackLanes { build: Some(Effort::High), workflow: Some(Effort::Instant), ..PackLanes::default() },
         // Low is Fast with a little thinking; Max is Deep at its highest
         // effort until Janus has a speed above Deep.
         level_effort: LevelEffort {
@@ -288,7 +308,7 @@ mod tests {
     use super::*;
 
     fn byo(levels: PackLevels) -> Pack {
-        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), ..nebo_ai() }
+        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), lanes: PackLanes::default(), ..nebo_ai() }
     }
 
     #[test]
@@ -332,6 +352,10 @@ mod tests {
         assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Fast, thinking a little");
         assert_eq!(nebo.effort_for(Effort::High), None, "Deep at its default");
         assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "Deep at its highest");
+        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::High), "built on Deep");
+        assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run on Fast");
+        assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
+        assert_eq!(nebo.lanes.level(Lane::Heartbeat), None, "the rest: the work chooses");
         let mine = byo(PackLevels {
             low: Some("a/low".into()),
             medium: Some("a/mid".into()),
@@ -378,5 +402,7 @@ mod tests {
         // A pack saved before these fields reads with their defaults.
         let old: Pack = serde_json::from_value(serde_json::json!({"id": "o", "name": "Old", "levels": {}, "fallback": true, "builtIn": false})).unwrap();
         assert!(!old.route_through_janus && old.lanes == PackLanes::default());
+        let lanes: PackLanes = serde_json::from_value(serde_json::json!({"build": "max", "workflow": "instant"})).unwrap();
+        assert_eq!((lanes.level(Lane::Build), lanes.level(Lane::Workflow)), (Some(Effort::Max), Some(Effort::Instant)));
     }
 }

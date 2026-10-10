@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Pianificato",
 		"laneCommunication": "Comunicazione",
 		"laneHelpers": "Assistenti",
+		"laneBuild": "Creazione",
+		"laneWorkflow": "Flussi di lavoro",
 		"laneByWork": "Scelto in base al lavoro",
 		"routeJanus": "Passa attraverso Janus",
 		"routeJanusHint": "Janus sceglie il livello per ogni passaggio tra i modelli di questo pacchetto per ridurre la tua fattura. Le tue chiavi viaggiano con ogni richiesta e non vengono mai salvate. Commissione di instradamento: {fee}.",

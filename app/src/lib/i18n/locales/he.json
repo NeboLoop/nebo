@@ -4078,6 +4078,8 @@
 		"laneScheduled": "מתוזמן",
 		"laneCommunication": "תקשורת",
 		"laneHelpers": "עוזרים",
+		"laneBuild": "בנייה",
+		"laneWorkflow": "תהליכי עבודה",
 		"laneByWork": "נבחר לפי העבודה",
 		"routeJanus": "נתב דרך Janus",
 		"routeJanusHint": "Janus בוחר את הרמה בכל שלב בין המודלים של חבילה זו כדי להוריד את החשבון שלך. המפתחות שלך נשלחים עם כל בקשה ולעולם לא נשמרים. עמלת ניתוב: {fee}.",

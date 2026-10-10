@@ -2975,6 +2975,8 @@ export interface PackLanes {
 	scheduled?: string
 	communication?: string
 	helpers?: string
+	build?: string
+	workflow?: string
 }
 
 export interface LevelEffort {

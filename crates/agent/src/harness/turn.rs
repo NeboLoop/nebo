@@ -126,6 +126,9 @@ pub struct TurnContext {
     /// Deferred tools this seat is declared from its first step
     /// (`tools::app_dev::preloaded`), never behind tool search.
     pub preloaded_tools: Arc<HashSet<String>>,
+    /// The model the turn's steps move to once it builds (`BUILD_TOOLS`),
+    /// when its intelligence pack pins the build lane.
+    build: Option<TurnModel>,
 }
 
 impl TurnContext {
@@ -185,11 +188,16 @@ pub struct TurnState {
     /// The model every step of the turn runs on (`provider/model`), chosen
     /// once at Prepare: the one the owner, the job or the helper's speed
     /// chose, else the configured default (`ModelSelector::resolve`). It
-    /// never changes, mid-turn or after an error: a failed call is retried
-    /// on it (`model_call`): switching models mid-turn would break the
-    /// cached prefix and change the voice of the answer, and Nebo has no
-    /// configured fallback model to switch to.
+    /// never changes after an error: a failed call is retried on it
+    /// (`model_call`), and Nebo has no configured fallback model to switch
+    /// to. It changes once, upward, when the turn starts building an
+    /// employee or a workflow and its pack pins the build lane
+    /// (`TurnContext::build`): what the turn writes then is the work its
+    /// employees run on, worth one break of the cached prefix.
     pub model: String,
+    /// The turn's steps are building (`TurnContext::build`): they run on the
+    /// build lane's model and reach Janus as the `build` purpose.
+    building: bool,
     /// The provider's own reasoning effort for the turn, from its
     /// intelligence pack level; fixed for the turn like `model`.
     pub effort: Option<types::packs::ProviderEffort>,
@@ -628,12 +636,14 @@ struct TurnModel {
     effort: Option<types::packs::ProviderEffort>,
 }
 
-/// The background lane a turn runs in, which a pack can pin to a level:
-/// heartbeat, a schedule, a helper's run, or a message from a channel.
+/// The lane a turn runs in, which a pack can pin to a level: heartbeat, a
+/// schedule, a helper's run, a workflow's step that names no model of its
+/// own, or a message from a channel.
 fn lane_of(seat: &super::SeatRequest) -> Option<types::packs::Lane> {
     use types::packs::Lane;
     use types::permissions::Door;
     match (&seat.door, seat.origin) {
+        (Door::Workflow, _) if seat.model_override.trim().is_empty() => Some(Lane::Workflow),
         (Door::Heartbeat, _) => Some(Lane::Heartbeat),
         (Door::Schedule, _) => Some(Lane::Scheduled),
         (Door::Helper, _) => Some(Lane::Helpers),
@@ -653,9 +663,8 @@ fn lane_of(seat: &super::SeatRequest) -> Option<types::packs::Lane> {
 /// (`ModelSelector::resolve`).
 fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Result<TurnModel, String> {
     use types::packs::{DEFAULT_EFFORT, nebo_ai, parse_ref};
-    let configured = h.selector.configured();
-    let pick = if chosen.trim().is_empty() { configured.as_str() } else { chosen };
-    let Some((id, named)) = parse_ref(pick) else {
+    let pick = pack_pick(h, chosen, lane);
+    let Some((id, named)) = parse_ref(&pick) else {
         return Ok(TurnModel { model: h.selector.resolve(chosen), notice: None, effort: None });
     };
     let nebo = nebo_ai();
@@ -687,6 +696,38 @@ fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Re
         return Err(format!("{what}, and it is set not to use Nebo AI instead."));
     }
     Ok(on_nebo(level, format!("{what}, so this reply used Nebo AI.")))
+}
+
+/// What a turn's model reference names: the chosen model, else the bot's
+/// default. Janus's Auto (`janus/nebo-1`, the default every bot ships with)
+/// is the built-in Nebo AI pack at Auto, so a lane Nebo AI pins holds for a
+/// bot that never chose a pack.
+fn pack_pick(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> String {
+    use types::packs::{NEBO_AI_ID, nebo_ai, pack_ref};
+    let pick = if chosen.trim().is_empty() { h.selector.configured() } else { chosen.to_string() };
+    let auto = nebo_ai().levels.auto;
+    if lane.is_some() && auto.as_deref() == Some(pick.trim()) {
+        return pack_ref(NEBO_AI_ID, None);
+    }
+    pick
+}
+
+/// The tools that write an employee or a workflow: a turn that loads or
+/// calls one is building, and its steps from then on run in the build lane.
+const BUILD_TOOLS: &[&str] = &["create_employee", "update_employee", "create_workflow", "update_workflow"];
+
+/// The model a turn's building steps run on: the build lane's, when the
+/// turn's intelligence pack pins it; else none, and the turn keeps its model.
+/// A linked employee runs its linked agent, never a lane's model.
+fn build_model(h: &Harness, chosen: &str, linked: bool) -> Option<TurnModel> {
+    use types::packs::Lane;
+    if linked {
+        return None;
+    }
+    let pick = pack_pick(h, chosen, Some(Lane::Build));
+    let (id, _) = types::packs::parse_ref(&pick)?;
+    h.store.get_intelligence_pack(id).ok().flatten()?.lanes.level(Lane::Build)?;
+    turn_model(h, chosen, Some(Lane::Build)).ok()
 }
 
 /// The owner's workspace keeps the history of its files
@@ -955,8 +996,12 @@ pub(crate) async fn prepare(
     .filter(|p| !p.trim().is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort } =
-        turn_model(h, &model, lane_of(&req.seat))?;
+    // The workflow builder's chat writes workflows from its first step; any
+    // other turn moves to the build lane when it starts building.
+    let build = if matches!(req.mode, TurnMode::Workflow(_)) { None } else { build_model(h, &model, employee.linked) };
+    let builder = build.is_some() && types::keyparser::parse_session_key(&req.session_key).rest == types::keyparser::WORKFLOW_BUILDER;
+    let lane = if builder { Some(types::packs::Lane::Build) } else { lane_of(&req.seat) };
+    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort } = turn_model(h, &model, lane)?;
     if let Some(notice) = pack_notice {
         warn!(session_id, %notice, "intelligence pack fell back to Nebo AI");
         let _ = tx.send(StreamEvent::notice(notice)).await;
@@ -1081,6 +1126,7 @@ pub(crate) async fn prepare(
         seen: Vec::new(),
         model: turn_model,
         effort: turn_effort,
+        building: builder,
         checkpoints: 0,
         checkpoints_since_progress: 0,
         answered_owner: false,
@@ -1148,6 +1194,7 @@ pub(crate) async fn prepare(
         review_fork,
         withheld_tools,
         preloaded_tools,
+        build,
     };
     // Entering and leaving Plan mode are rows, told once each (the
     // plan_mode and plan_mode_exit attachments), so the prompt stays
@@ -2298,7 +2345,7 @@ fn build_request(
             None => RequestTrace {
                 agent_id: cx.agent_id().to_string(),
                 run_id: cx.progress.run_id.clone(),
-                ..RequestTrace::new("agent_turn")
+                ..RequestTrace::new(if st.building { "build" } else { "agent_turn" })
             },
         },
     }
@@ -2544,6 +2591,13 @@ async fn tool_round(
     if let Some(result) = &results.saved_memory {
         st.saves.saved(st.step, result);
     }
+    let builds = tool_calls.iter().map(|tc| tc.name.as_str()).chain(results.loaded.iter().map(String::as_str));
+    if !st.building
+        && let Some(build) = cx.build.as_ref()
+        && builds.into_iter().any(|name| BUILD_TOOLS.contains(&name))
+    {
+        start_building(st, build, &cx.session_id);
+    }
     for tc in tool_calls.iter() {
         if !h.tools.read_only(&tc.name, &tc.input).await {
             st.checkpoints_since_progress = 0;
@@ -2586,6 +2640,16 @@ async fn tool_round(
     )
     .await;
     None
+}
+
+/// The turn starts building: its next steps run on the build lane's model at
+/// its effort, routed fresh (the last model's route is not theirs).
+fn start_building(st: &mut TurnState, build: &TurnModel, session_id: &str) {
+    info!(session_id, from = %st.model, to = %build.model, "the turn builds: its steps move to the build lane");
+    st.building = true;
+    st.model = build.model.clone();
+    st.effort = build.effort;
+    st.call.sticky_metadata = None;
 }
 
 /// The harness's correction of a save the owner asked for, after its step's
@@ -2992,7 +3056,8 @@ mod tests {
         }
 
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
-            if req.trace.purpose != "agent_turn" {
+            let turn_call = matches!(req.trace.purpose, "agent_turn" | "build");
+            if !turn_call {
                 self.side.lock().unwrap().push(req.clone());
             }
             if req.trace.purpose == "image_read" {
@@ -3011,7 +3076,7 @@ mod tests {
             if let Some(hook) = during_checkpoint {
                 hook.await;
             }
-            if req.trace.purpose != "agent_turn" {
+            if !turn_call {
                 return Ok(events(vec![StreamEvent::text("ok")], None));
             }
             self.calls.lock().unwrap().push(req.clone());
@@ -3233,6 +3298,7 @@ mod tests {
             ["nebo-1", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro"].map(info).to_vec(),
         );
         config.provider_models.insert("anthropic".into(), vec![info("claude-x")]);
+        config.provider_models.insert("scripted".into(), vec![info("fast"), info("strong")]);
         crate::selector::ModelSelector::new(config)
     }
 
@@ -3316,6 +3382,69 @@ mod tests {
         let sched = turn_model(&h, "pack/l", Some(Lane::Scheduled)).unwrap();
         assert_eq!(sched.model, "anthropic/claude-x", "an unpinned lane keeps the reference's level");
         assert_eq!(turn_model(&h, "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
+    }
+
+    /// Nebo AI's lanes hold for a bot that never chose a pack: on Janus's
+    /// Auto, a workflow's step runs on Fast and a build on Deep at its own
+    /// effort; a step that names its own model keeps it, and a model that is
+    /// not a pack has no build lane.
+    #[tokio::test]
+    async fn nebo_ai_builds_on_deep_and_runs_workflows_on_fast() {
+        use types::packs::Lane;
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        let step = turn_model(&h, "janus/nebo-1", Some(Lane::Workflow)).unwrap();
+        assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-flash", None), "a step on Fast");
+        let built = build_model(&h, "janus/nebo-1", false).unwrap();
+        assert_eq!((built.model.as_str(), built.effort), ("janus/nebo-1-pro", None), "built on Deep");
+        assert_eq!(build_model(&h, "pack/nebo-ai/low", false).unwrap().model, "janus/nebo-1-pro", "whatever level chats");
+        assert!(build_model(&h, "anthropic/claude-x", false).is_none(), "a model the owner chose stays his");
+        assert!(build_model(&h, "janus/nebo-1", true).is_none(), "a linked employee runs its agent");
+        assert_eq!(turn_model(&h, "janus/nebo-1", None).unwrap().model, "janus/nebo-1", "a chat stays on Auto");
+
+        let mut seat = owner("x").seat;
+        seat.door = types::permissions::Door::Workflow;
+        assert_eq!(lane_of(&seat), Some(Lane::Workflow));
+        seat.model_override = "janus/nebo-1-medium".into();
+        assert_eq!(lane_of(&seat), None, "the step's own model");
+    }
+
+    /// A turn that starts building moves to the build lane's model from its
+    /// next step, routed fresh and sent as the `build` purpose; the steps
+    /// before it keep the turn's model.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_that_builds_moves_to_the_build_lane() {
+        use types::packs::{Effort, LevelEffort, Pack, PackLanes, PackLevels};
+        let model = Scripted::new(vec![
+            Step::Call("echo", serde_json::json!({})),
+            Step::Call("create_employee", serde_json::json!({})),
+            Step::Say("Your employee is ready."),
+        ]);
+        let extra: Vec<Box<dyn tools::registry::DynTool>> =
+            vec![Box::new(Echo { name: "create_employee", deferred: false, read_only: false })];
+        let h = harness_selecting(&model, extra, pack_selector()).await;
+        h.selector.set_loaded_providers(vec!["scripted".into()]);
+        h.store
+            .save_intelligence_pack(&Pack {
+                id: "b".into(),
+                name: "Builder".into(),
+                levels: PackLevels { low: Some("scripted/fast".into()), max: Some("scripted/strong".into()), ..Default::default() },
+                fallback: false,
+                built_in: false,
+                route_through_janus: false,
+                lanes: PackLanes { build: Some(Effort::Max), ..Default::default() },
+                level_effort: LevelEffort::default(),
+            })
+            .unwrap();
+        let mut req = owner("Make me an employee that works my pipeline");
+        req.seat.model_override = "pack/b/low".into();
+        run_turn(&h, req).await;
+        let calls: Vec<(String, &str)> = model.calls().iter().map(|c| (c.model.clone(), c.trace.purpose)).collect();
+        assert_eq!(
+            calls,
+            [("fast".to_string(), "agent_turn"), ("fast".to_string(), "agent_turn"), ("strong".to_string(), "build")],
+            "built on the build lane from the step after create_employee"
+        );
     }
 
     async fn harness_selecting(

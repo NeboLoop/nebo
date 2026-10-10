@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Agendado",
 		"laneCommunication": "Comunicação",
 		"laneHelpers": "Auxiliares",
+		"laneBuild": "Criação",
+		"laneWorkflow": "Fluxos de trabalho",
 		"laneByWork": "Escolhido pelo trabalho",
 		"routeJanus": "Rotear pelo Janus",
 		"routeJanusHint": "O Janus escolhe o nível em cada etapa entre os modelos deste pacote para reduzir sua conta. Suas chaves vão com cada requisição e nunca são armazenadas. Taxa de roteamento: {fee}.",

@@ -4078,6 +4078,8 @@
 		"laneScheduled": "定时任务",
 		"laneCommunication": "通讯",
 		"laneHelpers": "助手",
+		"laneBuild": "构建",
+		"laneWorkflow": "工作流",
 		"laneByWork": "按工作选择",
 		"routeJanus": "通过 Janus 路由",
 		"routeJanusHint": "Janus 会在此智能包的模型之间为每一步选择级别，以降低你的账单。你的密钥会随每个请求一起发送，且永不存储。路由费：{fee}。",

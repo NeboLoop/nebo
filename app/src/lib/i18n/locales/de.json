@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Geplant",
 		"laneCommunication": "Kommunikation",
 		"laneHelpers": "Helfer",
+		"laneBuild": "Erstellen",
+		"laneWorkflow": "Workflows",
 		"laneByWork": "Je nach Aufgabe gewählt",
 		"routeJanus": "Über Janus leiten",
 		"routeJanusHint": "Janus wählt die Stufe für jeden Schritt über die Modelle dieses Pakets, um deine Rechnung zu senken. Deine Schlüssel werden mit jeder Anfrage mitgeschickt und nie gespeichert. Weiterleitungsgebühr: {fee}.",

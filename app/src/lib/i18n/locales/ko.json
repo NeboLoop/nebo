@@ -4078,6 +4078,8 @@
 		"laneScheduled": "예약됨",
 		"laneCommunication": "커뮤니케이션",
 		"laneHelpers": "도우미",
+		"laneBuild": "만들기",
+		"laneWorkflow": "워크플로",
 		"laneByWork": "작업에 따라 선택됨",
 		"routeJanus": "Janus를 통해 라우팅",
 		"routeJanusHint": "Janus는 비용을 낮추기 위해 이 팩의 모델 전체에서 각 단계의 수준을 선택합니다. 사용자의 키는 각 요청과 함께 전달되며 저장되지 않습니다. 라우팅 수수료: {fee}.",
