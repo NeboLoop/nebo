@@ -967,7 +967,13 @@
 		"contactSupport": "Support kontaktieren",
 		"contactSupportBlurb": "Fragen oder Probleme? Schreib uns eine E-Mail, ein Mensch antwortet innerhalb eines Werktags.",
 		"startAtLogin": "Beim Anmelden starten",
-		"startAtLoginHint": "Nebo arbeitet weiter, nachdem du die App beendet hast, und startet beim Anmelden."
+		"startAtLoginHint": "Nebo arbeitet weiter, nachdem du die App beendet hast, und startet beim Anmelden.",
+		"keepAfterLogout": "Nach dem Abmelden weiterlaufen",
+		"keepAfterLogoutHint": "Deine Mitarbeiter arbeiten weiter, während du an diesem Computer abgemeldet bist.",
+		"keepAfterLogoutConfirmTitle": "Nebo nach dem Abmelden weiterlaufen lassen?",
+		"keepAfterLogoutConfirmMessage": "Nebo arbeitet auf diesem Computer weiter, nachdem du dich abgemeldet hast, bis du das ausschaltest oder den Computer herunterfährst.",
+		"keepAfterLogoutConfirmButton": "Weiterlaufen lassen",
+		"keepAfterLogoutFailed": "Diese Einstellung konnte nicht geändert werden. Versuche es erneut."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo läuft nur, solange die App geöffnet ist. Damit Nebo nach dem Beenden weiterarbeitet, schalte Nebo unter Anmeldeobjekte ein.",
-		"open": "Anmeldeobjekte öffnen"
+		"open": "Anmeldeobjekte öffnen",
+		"unavailable": "Nebo läuft nur, solange die App geöffnet ist. Dieser Computer kann Nebo nach dem Beenden nicht weiterlaufen lassen."
 	}
 }

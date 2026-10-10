@@ -967,7 +967,13 @@
 		"contactSupport": "聯絡支援",
 		"contactSupportBlurb": "有問題或遇到狀況？寄封電子郵件給我們，會有專人在一個工作天內回覆。",
 		"startAtLogin": "登入時啟動",
-		"startAtLoginHint": "結束 App 後 Nebo 仍會繼續工作，並在你登入時啟動。"
+		"startAtLoginHint": "結束 App 後 Nebo 仍會繼續工作，並在你登入時啟動。",
+		"keepAfterLogout": "登出後繼續執行",
+		"keepAfterLogoutHint": "你登出這台電腦後，你的員工仍會繼續工作。",
+		"keepAfterLogoutConfirmTitle": "登出後讓 Nebo 繼續執行嗎？",
+		"keepAfterLogoutConfirmMessage": "登出後 Nebo 會繼續在這台電腦上工作，直到你關閉此選項或關機。",
+		"keepAfterLogoutConfirmButton": "繼續執行",
+		"keepAfterLogoutFailed": "無法變更此設定。請再試一次。"
 	},
 	"settingsPlugins": {
 		"title": "外掛",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo 只會在 App 開啟時執行。若要在結束後繼續工作，請在「登入項目」中開啟 Nebo。",
-		"open": "打開登入項目"
+		"open": "打開登入項目",
+		"unavailable": "Nebo 只在應用程式開啟時執行。結束應用程式後，這台電腦無法讓 Nebo 繼續執行。"
 	}
 }

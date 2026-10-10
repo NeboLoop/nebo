@@ -546,12 +546,18 @@ pub fn updating(data_dir: &std::path::Path) -> bool {
 
 /// The desktop feed's switch for how the app runs its engine (`engineMode`
 /// in `version.json`: `"service"` or `"in_process"`), when the feed sets one.
-/// The app keeps the last value it read; unset leaves the engine the app's
-/// own child.
+/// One value for every OS, or one per OS keyed as `platforms` is
+/// (`{"darwin": "service", "linux": "in_process"}`), so the rollout can turn
+/// it on one OS at a time. The app keeps the last value it read; unset
+/// leaves the engine the app's own child.
 pub fn engine_mode(version_json: &serde_json::Value) -> Option<String> {
-    version_json
-        .get("engineMode")
-        .and_then(|v| v.as_str())
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    let mode = version_json.get("engineMode")?;
+    mode.as_str()
+        .or_else(|| mode.get(os).and_then(|v| v.as_str()))
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -615,6 +621,10 @@ mod tests {
         assert_eq!(feed(serde_json::json!({"engineMode": " in_process "})).as_deref(), Some("in_process"));
         assert_eq!(feed(serde_json::json!({"engineMode": ""})), None);
         assert_eq!(feed(serde_json::json!({"engineMode": 1})), None);
+        // One OS at a time.
+        let os = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
+        assert_eq!(feed(serde_json::json!({"engineMode": {os: "service"}})).as_deref(), Some("service"));
+        assert_eq!(feed(serde_json::json!({"engineMode": {"nowhere": "service"}})), None);
     }
 
     #[test]

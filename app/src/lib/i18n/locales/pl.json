@@ -967,7 +967,13 @@
 		"contactSupport": "Skontaktuj się z pomocą",
 		"contactSupportBlurb": "Pytania albo problemy? Napisz do nas, a człowiek odpowie w ciągu jednego dnia roboczego.",
 		"startAtLogin": "Uruchamiaj przy logowaniu",
-		"startAtLoginHint": "Nebo działa dalej po zamknięciu aplikacji i uruchamia się po zalogowaniu."
+		"startAtLoginHint": "Nebo działa dalej po zamknięciu aplikacji i uruchamia się po zalogowaniu.",
+		"keepAfterLogout": "Działaj po wylogowaniu",
+		"keepAfterLogoutHint": "Twoi pracownicy pracują dalej, gdy jesteś wylogowany z tego komputera.",
+		"keepAfterLogoutConfirmTitle": "Czy Nebo ma działać po wylogowaniu?",
+		"keepAfterLogoutConfirmMessage": "Nebo pracuje dalej na tym komputerze po wylogowaniu, dopóki tego nie wyłączysz lub nie wyłączysz komputera.",
+		"keepAfterLogoutConfirmButton": "Działaj dalej",
+		"keepAfterLogoutFailed": "Nie udało się zmienić tego ustawienia. Spróbuj ponownie."
 	},
 	"settingsPlugins": {
 		"title": "Wtyczki",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Aby działało po jej zamknięciu, włącz Nebo w Rzeczach otwieranych podczas logowania.",
-		"open": "Otwórz rzeczy otwierane podczas logowania"
+		"open": "Otwórz rzeczy otwierane podczas logowania",
+		"unavailable": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Ten komputer nie może utrzymać działania Nebo po zamknięciu aplikacji."
 	}
 }

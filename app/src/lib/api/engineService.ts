@@ -13,6 +13,10 @@ export interface EngineService {
 	supervised: boolean;
 	/** Nebo is switched off in Login Items: it runs only while the app is open. */
 	needsApproval: boolean;
+	/** The service was asked for but this computer can't run it (Linux with no systemd user session). */
+	unavailable: boolean;
+	/** "Keep running after I log out" (Linux); null where the OS has no such choice. */
+	keepAfterLogout: boolean | null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -31,5 +35,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 export const engineService = () => invoke<EngineService>('engine_service');
 
 export const setStartAtLogin = (on: boolean) => invoke<EngineService>('set_start_at_login', { on });
+
+export const setKeepAfterLogout = (on: boolean) => invoke<EngineService>('set_keep_after_logout', { on });
 
 export const openLoginItems = () => invoke<void>('open_login_items');

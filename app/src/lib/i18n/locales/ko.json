@@ -967,7 +967,13 @@
 		"contactSupport": "지원팀에 문의",
 		"contactSupportBlurb": "질문이나 문제가 있으신가요? 이메일을 보내주시면 영업일 기준 하루 안에 담당자가 답변드립니다.",
 		"startAtLogin": "로그인 시 시작",
-		"startAtLoginHint": "앱을 종료한 후에도 Nebo가 계속 작동하고, 로그인하면 시작됩니다."
+		"startAtLoginHint": "앱을 종료한 후에도 Nebo가 계속 작동하고, 로그인하면 시작됩니다.",
+		"keepAfterLogout": "로그아웃 후에도 계속 실행",
+		"keepAfterLogoutHint": "이 컴퓨터에서 로그아웃한 동안에도 직원들이 계속 일합니다.",
+		"keepAfterLogoutConfirmTitle": "로그아웃 후에도 Nebo를 계속 실행할까요?",
+		"keepAfterLogoutConfirmMessage": "로그아웃한 후에도 이 설정을 끄거나 컴퓨터를 종료할 때까지 Nebo가 이 컴퓨터에서 계속 일합니다.",
+		"keepAfterLogoutConfirmButton": "계속 실행",
+		"keepAfterLogoutFailed": "이 설정을 변경하지 못했습니다. 다시 시도하세요."
 	},
 	"settingsPlugins": {
 		"title": "플러그인",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo는 앱이 열려 있을 때만 실행됩니다. 종료 후에도 계속 작동하게 하려면 로그인 항목에서 Nebo를 켜세요.",
-		"open": "로그인 항목 열기"
+		"open": "로그인 항목 열기",
+		"unavailable": "Nebo는 앱이 열려 있는 동안에만 실행됩니다. 이 컴퓨터는 앱을 종료한 후 Nebo를 계속 실행할 수 없습니다."
 	}
 }

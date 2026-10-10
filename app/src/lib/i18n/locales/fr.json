@@ -967,7 +967,13 @@
 		"contactSupport": "Contacter le support",
 		"contactSupportBlurb": "Des questions ou des soucis ? Écrivez-nous et une personne vous répond sous un jour ouvré.",
 		"startAtLogin": "Lancer à l'ouverture de session",
-		"startAtLoginHint": "Nebo continue de travailler après la fermeture de l'app et démarre à l'ouverture de session."
+		"startAtLoginHint": "Nebo continue de travailler après la fermeture de l'app et démarre à l'ouverture de session.",
+		"keepAfterLogout": "Continuer après la déconnexion",
+		"keepAfterLogoutHint": "Vos employés continuent de travailler pendant que vous êtes déconnecté de cet ordinateur.",
+		"keepAfterLogoutConfirmTitle": "Laisser Nebo fonctionner après la déconnexion ?",
+		"keepAfterLogoutConfirmMessage": "Nebo continue de travailler sur cet ordinateur après votre déconnexion, jusqu'à ce que vous désactiviez cette option ou éteigniez l'ordinateur.",
+		"keepAfterLogoutConfirmButton": "Continuer",
+		"keepAfterLogoutFailed": "Impossible de modifier ce réglage. Réessayez."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo ne fonctionne que lorsque l'app est ouverte. Pour qu'il continue après la fermeture, activez Nebo dans Ouverture.",
-		"open": "Ouvrir les éléments d'ouverture"
+		"open": "Ouvrir les éléments d'ouverture",
+		"unavailable": "Nebo ne fonctionne que lorsque l'app est ouverte. Cet ordinateur ne peut pas laisser Nebo fonctionner une fois l'app quittée."
 	}
 }

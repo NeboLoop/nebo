@@ -967,7 +967,13 @@
 		"contactSupport": "Falar com o suporte",
 		"contactSupportBlurb": "Dúvidas ou problemas? Escreva para a gente e uma pessoa responde em um dia útil.",
 		"startAtLogin": "Abrir ao iniciar sessão",
-		"startAtLoginHint": "O Nebo continua trabalhando depois que você fecha o app e abre quando você inicia sessão."
+		"startAtLoginHint": "O Nebo continua trabalhando depois que você fecha o app e abre quando você inicia sessão.",
+		"keepAfterLogout": "Continuar funcionando depois de sair",
+		"keepAfterLogoutHint": "Seus funcionários continuam trabalhando enquanto você está desconectado deste computador.",
+		"keepAfterLogoutConfirmTitle": "Manter o Nebo funcionando depois de sair?",
+		"keepAfterLogoutConfirmMessage": "O Nebo continua trabalhando neste computador depois que você sai, até você desativar esta opção ou desligar o computador.",
+		"keepAfterLogoutConfirmButton": "Continuar funcionando",
+		"keepAfterLogoutFailed": "Não foi possível alterar esta configuração. Tente novamente."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "O Nebo só funciona enquanto o app está aberto. Para que continue trabalhando depois de fechar, ative o Nebo em Itens de Início.",
-		"open": "Abrir Itens de Início"
+		"open": "Abrir Itens de Início",
+		"unavailable": "O Nebo só funciona enquanto o app está aberto. Este computador não consegue manter o Nebo funcionando depois que você fecha o app."
 	}
 }

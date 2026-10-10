@@ -967,7 +967,13 @@
 		"contactSupport": "Contact met support",
 		"contactSupportBlurb": "Vragen of problemen? Mail ons en een mens antwoordt binnen één werkdag.",
 		"startAtLogin": "Starten bij inloggen",
-		"startAtLoginHint": "Nebo blijft werken nadat je de app afsluit en start wanneer je inlogt."
+		"startAtLoginHint": "Nebo blijft werken nadat je de app afsluit en start wanneer je inlogt.",
+		"keepAfterLogout": "Blijven draaien na uitloggen",
+		"keepAfterLogoutHint": "Je medewerkers blijven werken terwijl je bent uitgelogd op deze computer.",
+		"keepAfterLogoutConfirmTitle": "Nebo laten draaien na het uitloggen?",
+		"keepAfterLogoutConfirmMessage": "Nebo blijft op deze computer werken nadat je uitlogt, totdat je dit uitzet of de computer afsluit.",
+		"keepAfterLogoutConfirmButton": "Laten draaien",
+		"keepAfterLogoutFailed": "Deze instelling kon niet worden gewijzigd. Probeer het opnieuw."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo werkt alleen zolang de app open is. Zet Nebo aan bij Inloggen om het te laten doorwerken na het afsluiten.",
-		"open": "Inlogonderdelen openen"
+		"open": "Inlogonderdelen openen",
+		"unavailable": "Nebo draait alleen zolang de app open is. Deze computer kan Nebo niet laten draaien nadat je de app afsluit."
 	}
 }

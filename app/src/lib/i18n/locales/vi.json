@@ -967,7 +967,13 @@
 		"contactSupport": "Liên hệ hỗ trợ",
 		"contactSupportBlurb": "Có câu hỏi hay vướng mắc? Hãy gửi email cho chúng tôi, sẽ có người trả lời trong một ngày làm việc.",
 		"startAtLogin": "Mở khi đăng nhập",
-		"startAtLoginHint": "Nebo tiếp tục làm việc sau khi bạn thoát ứng dụng và khởi động khi bạn đăng nhập."
+		"startAtLoginHint": "Nebo tiếp tục làm việc sau khi bạn thoát ứng dụng và khởi động khi bạn đăng nhập.",
+		"keepAfterLogout": "Tiếp tục chạy sau khi tôi đăng xuất",
+		"keepAfterLogoutHint": "Nhân viên của bạn vẫn tiếp tục làm việc khi bạn đã đăng xuất khỏi máy tính này.",
+		"keepAfterLogoutConfirmTitle": "Giữ Nebo chạy sau khi bạn đăng xuất?",
+		"keepAfterLogoutConfirmMessage": "Nebo tiếp tục làm việc trên máy tính này sau khi bạn đăng xuất, cho đến khi bạn tắt tùy chọn này hoặc tắt máy tính.",
+		"keepAfterLogoutConfirmButton": "Tiếp tục chạy",
+		"keepAfterLogoutFailed": "Không thể thay đổi cài đặt này. Hãy thử lại."
 	},
 	"settingsPlugins": {
 		"title": "Plugin",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo chỉ chạy khi ứng dụng đang mở. Để Nebo tiếp tục làm việc sau khi thoát, hãy bật Nebo trong Mục đăng nhập.",
-		"open": "Mở Mục đăng nhập"
+		"open": "Mở Mục đăng nhập",
+		"unavailable": "Nebo chỉ chạy khi ứng dụng đang mở. Máy tính này không thể giữ Nebo chạy sau khi bạn thoát ứng dụng."
 	}
 }

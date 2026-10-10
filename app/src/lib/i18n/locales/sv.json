@@ -967,7 +967,13 @@
 		"contactSupport": "Kontakta support",
 		"contactSupportBlurb": "Frågor eller problem? Mejla oss så svarar en människa inom en arbetsdag.",
 		"startAtLogin": "Starta vid inloggning",
-		"startAtLoginHint": "Nebo fortsätter arbeta när du har avslutat appen och startar när du loggar in."
+		"startAtLoginHint": "Nebo fortsätter arbeta när du har avslutat appen och startar när du loggar in.",
+		"keepAfterLogout": "Fortsätt köra efter utloggning",
+		"keepAfterLogoutHint": "Dina medarbetare fortsätter arbeta medan du är utloggad från den här datorn.",
+		"keepAfterLogoutConfirmTitle": "Låta Nebo köra vidare efter utloggning?",
+		"keepAfterLogoutConfirmMessage": "Nebo fortsätter arbeta på den här datorn efter att du loggat ut, tills du stänger av det här eller stänger av datorn.",
+		"keepAfterLogoutConfirmButton": "Fortsätt köra",
+		"keepAfterLogoutFailed": "Det gick inte att ändra inställningen. Försök igen."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo körs bara medan appen är öppen. Slå på Nebo under Inloggningsobjekt för att det ska fortsätta efter att du avslutat.",
-		"open": "Öppna Inloggningsobjekt"
+		"open": "Öppna Inloggningsobjekt",
+		"unavailable": "Nebo körs bara medan appen är öppen. Den här datorn kan inte hålla Nebo igång efter att du avslutat appen."
 	}
 }
