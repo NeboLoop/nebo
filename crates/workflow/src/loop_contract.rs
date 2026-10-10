@@ -82,6 +82,9 @@ pub struct LoopOutcome {
     /// not empty. Its text is then raw tool output, which the step evaluator
     /// is never asked to judge.
     pub tainted: bool,
+    /// Model turns this turn-loop took: what it spends of the run's budget
+    /// (`engine::RUN_MAX_ITERATIONS`).
+    pub steps: u32,
 }
 
 #[async_trait::async_trait]

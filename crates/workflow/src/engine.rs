@@ -11,20 +11,100 @@ use tools::workflows::step_tools::names_tool;
 use crate::WorkflowError;
 use crate::parser::{Activity, WorkflowDef};
 
-const MAX_ITERATIONS: u32 = 50;
+/// Model turns one step may take (an activity without steps is one step).
+pub const MAX_ITERATIONS: u32 = 50;
+
+/// Model turns one whole run may take, across every step of every activity:
+/// three steps' worth. A one-step workflow and a ten-step one are held to
+/// the same total. Set from the 2026-10-10 bake-off: every run that did its
+/// job stayed under 140 turns; the runs past that (146 to 336) were loops.
+pub const RUN_MAX_ITERATIONS: u32 = 3 * MAX_ITERATIONS;
 
 use crate::loop_contract::{ActivityLoop, LoopTurn};
 
-/// Per-activity turn budget: params.maxIterations overrides the default —
-/// the same shape the graph loop node accepts (graph.rs).
-fn activity_max_iterations(activity: &Activity) -> u32 {
+/// The `params.maxIterations` an activity sets, when it sets one — the same
+/// shape the graph loop node accepts (graph.rs).
+fn explicit_max_iterations(activity: &Activity) -> Option<u32> {
     activity
         .params
         .as_ref()
         .and_then(|p| p.get("maxIterations"))
         .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
         .map(|v| v as u32)
-        .unwrap_or(MAX_ITERATIONS)
+}
+
+/// Per-step turn budget: params.maxIterations overrides the default.
+fn activity_max_iterations(activity: &Activity) -> u32 {
+    explicit_max_iterations(activity).unwrap_or(MAX_ITERATIONS)
+}
+
+/// The model turns a run has left, shared by every step of every activity
+/// (graph forks included, hence atomic). A run resumed after an approval or
+/// an expert starts a fresh budget: the wait between is the owner's or the
+/// expert's, and the turns before it were already bounded.
+#[derive(Debug)]
+pub struct RunBudget {
+    cap: u32,
+    used: std::sync::atomic::AtomicU32,
+}
+
+impl RunBudget {
+    /// [`RUN_MAX_ITERATIONS`], or more when an activity explicitly gives one
+    /// step more than that (a loop node's maxIterations counts its visits,
+    /// not model turns, and is left out).
+    pub(crate) fn for_workflow(def: &WorkflowDef) -> Self {
+        let cap = def
+            .activities
+            .iter()
+            .filter(|a| a.activity_type != "loop")
+            .filter_map(explicit_max_iterations)
+            .fold(RUN_MAX_ITERATIONS, u32::max);
+        Self { cap, used: std::sync::atomic::AtomicU32::new(0) }
+    }
+
+    fn left(&self) -> u32 {
+        self.cap.saturating_sub(self.used.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn spend(&self, turns: u32) {
+        self.used.fetch_add(turns, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The turns the next step may take: its own cap, or what the run has
+    /// left when that is less. `Err` when the run has none left.
+    fn grant(&self, own: u32) -> Result<u32, WorkflowError> {
+        match self.left() {
+            0 => Err(WorkflowError::RunMaxIterations(self.cap)),
+            left => Ok(own.min(left)),
+        }
+    }
+
+    /// Account for one turn of a step granted `granted` of its own `own`
+    /// turns. A step that used everything it was granted because the run
+    /// ran out stopped at the run's cap, not its own.
+    fn settle<T>(
+        &self,
+        granted: u32,
+        own: u32,
+        outcome: Result<crate::LoopOutcome, WorkflowError>,
+        ok: impl FnOnce(crate::LoopOutcome) -> T,
+    ) -> Result<T, WorkflowError> {
+        match outcome {
+            Ok(out) => {
+                self.spend(out.steps);
+                Ok(ok(out))
+            }
+            Err(WorkflowError::MaxIterations { .. }) if granted < own => {
+                self.spend(granted);
+                Err(WorkflowError::RunMaxIterations(self.cap))
+            }
+            Err(e @ WorkflowError::MaxIterations { .. }) => {
+                self.spend(granted);
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 
@@ -365,6 +445,7 @@ pub async fn execute_workflow(
     // on the first call regardless of how much work the model actually did.
     let mut prior_context = String::new();
     let activity_count = def.activities.len();
+    let budget = RunBudget::for_workflow(def);
 
     // Circuit breaker: abort if 3+ consecutive activities fail with the same error pattern
     const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
@@ -460,8 +541,8 @@ pub async fn execute_workflow(
             checkpoint,
             resume.as_ref().filter(|r| r.activity_id == activity.id),
             "", // sequential engine has no loop nodes
-        
             cancel_token,
+            &budget,
         )
         .await
         {
@@ -712,6 +793,7 @@ pub(crate) async fn execute_activity_with_retry(
     resume: Option<&ResumeState>,
     iteration: &str,
     cancel_token: Option<&CancellationToken>,
+    budget: &RunBudget,
 ) -> Result<(String, u32), WorkflowError> {
     // Resume fast-forward: an activity this run already completed returns its
     // recorded output instead of re-executing — the Temporal property that a
@@ -752,8 +834,8 @@ pub(crate) async fn execute_activity_with_retry(
             checkpoint,
             resume,
             iteration,
-        
             cancel_token,
+            budget,
         )
         .await
         {
@@ -767,7 +849,8 @@ pub(crate) async fn execute_activity_with_retry(
                 e @ (WorkflowError::Exited(_)
                 | WorkflowError::Cancelled
                 | WorkflowError::Blocked(..)
-                | WorkflowError::AwaitingApproval { .. }),
+                | WorkflowError::AwaitingApproval { .. }
+                | WorkflowError::RunMaxIterations(_)),
             ) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -811,6 +894,7 @@ pub async fn execute_activity(
     resume: Option<&ResumeState>,
     iteration: &str,
     cancel_token: Option<&CancellationToken>,
+    budget: &RunBudget,
 ) -> Result<(String, u32), WorkflowError> {
     // The owner's per-run spending limit for this employee (0 = none). The
     // package's token_budget figures are estimates and never enforced.
@@ -865,6 +949,8 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
+        let own = activity_max_iterations(activity);
+        let granted = budget.grant(own)?;
         let turn = LoopTurn {
             activity,
             instructions,
@@ -879,7 +965,7 @@ pub async fn execute_activity(
             pending,
             iteration,
             step_index: None,
-            max_iterations: activity_max_iterations(activity),
+            max_iterations: granted,
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
             spend_cap_microcents,
@@ -887,7 +973,7 @@ pub async fn execute_activity(
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}", activity.id, iteration),
         };
-        let out = loop_impl.run_turn(turn).await?;
+        let out = budget.settle(granted, own, loop_impl.run_turn(turn).await, |o| o)?;
         *spent += out.total_tokens;
         *spent_output += out.output_tokens;
         return Ok((out.text, out.total_tokens));
@@ -962,7 +1048,12 @@ pub async fn execute_activity(
             });
         }
 
-        // Run this step through the ONE injected agentic loop.
+        // Run this step through the ONE injected agentic loop, with the
+        // turns it may take: its own, or what the run has left.
+        let own = activity_max_iterations(activity);
+        let granted = budget.grant(own).inspect_err(|e| {
+            let _ = store.update_task_item(&task_item.id, "failed", None, Some(&e.to_string()), 0, 0);
+        })?;
         let turn = LoopTurn {
             activity,
             instructions: instructions.clone(),
@@ -981,7 +1072,7 @@ pub async fn execute_activity(
             },
             iteration,
             step_index: Some(i as i64),
-            max_iterations: activity_max_iterations(activity),
+            max_iterations: granted,
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
             spend_cap_microcents,
@@ -989,10 +1080,8 @@ pub async fn execute_activity(
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}:{}", activity.id, iteration, i),
         };
-        let (step_result, step_tokens, step_tainted) = loop_impl
-            .run_turn(turn)
-            .await
-            .map(|o| {
+        let (step_result, step_tokens, step_tainted) = budget
+            .settle(granted, own, loop_impl.run_turn(turn).await, |o| {
                 *spent += o.total_tokens;
                 *spent_output += o.output_tokens;
                 (o.text, o.total_tokens, o.tainted)
@@ -2131,4 +2220,127 @@ mod engine_tests {
         assert_eq!(truncate_at_char_boundary("📊📊", 5), "📊");
     }
 
+    
+    /// A loop whose every turn wants `want` model turns: it takes them when
+    /// it was given that many, and otherwise stops at its limit the way the
+    /// harness does (MaxIterations). Records the limit each turn was given.
+    struct TurnHog {
+        want: u32,
+        granted: std::sync::Mutex<Vec<u32>>,
     }
+
+    impl TurnHog {
+        fn new(want: u32) -> Self {
+            Self { want, granted: std::sync::Mutex::new(Vec::new()) }
+        }
+        fn granted(&self) -> Vec<u32> {
+            self.granted.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ActivityLoop for TurnHog {
+        async fn run_turn(&self, turn: LoopTurn<'_>) -> Result<crate::LoopOutcome, WorkflowError> {
+            self.granted.lock().unwrap().push(turn.max_iterations);
+            if self.want > turn.max_iterations {
+                return Err(WorkflowError::MaxIterations {
+                    activity_id: turn.activity.id.clone(),
+                    step: turn.step_index.map(|i| (i as usize + 1, turn.activity.steps.len())),
+                    turns: turn.max_iterations,
+                });
+            }
+            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, output_tokens: 1, tainted: false, steps: self.want })
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
+        }
+        fn cleanup(&self, _run_id: &str) {}
+    }
+
+    fn turn_store() -> Arc<Store> {
+        let path = std::env::temp_dir().join(format!("nebo-runcap-test-{}.db", uuid::Uuid::new_v4()));
+        Arc::new(Store::new(path.to_str().unwrap()).expect("test store"))
+    }
+
+    async fn run(def: &str, looper: &TurnHog) -> Result<(String, String), WorkflowError> {
+        let mut def: serde_json::Value = serde_json::from_str(def).unwrap();
+        def["version"] = serde_json::json!("1.0");
+        let def = crate::parser::parse_workflow(&def.to_string()).unwrap();
+        execute_workflow(
+            &def, "", "owner", false, serde_json::json!({}), "manual", None, &turn_store(), None, looper, &[], None,
+            None, None, None, None, Vec::new(), None, None, None,
+        )
+        .await
+    }
+
+    /// Bake-off 2026-10-10: stepped hourly beats ran 146 to 336 model turns,
+    /// because each step had its own 50 and the run had no total. Five steps
+    /// of 40 turns each now stop at the run's 150: the fourth step gets the
+    /// 30 left and is stopped there, with words that say the run ran out.
+    #[tokio::test]
+    async fn a_stepped_run_stops_at_the_run_cap() {
+        let looper = TurnHog::new(40);
+        let err = run(
+            r#"{"id":"beat","name":"Hourly beat","activities":[{"id":"run","intent":"beat","steps":["a","b","c","d","e"]}]}"#,
+            &looper,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, WorkflowError::RunMaxIterations(150)), "{err:?}");
+        assert_eq!(looper.granted(), [50, 50, 50, 30], "each step gets its 50, the last what is left");
+        let said = err.to_string();
+        assert!(said.contains("150 model turns in total") && said.contains("split the work"), "{said}");
+    }
+
+    /// The budget is the run's, not an activity's: four activities of 45
+    /// turns, in sequence or on a graph, leave the fourth 15.
+    #[tokio::test]
+    async fn the_budget_is_shared_across_activities_and_graph_nodes() {
+        let sequential = r#"{"id":"w","name":"w","activities":[
+            {"id":"a","intent":"a"},{"id":"b","intent":"b"},{"id":"c","intent":"c"},{"id":"d","intent":"d"}]}"#;
+        let graph = r#"{"id":"w","name":"w","activities":[
+            {"id":"a","intent":"a"},{"id":"b","intent":"b"},{"id":"c","intent":"c"},{"id":"d","intent":"d"}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"c","to":"d"}]}"#;
+        for def in [sequential, graph] {
+            let looper = TurnHog::new(45);
+            let err = run(def, &looper).await.unwrap_err();
+            assert!(matches!(err, WorkflowError::RunMaxIterations(150)), "{err:?}");
+            assert_eq!(looper.granted(), [50, 50, 50, 15]);
+        }
+    }
+
+    /// A one-step workflow that loops stops at its step's 50 turns and says
+    /// which step and what to do, not "activity run exceeded max
+    /// iterations"; a step of a stepped activity is named by its number.
+    #[tokio::test]
+    async fn a_step_that_uses_its_turns_says_which_step() {
+        let looper = TurnHog::new(60);
+        let err = run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"do everything"}]}"#, &looper)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Stopped: \"run\" used its 50 model turns without finishing. Split the work into smaller steps, each one \
+             thing to do with its result."
+        );
+        let err = run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"x","steps":["a","b"]}]}"#, &TurnHog::new(60))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("Stopped: Step 1/2 of \"run\" used its 50 model turns"), "{err}");
+    }
+
+    /// An activity that explicitly gives one step more than a run's total
+    /// raises the run's cap to it; under the cap, a run finishes.
+    #[tokio::test]
+    async fn an_explicit_step_budget_raises_the_run_cap() {
+        let looper = TurnHog::new(180);
+        run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"x","params":{"maxIterations":200}}]}"#, &looper)
+            .await
+            .expect("finishes within its own 200");
+        assert_eq!(looper.granted(), [200]);
+        let looper = TurnHog::new(30);
+        run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"x","steps":["a","b","c","d"]}]}"#, &looper)
+            .await
+            .expect("120 turns fit");
+    }
+}

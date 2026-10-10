@@ -102,7 +102,7 @@ fn automation_item() -> serde_json::Value {
             "interval": { "type": "string", "description": "Instead of a schedule: run every interval (\"15m\", \"1h\")." },
             "window": { "type": "string", "description": "With interval: the hours it runs in, e.g. \"08:00-18:00\"." },
             "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Instead of a schedule: the events that start it, e.g. \"email.received\"." },
-            "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps, run in order in one run: what to do, with which tool or data, producing what." },
+            "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps, run in order in one run: what to do, with which tool or data, producing what. Each step gets up to 50 model turns and a run up to 150 in all, so split a long job into steps." },
             "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
             "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS },
             "activities": {

@@ -6161,6 +6161,58 @@ mod tests {
         assert!(!results[0].contains("wasn't loaded"), "{}", results[0]);
     }
 
+    /// A workflow turn reports the model turns it took, which the run's
+    /// budget spends (`workflow::engine::RUN_MAX_ITERATIONS`); a turn that
+    /// reaches its limit says which step of which activity ran out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_workflow_turn_reports_the_model_turns_it_took() {
+        use workflow::ActivityLoop;
+        let activity: workflow::parser::Activity =
+            serde_json::from_value(serde_json::json!({"id": "run", "intent": "echo twice", "steps": ["a", "b"]})).unwrap();
+        let turn = |max: u32| workflow::LoopTurn {
+            activity: &activity,
+            instructions: "Echo twice, then say done.".into(),
+            seed_messages: vec![ai::Message { role: "user".into(), content: "Step 2/2: b".into(), ..Default::default() }],
+            workflow_name: "Beat",
+            advertised_tools: vec!["echo".into()],
+            agent_id: "",
+            user_id: "",
+            memory_writes_disabled: false,
+            trace: RequestTrace::new("agent_turn"),
+            checkpoint: None,
+            pending: None,
+            iteration: "",
+            step_index: Some(1),
+            max_iterations: max,
+            min_iterations: 0,
+            requires_tools: Vec::new(),
+            spend_cap_microcents: 0,
+            model: String::new(),
+            cancel: None,
+            turn_key: format!("run::1:{max}"),
+        };
+        let script = || {
+            vec![
+                Step::Call("echo", serde_json::json!({})),
+                Step::Call("echo", serde_json::json!({})),
+                Step::Say("done"),
+            ]
+        };
+        let model = Scripted::new(script());
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        let out = looper.run_turn(turn(10)).await.expect("finishes");
+        assert_eq!(out.steps, 3, "two calls and the answer");
+
+        let model = Scripted::new(script());
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        let Err(err) = looper.run_turn(turn(2)).await else { panic!("stops at its limit") };
+        assert!(
+            matches!(&err, workflow::WorkflowError::MaxIterations { activity_id, step: Some((2, 2)), turns: 2 } if activity_id == "run"),
+            "{err:?}"
+        );
+        assert!(err.to_string().starts_with("Stopped: Step 2/2 of \"run\" used its 2 model turns"), "{err}");
+    }
+
     /// The owner's spending limit ends the turn before the next step, with
     /// a status line that says so.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
