@@ -65,6 +65,27 @@ fn stable_exe_from(
     }
 }
 
+/// End this process at once with `code`, from any thread: no exit handlers,
+/// no destructors, no flushing. For the stall watchdog: in a stall the
+/// other threads are stuck, and an ordinary exit waits on locks they hold
+/// (seen on Linux: the watchdog logged its exit, and the process stayed
+/// until the frozen threads moved again), so the supervisor never got its
+/// exit code. What must reach disk is written before this is called.
+pub(crate) fn exit_now(code: i32) -> ! {
+    #[cfg(unix)]
+    // SAFETY: `_exit` ends the process; it touches no Rust state.
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: ends this process (the pseudo-handle) with `code`.
+        unsafe { TerminateProcess(GetCurrentProcess(), code as u32) };
+        std::process::exit(code)
+    }
+}
+
 static STOP: LazyLock<Notify> = LazyLock::new(Notify::new);
 
 /// Stop this server the graceful way a shutdown signal does: drain, close,

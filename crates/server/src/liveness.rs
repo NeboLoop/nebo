@@ -271,7 +271,7 @@ pub(crate) fn start(store: Arc<db::Store>) {
                     "liveness: stalled past the limit; exiting so the supervisor starts Nebo again"
                 );
                 // stall.json was written when the stall began: the next run sends it.
-                std::process::exit(crate::process::EXIT_STALL);
+                crate::process::exit_now(crate::process::EXIT_STALL);
             }
             match stall {
                 Some(stall) if current.is_none() => {
