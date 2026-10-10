@@ -136,7 +136,9 @@ pub fn run_engine() -> ! {
 
     let supervisor = server::process::supervisor();
     tracing::info!(pid = std::process::id(), port = cfg.port, supervisor = ?supervisor, exe = ?std::env::current_exe().ok(), "starting the Nebo engine");
-    if supervisor.as_deref() == Some(SHELL) {
+    // Started by a parent that holds its stdin: the shell (child mode) or
+    // the Windows task's supervisor.
+    if matches!(supervisor.as_deref(), Some(SHELL | service::TASK_SCHEDULER)) {
         hold_lifeline();
     }
     #[cfg(unix)]
@@ -173,8 +175,8 @@ fn redirect_stdio() {
     }
 }
 
-/// Stop the engine when the shell that started it is gone: its stdin is
-/// the shell's pipe, which reads to its end only once the shell exits.
+/// Stop the engine when the process that started it is gone: its stdin is
+/// that parent's pipe, which reads to its end only once the parent exits.
 fn hold_lifeline() {
     let spawned = std::thread::Builder::new().name("nebo-lifeline".into()).spawn(|| {
         use std::io::Read;
@@ -204,7 +206,7 @@ const PORT_HELD_RETRY: Duration = Duration::from_secs(2);
 /// A run this long was healthy: the crash backoff starts over.
 const HEALTHY_RUN: Duration = Duration::from_secs(60);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// The restart policy for an engine that exited with `code` (None: killed by
 /// a signal) after running `ran`, with `crashes` crashes in a row before it.
