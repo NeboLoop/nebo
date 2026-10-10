@@ -5266,7 +5266,7 @@ pub async fn start_workflow_chat(
          until they press Save). The block is stripped from your message before display, so ALSO \
          describe what you changed in one short sentence. Never emit ops for questions — answer in prose.\n\n\
          ## Ops\n\
-         - {{\"op\":\"add_activity\",\"workflow\":NAME,\"activity\":{{id,type,intent,skills?,steps?,params?}},\"after\":ID|\"__trigger__\"|null,\"branchLabel\"?:LABEL}}\n\
+         - {{\"op\":\"add_activity\",\"workflow\":NAME,\"activity\":{{id,type,intent,skills?,steps?,params?,tools?}},\"after\":ID|\"__trigger__\"|null,\"branchLabel\"?:LABEL}}\n\
          - {{\"op\":\"update_activity\",\"workflow\":NAME,\"id\":ID,\"set\":{{...partial activity}}}}\n\
          - {{\"op\":\"remove_activity\",\"workflow\":NAME,\"id\":ID}}\n\
          - {{\"op\":\"connect\",\"workflow\":NAME,\"from\":ID|\"__trigger__\",\"to\":ID|\"__emit__\",\"label\"?:LABEL}}\n\
@@ -5276,7 +5276,8 @@ pub async fn start_workflow_chat(
          - {{\"op\":\"create_workflow\",\"name\":NAME,\"workflow\"?:{{...}}}} / {{\"op\":\"delete_workflow\",\"workflow\":NAME}} / {{\"op\":\"rename_workflow\",\"from\":A,\"to\":B}}\n\n\
          ## Activity types (the only valid `type` values)\n\
          custom, research (params: depth, sources), email (params: to, subject), notify, \
-         code (params: language, code), http (params: method, url, headers, body — runs deterministically, no AI), \
+         code (params: language, code), command (params: command — a shell command run deterministically, no AI; \
+         stdout is its output), http (params: method, url, headers, body — runs deterministically, no AI), \
          transform, condition, loop, wait (params: duration e.g. \"5m\"), \
          agent (params: agentId — delegation), connector (params: serverId, tool, input — MCP), \
          expert (params: expert — a coworker from the Experts list, task, input — an object of explicit \
@@ -5292,10 +5293,11 @@ pub async fn start_workflow_chat(
          - condition REQUIRES params.expression + params.mode (expression|contains|exists|regex) and \
            routes via edges labeled \"True\"/\"False\". Routing is never decided by the AI.\n\
          - loop REQUIRES params.source (data path, e.g. \"inputs.items\") and uses edges labeled \
-           \"Each item\" (body) and \"Done\". Items run in parallel. After Done, the loop's output is \
+           \"Each item\" (body) and \"Done\". Items run in parallel up to params.concurrency (rule 6). After Done, the loop's output is \
            {{summary, results:[{{item, outputs:{{<body-id>: ...}}}}]}} — EVERY item's result in item order. \
            params.batchSize N hands the body N items at a time; loop over another loop's results with a \
-           batchSize to summarise in groups before one final report. The AI lives INSIDE activities (intent + steps), never in routing.\n\n\
+           batchSize to summarise in groups before one final report. The AI lives INSIDE activities (intent + steps), never in routing.\n\
+         {rules}\n\n\
          ## Example\n\
          User: \"notify me when an urgent email arrives\"\n\
          ```workflow-ops\n\
@@ -5328,7 +5330,8 @@ pub async fn start_workflow_chat(
          - Reference ONLY workflow names and activity ids that exist in the draft below (or ones you create in the same batch).\n\
          - New activity ids: short kebab-case, unique within the workflow.\n\
          - Be concise. One sentence on what you changed; no restating the JSON.\n\
-         - If the user asks something outside workflow building, redirect them to the main chat."
+         - If the user asks something outside workflow building, redirect them to the main chat.",
+        rules = tools::workflows::authoring::AUTHORING_RULES,
     )];
 
     system_parts.push(format!(

@@ -691,6 +691,23 @@ test-gate-nightly: $(NEBO_CLI)
 test-error-shapes:
 	python3 scripts/error-shapes.py /tmp/nebo-gate-traces --baseline suites/error-shapes.baseline.txt
 
+# ─── Authoring eval: which workflows Nebo's guidance produces, per model ─────
+# Owner requests (fixtures/authoring/requests.json) → each model, given the
+# create_workflow/create_employee definitions exactly as Nebo shows them →
+# every workflow validated and checked against the design rules
+# (crates/tools/src/workflows/authoring.rs) → report.md per model and
+# matrix.md (each model's pass rate per rule) in target/eval-authoring/<stamp>/.
+# TRACK=run (or both) adds the run track: can a model RUN a lean judge step
+# and a multi-round tool step (fixtures/authoring/steps.json). Billed.
+#   make eval-authoring                                  # MODELS=claude:haiku
+#   make eval-authoring MODELS=janus:nebo-1-flash,janus:nebo-1-medium,janus:nebo-1-pro TRACK=both
+#   make eval-authoring ONLY=crm-sync,invoice-run
+#   make eval-authoring SCORE=target/eval-authoring/latest   # re-score only
+# janus:<model> needs JANUS_TOKEN (JANUS_URL defaults to Janus); claude:<alias> needs the claude CLI.
+.PHONY: eval-authoring
+eval-authoring:
+	@python3 scripts/eval-authoring.py
+
 # ─── Public benchmark: SWE-bench Verified ────────────────────────────────────
 # Runs a seeded sample of SWE-bench Verified through the live agent (needs make
 # dev, docker, and ./target/debug/nebo-cli), then scores it with the official

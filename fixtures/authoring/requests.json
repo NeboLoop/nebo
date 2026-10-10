@@ -1,0 +1,309 @@
+[
+  {
+    "id": "bulk-reconcile-payouts",
+    "request": "Every night, reconcile yesterday's Stripe payouts against open invoices in QuickBooks and record the payments for the ones that match. Flag anything odd to me.",
+    "employee": "Bookkeeper",
+    "plugins": [
+      "stripe",
+      "quickbooks"
+    ],
+    "expect": {
+      "bulk": true
+    }
+  },
+  {
+    "id": "bulk-order-intake",
+    "request": "Each morning the warehouse drops an orders spreadsheet in Google Drive. Create the sales orders in Odoo from it and tell me which rows you couldn't place.",
+    "employee": "Order Desk",
+    "plugins": [
+      "google-drive",
+      "odoo"
+    ],
+    "expect": {
+      "bulk": true
+    }
+  },
+  {
+    "id": "inbox-triage",
+    "request": "Every 15 minutes, check my inbox: label anything from customers, draft replies to questions (don't send them), and ping me about anything urgent.",
+    "employee": "Assistant",
+    "plugins": [
+      "gmail"
+    ],
+    "expect": {
+      "watch": true
+    }
+  },
+  {
+    "id": "crm-sync",
+    "request": "Every hour, keep HubSpot contacts in sync with new and changed Shopify customers. Add new ones, update changed emails, never create duplicates.",
+    "employee": "Sales Ops",
+    "plugins": [
+      "hubspot",
+      "shopify"
+    ],
+    "expect": {
+      "bulk": true
+    }
+  },
+  {
+    "id": "invoice-run",
+    "request": "On the 1st of every month, invoice each client for last month's billable hours from Harvest and send the invoices out through QuickBooks.",
+    "employee": "Bookkeeper",
+    "plugins": [
+      "harvest",
+      "quickbooks"
+    ],
+    "expect": {
+      "bulk": true,
+      "ceiling": true
+    }
+  },
+  {
+    "id": "uptime-heartbeat",
+    "request": "Check our website https://example-shop.com every 5 minutes and tell me only when it's down.",
+    "employee": "Assistant",
+    "plugins": [],
+    "expect": {
+      "watch": true,
+      "ai": "optional"
+    }
+  },
+  {
+    "id": "weekly-digest",
+    "request": "Every Monday at 8, send me one digest of last week's Shopify sales and our Meta Ads spend, with a short read on what changed.",
+    "employee": "Analyst",
+    "plugins": [
+      "shopify",
+      "meta-ads"
+    ],
+    "expect": {
+      "fanout": "fixed"
+    }
+  },
+  {
+    "id": "dedupe-contacts",
+    "request": "Once a week, clean up duplicate contacts in HubSpot: merge the obvious ones and list the unsure ones for me.",
+    "employee": "Sales Ops",
+    "plugins": [
+      "hubspot"
+    ],
+    "expect": {
+      "bulk": true
+    }
+  },
+  {
+    "id": "categorize-transactions",
+    "request": "Every day, categorize new bank transactions in Xero using our usual categories, and ask me about the ones you're unsure of.",
+    "employee": "Bookkeeper",
+    "plugins": [
+      "xero"
+    ],
+    "expect": {
+      "bulk": true
+    }
+  },
+  {
+    "id": "review-replies",
+    "request": "When a new Google review comes in, draft a reply and post it once I approve.",
+    "employee": "Marketing",
+    "plugins": [
+      "google-business"
+    ],
+    "expect": {
+      "watch": true,
+      "ceiling": true
+    }
+  },
+  {
+    "id": "expert-access",
+    "request": "Every Friday, pull our marketing spend from QuickBooks and compare it with the leads we got in HubSpot. Give me the cost per lead by channel.",
+    "employee": "Marketing",
+    "plugins": [
+      "hubspot"
+    ],
+    "experts": [
+      {
+        "name": "Bookkeeper",
+        "kind": "coworker",
+        "about": "Keeps the books in QuickBooks; holds the QuickBooks connection."
+      }
+    ],
+    "expect": {
+      "expert": "Bookkeeper"
+    }
+  },
+  {
+    "id": "expert-not-hired",
+    "request": "Each month, reconcile my Xero bank feed and tell me what doesn't match.",
+    "employee": "Assistant",
+    "plugins": [],
+    "experts": [
+      {
+        "name": "Xero Accountant",
+        "kind": "store",
+        "about": "Store employee, not hired: reconciles Xero bank feeds; brings the Xero plugin."
+      }
+    ],
+    "expect": {
+      "suggest_hire": "Xero Accountant"
+    }
+  },
+  {
+    "id": "expert-cross-owner",
+    "request": "Before each quarterly filing, have our outside tax advisor review the quarter's numbers from QuickBooks and send me their notes.",
+    "employee": "Bookkeeper",
+    "plugins": [
+      "quickbooks"
+    ],
+    "experts": [
+      {
+        "name": "Acme Tax Advisor",
+        "kind": "shared",
+        "about": "A tax advisor's expert on another owner's bot (the accounting firm), shared with you."
+      }
+    ],
+    "expect": {
+      "propose_cross_owner": "Acme Tax Advisor"
+    }
+  },
+  {
+    "id": "no-expert-simple",
+    "request": "Every morning at 7, send me a list of today's unread emails from my VIP senders (they have the VIP label in Gmail).",
+    "employee": "Assistant",
+    "plugins": [
+      "gmail"
+    ],
+    "experts": [
+      {
+        "name": "Bookkeeper",
+        "kind": "coworker",
+        "about": "Keeps the books in QuickBooks."
+      }
+    ],
+    "expect": {
+      "expert": false
+    }
+  },
+  {
+    "id": "fanout-experts",
+    "request": "Every Monday, get the sales numbers from Sales, the cash position from the Bookkeeper and the hiring status from HR, and give me one briefing.",
+    "employee": "Chief of Staff",
+    "plugins": [],
+    "experts": [
+      {
+        "name": "Sales",
+        "kind": "coworker",
+        "about": "Runs the pipeline in HubSpot."
+      },
+      {
+        "name": "Bookkeeper",
+        "kind": "coworker",
+        "about": "Keeps the books in QuickBooks."
+      },
+      {
+        "name": "HR",
+        "kind": "coworker",
+        "about": "Runs hiring in Greenhouse."
+      }
+    ],
+    "expect": {
+      "fanout": "fixed",
+      "experts_min": 3
+    }
+  },
+  {
+    "id": "fanout-per-item",
+    "request": "Every Friday, for each of our store locations in the Stores sheet, have that region's manager (the manager column names the coworker) review the week's numbers for the store, then give me the one-page roll-up.",
+    "employee": "Operations",
+    "plugins": [
+      "google-sheets"
+    ],
+    "experts": [
+      {
+        "name": "West Manager",
+        "kind": "coworker",
+        "about": "Runs the western region's stores."
+      },
+      {
+        "name": "East Manager",
+        "kind": "coworker",
+        "about": "Runs the eastern region's stores."
+      }
+    ],
+    "expect": {
+      "fanout": "per_item"
+    }
+  },
+  {
+    "id": "sequence-required",
+    "request": "Each night, take the day's paid Shopify orders, create their shipping labels in ShipStation, then email each customer their tracking number.",
+    "employee": "Order Desk",
+    "plugins": [
+      "shopify",
+      "shipstation",
+      "gmail"
+    ],
+    "expect": {
+      "fanout": "sequence",
+      "ceiling": true,
+      "bulk": true
+    }
+  },
+  {
+    "id": "access-memory-files",
+    "request": "Every Friday afternoon, write my weekly client update from what you remember about each client this week and the project docs in my Documents/Clients folder, and send it to me.",
+    "employee": "Assistant",
+    "plugins": [],
+    "expect": {
+      "tools_any": [
+        "recall",
+        "read_file"
+      ]
+    }
+  },
+  {
+    "id": "access-mcp",
+    "request": "Every morning, summarize the new Linear issues tagged bug and tell me which look most severe.",
+    "employee": "Engineering Lead",
+    "plugins": [],
+    "mcp": [
+      {
+        "server": "linear",
+        "tools": [
+          "mcp__linear__list_issues",
+          "mcp__linear__get_issue"
+        ]
+      }
+    ],
+    "expect": {
+      "tools_any": [
+        "mcp__linear"
+      ]
+    }
+  },
+  {
+    "id": "access-missing",
+    "request": "Every day at 6pm, pull today's Toast POS sales into my daily report.",
+    "employee": "Analyst",
+    "plugins": [
+      "google-sheets"
+    ],
+    "expect": {
+      "ask_connect": "toast"
+    }
+  },
+  {
+    "id": "employee-collections",
+    "request": "Hire me a new employee called Collections that every Tuesday chases overdue invoices in QuickBooks with a polite email to each client.",
+    "employee": "Assistant",
+    "plugins": [
+      "quickbooks",
+      "gmail"
+    ],
+    "expect": {
+      "bulk": true,
+      "ceiling": true
+    }
+  }
+]

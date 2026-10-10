@@ -102,19 +102,22 @@ fn automation_item() -> serde_json::Value {
             "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
             "activities": {
                 "type": "array",
-                "description": "Instead of steps, for a duty in stages: each stage runs on its own and sees the earlier stages' outputs.",
+                "description": "Instead of steps, for a duty in stages, designed by create_workflow's rules: each stage runs on its own. Stages may be typed exactly as in create_workflow (command, condition, loop, expert, with params).",
                 "items": {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
+                        "type": { "type": "string", "description": "Empty for an AI stage; command, http, condition, loop or expert as in create_workflow." },
+                        "params": { "type": "object" },
                         "intent": { "type": "string", "description": "What this stage accomplishes, in a line." },
                         "steps": { "type": "array", "items": { "type": "string" } },
                         "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills this stage may use." },
                         "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS }
                     },
-                    "required": ["id", "intent", "steps"]
+                    "required": ["id"]
                 }
             },
+            "connections": { "type": "array", "items": { "type": "object" }, "description": "With activities: the wiring, as in create_workflow ({from, to, label?}, starting at __trigger__)." },
             "emit": { "type": "string", "description": "An event to emit when it finishes, e.g. briefing.ready." }
         },
         "required": ["name"]
@@ -127,7 +130,7 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
     let props = serde_json::json!({
         "description": { "type": "string", "description": "What the employee does, in a sentence or two." },
         "agent_md": { "type": "string", "description": "The whole AGENT.md (frontmatter and instructions). Rarely needed: description and instructions cover most employees." },
-        "automations": { "type": "array", "items": automation_item(), "description": "The employee's recurring or triggered duties; each becomes its own workflow, run as the employee." },
+        "automations": { "type": "array", "items": automation_item(), "description": "The employee's recurring or triggered duties; each becomes its own workflow, run as the employee. Design every duty by create_workflow's rules: a duty that reads a system starts with a code stage, so use `activities` and `connections`, not plain steps." },
         "ceiling": {
             "type": "object",
             "additionalProperties": { "type": "string", "enum": ["approval"] },
@@ -223,7 +226,7 @@ impl Kind {
                 - The first call drafts it and returns one plain line of what it will be able to do; nothing is created yet. Say that line to the owner and ask them to confirm, unless their latest message already told you to create it now.\n\
                 - On their yes, or at once when they already told you to create it, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
-                - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone. List every tool the steps call in the automation's `tools`: it runs with only those.\n\
+                - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone. List every tool the steps call in the automation's `tools`: it runs with only those. create_workflow's design rules apply to every duty.\n\
                 - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the app-studio skill before writing one.\n\
                 - To change an employee that exists, its name included, use update_employee."
                 .to_string(),
@@ -611,6 +614,19 @@ mod tests {
 
     fn tool<'a>(family: &'a [EmployeeTool], name: &str) -> &'a EmployeeTool {
         family.iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// The authoring eval's input (`make eval-authoring`): these tools'
+    /// definitions exactly as the model is shown them, one file each in the
+    /// `AUTHORING_EXPORT` folder.
+    #[test]
+    #[ignore = "writes the authoring surfaces for make eval-authoring"]
+    fn export_authoring_surfaces() {
+        let dir = std::path::PathBuf::from(std::env::var("AUTHORING_EXPORT").expect("AUTHORING_EXPORT names the folder"));
+        for kind in [Kind::CreateEmployee, Kind::UpdateEmployee] {
+            let def = serde_json::json!({"name": kind.name(), "description": kind.description(), "input_schema": kind.schema()});
+            std::fs::write(dir.join(format!("{}.json", kind.name())), serde_json::to_string_pretty(&def).unwrap()).unwrap();
+        }
     }
 
     /// The family is the design's group C, every one deferred.

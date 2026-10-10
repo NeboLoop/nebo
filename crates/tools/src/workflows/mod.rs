@@ -1,3 +1,4 @@
+pub mod authoring;
 mod manager;
 pub(crate) mod work_tool;
 
