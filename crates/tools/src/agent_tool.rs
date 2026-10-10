@@ -279,6 +279,25 @@ pub fn apply_seat_declaration(
     }
 }
 
+/// Complete one workflow's declared steps (`workflows::step_tools::complete`):
+/// one line per step that gained tools, or why a step was refused.
+fn declare_binding_tools(
+    name: &str,
+    binding: &mut serde_json::Value,
+    defs: &std::collections::HashMap<String, ai::ToolDefinition>,
+) -> Result<Vec<String>, String> {
+    let mut notes = Vec::new();
+    for activity in binding.get_mut("activities").and_then(|a| a.as_array_mut()).into_iter().flatten() {
+        let id = activity.get("id").and_then(|i| i.as_str()).unwrap_or("run").to_string();
+        let added = crate::workflows::step_tools::complete(activity, defs)
+            .map_err(|e| format!("automation '{name}', stage '{id}': {e} Nothing was written."))?;
+        if !added.is_empty() {
+            notes.push(format!("{name}/{id} also has {}", added.join(", ")));
+        }
+    }
+    Ok(notes)
+}
+
 /// Add a `ceiling` given to create_employee or update_employee to the
 /// employee's agent.json: each operation it names asks the owner first.
 fn merge_ceiling(agent_json: &mut serde_json::Value, ceiling: &serde_json::Value) {
@@ -314,6 +333,10 @@ pub struct PersonaTool {
     /// The server's worker restart (filled late): a create or an automation
     /// change puts the employee's triggers live through it at once.
     live_triggers: LiveTriggersCell,
+    /// The registry's tool definitions: a builder's workflow steps are
+    /// completed and checked against them
+    /// (`workflows::step_tools::complete`).
+    tool_defs: crate::registry::ToolDefinitions,
 }
 
 /// Puts an employee's triggers live: the worker that owns them (event
@@ -360,6 +383,7 @@ impl PersonaTool {
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             plugin_runner: Arc::new(std::sync::RwLock::new(None)),
             live_triggers: Arc::new(std::sync::RwLock::new(None)),
+            tool_defs: Default::default(),
         }
     }
 
@@ -376,6 +400,28 @@ impl PersonaTool {
         if let Some(live) = live {
             live.resync(agent_id).await;
         }
+    }
+
+    /// Inject the registry's tool definitions.
+    pub fn with_tool_definitions(mut self, defs: crate::registry::ToolDefinitions) -> Self {
+        self.tool_defs = defs;
+        self
+    }
+
+    /// Complete the declared steps of every workflow in `agent_json`
+    /// (`workflows::step_tools::complete`): one line per step that gained
+    /// tools, for the result; or why a step was refused, before anything is
+    /// written.
+    async fn declare_step_tools(&self, agent_json: &mut serde_json::Value) -> Result<Vec<String>, String> {
+        let mut notes = Vec::new();
+        let Some(workflows) = agent_json.get_mut("workflows").and_then(|w| w.as_object_mut()) else {
+            return Ok(notes);
+        };
+        let defs = self.tool_defs.read().await;
+        for (name, binding) in workflows.iter_mut() {
+            notes.extend(declare_binding_tools(name, binding, &defs)?);
+        }
+        Ok(notes)
     }
 
     /// Inject the registry's plugin-runner cell (filled late, once a plugin
@@ -1579,6 +1625,15 @@ impl PersonaTool {
                 None => None,
             }
         };
+        // Each declared step runs with only its tools: complete them from
+        // what the step names, and its memory.
+        let step_notes = match agent_json.as_mut() {
+            Some(json) => match self.declare_step_tools(json).await {
+                Ok(notes) => notes,
+                Err(e) => return ToolResult::error(e),
+            },
+            None => Vec::new(),
+        };
         // What the employee needs (plugins, tools, interfaces) lives in
         // agent.json next to its workflows.
         if let Some(requires) = input.get("requires").filter(|r| r.is_object()) {
@@ -1722,6 +1777,9 @@ impl PersonaTool {
         }
 
         let mut result = format!("Created employee '{}' (id: {})", name, id);
+        if !step_notes.is_empty() {
+            result.push_str(&format!("\nStep tools: {}.", step_notes.join("; ")));
+        }
         if app_fields.is_some() {
             result.push_str(&Self::app_created_note(&id, &ui_files));
             result.push_str(&vendored.note());
@@ -2162,6 +2220,15 @@ impl PersonaTool {
                         last["requires_tools"] = required.clone();
                     }
 
+                    {
+                        let defs = self.tool_defs.read().await;
+                        match declare_binding_tools(binding_name, existing_binding, &defs) {
+                            Ok(notes) if !notes.is_empty() => changes.push(format!("step tools: {}", notes.join("; "))),
+                            Ok(_) => {}
+                            Err(e) => return ToolResult::error(e),
+                        }
+                    }
+
                     // Update trigger if any trigger field is provided
                     let has_trigger_change = update_obj["schedule"].is_string()
                         || update_obj["interval"].is_string()
@@ -2310,10 +2377,15 @@ impl PersonaTool {
                 serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
 
             if !autos.is_empty() {
-                let agent_json = match Self::build_agent_json_from_automations(autos) {
+                let mut agent_json = match Self::build_agent_json_from_automations(autos) {
                     Ok(v) => v,
                     Err(e) => return ToolResult::error(e),
                 };
+                match self.declare_step_tools(&mut agent_json).await {
+                    Ok(notes) if !notes.is_empty() => changes.push(format!("step tools: {}", notes.join("; "))),
+                    Ok(_) => {}
+                    Err(e) => return ToolResult::error(e),
+                }
                 existing["workflows"] = agent_json["workflows"].clone();
                 current_frontmatter = existing.to_string();
 
@@ -2353,10 +2425,15 @@ impl PersonaTool {
         // add_automations: add new automations without removing existing ones
         if let Some(additions) = input["add_automations"].as_array() {
             if !additions.is_empty() {
-                let new_json = match Self::build_agent_json_from_automations(additions) {
+                let mut new_json = match Self::build_agent_json_from_automations(additions) {
                     Ok(v) => v,
                     Err(e) => return ToolResult::error(e),
                 };
+                match self.declare_step_tools(&mut new_json).await {
+                    Ok(notes) if !notes.is_empty() => changes.push(format!("step tools: {}", notes.join("; "))),
+                    Ok(_) => {}
+                    Err(e) => return ToolResult::error(e),
+                }
                 // Parse BEFORE merging: a config that does not parse must not be
                 // written to agent.json or the DB, or the next load fails on it.
                 let config = match napp::agent::parse_agent_config(&new_json.to_string()) {
@@ -4159,6 +4236,101 @@ mod tests {
         ];
         want.sort();
         assert_eq!(asks, want);
+    }
+
+    /// Bake-off 2026-10-10 (B1, B7, B13): every builder left tools out of
+    /// its steps' declarations (memory above all), so 66 of 69 runs paused
+    /// for the owner; and one wrote `recall(key '…')`, which no run can
+    /// make. A duty made or changed here gets its memory and the tools its
+    /// steps name, and the result says so; a step that writes a call its
+    /// tool can't take is refused before anything is written.
+    #[tokio::test]
+    async fn a_built_duty_gets_its_memory_and_the_tools_its_steps_name() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let def = |name: &str, params: &[&str]| {
+            let properties: serde_json::Map<String, serde_json::Value> =
+                params.iter().map(|p| (p.to_string(), serde_json::json!({"type": "string"}))).collect();
+            (
+                name.to_string(),
+                ai::ToolDefinition {
+                    name: name.to_string(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type": "object", "properties": properties}),
+                },
+            )
+        };
+        let defs: crate::registry::ToolDefinitions = Arc::new(tokio::sync::RwLock::new(
+            [
+                def("recall", &["query"]),
+                def("remember", &["key", "value"]),
+                def("write_file", &["path", "content"]),
+                def("message_owner", &["text"]),
+                def("mcp__hubspot__hubspot_search_deals", &["query", "limit"]),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        let persona = super::PersonaTool::new(store.clone(), live, loader).with_tool_definitions(defs);
+        let tools_of = |id: &str, duty: &str| {
+            let fm: serde_json::Value = serde_json::from_str(&store.get_agent(id).unwrap().unwrap().frontmatter).unwrap();
+            fm["workflows"][duty]["activities"][0]["tools"].clone()
+        };
+
+        let made = persona
+            .handle_create(
+                &serde_json::json!({
+                    "name": "pipeline-watch",
+                    "description": "Watches the pipeline",
+                    "automations": [{
+                        "name": "evening-wrap",
+                        "schedule": "0 18 * * *",
+                        "steps": [
+                            "Pull today's deals with mcp__hubspot__hubspot_search_deals (limit 100).",
+                            "Save the wrap with write_file and send it with message_owner."
+                        ],
+                        "tools": ["mcp__hubspot__hubspot_search_deals", "message_owner"]
+                    }]
+                }),
+                "emp-1",
+            )
+            .await;
+        assert!(!made.is_error, "{}", made.content);
+        assert!(made.content.contains("Step tools: evening-wrap/run also has recall, remember, write_file."), "{}", made.content);
+        assert_eq!(
+            tools_of("emp-1", "evening-wrap"),
+            serde_json::json!(["mcp__hubspot__hubspot_search_deals", "message_owner", "recall", "remember", "write_file"])
+        );
+
+        let added = persona
+            .handle_update(&serde_json::json!({
+                "name": "pipeline-watch",
+                "add_automations": [{"name": "morning-brief", "schedule": "0 7 * * *", "steps": ["Brief the owner with message_owner."], "tools": []}]
+            }))
+            .await;
+        assert!(!added.is_error, "{}", added.content);
+        assert_eq!(tools_of("emp-1", "morning-brief"), serde_json::json!(["recall", "remember", "message_owner"]));
+
+        let refused = persona
+            .handle_create(
+                &serde_json::json!({
+                    "name": "watchlist",
+                    "description": "Keeps the watchlist",
+                    "automations": [{"name": "watch", "schedule": "0 * * * *", "steps": ["Read the list with recall(key 'watchlist/accounts')."], "tools": []}]
+                }),
+                "emp-2",
+            )
+            .await;
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(
+            refused.content.contains("automation 'watch', stage 'run': step 1 writes recall(key …), but recall has no parameter `key`; it takes: query."),
+            "{}",
+            refused.content
+        );
+        assert!(store.get_agent("emp-2").unwrap().is_none(), "nothing was made");
     }
 
     // The owner's rule: NeboAI's employees first. The hub's own order is

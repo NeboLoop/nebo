@@ -2642,6 +2642,19 @@ async fn save_binding(
                 }
             }
 
+            // Each declared step runs with only its tools: complete them from
+            // what the step names, and its memory; refuse a call its words
+            // write that its tool can't take.
+            if let Some(acts) = def.get_mut("activities").and_then(|v| v.as_array_mut()) {
+                let defs: HashMap<String, ai::ToolDefinition> =
+                    mgr.tools.list().await.into_iter().map(|d| (d.name.clone(), d)).collect();
+                for a in acts.iter_mut() {
+                    let id = a.get("id").and_then(|i| i.as_str()).unwrap_or("run").to_string();
+                    tools::workflows::step_tools::complete(a, &defs)
+                        .map_err(|e| format!("activity '{id}': {e} Nothing was saved."))?;
+                }
+            }
+
             // Reject hollow definitions loudly — a workflow with no activities
             // can never execute, and silently storing one reads as success.
             let has_runnable_activity = def

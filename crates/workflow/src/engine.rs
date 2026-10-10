@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use db::Store;
 use tools::registry::DynTool;
+use tools::workflows::step_tools::names_tool;
 
 use crate::WorkflowError;
 use crate::parser::{Activity, WorkflowDef};
@@ -111,15 +112,6 @@ fn selected_by_mcps_or_cmds(activity: &Activity, mcp_prefixes: &[String], plugin
     plugin_tools.iter().any(|p| p == n)
         || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
         || activity.mcps.iter().any(|m| m == n)
-}
-
-/// Whether a `tools` entry names tool `n`: its exact name, a dotted prefix
-/// (`"odoo"` covers every `odoo.*` tool) or a `prefix*` family
-/// (`"mcp__github__*"` covers that server's tools).
-fn names_tool(entry: &str, n: &str) -> bool {
-    n == entry
-        || n.strip_prefix(entry).is_some_and(|r| r.starts_with('.'))
-        || entry.strip_suffix('*').is_some_and(|p| !p.is_empty() && n.starts_with(p))
 }
 
 /// Scope an activity's toolset.
@@ -1494,6 +1486,16 @@ fn build_activity_prompt_with_context(
                  runs through that plugin's own tool: plugin__<name> with command \
                  \"calendar +agenda --today\". NEVER run a plugin binary through a shell — only \
                  its tool injects the account credentials, so the shell path fails auth.\n",
+            );
+        }
+        // State between runs is the employee's own memory (bake-off
+        // 2026-10-10: steps without it read made-up paths and Nebo's own
+        // database looking for what the last run saw).
+        if tool_names.iter().any(|t| t == "remember") {
+            prompt.push_str(
+                "Keep what this workflow's later runs need (what you already flagged, sent or saw) with \
+                 remember, as a sentence under a stable key, and read it back next run with recall. It is \
+                 this employee's own memory. Never look for saved state in files, folders or Nebo's database.\n",
             );
         }
         prompt.push('\n');

@@ -1,5 +1,6 @@
 pub mod authoring;
 mod manager;
+pub mod step_tools;
 pub(crate) mod work_tool;
 
 pub use manager::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};

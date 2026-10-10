@@ -84,7 +84,7 @@ fn draft_param() -> serde_json::Value {
 
 /// What an automation's `tools` say: a duty runs with only the tools it
 /// lists (`workflow::engine::scoped_activity_tools`).
-const AUTOMATION_TOOLS: &str = "Every tool the steps call, by exact name (plugin__<slug> for a plugin, e.g. plugin__odoo; read_file, run_command, send_message, push_notification). It runs with only these, plus exit, emit_event and message_owner; anything else is refused. Scheduling tools are refused in every automation.";
+const AUTOMATION_TOOLS: &str = "Every tool the steps call, by exact name (plugin__<slug> for a plugin, e.g. plugin__odoo; read_file, run_command, send_message, push_notification). It runs with only these, plus exit, emit_event and message_owner, its memory (recall and remember, to keep state between runs) and any tool its steps name; anything else is refused. A call written in a step uses the tool's own parameters. Scheduling tools are refused in every automation.";
 
 /// What an automation's `requires_tools` say: the delivery the step owes,
 /// checked before it may finish (`turn_end::WorkflowContractCheck`).
