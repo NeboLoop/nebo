@@ -311,7 +311,23 @@ pub struct PersonaTool {
     /// a hire raises the connect card for each account the new employee's
     /// job needs, through the runner's ONE connect card.
     plugin_runner: Arc<std::sync::RwLock<Option<Arc<crate::plugin_tool::PluginRunner>>>>,
+    /// The server's worker restart (filled late): a create or an automation
+    /// change puts the employee's triggers live through it at once.
+    live_triggers: LiveTriggersCell,
 }
+
+/// Puts an employee's triggers live: the worker that owns them (event
+/// subscriptions, watch and folder loops, schedule rows) starts again from
+/// what is stored now. The server implements it; the workers are its own.
+/// Without it, a duty made or changed in chat waited for the directory
+/// watcher, and a toggle or a removal (which writes no file) for a restart.
+#[async_trait::async_trait]
+pub trait LiveTriggers: Send + Sync {
+    async fn resync(&self, agent_id: &str);
+}
+
+/// The shared cell `PersonaTool` reads [`LiveTriggers`] from, filled late.
+pub type LiveTriggersCell = Arc<std::sync::RwLock<Option<Arc<dyn LiveTriggers>>>>;
 
 /// A listing NeboAI published: its qualified name lives under the @neboai
 /// namespace. Everything else is a third-party publisher.
@@ -343,6 +359,22 @@ impl PersonaTool {
             rail: crate::coworker::new_rail_cell(),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             plugin_runner: Arc::new(std::sync::RwLock::new(None)),
+            live_triggers: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Inject the registry's live-triggers cell (filled late by the server).
+    pub fn with_live_triggers(mut self, cell: LiveTriggersCell) -> Self {
+        self.live_triggers = cell;
+        self
+    }
+
+    /// Put `agent_id`'s triggers live now, when the server has bound the
+    /// worker restart.
+    async fn triggers_live(&self, agent_id: &str) {
+        let live = self.live_triggers.read().ok().and_then(|c| c.clone());
+        if let Some(live) = live {
+            live.resync(agent_id).await;
         }
     }
 
@@ -1694,7 +1726,6 @@ impl PersonaTool {
             result.push_str(&Self::app_created_note(&id, &ui_files));
             result.push_str(&vendored.note());
         }
-        let mut has_heartbeat_or_event = false;
 
         // Parse config and register triggers
         let parsed_config = if let Some(ref rj) = agent_json_str {
@@ -1713,24 +1744,14 @@ impl PersonaTool {
                                     format!("schedule({})", cron)
                                 }
                                 napp::agent::AgentTrigger::Heartbeat { interval, window } => {
-                                    has_heartbeat_or_event = true;
                                     match window {
                                         Some(w) => format!("heartbeat({}, {})", interval, w),
                                         None => format!("heartbeat({})", interval),
                                     }
                                 }
-                                napp::agent::AgentTrigger::Event { sources } => {
-                                    has_heartbeat_or_event = true;
-                                    format!("event({})", sources.join(", "))
-                                }
-                                napp::agent::AgentTrigger::Watch { plugin, .. } => {
-                                    has_heartbeat_or_event = true;
-                                    format!("watch({})", plugin)
-                                }
-                                napp::agent::AgentTrigger::Folder { path, .. } => {
-                                    has_heartbeat_or_event = true;
-                                    format!("folder({})", path)
-                                }
+                                napp::agent::AgentTrigger::Event { sources } => format!("event({})", sources.join(", ")),
+                                napp::agent::AgentTrigger::Watch { plugin, .. } => format!("watch({})", plugin),
+                                napp::agent::AgentTrigger::Folder { path, .. } => format!("folder({})", path),
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
                                 napp::agent::AgentTrigger::Call { line } => {
                                     format!("call(line: {})", if line.is_empty() { "any" } else { line })
@@ -1740,7 +1761,7 @@ impl PersonaTool {
                         })
                         .collect();
                     if !trigger_descs.is_empty() {
-                        result.push_str(&format!("\nAutomations: {}", trigger_descs.join(", ")));
+                        result.push_str(&format!("\nAutomations (live now): {}", trigger_descs.join(", ")));
                     }
 
                     Some(config)
@@ -1767,10 +1788,7 @@ impl PersonaTool {
         };
         self.agent_registry.write().await.insert(id.clone(), active);
         result.push_str("\nAgent activated and visible in sidebar.");
-
-        if has_heartbeat_or_event {
-            result.push_str("\nNote: schedule automations are running now; heartbeat/event/watch automations are registered but do not run until the app restarts.");
-        }
+        self.triggers_live(&id).await;
 
         ToolResult::ok(result)
     }
@@ -2082,12 +2100,17 @@ impl PersonaTool {
             }
         }
 
+        // Whether a duty's trigger changed (made, changed, turned on or off,
+        // removed): its worker then registers what is stored now.
+        let mut triggers_changed = false;
+
         // toggle_automation: toggle a single binding on/off
         if let Some(binding_name) = input["toggle_automation"].as_str() {
             match self.store.toggle_agent_workflow(agent_id, binding_name) {
                 Ok(new_state) => {
                     let state_str = if new_state { "enabled" } else { "disabled" };
                     changes.push(format!("automation '{}' {}", binding_name, state_str));
+                    triggers_changed = true;
                 }
                 Err(e) => changes.push(format!("failed to toggle '{}': {}", binding_name, e)),
             }
@@ -2231,6 +2254,7 @@ impl PersonaTool {
                     }
 
                     changes.push(format!("updated automation '{}'", binding_name));
+                    triggers_changed = true;
                 } else {
                     changes.push(format!(
                         "automation '{}' not found — use add_automations to create it",
@@ -2434,12 +2458,13 @@ impl PersonaTool {
             }
         }
 
+        let triggers_changed = triggers_changed || automations_changed;
         // Update live registry if agent is active
         let mut registry = self.agent_registry.write().await;
         if let Some(active) = registry.get_mut(agent_id) {
             active.name = current_name.clone();
             active.agent_md = current_md.clone();
-            if automations_changed {
+            if triggers_changed {
                 active.config = napp::agent::parse_agent_config(&current_frontmatter).ok();
             }
             // Only a real change reaches the live agent; an update that
@@ -2447,6 +2472,10 @@ impl PersonaTool {
             if !changes.is_empty() {
                 changes.push("live employee updated".to_string());
             }
+        }
+        drop(registry);
+        if triggers_changed {
+            self.triggers_live(agent_id).await;
         }
 
         if changes.is_empty() {

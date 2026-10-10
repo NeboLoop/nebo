@@ -435,6 +435,9 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The server's worker restart, shared with `PersonaTool` and filled LATE
+    /// like `code_installer`: duties made or changed in chat go live at once.
+    live_triggers: crate::agent_tool::LiveTriggersCell,
     /// The workflow manager, filled when the workflow tools register
     /// ([`Registry::register_workflows`]); `stop_task` shares the cell to
     /// stop workflow runs.
@@ -472,6 +475,7 @@ impl Registry {
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            live_triggers: Arc::new(std::sync::RwLock::new(None)),
             workflows: Default::default(),
             goals: crate::goal_tool::new_handle(),
             resource_permits: ResourcePermits::new(),
@@ -527,6 +531,12 @@ impl Registry {
     /// jobs through it from then on.
     pub fn set_job_consent(&self, consent: Arc<dyn crate::needs::JobConsent>) {
         *self.job_consent.write().unwrap() = Some(consent);
+    }
+
+    /// Set the server's worker restart. Called LATE by the server (the
+    /// workers are built with `AppState`); `PersonaTool` shares the cell.
+    pub fn set_live_triggers(&self, live: Arc<dyn crate::agent_tool::LiveTriggers>) {
+        *self.live_triggers.write().unwrap() = Some(live);
     }
 
     /// Set the broadcast callback (wired to ClientHub). Called LATE by the server
@@ -1428,7 +1438,8 @@ impl Registry {
                     .with_job_consent(self.job_consent.clone())
                     .with_coworker_rail(self.coworker_rail.clone())
                     .with_notify_fn(self.notify_fn.clone())
-                    .with_plugin_runner(self.plugin_runner.clone());
+                    .with_plugin_runner(self.plugin_runner.clone())
+                    .with_live_triggers(self.live_triggers.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }
