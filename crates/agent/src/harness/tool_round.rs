@@ -24,20 +24,38 @@ use crate::session::SessionManager;
 /// How often the tool clock checks whether the call is parked on the owner.
 const PARKED_POLL: Duration = Duration::from_millis(250);
 
-/// How many times one call (same tool, same input) may fail the same way
-/// (same error) in a turn before the turn stops. It is the failure that
-/// repeats, not the call: a poll whose answer moves never trips it, and a
-/// call that keeps getting the same refusal will get it again. Live
+/// How many times in a row one call (same tool, same input) may fail the
+/// same way (same error) with nothing changed in between before an
+/// unattended run (a workflow, a schedule, a heartbeat, a helper, a
+/// coworker's request) stops. It is the failure that repeats, not the
+/// call: a poll whose answer moves never trips it, and the count starts
+/// over once anything changed ([`Repeats`]). A call that only reads never
+/// stops a run, and the owner's own chat turn is never stopped by it: there
+/// the model is told to change course ([`RETRY_NOTE`],
+/// [`CHANGE_APPROACH_NOTE`]) and the owner is there to stop it. Live
 /// 2026-10-03: `write_file` with only a path was answered "`content` is
-/// missing" 22 times in a row while the owner waited in silence; the
-/// identical-call kernel that once bounded a turn (ceiling 16, any result)
-/// went with the old runner in v0.16.0 and nothing took its place.
-pub(crate) const MAX_IDENTICAL_FAILURES: usize = 3;
+/// missing" 22 times in a row; at 3 the owner's turns were stopped by a
+/// grep that found nothing. The run's step caps bound the cost either way.
+pub(crate) const MAX_IDENTICAL_FAILURES: usize = 8;
+
+/// Time between two runs of the same call after which the world may have
+/// moved, so the call's count starts over.
+const SETTLE: Duration = Duration::from_secs(30);
+
+/// What the model reads on the second identical failure in a row.
+pub(crate) const RETRY_NOTE: &str = "You already tried this exact call and it failed the same way. \
+     Change something before you try again: the input, the tool, or the approach.";
+
+/// What the model reads from the third identical failure in a row on.
+pub(crate) const CHANGE_APPROACH_NOTE: &str = "This exact call has now failed the same way three or more times \
+     in a row, and nothing has changed in between. Sending it again will fail again. Stop retrying it: take a \
+     different approach (different input, another tool, or the work in smaller pieces), or tell the owner what \
+     is in the way.";
 
 /// What the model reads on the result that trips [`MAX_IDENTICAL_FAILURES`].
-const STUCK_NOTE: &str = "This exact call has now failed the same way 3 times this turn, so the turn stops here \
-     and it will not run again as it is. Do not send it again: try a different approach (different input, \
-     another tool, or the work in smaller pieces), or tell the owner what is in the way.";
+const STUCK_NOTE: &str = "This exact call has now failed the same way 8 times in a row with nothing changed in \
+     between, so the run stops here and it will not run again as it is. Do not send it again: try a different \
+     approach (different input, another tool, or the work in smaller pieces), or tell the owner what is in the way.";
 
 /// What the model reads on a call that succeeded before in the turn with
 /// the same input and the same answer. Live 2026-10-08: one clip, four
@@ -45,10 +63,96 @@ const STUCK_NOTE: &str = "This exact call has now failed the same way 3 times th
 pub(crate) const REPEAT_NOTE: &str = "You already made this exact call earlier this turn and it gave this same answer. \
      Don't send it again unless something has changed since: carry on with the work, or answer the owner.";
 
-/// What the owner reads when the turn stops on a repeated failure: what is
-/// stuck, in plain words, with no tool or path in it.
-pub(crate) const STUCK_NOTICE: &str = "I stopped here: one step kept failing the same way, three times in a row, \
+/// What the owner reads when an unattended run stops on a repeated
+/// failure: what is stuck, in plain words, with no tool or path in it.
+pub(crate) const STUCK_NOTICE: &str = "I stopped here: one step kept failing the same way, eight times in a row, \
      so I'm not repeating it. Tell me how you'd like to go on, or ask me to try it a different way.";
+
+/// How often each outcome of a call (tool, input, success or failure, and
+/// the result) came back in a row this turn, counted since anything last
+/// changed: a call that changed something (a file written or edited, a
+/// command that isn't read-only, a plugin or memory write) or a wait (a
+/// `sleep`, a wait action) starts every count over, and so does
+/// [`SETTLE`] passing between two runs of the same call.
+#[derive(Default)]
+pub(crate) struct Repeats {
+    seen: HashMap<u64, Seen>,
+    /// Bumped by every change; a count taken before the latest one is stale.
+    changes: u64,
+}
+
+struct Seen {
+    times: usize,
+    /// [`Repeats::changes`] when the call last ran, its own change included.
+    changes: u64,
+    at: std::time::Instant,
+}
+
+impl Repeats {
+    /// Count one outcome at `now`: how many times in a row it has come back
+    /// with nothing changed in between, this time included. `waited`: the
+    /// call itself let time pass (a poll's sleep), so it starts over;
+    /// `changed`: the call changed something, which starts every other
+    /// count over.
+    pub(crate) fn count(&mut self, outcome: u64, now: std::time::Instant, waited: bool, changed: bool) -> usize {
+        if waited {
+            self.changes += 1;
+        }
+        let changes = self.changes;
+        let seen = self.seen.entry(outcome).or_insert(Seen { times: 0, changes, at: now });
+        if seen.changes != changes || now.saturating_duration_since(seen.at) >= SETTLE {
+            seen.times = 0;
+        }
+        seen.times += 1;
+        seen.at = now;
+        let times = seen.times;
+        if changed {
+            self.changes += 1;
+        }
+        // Its own change doesn't make the same call new next time.
+        self.seen.get_mut(&outcome).expect("counted").changes = self.changes;
+        times
+    }
+}
+
+/// What a result gets for being the same as before.
+#[derive(Debug, PartialEq, Eq)]
+enum Repeat {
+    New,
+    /// The same answer again ([`REPEAT_NOTE`]).
+    SameAnswer,
+    /// The same failure again: the note the model reads.
+    SameFailure(&'static str),
+    /// The same failure [`MAX_IDENTICAL_FAILURES`] times in an unattended
+    /// run: the run stops.
+    Stuck,
+}
+
+/// The rule: an identical answer is pointed out, an identical failure is
+/// pointed out more firmly each time, and only an unattended run's call
+/// that doesn't just read stops the run.
+fn repeat(times: usize, is_error: bool, read_only: bool, attended: bool) -> Repeat {
+    match (is_error, times) {
+        (_, 0 | 1) => Repeat::New,
+        (false, _) => Repeat::SameAnswer,
+        (true, n) if n >= MAX_IDENTICAL_FAILURES && !attended && !read_only => Repeat::Stuck,
+        (true, 2) => Repeat::SameFailure(RETRY_NOTE),
+        (true, _) => Repeat::SameFailure(CHANGE_APPROACH_NOTE),
+    }
+}
+
+/// A call that lets time pass on purpose: a shell command that sleeps or
+/// waits, or a tool's wait action.
+fn waits(input: &serde_json::Value) -> bool {
+    if input.get("action").and_then(|a| a.as_str()) == Some("wait") {
+        return true;
+    }
+    input.get("command").and_then(|c| c.as_str()).is_some_and(|c| {
+        tools::policy::subcommands(c)
+            .iter()
+            .any(|s| matches!(s.words().first(), Some(Some(w)) if w == "sleep" || w == "wait"))
+    })
+}
 
 /// What a run's tool calls carry: the one builder of their `ToolContext`,
 /// for the round and for a CLI provider's calls over `/agent/mcp`.
@@ -220,6 +324,9 @@ pub(crate) struct RoundContext<'a> {
     pub turn_mode: Option<&'a crate::harness::TurnMode>,
     /// The trace a side call of this run carries: its purpose and the agent.
     pub side_trace: &'a (dyn Fn(&'static str) -> RequestTrace + Sync),
+    /// The owner's own chat turn: he is there to stop it, so a repeated
+    /// failure only ever nudges the model ([`MAX_IDENTICAL_FAILURES`]).
+    pub attended: bool,
 }
 
 /// The run's state the round reads and updates: the called tools and the
@@ -230,9 +337,9 @@ pub(crate) struct RoundState<'a> {
     pub edits_since_check: &'a mut usize,
     pub last_desktop_act: &'a mut Option<String>,
     /// How often each outcome (tool, input, success or failure, and the
-    /// result) came back this turn ([`MAX_IDENTICAL_FAILURES`],
+    /// result) came back in a row this turn ([`MAX_IDENTICAL_FAILURES`],
     /// [`REPEAT_NOTE`]).
-    pub failures: &'a mut HashMap<u64, usize>,
+    pub failures: &'a mut Repeats,
 }
 
 /// How a round ended.
@@ -276,6 +383,7 @@ pub(crate) async fn run_tool_round(
         iteration,
         workflow_mode,
         side_trace,
+        attended,
         ..
     } = *cx;
     let RunToolScope {
@@ -428,25 +536,36 @@ pub(crate) async fn run_tool_round(
     let mut loaded = Vec::new();
     for (idx, entry) in results.into_iter().enumerate() {
         let Some((tc, mut result)) = entry else { continue };
-        // The same call failing the same way again: on the third time the
-        // model is told to change course and the turn stops after this
-        // batch, the owner told what is stuck. The same call answered the
-        // same way again: the model is told it already has that answer. A
-        // result with a picture or files is never "the same".
-        let outcome = crate::harness::simple_hash(format!("{}\0{}\0{}\0{}", result.is_error, tc.name, tc.input, result.content).as_bytes());
-        let seen = failures.entry(outcome).or_insert(0);
-        *seen += 1;
-        if !result.is_error && *seen >= 2 && result.image_url.is_none() && result.more_files.is_empty() {
-            result.content.push_str("\n\n");
-            result.content.push_str(REPEAT_NOTE);
-        }
-        if result.is_error && *seen >= MAX_IDENTICAL_FAILURES {
-            warn!(session_id, tool = %tc.name, times = *seen, "the same call failed the same way again: the turn stops");
-            result.content.push_str("\n\n");
-            result.content.push_str(STUCK_NOTE);
-            terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None));
-        }
+        // The same call answered the same way again, with nothing changed
+        // since: the model is told it already has that answer. The same
+        // call failing the same way again: the model is told to change
+        // something, more firmly from the third time; in an unattended run
+        // a call that doesn't just read stops the run after this batch on
+        // its eighth time, the owner told what is stuck. A result with a
+        // picture or files is never "the same".
         let target = targets[idx].as_ref();
+        let read_only = target.is_some_and(|t| t.read_only);
+        let outcome = crate::harness::simple_hash(format!("{}\0{}\0{}\0{}", result.is_error, tc.name, tc.input, result.content).as_bytes());
+        let times = failures.count(outcome, std::time::Instant::now(), waits(&tc.input), !result.is_error && !read_only);
+        match repeat(times, result.is_error, read_only, attended) {
+            Repeat::New => {}
+            Repeat::SameAnswer => {
+                if result.image_url.is_none() && result.more_files.is_empty() {
+                    result.content.push_str("\n\n");
+                    result.content.push_str(REPEAT_NOTE);
+                }
+            }
+            Repeat::SameFailure(note) => {
+                result.content.push_str("\n\n");
+                result.content.push_str(note);
+            }
+            Repeat::Stuck => {
+                warn!(session_id, tool = %tc.name, times, "the same call failed the same way again: the run stops");
+                result.content.push_str("\n\n");
+                result.content.push_str(STUCK_NOTE);
+                terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None));
+            }
+        }
         if let Some(t) = target
             && matches!(t.key.as_str(), "write_plan" | "check_plan")
             && let Some(p) = tc.input.get("path").and_then(|v| v.as_str()) {
@@ -1194,4 +1313,41 @@ mod tests {
         assert!(content(2).starts_with("eee"));
     }
 
+
+    /// Only an unattended run's call that doesn't just read stops, and only
+    /// on its eighth identical failure; everything else is told.
+    #[test]
+    fn only_an_unattended_change_that_keeps_failing_stops() {
+        assert_eq!(repeat(1, true, false, false), Repeat::New);
+        assert_eq!(repeat(2, true, false, false), Repeat::SameFailure(RETRY_NOTE));
+        assert_eq!(repeat(3, true, false, false), Repeat::SameFailure(CHANGE_APPROACH_NOTE));
+        assert_eq!(repeat(7, true, false, false), Repeat::SameFailure(CHANGE_APPROACH_NOTE));
+        assert_eq!(repeat(8, true, false, false), Repeat::Stuck);
+        assert_eq!(repeat(50, true, false, true), Repeat::SameFailure(CHANGE_APPROACH_NOTE), "the owner's turn never stops");
+        assert_eq!(repeat(50, true, true, false), Repeat::SameFailure(CHANGE_APPROACH_NOTE), "a read never stops");
+        assert_eq!(repeat(2, false, true, false), Repeat::SameAnswer);
+        assert_eq!(repeat(50, false, false, false), Repeat::SameAnswer);
+    }
+
+    /// A change, a wait, or time passing starts a call's count over; a
+    /// change doesn't start its own call's count over.
+    #[test]
+    fn a_change_a_wait_or_time_starts_the_count_over() {
+        let t0 = std::time::Instant::now();
+        let mut r = Repeats::default();
+        assert_eq!((1..=3).map(|_| r.count(1, t0, false, false)).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(r.count(2, t0, false, true), 1, "an edit");
+        assert_eq!(r.count(1, t0, false, false), 1, "the edit started it over");
+        assert_eq!(r.count(1, t0 + SETTLE, false, false), 1, "time passed");
+        assert_eq!(r.count(2, t0 + SETTLE, false, true), 1, "time passed for the write too");
+        assert_eq!(r.count(2, t0 + SETTLE, false, true), 2, "the same write again is a repeat of itself");
+        // A poll that sleeps: each run let time pass.
+        let poll = serde_json::json!({"command": "sleep 10 && curl -s https://example.com/status"});
+        assert!(waits(&poll));
+        let mut p = Repeats::default();
+        assert_eq!((0..10).map(|_| p.count(9, t0, waits(&poll), false)).max(), Some(1));
+        assert!(waits(&serde_json::json!({"action": "wait", "app": "Notepad"})));
+        assert!(!waits(&serde_json::json!({"command": "grep sleep notes.txt"})));
+        assert!(!waits(&serde_json::json!({"path": "/a.rs"})));
+    }
 }

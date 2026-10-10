@@ -135,6 +135,18 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
     }
 }
 
+/// The command a shell call's exit code comes from
+/// (`syntax::shell_exit_command`), its run-only wrappers stripped
+/// (`timeout 5 grep …` is grep), with the operator just before it (`&&`,
+/// `||`, `|`, `;`). `None` when the script doesn't parse or ends in
+/// anything but a simple command.
+pub fn exit_command(cmd: &str) -> Option<(Subcommand, Option<String>)> {
+    let (command, operator) = syntax::shell_exit_command(cmd)?;
+    let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes };
+    unwrap_wrappers(&mut sub);
+    Some((sub, operator))
+}
+
 /// Strip the wrappers that only run the command after them (`nohup rm x` runs
 /// `rm x`). A wrapper whose flags it can't read makes the command unknown.
 fn unwrap_wrappers(sub: &mut Subcommand) {

@@ -30,7 +30,7 @@
 //! There is no per-call state block and no stream reminder: everything the
 //! model reads is the system prompt or a stored row.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ai::{ChatRequest, RequestTrace, StreamEvent};
@@ -239,7 +239,7 @@ struct RoundCarry {
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
-    failures: HashMap<u64, usize>,
+    failures: tool_round::Repeats,
 }
 
 /// Why the loop is taking its next step.
@@ -443,6 +443,14 @@ fn owner_in_turn(req: &TurnRequest) -> bool {
         && !matches!(req.input, TurnInput::Platform { .. } | TurnInput::Compact { .. })
         && req.seat.origin == tools::Origin::User
         && req.seat.audience.is_none()
+}
+
+/// The owner is in this turn's conversation and can stop it himself
+/// (`owner_in_turn`), and it isn't a colleague's message: a repeated failure
+/// only nudges the model (`tool_round::MAX_IDENTICAL_FAILURES`). A coworker
+/// chain runs on with nobody watching each step.
+fn attended(req: &TurnRequest) -> bool {
+    owner_in_turn(req) && !matches!(req.input, TurnInput::Coworker { .. })
 }
 
 /// The owner's message resumes a paused goal, and the owner sees it resume.
@@ -1758,6 +1766,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             active_task: &goal,
             turn_mode: Some(&cx.request.mode),
             side_trace: &side_trace,
+            attended: attended(&cx.request),
         };
         // The streaming executor: safe calls start as their input completes
         // in the stream, while the reply is still arriving, so a read costs
@@ -3257,6 +3266,7 @@ mod tests {
     struct Refusing {
         name: &'static str,
         error: &'static str,
+        read_only: bool,
     }
 
     impl tools::registry::DynTool for Refusing {
@@ -3271,6 +3281,9 @@ mod tests {
         }
         fn should_defer(&self) -> bool {
             false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            self.read_only
         }
         fn execute_dyn<'a>(
             &'a self,
@@ -4283,33 +4296,108 @@ mod tests {
         assert!(!texts(&calls[1]).iter().any(|t| t.contains("Resume directly")), "a cut call is not resumed as text");
     }
 
-    /// The same call failing the same way stops the turn on its third time
-    /// (live 2026-10-03: a write with a path and no content, answered
-    /// "`content` is missing" 22 times in a row while the owner heard
-    /// nothing). The model reads to change course; the owner reads what is
-    /// stuck, with no tool or path in it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_same_call_failing_the_same_way_stops_the_turn() {
+    /// The live repro (2026-10-03): a write with a path and no content,
+    /// answered "`content` is missing" 22 times in a row.
+    fn missing_content() -> (serde_json::Value, Refusing) {
         let input = serde_json::json!({"path": "/Users/o/Library/Application Support/Nebo/files/i-like-to-ride.html"});
-        let model = Scripted::new((0..6).map(|_| Step::Call("write_file", input.clone())).chain([Step::Say("Done.")]).collect());
         let refusing = Refusing {
             name: "write_file",
             error: "<call_error>Invalid input for write_file:\nThe required parameter `content` is missing</call_error>",
+            read_only: false,
         };
+        (input, refusing)
+    }
+
+    /// A turn nobody watches: a scheduled run.
+    fn scheduled(text: &str) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.origin = tools::Origin::System;
+        req.seat.door = types::permissions::Door::Schedule;
+        req
+    }
+
+    fn tool_results(h: &Harness) -> Vec<String> {
+        stored(h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect()
+    }
+
+    fn notices(events: &[StreamEvent]) -> String {
+        events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect()
+    }
+
+    /// In an unattended run the same call failing the same way, with
+    /// nothing changed in between, stops the run on its eighth time. The
+    /// model reads to change course from the second; the owner reads what
+    /// is stuck, with no tool or path in it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_same_call_failing_the_same_way_stops_an_unattended_run() {
+        let (input, refusing) = missing_content();
+        let model = Scripted::new((0..22).map(|_| Step::Call("write_file", input.clone())).chain([Step::Say("Done.")]).collect());
         let h = harness_with(&model, vec![Box::new(refusing)]).await;
-        let events = run_turn(&h, owner("Build the website")).await;
+        let events = run_turn(&h, scheduled("Build the website")).await;
         assert_eq!(exit_of(&events), "terminal_tool_error");
-        let steps = model.calls().iter().filter(|c| c.tools.iter().any(|t| t.name == "write_file")).count();
-        assert_eq!(steps, 3, "no fourth try");
-        let results: Vec<String> =
-            stored(&h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect();
-        assert_eq!(results.len(), 3, "{results:#?}");
-        assert!(!results[1].contains("different approach"), "two failures are not yet stuck");
-        assert!(results[2].contains("try a different approach"), "the model is told to change course: {}", results[2]);
-        let notice: String =
-            events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect();
+        let results = tool_results(&h);
+        assert_eq!(results.len(), tool_round::MAX_IDENTICAL_FAILURES, "no ninth try: {results:#?}");
+        assert!(!results[0].contains("You already tried"), "the first failure is just a failure");
+        assert!(results[1].contains(tool_round::RETRY_NOTE), "{}", results[1]);
+        assert!(results[2].contains(tool_round::CHANGE_APPROACH_NOTE), "{}", results[2]);
+        assert!(!results[6].contains("the run stops here"), "seven failures are not yet stuck");
+        assert!(results[7].contains("try a different approach"), "the model is told to change course: {}", results[7]);
+        let notice = notices(&events);
         assert_eq!(notice, tool_round::STUCK_NOTICE);
         assert!(!notice.contains("write_file") && !notice.contains('/'), "plain words: {notice}");
+    }
+
+    /// The owner's own chat turn is never stopped by a repeated failure:
+    /// he is there to stop it. The model is nudged, more firmly from the
+    /// third time, and the turn ends when the model does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_same_call_failing_the_same_way_only_nudges_the_owners_turn() {
+        let (input, refusing) = missing_content();
+        let model = Scripted::new((0..22).map(|_| Step::Call("write_file", input.clone())).chain([Step::Say("Done.")]).collect());
+        let h = harness_with(&model, vec![Box::new(refusing)]).await;
+        let events = run_turn(&h, owner("Build the website")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let results = tool_results(&h);
+        assert_eq!(results.len(), 22, "every try ran");
+        assert!(results[1].contains(tool_round::RETRY_NOTE), "{}", results[1]);
+        assert!(results[21].contains(tool_round::CHANGE_APPROACH_NOTE), "{}", results[21]);
+        assert!(results.iter().all(|r| !r.contains("the run stops here")));
+        assert!(notices(&events).is_empty(), "nothing stopped the turn: {}", notices(&events));
+    }
+
+    /// A change between two identical failures starts the count over: a
+    /// test run that fails the same way after each edit is a fix being
+    /// tried, not a loop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_between_identical_failures_starts_the_count_over() {
+        let check = Refusing { name: "check", error: "1 test failed: totals_add_up", read_only: false };
+        let steps = (0..12)
+            .flat_map(|_| [Step::Call("check", serde_json::json!({})), Step::Call("writer", serde_json::json!({}))])
+            .chain([Step::Say("Done.")])
+            .collect();
+        let model = Scripted::new(steps);
+        let h = harness_with(&model, vec![Box::new(check)]).await;
+        let events = run_turn(&h, scheduled("Fix the totals")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let results = tool_results(&h);
+        assert_eq!(results.len(), 24, "every check ran");
+        assert!(results.iter().all(|r| !r.contains("You already tried")), "each check followed an edit");
+        assert!(notices(&events).is_empty(), "{}", notices(&events));
+    }
+
+    /// A call that only reads never stops a run, however often it fails
+    /// the same way: it is told, and runs on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_that_keeps_failing_never_stops_a_run() {
+        let look = Refusing { name: "look", error: "No such file: notes.txt", read_only: true };
+        let model = Scripted::new((0..12).map(|_| Step::Call("look", serde_json::json!({}))).chain([Step::Say("Done.")]).collect());
+        let h = harness_with(&model, vec![Box::new(look)]).await;
+        let events = run_turn(&h, scheduled("Read the notes")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let results = tool_results(&h);
+        assert_eq!(results.len(), 12);
+        assert!(results[11].contains(tool_round::CHANGE_APPROACH_NOTE), "{}", results[11]);
+        assert!(notices(&events).is_empty(), "{}", notices(&events));
     }
 
     /// The owner speaks while a tool round runs: the next step's call
