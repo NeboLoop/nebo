@@ -4222,5 +4222,21 @@
 			"scheduled": "타이머",
 			"watching": "감시"
 		}
+	},
+	"handoff": {
+		"fromAsk": "{name}님으로부터: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name}님의 대화 열기",
+		"openReceiver": "{name}님의 작업 열기",
+		"doneWith": "완료: {result}",
+		"failedWith": "실패: {error}",
+		"stop": "중지",
+		"status": {
+			"queued": "대기 중",
+			"running": "작업 중",
+			"done": "완료",
+			"failed": "실패",
+			"stopped": "중지됨"
+		}
 	}
 }

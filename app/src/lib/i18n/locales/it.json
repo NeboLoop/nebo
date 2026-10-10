@@ -4222,5 +4222,21 @@
 			"scheduled": "Timer",
 			"watching": "Monitoraggi"
 		}
+	},
+	"handoff": {
+		"fromAsk": "Da {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Apri la conversazione di {name}",
+		"openReceiver": "Apri il lavoro di {name}",
+		"doneWith": "Fatto: {result}",
+		"failedWith": "Non riuscito: {error}",
+		"stop": "Ferma",
+		"status": {
+			"queued": "In coda",
+			"running": "In corso",
+			"done": "Fatto",
+			"failed": "Non riuscito",
+			"stopped": "Fermato"
+		}
 	}
 }

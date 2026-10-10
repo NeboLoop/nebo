@@ -4222,5 +4222,21 @@
 			"scheduled": "Minuteurs",
 			"watching": "Surveillances"
 		}
+	},
+	"handoff": {
+		"fromAsk": "De {name} : {ask}",
+		"toAsk": "→ {name} : {ask}",
+		"openSender": "Ouvrir la conversation de {name}",
+		"openReceiver": "Ouvrir le travail de {name}",
+		"doneWith": "Terminé : {result}",
+		"failedWith": "Échec : {error}",
+		"stop": "Arrêter",
+		"status": {
+			"queued": "En attente",
+			"running": "En cours",
+			"done": "Terminé",
+			"failed": "Échec",
+			"stopped": "Arrêté"
+		}
 	}
 }

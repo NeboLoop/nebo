@@ -427,12 +427,38 @@ pub(crate) async fn send_coworker_message(
     };
     crate::addressing::open(&state, &post_id, &to_id, &team_id, &thread_key, &asker_session, &msg.from_agent_id)?;
 
+    // The trace of the hand-off (`handoff`): every delivery between
+    // employees, nested under the one its sender was working on. The
+    // owner's own team post is his, not a hand-off between employees.
+    let handoff_id = if matches!(route.authority, Authority::Owner { .. }) {
+        None
+    } else {
+        crate::handoff::queued(
+            &state,
+            &crate::handoff::Delivery {
+                from_agent_id: &msg.from_agent_id,
+                to_agent_id: &to_id,
+                team_id: &team_id,
+                sender_session: if asker_session.is_empty() { &msg.sender_session_key } else { &asker_session },
+                sender_run_id: msg.sender_run_id.as_deref(),
+                receiver_session: &thread_key,
+                ask: &msg.text,
+            },
+        )
+    };
+
     // A member asked to act in a team acknowledges there before it works.
     let acknowledge = team.is_some();
     let route_owners_request = route.authority.owners_request().map(str::to_string);
     if let Err(e) = run_in_thread(&state, &thread_key, route, prompt, Some(mention_context), seed_taint, acknowledge).await {
         crate::addressing::withdraw(&state, &post_id, &to_id);
+        if let Some(id) = handoff_id.as_deref() {
+            crate::handoff::failed(&state, id, &e);
+        }
         return Err(e);
+    }
+    if let Some(id) = handoff_id.as_deref() {
+        crate::handoff::running(&state, id);
     }
 
     if let Some(t) = team.as_ref() {
@@ -464,6 +490,7 @@ pub(crate) async fn send_coworker_message(
         to_agent_id: to_id,
         to_name,
         thread_key,
+        handoff_id,
     })
 }
 
@@ -564,6 +591,7 @@ pub(crate) async fn run_in_thread(
             None,
         ),
     };
+    let run_started = chrono::Utc::now().timestamp();
     let config = ChatConfig {
         session_key: thread_key.to_string(),
         prompt,
@@ -632,8 +660,10 @@ pub(crate) async fn run_in_thread(
         // A run that could not answer at all (a linked bot that is not
         // reachable) says so where its reply would have gone, in the
         // runtime's own words — never silence.
-        let said = if reply.text.is_empty() { reply.error.unwrap_or_default() } else { reply.text };
-        deliver_reply(&state, &route, &thread_key, said, reply.provenance).await;
+        let error = reply.error.filter(|_| reply.text.is_empty());
+        let said = if reply.text.is_empty() { error.clone().unwrap_or_default() } else { reply.text };
+        deliver_reply(&state, &route, &thread_key, said.clone(), reply.provenance).await;
+        crate::handoff::turn_ended(&state, &thread_key, &said, error.as_deref(), run_started);
     });
     Ok(())
 }

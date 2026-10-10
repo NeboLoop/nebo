@@ -4222,5 +4222,21 @@
 			"scheduled": "Таймери",
 			"watching": "Спостереження"
 		}
+	},
+	"handoff": {
+		"fromAsk": "Від {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Відкрити розмову з {name}",
+		"openReceiver": "Відкрити роботу {name}",
+		"doneWith": "Готово: {result}",
+		"failedWith": "Помилка: {error}",
+		"stop": "Зупинити",
+		"status": {
+			"queued": "У черзі",
+			"running": "У роботі",
+			"done": "Готово",
+			"failed": "Помилка",
+			"stopped": "Зупинено"
+		}
 	}
 }

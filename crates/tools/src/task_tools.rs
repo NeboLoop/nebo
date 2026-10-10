@@ -250,6 +250,15 @@ impl Tasks {
                      assignment.blocked, or assignment.failed when it closes; until then it is theirs — \
                      do not do it yourself."
                 ))
+                // The hand-off line in the assigner's chat; the assignment
+                // is traced under its own id (`server::handoff`).
+                .with_payload(serde_json::json!({
+                    "kind": "coworker_message",
+                    "to": assignee.name,
+                    "toAgentId": assignee.id,
+                    "text": subject,
+                    "handoffId": id,
+                }))
             }
             Err(e) => {
                 release();

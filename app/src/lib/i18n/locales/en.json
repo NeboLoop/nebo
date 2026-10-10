@@ -4222,5 +4222,21 @@
 			"scheduled": "Timers",
 			"watching": "Watches"
 		}
+	},
+	"handoff": {
+		"fromAsk": "From {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Open {name}'s conversation",
+		"openReceiver": "Open {name}'s work",
+		"doneWith": "Done: {result}",
+		"failedWith": "Failed: {error}",
+		"stop": "Stop",
+		"status": {
+			"queued": "Queued",
+			"running": "Working on it",
+			"done": "Done",
+			"failed": "Failed",
+			"stopped": "Stopped"
+		}
 	}
 }

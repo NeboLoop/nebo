@@ -4222,5 +4222,21 @@
 			"scheduled": "Timers",
 			"watching": "Bewakingen"
 		}
+	},
+	"handoff": {
+		"fromAsk": "Van {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Gesprek van {name} openen",
+		"openReceiver": "Werk van {name} openen",
+		"doneWith": "Klaar: {result}",
+		"failedWith": "Mislukt: {error}",
+		"stop": "Stoppen",
+		"status": {
+			"queued": "In de wachtrij",
+			"running": "Bezig",
+			"done": "Klaar",
+			"failed": "Mislukt",
+			"stopped": "Gestopt"
+		}
 	}
 }

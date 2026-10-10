@@ -220,6 +220,7 @@ impl Helpers {
                     "toAgentId": delivery.to_agent_id,
                     "threadKey": delivery.thread_key,
                     "text": text,
+                    "handoffId": delivery.handoff_id,
                 });
                 ToolResult::ok(format!(
                     "Message sent to {name}. They work on it in their own session and answer once; their answer \
@@ -573,6 +574,7 @@ mod tests {
                     to_agent_id: "bk".into(),
                     to_name: msg.to,
                     thread_key: "agent:bk:coworker".into(),
+                    handoff_id: Some("h-1".into()),
                 })
             })
         }

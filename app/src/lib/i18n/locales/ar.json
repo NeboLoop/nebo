@@ -4222,5 +4222,21 @@
 			"scheduled": "المؤقتات",
 			"watching": "المراقبات"
 		}
+	},
+	"handoff": {
+		"fromAsk": "من {name}: {ask}",
+		"toAsk": "← {name}: {ask}",
+		"openSender": "افتح محادثة {name}",
+		"openReceiver": "افتح عمل {name}",
+		"doneWith": "تم: {result}",
+		"failedWith": "فشل: {error}",
+		"stop": "إيقاف",
+		"status": {
+			"queued": "في الانتظار",
+			"running": "قيد العمل",
+			"done": "تم",
+			"failed": "فشل",
+			"stopped": "تم الإيقاف"
+		}
 	}
 }

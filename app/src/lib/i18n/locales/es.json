@@ -4222,5 +4222,21 @@
 			"scheduled": "Temporizadores",
 			"watching": "Vigilancias"
 		}
+	},
+	"handoff": {
+		"fromAsk": "De {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Abrir la conversación de {name}",
+		"openReceiver": "Abrir el trabajo de {name}",
+		"doneWith": "Hecho: {result}",
+		"failedWith": "Falló: {error}",
+		"stop": "Detener",
+		"status": {
+			"queued": "En cola",
+			"running": "Trabajando en ello",
+			"done": "Hecho",
+			"failed": "Falló",
+			"stopped": "Detenido"
+		}
 	}
 }

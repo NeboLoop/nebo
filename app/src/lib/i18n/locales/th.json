@@ -4222,5 +4222,21 @@
 			"scheduled": "ตัวจับเวลา",
 			"watching": "การเฝ้าดู"
 		}
+	},
+	"handoff": {
+		"fromAsk": "จาก {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "เปิดการสนทนาของ {name}",
+		"openReceiver": "เปิดงานของ {name}",
+		"doneWith": "เสร็จแล้ว: {result}",
+		"failedWith": "ล้มเหลว: {error}",
+		"stop": "หยุด",
+		"status": {
+			"queued": "อยู่ในคิว",
+			"running": "กำลังทำงาน",
+			"done": "เสร็จแล้ว",
+			"failed": "ล้มเหลว",
+			"stopped": "หยุดแล้ว"
+		}
 	}
 }

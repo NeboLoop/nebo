@@ -4222,5 +4222,21 @@
 			"scheduled": "Hẹn giờ",
 			"watching": "Theo dõi"
 		}
+	},
+	"handoff": {
+		"fromAsk": "Từ {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Mở cuộc trò chuyện của {name}",
+		"openReceiver": "Mở công việc của {name}",
+		"doneWith": "Xong: {result}",
+		"failedWith": "Thất bại: {error}",
+		"stop": "Dừng",
+		"status": {
+			"queued": "Đang chờ",
+			"running": "Đang làm",
+			"done": "Xong",
+			"failed": "Thất bại",
+			"stopped": "Đã dừng"
+		}
 	}
 }

@@ -4222,5 +4222,21 @@
 			"scheduled": "टाइमर",
 			"watching": "निगरानी"
 		}
+	},
+	"handoff": {
+		"fromAsk": "{name} से: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name} की बातचीत खोलें",
+		"openReceiver": "{name} का काम खोलें",
+		"doneWith": "पूरा: {result}",
+		"failedWith": "विफल: {error}",
+		"stop": "रोकें",
+		"status": {
+			"queued": "कतार में",
+			"running": "काम जारी है",
+			"done": "पूरा",
+			"failed": "विफल",
+			"stopped": "रोका गया"
+		}
 	}
 }

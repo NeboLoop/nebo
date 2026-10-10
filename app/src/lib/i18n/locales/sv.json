@@ -4222,5 +4222,21 @@
 			"scheduled": "Timrar",
 			"watching": "Bevakningar"
 		}
+	},
+	"handoff": {
+		"fromAsk": "Från {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Öppna konversationen med {name}",
+		"openReceiver": "Öppna arbetet för {name}",
+		"doneWith": "Klart: {result}",
+		"failedWith": "Misslyckades: {error}",
+		"stop": "Stoppa",
+		"status": {
+			"queued": "I kö",
+			"running": "Arbetar på det",
+			"done": "Klart",
+			"failed": "Misslyckades",
+			"stopped": "Stoppad"
+		}
 	}
 }

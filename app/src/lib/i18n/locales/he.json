@@ -4222,5 +4222,21 @@
 			"scheduled": "טיימרים",
 			"watching": "מעקבים"
 		}
+	},
+	"handoff": {
+		"fromAsk": "מאת {name}: {ask}",
+		"toAsk": "← {name}: {ask}",
+		"openSender": "פתח את השיחה של {name}",
+		"openReceiver": "פתח את העבודה של {name}",
+		"doneWith": "הושלם: {result}",
+		"failedWith": "נכשל: {error}",
+		"stop": "עצור",
+		"status": {
+			"queued": "בתור",
+			"running": "בעבודה",
+			"done": "הושלם",
+			"failed": "נכשל",
+			"stopped": "נעצר"
+		}
 	}
 }

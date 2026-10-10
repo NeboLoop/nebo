@@ -4222,5 +4222,21 @@
 			"scheduled": "টাইমার",
 			"watching": "নজরদারি"
 		}
+	},
+	"handoff": {
+		"fromAsk": "{name} থেকে: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name}-এর কথোপকথন খুলুন",
+		"openReceiver": "{name}-এর কাজ খুলুন",
+		"doneWith": "সম্পন্ন: {result}",
+		"failedWith": "ব্যর্থ: {error}",
+		"stop": "থামান",
+		"status": {
+			"queued": "অপেক্ষমাণ",
+			"running": "কাজ চলছে",
+			"done": "সম্পন্ন",
+			"failed": "ব্যর্থ",
+			"stopped": "থামানো হয়েছে"
+		}
 	}
 }

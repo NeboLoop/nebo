@@ -4222,5 +4222,21 @@
 			"scheduled": "Pemasa",
 			"watching": "Pemantauan"
 		}
+	},
+	"handoff": {
+		"fromAsk": "Daripada {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Buka perbualan {name}",
+		"openReceiver": "Buka kerja {name}",
+		"doneWith": "Selesai: {result}",
+		"failedWith": "Gagal: {error}",
+		"stop": "Hentikan",
+		"status": {
+			"queued": "Dalam baris gilir",
+			"running": "Sedang diusahakan",
+			"done": "Selesai",
+			"failed": "Gagal",
+			"stopped": "Dihentikan"
+		}
 	}
 }

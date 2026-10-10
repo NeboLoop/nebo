@@ -4222,5 +4222,21 @@
 			"scheduled": "計時器",
 			"watching": "監看"
 		}
+	},
+	"handoff": {
+		"fromAsk": "來自 {name}：{ask}",
+		"toAsk": "→ {name}：{ask}",
+		"openSender": "開啟 {name} 的對話",
+		"openReceiver": "開啟 {name} 的工作",
+		"doneWith": "已完成：{result}",
+		"failedWith": "失敗：{error}",
+		"stop": "停止",
+		"status": {
+			"queued": "排隊中",
+			"running": "處理中",
+			"done": "已完成",
+			"failed": "失敗",
+			"stopped": "已停止"
+		}
 	}
 }

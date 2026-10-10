@@ -4222,5 +4222,21 @@
 			"scheduled": "Таймеры",
 			"watching": "Наблюдения"
 		}
+	},
+	"handoff": {
+		"fromAsk": "От {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Открыть разговор с {name}",
+		"openReceiver": "Открыть работу {name}",
+		"doneWith": "Готово: {result}",
+		"failedWith": "Ошибка: {error}",
+		"stop": "Остановить",
+		"status": {
+			"queued": "В очереди",
+			"running": "В работе",
+			"done": "Готово",
+			"failed": "Ошибка",
+			"stopped": "Остановлено"
+		}
 	}
 }

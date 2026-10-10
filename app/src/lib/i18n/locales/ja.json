@@ -4222,5 +4222,21 @@
 			"scheduled": "タイマー",
 			"watching": "監視"
 		}
+	},
+	"handoff": {
+		"fromAsk": "{name} から: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name} の会話を開く",
+		"openReceiver": "{name} の作業を開く",
+		"doneWith": "完了: {result}",
+		"failedWith": "失敗: {error}",
+		"stop": "停止",
+		"status": {
+			"queued": "待機中",
+			"running": "作業中",
+			"done": "完了",
+			"failed": "失敗",
+			"stopped": "停止済み"
+		}
 	}
 }

@@ -576,7 +576,7 @@ async fn the_owner_is_answered_while_the_company_works() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coworker_message_returns_at_once_and_the_reply_wakes_the_sender() {
     let nebo = session().await;
-    nebo.hire("Proof Clerk", json!({ "workflows": {} })).await;
+    let clerk = nebo.hire("Proof Clerk", json!({ "workflows": {} })).await;
     const SENDER: &str = "proof:dm:sender-b1";
     let rules: Vec<Rule> = vec![
         worker("MARK-CLERK", "clerk", "CLERK-RESULT"),
@@ -628,6 +628,122 @@ async fn a_coworker_message_returns_at_once_and_the_reply_wakes_the_sender() {
             .any(|m| m.role == "assistant" && m.content.contains("HEARD"))
     })
     .await;
+
+    // The hand-off is on record: who sent what to whom, done with what came
+    // back, and the sender's tool result names it for the chat's line.
+    let handoff_id = sent
+        .payload
+        .as_ref()
+        .and_then(|p| p["handoffId"].as_str())
+        .expect("the receipt names its hand-off")
+        .to_string();
+    rig.until(30, "the hand-off ends with the answer", || {
+        nebo.store().get_handoff(&handoff_id).unwrap().is_some_and(|h| h.status == "done")
+    })
+    .await;
+    let h = nebo.store().get_handoff(&handoff_id).unwrap().expect("recorded");
+    assert_eq!(h.sender_session, SENDER);
+    assert_eq!(h.to_agent_id, clerk);
+    assert!(h.ask.contains("MARK-CLERK file the invoice"), "{}", h.ask);
+    assert_eq!(h.status, "done", "{h:?}");
+    assert!(h.result.contains("CLERK-RESULT"), "{}", h.result);
+    assert!(h.started_at.is_some() && h.finished_at.is_some(), "{h:?}");
+}
+
+/// A hand-off chain traces as one tree: the owner's employee messages
+/// Mid, Mid hands a piece on to Leaf while working it, and Mid's hand-off
+/// to Leaf is nested under the one it was working. Both run while Leaf
+/// works; each ends done with what it said once its answer is in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handoff_chain_traces_as_one_tree() {
+    let nebo = session().await;
+    let mid = nebo.hire("Proof Chain Mid", json!({ "workflows": {} })).await;
+    let leaf = nebo.hire("Proof Chain Leaf", json!({ "workflows": {} })).await;
+    const SENDER: &str = "proof:dm:sender-chain";
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            if !t.opener().contains("MARK-CH1") {
+                return None;
+            }
+            if t.says("LEAF-RESULT") && !t.answered("MID-RESULT") {
+                return Some(Step::say("MID-RESULT: the leaf counted 7."));
+            }
+            if t.has_tool_results() {
+                return Some(Step::say("Asked the leaf."));
+            }
+            t.new_text().contains("MARK-CH1").then(|| {
+                Step::call(vec![(
+                    "send_message",
+                    json!({"to": "Proof Chain Leaf", "message": "MARK-CH2 count the boxes"}),
+                )])
+            })
+        }),
+        worker("MARK-CH2", "leaf", "LEAF-RESULT"),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.open_session(SENDER);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(SENDER, "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof Chain Mid", "message": "MARK-CH1 how many boxes?"}))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let top_id = sent.payload.as_ref().and_then(|p| p["handoffId"].as_str()).expect("the receipt names its hand-off").to_string();
+
+    let child = || {
+        nebo.store()
+            .list_handoffs(&db::HandoffQuery { parent_id: Some(&top_id), ..Default::default() })
+            .unwrap()
+            .into_iter()
+            .next()
+    };
+    rig.until(30, "Mid's hand-off to Leaf is nested under the one it works", || child().is_some()).await;
+    let below = child().unwrap();
+    assert_eq!((below.from_agent_id.as_str(), below.to_agent_id.as_str()), (mid.as_str(), leaf.as_str()));
+    assert!(below.ask.contains("MARK-CH2"), "{}", below.ask);
+    let top = nebo.store().get_handoff(&top_id).unwrap().unwrap();
+    assert_eq!(top.status, "running", "Mid waits on Leaf: {top:?}");
+    assert_eq!(top.to_agent_id, mid);
+    assert_eq!(top.parent_id, None);
+    let live = crate::handoff::receiver_sessions(&nebo.state);
+    assert!(live.contains(&top.receiver_session) && live.contains(&below.receiver_session), "{live:?}");
+
+    rig.company.open("leaf");
+    rig.until(30, "the chain ends done, top and bottom", || {
+        let done = |id: &str| nebo.store().get_handoff(id).unwrap().is_some_and(|h| h.status == "done");
+        done(&top_id) && done(&below.id)
+    })
+    .await;
+    assert!(nebo.store().get_handoff(&below.id).unwrap().unwrap().result.contains("LEAF-RESULT"));
+    assert!(nebo.store().get_handoff(&top_id).unwrap().unwrap().result.contains("MID-RESULT"));
+    assert!(crate::handoff::live(&nebo.state).is_empty(), "nothing is left running");
+}
+
+/// The owner stops a hand-off while its employee works: the receiving run
+/// stops, and the hand-off stays on record as stopped, never left running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_handoff_stays_on_record_as_stopped() {
+    let nebo = session().await;
+    nebo.hire("Proof Stop Clerk", json!({ "workflows": {} })).await;
+    const SENDER: &str = "proof:dm:sender-stop";
+    let rules: Vec<Rule> = vec![worker("MARK-STOP", "stop-clerk", "STOP-RESULT")];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.open_session(SENDER);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(SENDER, "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof Stop Clerk", "message": "MARK-STOP file it"}))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let id = sent.payload.as_ref().and_then(|p| p["handoffId"].as_str()).unwrap().to_string();
+    rig.until(30, "the clerk is working", || rig.company.calls_naming("MARK-STOP") > 0).await;
+    assert_eq!(nebo.store().get_handoff(&id).unwrap().unwrap().status, "running");
+
+    crate::handoff::stop(&nebo.state, &id).await.unwrap();
+    let h = nebo.store().get_handoff(&id).unwrap().unwrap();
+    assert_eq!(h.status, "stopped", "{h:?}");
+    assert!(h.finished_at.is_some());
+    rig.company.open("stop-clerk");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(nebo.store().get_handoff(&id).unwrap().unwrap().status, "stopped", "a stop is final");
 }
 
 /// B2: a team's replies reach the session that posted: the lead's answer,
