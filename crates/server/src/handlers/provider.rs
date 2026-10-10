@@ -392,6 +392,7 @@ fn picker_models(
             "kind": kind,
             "preferred": m.preferred.unwrap_or(0) == 1,
             "isActive": m.is_active.unwrap_or(0) == 1,
+            "rank": m.rank,
         });
 
         // Add pricing if available
@@ -874,6 +875,7 @@ mod picker_tests {
             seeded_version: None,
             model_kind: "chat".into(),
             source: "catalog".into(),
+            rank: None,
             created_at: 0,
             updated_at: 0,
         }

@@ -37,7 +37,9 @@
   import AudioLines from 'lucide-svelte/icons/audio-lines';
   import CircleDot from 'lucide-svelte/icons/circle-dot';
   import { createClipRecorder, clipClock, CLIP_CAP_MS, type ClipNotice } from '$lib/chat/clipRecorder';
-  import { loadModelOptions, modelLabel, type ModelOption } from '$lib/models/speeds';
+  import { loadModelOptions, makeDefaultPack, modelLabel, type ModelOption } from '$lib/models/speeds';
+  import { devMode } from '$lib/stores/devmode';
+  import { withBase } from '$lib/nav';
   import * as api from '$lib/api/nebo';
   import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
 
@@ -144,15 +146,23 @@
 
   async function loadModel() {
     if (!agentId) return;
-    const [opts, cfg] = await Promise.all([
-      loadModelOptions(),
+    const [cfg, chat] = await Promise.all([
       (api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>).catch(() => null),
+      threadId ? (api.getChat(threadId) as Promise<{ model?: string | null }>).catch(() => null) : null,
     ]);
-    modelOptions = opts;
     agentModel = cfg?.config?.modelPreference ?? '';
-    if (!threadId) { chatModel = ''; return; }
-    const chat = await (api.getChat(threadId) as Promise<{ model?: string | null }>).catch(() => null);
     chatModel = chat?.model ?? '';
+    // The value in use rides along: a pack chosen in Developer mode stays a
+    // row after Developer mode is turned off.
+    modelOptions = await loadModelOptions(chatModel || agentModel);
+  }
+
+  // Developer mode: make a pack the bot's default from its row.
+  async function pickDefaultPack(packId: string) {
+    try {
+      await makeDefaultPack(packId);
+      modelOptions = await loadModelOptions(activeModel);
+    } catch { /* the row keeps its old state */ }
   }
 
   async function pickModel(value: string) {
@@ -878,7 +888,10 @@
               tabindex={-1}
             >{modelName}</button>
             <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-64 p-1 shadow-md border border-base-300 flex-nowrap max-h-80 overflow-y-auto">
-              {#each modelOptions as opt (opt.value)}
+              {#each modelOptions as opt, i (opt.value)}
+                {#if $devMode && opt.section === 'packs' && modelOptions[i - 1]?.section !== 'packs'}
+                  <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('modelPick.packsTitle')}</span></li>
+                {/if}
                 <li>
                   <!-- A menu item is a grid that flows its children into
                        columns; `flex` takes it back so the name sits above
@@ -888,7 +901,7 @@
                     onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
                     <span class="flex w-full items-center justify-between gap-1.5">
-                      <span>{opt.label}</span>
+                      <span>{opt.label}{#if $devMode && opt.packId && opt.isDefault}<span class="text-xs text-base-content/50"> · {$t('modelPick.defaultForBot')}</span>{/if}</span>
                       {#if modelLabel(activeModel, modelOptions) === opt.label}<span class="text-primary">&check;</span>{/if}
                     </span>
                     {#if opt.description}
@@ -896,7 +909,21 @@
                     {/if}
                   </button>
                 </li>
+                {#if $devMode && opt.packId && !opt.isDefault}
+                  <!-- A pack's own row: make it the bot's default. -->
+                  <li>
+                    <button
+                      class="text-xs text-primary"
+                      onclick={() => { pickDefaultPack(opt.packId!); (document.activeElement as HTMLElement | null)?.blur(); }}
+                    >{$t('modelPick.makeDefault', { values: { name: opt.label } })}</button>
+                  </li>
+                {/if}
               {/each}
+              {#if $devMode}
+                <li>
+                  <a class="text-sm text-primary" href={withBase('/settings/intelligence-packs')}>{$t('modelPick.createPack')}</a>
+                </li>
+              {/if}
             </ul>
           </div>
         {/if}

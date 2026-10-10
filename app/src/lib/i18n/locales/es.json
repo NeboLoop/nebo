@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Modelo",
-		"hint": "A qué velocidad de Nebo 1 trabaja este empleado. Por defecto, cada tarea elige la adecuada; una velocidad concreta fija todas las tareas a ella."
+		"hint": "A qué velocidad de Nebo 1 trabaja este empleado. Por defecto, cada tarea elige la adecuada; una velocidad concreta fija todas las tareas a ella.",
+		"packsTitle": "Paquetes de inteligencia",
+		"defaultForBot": "Predeterminado de este bot",
+		"makeDefault": "Hacer de {name} el predeterminado de este bot",
+		"createPack": "Crear un paquete de inteligencia…"
 	},
 	"settingsLayers": {
 		"title": "Capas",

@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "模型",
-		"hint": "这名员工使用的 Nebo 1 速度。默认会让每项任务自行选择合适的速度；指定某个速度后，所有任务都固定用它。"
+		"hint": "这名员工使用的 Nebo 1 速度。默认会让每项任务自行选择合适的速度；指定某个速度后，所有任务都固定用它。",
+		"packsTitle": "智能包",
+		"defaultForBot": "此机器人的默认",
+		"makeDefault": "将 {name} 设为此机器人的默认",
+		"createPack": "创建智能包…"
 	},
 	"settingsLayers": {
 		"title": "层级",

@@ -25,12 +25,10 @@
   async function load() {
     loading = true;
     try {
-      const [opts, cfgRes] = await Promise.all([
-        loadModelOptions(),
-        api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>,
-      ]);
-      options = opts;
+      const cfgRes = await (api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>);
       selected = cfgRes.config?.modelPreference ?? '';
+      // A pack chosen in Developer mode stays a row after it is turned off.
+      options = await loadModelOptions(selected);
     } catch {
       options = [];
     } finally {

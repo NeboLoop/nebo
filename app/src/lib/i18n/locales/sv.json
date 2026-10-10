@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Modell",
-		"hint": "Vilken Nebo 1-hastighet den här medarbetaren arbetar i. Standard låter varje uppgift välja rätt hastighet; en namngiven hastighet låser varje uppgift till den."
+		"hint": "Vilken Nebo 1-hastighet den här medarbetaren arbetar i. Standard låter varje uppgift välja rätt hastighet; en namngiven hastighet låser varje uppgift till den.",
+		"packsTitle": "Intelligenspaket",
+		"defaultForBot": "Standard för den här botten",
+		"makeDefault": "Gör {name} till standard för den här botten",
+		"createPack": "Skapa ett intelligenspaket…"
 	},
 	"settingsLayers": {
 		"title": "Lager",

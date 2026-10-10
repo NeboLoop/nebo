@@ -3,40 +3,58 @@
  * publishes (GET /v1/models, synced into the catalog and served by
  * /api/v1/models). Settings → General → MODEL and the composer chip both read
  * this; neither keeps a list of its own. With Developer mode on, the
- * intelligence packs follow the speeds (a feature under test: never shown to
- * an owner without it).
+ * Intelligence Packs section follows the speeds (a feature under test: never
+ * shown to an owner without it).
  */
 import { get } from 'svelte/store';
 import * as api from '$lib/api/nebo';
 import { devMode, loadDevMode } from '$lib/stores/devmode';
 
-export type ModelOption = { value: string; label: string; description: string };
+/**
+ * One row of a model picker. `section: 'packs'` rows are the Developer-mode
+ * "Intelligence Packs" section; `packId` marks a whole-pack row (one the
+ * owner can make the bot's default), `isDefault` the bot's default pack.
+ */
+export type ModelOption = {
+	value: string;
+	label: string;
+	description: string;
+	section?: 'packs';
+	packId?: string;
+	isDefault?: boolean;
+};
 
 type CatalogModel = {
 	id: string;
 	displayName: string;
 	description?: string | null;
 	isActive: boolean;
+	/** The speed's place on Janus's ladder (nebo-1 0, Fast 1, Balanced 2, Deep 3). */
+	rank?: number | null;
 };
 
 /** The catalog id of the default speed. Its option value is '' — "no choice". */
 const DEFAULT_ID = 'nebo-1';
 
 /**
- * The options, Default first, then the ladder as Janus orders it, then (in
- * Developer mode) the intelligence packs. Empty when the catalog has not
- * synced — callers render nothing rather than a guess.
+ * The options: Default first, then the speeds by their rank on the ladder
+ * (never by name), then, in Developer mode, the Intelligence Packs section.
+ * `current` is the value in use: a pack choice made in Developer mode stays
+ * listed (as its one row) after Developer mode is turned off. Empty when the
+ * catalog has not synced — callers render nothing rather than a guess.
  */
-export async function loadModelOptions(): Promise<ModelOption[]> {
+export async function loadModelOptions(current = ''): Promise<ModelOption[]> {
 	try {
 		const [res, packs] = await Promise.all([
 			api.listModels() as Promise<{ models?: Record<string, CatalogModel[]> }>,
-			packOptions()
+			packOptions(current)
 		]);
 		const janus = (res.models?.['janus'] ?? []).filter(
 			(m) => m.isActive && (m.id === DEFAULT_ID || m.description)
 		);
-		janus.sort((a, b) => (a.id === DEFAULT_ID ? -1 : b.id === DEFAULT_ID ? 1 : 0));
+		const rank = (m: CatalogModel) =>
+			m.id === DEFAULT_ID ? -1 : (m.rank ?? Number.MAX_SAFE_INTEGER);
+		janus.sort((a, b) => rank(a) - rank(b));
 		const speeds = janus.map((m) => ({
 			value: m.id === DEFAULT_ID ? '' : `janus/${m.id}`,
 			label: m.displayName,
@@ -59,31 +77,68 @@ export const EFFORT_LABELS: Record<Effort, string> = {
 	max: 'Max'
 };
 
+/** What each level is for, in plain words. */
+const EFFORT_DESCRIPTIONS: Record<Effort, string> = {
+	instant: 'Quickest replies',
+	low: 'Quick, with a little thinking',
+	medium: 'Everyday work',
+	high: 'Harder problems',
+	max: 'The most thinking'
+};
+
+/** The built-in Nebo AI pack: its levels are the speeds, so only its row is listed. */
+const NEBO_AI_ID = 'nebo-ai';
+
 /**
- * Developer mode only: each pack as `pack/<id>` (Nebo AI's Auto, else the
- * pack's default level) and once per Effort level (`pack/<id>/<level>`).
+ * The Intelligence Packs section (Developer mode only): Nebo AI as one row
+ * (back to the standard speeds), then each of the owner's own packs as its
+ * row (`pack/<id>`, its default level) and once per level
+ * (`pack/<id>/<level>`). Never a model id: a level reads as what it is for.
+ * With Developer mode off, only `current` is kept, when it is a pack choice.
  * Developer surfaces are English.
  */
-export async function packOptions(): Promise<ModelOption[]> {
+export async function packOptions(current = ''): Promise<ModelOption[]> {
 	await loadDevMode();
-	if (!get(devMode)) return [];
+	const dev = get(devMode);
+	if (!dev && !current.startsWith('pack/')) return [];
 	try {
 		const res = await api.listPacks();
-		return (res.packs ?? []).flatMap((p) => [
-			{
+		// The bot's default: a pack ref, or a model (Nebo AI's own speeds).
+		const def = res.default ?? '';
+		const all = (res.packs ?? []).flatMap((p): ModelOption[] => {
+			const row: ModelOption = {
 				value: `pack/${p.id}`,
-				label: p.levels.auto ? `${p.name} · Auto` : p.name,
-				description: p.levels.auto ? 'Nebo AI picks the level' : 'Its default level (Medium)'
-			},
-			...EFFORTS.map((e) => ({
-				value: `pack/${p.id}/${e}`,
-				label: `${p.name} · ${EFFORT_LABELS[e]}`,
-				description: p.levels[e] ?? 'The nearest level that is set'
-			}))
-		]);
+				label: p.name,
+				description: p.builtIn ? 'The standard speeds' : 'Your pack at its default level',
+				section: 'packs',
+				packId: p.id,
+				isDefault: def.startsWith('pack/')
+					? def === `pack/${p.id}` || def.startsWith(`pack/${p.id}/`)
+					: p.builtIn
+			};
+			return [
+				row,
+				...EFFORTS.map((e) => ({
+					value: `pack/${p.id}/${e}`,
+					label: `${p.name} · ${EFFORT_LABELS[e]}`,
+					description: p.levels[e]
+						? EFFORT_DESCRIPTIONS[e]
+						: `${EFFORT_DESCRIPTIONS[e]} · uses the nearest level that is set`,
+					section: 'packs' as const
+				}))
+			];
+		});
+		return all.filter((o) =>
+			o.value === current || `${o.value}/auto` === current || (dev && (o.packId !== undefined || !o.value.startsWith(`pack/${NEBO_AI_ID}/`)))
+		);
 	} catch {
 		return [];
 	}
+}
+
+/** Make a pack the bot's default (Developer mode, the picker's pack rows). */
+export async function makeDefaultPack(packId: string): Promise<void> {
+	await api.setDefaultPack({ value: `pack/${packId}` });
 }
 
 /**
