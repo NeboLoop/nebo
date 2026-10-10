@@ -5970,6 +5970,44 @@ mod tests {
         assert_eq!(model.calls().len(), 1);
     }
 
+    /// Bake-off 2026-10-10 (B2): a workflow step whose declared tool is
+    /// deferred (an MCP server's) has it declared on its first call, so the
+    /// first call to it runs. Before, the step spent its first call on
+    /// find_tools (which a declared step wasn't given, so the run parked for
+    /// the owner) or called the tool unloaded and got "wasn't loaded, so its
+    /// definition was never sent".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_workflow_step_has_its_deferred_tools_from_its_first_call() {
+        const DEAL: &str = "mcp__hubspot__hubspot_get_deal";
+        let model = Scripted::new(vec![Step::Call(DEAL, serde_json::json!({})), Step::Say("Deal read.")]);
+        let h = harness(&model).await;
+        h.tools.register(Box::new(Echo { name: DEAL, deferred: true, read_only: true })).await;
+        h.tools.register(Box::new(Echo { name: "mcp__hubspot__hubspot_create_note", deferred: true, read_only: false })).await;
+        let mut req = owner("Step 1/1: Read deal 42.");
+        let declared: HashSet<String> = [DEAL.to_string(), "exit".to_string()].into();
+        req.seat.tool_allowlist = Some(declared.clone());
+        req.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            advertised_tools: declared,
+            ..Default::default()
+        }));
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "text_response");
+
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the call, then the answer: no find_tools step");
+        let first: Vec<&str> = calls[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(first.contains(&DEAL), "declared on the first call: {first:?}");
+        assert!(!first.contains(&"mcp__hubspot__hubspot_create_note"), "only the step's own tools: {first:?}");
+        let said: Vec<String> = calls[0].messages.iter().map(|m| m.content.clone()).collect();
+        assert!(!said.iter().any(|c| c.contains("available through find_tools")), "nothing listed to look up: {said:?}");
+        let results: Vec<String> =
+            calls[1].messages.iter().filter_map(|m| m.tool_results.as_ref().map(|r| r.to_string())).collect();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].contains(&format!("{DEAL} ran")), "the first call ran: {}", results[0]);
+        assert!(!results[0].contains("wasn't loaded"), "{}", results[0]);
+    }
+
     /// The owner's spending limit ends the turn before the next step, with
     /// a status line that says so.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7259,14 +7297,19 @@ mod tests {
         }
         let names = |c: &ChatRequest| c.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
         for (i, call) in calls.iter().enumerate() {
+            // A workflow step declares the core like every run, then its own
+            // deferred tools after it, loaded at its first step.
+            let tools = if i == 5 { &call.tools[..calls[0].tools.len()] } else { &call.tools[..] };
             assert_eq!(
-                serde_json::to_string(&call.tools).unwrap(),
+                serde_json::to_string(tools).unwrap(),
                 serde_json::to_string(&calls[0].tools).unwrap(),
                 "run {i} declares the same tools as every run: {:?} vs {:?}",
                 names(call),
                 names(&calls[0])
             );
         }
+        let appended: Vec<String> = names(&calls[5]).split_off(calls[0].tools.len());
+        assert_eq!(appended, ["exit", "weather"], "the activity's deferred tools follow the core");
         assert!(!names(&calls[0]).iter().any(|n| n == "weather" || n == "app__crm__lookup" || n == "plugin__ledger" || n == "exit"));
         let listing = |c: &ChatRequest| {
             c.messages
@@ -7276,7 +7319,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        assert!(listing(&calls[5]).contains("\nexit"), "the activity lists its exit: {}", listing(&calls[5]));
+        assert!(listing(&calls[5]).is_empty(), "the activity lists nothing behind find_tools: {}", listing(&calls[5]));
         assert!(!listing(&calls[0]).contains("\nexit"), "a chat turn isn't offered exit: {}", listing(&calls[0]));
         assert!(!listing(&calls[6]).contains("weather"), "a restricted run lists only what it may use: {}", listing(&calls[6]));
 

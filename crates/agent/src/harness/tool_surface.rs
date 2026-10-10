@@ -16,7 +16,8 @@
 //! loaded by a result that carries its definition: `find_tools`, or the
 //! error for a call made without it (`ToolResult::loads`); or by a request
 //! that says its triggers (an installed plugin's or a built-in tool's), whose `tools_triggered`
-//! row carries it. A tool
+//! row carries it. A workflow step loads all of its own tools on its first
+//! step, the same way, and lists nothing. A tool
 //! arriving or leaving (a plugin connecting, an MCP server going away) and a
 //! loaded tool whose definition changed (an operation tool gaining a second
 //! provider) are told in the listing delta, never by changing the declared
@@ -275,8 +276,9 @@ pub struct SurfaceInputs<'a> {
     pub agent_id: &'a str,
     /// A restricted run's allowlist: only what it admits is listed.
     pub allowlist: Option<&'a HashSet<String>>,
-    /// A workflow activity lists its own tools: its declaration, deferred
-    /// tools included, with the `exit` primitive.
+    /// A workflow activity is offered its own tools: its declaration,
+    /// deferred tools included, with the `exit` primitive. Its deferred tools
+    /// are loaded at its first step, never listed.
     pub workflow: Option<&'a crate::harness::WorkflowMode>,
     /// A helper's kind and depth, and whether the run is a workflow
     /// activity, decide what it is offered (`delegation::on_surface`).
@@ -375,19 +377,32 @@ pub async fn surface(
         .filter(|e| !loaded.iter().any(|t| t.declared.name == e.definition.name))
         .cloned()
         .collect();
-    let triggered: Vec<ToolDefinition> = seat
-        .request
-        .map(|request| {
-            tools::find_tools::triggered(&unloaded, request, tools::find_tools::TRIGGERED_MAX)
-                .into_iter()
-                .map(|e| e.definition.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+    // A workflow step's tools are named by its activity: every one of them
+    // is loaded on its first step, so its first call has the definition and
+    // nothing is left to look up. Bake-off 2026-10-10: a step whose declared
+    // HubSpot tools were deferred spent its first call on find_tools, which
+    // it wasn't given, and parked for the owner (77 of 154 pauses); a direct
+    // call failed instead ("wasn't loaded, so its definition was never
+    // sent", 20 runs).
+    let triggered: Vec<ToolDefinition> = if seat.workflow.is_some() {
+        unloaded.iter().map(|e| e.definition.clone()).collect()
+    } else {
+        seat.request
+            .map(|request| {
+                tools::find_tools::triggered(&unloaded, request, tools::find_tools::TRIGGERED_MAX)
+                    .into_iter()
+                    .map(|e| e.definition.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let mut declared = declared(&all, &deferred, &loaded);
     declared.extend(triggered.iter().cloned());
+    // A workflow step lists nothing behind find_tools: all of its tools are
+    // declared (above), and nothing else is its to load.
     let listed: Listing = offered
         .into_iter()
+        .filter(|_| seat.workflow.is_none())
         .map(|e| (e.definition.name, e.search_hint.trim().to_string()))
         .collect();
     let announced = crate::harness::events::announced("tools_available", conversation);
