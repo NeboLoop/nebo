@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Kecepatan Nebo 1 yang dipakai karyawan ini. Bawaan membiarkan tiap tugas memilih yang tepat; kecepatan tertentu mengunci semua tugas ke situ."
+		"hint": "Kecepatan Nebo 1 yang dipakai karyawan ini. Bawaan membiarkan tiap tugas memilih yang tepat; kecepatan tertentu mengunci semua tugas ke situ.",
+		"packsTitle": "Paket kecerdasan",
+		"defaultForBot": "Bawaan untuk bot ini",
+		"makeDefault": "Jadikan {name} bawaan untuk bot ini",
+		"createPack": "Buat paket kecerdasan…"
 	},
 	"settingsLayers": {
 		"title": "Lapisan",

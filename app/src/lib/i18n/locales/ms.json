@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Kelajuan Nebo 1 yang digunakan oleh pekerja ini. Lalai membiarkan setiap tugas memilih yang sesuai; kelajuan tertentu mengunci semua tugas kepadanya."
+		"hint": "Kelajuan Nebo 1 yang digunakan oleh pekerja ini. Lalai membiarkan setiap tugas memilih yang sesuai; kelajuan tertentu mengunci semua tugas kepadanya.",
+		"packsTitle": "Pek kecerdasan",
+		"defaultForBot": "Lalai untuk bot ini",
+		"makeDefault": "Jadikan {name} lalai untuk bot ini",
+		"createPack": "Cipta pek kecerdasan…"
 	},
 	"settingsLayers": {
 		"title": "Lapisan",

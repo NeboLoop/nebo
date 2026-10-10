@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Modell",
-		"hint": "Mit welcher Nebo-1-Geschwindigkeit dieser Mitarbeiter arbeitet. Standard lässt jede Aufgabe die passende wählen; eine benannte Geschwindigkeit legt alle Aufgaben darauf fest."
+		"hint": "Mit welcher Nebo-1-Geschwindigkeit dieser Mitarbeiter arbeitet. Standard lässt jede Aufgabe die passende wählen; eine benannte Geschwindigkeit legt alle Aufgaben darauf fest.",
+		"packsTitle": "Intelligenz-Pakete",
+		"defaultForBot": "Standard für diesen Bot",
+		"makeDefault": "{name} zum Standard für diesen Bot machen",
+		"createPack": "Intelligenz-Paket erstellen…"
 	},
 	"settingsLayers": {
 		"title": "Ebenen",

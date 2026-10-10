@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Mô hình",
-		"hint": "Tốc độ Nebo 1 mà nhân viên này dùng. Mặc định để mỗi việc tự chọn tốc độ phù hợp; chọn một tốc độ cụ thể là khóa mọi việc vào tốc độ đó."
+		"hint": "Tốc độ Nebo 1 mà nhân viên này dùng. Mặc định để mỗi việc tự chọn tốc độ phù hợp; chọn một tốc độ cụ thể là khóa mọi việc vào tốc độ đó.",
+		"packsTitle": "Gói trí tuệ",
+		"defaultForBot": "Mặc định của bot này",
+		"makeDefault": "Đặt {name} làm mặc định cho bot này",
+		"createPack": "Tạo gói trí tuệ…"
 	},
 	"settingsLayers": {
 		"title": "Lớp",

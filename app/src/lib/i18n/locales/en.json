@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Which Nebo 1 speed this employee works at. Default lets each task pick the right one; a named speed pins every task to it."
+		"hint": "Which Nebo 1 speed this employee works at. Default lets each task pick the right one; a named speed pins every task to it.",
+		"packsTitle": "Intelligence Packs",
+		"defaultForBot": "Default for this bot",
+		"makeDefault": "Make {name} the default for this bot",
+		"createPack": "Create an Intelligence Pack…"
 	},
 	"settingsLayers": {
 		"title": "Layers",

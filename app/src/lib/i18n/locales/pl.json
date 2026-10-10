@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Na jakiej prędkości Nebo 1 pracuje ten pracownik. „Domyślnie” pozwala każdemu zadaniu wybrać właściwą; wskazana prędkość przypina do niej wszystkie zadania."
+		"hint": "Na jakiej prędkości Nebo 1 pracuje ten pracownik. „Domyślnie” pozwala każdemu zadaniu wybrać właściwą; wskazana prędkość przypina do niej wszystkie zadania.",
+		"packsTitle": "Pakiety inteligencji",
+		"defaultForBot": "Domyślny dla tego bota",
+		"makeDefault": "Ustaw {name} jako domyślny dla tego bota",
+		"createPack": "Utwórz pakiet inteligencji…"
 	},
 	"settingsLayers": {
 		"title": "Warstwy",

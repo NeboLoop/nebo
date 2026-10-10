@@ -412,6 +412,10 @@ struct JanusEntry {
     /// it (a pool's smallest member, capped at 200k).
     #[serde(default)]
     context_window: Option<i64>,
+    /// The speed's place on the ladder (nebo-1 0, then lowest = fastest).
+    /// A listing without it is still in ladder order: its position stands in.
+    #[serde(default)]
+    rank: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -419,11 +423,12 @@ struct JanusListing {
     data: Vec<JanusEntry>,
 }
 
-/// Store the sellable entries of a Janus listing, each with the window Janus
-/// reported for it, and remove the synced rows it no longer lists.
+/// Store the sellable entries of a Janus listing, each with the window and
+/// ladder rank Janus reported for it, and remove the synced rows it no longer
+/// lists.
 fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize, String> {
     let mut listed: Vec<String> = Vec::new();
-    for m in listing.data.into_iter().filter(|m| m.owned_by == "neboai") {
+    for (pos, m) in listing.data.into_iter().filter(|m| m.owned_by == "neboai").enumerate() {
         let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
         store
             .upsert_provider_model(
@@ -440,6 +445,9 @@ fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize
                 None,
                 true,
             )
+            .map_err(|e| e.to_string())?;
+        store
+            .set_provider_model_rank(&format!("janus/{}", m.id), m.rank.unwrap_or(pos as i64))
             .map_err(|e| e.to_string())?;
         listed.push(m.id);
     }
@@ -4235,6 +4243,44 @@ mod janus_sync_tests {
         let catalog: config::ModelsConfig = serde_yaml::from_str(include_str!("../../config/src/models.yaml")).unwrap();
         seed_models_from_catalog(&store, &catalog);
         assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
+    }
+
+    /// The speeds list by their rank on the ladder, never by name (which
+    /// read Balanced, Deep, Fast), whether Janus sends the rank or only its
+    /// order.
+    #[test]
+    fn the_speeds_list_by_rank_not_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let names = |store: &db::Store| -> Vec<String> {
+            store.list_provider_models("janus").unwrap().into_iter().map(|m| m.display_name).collect()
+        };
+        let ordered: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Default"},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Fast"},
+            {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Balanced"},
+            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "Deep"}
+        ]}))
+        .unwrap();
+        store_janus_listing(&store, ordered).unwrap();
+        assert_eq!(names(&store), ["Default", "Fast", "Balanced", "Deep"]);
+        let ranked: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "Deep", "rank": 3},
+            {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Balanced", "rank": 2},
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Default", "rank": 0},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Fast", "rank": 1}
+        ]}))
+        .unwrap();
+        store_janus_listing(&store, ranked).unwrap();
+        assert_eq!(names(&store), ["Default", "Fast", "Balanced", "Deep"]);
+        let all: Vec<String> = store
+            .list_all_provider_models()
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.provider == "janus")
+            .map(|m| m.display_name)
+            .collect();
+        assert_eq!(all, ["Default", "Fast", "Balanced", "Deep"]);
     }
 }
 

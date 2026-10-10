@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Bu çalışanın hangi Nebo 1 hızında çalıştığı. Varsayılan, her görevin doğru olanı seçmesine izin verir; belirli bir hız ise her görevi ona sabitler."
+		"hint": "Bu çalışanın hangi Nebo 1 hızında çalıştığı. Varsayılan, her görevin doğru olanı seçmesine izin verir; belirli bir hız ise her görevi ona sabitler.",
+		"packsTitle": "Zekâ paketleri",
+		"defaultForBot": "Bu botun varsayılanı",
+		"makeDefault": "{name} paketini bu botun varsayılanı yap",
+		"createPack": "Zekâ paketi oluştur…"
 	},
 	"settingsLayers": {
 		"title": "Katmanlar",

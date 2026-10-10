@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Modelo",
-		"hint": "Em que velocidade do Nebo 1 este funcionário trabalha. Por predefinição, cada tarefa escolhe a certa; indicar uma velocidade fixa todas as tarefas nela."
+		"hint": "Em que velocidade do Nebo 1 este funcionário trabalha. Por predefinição, cada tarefa escolhe a certa; indicar uma velocidade fixa todas as tarefas nela.",
+		"packsTitle": "Pacotes de inteligência",
+		"defaultForBot": "Predefinição deste bot",
+		"makeDefault": "Tornar {name} a predefinição deste bot",
+		"createPack": "Criar um pacote de inteligência…"
 	},
 	"settingsLayers": {
 		"title": "Camadas",

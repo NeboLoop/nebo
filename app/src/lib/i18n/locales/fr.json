@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Modèle",
-		"hint": "À quelle vitesse de Nebo 1 cet employé travaille. Par défaut, chaque tâche choisit la bonne ; une vitesse nommée fixe toutes les tâches sur elle."
+		"hint": "À quelle vitesse de Nebo 1 cet employé travaille. Par défaut, chaque tâche choisit la bonne ; une vitesse nommée fixe toutes les tâches sur elle.",
+		"packsTitle": "Packs d'intelligence",
+		"defaultForBot": "Par défaut pour ce bot",
+		"makeDefault": "Faire de {name} le choix par défaut de ce bot",
+		"createPack": "Créer un pack d'intelligence…"
 	},
 	"settingsLayers": {
 		"title": "Couches",

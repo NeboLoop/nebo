@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Op welke Nebo 1-snelheid deze medewerker werkt. Standaard laat elke taak de juiste kiezen; een genoemde snelheid zet elke taak daarop vast."
+		"hint": "Op welke Nebo 1-snelheid deze medewerker werkt. Standaard laat elke taak de juiste kiezen; een genoemde snelheid zet elke taak daarop vast.",
+		"packsTitle": "Intelligentiepakketten",
+		"defaultForBot": "Standaard voor deze bot",
+		"makeDefault": "Maak {name} de standaard voor deze bot",
+		"createPack": "Intelligentiepakket maken…"
 	},
 	"settingsLayers": {
 		"title": "Lagen",

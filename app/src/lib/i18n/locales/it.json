@@ -3227,7 +3227,11 @@
 	},
 	"modelPick": {
 		"title": "Modello",
-		"hint": "A quale velocità di Nebo 1 lavora questo dipendente. Come impostazione predefinita ogni compito sceglie quella giusta; una velocità indicata fissa tutti i compiti su quella."
+		"hint": "A quale velocità di Nebo 1 lavora questo dipendente. Come impostazione predefinita ogni compito sceglie quella giusta; una velocità indicata fissa tutti i compiti su quella.",
+		"packsTitle": "Pacchetti di intelligenza",
+		"defaultForBot": "Predefinito per questo bot",
+		"makeDefault": "Rendi {name} il predefinito per questo bot",
+		"createPack": "Crea un pacchetto di intelligenza…"
 	},
 	"settingsLayers": {
 		"title": "Livelli",

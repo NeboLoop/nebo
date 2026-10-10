@@ -681,6 +681,9 @@ pub struct ProviderModel {
     /// `catalog`, `added` (typed by hand) or `browsed` (picked from the
     /// provider's list).
     pub source: String,
+    /// A synced Janus speed's place on its ladder (lowest = fastest);
+    /// None for every other row.
+    pub rank: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
