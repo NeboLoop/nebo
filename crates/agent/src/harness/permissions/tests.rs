@@ -853,7 +853,7 @@ async fn an_unattended_run_never_schedules_work() {
     for tool in tools::event_tool::tools(store.clone()) {
         reg.register(Box::new(tool)).await;
     }
-    let once = |name: &str| json!({ "name": name, "at": "in 30 seconds", "prompt": "Retry the Odoo write." });
+    let once = |name: &str| json!({ "name": name, "reason": "retry the write", "at": "in 30 seconds", "prompt": "Retry the Odoo write." });
     let unattended = [
         (Origin::Workflow, Door::Workflow, "agent:emp:workflow:run-1:resolve-and-record:0:0"),
         (Origin::System, Door::Schedule, "agent:emp:cron:odoo-retry"),
@@ -924,7 +924,7 @@ async fn a_declared_workflow_step_pauses_on_a_tool_it_wasnt_given() {
     assert_eq!(ask.case, AskCase::StepTool { step: "resolve-and-record".into(), tool: "fetch_url".into() });
     assert!(!ask.this_once_offered(), "one allow");
     assert!(ask.reason_text().contains("resolve-and-record") && ask.reason_text().contains("fetch_url"), "{}", ask.reason_text());
-    let r = reg.execute(&c, "create_schedule", json!({ "name": "retry", "at": "in 30 seconds", "prompt": "x" })).await;
+    let r = reg.execute(&c, "create_schedule", json!({ "name": "retry", "reason": "retry", "at": "in 30 seconds", "prompt": "x" })).await;
     assert!(r.is_error && r.parked_ask.is_none() && r.content.contains("can't create, turn on or start"), "{}", r.content);
     assert_eq!((odoo_ran.load(Ordering::SeqCst), fetch_ran.load(Ordering::SeqCst)), (1, 0));
 

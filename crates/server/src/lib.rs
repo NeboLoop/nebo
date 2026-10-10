@@ -6,6 +6,7 @@ pub mod agents_export;
 pub mod app_lifecycle;
 pub mod backup_ship;
 mod artifact_updates;
+pub mod background;
 mod revocation;
 mod channel_dispatch;
 pub mod chat_dispatch;
@@ -2848,6 +2849,13 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     tokio::spawn(async move { wake::answer_thread(&state, &key, 0, Vec::new()).await });
                 })
             }),
+            background_note: Some({
+                let state = state.clone();
+                Arc::new(move |agent_id: String, session_key: String| {
+                    let state = state.clone();
+                    Box::pin(async move { background::note_for(&state, &agent_id, &session_key).await })
+                })
+            }),
         });
         // `suggest_goal` reaches the agreed goal through the harness.
         state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(
@@ -3445,6 +3453,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The one durable-work loop (heartbeats and schedules are its timers). Dark until the conversion migration moves
     // the seven mechanisms into its tables; real from day one.
     engine::spawn(state.clone());
+    // Background work: the owner's "Running now", told as it changes.
+    background::spawn(state.clone());
     // The workforce reporter: runs and duties pushed to the platform as they
     // happen, so an owner hears about a failure from us in seconds instead of
     // when they next open the console (accountability W2, bot half).

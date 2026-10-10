@@ -85,6 +85,10 @@ pub async fn create_task(
             agent_id,
             channel_ctx_json,
             overlap,
+            &db::models::ScheduleProvenance::new(
+                db::models::ScheduleCreator::Owner,
+                body["reason"].as_str().unwrap_or_default(),
+            ),
         )
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(task)))
@@ -148,6 +152,12 @@ pub async fn update_task(
             agent_id,
             channel_ctx_json,
             overlap,
+            // An edit keeps the schedule's own provenance; this only names
+            // a schedule the edit creates.
+            &db::models::ScheduleProvenance::new(
+                db::models::ScheduleCreator::Owner,
+                body["reason"].as_str().unwrap_or_default(),
+            ),
         )
         .map_err(to_error_response)?;
 

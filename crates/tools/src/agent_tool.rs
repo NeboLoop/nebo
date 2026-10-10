@@ -2970,6 +2970,10 @@ impl PersonaTool {
                         Some(&agent.id),
                         None,
                         None,
+                        &db::models::ScheduleProvenance::new(
+                            db::models::ScheduleCreator::Workflow,
+                            format!("the {} workflow's schedule", binding.binding_name),
+                        ),
                     );
 
                     fixes.push(format!(
@@ -3190,6 +3194,10 @@ impl PersonaTool {
                         Some(agent_id),
                         None,
                         None,
+                        &db::models::ScheduleProvenance::new(
+                            db::models::ScheduleCreator::Workflow,
+                            format!("the {} workflow's schedule", binding.binding_name),
+                        ),
                     ) {
                         warn!(agent = agent_id, binding = %binding.binding_name, error = %e, "failed to register schedule trigger");
                     }

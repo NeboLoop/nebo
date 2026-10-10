@@ -7,13 +7,14 @@
 use rusqlite::params;
 
 use crate::Store;
-use crate::models::{CronHistory, CronJob, OverlapPolicy};
+use crate::models::{CronHistory, CronJob, OverlapPolicy, ScheduleProvenance};
 use crate::queries::engine::NewRun;
 use types::NeboError;
 
 /// The job row plus its derived columns. Every read goes through this.
 const JOB_SELECT: &str = "SELECT j.id, j.name, j.schedule, j.command, j.task_type, j.message, j.deliver, j.instructions,
         j.enabled, j.created_at, j.agent_id, j.channel_ctx_json, j.overlap_policy,
+        j.created_by, j.created_by_run, j.created_in, j.reason,
         (SELECT datetime(MAX(r.created_at), 'unixepoch') FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS last_run,
         (SELECT COUNT(*) FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS run_count,
         (SELECT r.error FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_error
@@ -84,6 +85,7 @@ impl Store {
         channel_ctx_json: Option<&str>,
         // `None` = the default, skip.
         overlap: Option<OverlapPolicy>,
+        provenance: &ScheduleProvenance,
     ) -> Result<CronJob, NeboError> {
         let conn = self.conn()?;
         if enabled {
@@ -119,9 +121,14 @@ impl Store {
             }
         }
         conn.execute(
-            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'))",
-            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json, overlap.map(OverlapPolicy::as_str)],
+            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy,
+                                    created_by, created_by_run, created_in, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'), ?12, ?13, ?14, ?15)",
+            params![
+                name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json,
+                overlap.map(OverlapPolicy::as_str),
+                provenance.created_by.as_str(), provenance.run_id, provenance.session_key, provenance.reason
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         let id = conn.last_insert_rowid();
@@ -145,11 +152,16 @@ impl Store {
         // `None` keeps the job's policy (skip for a new one): a trigger
         // re-registered at every load never undoes the owner's choice.
         overlap: Option<OverlapPolicy>,
+        // Who made it and why. A schedule that already exists keeps the
+        // provenance it was made with: an edit or a re-registration is not
+        // a new maker.
+        provenance: &ScheduleProvenance,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'))
+            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy,
+                                    created_by, created_by_run, created_in, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'), ?12, ?13, ?14, ?15)
              ON CONFLICT(name) DO UPDATE SET
                 schedule = excluded.schedule, command = excluded.command,
                 task_type = excluded.task_type, message = excluded.message,
@@ -157,7 +169,11 @@ impl Store {
                 enabled = excluded.enabled,
                 agent_id = excluded.agent_id, channel_ctx_json = excluded.channel_ctx_json,
                 overlap_policy = COALESCE(?11, overlap_policy)",
-            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json, overlap.map(OverlapPolicy::as_str)],
+            params![
+                name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json,
+                overlap.map(OverlapPolicy::as_str),
+                provenance.created_by.as_str(), provenance.run_id, provenance.session_key, provenance.reason
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -248,6 +264,42 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Switch off the enabled schedules the run `run_id` made, and return
+    /// them as they were. A turn the owner stopped takes the schedules it
+    /// set up with it. Switched off, never deleted, as every retired
+    /// schedule is: what it was stays visible.
+    pub fn retire_schedules_made_by(&self, run_id: &str) -> Result<Vec<CronJob>, NeboError> {
+        if run_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        let jobs: Vec<CronJob> = {
+            let conn = self.conn()?;
+            let mut stmt = conn
+                .prepare(&format!("{JOB_SELECT} WHERE j.created_by_run = ?1 AND j.enabled = 1"))
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![run_id], row_to_cron_job)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| NeboError::Database(e.to_string()))?
+        };
+        for job in &jobs {
+            self.set_cron_job_enabled(job.id, false)?;
+        }
+        Ok(jobs)
+    }
+
+    /// When each schedule fires next: its one pending timer's due moment
+    /// (unix seconds), keyed by job id. A schedule with no timer armed yet
+    /// (just made, or switched off) is absent.
+    pub fn cron_next_fires(&self) -> Result<std::collections::HashMap<i64, i64>, NeboError> {
+        Ok(self
+            .engine_pending_timers("binding")?
+            .into_iter()
+            .filter_map(|t| Some((t.target_id.strip_prefix("cron:")?.parse::<i64>().ok()?, t.due_at?)))
+            .collect())
+    }
+
     // ── fires ─────────────────────────────────────────────────────────────
 
     /// Queue one fire of a job as an engine run. The engine loop executes it
@@ -328,6 +380,10 @@ fn row_to_cron_job(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
         agent_id: row.get("agent_id")?,
         channel_ctx_json: row.get("channel_ctx_json")?,
         overlap_policy: row.get("overlap_policy")?,
+        created_by: row.get("created_by")?,
+        created_by_run: row.get("created_by_run")?,
+        created_in: row.get("created_in")?,
+        reason: row.get("reason")?,
     })
 }
 
@@ -378,26 +434,56 @@ mod tests {
         let store = temp_store();
         for i in 0..MAX_ONE_SHOTS_PER_HOUR {
             store
-                .create_cron_job(&format!("retry-{i}"), "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("emp"), None, None)
+                .create_cron_job(&format!("retry-{i}"), "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, ""))
                 .unwrap();
         }
         let refused = store
-            .create_cron_job("retry-more", "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("emp"), None, None)
+            .create_cron_job("retry-more", "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, ""))
             .unwrap_err();
         assert!(matches!(refused, NeboError::Validation(ref m) if m.contains("one-time schedules")), "{refused}");
         // A repeating schedule isn't a one-shot; another employee has its own count.
-        store.create_cron_job("daily", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        store.create_cron_job("daily", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, "")).unwrap();
         store
-            .create_cron_job("other-once", "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("other"), None, None)
+            .create_cron_job("other-once", "16 12 16 8 10 * 2099", "", "agent", Some("x"), None, None, true, Some("other"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, ""))
             .unwrap();
 
         for i in 0..(MAX_ACTIVE_SCHEDULES_PER_EMPLOYEE - MAX_ONE_SHOTS_PER_HOUR - 1) {
-            store.create_cron_job(&format!("d-{i}"), "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+            store.create_cron_job(&format!("d-{i}"), "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, "")).unwrap();
         }
-        let full = store.create_cron_job("one-too-many", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap_err();
+        let full = store.create_cron_job("one-too-many", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, "")).unwrap_err();
         assert!(matches!(full, NeboError::Validation(ref m) if m.contains("active schedules")), "{full}");
         // A paused one doesn't count against it.
-        store.create_cron_job("paused", "0 9 * * *", "", "agent", Some("x"), None, None, false, Some("emp"), None, None).unwrap();
+        store.create_cron_job("paused", "0 9 * * *", "", "agent", Some("x"), None, None, false, Some("emp"), None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, "")).unwrap();
+    }
+
+    /// A schedule keeps who made it, from which run and conversation, and
+    /// why; re-registering it keeps that. The run's own schedules are the
+    /// ones retired with it: switched off, never deleted, and only once.
+    #[test]
+    fn provenance_is_kept_and_a_runs_schedules_retire_with_it() {
+        use crate::models::{ScheduleCreator, ScheduleProvenance};
+        let store = temp_store();
+        let by_run = ScheduleProvenance::new(ScheduleCreator::Chat, "Kristi asked").in_run(Some("run-1"), "agent:ava:web");
+        let mine = store.create_cron_job("mine", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("ava"), None, None, &by_run).unwrap();
+        assert_eq!(
+            (mine.created_by.as_str(), mine.created_by_run.as_deref(), mine.created_in.as_deref(), mine.reason.as_str()),
+            ("chat", Some("run-1"), Some("agent:ava:web"), "Kristi asked")
+        );
+        let other = ScheduleProvenance::new(ScheduleCreator::Chat, "y").in_run(Some("run-2"), "agent:ava:web");
+        let theirs = store.create_cron_job("theirs", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("ava"), None, None, &other).unwrap();
+        // An edit through upsert is not a new maker.
+        store
+            .upsert_cron_job("mine", "0 10 * * *", "", "agent", Some("x"), None, None, true, Some("ava"), None, None, &ScheduleProvenance::new(ScheduleCreator::Owner, "edited"))
+            .unwrap();
+        let edited = store.get_cron_job(mine.id).unwrap().unwrap();
+        assert_eq!((edited.schedule.as_str(), edited.created_by.as_str(), edited.reason.as_str()), ("0 10 * * *", "chat", "Kristi asked"));
+
+        let retired = store.retire_schedules_made_by("run-1").unwrap();
+        assert_eq!(retired.iter().map(|j| j.id).collect::<Vec<_>>(), vec![mine.id]);
+        assert_eq!(store.get_cron_job(mine.id).unwrap().unwrap().enabled, Some(0), "switched off, kept");
+        assert_eq!(store.get_cron_job(theirs.id).unwrap().unwrap().enabled, Some(1));
+        assert!(store.retire_schedules_made_by("run-1").unwrap().is_empty(), "once");
+        assert!(store.retire_schedules_made_by("").unwrap().is_empty(), "no run, nothing");
     }
 
     /// The engine lists the enabled schedules every tick (5 s); each job's
@@ -430,7 +516,7 @@ mod tests {
     fn derived_columns_and_history_read_from_engine_runs() {
         let store = temp_store();
         let job = store
-            .create_cron_job("j", "0 0 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None)
+            .create_cron_job("j", "0 0 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, ""))
             .unwrap();
         assert_eq!(job.run_count, Some(0));
         assert!(job.last_run.is_none());

@@ -54,7 +54,7 @@ pub use app_listings::AppListing;
 pub use agents::agent_slug;
 pub use inbound_mail::InboundMailRow;
 pub use assignments::{Assignment, NewAssignment};
-pub use cron_jobs::cron_ref;
+pub use cron_jobs::{cron_ref, is_one_shot};
 pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
 pub use chats::{AUTOMATION_KEY, is_automation_notice};
 pub use engine::{

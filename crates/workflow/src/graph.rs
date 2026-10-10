@@ -381,6 +381,7 @@ fn build_ctx<'a>(
         skill_content,
         event_bus,
         emit_sources,
+        budget: crate::engine::RunBudget::for_workflow(def, progress_tx.clone()),
         progress_tx,
         checkpoint: checkpoint.cloned(),
         resume,
@@ -401,7 +402,6 @@ fn build_ctx<'a>(
             total_output_tokens: 0,
             pending_experts: Vec::new(),
         }),
-        budget: crate::engine::RunBudget::for_workflow(def),
     }
 }
 

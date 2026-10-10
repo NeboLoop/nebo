@@ -59,7 +59,14 @@ pub struct Outlets {
     /// stopped turn never answered. A stopped turn's stream has ended, so
     /// its answer needs a turn of its own the app runs.
     pub answer_thread: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// The note a turn of an employee reads about its own background work,
+    /// for (employee id, the turn's session key); empty when none runs.
+    pub background_note: Option<BackgroundNote>,
 }
+
+/// Reads an employee's background note (see [`Outlets::background_note`]).
+pub type BackgroundNote =
+    Arc<dyn Fn(String, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> + Send + Sync>;
 
 /// The facade every caller starts a turn through: the services a turn runs
 /// against. Cheap to clone; a running turn owns a clone.
@@ -184,6 +191,10 @@ impl Harness {
 
     pub(crate) fn answer_thread(&self) -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
         self.outlets.get().and_then(|o| o.answer_thread.clone())
+    }
+
+    pub(crate) fn background_note(&self) -> Option<BackgroundNote> {
+        self.outlets.get().and_then(|o| o.background_note.clone())
     }
 
     pub fn sessions(&self) -> &SessionManager {

@@ -86,7 +86,10 @@ pub enum TurnEvent {
     SkillListing(LinedDelta),
     /// The helper types changed; a line is the type's use and tool set.
     HelperTypes(LinedDelta),
-    /// A proactive inbox item or a presence change.
+    /// The employee's own background work: its helpers and commands still
+    /// running, its workflow runs running or waiting, its schedules and when
+    /// each fires next. Told at the start of every turn while there is any,
+    /// and again when it changes.
     BackgroundUpdate(String),
     /// The last reply hit the output limit.
     CutoffResume,
@@ -424,7 +427,14 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::ToolsTriggered(defs) => return tools_triggered_row(defs),
         TurnEvent::SkillListing(d) => return d.attachment("skill_listing", &SKILL_WORDS),
         TurnEvent::HelperTypes(d) => return d.attachment("helper_types", &HELPER_WORDS),
-        TurnEvent::BackgroundUpdate(text) => ("background_update", non_empty(text)?),
+        TurnEvent::BackgroundUpdate(text) => {
+            let text = non_empty(text)?;
+            return Some(Attachment {
+                kind: "background_update",
+                data: serde_json::Map::from_iter([("note".to_string(), serde_json::json!(text))]),
+                text,
+            });
+        }
         TurnEvent::CutoffResume => (
             "cutoff_resume",
             "Your last reply hit the output limit. Resume directly, with no apology and no recap: pick up mid-thought if that is where it stopped, and break the remaining work into smaller pieces.".to_string(),
@@ -792,6 +802,29 @@ pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<T
 /// What the conversation is told when the owner's phone position stops
 /// being shared with the employee: sharing was turned off, or the phone
 /// stopped reporting.
+/// The background note when what was told has ended and nothing runs now.
+pub const NOTHING_IN_BACKGROUND: &str = "None of your background work is running now.";
+
+/// The background note to tell this step, if any: `now` is the note as it
+/// stands (empty when nothing runs). The first step of a turn tells it
+/// whenever there is any; a later step only when it changed since it was
+/// last told. Once the told work has all ended, that is told once.
+pub fn background_event(now: &str, history: &[ChatMessage], turn_start: bool) -> Option<TurnEvent> {
+    let told = history
+        .iter()
+        .filter_map(attachment_fields)
+        .filter(|f| f.get("kind").and_then(|k| k.as_str()) == Some("background_update"))
+        .last()
+        .map(|f| f.get("note").and_then(|n| n.as_str()).unwrap_or_default().to_string());
+    let now = now.trim();
+    if now.is_empty() {
+        return told
+            .filter(|t| !t.is_empty() && t != NOTHING_IN_BACKGROUND)
+            .map(|_| TurnEvent::BackgroundUpdate(NOTHING_IN_BACKGROUND.to_string()));
+    }
+    (turn_start || told.as_deref() != Some(now)).then(|| TurnEvent::BackgroundUpdate(now.to_string()))
+}
+
 const PHONE_LOCATION_WITHDRAWN: &str = "The owner's phone location is not shared with you now: sharing was turned off \
 or the phone stopped reporting. Earlier readings in this conversation, and the owner's distance from the office worked \
 out from them, are withdrawn; don't use or repeat them.";
@@ -1091,6 +1124,33 @@ mod tests {
     /// The row the writer stores for an attachment.
     fn stored(a: &Attachment) -> ChatMessage {
         row("user", &crate::harness::reminders::wrap(&a.text), None, Some(a.metadata()))
+    }
+
+    /// The background note is told at the start of every turn while there
+    /// is work, mid-turn only when it changed, never when nothing runs, and
+    /// once when the work it told has all ended.
+    #[test]
+    fn the_background_note_is_told_per_turn_and_on_change() {
+        let note = "Your background work right now:\n- helper h-1 \"price the order\" is still running.";
+        let told = |text: &str| stored(&attachment_for(&TurnEvent::BackgroundUpdate(text.into())).unwrap());
+        let say = |e: Option<TurnEvent>| match e {
+            Some(TurnEvent::BackgroundUpdate(t)) => Some(t),
+            None => None,
+            other => panic!("{other:?}"),
+        };
+        // Nothing runs, nothing was told: silence.
+        assert_eq!(say(background_event("", &[], true)), None);
+        // Work runs: told at the turn's start, and only then while unchanged.
+        assert_eq!(say(background_event(note, &[], true)).as_deref(), Some(note));
+        let history = vec![told(note)];
+        assert_eq!(say(background_event(note, &history, false)), None, "mid-turn and unchanged");
+        assert_eq!(say(background_event(note, &history, true)).as_deref(), Some(note), "every turn");
+        let changed = "Your background work right now:\n- schedule \"call-back\" fires next Fri Oct 10 15:00.";
+        assert_eq!(say(background_event(changed, &history, false)).as_deref(), Some(changed), "changed mid-turn");
+        // The told work ended: said once, then silence.
+        assert_eq!(say(background_event("", &history, false)).as_deref(), Some(NOTHING_IN_BACKGROUND));
+        let after = vec![told(note), told(NOTHING_IN_BACKGROUND)];
+        assert_eq!(say(background_event("", &after, true)), None);
     }
 
     fn facts() -> SessionFacts {

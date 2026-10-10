@@ -117,7 +117,7 @@ impl GoalObserver for GoalOutlet {
         };
         self.state
             .helpers
-            .list(&key)
+            .list(Some(&key))
             .into_iter()
             .filter(|h| h.running)
             .map(|h| agent::harness::compact::restore::RunningWork::helper(h.task_id, h.description))

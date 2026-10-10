@@ -46,20 +46,23 @@ fn activity_max_iterations(activity: &Activity) -> u32 {
 pub struct RunBudget {
     cap: u32,
     used: std::sync::atomic::AtomicU32,
+    /// Where the turns used are told as they are spent, so the owner sees
+    /// how far into its budget a running workflow is.
+    progress: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
 }
 
 impl RunBudget {
     /// [`RUN_MAX_ITERATIONS`], or more when an activity explicitly gives one
     /// step more than that (a loop node's maxIterations counts its visits,
     /// not model turns, and is left out).
-    pub(crate) fn for_workflow(def: &WorkflowDef) -> Self {
+    pub(crate) fn for_workflow(def: &WorkflowDef, progress: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>) -> Self {
         let cap = def
             .activities
             .iter()
             .filter(|a| a.activity_type != "loop")
             .filter_map(explicit_max_iterations)
             .fold(RUN_MAX_ITERATIONS, u32::max);
-        Self { cap, used: std::sync::atomic::AtomicU32::new(0) }
+        Self { cap, used: std::sync::atomic::AtomicU32::new(0), progress }
     }
 
     fn left(&self) -> u32 {
@@ -67,7 +70,10 @@ impl RunBudget {
     }
 
     fn spend(&self, turns: u32) {
-        self.used.fetch_add(turns, std::sync::atomic::Ordering::Relaxed);
+        let used = self.used.fetch_add(turns, std::sync::atomic::Ordering::Relaxed) + turns;
+        if let Some(tx) = &self.progress {
+            let _ = tx.send(WorkflowProgress::Turns { used, cap: self.cap });
+        }
     }
 
     /// The turns the next step may take: its own cap, or what the run has
@@ -312,6 +318,8 @@ pub enum WorkflowProgress {
         seq: i64,
         status: String,
     },
+    /// Model turns the run has used of its budget, after a step spends some.
+    Turns { used: u32, cap: u32 },
 }
 
 /// Approval-checkpoint context for a run: an activity whose call the
@@ -445,7 +453,7 @@ pub async fn execute_workflow(
     // on the first call regardless of how much work the model actually did.
     let mut prior_context = String::new();
     let activity_count = def.activities.len();
-    let budget = RunBudget::for_workflow(def);
+    let budget = RunBudget::for_workflow(def, progress_tx.clone());
 
     // Circuit breaker: abort if 3+ consecutive activities fail with the same error pattern
     const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
@@ -2290,6 +2298,24 @@ mod engine_tests {
         assert_eq!(looper.granted(), [50, 50, 50, 30], "each step gets its 50, the last what is left");
         let said = err.to_string();
         assert!(said.contains("150 model turns in total") && said.contains("split the work"), "{said}");
+    }
+
+    /// Every spend tells the turns the run has used of its cap, so the
+    /// owner sees how far into its budget a running workflow is.
+    #[test]
+    fn spending_tells_the_turns_used_of_the_cap() {
+        let def = crate::parser::parse_workflow(r#"{"version":"1.0","id":"w","name":"w","activities":[{"id":"a","intent":"a"}]}"#).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let budget = RunBudget::for_workflow(&def, Some(tx));
+        budget.spend(3);
+        budget.spend(2);
+        let told: Vec<(u32, u32)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|p| match p {
+                WorkflowProgress::Turns { used, cap } => (used, cap),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(told, [(3, RUN_MAX_ITERATIONS), (5, RUN_MAX_ITERATIONS)]);
     }
 
     /// The budget is the run's, not an activity's: four activities of 45

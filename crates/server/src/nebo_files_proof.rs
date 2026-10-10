@@ -418,6 +418,10 @@ fn scheduled(agent: &str, name: &str, command: String) -> db::models::CronJob {
         agent_id: Some(agent.to_string()),
         channel_ctx_json: None,
         overlap_policy: "skip".to_string(),
+        created_by: "owner".to_string(),
+        created_by_run: None,
+        created_in: None,
+        reason: String::new(),
     }
 }
 

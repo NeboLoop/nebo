@@ -67,6 +67,7 @@ impl Kind {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "A short unique name, e.g. \"call-back-kristi\"." },
+                    "reason": { "type": "string", "description": "Why it exists, in a few words the owner reads." },
                     "at": { "type": "string", "description": "Run once, this long from now: \"in 5 minutes\", \"in 2 hours\"." },
                     "cron": { "type": "string", "description": "Run at a clock time or on a repeat: minute hour day month weekday." },
                     "prompt": { "type": "string", "description": "What to do when it fires; you run it with your tools and memory." },
@@ -77,7 +78,7 @@ impl Kind {
                         "description": "When it comes due while its last run is still going: skip that time (the default), buffer_one (run once when the last run ends), or allow_all (run anyway)."
                     }
                 },
-                "required": ["name"]
+                "required": ["name", "reason"]
             }),
             Kind::List => serde_json::json!({ "type": "object", "properties": {} }),
             Kind::SetPaused => serde_json::json!({
@@ -204,6 +205,9 @@ impl DynTool for ScheduleTool {
         if at.is_empty() == cron.is_empty() {
             return Err("Give exactly one of `at` (once, e.g. \"in 3 hours\") or `cron` (a clock time or repeat).".into());
         }
+        if str_field(input, "reason").is_empty() {
+            return Err("Give `reason`: why this schedule exists, in a few words the owner reads beside it.".into());
+        }
         let (prompt, command) = (str_field(input, "prompt"), str_field(input, "command"));
         if prompt.is_empty() == command.is_empty() {
             return Err("Give exactly one of `prompt` (what you do when it fires) or `command` (a shell command).".into());
@@ -264,6 +268,20 @@ impl DynTool for ScheduleTool {
                 Kind::History => self.history(name),
             }
         })
+    }
+}
+
+/// Who a schedule made through this door was made by: a workflow step, a
+/// scheduled or heartbeat turn, the owner's own local API, or else an
+/// employee in a conversation.
+fn creator(door: &types::permissions::Door) -> db::models::ScheduleCreator {
+    use db::models::ScheduleCreator;
+    use types::permissions::Door;
+    match door {
+        Door::Workflow => ScheduleCreator::Workflow,
+        Door::Schedule | Door::Heartbeat => ScheduleCreator::Schedule,
+        Door::LocalApi => ScheduleCreator::Owner,
+        _ => ScheduleCreator::Chat,
     }
 }
 
@@ -338,6 +356,8 @@ impl ScheduleTool {
             agent_id.as_deref(),
             channel_ctx_json.as_deref(),
             overlap,
+            &db::models::ScheduleProvenance::new(creator(&ctx.door), str_field(input, "reason"))
+                .in_run(ctx.run_id.as_deref(), &ctx.session_key),
         ) {
             Ok(job) => ToolResult::ok(format!(
                 "Created schedule '{}' (id={}): {} ({}){}",
@@ -369,7 +389,8 @@ impl ScheduleTool {
                     .map(|j| {
                         let state = if j.enabled.unwrap_or(0) != 0 { "active" } else { "paused" };
                         let work = if j.task_type == "agent" { "prompt" } else { "command" };
-                        format!("- {} [{}] ({}) — {}", j.name, state, work, j.schedule)
+                        let why = if j.reason.is_empty() { String::new() } else { format!(": {}", j.reason) };
+                        format!("- {} [{}] ({}) — {}{why}", j.name, state, work, j.schedule)
                     })
                     .collect();
                 ToolResult::ok(format!("{}\n{}", list_header(jobs.len(), total), lines.join("\n")))
@@ -549,16 +570,18 @@ mod tests {
     fn a_create_names_one_time_and_one_kind_of_work() {
         let (s, _d) = store();
         let create = tool(&s, "create_schedule");
-        let ok = json!({"name": "call-back", "at": "in 3 hours", "prompt": "Remind the owner to call back"});
+        let ok = json!({"name": "call-back", "reason": "Kristi asked", "at": "in 3 hours", "prompt": "Remind the owner to call back"});
         assert!(create.validate_input(&ok).is_ok());
-        assert!(create.validate_input(&json!({"name": "x", "cron": "0 9 * * 1-5", "command": "echo hi"})).is_ok());
-        let no_time = create.validate_input(&json!({"name": "x", "prompt": "p"})).unwrap_err();
+        assert!(create.validate_input(&json!({"name": "x", "reason": "r", "cron": "0 9 * * 1-5", "command": "echo hi"})).is_ok());
+        let no_time = create.validate_input(&json!({"name": "x", "reason": "r", "prompt": "p"})).unwrap_err();
         assert!(no_time.contains("`at`") && no_time.contains("`cron`"), "{no_time}");
-        assert!(create.validate_input(&json!({"name": "x", "at": "in 1 hour", "cron": "0 0 9 * * *", "prompt": "p"})).is_err());
-        let no_work = create.validate_input(&json!({"name": "x", "at": "in 1 hour"})).unwrap_err();
+        assert!(create.validate_input(&json!({"name": "x", "reason": "r", "at": "in 1 hour", "cron": "0 0 9 * * *", "prompt": "p"})).is_err());
+        let no_work = create.validate_input(&json!({"name": "x", "reason": "r", "at": "in 1 hour"})).unwrap_err();
         assert!(no_work.contains("`prompt`") && no_work.contains("`command`"), "{no_work}");
-        let clock = create.validate_input(&json!({"name": "x", "at": "3pm", "prompt": "p"})).unwrap_err();
+        let clock = create.validate_input(&json!({"name": "x", "reason": "r", "at": "3pm", "prompt": "p"})).unwrap_err();
         assert!(clock.contains("\"3pm\"") && clock.contains("`cron`"), "{clock}");
+        let no_reason = create.validate_input(&json!({"name": "x", "at": "in 1 hour", "prompt": "p"})).unwrap_err();
+        assert!(no_reason.contains("`reason`"), "{no_reason}");
     }
 
     /// The cron a model writes is read strictly: five fields minute first
@@ -568,13 +591,13 @@ mod tests {
     fn a_create_takes_five_field_cron_and_refuses_six() {
         let (s, _d) = store();
         let create = tool(&s, "create_schedule");
-        assert!(create.validate_input(&json!({"name": "x", "cron": "30 8 * * *", "prompt": "p"})).is_ok());
-        assert!(create.validate_input(&json!({"name": "x", "cron": "every hour", "prompt": "p"})).is_ok());
-        let six = create.validate_input(&json!({"name": "x", "cron": "30 8 * * * *", "prompt": "p"})).unwrap_err();
+        assert!(create.validate_input(&json!({"name": "x", "reason": "r", "cron": "30 8 * * *", "prompt": "p"})).is_ok());
+        assert!(create.validate_input(&json!({"name": "x", "reason": "r", "cron": "every hour", "prompt": "p"})).is_ok());
+        let six = create.validate_input(&json!({"name": "x", "reason": "r", "cron": "30 8 * * * *", "prompt": "p"})).unwrap_err();
         assert!(six.contains("six fields") && six.contains("\"30 8 * * *\""), "{six}");
-        let sec_first = create.validate_input(&json!({"name": "x", "cron": "0 30 8 * * *", "prompt": "p"})).unwrap_err();
+        let sec_first = create.validate_input(&json!({"name": "x", "reason": "r", "cron": "0 30 8 * * *", "prompt": "p"})).unwrap_err();
         assert!(sec_first.contains("five fields"), "{sec_first}");
-        let guess = create.validate_input(&json!({"name": "x", "cron": "every morning at 8", "prompt": "p"})).unwrap_err();
+        let guess = create.validate_input(&json!({"name": "x", "reason": "r", "cron": "every morning at 8", "prompt": "p"})).unwrap_err();
         assert!(guess.contains("Could not read"), "{guess}");
         let description = Kind::Create.description();
         assert!(description.contains("\"30 8 * * *\" is 8:30 every day") && !description.contains("seconds:"), "{description}");
@@ -584,13 +607,21 @@ mod tests {
     #[tokio::test]
     async fn each_tool_does_its_one_job() {
         let (s, _d) = store();
-        let ctx = ToolContext::default();
+        let mut ctx = ToolContext::default();
+        ctx.session_key = "agent:ava:web".into();
+        ctx.run_id = Some("run-1".into());
         let r = tool(&s, "create_schedule")
-            .execute_dyn(&ctx, json!({"name": "call-back", "at": "in 5 minutes", "prompt": "Remind the owner: call back"}))
+            .execute_dyn(&ctx, json!({"name": "call-back", "reason": "Kristi asked for a call back", "at": "in 5 minutes", "prompt": "Remind the owner: call back"}))
             .await;
         assert!(!r.is_error && r.content.contains("Created schedule 'call-back'") && r.content.contains("fires at"), "{}", r.content);
+        // Who made it, in which run and conversation, and why.
+        let job = s.get_cron_job_by_name("call-back").unwrap().unwrap();
+        assert_eq!(
+            (job.created_by.as_str(), job.created_by_run.as_deref(), job.created_in.as_deref(), job.reason.as_str()),
+            ("chat", Some("run-1"), Some("agent:ava:web"), "Kristi asked for a call back")
+        );
         let listed = tool(&s, "list_schedules").execute_dyn(&ctx, json!({})).await;
-        assert!(listed.content.contains("call-back [active] (prompt)"), "{}", listed.content);
+        assert!(listed.content.contains("call-back [active] (prompt)") && listed.content.contains(": Kristi asked for a call back"), "{}", listed.content);
         let paused = tool(&s, "set_schedule_paused").execute_dyn(&ctx, json!({"name": "call-back", "paused": true})).await;
         assert!(!paused.is_error, "{}", paused.content);
         assert!(tool(&s, "list_schedules").execute_dyn(&ctx, json!({})).await.content.contains("[paused]"));
@@ -611,7 +642,7 @@ mod tests {
     fn a_scheduled_command_is_decided_as_a_command() {
         let (s, _d) = store();
         let create = tool(&s, "create_schedule");
-        let cmd = json!({"name": "x", "cron": "0 0 9 * * *", "command": "rm -rf /tmp/cache"});
+        let cmd = json!({"name": "x", "reason": "r", "cron": "0 0 9 * * *", "command": "rm -rf /tmp/cache"});
         assert_eq!(create.capability(&cmd), Some("shell"));
         assert_eq!(
             create.rule_field(&cmd),
@@ -622,14 +653,14 @@ mod tests {
             e
         };
         assert_eq!(create.effects(&cmd), arming(types::permissions::CallEffects::unknown()));
-        let prompt = json!({"name": "x", "at": "in 1 hour", "prompt": "check the calendar"});
+        let prompt = json!({"name": "x", "reason": "r", "at": "in 1 hour", "prompt": "check the calendar"});
         assert_eq!(create.capability(&prompt), None);
         assert_eq!(create.rule_field(&prompt), None);
         assert_eq!(create.effects(&prompt), arming(types::permissions::CallEffects::none()));
         // Resuming and firing arm scheduled work; pausing, deleting and reading don't.
         assert!(tool(&s, "run_schedule_now").effects(&json!({"name": "x"})).arms_schedule);
-        assert!(tool(&s, "set_schedule_paused").effects(&json!({"name": "x", "paused": false})).arms_schedule);
-        assert!(!tool(&s, "set_schedule_paused").effects(&json!({"name": "x", "paused": true})).arms_schedule);
+        assert!(tool(&s, "set_schedule_paused").effects(&json!({"name": "x", "reason": "r", "paused": false})).arms_schedule);
+        assert!(!tool(&s, "set_schedule_paused").effects(&json!({"name": "x", "reason": "r", "paused": true})).arms_schedule);
         assert!(!tool(&s, "delete_schedule").effects(&json!({"name": "x"})).arms_schedule);
         assert!(!tool(&s, "list_schedules").effects(&json!({})).arms_schedule);
         assert!(tool(&s, "list_schedules").read_only(&json!({})));

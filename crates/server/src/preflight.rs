@@ -724,6 +724,7 @@ mod tests {
                 Some("emp"),
                 None,
                 None,
+                &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, ""),
             )
             .unwrap();
         let run = s
@@ -744,6 +745,7 @@ mod tests {
                 Some("emp"),
                 None,
                 None,
+                &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, ""),
             )
             .unwrap();
         let run = s

@@ -861,7 +861,7 @@ mod tests {
             .upsert_agent_workflow(id, "nightly", "schedule", "0 3 * * *", Some("Nightly"), None, None, None, None, false)
             .unwrap();
         store
-            .create_cron_job(&format!("agent-{id}-nightly"), "0 3 * * *", "", "agent", None, None, None, true, Some(id), None, None)
+            .create_cron_job(&format!("agent-{id}-nightly"), "0 3 * * *", "", "agent", None, None, None, true, Some(id), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Workflow, "the nightly workflow"))
             .unwrap();
         folder
     }

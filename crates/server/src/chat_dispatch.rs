@@ -1822,6 +1822,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         cleanup_tools.close_browser_session(cleanup_id).await;
 
+        // A turn the owner stopped takes the schedules it made with it.
+        crate::background::turn_ended(&wake_state, &_run_handle, &cancel_token);
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
 
@@ -1904,6 +1906,7 @@ pub async fn run_chat_events(
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
     let harness = state.harness.clone();
     let cleanup_tools = state.tools.clone();
+    let end_state = state.clone();
 
     remember_input(state, &config);
     let sid = config.session_key.clone();
@@ -1979,6 +1982,8 @@ pub async fn run_chat_events(
             .map(|s| s.id);
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         cleanup_tools.close_browser_session(cleanup_id).await;
+        // A turn the owner stopped takes the schedules it made with it.
+        crate::background::turn_ended(&end_state, &_run_handle, &cancel_token);
         drop(_run_handle);
         Ok(())
     });

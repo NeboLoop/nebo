@@ -713,6 +713,34 @@ export function verifyEmail(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List background"
+ */
+export function listBackground(agentId?: string) {
+	return webapi.get<components.BackgroundListResponse>(`/api/v1/background`, { agentId })
+}
+
+/**
+ * @description "Stop all background"
+ */
+export function stopAllBackground(req: Record<string, unknown> = {}) {
+	return webapi.post<components.StopEverythingResponse>(`/api/v1/background/stop-all`, req)
+}
+
+/**
+ * @description "Background output"
+ */
+export function backgroundOutput(id: string) {
+	return webapi.get<components.BackgroundOutputResponse>(`/api/v1/background/${id}/output`)
+}
+
+/**
+ * @description "Background action"
+ */
+export function backgroundAction(id: string, action: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.BackgroundActionResponse>(`/api/v1/background/${id}/${action}`, req)
+}
+
+/**
  * @description "List backups"
  */
 export function listBackups() {
