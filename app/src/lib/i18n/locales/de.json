@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Wobei kannst du mir helfen?",
 		"roleSuggestion2": "Stell dich kurz vor",
 		"messageChannel": "Nachricht an #{channel}...",
-		"messagedCoworker": "Nachricht geschickt",
 		"disclaimer": "Nebo kann Fehler machen. Überprüfe wichtige Informationen.",
 		"uploadsKept": "Hochgeladene Dateien werden {days, plural, one {# Tag} other {# Tage}} aufbewahrt.",
 		"goodMorning": "Guten Morgen",

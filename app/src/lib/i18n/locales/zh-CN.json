@@ -311,7 +311,6 @@
 		"roleSuggestion1": "你能帮我做什么？",
 		"roleSuggestion2": "做个简单的自我介绍",
 		"messageChannel": "消息 #{channel}...",
-		"messagedCoworker": "已发送消息",
 		"disclaimer": "Nebo 可能会犯错。请核实重要信息。",
 		"uploadsKept": "上传的文件保留 {days} 天。",
 		"goodMorning": "早上好",

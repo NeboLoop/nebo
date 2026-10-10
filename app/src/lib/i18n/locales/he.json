@@ -311,7 +311,6 @@
 		"roleSuggestion1": "במה תוכל לעזור לי?",
 		"roleSuggestion2": "תן לי היכרות קצרה",
 		"messageChannel": "הודעה ל-#{channel}...",
-		"messagedCoworker": "שלח הודעה",
 		"disclaimer": "Nebo עלול לטעות. ודא מידע חשוב.",
 		"uploadsKept": "{days, plural, one {העלאות נשמרות למשך יום אחד.} two {העלאות נשמרות למשך יומיים.} other {העלאות נשמרות למשך # ימים.}}",
 		"goodMorning": "בוקר טוב",

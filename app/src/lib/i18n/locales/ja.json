@@ -311,7 +311,6 @@
 		"roleSuggestion1": "何をお手伝いできますか？",
 		"roleSuggestion2": "簡単な自己紹介をして",
 		"messageChannel": "#{channel} にメッセージ...",
-		"messagedCoworker": "メッセージ送信済み",
 		"disclaimer": "Neboは間違えることがあります。重要な情報はご確認ください。",
 		"uploadsKept": "アップロードは{days}日間保存されます。",
 		"goodMorning": "おはようございます",

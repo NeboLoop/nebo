@@ -311,7 +311,6 @@
 		"roleSuggestion1": "你能幫我做什麼？",
 		"roleSuggestion2": "做個簡單的自我介紹",
 		"messageChannel": "訊息 #{channel}...",
-		"messagedCoworker": "已傳訊息",
 		"disclaimer": "Nebo 可能會犯錯。請驗證重要資訊。",
 		"uploadsKept": "上傳的檔案會保留 {days} 天。",
 		"goodMorning": "早安",

@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Como me pode ajudar?",
 		"roleSuggestion2": "Faça uma breve apresentação",
 		"messageChannel": "Mensagem para #{channel}...",
-		"messagedCoworker": "Mensagem enviada",
 		"disclaimer": "O Nebo pode cometer erros. Verifique informações importantes.",
 		"uploadsKept": "{days, plural, one {Os ficheiros carregados são guardados durante # dia.} other {Os ficheiros carregados são guardados durante # dias.}}",
 		"goodMorning": "Bom dia",

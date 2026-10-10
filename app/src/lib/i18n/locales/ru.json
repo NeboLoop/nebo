@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Чем ты можешь мне помочь?",
 		"roleSuggestion2": "Кратко представься",
 		"messageChannel": "Сообщение #{channel}...",
-		"messagedCoworker": "Написал",
 		"disclaimer": "Nebo может ошибаться. Проверяйте важную информацию.",
 		"uploadsKept": "Загрузки хранятся {days, plural, one {# день} few {# дня} many {# дней} other {# дня}}.",
 		"goodMorning": "Доброе утро",

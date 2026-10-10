@@ -311,7 +311,6 @@
 		"roleSuggestion1": "What can you help me with?",
 		"roleSuggestion2": "Give me a brief introduction",
 		"messageChannel": "Message #{channel}...",
-		"messagedCoworker": "Messaged",
 		"disclaimer": "Nebo can make mistakes. Verify important information.",
 		"uploadsKept": "Uploads are kept for {days} days.",
 		"goodMorning": "Good morning",
