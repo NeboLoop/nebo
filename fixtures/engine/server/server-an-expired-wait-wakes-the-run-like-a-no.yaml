@@ -1,0 +1,9 @@
+id: server-an-expired-wait-wakes-the-run-like-a-no
+name: "An expired wait wakes the run like a no"
+description: |
+  A day with no answer wakes the parked run with the denial's event, marked
+  expired, on the same key: an answer recorded first wins and the expiry is
+  its duplicate.
+target_component: engine
+proof: engine::proof::server::an_expired_wait_wakes_the_run_like_a_no
+conversation: []

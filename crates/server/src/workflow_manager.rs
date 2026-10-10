@@ -150,8 +150,36 @@ impl WorkflowManagerImpl {
                 info!(run_id, "workflow run cancelled");
                 Ok(())
             }
-            None => Err(format!("no active run found: {}", run_id)),
+            None => self.cancel_parked_run(run_id),
         }
+    }
+
+    /// A run parked on the owner's answer or on experts has no task to
+    /// stop: it waits in the table. Cancelling it ends it there, cancelled
+    /// with its completion time, and drops its suspension; the ask it
+    /// waited on is withdrawn the moment anything looks
+    /// (`Asks::open`, `Asks::withdraw_for_run`).
+    fn cancel_parked_run(&self, run_id: &str) -> Result<(), String> {
+        let run = self
+            .store
+            .get_workflow_run(run_id)
+            .map_err(|e| e.to_string())?
+            .filter(|r| matches!(r.status.as_str(), "awaiting_approval" | "waiting"))
+            .ok_or_else(|| format!("no active run found: {}", run_id))?;
+        let _ = self.store.delete_workflow_suspension(run_id);
+        self.store
+            .complete_workflow_run(
+                run_id,
+                "cancelled",
+                run.total_tokens_used.unwrap_or(0),
+                Some("cancelled by user"),
+                run.error_activity.as_deref().or(run.current_activity.as_deref()),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        self.hub.broadcast("workflow_run_cancelled", serde_json::json!({ "runId": run_id }));
+        info!(run_id, "parked workflow run cancelled");
+        Ok(())
     }
 
     /// Boot recovery (WS4): sweep runs stranded by process death and resume
@@ -2154,7 +2182,7 @@ pub(crate) fn tell_owner_if_blocked(
     }
 }
 
-fn notify_workflow_failure(
+pub(crate) fn notify_workflow_failure(
     store: &db::Store,
     hub: &ClientHub,
     agent_id: &str,
@@ -3230,7 +3258,7 @@ async fn workflow_tuning_sweep(
 /// the owner, never the employee's own words. It carries the automation
 /// marker, which the model's view and memory extraction leave out (a
 /// five-minute workflow once left 36,980 of them as context).
-fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
+pub(crate) fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
     let msg_id = uuid::Uuid::new_v4().to_string();
     let metadata = serde_json::json!({ db::AUTOMATION_KEY: true }).to_string();
     match store.create_chat_message_for_runner(
@@ -3570,6 +3598,30 @@ mod list_tests {
     }
 
     const STEPS: &str = r#"{"steps": ["Ask the owner for the customer name.", "Draft the invoice."]}"#;
+
+    /// Bake-off 2026-10-10 (B10): cancelling a run parked on the owner's
+    /// answer said "no active run found" and left it waiting. It ends
+    /// cancelled, with its completion time, and its suspension goes; a run
+    /// that is neither running nor parked is still refused.
+    #[tokio::test]
+    async fn a_parked_run_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let mgr = manager(store.clone());
+        store.create_workflow_run("run-p", &types::keyparser::agent_workflow_id("emp"), "schedule", Some("scan"), Some("{}"), None, Some("{}")).unwrap();
+        store.update_workflow_run("run-p", Some("running"), Some("run"), None, None, None).unwrap();
+        store.create_workflow_suspension("run-p", "emp", "scan", "run", "", Some(0), "[]", "{}", "find_tools", "loading tools").unwrap();
+        assert_eq!(store.get_workflow_run("run-p").unwrap().unwrap().status, "awaiting_approval");
+
+        mgr.cancel_run("run-p").await.expect("a parked run is cancelled");
+        let run = store.get_workflow_run("run-p").unwrap().unwrap();
+        assert_eq!(run.status, "cancelled");
+        assert!(run.completed_at.is_some());
+        assert_eq!(store.engine_get_run("run-p").unwrap().unwrap().current_wait_id, None, "nothing waits for an answer");
+
+        let err = mgr.cancel_run("run-p").await.unwrap_err();
+        assert!(err.starts_with("no active run found"), "{err}");
+    }
 
     /// Release proof of 2026-09-27 (plugin-many-skills-fan-out run 2, call
     /// #52): thirteen create_workflow calls on the Billing Desk succeeded,

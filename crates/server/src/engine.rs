@@ -1868,16 +1868,49 @@ async fn resume_after_expert(state: &AppState, run: &EngineRun, event_id: i64, t
     }
 }
 
+/// End a run parked on the owner's answer that will not continue: he said
+/// no (`denied`), or nobody answered in a day (`expired`: it fails with
+/// [`expired_run_message`]). It ends like any run, with its tokens, its
+/// step and its completion time, and its suspension goes. Returns the
+/// reason it ended with.
+pub(crate) fn end_parked_run(store: &Store, run_id: &str, display: &str, expired: bool) -> String {
+    let _ = store.delete_workflow_suspension(run_id);
+    let detail = store.get_workflow_run(run_id).ok().flatten();
+    let tokens = detail.as_ref().and_then(|r| r.total_tokens_used).unwrap_or(0);
+    let step = detail.as_ref().and_then(|r| r.error_activity.clone().or(r.current_activity.clone()));
+    let (status, why) = if expired {
+        ("failed", expired_run_message(display))
+    } else {
+        ("denied", format!("Owner denied: {display}"))
+    };
+    if let Err(e) = store.complete_workflow_run(run_id, status, tokens, Some(&why), step.as_deref(), None) {
+        warn!(run = run_id, error = %e, "parked run not ended");
+    }
+    why
+}
+
+/// What the owner reads when a parked run stopped because nobody answered
+/// its ask in a day (`agent::harness::permissions::ask::RUN_ASK_EXPIRES_AFTER`).
+pub(crate) fn expired_run_message(display: &str) -> String {
+    format!(
+        "Stopped: this run waited a day for your OK on {display}, and no answer came. Nothing after that point ran. \
+         To let it run next time, allow it when asked, or give the step that tool."
+    )
+}
+
 /// An approval event resumed a parked run: continue it at the approved
-/// call, or end it as denied. The event's payload is the owner's answer.
+/// call, or end it as denied, or as stopped when nobody answered in a day
+/// (`{"expired": true}`). The event's payload is the owner's answer.
 async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
     let store = &state.store;
-    let approved = store
+    let payload = store
         .engine_get_event(event_id)
         .ok()
         .flatten()
         .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.payload).ok())
-        .and_then(|p| p["approved"].as_bool());
+        .unwrap_or_default();
+    let approved = payload["approved"].as_bool();
+    let expired = payload["expired"].as_bool().unwrap_or(false);
     let Some(approved) = approved else {
         // Woken by something that is not an answer; nothing to continue.
         let _ = store.engine_set_run_state(&run.id, "failed", t, Some("woken without an approval decision"));
@@ -1892,10 +1925,24 @@ async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64,
         }
     };
     if !approved {
-        let _ = store.delete_workflow_suspension(&run.id);
-        let _ = store.update_workflow_run(&run.id, Some("denied"), None, None, Some(&format!("Owner denied: {display}")), None);
-        state.hub.broadcast("workflow_run_denied", serde_json::json!({ "runId": run.id, "agentId": agent_id }));
-        info!(run = %run.id, "engine: approval denied; run ended");
+        let why = end_parked_run(store, &run.id, &display, expired);
+        if expired {
+            crate::workflow_manager::post_automation_message(
+                store,
+                &state.hub,
+                &format!("agent:{agent_id}:web"),
+                &format!("**Automation stopped** — {binding}: {why}"),
+            );
+            crate::workflow_manager::notify_workflow_failure(store, &state.hub, &agent_id, &run.id, &binding, &why);
+            state.hub.broadcast(
+                "workflow_run_failed",
+                serde_json::json!({ "runId": run.id, "agentId": agent_id, "bindingName": binding, "error": why }),
+            );
+            info!(run = %run.id, "engine: no answer came in a day; parked run ended");
+        } else {
+            state.hub.broadcast("workflow_run_denied", serde_json::json!({ "runId": run.id, "agentId": agent_id }));
+            info!(run = %run.id, "engine: approval denied; run ended");
+        }
         return;
     }
     let Some(definition) = run.definition.clone() else {

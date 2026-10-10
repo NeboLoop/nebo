@@ -311,11 +311,23 @@ impl Store {
     /// on the same card is a duplicate). Refused when the run is not
     /// waiting, so an answer can never be pinned on the wrong moment.
     pub fn engine_answer_wait(&self, run_id: &str, approved: bool) -> Result<Enqueued, NeboError> {
+        self.engine_wake_approval(run_id, serde_json::json!({ "approved": approved }))
+    }
+
+    /// The run's wait ran out: no answer came for a day. Woken like a No,
+    /// on the same idem key, so an answer recorded first wins and this is
+    /// its duplicate; the payload says it expired, so the run ends saying
+    /// so instead of "denied".
+    pub fn engine_expire_wait(&self, run_id: &str) -> Result<Enqueued, NeboError> {
+        self.engine_wake_approval(run_id, serde_json::json!({ "approved": false, "expired": true }))
+    }
+
+    fn engine_wake_approval(&self, run_id: &str, payload: serde_json::Value) -> Result<Enqueued, NeboError> {
         let run = self.engine_get_run(run_id)?.ok_or(NeboError::NotFound)?;
         let (Some(wait_id), "waiting") = (run.current_wait_id, run.state.as_str()) else {
             return Err(NeboError::Validation("this run is not waiting for an approval".into()));
         };
-        let payload = serde_json::json!({ "approved": approved }).to_string();
+        let payload = payload.to_string();
         self.engine_enqueue_event(&NewEvent {
             kind: "approval",
             target_type: "run",

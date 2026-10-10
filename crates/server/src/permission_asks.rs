@@ -258,6 +258,13 @@ impl AskSurfaces for OwnerSurfaces {
             Err(e) => warn!(run_id, error = %e, "ask answered but the parked run could not be released"),
         }
     }
+
+    fn expire_run(&self, run_id: &str) {
+        match self.state.store.engine_expire_wait(run_id) {
+            Ok(_) => info!(run_id, "ask unanswered for a day; the parked workflow run is ended"),
+            Err(e) => warn!(run_id, error = %e, "ask expired but the parked run could not be ended"),
+        }
+    }
 }
 
 /// The asks still open, pushed again to the hub Inbox: pushes are
