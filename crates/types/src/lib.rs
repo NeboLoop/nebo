@@ -11,6 +11,7 @@ pub mod pathres;
 pub mod permissions;
 pub mod provenance;
 pub mod redact;
+pub mod stall;
 pub mod strutil;
 pub mod timeutil;
 

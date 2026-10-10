@@ -1956,7 +1956,7 @@ async fn write_loop(
     let lease = crate::lease::process();
     let mut ping_interval = tokio::time::interval(crate::lease::RENEW_EVERY);
     ping_interval.tick().await; // skip first immediate tick
-    let mut last_ping_wall = std::time::SystemTime::now();
+    let mut last_ping = types::stall::now();
 
     loop {
         tokio::select! {
@@ -1980,20 +1980,37 @@ async fn write_loop(
                 }
             }
             _ = ping_interval.tick() => {
-                // Detect wall-clock drift — if elapsed > 60s (4x the ping
-                // interval), the system was likely asleep and the TCP
-                // connection is dead.
-                let now_wall = std::time::SystemTime::now();
-                let elapsed = now_wall.duration_since(last_ping_wall).unwrap_or_default();
-                last_ping_wall = now_wall;
-
-                if elapsed > std::time::Duration::from_secs(60) {
-                    warn!(
-                        elapsed_secs = elapsed.as_secs(),
-                        "neboai write loop detected sleep drift, exiting"
+                // A ping far later than its interval: the machine slept, or
+                // this process got no CPU while it was awake. Either way the
+                // connection likely died meanwhile; the loop exits and the
+                // connection is made again.
+                let now = types::stall::now();
+                let gap = types::stall::classify(last_ping, now, crate::lease::RENEW_EVERY);
+                last_ping = now;
+                if gap.stalled() {
+                    tracing::error!(
+                        lag_secs = gap.lag.as_secs(),
+                        "neboai write loop ran late while the machine was awake; reconnecting"
                     );
+                    types::stall::record(types::stall::Report {
+                        kind: "comm_lag".into(),
+                        at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64 - gap.lag.as_secs() as i64)
+                            .unwrap_or_default(),
+                        duration_secs: Some(gap.lag.as_secs()),
+                        ..Default::default()
+                    });
+                } else if gap.slept() {
+                    info!(slept_secs = gap.slept.as_secs(), "neboai write loop: the machine slept; reconnecting");
+                }
+                if gap.stalled() || gap.slept() {
                     if let Some(ref dl) = devlog {
-                        dl.event(&format!("SLEEP_DRIFT detected ({}s), exiting write loop", elapsed.as_secs()));
+                        dl.event(&format!(
+                            "SLEEP_DRIFT detected (slept {}s, lag {}s), exiting write loop",
+                            gap.slept.as_secs(),
+                            gap.lag.as_secs()
+                        ));
                     }
                     break;
                 }

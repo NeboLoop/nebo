@@ -6362,12 +6362,14 @@ dependencies = [
 name = "nebo-types"
 version = "0.16.15"
 dependencies = [
+ "libc",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

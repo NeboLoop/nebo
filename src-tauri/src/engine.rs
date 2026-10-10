@@ -334,6 +334,24 @@ fn urlencoding_component(s: &str) -> String {
 /// (the engine finishes stopping on its own).
 const QUIT_WAIT: Duration = Duration::from_secs(15);
 
+/// Tell the engine what the main window is doing (`focused`, `background`,
+/// `hidden`): its stall reports carry it (`POST /api/v1/client/events`, the
+/// shell's own `window` event). Only a change is sent; off the main thread.
+pub fn window_state(state: &'static str) {
+    static LAST: std::sync::Mutex<&str> = std::sync::Mutex::new("");
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if *last == state {
+            return;
+        }
+        *last = state;
+    }
+    std::thread::spawn(move || {
+        let body = serde_json::json!({ "event": "window", "detail": state }).to_string();
+        let _ = call("POST", "/api/v1/client/events").set("Content-Type", "application/json").send_string(&body);
+    });
+}
+
 /// "Quit Nebo": when work is in flight, ask first; then the engine stops
 /// the graceful way, and the shell exits once it has (or after
 /// [`QUIT_WAIT`]). Runs off the main thread.

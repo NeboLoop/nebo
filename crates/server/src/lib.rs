@@ -3665,6 +3665,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
 
+    // Stopped on purpose: the next run is not a restart.
+    process::end_run();
     Ok(())
 }
 
