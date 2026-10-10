@@ -26,6 +26,7 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
             routing::any(apps::proxy_to_sidecar),
         )
         .route("/apps/{agent_id}/sidecar", routing::get(apps::sidecar_state))
+        .route("/apps/{agent_id}/desktop", routing::get(apps::desktop_app))
         .route(
             "/apps/{agent_id}/sidecar/restart",
             routing::post(apps::restart_sidecar),

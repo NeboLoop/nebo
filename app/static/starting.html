@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebo</title>
+<!-- The desktop app's window while Nebo's engine starts: a page of the
+     app's own, shown before the engine answers (src-tauri/src/engine.rs). -->
+<link rel="stylesheet" href="starting.css">
+<script src="starting.js" defer></script>
+</head>
+<body>
+<main class="starting">
+  <img class="starting-mark" src="favicon.svg" alt="">
+  <p class="starting-title" id="title">Starting Nebo…</p>
+  <p class="starting-note" id="note" hidden></p>
+  <button class="starting-retry" id="retry" type="button" hidden>Try again</button>
+</main>
+</body>
+</html>

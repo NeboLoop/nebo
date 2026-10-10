@@ -105,3 +105,12 @@ ai = { workspace = true, features = ["test-agents"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd = { workspace = true }
+
+# The App Nap opt-out every engine holds (`process::hold_full_speed`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
+
+# The power-throttling opt-out (`process::hold_full_speed`) and the awake
+# clock the stall watchdog counts in (`liveness`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

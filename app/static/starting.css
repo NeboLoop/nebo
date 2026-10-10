@@ -1,0 +1,62 @@
+/* The desktop app's starting page (starting.html). Colors from app.css's
+   "nebo" theme. */
+:root {
+  color-scheme: light dark;
+  --starting-bg: #f7fbfc;
+  --starting-fg: #0e1c26;
+  --starting-muted: #4b5d68;
+  --starting-primary: #0077a8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --starting-bg: #0e1c26;
+    --starting-fg: #e6f0f4;
+    --starting-muted: #9db2bd;
+  }
+}
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--starting-bg);
+  color: var(--starting-fg);
+  font-family: Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.starting {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 0 24px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.starting-mark {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+}
+.starting-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.starting-note {
+  margin: 0;
+  max-width: 420px;
+  font-size: 14px;
+  color: var(--starting-muted);
+}
+.starting-retry {
+  margin-top: 8px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--starting-primary);
+  color: #ffffff;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}

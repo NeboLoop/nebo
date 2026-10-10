@@ -19,14 +19,14 @@ use tauri::{
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-const SERVER_URL: &str = "http://localhost:27895";
+mod engine;
 
-/// In dev mode, load from Vite dev server for HMR. In production, load from the backend.
-fn frontend_url() -> &'static str {
-    if cfg!(debug_assertions) {
-        "http://localhost:5173"
-    } else {
-        SERVER_URL
+/// Where the window loads Nebo from: the Vite dev server (HMR) under
+/// `cargo tauri dev`, the engine otherwise.
+fn frontend_url(app: &tauri::AppHandle) -> String {
+    match app.config().build.dev_url.as_ref().filter(|_| tauri::is_dev()) {
+        Some(dev) => dev.as_str().trim_end_matches('/').to_string(),
+        None => engine::url(),
     }
 }
 
@@ -67,7 +67,7 @@ fn focused_app(app: &tauri::AppHandle) -> Option<String> {
 fn shows_own_app(label: &str) -> bool {
     label
         .strip_prefix("app-")
-        .is_some_and(|id| !id.is_empty() && server::handlers::apps::desktop_offers_publish(id))
+        .is_some_and(|id| !id.is_empty() && engine::desktop_app(id).offers_publish)
 }
 
 /// Publish from an app window's native menu: bring up the main window and
@@ -75,7 +75,7 @@ fn shows_own_app(label: &str) -> bool {
 /// Publish button, with the app's own employee.
 fn publish_focused_app(app: &tauri::AppHandle) {
     let Some(agent_id) = focused_app(app) else { return };
-    if !server::handlers::apps::desktop_offers_publish(&agent_id) {
+    if !engine::desktop_app(&agent_id).offers_publish {
         return;
     }
     if let Some(w) = app.get_webview_window("main") {
@@ -274,6 +274,30 @@ fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> 
     Ok(dest.to_string_lossy().into_owned())
 }
 
+/// Tauri command: the native file picker. The window's to show: the engine
+/// has no window (macOS shows no panel from a process without one).
+#[tauri::command]
+async fn pick_files() -> Vec<String> {
+    rfd::AsyncFileDialog::new()
+        .set_title("Select files")
+        .pick_files()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|f| f.path().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Tauri command: the native folder picker (see `pick_files`).
+#[tauri::command]
+async fn pick_folder() -> Option<String> {
+    rfd::AsyncFileDialog::new()
+        .set_title("Select folder")
+        .pick_folder()
+        .await
+        .map(|f| f.path().to_string_lossy().into_owned())
+}
+
 /// The event the main window opens an owner item's place on
 /// (`app/src/lib/websocket/listeners.ts`).
 const OWNER_ITEM_OPEN: &str = "owner-item-open";
@@ -470,8 +494,8 @@ fn resolve_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
         }
     }
     // An app the owner made is in a folder named for the employee, with no
-    // id in it: the database records where (the server's own fallback).
-    best.map(|(_, ui)| ui).or_else(|| server::handlers::apps::desktop_app_ui_dir(agent_id))
+    // id in it: the database records where (the engine's own fallback).
+    best.map(|(_, ui)| ui).or_else(|| engine::desktop_app(agent_id).ui_dir)
 }
 
 /// A video's full-screen button, in the chat, the Work panel, the
@@ -487,31 +511,12 @@ fn allow_element_fullscreen<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
     });
 }
 
-/// Keep macOS from napping Nebo while its window is hidden or covered. App
-/// Nap moved the whole process (server included) to background priority 4
-/// with throttled I/O and coalesced timers; under load it got no CPU for
-/// minutes: no answer on :27895, even /health, and the NeboAI write loop
-/// exited on "sleep drift" (60-182 s, 2026-10-07..09). Held for the life of
-/// the process. `UserInitiatedAllowingIdleSystemSleep` lets the Mac idle-sleep
-/// as before: no power assertion, never keeps it awake.
-#[cfg(target_os = "macos")]
-fn hold_app_nap_opt_out() {
-    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
-    let activity = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
-        NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
-        &NSString::from_str("Nebo serves the local API and runs agents in the background"),
-    );
-    // Never ended: the activity lasts as long as the process.
-    std::mem::forget(activity);
-    tracing::info!("App Nap opt-out held (idle system sleep still allowed)");
-}
-
 #[cfg(not(target_os = "macos"))]
 fn allow_element_fullscreen<R: tauri::Runtime>(_webview: &tauri::Webview<R>) {}
 
 /// Generate the bridge script + meta tags injected into every HTML page served
 /// via the neboapp:// protocol, followed by what the HTTP path adds by the
-/// same rule (`desktop_developer_script`): the owner's own app gets the
+/// same rule (the engine's `developerScript`): the owner's own app gets the
 /// developer script; one installed from the marketplace gets nothing.
 ///
 /// WebKit treats custom-scheme pages as opaque origins and silently blocks
@@ -526,7 +531,7 @@ fn neboapp_bridge(agent_id: &str) -> String {
             r#"<meta name="htmx-config" content='{{"selfRequestsOnly":false}}'>"#,
             r#"<script>(function(){{var O="neboapp://{id}";"#,
             r#"function rw(u){{if(typeof u!=="string")return u;"#,
-            r#"var h=u.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):27895(\/.*)/);if(h)return O+h[1];"#,
+            r#"var h=u.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):{port}(\/.*)/);if(h)return O+h[1];"#,
             r#"return u}}"#,
             r#"var F=window.fetch;window.fetch=function(i,o){{"#,
             r#"if(typeof i==="string")i=rw(i);"#,
@@ -538,7 +543,8 @@ fn neboapp_bridge(agent_id: &str) -> String {
             "{dev}",
         ),
         id = agent_id,
-        dev = server::handlers::apps::desktop_developer_script(agent_id),
+        port = engine::port(),
+        dev = engine::desktop_app(agent_id).developer_script,
     )
 }
 
@@ -674,15 +680,16 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
         .unwrap_or("")
         .to_string();
 
+    let port = engine::port();
     let urls = if query.is_empty() {
         vec![
-            format!("http://127.0.0.1:27895{}", path),
-            format!("http://127.0.0.1:27895/apps/{}/api{}", agent_id, path),
+            format!("http://127.0.0.1:{port}{}", path),
+            format!("http://127.0.0.1:{port}/apps/{}/api{}", agent_id, path),
         ]
     } else {
         vec![
-            format!("http://127.0.0.1:27895{}?{}", path, query),
-            format!("http://127.0.0.1:27895/apps/{}/api{}?{}", agent_id, path, query),
+            format!("http://127.0.0.1:{port}{}?{}", path, query),
+            format!("http://127.0.0.1:{port}/apps/{}/api{}?{}", agent_id, path, query),
         ]
     };
 
@@ -804,13 +811,18 @@ fn main() {
 
     dotenvy::dotenv().ok();
 
+    // One executable, two roles: `--engine` is the server, with no window;
+    // otherwise this is the shell, the window and tray.
+    let engine_role = std::env::args().any(|a| a == "--engine");
+
     // Terminal layer (with ANSI colors)
     let env_filter =
         || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let stdout_layer = fmt::layer().with_filter(env_filter());
 
-    // File layer (append to <data_dir>/logs/nebo.log)
-    let file_layer = config::log_file("nebo.log").map(|file| {
+    // File layer: the engine's in <data_dir>/logs/nebo.log, the shell's
+    // in nebo-shell.log.
+    let file_layer = config::log_file(if engine_role { "nebo.log" } else { "nebo-shell.log" }).map(|file| {
         fmt::layer()
             .with_writer(Mutex::new(file))
             .with_ansi(false)
@@ -850,37 +862,24 @@ fn main() {
         }
     }));
 
-    let mut cfg = config::Config::load_embedded().expect("failed to load config");
-    let settings = config::load_settings().expect("failed to load settings");
-    cfg.auth.access_secret = settings.access_secret;
-    cfg.auth.access_expire = settings.access_expire;
-    cfg.auth.refresh_token_expire = settings.refresh_token_expire;
+    if engine_role {
+        engine::run_engine();
+    }
+
     config::ensure_data_dir().expect("failed to create data directory");
-
-    #[cfg(target_os = "macos")]
-    hold_app_nap_opt_out();
-
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-        rt.block_on(async {
-            tracing::info!("starting Nebo server thread");
-            match server::run(cfg, true).await {
-                Ok(()) => tracing::info!("server shut down cleanly"),
-                Err(e) => tracing::error!("server exited with error: {e}"),
-            }
-        });
-        // Server exited (SIGTERM/Ctrl+C) — exit the whole process so the Tauri window closes too
-        tracing::info!("server thread exited, terminating process");
-        std::process::exit(0);
-    });
-
-    wait_for_server();
+    tracing::info!(pid = std::process::id(), engine = %engine::url(), "starting the Nebo app");
 
     let saved = load_state("main");
 
     tauri::Builder::default()
         .on_page_load(|webview, _| allow_element_fullscreen(webview))
-        .invoke_handler(tauri::generate_handler![get_window_state, save_artifact, show_owner_notification])
+        .invoke_handler(tauri::generate_handler![
+            get_window_state,
+            save_artifact,
+            show_owner_notification,
+            pick_files,
+            pick_folder
+        ])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -920,14 +919,14 @@ fn main() {
                 .map(|s| (s.width, s.height))
                 .unwrap_or((1280.0, 860.0));
 
-            // The window opens through a one-use sign-in ticket minted in
-            // this process (the server runs here too): the local API answers
-            // only a browser holding the session it gives (`local_access`).
-            let signed_in = format!("{}{}", frontend_url(), server::local_access::sign_in_path());
+            // The window opens on the starting page and moves to Nebo once
+            // the engine answers, through a one-use sign-in ticket the engine
+            // mints: the local API answers only a browser holding the session
+            // it gives (`local_access`).
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(signed_in.parse().unwrap()),
+                WebviewUrl::App(engine::STARTING_PAGE.into()),
             )
             .title("Nebo")
             .inner_size(w, h)
@@ -939,7 +938,8 @@ fn main() {
             .disable_drag_drop_handler()
             .on_navigation(|url| {
                 let host = url.host_str().unwrap_or("");
-                if host == "localhost" || host == "127.0.0.1" || is_stripe_domain(host) {
+                // `tauri.localhost`: the starting page's origin on Windows.
+                if host == "localhost" || host == "127.0.0.1" || host == "tauri.localhost" || is_stripe_domain(host) {
                     return true;
                 }
                 open_external(url.as_str());
@@ -966,6 +966,11 @@ fn main() {
 
             WINDOW_READY.store(true, Ordering::SeqCst);
             let _ = window.show();
+
+            // The engine: started as this process's child (or one already
+            // serving attached to), and the window kept on it.
+            engine::supervise(app.handle().clone());
+            engine::attach(app.handle().clone(), frontend_url(app.handle()));
 
             // Build tray
             let show = MenuItemBuilder::with_id("show", "Show Nebo").build(app)?;
@@ -1023,9 +1028,7 @@ fn main() {
                     "feedback" => {
                         open_external("https://github.com/NeboLoop/nebo/issues");
                     }
-                    "quit" => {
-                        app.exit(0);
-                    }
+                    "quit" => engine::quit(app.clone()),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -1188,7 +1191,14 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building Nebo desktop")
-        .run(|_app, event| {
+        .run(|app, event| {
+            // Cmd-Q and the app menu's Quit: the same "Quit Nebo" as the
+            // tray's. The shell's own exit (`code` set) goes ahead.
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                api.prevent_exit();
+                engine::quit(app.clone());
+                return;
+            }
             if let tauri::RunEvent::Resumed { .. } = event {
                 // Debounce: Tauri fires Resumed many times per wake cycle.
                 // Only reconnect if >5s since last resume event.
@@ -1208,7 +1218,7 @@ fn main() {
                     std::thread::spawn(|| {
                         use std::io::Write;
                         let Some(key) = config::read_install_key() else { return };
-                        if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:27895") {
+                        if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", engine::port())) {
                             let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
                             let _ = stream.write_all(
                                 format!(
@@ -1234,7 +1244,7 @@ fn toggle_prompt_window(app: &tauri::AppHandle) {
         }
     } else {
         // Create a small centered floating window pointing at the prompt route
-        let url = format!("{}/prompt", SERVER_URL);
+        let url = format!("{}/prompt", engine::url());
         match WebviewWindowBuilder::new(app, "prompt", WebviewUrl::External(url.parse().unwrap()))
             .title("Nebo")
             .inner_size(600.0, 80.0)
@@ -1253,17 +1263,4 @@ fn toggle_prompt_window(app: &tauri::AppHandle) {
             }
         }
     }
-}
-
-fn wait_for_server() {
-    use std::net::TcpStream;
-
-    for _ in 0..60 {
-        if TcpStream::connect("127.0.0.1:27895").is_ok() {
-            tracing::info!("Server is ready");
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    tracing::warn!("Server did not become ready in 15s, launching window anyway");
 }

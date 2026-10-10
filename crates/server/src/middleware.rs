@@ -239,7 +239,7 @@ pub fn is_loopback_bind(host: &str) -> bool {
 }
 
 /// The bearer token on a request, if it carries one.
-fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     let (scheme, token) = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()

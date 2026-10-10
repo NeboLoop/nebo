@@ -22,7 +22,6 @@
     uploadLayerPack,
     applyLayers,
     listLayerSeats,
-    pickFolder,
     type LayerPack,
     type LayerFile,
     type LayerFolderCounts,
@@ -32,6 +31,7 @@
     type PendingLayerEntry,
   } from '$lib/api/nebo';
   import { uploadLayerZip } from '$lib/api/upload';
+  import { pickFolder } from '$lib/api/pick';
 
   // The one place the owner manages the three layers: what they are, what is in
   // them, what changed, and the button that tells the employees to learn it.
