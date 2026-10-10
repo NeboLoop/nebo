@@ -526,6 +526,37 @@ impl BackgroundChecker {
     }
 }
 
+/// `<data_dir>/UPDATING`: the engine writes it just before an app update's
+/// helper swaps the app, and the helper removes it when done. While it is
+/// there the app does not start its engine again: the update does.
+pub const UPDATING_MARKER: &str = "UPDATING";
+
+/// How long an [`UPDATING_MARKER`] counts: a helper that died never blocks
+/// the engine for longer.
+const UPDATING_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// An app update is swapping the app right now.
+pub fn updating(data_dir: &std::path::Path) -> bool {
+    std::fs::metadata(data_dir.join(UPDATING_MARKER))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age < UPDATING_FOR)
+}
+
+/// The desktop feed's switch for how the app runs its engine (`engineMode`
+/// in `version.json`: `"service"` or `"in_process"`), when the feed sets one.
+/// The app keeps the last value it read; unset leaves the engine the app's
+/// own child.
+pub fn engine_mode(version_json: &serde_json::Value) -> Option<String> {
+    version_json
+        .get("engineMode")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn normalize_version(v: &str) -> String {
     v.trim().trim_start_matches('v').to_string()
 }
@@ -564,6 +595,26 @@ mod tests {
         assert!(is_newer("2.0.0", "1.9.9"));
         assert!(!is_newer("1.0.0", "1.0.0"));
         assert!(!is_newer("0.9.0", "1.0.0"));
+    }
+
+    #[test]
+    fn the_updating_marker_counts_while_fresh() {
+        let dir = std::env::temp_dir().join(format!("nebo-updating-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!updating(&dir));
+        std::fs::write(dir.join(UPDATING_MARKER), "").unwrap();
+        assert!(updating(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_feed_names_the_engine_mode_or_nothing() {
+        let feed = |v: serde_json::Value| engine_mode(&v);
+        assert_eq!(feed(serde_json::json!({"version": "v1.0.0"})), None);
+        assert_eq!(feed(serde_json::json!({"engineMode": "service"})).as_deref(), Some("service"));
+        assert_eq!(feed(serde_json::json!({"engineMode": " in_process "})).as_deref(), Some("in_process"));
+        assert_eq!(feed(serde_json::json!({"engineMode": ""})), None);
+        assert_eq!(feed(serde_json::json!({"engineMode": 1})), None);
     }
 
     #[test]

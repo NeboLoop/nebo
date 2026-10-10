@@ -965,7 +965,9 @@
 		"installAndRestart": "Installer et redémarrer",
 		"openSourceLicenses": "Licences open source",
 		"contactSupport": "Contacter le support",
-		"contactSupportBlurb": "Des questions ou des soucis ? Écrivez-nous et une personne vous répond sous un jour ouvré."
+		"contactSupportBlurb": "Des questions ou des soucis ? Écrivez-nous et une personne vous répond sous un jour ouvré.",
+		"startAtLogin": "Lancer à l'ouverture de session",
+		"startAtLoginHint": "Nebo continue de travailler après la fermeture de l'app et démarre à l'ouverture de session."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Passer par Janus",
 		"routeJanusHint": "Janus choisit le niveau à chaque étape parmi les modèles de ce pack pour réduire votre facture. Vos clés accompagnent chaque requête et ne sont jamais stockées. Frais de routage : {fee}.",
 		"routeJanusLocal": "Les modèles sur cet ordinateur (Ollama, Claude Code, Codex) tournent toujours en direct. La voix ne passe jamais par ce routage."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo ne fonctionne que lorsque l'app est ouverte. Pour qu'il continue après la fermeture, activez Nebo dans Ouverture.",
+		"open": "Ouvrir les éléments d'ouverture"
 	}
 }

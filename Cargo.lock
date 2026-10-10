@@ -4157,7 +4157,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -5797,12 +5797,17 @@ dependencies = [
  "dotenvy",
  "futures",
  "http",
+ "libc",
  "mimalloc",
  "nebo-browser",
  "nebo-command",
  "nebo-config",
  "nebo-server",
+ "nebo-updater",
  "notify-rust",
+ "objc2",
+ "objc2-foundation",
+ "objc2-service-management",
  "objc2-web-kit",
  "open",
  "rfd",
@@ -6979,6 +6984,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-service-management"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b213642d6959cc6023ceb1217aa595eaaf09b8094ce95127c103cab611fe65e8"
+dependencies = [
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-security",
+]
+
+[[package]]
 name = "objc2-ui-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7984,7 +8001,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",

@@ -965,7 +965,9 @@
 		"installAndRestart": "Instalar e reiniciar",
 		"openSourceLicenses": "Licenças de código aberto",
 		"contactSupport": "Contactar o apoio",
-		"contactSupportBlurb": "Dúvidas ou problemas? Escreva-nos e uma pessoa responde num dia útil."
+		"contactSupportBlurb": "Dúvidas ou problemas? Escreva-nos e uma pessoa responde num dia útil.",
+		"startAtLogin": "Abrir ao iniciar sessão",
+		"startAtLoginHint": "O Nebo continua a trabalhar depois de fechar a app e abre quando inicia sessão."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Encaminhar pelo Janus",
 		"routeJanusHint": "O Janus escolhe o nível em cada etapa entre os modelos deste pacote para reduzir a sua conta. As suas chaves são enviadas com cada pedido e nunca são guardadas. Taxa de encaminhamento: {fee}.",
 		"routeJanusLocal": "Os modelos neste computador (Ollama, Claude Code, Codex) funcionam sempre diretamente. A voz nunca é encaminhada."
+	},
+	"loginItemsBanner": {
+		"text": "O Nebo só funciona enquanto a app está aberta. Para continuar a trabalhar depois de a fechar, ative o Nebo em Elementos de início de sessão.",
+		"open": "Abrir Elementos de início de sessão"
 	}
 }

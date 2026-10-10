@@ -965,7 +965,9 @@
 		"installAndRestart": "설치 및 재시작",
 		"openSourceLicenses": "오픈 소스 라이선스",
 		"contactSupport": "지원팀에 문의",
-		"contactSupportBlurb": "질문이나 문제가 있으신가요? 이메일을 보내주시면 영업일 기준 하루 안에 담당자가 답변드립니다."
+		"contactSupportBlurb": "질문이나 문제가 있으신가요? 이메일을 보내주시면 영업일 기준 하루 안에 담당자가 답변드립니다.",
+		"startAtLogin": "로그인 시 시작",
+		"startAtLoginHint": "앱을 종료한 후에도 Nebo가 계속 작동하고, 로그인하면 시작됩니다."
 	},
 	"settingsPlugins": {
 		"title": "플러그인",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Janus를 통해 라우팅",
 		"routeJanusHint": "Janus는 비용을 낮추기 위해 이 팩의 모델 전체에서 각 단계의 수준을 선택합니다. 사용자의 키는 각 요청과 함께 전달되며 저장되지 않습니다. 라우팅 수수료: {fee}.",
 		"routeJanusLocal": "이 컴퓨터에서 실행되는 모델(Ollama, Claude Code, Codex)은 항상 직접 실행됩니다. 음성은 라우팅되지 않습니다."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo는 앱이 열려 있을 때만 실행됩니다. 종료 후에도 계속 작동하게 하려면 로그인 항목에서 Nebo를 켜세요.",
+		"open": "로그인 항목 열기"
 	}
 }

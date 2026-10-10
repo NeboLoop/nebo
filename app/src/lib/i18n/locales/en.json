@@ -965,7 +965,9 @@
 		"installAndRestart": "Install & Restart",
 		"openSourceLicenses": "Open Source Licenses",
 		"contactSupport": "Contact support",
-		"contactSupportBlurb": "Questions or problems? Email us and a person replies within one business day."
+		"contactSupportBlurb": "Questions or problems? Email us and a person replies within one business day.",
+		"startAtLogin": "Start at login",
+		"startAtLoginHint": "Nebo keeps working after you quit the app, and starts when you log in."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Route through Janus",
 		"routeJanusHint": "Janus picks the level for each step across this pack's models to lower your bill. Your keys go with each request and are never stored. Routing fee: {fee}.",
 		"routeJanusLocal": "Models on this computer (Ollama, Claude Code, Codex) always run direct. Voice never routes."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo runs only while the app is open. To keep it working after you quit, turn on Nebo in Login Items.",
+		"open": "Open Login Items"
 	}
 }

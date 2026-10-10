@@ -965,7 +965,9 @@
 		"installAndRestart": "Zainstaluj i uruchom ponownie",
 		"openSourceLicenses": "Licencje open source",
 		"contactSupport": "Skontaktuj się z pomocą",
-		"contactSupportBlurb": "Pytania albo problemy? Napisz do nas, a człowiek odpowie w ciągu jednego dnia roboczego."
+		"contactSupportBlurb": "Pytania albo problemy? Napisz do nas, a człowiek odpowie w ciągu jednego dnia roboczego.",
+		"startAtLogin": "Uruchamiaj przy logowaniu",
+		"startAtLoginHint": "Nebo działa dalej po zamknięciu aplikacji i uruchamia się po zalogowaniu."
 	},
 	"settingsPlugins": {
 		"title": "Wtyczki",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Przekieruj przez Janus",
 		"routeJanusHint": "Janus wybiera poziom na każdym kroku wśród modeli tego pakietu, aby zmniejszyć twój rachunek. Twoje klucze są przesyłane z każdym żądaniem i nigdy nie są przechowywane. Opłata za routing: {fee}.",
 		"routeJanusLocal": "Modele na tym komputerze (Ollama, Claude Code, Codex) zawsze działają bezpośrednio. Głos nigdy nie jest kierowany przez Janus."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Aby działało po jej zamknięciu, włącz Nebo w Rzeczach otwieranych podczas logowania.",
+		"open": "Otwórz rzeczy otwierane podczas logowania"
 	}
 }
