@@ -10,6 +10,11 @@
 //!
 //! The child's stdin is a pipe the shell holds (`hold_lifeline`): when the
 //! shell goes, however it goes, the engine stops the graceful way.
+//!
+//! When the OS runs the engine as a service (`service`: a LaunchAgent on
+//! macOS, switched on from the update feed), the shell starts nothing itself:
+//! it attaches, asks launchd to start a stopped engine, and falls back to the
+//! child when the owner switched Nebo off in Login Items.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,6 +23,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
+
+use crate::service;
 
 /// `NEBO_SUPERVISED` for an engine the shell started as its child.
 const SHELL: &str = "shell";
@@ -30,6 +37,39 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// The last engine the shell started exited because the port was held.
 static PORT_HELD: AtomicBool = AtomicBool::new(false);
+
+/// The child engine is being stopped so the OS's service takes over: its
+/// exit 0 does not close the app.
+static HANDOVER: AtomicBool = AtomicBool::new(false);
+
+/// How the shell runs its engine right now, for Settings, the banner and
+/// the tray.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceView {
+    /// The OS service is on offer here (asked for by the update feed or
+    /// `NEBO_ENGINE_MODE`, on an OS that has one): Settings and the tray
+    /// show Start at login.
+    pub offered: bool,
+    /// The owner's Start at login switch.
+    pub start_at_login: bool,
+    /// The OS runs the engine; otherwise it is this app's child.
+    pub supervised: bool,
+    /// Nebo is switched off in Login Items: the engine runs only while the
+    /// app is open, and the window says how to change that.
+    pub needs_approval: bool,
+}
+
+static VIEW: Mutex<ServiceView> =
+    Mutex::new(ServiceView { offered: false, start_at_login: true, supervised: false, needs_approval: false });
+
+pub fn service_view() -> ServiceView {
+    *VIEW.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn set_view(f: impl FnOnce(&mut ServiceView)) {
+    f(&mut VIEW.lock().unwrap_or_else(|e| e.into_inner()));
+}
 
 pub fn port() -> u16 {
     *PORT.get_or_init(|| config::Config::load_embedded().map(|c| c.port).unwrap_or(27895))
@@ -46,7 +86,12 @@ fn http() -> ureq::Agent {
 
 /// A call of the shell's own to the engine, proving itself with the install key.
 fn call(method: &str, path: &str) -> ureq::Request {
-    let req = http().request(method, &format!("http://127.0.0.1:{}{path}", port()));
+    call_on(port(), method, path)
+}
+
+/// [`call`] to the engine on `port`.
+fn call_on(port: u16, method: &str, path: &str) -> ureq::Request {
+    let req = http().request(method, &format!("http://127.0.0.1:{port}{path}"));
     match config::read_install_key() {
         Some(key) => req.set("Authorization", &format!("Bearer {key}")),
         None => req,
@@ -81,6 +126,10 @@ pub fn run_engine() -> ! {
     if supervisor.as_deref() == Some(SHELL) {
         hold_lifeline();
     }
+    #[cfg(unix)]
+    if supervisor.as_deref() == Some("launchd") {
+        redirect_stdio();
+    }
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let result = rt.block_on(server::run(cfg, true));
@@ -90,6 +139,25 @@ pub fn run_engine() -> ! {
         Err(e) => tracing::error!(code, "engine exited with error: {e}"),
     }
     std::process::exit(code);
+}
+
+/// launchd's agent has nowhere for stdout and stderr (its plist can't name
+/// a path under the home folder): they go to `logs/engine-stdio.log`.
+#[cfg(unix)]
+fn redirect_stdio() {
+    use std::os::fd::AsRawFd;
+    let Ok(dir) = config::data_dir() else { return };
+    let path = dir.join("logs").join("engine-stdio.log");
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => {
+            // SAFETY: duplicates an open descriptor onto stdout and stderr.
+            unsafe {
+                libc::dup2(file.as_raw_fd(), 1);
+                libc::dup2(file.as_raw_fd(), 2);
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, path = %path.display(), "engine: stdout and stderr stay unredirected"),
+    }
 }
 
 /// Stop the engine when the shell that started it is gone: its stdin is
@@ -140,65 +208,393 @@ pub(crate) fn after_exit(code: Option<i32>, ran: Duration, crashes: u32) -> (Aft
     }
 }
 
-/// An engine of this version answers on the port, healthy.
-fn engine_answers() -> bool {
-    let Ok(resp) = http().get(&format!("http://127.0.0.1:{}/health", port())).call() else { return false };
-    let Some(health) = json::<serde_json::Value>(resp) else { return false };
-    health["role"] == "engine" && health["version"] == env!("CARGO_PKG_VERSION") && health["status"] == "ok"
+/// What answers on the engine's port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Health {
+    /// An engine of this version, healthy.
+    Ours,
+    /// An engine of another version: an older app's, still running.
+    Stale,
+    /// Nothing, or not an engine.
+    None,
 }
 
-/// Keep an engine serving for as long as the shell runs: attach to one that
-/// already answers, otherwise start one as a child and start it again as
-/// [`after_exit`] says. When the engine stops on purpose, the shell exits.
+fn health_on(port: u16) -> Health {
+    let Ok(resp) = http().get(&format!("http://127.0.0.1:{port}/health")).call() else { return Health::None };
+    let Some(health) = json::<serde_json::Value>(resp) else { return Health::None };
+    classify(&health)
+}
+
+fn classify(health: &serde_json::Value) -> Health {
+    if health["role"] != "engine" {
+        Health::None
+    } else if health["version"] != env!("CARGO_PKG_VERSION") {
+        Health::Stale
+    } else if health["status"] == "ok" {
+        Health::Ours
+    } else {
+        Health::None
+    }
+}
+
+/// An engine of this version answers on the port, healthy.
+fn engine_answers() -> bool {
+    health_on(port()) == Health::Ours
+}
+
+/// Keep an engine serving for as long as the shell runs: as the OS's
+/// service when the app runs it as one ([`service::plan`]), otherwise as
+/// this process's child, started again as [`after_exit`] says. When a child
+/// engine stops on purpose, the shell exits.
+/// Decides how the engine runs before it returns (Settings and the tray read
+/// it), then supervises on its own thread.
 pub fn supervise(app: tauri::AppHandle) {
+    let first = start();
     let spawned = std::thread::Builder::new().name("nebo-engine-supervisor".into()).spawn(move || {
+        let mut run = first;
         let mut crashes = 0;
+        let mut watch = ServiceWatch::default();
         loop {
             if QUITTING.load(Ordering::SeqCst) {
                 return;
             }
-            if engine_answers() {
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
-            }
-            let started = Instant::now();
-            let mut child = match spawn_engine() {
-                Ok(child) => child,
-                Err(e) => {
-                    tracing::error!(error = %e, "could not start the engine");
-                    std::thread::sleep(MAX_BACKOFF);
-                    continue;
-                }
-            };
-            tracing::info!(pid = child.id(), "engine started");
-            // Held until the engine exits: `wait` would close it first.
-            let lifeline = child.stdin.take();
-            let status = child.wait();
-            drop(lifeline);
-            let code = status.as_ref().ok().and_then(|s| s.code());
-            PORT_HELD.store(code == Some(server::process::EXIT_PORT_HELD), Ordering::SeqCst);
-            let (next, now) = after_exit(code, started.elapsed(), crashes);
-            crashes = now;
-            match next {
-                AfterExit::StayDown => {
-                    tracing::info!("engine stopped; closing the app");
-                    app.exit(0);
-                    return;
-                }
-                AfterExit::Restart(after) => {
-                    if code == Some(server::process::EXIT_PORT_HELD) {
-                        tracing::warn!(port = port(), "the engine's port is held by another process; trying again");
-                    } else {
-                        tracing::error!(status = ?status, after_secs = after.as_secs(), "engine exited; starting it again");
+            run = match run {
+                Run::Child => match run_child(&mut crashes) {
+                    ChildEnd::Stopped if HANDOVER.swap(false, Ordering::SeqCst) => {
+                        tracing::info!("the app's engine stopped; the OS runs it from here");
+                        watch = ServiceWatch::default();
+                        set_view(|v| {
+                            v.supervised = true;
+                            v.needs_approval = false;
+                        });
+                        Run::Service
                     }
-                    std::thread::sleep(after);
-                }
-            }
+                    ChildEnd::Stopped => {
+                        tracing::info!("engine stopped; closing the app");
+                        app.exit(0);
+                        return;
+                    }
+                    ChildEnd::Again => Run::Child,
+                },
+                Run::Service => match service_tick(&mut watch) {
+                    Tick::Serving => Run::Service,
+                    Tick::Fallback { banner } => {
+                        fall_back(banner);
+                        Run::Child
+                    }
+                    Tick::Updating => {
+                        tracing::info!("Nebo is updating; closing the app (the update opens it again)");
+                        QUITTING.store(true, Ordering::SeqCst);
+                        app.exit(0);
+                        return;
+                    }
+                },
+            };
         }
     });
     if let Err(e) = spawned {
         tracing::error!(error = %e, "could not start the engine supervisor");
     }
+}
+
+/// How the shell runs the engine at this moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Run {
+    Child,
+    Service,
+}
+
+/// The app opens: decide how its engine runs ([`service::plan`]) and do the
+/// registration part of it.
+fn start() -> Run {
+    let target = service::Target::app();
+    let saved = service::load();
+    let dev = tauri::is_dev();
+    let mode = service::wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), saved.engine_mode.as_deref());
+    // A child-only app (the default, and dev) asks nothing of the OS beyond
+    // whether a registration is left to remove.
+    let status = if dev { service::Status::Unsupported } else { service::status(&target) };
+    let exe = std::env::current_exe().unwrap_or_default();
+    let facts = service::Facts {
+        dev,
+        mode,
+        start_at_login: saved.start_at_login,
+        transient_path: service::is_transient(&exe),
+        status,
+    };
+    let plan = service::plan(&facts);
+    tracing::info!(?mode, ?status, ?plan, start_at_login = saved.start_at_login, "how the engine runs");
+    set_view(|v| {
+        v.offered = !dev && mode == service::Mode::Service && status != service::Status::Unsupported;
+        v.start_at_login = saved.start_at_login;
+    });
+    if !dev {
+        service::refresh_feed_mode();
+    }
+    match plan {
+        service::Plan::Child { banner, unregister } => {
+            if unregister && let Err(e) = service::unregister(&target) {
+                tracing::warn!(error = %e, "could not remove the engine's registration");
+            }
+            if banner {
+                fall_back(true);
+            }
+            Run::Child
+        }
+        service::Plan::MoveToApplications => {
+            std::thread::spawn(say_move_to_applications);
+            Run::Child
+        }
+        service::Plan::Register => match service::install(&target) {
+            Ok(service::Status::Enabled) => {
+                tracing::info!("engine registered with the OS");
+                set_view(|v| v.supervised = true);
+                Run::Service
+            }
+            Ok(status) => {
+                tracing::warn!(?status, "engine registered but not enabled; it runs while the app is open");
+                fall_back(status == service::Status::RequiresApproval);
+                Run::Child
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "could not register the engine; it runs while the app is open");
+                Run::Child
+            }
+        },
+        service::Plan::Service => {
+            set_view(|v| v.supervised = true);
+            Run::Service
+        }
+    }
+}
+
+/// The engine runs as this app's child from here. With `banner`, Nebo is
+/// switched off in Login Items: the window says so, and once it is switched
+/// on again the OS takes the engine over.
+fn fall_back(banner: bool) {
+    set_view(|v| {
+        v.supervised = false;
+        v.needs_approval = banner;
+    });
+    if banner {
+        tracing::warn!("Nebo is switched off in Login Items; the engine runs only while the app is open");
+        std::thread::spawn(|| watch_for_approval(service::Target::app()));
+    }
+}
+
+/// While Nebo is switched off in Login Items: check every few seconds, and
+/// once it is on, stop the child so the OS runs the engine.
+fn watch_for_approval(target: service::Target) {
+    loop {
+        std::thread::sleep(Duration::from_secs(10));
+        if QUITTING.load(Ordering::SeqCst) || !service_view().needs_approval {
+            return;
+        }
+        if service::status(&target) == service::Status::Enabled && service::job(&target) != service::Job::Absent {
+            hand_over(&target);
+            return;
+        }
+    }
+}
+
+/// Stop the child engine the graceful way so the OS's runs instead.
+fn hand_over(target: &service::Target) {
+    tracing::info!("Nebo is on in Login Items; handing the engine to the OS");
+    set_view(|v| v.needs_approval = false);
+    HANDOVER.store(true, Ordering::SeqCst);
+    quit_engine(target.port);
+}
+
+/// How one run of the child engine ended.
+enum ChildEnd {
+    /// It exited 0: stopped on purpose.
+    Stopped,
+    /// Look again (it exited and is due a restart, or another engine answers).
+    Again,
+}
+
+/// One turn of the child loop: attach to an engine that answers, otherwise
+/// start one and wait for it to exit.
+fn run_child(crashes: &mut u32) -> ChildEnd {
+    if engine_answers() {
+        std::thread::sleep(Duration::from_secs(2));
+        return ChildEnd::Again;
+    }
+    let started = Instant::now();
+    let mut child = match spawn_engine() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::error!(error = %e, "could not start the engine");
+            std::thread::sleep(MAX_BACKOFF);
+            return ChildEnd::Again;
+        }
+    };
+    tracing::info!(pid = child.id(), "engine started");
+    // Held until the engine exits: `wait` would close it first.
+    let lifeline = child.stdin.take();
+    let status = child.wait();
+    drop(lifeline);
+    let code = status.as_ref().ok().and_then(|s| s.code());
+    PORT_HELD.store(code == Some(server::process::EXIT_PORT_HELD), Ordering::SeqCst);
+    let (next, now) = after_exit(code, started.elapsed(), *crashes);
+    *crashes = now;
+    match next {
+        AfterExit::StayDown => ChildEnd::Stopped,
+        AfterExit::Restart(after) => {
+            if code == Some(server::process::EXIT_PORT_HELD) {
+                tracing::warn!(port = port(), "the engine's port is held by another process; trying again");
+            } else {
+                tracing::error!(status = ?status, after_secs = after.as_secs(), "engine exited; starting it again");
+            }
+            std::thread::sleep(after);
+            ChildEnd::Again
+        }
+    }
+}
+
+/// What the service loop remembers between looks.
+#[derive(Debug, Default)]
+struct ServiceWatch {
+    /// Since when no engine of this version has answered.
+    down_since: Option<Instant>,
+    /// When the shell last asked launchd to start the engine.
+    kicked: Option<Instant>,
+}
+
+/// One look at a service-run engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tick {
+    Serving,
+    /// The OS will not run it: the app's child runs it instead.
+    Fallback { banner: bool },
+    /// An update is swapping the app: the shell goes too.
+    Updating,
+}
+
+/// How long launchd gets to start an engine it was asked for before the
+/// shell runs the engine itself (`launchctl disable` leaves the
+/// registration "enabled" while nothing starts).
+const KICK_GRACE: Duration = Duration::from_secs(15);
+/// How long a started engine may take to answer before it is started again.
+const START_LIMIT: Duration = Duration::from_secs(120);
+/// How often a stale engine (an older version's) is asked to restart.
+const STALE_KICK_EVERY: Duration = Duration::from_secs(30);
+
+fn service_tick(watch: &mut ServiceWatch) -> Tick {
+    let target = service::Target::app();
+    match health_on(target.port) {
+        Health::Ours => {
+            watch.down_since = None;
+            watch.kicked = None;
+            std::thread::sleep(Duration::from_secs(2));
+            return Tick::Serving;
+        }
+        Health::Stale => {
+            // The bundle holds this version; the engine still runs the old
+            // one. A restart runs the new.
+            if watch.kicked.is_none_or(|at| at.elapsed() >= STALE_KICK_EVERY) {
+                tracing::info!("the engine runs an older version; restarting it");
+                if let Err(e) = service::kickstart(&target, true) {
+                    tracing::warn!(error = %e, "could not restart the engine");
+                }
+                watch.kicked = Some(Instant::now());
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            return Tick::Serving;
+        }
+        Health::None => {}
+    }
+    if config::data_dir().is_ok_and(|d| updater::updating(&d)) {
+        return Tick::Updating;
+    }
+    match service::status(&target) {
+        service::Status::Enabled => {}
+        status => return Tick::Fallback { banner: status == service::Status::RequiresApproval },
+    }
+    let down = *watch.down_since.get_or_insert_with(Instant::now);
+    let kicked_ago = watch.kicked.map(|at| at.elapsed());
+    match service::job(&target) {
+        service::Job::Running(_) => {
+            // Starting (migrations, a first index load). Started again only
+            // when it has had far longer than any start takes.
+            if down.elapsed() >= START_LIMIT && kicked_ago.is_none_or(|ago| ago >= START_LIMIT) {
+                tracing::warn!("the engine has not answered in {}s; restarting it", START_LIMIT.as_secs());
+                let _ = service::kickstart(&target, true);
+                watch.kicked = Some(Instant::now());
+            }
+        }
+        job => {
+            if kicked_ago.is_some_and(|ago| ago >= KICK_GRACE) {
+                tracing::warn!(?job, "launchd did not start the engine; it runs while the app is open");
+                return Tick::Fallback { banner: true };
+            }
+            if kicked_ago.is_none() {
+                if job == service::Job::Absent
+                    && let Err(e) = service::install(&target)
+                {
+                    tracing::warn!(error = %e, "could not register the engine again");
+                }
+                tracing::info!("starting the engine");
+                if let Err(e) = service::kickstart(&target, false) {
+                    tracing::warn!(error = %e, "launchd would not start the engine; it runs while the app is open");
+                    return Tick::Fallback { banner: true };
+                }
+                watch.kicked = Some(Instant::now());
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    Tick::Serving
+}
+
+/// Start at login, from Settings or the tray: on registers the engine with
+/// the OS (which then runs it), off removes the registration (the engine
+/// runs while the app is open). Kept for the next open either way.
+pub fn set_start_at_login(on: bool) -> Result<ServiceView, String> {
+    let target = service::Target::app();
+    let mut saved = service::load();
+    saved.start_at_login = on;
+    service::save(&saved);
+    set_view(|v| v.start_at_login = on);
+    if !service_view().offered {
+        return Ok(service_view());
+    }
+    if on {
+        match service::install(&target)? {
+            service::Status::Enabled if !service_view().supervised => hand_over(&target),
+            service::Status::RequiresApproval if !service_view().needs_approval => fall_back(true),
+            _ => {}
+        }
+    } else {
+        // launchd stops the engine (its graceful path); the supervisor
+        // starts the app's child.
+        service::unregister(&target)?;
+        set_view(|v| v.needs_approval = false);
+    }
+    Ok(service_view())
+}
+
+/// "Nebo is running" / "Nebo is starting…" / "Nebo is stopped", for the tray.
+pub fn status_line() -> &'static str {
+    if QUITTING.load(Ordering::SeqCst) {
+        "Nebo is stopped"
+    } else if engine_answers() {
+        "Nebo is running"
+    } else {
+        "Nebo is starting…"
+    }
+}
+
+/// Opened from a disk image or a translocated copy: registering would point
+/// the OS at a path that goes away. Nebo still runs, as the app's child.
+fn say_move_to_applications() {
+    rfd::MessageDialog::new()
+        .set_title("Move Nebo to Applications")
+        .set_description(
+            "Nebo is open from a disk image or a temporary copy. Move Nebo to your Applications folder, then open it from there.",
+        )
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
 }
 
 /// This executable as the engine, a child of the shell: its own process
@@ -367,15 +763,22 @@ pub fn quit(app: tauri::AppHandle) {
             return;
         }
         QUITTING.store(true, Ordering::SeqCst);
-        if let Err(e) = call("POST", "/api/v1/engine/quit").call() {
-            tracing::warn!(error = %e, "the engine did not take Quit; it stops when the app closes");
-        }
-        let deadline = Instant::now() + QUIT_WAIT;
-        while Instant::now() < deadline && engine_answers() {
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        quit_engine(port());
         app.exit(0);
     });
+}
+
+/// Ask the engine on `port` to stop the graceful way (it exits 0, so
+/// launchd leaves it down), and wait up to [`QUIT_WAIT`] for it to go.
+pub fn quit_engine(port: u16) {
+    if let Err(e) = call_on(port, "POST", "/api/v1/engine/quit").call() {
+        tracing::warn!(error = %e, "the engine did not take Quit");
+        return;
+    }
+    let deadline = Instant::now() + QUIT_WAIT;
+    while Instant::now() < deadline && health_on(port) != Health::None {
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 fn confirm_quit(working: usize) -> bool {
@@ -426,6 +829,17 @@ mod tests {
         let page: tauri::Url = "tauri://localhost/starting.html".parse().unwrap();
         assert_eq!(starting_url(&page, true).as_str(), "tauri://localhost/starting.html#held");
         assert_eq!(starting_url(&starting_url(&page, true), false).as_str(), "tauri://localhost/starting.html");
+    }
+
+    #[test]
+    fn health_tells_ours_from_an_older_engine() {
+        let me = env!("CARGO_PKG_VERSION");
+        let h = |v: serde_json::Value| classify(&v);
+        assert_eq!(h(serde_json::json!({"role": "engine", "version": me, "status": "ok"})), Health::Ours);
+        assert_eq!(h(serde_json::json!({"role": "engine", "version": "0.0.1", "status": "ok"})), Health::Stale);
+        assert_eq!(h(serde_json::json!({"role": "engine", "version": me, "status": "stalled"})), Health::None);
+        // An in-process Nebo (0.16.x) says no role: not an engine to restart.
+        assert_eq!(h(serde_json::json!({"version": "0.16.14", "status": "ok"})), Health::None);
     }
 
     #[test]

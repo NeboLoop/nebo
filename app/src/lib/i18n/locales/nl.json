@@ -965,7 +965,9 @@
 		"installAndRestart": "Installeren & herstarten",
 		"openSourceLicenses": "Opensourcelicenties",
 		"contactSupport": "Contact met support",
-		"contactSupportBlurb": "Vragen of problemen? Mail ons en een mens antwoordt binnen één werkdag."
+		"contactSupportBlurb": "Vragen of problemen? Mail ons en een mens antwoordt binnen één werkdag.",
+		"startAtLogin": "Starten bij inloggen",
+		"startAtLoginHint": "Nebo blijft werken nadat je de app afsluit en start wanneer je inlogt."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Via Janus laten lopen",
 		"routeJanusHint": "Janus kiest bij elke stap het niveau over de modellen van dit pakket om je rekening te verlagen. Je sleutels gaan mee met elk verzoek en worden nooit opgeslagen. Routeringskosten: {fee}.",
 		"routeJanusLocal": "Modellen op deze computer (Ollama, Claude Code, Codex) draaien altijd direct. Stem routeert nooit."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo werkt alleen zolang de app open is. Zet Nebo aan bij Inloggen om het te laten doorwerken na het afsluiten.",
+		"open": "Inlogonderdelen openen"
 	}
 }

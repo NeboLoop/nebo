@@ -965,7 +965,9 @@
 		"installAndRestart": "安装并重启",
 		"openSourceLicenses": "开源许可",
 		"contactSupport": "联系支持",
-		"contactSupportBlurb": "有疑问或遇到问题？给我们发邮件，会有人在一个工作日内回复。"
+		"contactSupportBlurb": "有疑问或遇到问题？给我们发邮件，会有人在一个工作日内回复。",
+		"startAtLogin": "登录时启动",
+		"startAtLoginHint": "退出应用后 Nebo 仍会继续工作，并在你登录时启动。"
 	},
 	"settingsPlugins": {
 		"title": "插件",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "通过 Janus 路由",
 		"routeJanusHint": "Janus 会在此智能包的模型之间为每一步选择级别，以降低你的账单。你的密钥会随每个请求一起发送，且永不存储。路由费：{fee}。",
 		"routeJanusLocal": "这台电脑上的模型（Ollama、Claude Code、Codex）始终直接运行。语音永不路由。"
+	},
+	"loginItemsBanner": {
+		"text": "Nebo 仅在应用打开时运行。若要在退出后继续工作，请在“登录项”中打开 Nebo。",
+		"open": "打开登录项"
 	}
 }

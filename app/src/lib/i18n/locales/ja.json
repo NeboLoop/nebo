@@ -965,7 +965,9 @@
 		"installAndRestart": "インストールして再起動",
 		"openSourceLicenses": "オープンソースライセンス",
 		"contactSupport": "サポートに問い合わせ",
-		"contactSupportBlurb": "ご質問や問題がありますか？メールをいただければ、1営業日以内に担当者が返信します。"
+		"contactSupportBlurb": "ご質問や問題がありますか？メールをいただければ、1営業日以内に担当者が返信します。",
+		"startAtLogin": "ログイン時に起動",
+		"startAtLoginHint": "アプリを終了しても Nebo は動き続け、ログイン時に起動します。"
 	},
 	"settingsPlugins": {
 		"title": "プラグイン",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Janus経由にする",
 		"routeJanusHint": "Janusは、料金を抑えるためにこのパックのモデル間で各ステップのレベルを選びます。あなたのキーは各リクエストとともに送られ、保存されることはありません。ルーティング料金: {fee}。",
 		"routeJanusLocal": "このコンピューター上のモデル（Ollama、Claude Code、Codex）は常に直接動作します。ボイスはルーティングされません。"
+	},
+	"loginItemsBanner": {
+		"text": "Nebo はアプリが開いている間だけ動作します。終了後も動かし続けるには、ログイン項目で Nebo をオンにしてください。",
+		"open": "ログイン項目を開く"
 	}
 }

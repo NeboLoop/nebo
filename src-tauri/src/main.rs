@@ -20,6 +20,7 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod engine;
+mod service;
 
 /// Where the window loads Nebo from: the Vite dev server (HMR) under
 /// `cargo tauri dev`, the engine otherwise.
@@ -296,6 +297,39 @@ async fn pick_folder() -> Option<String> {
         .pick_folder()
         .await
         .map(|f| f.path().to_string_lossy().into_owned())
+}
+
+/// How the app runs its engine, for Settings' Start at login and the Login
+/// Items banner.
+#[tauri::command]
+fn engine_service() -> engine::ServiceView {
+    engine::service_view()
+}
+
+/// Settings' Start at login switch.
+#[tauri::command]
+async fn set_start_at_login(on: bool) -> Result<engine::ServiceView, String> {
+    // Registering waits on the OS, and a handover on the engine's stop.
+    let view = tauri::async_runtime::spawn_blocking(move || engine::set_start_at_login(on))
+        .await
+        .map_err(|e| e.to_string())??;
+    sync_start_at_login_item(view);
+    Ok(view)
+}
+
+/// The Login Items banner's button.
+#[tauri::command]
+fn open_login_items() {
+    service::open_login_items();
+}
+
+/// The tray's Start at login item, shown while the service is on offer.
+static START_AT_LOGIN_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> = std::sync::OnceLock::new();
+
+fn sync_start_at_login_item(view: engine::ServiceView) {
+    if let Some(item) = START_AT_LOGIN_ITEM.get() {
+        let _ = item.set_checked(view.start_at_login);
+    }
 }
 
 /// The event the main window opens an owner item's place on
@@ -811,6 +845,15 @@ fn main() {
 
     dotenvy::dotenv().ok();
 
+    // `--engine-service <verb>`: register, remove, start or read the engine's
+    // OS service, for installers, `make` and tests. No window.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a == "--engine-service") {
+            service::run_verb(&args);
+        }
+    }
+
     // One executable, two roles: `--engine` is the server, with no window;
     // otherwise this is the shell, the window and tray.
     let engine_role = std::env::args().any(|a| a == "--engine");
@@ -878,7 +921,10 @@ fn main() {
             save_artifact,
             show_owner_notification,
             pick_files,
-            pick_folder
+            pick_folder,
+            engine_service,
+            set_start_at_login,
+            open_login_items
         ])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
@@ -972,7 +1018,13 @@ fn main() {
             engine::supervise(app.handle().clone());
             engine::attach(app.handle().clone(), frontend_url(app.handle()));
 
-            // Build tray
+            // Build tray: a status line first, then Start at login while the
+            // OS service is on offer.
+            let status = MenuItemBuilder::with_id("status", engine::status_line()).enabled(false).build(app)?;
+            let start_at_login = tauri::menu::CheckMenuItemBuilder::with_id("start_at_login", "Start at Login")
+                .checked(engine::service_view().start_at_login)
+                .build(app)?;
+            let sep0 = PredefinedMenuItem::separator(app)?;
             let show = MenuItemBuilder::with_id("show", "Show Nebo").build(app)?;
             let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
@@ -981,9 +1033,26 @@ fn main() {
             let feedback = MenuItemBuilder::with_id("feedback", "Send Feedback").build(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit Nebo").build(app)?;
-            let menu = MenuBuilder::new(app)
-                .items(&[&show, &hide, &sep1, &check_update, &help, &feedback, &sep2, &quit])
+            let mut menu = MenuBuilder::new(app).items(&[&status]);
+            if engine::service_view().offered {
+                menu = menu.item(&start_at_login);
+            }
+            let menu = menu
+                .items(&[&sep0, &show, &hide, &sep1, &check_update, &help, &feedback, &sep2, &quit])
                 .build()?;
+            let _ = START_AT_LOGIN_ITEM.set(start_at_login);
+            // The status line follows the engine.
+            std::thread::spawn(move || {
+                let mut shown = "";
+                loop {
+                    let line = engine::status_line();
+                    if line != shown {
+                        let _ = status.set_text(line);
+                        shown = line;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            });
 
             // macOS re-tints a black template icon to suit the menu bar.
             // Windows and Linux draw the icon as-is on a taskbar or panel that
@@ -1000,7 +1069,7 @@ fn main() {
                 .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
-                .tooltip("Nebo — Running")
+                .tooltip("Nebo")
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -1029,6 +1098,16 @@ fn main() {
                         open_external("https://github.com/NeboLoop/nebo/issues");
                     }
                     "quit" => engine::quit(app.clone()),
+                    "start_at_login" => {
+                        let on = !engine::service_view().start_at_login;
+                        std::thread::spawn(move || match engine::set_start_at_login(on) {
+                            Ok(view) => sync_start_at_login_item(view),
+                            Err(e) => {
+                                tracing::warn!(error = %e, "could not change Start at login");
+                                sync_start_at_login_item(engine::service_view());
+                            }
+                        });
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
+  import LoginItemsBanner from '$lib/components/LoginItemsBanner.svelte';
   import FeedbackModal from '$lib/components/FeedbackModal.svelte';
 
   let displayName = $state('');
@@ -49,6 +50,7 @@
 </script>
 
 <UpdateBanner {collapsed} />
+<LoginItemsBanner {collapsed} />
 <div class="relative border-t border-base-300 shrink-0">
   {#if open}
     <div class="fixed inset-0 z-40" onclick={() => open = false} role="presentation"></div>

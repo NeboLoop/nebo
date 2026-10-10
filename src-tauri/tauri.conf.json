@@ -30,7 +30,10 @@
     ],
     "macOS": {
       "entitlements": "../assets/macos/nebo.entitlements",
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "files": {
+        "Library/LaunchAgents/dev.neboai.nebo.engine.plist": "LaunchAgents/dev.neboai.nebo.engine.plist"
+      }
     }
   },
   "app": {

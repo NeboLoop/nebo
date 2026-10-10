@@ -106,6 +106,28 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 /// The server serves: a supervised engine's stall may exit it from now on.
 pub(crate) fn serving() {
     SERVING.store(true, Ordering::Relaxed);
+    stall_for_test();
+}
+
+/// A test's stalled engine: `<data_dir>/TEST_STALL` holding a number of
+/// seconds makes every runtime worker block that long once the server
+/// serves, as workers stuck in SQLite would. Read once and removed, so the
+/// engine its supervisor starts again serves. Only in a relocated Nebo
+/// folder (`NEBO_HOME`: a test's), never the owner's.
+fn stall_for_test() {
+    if !config::data_dir_overridden() {
+        return;
+    }
+    let Ok(path) = config::data_dir().map(|d| d.join("TEST_STALL")) else { return };
+    let Some(secs) = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u64>().ok()) else { return };
+    let _ = std::fs::remove_file(&path);
+    let Ok(rt) = tokio::runtime::Handle::try_current() else { return };
+    let workers = rt.metrics().num_workers();
+    tracing::warn!(secs, workers, "TEST_STALL: blocking every runtime worker");
+    // More than one each: a worker that finds the queue empty steals the next.
+    for _ in 0..workers * 2 {
+        rt.spawn(async move { std::thread::sleep(Duration::from_secs(secs)) });
+    }
 }
 
 /// How long the stall has lasted in awake time after one watchdog tick

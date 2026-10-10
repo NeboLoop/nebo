@@ -965,7 +965,9 @@
 		"installAndRestart": "Pasang & Mulai Ulang",
 		"openSourceLicenses": "Lisensi Sumber Terbuka",
 		"contactSupport": "Hubungi dukungan",
-		"contactSupportBlurb": "Ada pertanyaan atau masalah? Email kami dan seseorang akan membalas dalam satu hari kerja."
+		"contactSupportBlurb": "Ada pertanyaan atau masalah? Email kami dan seseorang akan membalas dalam satu hari kerja.",
+		"startAtLogin": "Mulai saat login",
+		"startAtLoginHint": "Nebo tetap bekerja setelah Anda menutup aplikasi, dan mulai saat Anda login."
 	},
 	"settingsPlugins": {
 		"title": "Plugin",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Dialihkan melalui Janus",
 		"routeJanusHint": "Janus memilih tingkat untuk setiap langkah di seluruh model paket ini untuk menekan tagihan Anda. Kunci Anda ikut di setiap permintaan dan tidak pernah disimpan. Biaya perutean: {fee}.",
 		"routeJanusLocal": "Model di komputer ini (Ollama, Claude Code, Codex) selalu berjalan langsung. Suara tidak pernah dialihkan."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo hanya berjalan selama aplikasi terbuka. Agar tetap bekerja setelah ditutup, aktifkan Nebo di Item Login.",
+		"open": "Buka Item Login"
 	}
 }

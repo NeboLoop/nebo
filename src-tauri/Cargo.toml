@@ -23,6 +23,8 @@ notify-rust = "4"
 server = { workspace = true }
 config = { workspace = true }
 browser = { workspace = true }
+# The desktop feed's `engineMode` and the update marker
+updater = { workspace = true }
 
 # HTTP types (re-export from tauri for protocol handler)
 http = "1"
@@ -52,3 +54,11 @@ anyhow = { workspace = true }
 # WebKit on macOS ships with it off.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "objc2-app-kit"] }
+# The engine's LaunchAgent (SMAppService, macOS 13+), and the OS version
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSError"] }
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+
+[target.'cfg(unix)'.dependencies]
+# The engine's stdout and stderr into its log when launchd starts it
+libc = "0.2"

@@ -965,7 +965,9 @@
 		"installAndRestart": "Installieren & neu starten",
 		"openSourceLicenses": "Open-Source-Lizenzen",
 		"contactSupport": "Support kontaktieren",
-		"contactSupportBlurb": "Fragen oder Probleme? Schreib uns eine E-Mail, ein Mensch antwortet innerhalb eines Werktags."
+		"contactSupportBlurb": "Fragen oder Probleme? Schreib uns eine E-Mail, ein Mensch antwortet innerhalb eines Werktags.",
+		"startAtLogin": "Beim Anmelden starten",
+		"startAtLoginHint": "Nebo arbeitet weiter, nachdem du die App beendet hast, und startet beim Anmelden."
 	},
 	"settingsPlugins": {
 		"title": "Plugins",
@@ -4091,5 +4093,9 @@
 		"routeJanus": "Über Janus leiten",
 		"routeJanusHint": "Janus wählt die Stufe für jeden Schritt über die Modelle dieses Pakets, um deine Rechnung zu senken. Deine Schlüssel werden mit jeder Anfrage mitgeschickt und nie gespeichert. Weiterleitungsgebühr: {fee}.",
 		"routeJanusLocal": "Modelle auf diesem Computer (Ollama, Claude Code, Codex) laufen immer direkt. Stimme wird nie weitergeleitet."
+	},
+	"loginItemsBanner": {
+		"text": "Nebo läuft nur, solange die App geöffnet ist. Damit Nebo nach dem Beenden weiterarbeitet, schalte Nebo unter Anmeldeobjekte ein.",
+		"open": "Anmeldeobjekte öffnen"
 	}
 }
