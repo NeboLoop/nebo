@@ -543,8 +543,9 @@ async fn apply_by_type(state: &AppState, api: &comm::api::NeboAIApi, artifact_ty
 /// What a hub update notice (`tool_updated`) does to an installed artifact.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NoticeStep {
-    /// Not tracked here: the install pathway, as for any install event.
-    Install,
+    /// The installed version is unknown here: nothing is put in place from
+    /// the notice (the update checker compares it), and nothing installs.
+    Unversioned,
     /// Already current: the notice's version was applied after it was sent,
     /// or the notice is older than what is installed.
     Skip,
@@ -562,10 +563,10 @@ pub(crate) enum NoticeStep {
 /// hub sent the notice (both unix seconds).
 pub(crate) fn notice_step(local: Option<&str>, notice: &str, applied_at: Option<i64>, sent_at: Option<i64>) -> NoticeStep {
     let Some(local) = local.filter(|v| !v.is_empty()) else {
-        return NoticeStep::Install;
+        return NoticeStep::Unversioned;
     };
     if notice.is_empty() {
-        return NoticeStep::Install;
+        return NoticeStep::Unversioned;
     }
     if notice == local {
         return match (applied_at, sent_at) {
@@ -618,8 +619,8 @@ async fn tracked(state: &AppState, artifact_id: &str, artifact_type: &str, slug:
 }
 
 /// A hub update notice (`tool_updated`) for an artifact installed here.
-/// Returns `false` when the artifact is not tracked here and the caller
-/// installs it the way any install event is installed.
+/// Returns `false` when the artifact is not installed here; the caller drops
+/// the notice (an update notice never installs).
 ///
 /// An update keeps what the owner set on the artifact: it goes through the
 /// same apply core as Settings → Updates, never a clean reinstall (which
@@ -661,7 +662,10 @@ pub(crate) async fn on_update_notice(
     let applied_at = state.store.artifact_update_applied_at(&key, row_type, &notice).ok().flatten();
     let name = event.payload.get("name").and_then(|v| v.as_str()).unwrap_or(&item.name).to_string();
     match notice_step(Some(&local), &notice, applied_at, sent_at) {
-        NoticeStep::Install => false,
+        NoticeStep::Unversioned => {
+            debug!(artifact = %key, notice = %notice, "update notice: installed version unknown, left to the update checker");
+            true
+        }
         NoticeStep::Skip => {
             debug!(artifact = %key, local = %local, notice = %notice, "update notice: already current");
             true
@@ -878,6 +882,41 @@ mod notice_tests {
 
     use super::{notice_step, NoticeStep};
 
+    // A version approved on the hub reaches the bots it lists as installed.
+    // A bot that does not have the artifact (the owner removed it; the hub's
+    // row outlived the removal) drops the notice: an update notice never
+    // installs. Before this it fell through to a full install, and a removed
+    // app came back by itself on every approval.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_update_notice_never_installs_what_is_not_here() {
+        use crate::staffed_proof::{hub_offers_agent, session};
+        let nebo = session().await;
+        let state = nebo.state.clone();
+        let profile = uuid::Uuid::new_v4().to_string();
+        state
+            .store
+            .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let tag = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+        let id = format!("removed-{tag}");
+        let name = format!("Removed Studio {tag}");
+        hub_offers_agent(&format!("AGNT-RMVD-{}", tag[..4].to_uppercase()), &id, &name, serde_json::json!({ "workflows": {} }));
+
+        for notice in [
+            serde_json::json!({ "type": "tool_updated", "tool_id": id, "payload": { "name": name, "version": "0.3.7", "artifact_type": "app" } }),
+            serde_json::json!({
+                "type": "skillUpdated", "skillId": id, "skillName": name, "version": "0.3.7",
+                "artifactType": "app", "permissionsAdded": [], "permissionsRemoved": [],
+                "updatedAt": chrono::Utc::now().to_rfc3339(),
+            }),
+        ] {
+            let event = napp::InstallEvent::parse(&notice.to_string()).unwrap();
+            crate::handle_comm_install_event(&state, event).await.expect("the update notice");
+            assert!(state.store.get_agent(&id).unwrap().is_none(), "nothing installed from {notice}");
+        }
+        state.store.delete_auth_profile(&profile).unwrap();
+    }
+
     // A hub update notice moves an installed artifact only when it brings
     // something: a newer version is offered (or applied, with automatic
     // updates on), the same version rebuilt in place is put in place once,
@@ -885,7 +924,7 @@ mod notice_tests {
     // notice reinstalled unconditionally.
     #[test]
     fn an_update_notice_is_checked_against_what_is_installed() {
-        assert_eq!(notice_step(None, "0.2.0", None, None), NoticeStep::Install, "not here: the install path");
+        assert_eq!(notice_step(None, "0.2.0", None, None), NoticeStep::Unversioned, "no known version: nothing applied");
         assert_eq!(notice_step(Some("0.1.0"), "0.2.0", None, Some(100)), NoticeStep::Offer);
         assert_eq!(notice_step(Some("0.2.0"), "0.1.0", None, Some(100)), NoticeStep::Skip, "an older notice");
         assert_eq!(notice_step(Some("0.2.0"), "0.2.0", None, Some(100)), NoticeStep::Refresh, "rebuilt in place");

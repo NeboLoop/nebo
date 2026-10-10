@@ -416,18 +416,15 @@ pub async fn uninstall_store_product(
     // Get product detail before removing so we know the slug and type
     let detail = api.get_skill(&id).await.ok();
 
-    // Unregister from NeboAI
-    let _ = api.uninstall_product(&id).await;
+    // Unregister from NeboAI. A failure is logged, never dropped: a hub
+    // install row left active keeps this bot on the artifact's update
+    // notices.
+    if let Err(e) = api.uninstall_app(&id).await {
+        tracing::warn!(product = %id, error = %e, "uninstall: the hub was not told; its install row stays active");
+    }
 
-    // Look up local agent by NeboAI product ID first, then by name as fallback
-    let local_agent = state.store.get_agent(&id).ok().flatten().or_else(|| {
-        let name = detail.as_ref().map(|d| d.item.name.as_str()).unwrap_or("");
-        if !name.is_empty() {
-            state.store.get_agent_by_name(name).ok().flatten()
-        } else {
-            None
-        }
-    });
+    let code = detail.as_ref().and_then(|d| d.item.code.as_deref());
+    let local_agent = installed_agent(&state.store, &id, code);
     let slug = detail
         .as_ref()
         .map(|d| d.item.slug.clone())
@@ -455,8 +452,10 @@ pub async fn uninstall_store_product(
         return Ok(Json(serde_json::json!({ "success": true })));
     }
 
-    // Determine artifact type from local DB kind or NeboAI
+    // Determine artifact type from local DB kind or NeboAI. An app is an
+    // employee with a page: it lives under agents/, never skills/.
     let is_agent = artifact_type == "agent"
+        || artifact_type == "app"
         || local_agent.is_some()
         || local_agent
             .as_ref()
@@ -536,6 +535,23 @@ pub async fn uninstall_store_product(
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// The local employee a marketplace product installed: the record with the
+/// product's id, else (an install from before ids matched) the record whose
+/// kind is the product's install code. Never matched by name: the owner's own
+/// employee can carry the product's name, and removing the product must not
+/// remove it.
+fn installed_agent(store: &db::Store, id: &str, code: Option<&str>) -> Option<db::models::Agent> {
+    if let Some(agent) = store.get_agent(id).ok().flatten() {
+        return Some(agent);
+    }
+    let code = code.filter(|c| !c.is_empty())?;
+    store
+        .list_agents(1000, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|a| a.kind.as_deref() == Some(code))
 }
 
 // ── Collections ───────────────────────────────────────────────────
@@ -620,4 +636,77 @@ pub async fn list_store_orgs(State(state): State<AppState>) -> HandlerResult<ser
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("list_orgs: {e}"))))?;
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installed_agent;
+
+    fn store() -> db::Store {
+        let path = std::env::temp_dir().join(format!("nebo-store-uninstall-{}.db", uuid::Uuid::new_v4()));
+        db::Store::new(&path.to_string_lossy()).unwrap()
+    }
+
+    /// Removing a marketplace product finds the employee that product
+    /// installed, never the owner's own employee of the same name.
+    #[test]
+    fn removing_a_product_never_finds_the_owners_employee_by_name() {
+        let s = store();
+        // The owner's own Design Studio (no install code), and the
+        // marketplace one hired beside it as "Design Studio 2".
+        s.create_agent("dd5cdd36", None, "Design Studio", "", "", "{}", None, None).unwrap();
+        s.create_agent("6cd4d527", Some("APPS-WSRW-12K5"), "Design Studio 2", "", "", "{}", None, None).unwrap();
+        let found = installed_agent(&s, "6cd4d527", Some("APPS-WSRW-12K5")).map(|a| a.id);
+        assert_eq!(found.as_deref(), Some("6cd4d527"), "by the product's id");
+
+        // Already removed here: nothing to remove, the owner's employee untouched.
+        s.delete_agent("6cd4d527").unwrap();
+        assert!(installed_agent(&s, "6cd4d527", Some("APPS-WSRW-12K5")).is_none());
+        assert!(installed_agent(&s, "6cd4d527", None).is_none());
+        assert!(s.get_agent("dd5cdd36").unwrap().is_some());
+    }
+
+    /// Through the store's Remove: the marketplace "Design Studio" is not
+    /// installed here under its id, and the owner's own employee of that
+    /// name stays, with its folder.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn removing_a_product_leaves_the_owners_employee_of_the_same_name() {
+        use crate::staffed_proof::{hub_lists, session};
+        let nebo = session().await;
+        let profile = uuid::Uuid::new_v4().to_string();
+        nebo.state
+            .store
+            .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let tag = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+        let name = format!("Studio {tag}");
+        let product = format!("market-{tag}");
+        hub_lists(&product, Some((&name, "app", "0.3.7", false)));
+        let own = format!("own-{tag}");
+        nebo.state.store.create_agent(&own, None, &name, "", "", "{}", None, None).unwrap();
+        let own_dir = config::user_dir().unwrap().join("agents").join(&name);
+        std::fs::create_dir_all(&own_dir).unwrap();
+        std::fs::write(own_dir.join("AGENT.md"), format!("---\nname: {name}\n---\n")).unwrap();
+
+        let (status, body) = nebo.delete(&format!("/store/products/{product}/install")).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(nebo.state.store.get_agent(&own).unwrap().is_some(), "the owner's employee stays");
+        assert!(own_dir.join("AGENT.md").exists(), "and its folder");
+
+        hub_lists(&product, None);
+        let _ = nebo.state.store.delete_agent(&own);
+        let _ = std::fs::remove_dir_all(&own_dir);
+        nebo.state.store.delete_auth_profile(&profile).unwrap();
+    }
+
+    /// An install whose local id differs from the product's is found by the
+    /// install code it recorded.
+    #[test]
+    fn an_install_under_another_id_is_found_by_its_code() {
+        let s = store();
+        s.create_agent("dd5cdd36", None, "Design Studio", "", "", "{}", None, None).unwrap();
+        s.create_agent("old-local-id", Some("APPS-WSRW-12K5"), "Design Studio 2", "", "", "{}", None, None).unwrap();
+        let found = installed_agent(&s, "6cd4d527", Some("APPS-WSRW-12K5")).map(|a| a.id);
+        assert_eq!(found.as_deref(), Some("old-local-id"));
+    }
 }
