@@ -967,7 +967,13 @@
 		"contactSupport": "Destekle iletişime geçin",
 		"contactSupportBlurb": "Sorularınız veya bir aksaklık mı var? Bize e-posta gönderin, bir iş günü içinde bir insan size yanıt versin.",
 		"startAtLogin": "Oturum açılışında başlat",
-		"startAtLoginHint": "Nebo uygulamadan çıktıktan sonra da çalışmaya devam eder ve oturum açtığınızda başlar."
+		"startAtLoginHint": "Nebo uygulamadan çıktıktan sonra da çalışmaya devam eder ve oturum açtığınızda başlar.",
+		"keepAfterLogout": "Oturumu kapattıktan sonra çalışmaya devam et",
+		"keepAfterLogoutHint": "Bu bilgisayarda oturumunuz kapalıyken çalışanlarınız çalışmaya devam eder.",
+		"keepAfterLogoutConfirmTitle": "Oturumu kapattıktan sonra Nebo çalışmaya devam etsin mi?",
+		"keepAfterLogoutConfirmMessage": "Nebo, siz bunu kapatana veya bilgisayarı kapatana kadar oturumu kapattıktan sonra da bu bilgisayarda çalışmaya devam eder.",
+		"keepAfterLogoutConfirmButton": "Çalışmaya devam et",
+		"keepAfterLogoutFailed": "Bu ayar değiştirilemedi. Tekrar deneyin."
 	},
 	"settingsPlugins": {
 		"title": "Eklentiler",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo yalnızca uygulama açıkken çalışır. Çıktıktan sonra da çalışması için Giriş Öğeleri'nde Nebo'yu açın.",
-		"open": "Giriş Öğeleri'ni aç"
+		"open": "Giriş Öğeleri'ni aç",
+		"unavailable": "Nebo yalnızca uygulama açıkken çalışır. Bu bilgisayar, uygulamadan çıktıktan sonra Nebo'yu çalışır durumda tutamaz."
 	}
 }

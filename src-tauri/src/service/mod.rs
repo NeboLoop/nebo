@@ -23,6 +23,7 @@
 //! [--port P]` are the same operations for installers, `make` and tests.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The app's engine job.
 pub const LABEL: &str = "dev.neboai.nebo.engine";
@@ -62,6 +63,10 @@ pub enum Status {
     NotFound,
     /// No service on this OS (yet): the engine runs as the app's child.
     Unsupported,
+    /// This OS has one, but it can't run here (Linux with no systemd user
+    /// manager, or the unit masked): the engine runs as the app's child,
+    /// and the window says so.
+    Unavailable,
 }
 
 /// The engine job as launchd has it.
@@ -141,7 +146,7 @@ pub fn plan(f: &Facts) -> Plan {
         Status::Enabled => Plan::Service,
         Status::NotRegistered => Plan::Register,
         Status::RequiresApproval => Plan::Child { banner: true, unregister: false },
-        Status::NotFound | Status::Unsupported => Plan::Child { banner: false, unregister: false },
+        Status::NotFound | Status::Unsupported | Status::Unavailable => Plan::Child { banner: false, unregister: false },
     }
 }
 
@@ -284,28 +289,43 @@ pub fn parse_print(out: &str) -> Job {
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{install, job, kickstart, open_login_items, status, unregister};
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{install, job, keep_after_logout, kickstart, open_login_items, set_keep_after_logout, status, unregister};
 
-#[cfg(not(target_os = "macos"))]
+/// Whether the engine keeps running after the owner logs out: Linux only
+/// (`loginctl enable-linger`), None where the OS has no such choice.
+#[cfg(not(target_os = "linux"))]
+pub fn keep_after_logout() -> Option<bool> {
+    None
+}
+#[cfg(not(target_os = "linux"))]
+pub fn set_keep_after_logout(_on: bool) -> Result<(), String> {
+    Err("no such setting on this OS".into())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn status(_: &Target) -> Status {
     Status::Unsupported
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn install(_: &Target) -> Result<Status, String> {
     Ok(Status::Unsupported)
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn unregister(_: &Target) -> Result<(), String> {
     Ok(())
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn kickstart(_: &Target, _restart: bool) -> Result<(), String> {
     Err("no engine service on this OS".into())
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn job(_: &Target) -> Job {
     Job::Absent
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn open_login_items() {}
 
 /// `--engine-service uninstall`: stop the engine the graceful way (the
@@ -322,11 +342,13 @@ pub fn uninstall(target: &Target) -> Result<(), String> {
 pub fn run_verb(args: &[String]) -> ! {
     let mut verb = None;
     let mut target = Target::app();
+    let mut within = 90;
     let mut it = args.iter().skip_while(|a| *a != "--engine-service").skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--label" => target.label = it.next().cloned().unwrap_or_default(),
             "--port" => target.port = it.next().and_then(|p| p.parse().ok()).unwrap_or(target.port),
+            "--within" => within = it.next().and_then(|s| s.parse().ok()).unwrap_or(within),
             v if verb.is_none() && !v.starts_with("--") => verb = Some(v.to_string()),
             other => fail(&format!("unknown argument {other}")),
         }
@@ -339,7 +361,23 @@ pub fn run_verb(args: &[String]) -> ! {
         Some("install") => install(&target).map(|s| serde_json::json!({ "status": s, "job": job(&target) })),
         Some("uninstall") => uninstall(&target).map(|()| serde_json::json!({ "status": status(&target) })),
         Some("kickstart") => kickstart(&target, false).map(|()| serde_json::json!({ "job": job(&target) })),
-        _ => Err("usage: nebo --engine-service <install|uninstall|status|kickstart> [--label L] [--port P]".into()),
+        // The session's login entry (Linux): the kill switch holds there too,
+        // with no window opened; otherwise the engine gets the session's
+        // display.
+        Some("login") => {
+            let mode = wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), load().engine_mode.as_deref());
+            if mode == Mode::Child {
+                uninstall(&target).map(|()| serde_json::json!({ "status": status(&target) }))
+            } else {
+                kickstart(&target, false).map(|()| serde_json::json!({ "job": job(&target) }))
+            }
+        }
+        // The update helper's gate, asked of the new executable: an engine
+        // of this executable's own version answers healthy within `--within`
+        // seconds.
+        Some("health") => crate::engine::wait_for_engine_version(target.port, env!("CARGO_PKG_VERSION"), Duration::from_secs(within))
+            .map(|()| serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
+        _ => Err("usage: nebo --engine-service <install|uninstall|status|kickstart|login|health> [--label L] [--port P]".into()),
     };
     match result {
         Ok(v) => {

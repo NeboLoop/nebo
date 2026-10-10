@@ -967,7 +967,13 @@
 		"contactSupport": "联系支持",
 		"contactSupportBlurb": "有疑问或遇到问题？给我们发邮件，会有人在一个工作日内回复。",
 		"startAtLogin": "登录时启动",
-		"startAtLoginHint": "退出应用后 Nebo 仍会继续工作，并在你登录时启动。"
+		"startAtLoginHint": "退出应用后 Nebo 仍会继续工作，并在你登录时启动。",
+		"keepAfterLogout": "注销后继续运行",
+		"keepAfterLogoutHint": "你注销这台电脑后，你的员工仍会继续工作。",
+		"keepAfterLogoutConfirmTitle": "注销后让 Nebo 继续运行吗？",
+		"keepAfterLogoutConfirmMessage": "注销后 Nebo 会继续在这台电脑上工作，直到你关闭此选项或关机。",
+		"keepAfterLogoutConfirmButton": "继续运行",
+		"keepAfterLogoutFailed": "无法更改此设置。请重试。"
 	},
 	"settingsPlugins": {
 		"title": "插件",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo 仅在应用打开时运行。若要在退出后继续工作，请在“登录项”中打开 Nebo。",
-		"open": "打开登录项"
+		"open": "打开登录项",
+		"unavailable": "Nebo 仅在应用打开时运行。退出应用后，这台电脑无法让 Nebo 继续运行。"
 	}
 }

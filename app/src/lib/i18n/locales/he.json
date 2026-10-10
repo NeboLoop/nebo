@@ -967,7 +967,13 @@
 		"contactSupport": "צור קשר עם התמיכה",
 		"contactSupportBlurb": "שאלות או תקלות? שלח לנו מייל ואדם יענה לך תוך יום עסקים אחד.",
 		"startAtLogin": "הפעלה בעת התחברות",
-		"startAtLoginHint": "Nebo ממשיך לעבוד גם אחרי שסוגרים את האפליקציה, ומתחיל בעת ההתחברות."
+		"startAtLoginHint": "Nebo ממשיך לעבוד גם אחרי שסוגרים את האפליקציה, ומתחיל בעת ההתחברות.",
+		"keepAfterLogout": "המשך פעולה אחרי היציאה מהמערכת",
+		"keepAfterLogoutHint": "העובדים שלך ממשיכים לעבוד כשאתה מחוץ למערכת במחשב הזה.",
+		"keepAfterLogoutConfirmTitle": "להשאיר את Nebo פועל אחרי היציאה מהמערכת?",
+		"keepAfterLogoutConfirmMessage": "Nebo ממשיך לעבוד במחשב הזה אחרי שתצא מהמערכת, עד שתכבה את האפשרות או תכבה את המחשב.",
+		"keepAfterLogoutConfirmButton": "המשך פעולה",
+		"keepAfterLogoutFailed": "לא ניתן לשנות את ההגדרה. נסה שוב."
 	},
 	"settingsPlugins": {
 		"title": "תוספים",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo פועל רק כשהאפליקציה פתוחה. כדי שימשיך לעבוד אחרי הסגירה, הפעילו את Nebo בפריטי התחברות.",
-		"open": "פתיחת פריטי התחברות"
+		"open": "פתיחת פריטי התחברות",
+		"unavailable": "Nebo פועל רק כשהאפליקציה פתוחה. המחשב הזה לא יכול להשאיר את Nebo פועל אחרי שתצא מהאפליקציה."
 	}
 }

@@ -967,7 +967,13 @@
 		"contactSupport": "サポートに問い合わせ",
 		"contactSupportBlurb": "ご質問や問題がありますか？メールをいただければ、1営業日以内に担当者が返信します。",
 		"startAtLogin": "ログイン時に起動",
-		"startAtLoginHint": "アプリを終了しても Nebo は動き続け、ログイン時に起動します。"
+		"startAtLoginHint": "アプリを終了しても Nebo は動き続け、ログイン時に起動します。",
+		"keepAfterLogout": "ログアウト後も実行を続ける",
+		"keepAfterLogoutHint": "このコンピュータからログアウトしている間も、従業員は作業を続けます。",
+		"keepAfterLogoutConfirmTitle": "ログアウト後も Nebo を実行し続けますか？",
+		"keepAfterLogoutConfirmMessage": "ログアウト後も、この設定をオフにするかコンピュータをシャットダウンするまで、Nebo はこのコンピュータで作業を続けます。",
+		"keepAfterLogoutConfirmButton": "実行を続ける",
+		"keepAfterLogoutFailed": "この設定を変更できませんでした。もう一度お試しください。"
 	},
 	"settingsPlugins": {
 		"title": "プラグイン",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo はアプリが開いている間だけ動作します。終了後も動かし続けるには、ログイン項目で Nebo をオンにしてください。",
-		"open": "ログイン項目を開く"
+		"open": "ログイン項目を開く",
+		"unavailable": "Nebo はアプリが開いている間だけ実行されます。このコンピュータでは、アプリを終了した後に Nebo を実行し続けることができません。"
 	}
 }

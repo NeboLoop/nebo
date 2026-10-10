@@ -967,7 +967,13 @@
 		"contactSupport": "Hubungi sokongan",
 		"contactSupportBlurb": "Ada soalan atau masalah? E-mel kami dan seseorang akan membalas dalam satu hari bekerja.",
 		"startAtLogin": "Mula semasa log masuk",
-		"startAtLoginHint": "Nebo terus berfungsi selepas anda menutup apl, dan bermula apabila anda log masuk."
+		"startAtLoginHint": "Nebo terus berfungsi selepas anda menutup apl, dan bermula apabila anda log masuk.",
+		"keepAfterLogout": "Terus berjalan selepas saya log keluar",
+		"keepAfterLogoutHint": "Pekerja anda terus bekerja semasa anda log keluar daripada komputer ini.",
+		"keepAfterLogoutConfirmTitle": "Biarkan Nebo terus berjalan selepas anda log keluar?",
+		"keepAfterLogoutConfirmMessage": "Nebo terus bekerja pada komputer ini selepas anda log keluar, sehingga anda mematikan pilihan ini atau menutup komputer.",
+		"keepAfterLogoutConfirmButton": "Terus berjalan",
+		"keepAfterLogoutFailed": "Tidak dapat menukar tetapan ini. Cuba lagi."
 	},
 	"settingsPlugins": {
 		"title": "Plugin",
@@ -4096,6 +4102,7 @@
 	},
 	"loginItemsBanner": {
 		"text": "Nebo hanya berjalan semasa apl dibuka. Untuk terus berfungsi selepas ditutup, hidupkan Nebo dalam Item Log Masuk.",
-		"open": "Buka Item Log Masuk"
+		"open": "Buka Item Log Masuk",
+		"unavailable": "Nebo hanya berjalan semasa apl dibuka. Komputer ini tidak dapat memastikan Nebo terus berjalan selepas anda keluar daripada apl."
 	}
 }

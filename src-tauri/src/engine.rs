@@ -58,10 +58,23 @@ pub struct ServiceView {
     /// Nebo is switched off in Login Items: the engine runs only while the
     /// app is open, and the window says how to change that.
     pub needs_approval: bool,
+    /// The service was asked for, but this computer can't run it (Linux with
+    /// no systemd user manager): the engine runs only while the app is
+    /// open, and the window says so.
+    pub unavailable: bool,
+    /// "Keep running after I log out" (Linux): None where the OS has no
+    /// such choice.
+    pub keep_after_logout: Option<bool>,
 }
 
-static VIEW: Mutex<ServiceView> =
-    Mutex::new(ServiceView { offered: false, start_at_login: true, supervised: false, needs_approval: false });
+static VIEW: Mutex<ServiceView> = Mutex::new(ServiceView {
+    offered: false,
+    start_at_login: true,
+    supervised: false,
+    needs_approval: false,
+    unavailable: false,
+    keep_after_logout: None,
+});
 
 pub fn service_view() -> ServiceView {
     *VIEW.lock().unwrap_or_else(|e| e.into_inner())
@@ -324,9 +337,14 @@ fn start() -> Run {
     };
     let plan = service::plan(&facts);
     tracing::info!(?mode, ?status, ?plan, start_at_login = saved.start_at_login, "how the engine runs");
+    let offered = !dev
+        && mode == service::Mode::Service
+        && !matches!(status, service::Status::Unsupported | service::Status::Unavailable);
     set_view(|v| {
-        v.offered = !dev && mode == service::Mode::Service && status != service::Status::Unsupported;
+        v.offered = offered;
         v.start_at_login = saved.start_at_login;
+        v.unavailable = !dev && mode == service::Mode::Service && status == service::Status::Unavailable;
+        v.keep_after_logout = if offered { service::keep_after_logout() } else { None };
     });
     if !dev {
         service::refresh_feed_mode();
@@ -572,6 +590,46 @@ pub fn set_start_at_login(on: bool) -> Result<ServiceView, String> {
         set_view(|v| v.needs_approval = false);
     }
     Ok(service_view())
+}
+
+/// "Keep running after I log out", from Settings (Linux: lingering for this
+/// user). Only the owner turns it on; never silently.
+pub fn set_keep_after_logout(on: bool) -> Result<ServiceView, String> {
+    if !service_view().offered {
+        return Err("Nebo's background service is off".into());
+    }
+    service::set_keep_after_logout(on)?;
+    set_view(|v| v.keep_after_logout = service::keep_after_logout());
+    Ok(service_view())
+}
+
+/// Whether the engine on `port` runs nothing a restart would cut short. No
+/// answer counts as idle: there is nothing to cut.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn engine_idle(port: u16) -> bool {
+    call_on(port, "GET", "/api/v1/runs/active")
+        .call()
+        .ok()
+        .and_then(json::<serde_json::Value>)
+        .is_none_or(|v| v["runs"].as_array().is_none_or(Vec::is_empty))
+}
+
+/// The update helper's health gate (`--engine-service health`): wait up to
+/// `within` for the engine on `port` to answer healthy as `version`.
+pub fn wait_for_engine_version(port: u16, version: &str, within: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let Ok(resp) = http().get(&format!("http://127.0.0.1:{port}/health")).call()
+            && let Some(health) = json::<serde_json::Value>(resp)
+            && health["role"] == "engine"
+            && health["status"] == "ok"
+            && health["version"] == version
+        {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    Err(format!("no engine answered as {version} within {}s", within.as_secs()))
 }
 
 /// "Nebo is running" / "Nebo is starting…" / "Nebo is stopped", for the tray.

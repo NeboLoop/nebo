@@ -317,6 +317,19 @@ async fn set_start_at_login(on: bool) -> Result<engine::ServiceView, String> {
     Ok(view)
 }
 
+/// Settings' "Keep running after I log out" (Linux). From Nebo's own
+/// Settings in the main window only, never an app's window (which reaches
+/// these commands too).
+#[tauri::command]
+async fn set_keep_after_logout(webview: tauri::Webview, on: bool) -> Result<engine::ServiceView, String> {
+    if webview.label() != "main" {
+        return Err("only Nebo's Settings can change this".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || engine::set_keep_after_logout(on))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// The Login Items banner's button.
 #[tauri::command]
 fn open_login_items() {
@@ -924,6 +937,7 @@ fn main() {
             pick_folder,
             engine_service,
             set_start_at_login,
+            set_keep_after_logout,
             open_login_items
         ])
         .plugin(tauri_plugin_shell::init())
