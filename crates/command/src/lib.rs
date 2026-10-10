@@ -18,6 +18,8 @@
 
 use std::ffi::OsStr;
 
+pub mod task;
+
 /// How a child relates to the console. Only Windows acts on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Console {

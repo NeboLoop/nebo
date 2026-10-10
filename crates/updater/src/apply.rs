@@ -14,6 +14,17 @@ static PRE_APPLY_HOOK: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
 const ROLLBACK_MARKER_JSON: &str =
     r#"{"error":"Update failed and was rolled back to the previous version."}"#;
 
+/// How long an app-bundle update waits for the new engine to answer
+/// `/health` before it rolls back (the helper's health gate).
+#[cfg(target_os = "windows")]
+const HEALTH_GATE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The port the engine serves on: `NEBO_PORT`, else the default.
+#[cfg(target_os = "windows")]
+fn engine_port() -> u16 {
+    std::env::var("NEBO_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(27895)
+}
+
 /// Register a function to run before the binary restarts.
 pub fn set_pre_apply_hook(f: Box<dyn Fn() + Send>) {
     let mut hook = PRE_APPLY_HOOK.lock().unwrap();
@@ -339,66 +350,214 @@ exit 0
         .replace("__MARKER_JSON__", ROLLBACK_MARKER_JSON)
 }
 
-/// Windows: run the NSIS installer silently (`/S`) from a detached helper that waits
-/// for this process to exit first (so the installer can replace in-use files), then
-/// relaunches. NSIS performs its own in-place install; on installer failure we write
-/// the rollback marker (best-effort — NSIS is not transactional like an atomic move).
+/// Windows: a detached helper runs the NSIS installer silently (`/S`) once this
+/// process has exited (so the installer can replace in-use files), then starts
+/// Nebo again: the engine's task when one is registered, and the app.
+///
+/// When the engine runs as the OS's service (its Windows task's supervisor,
+/// `NEBO_SUPERVISED=taskscheduler`; off by default) the helper also holds the
+/// new version to a health gate: the engine must answer `/health` as a version
+/// other than this one within [`HEALTH_GATE`]. When it doesn't, or the
+/// installer fails, it reinstalls the previous version's installer (kept from
+/// the last update that passed the gate) and writes the rollback marker. NSIS
+/// is not transactional: the previous installer is the way back.
 #[cfg(target_os = "windows")]
 fn apply_app_bundle(setup_path: &Path, data_dir: &Path) -> Result<(), UpdateError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| UpdateError::Other(format!("resolve executable: {}", e)))?;
 
+    // The download has no extension; Windows starts an installer only as an .exe.
+    let setup = std::env::temp_dir().join(format!("Nebo-update-{}-setup.exe", uuid::Uuid::new_v4()));
+    std::fs::rename(setup_path, &setup).or_else(|_| copy_file(setup_path, &setup).map(|()| {
+        let _ = std::fs::remove_file(setup_path);
+    }))?;
+
+    let gated = std::env::var("NEBO_SUPERVISED").is_ok_and(|s| s == "taskscheduler");
+    let previous = data_dir.join("updates").join("previous-setup.exe");
+    let script = build_windows_helper(&WindowsHelper {
+        self_task: if gated { UPDATE_TASK.to_string() } else { String::new() },
+        pid: std::process::id(),
+        setup: setup.to_string_lossy().into_owned(),
+        previous: previous.to_string_lossy().into_owned(),
+        relaunch: current_exe.to_string_lossy().into_owned(),
+        task: WINDOWS_TASK.to_string(),
+        port: engine_port(),
+        old_version: env!("CARGO_PKG_VERSION").to_string(),
+        gate_secs: if gated { HEALTH_GATE.as_secs() } else { 0 },
+        marker: marker_path(data_dir).to_string_lossy().into_owned(),
+        log: log_path(data_dir).to_string_lossy().into_owned(),
+    });
     run_pre_apply();
-    let script = build_windows_helper(
-        std::process::id(),
-        &setup_path.to_string_lossy(),
-        &current_exe.to_string_lossy(),
-        &marker_path(data_dir).to_string_lossy(),
-        &log_path(data_dir).to_string_lossy(),
-    );
-    spawn_detached_cmd(&script)?;
+    // An engine the task runs ends with its task, and Task Scheduler takes
+    // what the task's processes started with it (seen on the house runner:
+    // children die when the task ends, breakaway or not). So that engine's
+    // helper runs as a task of its own.
+    if gated {
+        match start_helper_task(UPDATE_TASK, &script) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => tracing::warn!(error = %e, "update helper task did not start; starting the helper directly"),
+        }
+    }
+    spawn_detached_powershell(&script)?;
 
     std::process::exit(0);
 }
 
+/// The update helper's own task, for an engine the Windows task runs.
 #[cfg(target_os = "windows")]
-fn build_windows_helper(pid: u32, setup: &str, exe: &str, marker: &str, log: &str) -> String {
-    const TEMPLATE: &str = "@echo off\r
-:wait\r
-tasklist /FI \"PID eq __PID__\" 2>NUL | find \"__PID__\" >NUL\r
-if not errorlevel 1 (\r
-  ping -n 2 127.0.0.1 >NUL\r
-  goto wait\r
-)\r
-echo [update] running installer >> \"__LOG__\" 2>NUL\r
-\"__SETUP__\" /S\r
-if errorlevel 1 (\r
-  echo [update] installer failed >> \"__LOG__\" 2>NUL\r
-  echo __MARKER_JSON__>\"__MARKER__\"\r
-)\r
-start \"\" \"__EXE__\"\r
-del \"%~f0\"\r
-";
-    // NSIS install failure marker — kept ASCII/quote-safe for `echo` redirection.
-    const WIN_MARKER_JSON: &str =
-        "{\"error\":\"Update failed. Please reinstall Nebo from neboai.com.\"}";
-    TEMPLATE
-        .replace("__PID__", &pid.to_string())
-        .replace("__SETUP__", setup)
-        .replace("__EXE__", exe)
-        .replace("__MARKER__", marker)
-        .replace("__LOG__", log)
-        .replace("__MARKER_JSON__", WIN_MARKER_JSON)
+const UPDATE_TASK: &str = r"\NeboAI\Nebo Update";
+
+/// The helper as `powershell -EncodedCommand`'s argument: UTF-16, base64.
+#[cfg(target_os = "windows")]
+fn encode_powershell(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
 }
 
+/// Run the helper as the one-shot task `name` in the user's session, apart
+/// from the task the engine ran in. `conhost --headless` gives PowerShell a
+/// console no one sees: a task's console program would open a window.
 #[cfg(target_os = "windows")]
-fn spawn_detached_cmd(script: &str) -> Result<(), UpdateError> {
-    let path =
-        std::env::temp_dir().join(format!("nebo-update-helper-{}.cmd", uuid::Uuid::new_v4()));
-    std::fs::write(&path, script)?;
-    command::new::<std::process::Command>("cmd", command::Console::Detached)
-        .arg("/C")
-        .arg(&path)
+pub fn start_helper_task(name: &str, script: &str) -> Result<(), UpdateError> {
+    let conhost = std::path::Path::new(&std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
+        .join("System32")
+        .join("conhost.exe");
+    let arguments = format!("--headless powershell.exe -NoProfile -NonInteractive -EncodedCommand {}", encode_powershell(script));
+    let task = command::task::Task {
+        description: "Installs a Nebo update, then removes itself.",
+        command: &conhost.to_string_lossy(),
+        arguments: &arguments,
+        at_logon: false,
+    };
+    command::task::register(name, &task).map_err(UpdateError::Other)?;
+    command::task::run(name).map_err(UpdateError::Other)
+}
+
+/// The engine's Windows task (`src-tauri/src/service/windows.rs`).
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_TASK: &str = r"\NeboAI\Nebo Engine";
+
+/// What the Windows update helper works on.
+#[cfg(any(target_os = "windows", test))]
+pub struct WindowsHelper {
+    /// The helper's own task, deleted when it is done (empty: started
+    /// directly).
+    pub self_task: String,
+    /// The engine process to wait for.
+    pub pid: u32,
+    /// The new version's installer.
+    pub setup: String,
+    /// The installer of the version that last passed the health gate.
+    pub previous: String,
+    /// The app to start once installed (empty: none).
+    pub relaunch: String,
+    /// The engine's task, started when registered.
+    pub task: String,
+    pub port: u16,
+    /// The version being replaced: the new engine must answer as another.
+    pub old_version: String,
+    /// The health gate's length; 0 turns the gate and the rollback off.
+    pub gate_secs: u64,
+    pub marker: String,
+    pub log: String,
+}
+
+/// The helper, a PowerShell script. Run as `-EncodedCommand`, which no
+/// execution policy blocks (a `.ps1` file would be, and the house box's
+/// machine policy is Restricted).
+#[cfg(any(target_os = "windows", test))]
+pub fn build_windows_helper(h: &WindowsHelper) -> String {
+    const TEMPLATE: &str = r#"
+$ErrorActionPreference = 'Continue'
+$Log = '__LOG__'
+function Log($m) { try { New-Item -ItemType Directory -Force (Split-Path $Log) | Out-Null; Add-Content -Path $Log -Value "[$(Get-Date -Format s)] $m" } catch { } }
+function Install($setup) {
+  try { $p = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru -ErrorAction Stop; return $p.ExitCode } catch { Log "installer did not run: $_"; return -1 }
+}
+function Start-Nebo {
+  schtasks /Query /TN '__TASK__' 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) { schtasks /Run /TN '__TASK__' 2>&1 | Out-Null; Log "started task __TASK__ ($LASTEXITCODE)" }
+  if ('__RELAUNCH__' -ne '') { try { Start-Process -FilePath '__RELAUNCH__' } catch { Log "relaunch failed: $_" } }
+}
+function Healthy($want) {
+  $deadline = (Get-Date).AddSeconds(__GATE__)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $h = Invoke-RestMethod -Uri 'http://127.0.0.1:__PORT__/health' -TimeoutSec 2
+      if ($h.status -eq 'ok' -and $h.role -eq 'engine' -and (& $want $h.version)) { Log "engine answers as $($h.version)"; return $true }
+    } catch { }
+    Start-Sleep -Seconds 1
+  }
+  return $false
+}
+function Done($code) {
+  if ('__SELF_TASK__' -ne '') { schtasks /Delete /TN '__SELF_TASK__' /F 2>&1 | Out-Null }
+  exit $code
+}
+function Marker($json) { New-Item -ItemType Directory -Force (Split-Path '__MARKER__') | Out-Null; Set-Content -Encoding ascii -NoNewline -Path '__MARKER__' -Value $json }
+
+Log "waiting for pid __PID__ to exit"
+while (Get-Process -Id __PID__ -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }
+Log "running installer __SETUP__"
+$code = Install '__SETUP__'
+Log "installer exited $code"
+if (__GATE__ -eq 0) {
+  if ($code -ne 0) { Marker '__INSTALL_FAILED_JSON__' }
+  Start-Nebo
+  Remove-Item -Force '__SETUP__' -ErrorAction SilentlyContinue
+  Log "update done (no health gate)"
+  Done 0
+}
+if ($code -eq 0) {
+  Start-Nebo
+  if (Healthy { param($v) $v -ne '__OLD__' }) {
+    New-Item -ItemType Directory -Force (Split-Path '__PREVIOUS__') | Out-Null
+    Move-Item -Force '__SETUP__' '__PREVIOUS__'
+    Log "update complete"
+    Done 0
+  }
+  Log "FAILED: the new version did not answer within __GATE__ s"
+}
+if (Test-Path '__PREVIOUS__') {
+  Log "rolling back with __PREVIOUS__"
+  $back = Install '__PREVIOUS__'
+  Log "previous installer exited $back"
+  Start-Nebo
+  if (Healthy { param($v) $true }) { Log "rolled back" } else { Log "the previous version did not answer either" }
+  Marker '__ROLLED_BACK_JSON__'
+} else {
+  Log "no previous installer to roll back to"
+  Start-Nebo
+  Marker '__INSTALL_FAILED_JSON__'
+}
+Remove-Item -Force '__SETUP__' -ErrorAction SilentlyContinue
+Done 1
+"#;
+    // Inside single-quoted PowerShell strings a quote is doubled.
+    let q = |s: &str| s.replace('\'', "''");
+    TEMPLATE
+        .replace("__SELF_TASK__", &q(&h.self_task))
+        .replace("__PID__", &h.pid.to_string())
+        .replace("__SETUP__", &q(&h.setup))
+        .replace("__PREVIOUS__", &q(&h.previous))
+        .replace("__RELAUNCH__", &q(&h.relaunch))
+        .replace("__TASK__", &q(&h.task))
+        .replace("__PORT__", &h.port.to_string())
+        .replace("__OLD__", &q(&h.old_version))
+        .replace("__GATE__", &h.gate_secs.to_string())
+        .replace("__MARKER__", &q(&h.marker))
+        .replace("__LOG__", &q(&h.log))
+        .replace("__ROLLED_BACK_JSON__", r#"{"error":"Update failed and was rolled back to the previous version."}"#)
+        .replace("__INSTALL_FAILED_JSON__", r#"{"error":"Update failed. Please reinstall Nebo from neboai.com."}"#)
+}
+
+/// Start the helper so it outlives this process: its own process group and
+/// hidden console (`Console::Detached`).
+#[cfg(target_os = "windows")]
+fn spawn_detached_powershell(script: &str) -> Result<(), UpdateError> {
+    command::new::<std::process::Command>("powershell", command::Console::Detached)
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encode_powershell(script)])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -674,18 +833,41 @@ mod tests {
         assert!(script.contains(ROLLBACK_MARKER_JSON));
     }
 
-    #[cfg(target_os = "windows")]
+    fn windows_helper(gate_secs: u64) -> String {
+        build_windows_helper(&WindowsHelper {
+            self_task: r"\NeboAI\Nebo Update".into(),
+            pid: 99,
+            setup: r"C:\Temp\Nebo-update-x-setup.exe".into(),
+            previous: r"C:\Users\O'Brien\AppData\Roaming\Nebo\updates\previous-setup.exe".into(),
+            relaunch: r"C:\Users\O'Brien\AppData\Local\Nebo\nebo.exe".into(),
+            task: WINDOWS_TASK.into(),
+            port: 27895,
+            old_version: "0.16.15".into(),
+            gate_secs,
+            marker: r"C:\data\UPDATE_FAILED.json".into(),
+            log: r"C:\data\logs\update.log".into(),
+        })
+    }
+
     #[test]
     fn windows_helper_substitutes_all_placeholders() {
-        let script = build_windows_helper(
-            99,
-            "C:\\Temp\\Nebo-1.0.0-setup.exe",
-            "C:\\Program Files\\Nebo\\nebo.exe",
-            "C:\\data\\UPDATE_FAILED.json",
-            "C:\\data\\logs\\update.log",
-        );
+        let script = windows_helper(90);
         assert!(!script.contains("__"), "unsubstituted placeholder: {script}");
-        assert!(script.contains("/S"));
-        assert!(script.contains("PID eq 99"));
+        assert!(script.contains("Get-Process -Id 99"));
+        assert!(script.contains("-ArgumentList '/S'"));
+        assert!(script.contains(r"schtasks /Run /TN '\NeboAI\Nebo Engine'"));
+        assert!(script.contains("http://127.0.0.1:27895/health"));
+        assert!(script.contains("$v -ne '0.16.15'"));
+        // A quote in a path is doubled inside PowerShell's single quotes.
+        assert!(script.contains(r"'C:\Users\O''Brien\AppData\Local\Nebo\nebo.exe'"));
+        assert!(script.contains("rolled back to the previous version"));
+        assert!(script.contains(r"schtasks /Delete /TN '\NeboAI\Nebo Update' /F"));
+    }
+
+    #[test]
+    fn windows_helper_gates_only_when_asked() {
+        assert!(windows_helper(0).contains("if (0 -eq 0)"));
+        assert!(windows_helper(90).contains("if (90 -eq 0)"));
+        assert!(windows_helper(90).contains("AddSeconds(90)"));
     }
 }

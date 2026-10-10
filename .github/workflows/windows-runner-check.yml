@@ -145,3 +145,10 @@ jobs:
       - name: Child-process constructor on Windows
         shell: bash
         run: cargo test -p nebo-command
+
+      # The app update's helper on Windows, run for real against fake
+      # installers and a fake engine: the health gate keeps a version that
+      # answers and rolls back one that doesn't.
+      - name: Update helper on Windows
+        shell: bash
+        run: cargo test -p nebo-updater --test windows_update_helper
