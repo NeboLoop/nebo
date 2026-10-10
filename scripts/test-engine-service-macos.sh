@@ -40,6 +40,13 @@ if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "port $PORT is in use; pick another PORT"; exit 2
 fi
 
+# SMAppService registers agents only from a GUI login session (Aqua); a
+# runner started as a background service answers "No such process".
+if [ "$(launchctl managername 2>/dev/null)" != Aqua ]; then
+  echo "needs a GUI login session (launchctl managername: $(launchctl managername 2>/dev/null)); a runner started as a background service can't register a LaunchAgent"
+  exit 2
+fi
+
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAILS=$((FAILS + 1)); }
 verb() { NEBO_HOME="$HOME_DIR" NEBO_MCP_API_KEY="$KEY" "$APP/Contents/MacOS/nebo" --engine-service "$1" --label "$LABEL" --port "$PORT"; }
