@@ -96,6 +96,8 @@ struct GraphCtx<'a> {
     /// Per-loop body node sets (validated self-contained).
     loop_bodies: HashMap<String, HashSet<String>>,
     state: Mutex<GraphState>,
+    /// The model turns the run has left, shared by every node.
+    budget: crate::engine::RunBudget,
 }
 
 /// One barrier scope: the top-level walk, or one loop-body iteration.
@@ -399,6 +401,7 @@ fn build_ctx<'a>(
             total_output_tokens: 0,
             pending_experts: Vec::new(),
         }),
+        budget: crate::engine::RunBudget::for_workflow(def),
     }
 }
 
@@ -1887,8 +1890,8 @@ async fn run_llm_activity<'a>(
             .as_ref()
             .filter(|r| r.activity_id == activity.id && r.iteration == scope.iteration),
         &scope.iteration,
-    
         ctx.cancel_token,
+        &ctx.budget,
     )
     .await
     {
@@ -2510,6 +2513,7 @@ mod walk_tests {
                 total_tokens: (ti.max(0) + to.max(0)) as u32,
                 output_tokens: to.max(0) as u32,
                 tainted,
+                steps: 1,
             })
         }
 

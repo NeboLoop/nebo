@@ -419,6 +419,13 @@ impl ActivityLoop for WorkflowTurns {
             progress: None,
         };
 
+        // The model turns this turn takes are the assistant rows it adds to
+        // its scratch conversation: what it spends of the run's budget.
+        let assistant_rows = |id: &str| {
+            sessions.get_messages(id).unwrap_or_default().iter().filter(|m| m.role == "assistant").count() as u32
+        };
+        let rows_before = assistant_rows(&session_id);
+        let step = turn.step_index.and_then(|i| usize::try_from(i).ok()).map(|i| (i + 1, turn.activity.steps.len()));
         let mut rx = self
             .harness
             .start_turn(req)
@@ -505,7 +512,11 @@ impl ActivityLoop for WorkflowTurns {
                 });
             }
             super::delegation::collect::STOP_MAX_STEPS => {
-                return Err(WorkflowError::MaxIterations(turn.activity.id.clone()));
+                return Err(WorkflowError::MaxIterations {
+                    activity_id: turn.activity.id.clone(),
+                    step,
+                    turns: turn.max_iterations,
+                });
             }
             _ => {}
         }
@@ -534,6 +545,7 @@ impl ActivityLoop for WorkflowTurns {
             total_tokens: total_in + total_out,
             output_tokens: total_out,
             tainted,
+            steps: assistant_rows(&session_id).saturating_sub(rows_before).max(1),
         })
     }
 
