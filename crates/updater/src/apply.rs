@@ -16,11 +16,11 @@ const ROLLBACK_MARKER_JSON: &str =
 
 /// How long an app-bundle update waits for the new engine to answer
 /// `/health` before it rolls back (the helper's health gate).
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const HEALTH_GATE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The port the engine serves on: `NEBO_PORT`, else the default.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn engine_port() -> u16 {
     std::env::var("NEBO_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(27895)
 }
@@ -109,7 +109,7 @@ fn is_writable(dir: &Path) -> bool {
 /// producing the "app quits on update but never comes back" bug. Making the
 /// helper a session leader detaches it from our job so it runs to completion.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn spawn_detached_sh(script: &str) -> Result<(), UpdateError> {
+fn spawn_detached_sh(script: &str) -> Result<std::path::PathBuf, UpdateError> {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
     let path = std::env::temp_dir().join(format!("nebo-update-helper-{}.sh", uuid::Uuid::new_v4()));
@@ -133,7 +133,8 @@ fn spawn_detached_sh(script: &str) -> Result<(), UpdateError> {
     }
     cmd.spawn()
         .map_err(|e| UpdateError::Other(format!("spawn update helper: {}", e)))?;
-    Ok(())
+    // The script removes itself when it is done.
+    Ok(path)
 }
 
 /// Apply the update: detect install method and use the appropriate strategy.
@@ -179,6 +180,13 @@ fn apply_app_bundle(_new_path: &Path, _data_dir: &Path) -> Result<(), UpdateErro
 
 /// macOS: stage Nebo.app out of the DMG next to the target, then a detached helper
 /// atomically swaps it in (move-aside → move-in → codesign verify → rollback on fail).
+///
+/// When launchd runs the engine as the OS's service (`NEBO_SUPERVISED=launchd`;
+/// off by default) the helper also waits for the app's window process, starts
+/// the new engine (`launchctl kickstart`), and keeps the new app only once its
+/// `/health` reports the new app's version within [`HEALTH_GATE`]; otherwise
+/// it puts the previous app back, starts its engine and writes the rollback
+/// marker. Without the service it swaps and reopens the app, as before.
 #[cfg(target_os = "macos")]
 fn apply_app_bundle(dmg_path: &Path, data_dir: &Path) -> Result<(), UpdateError> {
     use std::process::Command;
@@ -271,34 +279,79 @@ fn apply_app_bundle(dmg_path: &Path, data_dir: &Path) -> Result<(), UpdateError>
 
     // 6. Spawn the detached helper, then exit. All destructive work happens after exit.
     run_pre_apply();
-    let script = build_macos_helper(
-        std::process::id(),
-        &dest_app.to_string_lossy(),
-        &staged_app.to_string_lossy(),
-        &staging_dir.to_string_lossy(),
-        &format!("{}.old-{}", dest_app.to_string_lossy(), uuid::Uuid::new_v4()),
-        &marker_path(data_dir).to_string_lossy(),
-        &log_path(data_dir).to_string_lossy(),
-    );
+    let label = launchd_label();
+    let updating = data_dir.join(crate::UPDATING_MARKER);
+    let script = build_macos_helper(&MacHelper {
+        pid: std::process::id(),
+        dest: &dest_app.to_string_lossy(),
+        staged: &staged_app.to_string_lossy(),
+        staging: &staging_dir.to_string_lossy(),
+        old: &format!("{}.old-{}", dest_app.to_string_lossy(), uuid::Uuid::new_v4()),
+        marker: &marker_path(data_dir).to_string_lossy(),
+        log: &log_path(data_dir).to_string_lossy(),
+        updating: &updating.to_string_lossy(),
+        label: label.as_deref(),
+        health: &format!("http://127.0.0.1:{}/health", engine_port()),
+    });
+    // The window process of a service-run engine waits while this is here:
+    // the update starts the engine, never the app.
+    if label.is_some() {
+        let _ = std::fs::write(&updating, "");
+    }
     if let Err(e) = spawn_detached_sh(&script) {
         // Couldn't even spawn the helper — clean up and report while still alive.
         let _ = std::fs::remove_dir_all(&staging_dir);
+        let _ = std::fs::remove_file(&updating);
         return Err(e);
     }
 
     std::process::exit(0);
 }
 
+/// The launchd job running this engine, when launchd runs it as the OS's
+/// service (`NEBO_SUPERVISED=launchd`): launchd names it in `XPC_SERVICE_NAME`.
 #[cfg(target_os = "macos")]
-fn build_macos_helper(
+fn launchd_label() -> Option<String> {
+    if !std::env::var("NEBO_SUPERVISED").is_ok_and(|s| s == "launchd") {
+        return None;
+    }
+    std::env::var("XPC_SERVICE_NAME").ok().filter(|s| !s.is_empty() && s != "0")
+}
+
+/// What the macOS helper script is built from.
+#[cfg(target_os = "macos")]
+struct MacHelper<'a> {
+    /// The engine, which exits right after spawning the helper.
     pid: u32,
-    dest: &str,
-    staged: &str,
-    staging: &str,
-    old: &str,
-    marker: &str,
-    log: &str,
-) -> String {
+    dest: &'a str,
+    staged: &'a str,
+    staging: &'a str,
+    old: &'a str,
+    marker: &'a str,
+    log: &'a str,
+    /// [`crate::UPDATING_MARKER`] in the data dir.
+    updating: &'a str,
+    /// The engine's launchd job: None when the app runs it as its child.
+    label: Option<&'a str>,
+    /// The engine's `/health`.
+    health: &'a str,
+}
+
+/// The helper script. Without a service (the app runs the engine as its
+/// child), it swaps the app and opens it. With launchd's service it also:
+///
+/// - waits for the app's window process (`nebo` of this app, not the engine
+///   nor a browser relay) to close, which it does once it sees the engine
+///   gone and the update marker; stops it after 20 s;
+/// - after the swap, `launchctl kickstart -k`s the engine (the registration
+///   is the app's identity and plist name, so a same-path swap keeps it) and
+///   reopens the app only if it was open;
+/// - health gate: keeps the new app only once `/health` reports the new
+///   app's own version (its Info.plist `CFBundleShortVersionString`) within
+///   [`HEALTH_GATE`]; otherwise puts the previous app back, starts its engine
+///   and writes `UPDATE_FAILED.json`.
+#[cfg(target_os = "macos")]
+fn build_macos_helper(h: &MacHelper) -> String {
     const TEMPLATE: &str = r#"#!/bin/sh
 DEST="__DEST__"
 STAGED="__STAGED__"
@@ -306,25 +359,56 @@ STAGING="__STAGING__"
 OLD="__OLD__"
 MARKER="__MARKER__"
 LOG="__LOG__"
+UPDATING="__UPDATING__"
 PID=__PID__
+LABEL="__LABEL__"
+HEALTH="__HEALTH__"
+GATE=__GATE__
+EXE="$DEST/Contents/MacOS/nebo"
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 log() { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] $1" >> "$LOG" 2>/dev/null; }
+# The app's window processes: this app's nebo, not its engine, not a relay.
+shells() {
+  ps -axo pid=,command= | awk -v exe="$EXE" '{ pid = $1; $1 = ""; sub(/^ /, ""); if (index($0, exe) == 1 && $0 !~ /--engine/ && $0 !~ /chrome-extension:/) print pid }'
+}
+stop_shells() {
+  n=0
+  while [ -n "$(shells)" ] && [ $n -lt $1 ]; do sleep 1; n=$((n + 1)); done
+  for p in $(shells); do kill -TERM "$p" 2>/dev/null; done
+  sleep 2
+  for p in $(shells); do kill -KILL "$p" 2>/dev/null; done
+}
+start_engine() {
+  [ -n "$LABEL" ] && launchctl kickstart -k "gui/$(id -u)/$LABEL" >> "$LOG" 2>&1
+}
+reopen() {
+  if [ -z "$LABEL" ] || [ "$HAD_SHELL" = 1 ]; then open "$DEST" 2>/dev/null; fi
+}
 fail() {
   log "FAILED: $1 — rolling back"
+  [ -n "$LABEL" ] && stop_shells 0
   if [ -e "$OLD" ]; then
     rm -rf "$DEST" 2>/dev/null
     mv "$OLD" "$DEST" 2>/dev/null
   fi
   mkdir -p "$(dirname "$MARKER")" 2>/dev/null
   printf '%s' '__MARKER_JSON__' > "$MARKER" 2>/dev/null
-  open "$DEST" 2>/dev/null
+  rm -f "$UPDATING" 2>/dev/null
+  start_engine
+  reopen
   rm -rf "$STAGING" 2>/dev/null
   rm -f "$0" 2>/dev/null
   exit 1
 }
 log "waiting for pid $PID to exit"
 while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
-log "pid $PID gone, swapping"
+HAD_SHELL=0
+if [ -n "$LABEL" ]; then
+  [ -n "$(shells)" ] && HAD_SHELL=1
+  log "pid $PID gone; waiting for the app to close"
+  stop_shells 20
+fi
+log "swapping"
 if [ -e "$DEST" ]; then
   mv "$DEST" "$OLD" || fail "move-aside current app"
 fi
@@ -332,21 +416,41 @@ mv "$STAGED" "$DEST" || fail "move staged app into place"
 if ! codesign --verify --deep --strict "$DEST" >> "$LOG" 2>&1; then
   fail "codesign verification"
 fi
-log "swap OK, relaunching"
-open "$DEST" 2>/dev/null
+if [ -n "$LABEL" ]; then
+  NEW=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$DEST/Contents/Info.plist" 2>/dev/null)
+  [ -n "$NEW" ] || fail "the new app names no version"
+  log "swap OK, starting the new engine ($NEW)"
+  start_engine
+  n=0
+  until curl -fsS --max-time 2 "$HEALTH" 2>/dev/null | grep -qF "\"version\":\"$NEW\""; do
+    n=$((n + 1))
+    [ $n -ge $GATE ] && fail "the new engine did not report $NEW within ${GATE}s"
+    sleep 1
+  done
+  log "the new engine reports $NEW"
+  rm -f "$UPDATING" 2>/dev/null
+  reopen
+else
+  log "swap OK, relaunching"
+  open "$DEST" 2>/dev/null
+fi
 rm -rf "$OLD" "$STAGING" 2>/dev/null
 log "update complete"
 rm -f "$0" 2>/dev/null
 exit 0
 "#;
     TEMPLATE
-        .replace("__DEST__", dest)
-        .replace("__STAGED__", staged)
-        .replace("__STAGING__", staging)
-        .replace("__OLD__", old)
-        .replace("__MARKER__", marker)
-        .replace("__LOG__", log)
-        .replace("__PID__", &pid.to_string())
+        .replace("__DEST__", h.dest)
+        .replace("__STAGED__", h.staged)
+        .replace("__STAGING__", h.staging)
+        .replace("__OLD__", h.old)
+        .replace("__MARKER__", h.marker)
+        .replace("__LOG__", h.log)
+        .replace("__UPDATING__", h.updating)
+        .replace("__PID__", &h.pid.to_string())
+        .replace("__LABEL__", h.label.unwrap_or(""))
+        .replace("__HEALTH__", h.health)
+        .replace("__GATE__", &HEALTH_GATE.as_secs().to_string())
         .replace("__MARKER_JSON__", ROLLBACK_MARKER_JSON)
 }
 
@@ -799,22 +903,58 @@ mod tests {
     use super::*;
 
     #[cfg(target_os = "macos")]
+    fn mac_helper(label: Option<&str>) -> String {
+        build_macos_helper(&MacHelper {
+            pid: 4242,
+            dest: "/Applications/Nebo.app",
+            staged: "/Applications/.nebo-update-x/Nebo.app",
+            staging: "/Applications/.nebo-update-x",
+            old: "/Applications/Nebo.app.old-y",
+            marker: "/data/UPDATE_FAILED.json",
+            log: "/data/logs/update.log",
+            updating: "/data/UPDATING",
+            label,
+            health: "http://127.0.0.1:27895/health",
+        })
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_helper_substitutes_all_placeholders() {
-        let script = build_macos_helper(
-            4242,
-            "/Applications/Nebo.app",
-            "/Applications/.nebo-update-x/Nebo.app",
-            "/Applications/.nebo-update-x",
-            "/Applications/Nebo.app.old-y",
-            "/data/UPDATE_FAILED.json",
-            "/data/logs/update.log",
-        );
-        assert!(!script.contains("__"), "unsubstituted placeholder: {script}");
-        assert!(script.contains("PID=4242"));
-        assert!(script.contains("codesign --verify"));
-        assert!(script.contains("/Applications/Nebo.app"));
-        assert!(script.contains(ROLLBACK_MARKER_JSON));
+        for label in [None, Some("dev.neboai.nebo.engine")] {
+            let script = mac_helper(label);
+            assert!(!script.contains("__"), "unsubstituted placeholder: {script}");
+            assert!(script.contains("PID=4242"));
+            assert!(script.contains("codesign --verify"));
+            assert!(script.contains("/Applications/Nebo.app"));
+            assert!(script.contains(ROLLBACK_MARKER_JSON));
+            assert!(script.contains("GATE=90"));
+            assert!(script.contains(&format!("LABEL=\"{}\"", label.unwrap_or(""))));
+        }
+    }
+
+    /// The script parses, and the app's own window process is told apart
+    /// from its engine, a browser relay and other apps.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_helper_is_valid_sh_and_finds_only_the_window_process() {
+        let script = mac_helper(Some("dev.neboai.nebo.engine"));
+        let dir = std::env::temp_dir().join(format!("nebo-helper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("helper.sh");
+        std::fs::write(&path, &script).unwrap();
+        let ok = std::process::Command::new("sh").arg("-n").arg(&path).status().unwrap();
+        assert!(ok.success(), "sh -n rejects the helper");
+        // The awk filter of `shells`, over a fixed process list.
+        let filter = script.lines().find(|l| l.contains("ps -axo")).unwrap().split_once("| ").unwrap().1;
+        let list = "  11 /Applications/Nebo.app/Contents/MacOS/nebo\n  12 Contents/MacOS/nebo --engine\n  13 /Applications/Nebo.app/Contents/MacOS/nebo --engine\n  14 /Applications/Nebo.app/Contents/MacOS/nebo chrome-extension://abc/\n  15 /Applications/Other.app/Contents/MacOS/nebo\n";
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("EXE=/Applications/Nebo.app/Contents/MacOS/nebo; printf '{list}' | {filter}"))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "11\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -869,5 +1009,121 @@ mod tests {
         assert!(windows_helper(0).contains("if (0 -eq 0)"));
         assert!(windows_helper(90).contains("if (90 -eq 0)"));
         assert!(windows_helper(90).contains("AddSeconds(90)"));
+    }
+
+    /// An app update under launchd, end to end, on a registered TEST agent
+    /// (`scripts/test-engine-service-macos.sh` registers one and sets the
+    /// env): a good update swaps the app, starts the new engine and passes
+    /// the health gate; one whose engine never reports the version, and one
+    /// whose signature is broken, are rolled back with the failure marker,
+    /// and the previous engine serves again. No window opens (none was open).
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a registered test LaunchAgent: scripts/test-engine-service-macos.sh"]
+    fn macos_service_update_under_launchd() {
+        use std::os::unix::fs::MetadataExt;
+        use std::path::PathBuf;
+        use std::time::{Duration, Instant};
+
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} is not set"));
+        let app = PathBuf::from(env("NEBO_TEST_APP"));
+        let label = env("NEBO_TEST_LABEL");
+        // A copy of the app whose Info.plist names a version its engine never
+        // reports (re-signed): the health gate's failure.
+        let never = PathBuf::from(env("NEBO_TEST_APP_NEVER"));
+        let port = env("NEBO_TEST_PORT");
+        let key = env("NEBO_TEST_KEY");
+        let version = env("NEBO_TEST_VERSION");
+        let data = PathBuf::from(env("NEBO_TEST_HOME"));
+        let health_url = format!("http://127.0.0.1:{port}/health");
+        let exe = app.join("Contents/MacOS/nebo");
+
+        let health = || -> Option<serde_json::Value> {
+            let out = std::process::Command::new("curl").args(["-fsS", "--max-time", "2", &health_url]).output().ok()?;
+            serde_json::from_slice(&out.stdout).ok()
+        };
+        let serving = |within: Duration| {
+            let end = Instant::now() + within;
+            while Instant::now() < end {
+                if health().is_some_and(|h| h["version"] == version.as_str()) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            false
+        };
+
+        // One update: stage a copy (broken if asked), hand it to the helper,
+        // stop the engine as `apply_app_bundle` does, wait for the helper.
+        let update = |source: &Path, corrupt: bool| {
+            assert!(serving(Duration::from_secs(60)), "the engine is not serving before the update");
+            let pid = health().unwrap()["pid"].as_u64().unwrap() as u32;
+            let staging = app.parent().unwrap().join(format!(".nebo-update-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&staging).unwrap();
+            let staged = staging.join(app.file_name().unwrap());
+            assert!(std::process::Command::new("cp").arg("-R").arg(source).arg(&staged).status().unwrap().success());
+            if corrupt {
+                let mut f = std::fs::OpenOptions::new().append(true).open(staged.join("Contents/MacOS/nebo")).unwrap();
+                f.write_all(b"not signed").unwrap();
+            }
+            let marker = marker_path(&data);
+            let _ = std::fs::remove_file(&marker);
+            let updating = data.join(crate::UPDATING_MARKER);
+            std::fs::write(&updating, "").unwrap();
+            let script = build_macos_helper(&MacHelper {
+                pid,
+                dest: &app.to_string_lossy(),
+                staged: &staged.to_string_lossy(),
+                staging: &staging.to_string_lossy(),
+                old: &format!("{}.old-{}", app.to_string_lossy(), uuid::Uuid::new_v4()),
+                marker: &marker.to_string_lossy(),
+                log: &log_path(&data).to_string_lossy(),
+                updating: &updating.to_string_lossy(),
+                label: Some(&label),
+                health: &health_url,
+            });
+            let helper = spawn_detached_sh(&script).unwrap();
+            // The engine stops the graceful way: exit 0, launchd leaves it down.
+            let quit = std::process::Command::new("curl")
+                .args(["-fsS", "-X", "POST", "-H", &format!("Authorization: Bearer {key}")])
+                .arg(format!("http://127.0.0.1:{port}/api/v1/engine/quit"))
+                .status()
+                .unwrap();
+            assert!(quit.success(), "the engine did not take Quit");
+            let end = Instant::now() + Duration::from_secs(200);
+            while helper.exists() && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            assert!(!helper.exists(), "the helper did not finish within 200 s");
+            assert!(!updating.exists(), "the helper left the updating marker");
+            assert!(!staging.exists(), "the helper left the staging folder");
+            marker.exists()
+        };
+
+        // A good update.
+        let before = std::fs::metadata(&exe).unwrap().ino();
+        assert!(!update(&app, false), "a good update wrote the failure marker");
+        assert_ne!(std::fs::metadata(&exe).unwrap().ino(), before, "the app was not swapped");
+        assert!(serving(Duration::from_secs(5)), "the new engine is not serving");
+
+        // The new engine never reports the new version: rolled back.
+        let before = std::fs::metadata(&exe).unwrap().ino();
+        assert!(update(&never, false), "no failure marker after the health gate failed");
+        assert_eq!(std::fs::metadata(&exe).unwrap().ino(), before, "the previous app is not back");
+        assert!(serving(Duration::from_secs(60)), "the previous engine is not serving after the rollback");
+
+        // A broken signature: rolled back before any engine starts.
+        let before = std::fs::metadata(&exe).unwrap().ino();
+        assert!(update(&app, true), "no failure marker after the signature check failed");
+        assert_eq!(std::fs::metadata(&exe).unwrap().ino(), before, "the previous app is not back");
+        assert!(serving(Duration::from_secs(60)), "the previous engine is not serving after the rollback");
+
+        let leftovers: Vec<_> = std::fs::read_dir(app.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".old-") || n.starts_with(".nebo-update-"))
+            .collect();
+        assert!(leftovers.is_empty(), "left beside the app: {leftovers:?}");
     }
 }
