@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos cli-darwin app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -333,12 +333,12 @@ release-darwin:
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=aarch64-apple-darwin
 	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=aarch64-apple-darwin
 	cargo tauri build --target aarch64-apple-darwin
-	cp $(TAURI_TARGET)/aarch64-apple-darwin/release/nebo dist/nebo-darwin-arm64
+	$(MAKE) cli-darwin MAC_TARGET=aarch64-apple-darwin CLI_ARCH=arm64
 	# amd64
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=x86_64-apple-darwin
 	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=x86_64-apple-darwin
 	cargo tauri build --target x86_64-apple-darwin
-	cp $(TAURI_TARGET)/x86_64-apple-darwin/release/nebo dist/nebo-darwin-amd64
+	$(MAKE) cli-darwin MAC_TARGET=x86_64-apple-darwin CLI_ARCH=amd64
 
 # Linux: Tauri desktop + headless CLI
 release-linux: stage-obscura stage-ripgrep
@@ -465,7 +465,7 @@ github-release:
 # macOS runners on GitHub Actions bill at ~10x Linux, so CI skips the mac jobs
 # (BUILD_MACOS_IN_CI unset) and we build the arm64 mac assets locally instead.
 # Produces, into dist/, names matching the CI/CDN convention:
-#   nebo-darwin-arm64                  (bare binary)
+#   nebo-darwin-arm64                  (bare binary: nebo-cli signed on its own, see cli-darwin)
 #   Nebo-$(RELEASE_VERSION)-arm64.dmg  (Developer ID signed + notarized + stapled)
 #   checksums-macos.txt                (sha256 of the two assets, for the merge)
 RELEASE_VERSION := $(shell grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
@@ -473,8 +473,7 @@ RELEASE_VERSION := $(shell grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)
 release-macos:
 	@echo "Building macOS arm64 release assets locally (v$(RELEASE_VERSION))..."
 	@$(MAKE) notarize VERSION=$(RELEASE_VERSION)
-	@cp "$(TAURI_RELEASE)/nebo" dist/nebo-darwin-arm64
-	@chmod +x dist/nebo-darwin-arm64
+	@$(MAKE) cli-darwin CLI_ARCH=arm64 CLI_NOTARIZE=1
 	@cd dist && shasum -a 256 nebo-darwin-arm64 "Nebo-$(RELEASE_VERSION)-arm64.dmg" > checksums-macos.txt
 	@echo "macOS assets ready in dist/:"
 	@ls -1 "dist/nebo-darwin-arm64" "dist/Nebo-$(RELEASE_VERSION)-arm64.dmg"
@@ -488,11 +487,22 @@ release-macos-amd64:
 	@echo "Building Obscura fork sidecars for x86_64-apple-darwin..."
 	@cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli --target x86_64-apple-darwin
 	@$(MAKE) notarize VERSION=$(RELEASE_VERSION) MAC_TARGET=x86_64-apple-darwin
-	@cp "target/x86_64-apple-darwin/release/nebo" dist/nebo-darwin-amd64
-	@chmod +x dist/nebo-darwin-amd64
+	@$(MAKE) cli-darwin MAC_TARGET=x86_64-apple-darwin CLI_ARCH=amd64 CLI_NOTARIZE=1
 	@cd dist && shasum -a 256 nebo-darwin-amd64 "Nebo-$(RELEASE_VERSION)-amd64.dmg" >> checksums-macos.txt
 	@echo "macOS Intel assets ready in dist/:"
 	@ls -1 "dist/nebo-darwin-amd64" "dist/Nebo-$(RELEASE_VERSION)-amd64.dmg"
+
+# The bare darwin asset, dist/nebo-darwin-$(CLI_ARCH): the headless nebo-cli
+# signed on its own (dev.neboai.nebo.cli), never the app's executable copied out
+# of Nebo.app (its signature is bound to the bundle: the kernel kills it run on
+# its own). CLI_NOTARIZE=1 notarizes it; then it is run on its own (the gate).
+CLI_ARCH ?= $(DMG_ARCH)
+cli-darwin:
+	cargo build --release -p nebo-cli $(MAC_TARGET_FLAG)
+	@mkdir -p dist
+	SIGN_IDENTITY="$(SIGN_IDENTITY)" bash scripts/nebo-cli-darwin.sh sign "$(MAC_BIN_DIR)/nebo-cli" "dist/nebo-darwin-$(CLI_ARCH)"
+	@if [ -n "$(CLI_NOTARIZE)" ]; then bash scripts/nebo-cli-darwin.sh notarize "dist/nebo-darwin-$(CLI_ARCH)"; fi
+	bash scripts/nebo-cli-darwin.sh check "dist/nebo-darwin-$(CLI_ARCH)"
 
 # Attach locally-built mac assets to an existing GitHub release + CDN, merging
 # their checksums into the release's checksums.txt. Run after `make release-macos`
