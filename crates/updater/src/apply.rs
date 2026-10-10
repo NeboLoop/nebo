@@ -943,12 +943,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("helper.sh");
         std::fs::write(&path, &script).unwrap();
-        let ok = std::process::Command::new("sh").arg("-n").arg(&path).status().unwrap();
+        let ok = command::new::<std::process::Command>("sh", command::Console::Hidden).arg("-n").arg(&path).status().unwrap();
         assert!(ok.success(), "sh -n rejects the helper");
         // The awk filter of `shells`, over a fixed process list.
         let filter = script.lines().find(|l| l.contains("ps -axo")).unwrap().split_once("| ").unwrap().1;
         let list = "  11 /Applications/Nebo.app/Contents/MacOS/nebo\n  12 Contents/MacOS/nebo --engine\n  13 /Applications/Nebo.app/Contents/MacOS/nebo --engine\n  14 /Applications/Nebo.app/Contents/MacOS/nebo chrome-extension://abc/\n  15 /Applications/Other.app/Contents/MacOS/nebo\n";
-        let out = std::process::Command::new("sh")
+        let out = command::new::<std::process::Command>("sh", command::Console::Hidden)
             .arg("-c")
             .arg(format!("EXE=/Applications/Nebo.app/Contents/MacOS/nebo; printf '{list}' | {filter}"))
             .output()
@@ -1039,7 +1039,7 @@ mod tests {
         let exe = app.join("Contents/MacOS/nebo");
 
         let health = || -> Option<serde_json::Value> {
-            let out = std::process::Command::new("curl").args(["-fsS", "--max-time", "2", &health_url]).output().ok()?;
+            let out = command::new::<std::process::Command>("curl", command::Console::Hidden).args(["-fsS", "--max-time", "2", &health_url]).output().ok()?;
             serde_json::from_slice(&out.stdout).ok()
         };
         let serving = |within: Duration| {
@@ -1061,7 +1061,7 @@ mod tests {
             let staging = app.parent().unwrap().join(format!(".nebo-update-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&staging).unwrap();
             let staged = staging.join(app.file_name().unwrap());
-            assert!(std::process::Command::new("cp").arg("-R").arg(source).arg(&staged).status().unwrap().success());
+            assert!(command::new::<std::process::Command>("cp", command::Console::Hidden).arg("-R").arg(source).arg(&staged).status().unwrap().success());
             if corrupt {
                 let mut f = std::fs::OpenOptions::new().append(true).open(staged.join("Contents/MacOS/nebo")).unwrap();
                 f.write_all(b"not signed").unwrap();
@@ -1084,7 +1084,7 @@ mod tests {
             });
             let helper = spawn_detached_sh(&script).unwrap();
             // The engine stops the graceful way: exit 0, launchd leaves it down.
-            let quit = std::process::Command::new("curl")
+            let quit = command::new::<std::process::Command>("curl", command::Console::Hidden)
                 .args(["-fsS", "-X", "POST", "-H", &format!("Authorization: Bearer {key}")])
                 .arg(format!("http://127.0.0.1:{port}/api/v1/engine/quit"))
                 .status()
