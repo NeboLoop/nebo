@@ -128,6 +128,51 @@ fn the_owners_answer_is_one_event_per_wait() {
     assert!(matches!(w.s.engine_answer_wait("nobody", true), Err(types::NeboError::NotFound)));
 }
 
+/// A parked workflow run, as `run_inline` leaves one: its run row waiting
+/// on the owner and its suspension.
+fn parked_run(w: &World, run: &str) {
+    w.s.create_workflow_run(run, &types::keyparser::agent_workflow_id("emp"), "schedule", Some("pipeline-scan"), Some("{}"), Some("agent:emp:workflow"), Some("{}")).unwrap();
+    w.s.update_workflow_run(run, Some("running"), Some("run"), Some(1200), None, None).unwrap();
+    w.s.create_workflow_suspension(run, "emp", "pipeline-scan", "run", "", Some(0), "[]", "{}", "find_tools", "loading tools").unwrap();
+    assert_eq!(w.s.get_workflow_run(run).unwrap().unwrap().status, "awaiting_approval");
+}
+
+/// Bake-off 2026-10-10 (B1, B10): a run parked on an ask nobody answered
+/// waited forever, and a run the owner said no to showed `denied` with no
+/// completion time. Nobody answering in a day ends it failed, saying it
+/// waited and what for; a No ends it denied. Both keep their tokens and
+/// step, get their completion time, and drop the suspension.
+#[test]
+fn a_parked_run_ends_when_denied_or_when_no_answer_comes() {
+    let w = World::new();
+    parked_run(&w, "run-expired");
+    let why = end_parked_run(&w.s, "run-expired", "loading tools", true);
+    let run = w.s.get_workflow_run("run-expired").unwrap().unwrap();
+    assert_eq!(run.status, "failed");
+    assert!(run.completed_at.is_some(), "it ended");
+    assert_eq!(run.error.as_deref(), Some(why.as_str()));
+    assert!(why.starts_with("Stopped: this run waited a day for your OK on loading tools, and no answer came."), "{why}");
+    assert_eq!((run.total_tokens_used, run.error_activity.as_deref()), (Some(1200), Some("run")));
+    assert_eq!(w.run("run-expired").current_wait_id, None, "its wait is released");
+
+    parked_run(&w, "run-denied");
+    end_parked_run(&w.s, "run-denied", "loading tools", false);
+    let run = w.s.get_workflow_run("run-denied").unwrap().unwrap();
+    assert_eq!((run.status.as_str(), run.error.as_deref()), ("denied", Some("Owner denied: loading tools")));
+    assert!(run.completed_at.is_some(), "a denied run is closed");
+    assert_eq!(w.run("run-denied").current_wait_id, None, "its wait is released");
+}
+
+/// The expired wake is the denial's event with `expired` set, on the same
+/// key: an answer recorded first wins and the expiry is its duplicate.
+#[test]
+fn an_expired_wait_wakes_the_run_like_a_no() {
+    let w = World::new();
+    parked_run(&w, "run-x");
+    assert!(matches!(w.s.engine_expire_wait("run-x").unwrap(), Enqueued::Inserted(_)));
+    assert_eq!(w.s.engine_answer_wait("run-x", true).unwrap(), Enqueued::Duplicate, "the expiry came first");
+}
+
 /// The hub's webhook door: a delivery to a case binding that names a
 /// person opens their case; the hub's redelivery of the same message is a
 /// duplicate; a second submission reaches the same case; a delivery that

@@ -1,7 +1,8 @@
 //! The ask, proven through the real server: an unattended run parks only
 //! the step that asks, the one card reaches the Inbox, the phone's answer
-//! resumes that step alone, and an ask nobody answers never expires: it
-//! comes back to the owner as a reminder and waits.
+//! resumes that step alone, and an ask nobody answers that no workflow run
+//! is parked on never expires: it comes back to the owner as a reminder and
+//! waits. (A parked workflow run's ask ends the run after a day.)
 //!
 //! The asking step here is outside the employee's job (§2.12.4 case 4),
 //! decided by code today; every surfaced case parks through the same ask.
@@ -163,7 +164,8 @@ async fn heartbeat_ask_parks_only_that_step() {
     assert!(nebo.get_ok(&format!("/permissions/asks?session={key}")).await["asks"].as_array().unwrap().is_empty());
 }
 
-/// An ask nobody answers never expires and never counts as a No. When its
+/// An ask nobody answers (a heartbeat's: no workflow run is parked on it)
+/// never expires and never counts as a No. When its
 /// wait's timer wakes it, the card comes back to the top of the owner's
 /// Inbox, unread, and the ask waits again for the next reminder. The owner
 /// answers days later: the server's own engine loop hears the answer, the

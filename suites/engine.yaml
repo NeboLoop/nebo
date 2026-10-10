@@ -105,6 +105,8 @@ fixtures:
   - ../fixtures/engine/server/server-turns-time-out-by-the-clock-and-by-silence.yaml
   - ../fixtures/engine/server/server-heartbeats-are-armed-inside-their-windows.yaml
   - ../fixtures/engine/server/server-the-owners-answer-is-one-event-per-wait.yaml
+  - ../fixtures/engine/server/server-a-parked-run-ends-when-denied-or-when-no-answer-comes.yaml
+  - ../fixtures/engine/server/server-an-expired-wait-wakes-the-run-like-a-no.yaml
   - ../fixtures/engine/server/server-the-webhook-door-routes-people-to-their-case-and-the-rest-to-a-plain-run.yaml
   - ../fixtures/engine/server/server-a-missing-need-reaches-the-owner-once.yaml
   - ../fixtures/engine/server/server-one-missing-need-is-one-notice-whoever-sees-it-and-however-often.yaml

@@ -29,6 +29,7 @@ impl AskSurfaces for Owner {
         self.told.lock().unwrap().push(text.to_string());
     }
     fn release_run(&self, _run_id: &str, _allowed: bool) {}
+    fn expire_run(&self, _run_id: &str) {}
 }
 
 /// A text message: outside the employee's job, so it asks.

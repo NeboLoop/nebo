@@ -334,6 +334,10 @@ pub async fn cancel_run(
         .cancel(&run_id)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    // A run parked on an ask: its card clears now, not at the next look.
+    if let Err(e) = state.permission_asks.withdraw_for_run(&run_id) {
+        tracing::warn!(run_id = %run_id, error = %e, "cancelled run's ask not withdrawn");
+    }
 
     Ok(Json(
         serde_json::json!({ "cancelled": true, "runId": run_id }),

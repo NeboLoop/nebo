@@ -11,9 +11,12 @@
 //! [`Asks::resume`], which applies the answer once: it re-runs the stored
 //! call with the stored seat through the one check and tells the employee,
 //! or releases the workflow step parked on the ask. An unanswered ask never
-//! expires and never counts as a No; the wait's timer brings it back to the
-//! owner as a reminder instead, at widening intervals, for as long as it is
-//! open. Nothing here ever approves on its own.
+//! counts as a No and never approves. One a workflow run is parked on
+//! expires after a day ([`RUN_ASK_EXPIRES_AFTER`]): nobody is there to
+//! carry on, so the run ends saying it waited and no answer came, instead
+//! of hanging. Every other ask stays open, and the wait's timer brings it
+//! back to the owner as a reminder, at widening intervals, for as long as
+//! it is open. Nothing here ever approves on its own.
 
 use std::sync::{Arc, OnceLock};
 
@@ -38,6 +41,12 @@ pub fn reminder_after(reminded: usize) -> i64 {
         _ => 7 * DAY,
     }
 }
+
+/// How long a workflow run waits on an unanswered ask before it stops, in
+/// seconds: a day, when the ask's first reminder would come. The run is
+/// unattended; past this it ends with a clear message to the owner rather
+/// than waiting forever.
+pub const RUN_ASK_EXPIRES_AFTER: i64 = 24 * 3600;
 
 /// The event kind the owner's answer is signalled as, on the ask's wait key
 /// ([`db::ask_wait_key`]).
@@ -330,6 +339,9 @@ pub trait AskSurfaces: Send + Sync {
     fn notify(&self, session_key: &str, text: &str);
     /// A workflow run parked on an ask: release it, allowed or not.
     fn release_run(&self, run_id: &str, allowed: bool);
+    /// A workflow run parked on an ask nobody answered in
+    /// [`RUN_ASK_EXPIRES_AFTER`]: end it, saying it waited and why.
+    fn expire_run(&self, run_id: &str);
 }
 
 /// Why an answer wasn't taken.
@@ -547,6 +559,19 @@ impl Asks {
             .collect())
     }
 
+    /// The run `run_id` was parked on an ask and has ended without it (the
+    /// owner cancelled it): the ask is withdrawn and its card cleared now.
+    /// Nothing runs, and it is not a No. Returns whether one was open.
+    pub fn withdraw_for_run(&self, run_id: &str) -> Result<bool, AskError> {
+        match self.for_run(run_id)? {
+            Some(ask) if ask.status == AskStatus::Open => {
+                self.withdraw(ask, chrono::Utc::now().timestamp())?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// The owner's answer. The first answer anywhere wins; a later one
     /// gets [`AskError::Settled`]. The answer is recorded, the card cleared
     /// everywhere, and the answer signalled to the ask's wait; the engine
@@ -597,10 +622,13 @@ impl Asks {
         };
         match ask.status {
             AskStatus::Open => {
-                if let Some(run) = &ask.run_id
-                    && self.parked_run_is_gone(run)
-                {
-                    return self.withdraw(ask, now).map(|_| None);
+                if let Some(run) = ask.run_id.clone() {
+                    if self.parked_run_is_gone(&run) {
+                        return self.withdraw(ask, now).map(|_| None);
+                    }
+                    if now - ask.created_at >= RUN_ASK_EXPIRES_AFTER {
+                        return self.expire(registry, ask, &run, now);
+                    }
                 }
                 if let Some(s) = self.surfaces() {
                     s.remind(&ask);
@@ -813,6 +841,34 @@ impl Asks {
         }
         self.store.engine_finish_run(&ask.id, now).map_err(store_err)?;
         Ok(())
+    }
+
+    /// Nobody answered the ask a workflow run is parked on for
+    /// [`RUN_ASK_EXPIRES_AFTER`]: it is withdrawn (the card clears
+    /// everywhere; nothing ran, and it is not a No) and the run ends saying
+    /// it waited. An answer that landed first wins and is applied instead.
+    fn expire(
+        &self,
+        registry: &Arc<tools::Registry>,
+        mut ask: Ask,
+        run_id: &str,
+        now: i64,
+    ) -> Result<Option<tokio::task::JoinHandle<()>>, AskError> {
+        let store_err = |e: types::NeboError| AskError::Store(e.to_string());
+        if !self.store.settle_permission_ask(&ask.id, "withdrawn", None, None, now).map_err(store_err)? {
+            return match self.get(&ask.id)? {
+                Some(answered) => self.apply(registry, answered, now),
+                None => Ok(None),
+            };
+        }
+        ask.status = AskStatus::Withdrawn;
+        self.store.engine_finish_run(&ask.id, now).map_err(store_err)?;
+        if let Some(s) = self.surfaces() {
+            s.resolved(&ask);
+            s.expire_run(run_id);
+        }
+        tracing::info!(ask = %ask.id, run = run_id, "ask unanswered for a day; the parked run stops");
+        Ok(None)
     }
 
     /// A No: the parked workflow run ends refused, or the employee is told.
@@ -1149,6 +1205,7 @@ mod tests {
         resolved: Mutex<Vec<(String, AskStatus)>>,
         notes: Mutex<Vec<(String, String)>>,
         released: Mutex<Vec<(String, bool)>>,
+        expired: Mutex<Vec<String>>,
     }
 
     impl AskSurfaces for Seen {
@@ -1166,6 +1223,9 @@ mod tests {
         }
         fn release_run(&self, run_id: &str, allowed: bool) {
             self.released.lock().unwrap().push((run_id.to_string(), allowed));
+        }
+        fn expire_run(&self, run_id: &str) {
+            self.expired.lock().unwrap().push(run_id.to_string());
         }
     }
 
@@ -1813,7 +1873,8 @@ mod tests {
         assert_eq!(ask.reason(), "Only you can give an employee more room.");
     }
 
-    /// An ask nobody answers never expires and never counts as a No: each
+    /// An ask no workflow run is parked on (here a heartbeat's) never
+    /// expires and never counts as a No: each
     /// time its wait's timer wakes it, the card comes back to the owner and
     /// the ask waits again, a day, then two, then four days out. Four days
     /// on it is still open, nothing ran and the employee was told nothing;
@@ -1918,6 +1979,70 @@ mod tests {
         assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "done");
         assert!(matches!(r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Inbox), Err(AskError::Settled(_))));
         assert_eq!(r.ran(1), 0);
+    }
+
+    /// Bake-off 2026-10-10 (B1): 66 of 69 unattended runs parked on an ask,
+    /// and an ask never expired, so an unattended run hung forever. A
+    /// workflow run's ask is reminded never: a day on, unanswered, it is
+    /// withdrawn (the card clears, nothing ran, not a No) and the run is
+    /// ended through `expire_run`. An answer after that is refused.
+    #[tokio::test]
+    async fn a_parked_runs_unanswered_ask_expires_after_a_day() {
+        let r = rig().await;
+        let id = r.park("workflow:wf-11", Door::Workflow, "+15550142").await;
+        r.store
+            .engine_create_run(&db::NewRun { id: "run-11", kind: "workflow", session_key: "workflow:wf-11", agent_id: "emp", lane: "main", ..Default::default() })
+            .unwrap();
+        r.store.engine_set_run_state("run-11", "waiting", 1, None).unwrap();
+        r.store.link_permission_ask_run(&id, "run-11").unwrap();
+        let created = r.asks.get(&id).unwrap().unwrap().created_at;
+
+        // Before the day is out, a wake changes nothing for the run.
+        assert!(r.asks.resume(&r.reg, &id, created + RUN_ASK_EXPIRES_AFTER - 60).unwrap().is_none());
+        assert!(r.seen.expired.lock().unwrap().is_empty());
+        assert_eq!(r.asks.get(&id).unwrap().unwrap().status, AskStatus::Open);
+
+        assert!(r.asks.resume(&r.reg, &id, created + RUN_ASK_EXPIRES_AFTER).unwrap().is_none());
+        assert_eq!(*r.seen.expired.lock().unwrap(), vec!["run-11".to_string()], "the run is ended");
+        assert!(r.seen.released.lock().unwrap().is_empty(), "never released as allowed or denied");
+        let row = r.store.get_permission_ask(&id).unwrap().unwrap();
+        assert_eq!((row.status.as_str(), row.answer.as_deref()), ("withdrawn", None));
+        assert!(r.seen.resolved.lock().unwrap().contains(&(id.clone(), AskStatus::Withdrawn)), "the card clears");
+        assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "done", "the ask's wait is closed");
+        assert!(matches!(r.asks.answer(&id, Answer::AllowAlways, AnsweredVia::Inbox), Err(AskError::Settled(_))));
+        assert_eq!(r.ran(1), 0, "nothing ran");
+    }
+
+    /// The owner cancelled the run an ask parked: the card clears at once
+    /// (withdrawn, not a No), and a second withdraw finds nothing open.
+    #[tokio::test]
+    async fn a_cancelled_runs_ask_is_withdrawn_at_once() {
+        let r = rig().await;
+        let id = r.park("workflow:wf-13", Door::Workflow, "+15550142").await;
+        r.store.link_permission_ask_run(&id, "run-13").unwrap();
+        assert!(r.asks.withdraw_for_run("run-13").unwrap());
+        assert_eq!(r.asks.get(&id).unwrap().unwrap().status, AskStatus::Withdrawn);
+        assert_eq!(*r.seen.resolved.lock().unwrap(), vec![(id.clone(), AskStatus::Withdrawn)]);
+        assert!(!r.asks.withdraw_for_run("run-13").unwrap());
+        assert!(r.seen.released.lock().unwrap().is_empty() && r.seen.expired.lock().unwrap().is_empty());
+        assert_eq!(r.ran(1), 0);
+    }
+
+    /// An answer that landed before the day's wake is applied, not expired.
+    #[tokio::test]
+    async fn an_answer_before_the_expiry_wins() {
+        let r = rig().await;
+        let id = r.park("workflow:wf-12", Door::Workflow, "+15550142").await;
+        r.store
+            .engine_create_run(&db::NewRun { id: "run-12", kind: "workflow", session_key: "workflow:wf-12", agent_id: "emp", lane: "main", ..Default::default() })
+            .unwrap();
+        r.store.engine_set_run_state("run-12", "waiting", 1, None).unwrap();
+        r.store.link_permission_ask_run(&id, "run-12").unwrap();
+        let created = r.asks.get(&id).unwrap().unwrap().created_at;
+        r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Inbox).unwrap();
+        assert!(r.asks.resume(&r.reg, &id, created + 2 * RUN_ASK_EXPIRES_AFTER).unwrap().is_none());
+        assert_eq!(*r.seen.released.lock().unwrap(), vec![("run-12".to_string(), true)]);
+        assert!(r.seen.expired.lock().unwrap().is_empty());
     }
 
     /// The model always hears where the owner answers, by door: on his own
