@@ -998,9 +998,15 @@ fn command_rules(ask: &Ask) -> Option<Vec<Rule>> {
 /// One allow per command of the call that watches the owner or drives his
 /// apps and isn't allowed yet: the program (`screencapture`, `osascript`,
 /// `open -a`), so the next one is covered whatever its file or script.
-/// `None` when one of them can't be named.
+/// `None` when one of them can't be named. A call that is not a command
+/// (the `os` tool on his calendar, the `message` tool on his Messages) gets
+/// one allow for its own key (`calendar_event_list`): that call, for this
+/// employee, and nothing wider.
 fn reach_rules(ask: &Ask) -> Option<Vec<Rule>> {
     let t = &ask.target;
+    if !matches!(t.field, Some(RuleField::CommandPrefix(_))) {
+        return Some(vec![standing_allow(ask, RuleKey::Tool(t.key.clone()), None, None)]);
+    }
     let rules = RuleSet::of(&ask.seat.grant);
     let mut out: Vec<Rule> = Vec::new();
     let mut reaching = false;
@@ -2281,5 +2287,141 @@ mod tests {
         }
         assert_eq!(*ran.lock().unwrap(), vec!["grep screencapture notes.txt", "echo osascript", "open file.pdf"]);
         assert_eq!(r.seen.cards(), 2);
+    }
+
+    /// The owner's own apps as Nebo's tools reach them (`os` on his mail,
+    /// calendar, reminders and contacts; `message` on his Messages), counting
+    /// the calls instead of making them: nothing of his is read here.
+    struct AppSpec {
+        spec: Box<dyn DynTool>,
+        ran: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl DynTool for AppSpec {
+        fn name(&self) -> &str {
+            self.spec.name()
+        }
+        fn description(&self) -> String {
+            self.spec.description()
+        }
+        fn schema(&self) -> serde_json::Value {
+            self.spec.schema()
+        }
+        fn read_only(&self, input: &serde_json::Value) -> bool {
+            self.spec.read_only(input)
+        }
+        fn rule_key(&self, input: &serde_json::Value) -> String {
+            self.spec.rule_key(input)
+        }
+        fn rule_field(&self, input: &serde_json::Value) -> Option<RuleField> {
+            self.spec.rule_field(input)
+        }
+        fn capability(&self, input: &serde_json::Value) -> Option<&'static str> {
+            self.spec.capability(input)
+        }
+        fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+            self.spec.effects(input)
+        }
+        fn activity(&self, input: &serde_json::Value) -> String {
+            self.spec.activity(input)
+        }
+        fn validates_input(&self) -> bool {
+            self.spec.validates_input()
+        }
+        fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
+            self.spec.normalize_input(input)
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            self.ran.lock().unwrap().push(format!("{} {}", self.spec.name(), self.spec.rule_key(&input)));
+            Box::pin(async { ToolResult::ok("RAN") })
+        }
+    }
+
+    impl Rig {
+        async fn owner_apps(&self) -> Arc<Mutex<Vec<String>>> {
+            let ran = Arc::new(Mutex::new(Vec::new()));
+            self.reg.register(Box::new(AppSpec { spec: Box::new(tools::OsTool::new()), ran: ran.clone() })).await;
+            self.reg
+                .register(Box::new(AppSpec { spec: Box::new(tools::MessageTool::new(self.store.clone())), ran: ran.clone() }))
+                .await;
+            ran
+        }
+    }
+
+    fn workflow_ctx(agent: &str) -> ToolContext {
+        let mut c = ToolContext::new(Origin::Workflow).with_session(format!("agent:{agent}:workflow:run-1:run::0"), "s1");
+        c.door = Door::Workflow;
+        c
+    }
+
+    /// Bake-off 2026-10-10: a test employee's unattended workflow read the
+    /// owner's Calendar through `os` and tried Mail and Messages, with
+    /// nothing asking. Each of his apps now waits for his OK, in every
+    /// mode, Full Access included, a workflow step too; "Allow always" grants
+    /// that one call to that employee, and another employee is still asked.
+    #[tokio::test]
+    async fn the_owners_apps_wait_for_his_ok_and_allow_always_grants_that_employee() {
+        let r = rig().await;
+        let ran = r.owner_apps().await;
+        let calls = [
+            ("os", json!({ "resource": "calendar", "action": "today" }), "Calendar"),
+            ("os", json!({ "resource": "mail", "action": "unread" }), "Mail"),
+            ("os", json!({ "resource": "reminders", "action": "list" }), "Reminders"),
+            ("os", json!({ "resource": "contacts", "action": "search", "query": "Ann" }), "Contacts"),
+            ("message", json!({ "resource": "sms", "action": "read", "phone": "+15550142" }), "Messages"),
+            ("message", json!({ "resource": "sms", "action": "send", "phone": "+15550142", "text": "hi" }), "Messages"),
+        ];
+        for agent in ["emp", "other"] {
+            r.mode(agent, Mode::FullAccess);
+        }
+        for (tool, input, app) in &calls {
+            let t = r.reg.target(tool, input).await.unwrap();
+            assert_eq!(t.effects.reaches_owner, Some(OwnerReach::App { app: Some(app.to_string()) }), "{tool} {input}");
+            for c in [workflow_ctx("emp"), ctx("agent:emp:web", Door::Chat)] {
+                let parked = r.reg.execute(&c, tool, input.clone()).await;
+                let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{tool} {input}: {}", parked.content));
+                let ask = r.asks.get(&id).unwrap().unwrap();
+                assert!(matches!(ask.case, AskCase::ReachesOwner { .. }), "{tool} {input}");
+                assert!(ask.allow_always_offered(&r.store), "{tool} {input}: Allow always is offered");
+            }
+        }
+        assert!(ran.lock().unwrap().is_empty(), "nothing of his was read or sent");
+
+        // Allow always on the calendar read: that call, for that employee.
+        let calendar = r.reg.execute(&workflow_ctx("emp"), "os", calls[0].1.clone()).await;
+        r.answer(&calendar.parked_ask.unwrap(), Answer::AllowAlways, AnsweredVia::Chat).await.unwrap();
+        let saved: Vec<Rule> = r.store.permission_rules("emp").unwrap();
+        assert!(
+            saved.iter().any(|x| x.key == RuleKey::Tool("calendar_event_list".into())
+                && x.field.is_none()
+                && x.effect == Effect::Allow
+                && x.scope == Scope::Employee("emp".into())),
+            "{saved:?}"
+        );
+        let again = r.reg.execute(&workflow_ctx("emp"), "os", calls[0].1.clone()).await;
+        assert_eq!((again.content.as_str(), again.parked_ask.is_none()), ("RAN", true));
+        // Not his mail, and not another employee's calendar.
+        assert!(r.reg.execute(&workflow_ctx("emp"), "os", calls[1].1.clone()).await.parked_ask.is_some());
+        assert!(r.reg.execute(&workflow_ctx("other"), "os", calls[0].1.clone()).await.parked_ask.is_some());
+    }
+
+    /// What isn't his app doesn't ask: a file search, listing what runs,
+    /// and a text from the employee's own texting line.
+    #[tokio::test]
+    async fn calls_that_are_not_his_apps_do_not_reach_him() {
+        let r = rig().await;
+        let _ran = r.owner_apps().await;
+        for (tool, input) in [
+            ("os", json!({ "resource": "search", "action": "search", "query": "invoice" })),
+            ("os", json!({ "resource": "app", "action": "list" })),
+            ("message", json!({ "resource": "sms", "action": "send", "phone": "+15550142", "text": "hi", "from": "+15550100" })),
+        ] {
+            let t = r.reg.target(tool, &input).await.unwrap();
+            assert_eq!(t.effects.reaches_owner, None, "{tool} {input}");
+        }
     }
 }
