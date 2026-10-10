@@ -25,7 +25,7 @@ pub type Calls = Arc<Mutex<Vec<(String, Value)>>>;
 
 /// Whether this is a turn's own call (not a title, recap or memory call).
 pub fn main_call(purpose: &str) -> bool {
-    purpose == "agent_turn" || purpose.starts_with("workflow")
+    purpose == "agent_turn" || purpose == "build" || purpose.starts_with("workflow")
 }
 
 /// Whether the conversation already holds a tool result.

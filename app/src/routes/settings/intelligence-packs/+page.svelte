@@ -25,13 +25,15 @@
   // real fee (from Janus or pricing) before Route through Janus ships.
   const ROUTING_FEE_PLACEHOLDER = '[FEE]';
 
-  const LANES = ['heartbeat', 'scheduled', 'communication', 'helpers'] as const;
+  const LANES = ['heartbeat', 'scheduled', 'communication', 'helpers', 'build', 'workflow'] as const;
   type Lane = (typeof LANES)[number];
   const LANE_KEYS: Record<Lane, string> = {
     heartbeat: 'settingsPacks.laneHeartbeat',
     scheduled: 'settingsPacks.laneScheduled',
     communication: 'settingsPacks.laneCommunication',
     helpers: 'settingsPacks.laneHelpers',
+    build: 'settingsPacks.laneBuild',
+    workflow: 'settingsPacks.laneWorkflow',
   };
   const PROVIDER_EFFORTS = ['low', 'medium', 'high'] as const;
 

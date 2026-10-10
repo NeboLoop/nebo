@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Zamanlanmış",
 		"laneCommunication": "İletişim",
 		"laneHelpers": "Yardımcılar",
+		"laneBuild": "Oluşturma",
+		"laneWorkflow": "İş akışları",
 		"laneByWork": "İşe göre seçilir",
 		"routeJanus": "Janus üzerinden yönlendir",
 		"routeJanusHint": "Janus, faturanızı düşürmek için bu paketin modelleri arasında her adımın düzeyini seçer. Anahtarlarınız her istekle birlikte gider ve hiçbir zaman saklanmaz. Yönlendirme ücreti: {fee}.",

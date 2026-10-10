@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Berjadual",
 		"laneCommunication": "Komunikasi",
 		"laneHelpers": "Pembantu",
+		"laneBuild": "Pembinaan",
+		"laneWorkflow": "Aliran kerja",
 		"laneByWork": "Dipilih mengikut kerja",
 		"routeJanus": "Lalu melalui Janus",
 		"routeJanusHint": "Janus memilih tahap untuk setiap langkah merentasi model pek ini untuk mengurangkan bil anda. Kunci anda disertakan dengan setiap permintaan dan tidak pernah disimpan. Yuran penghalaan: {fee}.",

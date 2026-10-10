@@ -256,6 +256,8 @@ pub(crate) struct RoundResults {
     /// A `remember` call in the round succeeded, with the tool's answer (the
     /// last one's): a save the owner asked for is done (`memory_save`).
     pub saved_memory: Option<String>,
+    /// The deferred tools the round's results loaded, by name.
+    pub loaded: Vec<String>,
 }
 
 /// Run the model's tool calls: the exit primitive, then every call through
@@ -423,6 +425,7 @@ pub(crate) async fn run_tool_round(
     let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
     let mut saved_memory = None;
+    let mut loaded = Vec::new();
     for (idx, entry) in results.into_iter().enumerate() {
         let Some((tc, mut result)) = entry else { continue };
         // The same call failing the same way again: on the third time the
@@ -488,6 +491,7 @@ pub(crate) async fn run_tool_round(
         if !result.is_error && target.is_some_and(|t| t.key == "remember") {
             saved_memory = Some(result.content.clone());
         }
+        loaded.extend(result.loads.iter().map(|d| d.name.clone()));
 
         let row = ToolResultRow {
             tool_call_id: tc.id.clone(),
@@ -548,6 +552,7 @@ pub(crate) async fn run_tool_round(
         summary_tool_calls,
         summary_tool_results,
         saved_memory,
+        loaded,
     })
 }
 

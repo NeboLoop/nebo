@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Schemalagt",
 		"laneCommunication": "Kommunikation",
 		"laneHelpers": "Hjälpare",
+		"laneBuild": "Bygga",
+		"laneWorkflow": "Arbetsflöden",
 		"laneByWork": "Valt utifrån arbetet",
 		"routeJanus": "Dirigera via Janus",
 		"routeJanusHint": "Janus väljer nivån för varje steg bland det här paketets modeller för att sänka din räkning. Dina nycklar skickas med varje begäran och sparas aldrig. Dirigeringsavgift: {fee}.",

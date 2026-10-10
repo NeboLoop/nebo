@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Agendado",
 		"laneCommunication": "Comunicação",
 		"laneHelpers": "Auxiliares",
+		"laneBuild": "Criação",
+		"laneWorkflow": "Fluxos de trabalho",
 		"laneByWork": "Escolhido pelo trabalho",
 		"routeJanus": "Encaminhar pelo Janus",
 		"routeJanusHint": "O Janus escolhe o nível em cada etapa entre os modelos deste pacote para reduzir a sua conta. As suas chaves são enviadas com cada pedido e nunca são guardadas. Taxa de encaminhamento: {fee}.",

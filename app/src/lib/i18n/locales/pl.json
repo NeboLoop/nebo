@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Zaplanowane",
 		"laneCommunication": "Komunikacja",
 		"laneHelpers": "Pomocnicy",
+		"laneBuild": "Tworzenie",
+		"laneWorkflow": "Przepływy pracy",
 		"laneByWork": "Wybierane według zadania",
 		"routeJanus": "Przekieruj przez Janus",
 		"routeJanusHint": "Janus wybiera poziom na każdym kroku wśród modeli tego pakietu, aby zmniejszyć twój rachunek. Twoje klucze są przesyłane z każdym żądaniem i nigdy nie są przechowywane. Opłata za routing: {fee}.",

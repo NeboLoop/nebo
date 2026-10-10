@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Programado",
 		"laneCommunication": "Comunicación",
 		"laneHelpers": "Ayudantes",
+		"laneBuild": "Creación",
+		"laneWorkflow": "Flujos de trabajo",
 		"laneByWork": "Elegido según la tarea",
 		"routeJanus": "Pasar por Janus",
 		"routeJanusHint": "Janus elige el nivel en cada paso entre los modelos de este paquete para reducir tu factura. Tus claves se envían con cada solicitud y nunca se almacenan. Tarifa de enrutamiento: {fee}.",

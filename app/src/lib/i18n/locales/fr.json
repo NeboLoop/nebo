@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Planifié",
 		"laneCommunication": "Communication",
 		"laneHelpers": "Assistants",
+		"laneBuild": "Création",
+		"laneWorkflow": "Workflows",
 		"laneByWork": "Choisi selon la tâche",
 		"routeJanus": "Passer par Janus",
 		"routeJanusHint": "Janus choisit le niveau à chaque étape parmi les modèles de ce pack pour réduire votre facture. Vos clés accompagnent chaque requête et ne sont jamais stockées. Frais de routage : {fee}.",

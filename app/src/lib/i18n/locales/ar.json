@@ -4078,6 +4078,8 @@
 		"laneScheduled": "مجدول",
 		"laneCommunication": "التواصل",
 		"laneHelpers": "المساعدون",
+		"laneBuild": "الإنشاء",
+		"laneWorkflow": "سير العمل",
 		"laneByWork": "يُختار حسب العمل",
 		"routeJanus": "التوجيه عبر Janus",
 		"routeJanusHint": "يختار Janus المستوى في كل خطوة بين نماذج هذه الحزمة لتقليل فاتورتك. تُرسَل مفاتيحك مع كل طلب ولا تُخزَّن أبدًا. رسوم التوجيه: {fee}.",

@@ -4078,6 +4078,8 @@
 		"laneScheduled": "Gepland",
 		"laneCommunication": "Communicatie",
 		"laneHelpers": "Hulpmedewerkers",
+		"laneBuild": "Bouwen",
+		"laneWorkflow": "Workflows",
 		"laneByWork": "Gekozen op basis van het werk",
 		"routeJanus": "Via Janus laten lopen",
 		"routeJanusHint": "Janus kiest bij elke stap het niveau over de modellen van dit pakket om je rekening te verlagen. Je sleutels gaan mee met elk verzoek en worden nooit opgeslagen. Routeringskosten: {fee}.",
