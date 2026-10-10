@@ -1,0 +1,83 @@
+name: macOS engine service check
+
+# The desktop engine as a macOS LaunchAgent, end to end, on the house Mac mini:
+# scripts/test-engine-service-macos.sh under a TEST identity (bundle id
+# dev.neboai.nebo.enginetest, label dev.neboai.nebo.engine.test, port 37895,
+# a scratch Nebo folder, the keychain left alone). register → serving,
+# ProcessType Interactive, no sleep assertion, kill -9 → back, a stall → exit
+# 70 → back, Quit → stays down, kickstart, an update swapped and health-gated
+# (a bad one rolled back), a held port → 75 → takeover, unregister → nothing
+# left. It never touches the Mac mini's installed Nebo.app or port 27895, and
+# removes everything it registered.
+#
+# Dispatch only (never on a pull request: the runner is a house machine).
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.95"
+
+jobs:
+  check:
+    runs-on: [self-hosted, macOS, stadium-mac]
+    timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
+      # Its own build cache beside the checkout: never the release jobs'.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../nebo-target-engine-service
+      HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Import the signing certificate (SMAppService registers only a signed app)
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/engine-service.keychain-db
+          security list-keychains -d user | xargs > "$RUNNER_TEMP/keychains-before"
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          for ca in DeveloperIDG2CA DeveloperIDCA; do
+            curl -sSf -o "$RUNNER_TEMP/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN_PATH"
+            rm "$RUNNER_TEMP/$ca.cer"
+          done
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(cat "$RUNNER_TEMP/keychains-before")
+
+      - name: Build the desktop executable (debug; sidecars are placeholders)
+        run: |
+          mkdir -p app/build src-tauri/binaries
+          [ -f app/build/index.html ] || echo '<!doctype html><html></html>' > app/build/index.html
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          for b in obscura obscura-worker rg; do
+            printf '#!/bin/sh\nexit 0\n' > "src-tauri/binaries/$b-$triple"
+            chmod +x "src-tauri/binaries/$b-$triple"
+          done
+          cargo build -p nebo
+
+      - name: Run the engine service checks
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
+        env:
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: NEBO_BIN="$CARGO_TARGET_DIR/debug/nebo" TMPDIR="$RUNNER_TEMP/" bash scripts/test-engine-service-macos.sh
+
+      - name: Remove the signing keychain
+        if: ${{ always() && env.HAS_SIGNING_CERT == 'true' }}
+        run: |
+          # shellcheck disable=SC2046
+          [ -f "$RUNNER_TEMP/keychains-before" ] && security list-keychains -d user -s $(cat "$RUNNER_TEMP/keychains-before")
+          security delete-keychain "$RUNNER_TEMP/engine-service.keychain-db" 2>/dev/null || true
