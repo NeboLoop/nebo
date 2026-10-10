@@ -1626,8 +1626,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let extension_bridge = browser_manager.bridge();
 
     // Install/update native messaging host manifest for Chrome extension.
-    // The manifest points at this executable: the desktop app's `nebo` and
-    // `nebo-cli` both run the relay when the browser starts them.
+    // The manifest points at this executable where it stays
+    // (`process::stable_exe`: an AppImage's own file, never its transient
+    // mount): the desktop app's `nebo` and `nebo-cli` both run the relay
+    // when the browser starts them.
     // The manifests live in the user's browser profiles, outside the Nebo root,
     // and bind those browsers to ONE binary: the Nebo at the platform data
     // directory. A relocated root (tests, cloud pods, side installs) never
@@ -1635,7 +1637,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if config::data_dir_overridden() {
         info!("data dir overridden — leaving the browser native messaging manifests alone");
     } else {
-        let nebo_binary = std::env::current_exe()
+        let nebo_binary = process::stable_exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "nebo".to_string());
         let local_ext_id = cfg.browser_extension_id.as_deref().unwrap_or("");
