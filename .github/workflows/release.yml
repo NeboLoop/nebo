@@ -216,31 +216,28 @@ jobs:
             codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$f"
           done
 
-          # Sign the bundled Obscura sidecars BEFORE the main executable (inside-out).
+          # Every bundled sidecar BEFORE the main executable (inside-out): each
+          # executable in Contents/MacOS that is not the app itself, as the
+          # Makefile's app-bundle does, so a new sidecar is never left unsigned.
           # `cargo tauri build` leaves them adhoc/linker-signed (no identity is passed
           # at build time), which passes `codesign --verify` but is REJECTED by
           # notarization — nested Mach-O executables must be Developer-ID-signed with
-          # the Hardened Runtime. They embed V8 (deno_core) JIT, so they need the
-          # obscura.entitlements (allow-jit / allow-unsigned-executable-memory).
-          for sidecar in obscura obscura-worker; do
-            SIDECAR_PATH="$APP_PATH/Contents/MacOS/$sidecar"
-            if [ -f "$SIDECAR_PATH" ]; then
-              codesign --force --sign "$SIGN_IDENTITY" \
-                --entitlements assets/macos/obscura.entitlements \
-                --timestamp \
-                --options runtime \
-                "$SIDECAR_PATH"
-            fi
-          done
-
-          # Sign the bundled rg sidecar (plain hardened runtime — no JIT
-          # entitlements; it is not a V8 host like the Obscura binaries).
-          if [ -f "$APP_PATH/Contents/MacOS/rg" ]; then
-            codesign --force --sign "$SIGN_IDENTITY" \
+          # the Hardened Runtime. The Obscura pair embeds V8 (deno_core) JIT, so it
+          # gets obscura.entitlements (allow-jit / allow-unsigned-executable-memory);
+          # the others (rg) get none.
+          for SIDECAR_PATH in "$APP_PATH"/Contents/MacOS/*; do
+            sidecar=$(basename "$SIDECAR_PATH")
+            [ "$sidecar" = nebo ] && continue
+            case "$sidecar" in
+              obscura|obscura-worker) ent=(--entitlements assets/macos/obscura.entitlements) ;;
+              *) ent=() ;;
+            esac
+            codesign --force --sign "$SIGN_IDENTITY" ${ent[@]+"${ent[@]}"} \
               --timestamp \
               --options runtime \
-              "$APP_PATH/Contents/MacOS/rg"
-          fi
+              "$SIDECAR_PATH"
+            echo "signed sidecar: $sidecar"
+          done
 
           # Sign the main executable explicitly
           codesign --force --sign "$SIGN_IDENTITY" \
@@ -261,10 +258,19 @@ jobs:
           codesign --verify --deep --strict "$APP_PATH"
           echo "Nebo.app signed with Developer ID"
 
-      - name: Extract signed binary for auto-update
+      # The bare `nebo-darwin-<arch>` asset (direct-mode updater, bare
+      # installs) is the headless nebo-cli signed on its own, never the app's
+      # executable copied out: that signature is bound to the bundle and the
+      # kernel kills it run on its own. Notarized in notarize-macos; the
+      # downloaded asset is run again in publish-macos.
+      - name: Build + sign the bare darwin asset (nebo-cli, standalone)
+        env:
+          SIGN_IDENTITY: ${{ env.HAS_SIGNING_CERT == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
-          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
-          cp "$APP_PATH/Contents/MacOS/nebo" nebo-darwin-${{ matrix.arch }}
+          cargo build --release -p nebo-cli --target ${{ matrix.target }}
+          bash scripts/nebo-cli-darwin.sh sign "$CARGO_TARGET_DIR/${{ matrix.target }}/release/nebo-cli" nebo-darwin-${{ matrix.arch }}
+          bash scripts/nebo-cli-darwin.sh check nebo-darwin-${{ matrix.arch }}
 
       - uses: actions/cache/save@v4
         with:
@@ -375,6 +381,24 @@ jobs:
           xcrun stapler validate "$DMG_FILE"
           echo "Notarization complete and stapled."
 
+      - name: Restore the bare darwin asset
+        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-binary
+          path: nebo-darwin-${{ matrix.arch }}
+          fail-on-cache-miss: true
+
+      # A bare Mach-O can't be stapled: notarized from a zip, Gatekeeper checks
+      # it online on first run. Only Accepted proceeds.
+      - name: Notarize the bare darwin asset (nebo-cli)
+        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/nebo-cli-darwin.sh notarize nebo-darwin-${{ matrix.arch }}
+
       - name: Save notarized DMG for the release job
         uses: actions/cache/save@v4
         with:
@@ -437,6 +461,17 @@ jobs:
           # by `make release-macos`, which doesn't run in CI).
           ( cd dist && for f in Nebo-*.dmg nebo-darwin-arm64 nebo-darwin-amd64; do [ -f "$f" ] && shasum -a 256 "$f"; done > checksums-macos.txt )
           RELEASE_VERSION="${TAG#v}" TAG="$TAG" bash scripts/publish-macos.sh
+
+      # Release gate: the bare darwin assets as published, downloaded and run
+      # on their own. Killed (a bundle-bound signature) fails the release.
+      - name: Run the published bare darwin assets on their own
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gate=$(mktemp -d)
+          gh release download "$TAG" --repo NeboLoop/nebo -p 'nebo-darwin-*' -D "$gate"
+          for f in "$gate"/nebo-darwin-*; do bash scripts/nebo-cli-darwin.sh check "$f"; done
 
   # ─── Linux desktop builds (Tauri 2 — WebKitGTK) ──────────────────────
   # ─── Linux amd64 runner: a droplet that exists only for this run ───────
