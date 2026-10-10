@@ -22,6 +22,7 @@
   import FolderPlus from 'lucide-svelte/icons/folder-plus';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import * as api from '$lib/api/nebo';
+  import { pickFolder } from '$lib/api/pick';
   import type { PermissionItem, PermissionSwitch, PermissionsPage, MoneyAmounts } from '$lib/api/nebo';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import { switchStates, switchChange, inheritedNote, type SwitchChange, type SwitchValue } from '$lib/utils/permissionSwitch';
@@ -143,7 +144,7 @@
 
   async function addFolder() {
     try {
-      const picked = await api.pickFolder();
+      const picked = await pickFolder();
       if (picked?.path) await change({ addFolder: picked.path });
     } catch (e) {
       error = e instanceof Error && e.message ? e.message : $t('permissions.saveError');

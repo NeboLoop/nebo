@@ -95,7 +95,9 @@ frontend:
 
 dev: stage-obscura stage-ripgrep frontend
 	@echo "Starting Nebo (Tauri + Vite)..."
-	@echo "  Vite HMR for frontend, Tauri watch for backend"
+	@echo "  Two processes: the app (window, tray) and its engine (nebo --engine, the server), its child"
+	@echo "  Vite HMR for frontend, Tauri watch for backend: a Rust change rebuilds both"
+	@echo "  Engine log: <Nebo folder>/logs/nebo.log; the app's: logs/nebo-shell.log"
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
 	@echo "  NOTE: File changes trigger restart — use 'make run' to test workflows."
 	@echo "  Ctrl-C to stop all processes."

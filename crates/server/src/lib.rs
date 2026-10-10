@@ -33,6 +33,7 @@ mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
 mod preflight;
+pub mod process;
 mod redact;
 pub mod routes;
 pub mod run_display;
@@ -1190,6 +1191,10 @@ pub(crate) fn compression() -> CompressionLayer<
 }
 
 pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
+    // Full speed with no window in front: every engine holds it (the desktop
+    // app's, `nebo-cli serve`, dev).
+    process::hold_full_speed();
+    std::sync::LazyLock::force(&STARTED_AT);
     let host = cfg.host.clone();
     // The port is taken first and held until the server serves on it, so
     // nothing else can take it while Nebo starts. Port 0 takes whichever
@@ -1265,7 +1270,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Ok(n) => info!(count = n, "encrypted provider keys stored in the clear"),
         Err(e) => warn!(error = %e, "provider keys could not be encrypted at rest"),
     }
-    handlers::apps::serve_desktop_from(store.clone(), port);
     // The old permission settings become rules once, before anything runs a
     // tool: every call is decided by the rules from here on.
     agent::migrate_legacy(&store)?;
@@ -1622,9 +1626,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let extension_bridge = browser_manager.bridge();
 
     // Install/update native messaging host manifest for Chrome extension.
-    // The manifest must point to the `nebo` CLI binary (which has the relay code),
-    // NOT `nebo-desktop` (the Tauri GUI). When running as `nebo-desktop`, we find
-    // the sibling `nebo` binary in the same directory.
+    // The manifest points at this executable: the desktop app's `nebo` and
+    // `nebo-cli` both run the relay when the browser starts them.
     // The manifests live in the user's browser profiles, outside the Nebo root,
     // and bind those browsers to ONE binary: the Nebo at the platform data
     // directory. A relocated root (tests, cloud pods, side installs) never
@@ -1633,15 +1636,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         info!("data dir overridden — leaving the browser native messaging manifests alone");
     } else {
         let nebo_binary = std::env::current_exe()
-            .map(|p| {
-                if p.file_name().and_then(|n| n.to_str()) == Some("nebo-desktop") {
-                    let sibling = p.with_file_name("nebo");
-                    if sibling.exists() {
-                        return sibling.to_string_lossy().to_string();
-                    }
-                }
-                p.to_string_lossy().to_string()
-            })
+            .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "nebo".to_string());
         let local_ext_id = cfg.browser_extension_id.as_deref().unwrap_or("");
         if browser::native_host::needs_manifest_update(&nebo_binary, local_ext_id) {
@@ -3616,6 +3611,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // peer address. A credential carried in the path comes off it before
     // routing (`middleware::path_credential`).
     let app = tower::ServiceExt::map_request(app, middleware::path_credential);
+    liveness::serving();
     axum::serve(listener, axum::ServiceExt::into_make_service_with_connect_info::<std::net::SocketAddr>(app))
         .with_graceful_shutdown(async move {
             shutdown.await;
@@ -3715,7 +3711,9 @@ async fn drain_in_flight_runs(registry: &run_registry::RunRegistry) {
 }
 
 /// The shutdown signals: SIGTERM (kill, Kubernetes, hot reload), SIGINT
-/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere.
+/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere,
+/// and a stop asked of the engine itself (`process::stop`: Quit, the shell
+/// that started it gone).
 /// They are registered when this is called; the returned future resolves on
 /// the first one to arrive. This is the only shutdown signal handler in the
 /// process: the graceful drain it starts owns shutdown end to end.
@@ -3733,6 +3731,7 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
             _ = term.recv() => "SIGTERM",
             _ = int.recv() => "SIGINT",
             _ = hup.recv() => "SIGHUP",
+            _ = process::stopped() => "stop",
         };
         info!(signal = sig, "received shutdown signal");
     })
@@ -3741,8 +3740,11 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
 #[cfg(not(unix))]
 fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
     Ok(async {
-        tokio::signal::ctrl_c().await.ok();
-        info!("received Ctrl+C");
+        let sig = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "Ctrl+C",
+            _ = process::stopped() => "stop",
+        };
+        info!(signal = sig, "received shutdown signal");
     })
 }
 
@@ -7352,13 +7354,26 @@ async fn health_handler() -> (axum::http::StatusCode, Json<HealthResponse>) {
     health_response(liveness::LIVENESS.stall(std::time::Instant::now()).is_some())
 }
 
+/// When this process started, for `/health`.
+static STARTED_AT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| chrono::Utc::now().to_rfc3339());
+
 fn health_response(stalled: bool) -> (axum::http::StatusCode, Json<HealthResponse>) {
     let (code, status) = if stalled {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "stalled")
     } else {
         (axum::http::StatusCode::OK, "ok")
     };
-    (code, Json(HealthResponse { status: status.into(), version: VERSION.into() }))
+    (
+        code,
+        Json(HealthResponse {
+            status: status.into(),
+            version: VERSION.into(),
+            role: "engine".into(),
+            pid: std::process::id(),
+            supervised: process::supervisor().is_some(),
+            started_at: STARTED_AT.clone(),
+        }),
+    )
 }
 
 #[cfg(test)]

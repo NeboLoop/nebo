@@ -5803,9 +5803,9 @@ dependencies = [
  "nebo-config",
  "nebo-server",
  "notify-rust",
- "objc2-foundation",
  "objc2-web-kit",
  "open",
+ "rfd",
  "serde",
  "serde_json",
  "tauri",
@@ -6208,6 +6208,7 @@ dependencies = [
  "nebo-voice",
  "nebo-workflow",
  "notify",
+ "objc2-foundation",
  "open",
  "pulldown-cmark",
  "rand 0.8.5",
@@ -6237,6 +6238,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
 

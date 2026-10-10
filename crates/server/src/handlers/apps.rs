@@ -368,44 +368,54 @@ struct DesktopPage<'a> {
 /// stays open between reloads; each load gets a new one.
 const DESKTOP_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
-/// The store and port the desktop's `neboapp://` handler answers from. It
-/// runs in this process, outside the router, so `run` hands it them here.
-static DESKTOP: std::sync::OnceLock<(std::sync::Arc<db::Store>, u16)> = std::sync::OnceLock::new();
-
-/// Called once by `run`: the desktop's app windows read this store.
-pub(crate) fn serve_desktop_from(store: std::sync::Arc<db::Store>, port: u16) {
-    let _ = DESKTOP.set((store, port));
+/// What the desktop shell's window for one app needs from this server
+/// (`GET /api/v1/apps/{id}/desktop`), read by its `neboapp://` handler and
+/// its app-window menu. The shell is another process: it asks.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopApp {
+    /// Whether the app window offers "Publish This App…": only one of the
+    /// owner's own apps (the only ones built and published from here), and
+    /// only under App Developer mode, which counts while Developer mode is
+    /// on: the same gate as the chat's Publish button.
+    offers_publish: bool,
+    /// What the app's entry page carries after the desktop bridge, by the
+    /// one rule the HTTP path follows (`serve_app_ui_inner`): the owner's own
+    /// app gets the developer script (console capture and the reload
+    /// listener, the floating console with App Developer mode on); an app
+    /// installed from the marketplace gets nothing.
+    developer_script: String,
+    /// The app's served `ui/` as the database records it, the server's own
+    /// fallback (`resolve_app_ui`). An app the owner made lives in a folder
+    /// named for the employee ("Design Studio"), not its id, so the window's
+    /// folder scan alone never finds it (live 2026-10-05: "App not found"
+    /// for Design Studio on the desktop).
+    ui_dir: Option<PathBuf>,
 }
 
-/// For the desktop's `neboapp://` handler: what an app's entry page carries
-/// after the desktop bridge, by the one rule the HTTP path follows
-/// (`serve_app_ui_inner`): the owner's own app gets the developer script
-/// (console capture and the reload listener, the floating console with App
-/// Developer mode on); an app installed from the marketplace gets nothing.
-pub fn desktop_developer_script(agent_id: &str) -> String {
-    DESKTOP.get().map(|(store, port)| desktop_script(store, *port, agent_id)).unwrap_or_default()
-}
-
-/// For the desktop's app-window menu: whether "Publish This App…" is offered
-/// for `agent_id`. Only one of the owner's own apps (the only ones built and
-/// published from here), and only under App Developer mode, which counts
-/// while Developer mode is on: the same gate as the chat's Publish button.
-pub fn desktop_offers_publish(agent_id: &str) -> bool {
-    DESKTOP.get().is_some_and(|(store, _)| {
-        let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
-        developer && store.app_developer_mode() && own_app(store, agent_id).is_some()
+/// GET /api/v1/apps/{agent_id}/desktop: [`DesktopApp`], for the desktop
+/// shell's own call only (`process::from_the_shell`).
+pub async fn desktop_app(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !crate::process::from_the_shell(&headers) {
+        return (StatusCode::UNAUTHORIZED, "the install key is required").into_response();
+    }
+    let store = &state.store;
+    let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
+    axum::Json(DesktopApp {
+        offers_publish: developer && store.app_developer_mode() && own_app(store, &agent_id).is_some(),
+        developer_script: desktop_script(store, state.config.port, &agent_id),
+        ui_dir: store
+            .get_agent(&agent_id)
+            .ok()
+            .flatten()
+            .and_then(|a| a.app_ui_path)
+            .and_then(|recorded| served_ui_dir(PathBuf::from(recorded))),
     })
-}
-
-/// For the desktop's `neboapp://` window: the app's served `ui/` as the
-/// database records it, the server's own fallback (`resolve_app_ui`). An
-/// app the owner made lives in a folder named for the employee ("Design
-/// Studio"), not its id, so the window's folder scan alone never finds it
-/// (live 2026-10-05: "App not found" for Design Studio on the desktop).
-pub fn desktop_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
-    let (store, _) = DESKTOP.get()?;
-    let recorded = store.get_agent(agent_id).ok()??.app_ui_path?;
-    served_ui_dir(PathBuf::from(recorded))
+    .into_response()
 }
 
 fn desktop_script(store: &db::Store, port: u16, agent_id: &str) -> String {

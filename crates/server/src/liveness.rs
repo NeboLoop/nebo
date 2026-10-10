@@ -14,10 +14,12 @@
 //! Either one older than [`STALE_AFTER`] is a stall: `/health` answers 503
 //! whenever a worker can still run it, and a watchdog on its own OS thread
 //! (never a tokio worker) logs the stall once, with the pool's state, and
-//! logs again when it clears. Nothing here exits the process: a cloud bot's
-//! liveness probe on `/health` (503, or no answer at all) is what restarts
-//! it; the desktop app and `make dev` have no supervisor, so there a stall is
-//! a loud log and an unhealthy `/health`.
+//! logs again when it clears. A cloud bot's liveness probe on `/health` (503,
+//! or no answer at all) is what restarts it. A supervised engine (the desktop
+//! app's, `process::supervisor`) has no such probe: once it serves, a stall
+//! that lasts [`EXIT_AFTER`] of the machine's awake time exits it with
+//! `process::EXIT_STALL` from the watchdog's own thread, and its supervisor
+//! starts it again. A server nothing restarts only logs.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -29,6 +31,9 @@ const WATCH_EVERY: Duration = Duration::from_secs(5);
 /// Longer than one pool wait (`db::pool::POOL_WAIT`) plus SQLite's
 /// busy_timeout several times over, so a busy moment never reads as a stall.
 pub(crate) const STALE_AFTER: Duration = Duration::from_secs(60);
+/// How long a supervised engine stays stalled, counted in awake time, before
+/// the watchdog exits it.
+const EXIT_AFTER: Duration = Duration::from_secs(120);
 
 /// Both heartbeats, as milliseconds since `epoch` (monotonic; a laptop's
 /// sleep does not age them).
@@ -87,6 +92,45 @@ impl Liveness {
 /// This process's liveness.
 pub(crate) static LIVENESS: LazyLock<Liveness> = LazyLock::new(Liveness::new);
 
+/// Set once the server serves: no stall exits the process while it is still
+/// starting (migrations, the first index load).
+static SERVING: AtomicBool = AtomicBool::new(false);
+
+/// The server serves: a supervised engine's stall may exit it from now on.
+pub(crate) fn serving() {
+    SERVING.store(true, Ordering::Relaxed);
+}
+
+/// How long the stall has lasted in awake time after one watchdog tick
+/// that took `awake` of it: a tick with no stall starts the count over.
+fn stalled_for(before: Duration, stalled: bool, awake: Duration) -> Duration {
+    if stalled { before + awake } else { Duration::ZERO }
+}
+
+/// The machine's awake time: it stops while the machine sleeps, so a laptop
+/// with its lid closed for an hour never counts as a stall. (`Instant` is
+/// this clock on macOS and Linux, but on Windows it counts sleep too.)
+fn awake_now() -> Duration {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let clock = libc::CLOCK_MONOTONIC;
+    #[cfg(unix)]
+    {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid clock id and a timespec to write into.
+        unsafe { libc::clock_gettime(clock, &mut ts) };
+        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    }
+    #[cfg(windows)]
+    {
+        let mut hundred_ns: u64 = 0;
+        // SAFETY: writes one u64.
+        unsafe { windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut hundred_ns) };
+        Duration::from_nanos(hundred_ns.saturating_mul(100))
+    }
+}
+
 /// Start both heartbeats and the watchdog. Called once, inside the runtime,
 /// after the store opens.
 pub(crate) fn start(store: Arc<db::Store>) {
@@ -113,11 +157,29 @@ pub(crate) fn start(store: Arc<db::Store>) {
         tracing::error!(error = %e, "liveness: could not start the database probe");
     }
 
+    let supervisor = crate::process::supervisor();
     let watchdog = std::thread::Builder::new().name("nebo-watchdog".into()).spawn(move || {
         let mut reported = false;
+        let mut stalled = Duration::ZERO;
+        let mut awake = awake_now();
         loop {
             std::thread::sleep(WATCH_EVERY);
-            match live.stall(Instant::now()) {
+            let stall = live.stall(Instant::now());
+            let now = awake_now();
+            stalled = stalled_for(stalled, stall.is_some(), now.saturating_sub(awake));
+            awake = now;
+            if let Some(by) = supervisor.as_deref()
+                && stalled >= EXIT_AFTER
+                && SERVING.load(Ordering::Relaxed)
+            {
+                tracing::error!(
+                    stalled_secs = stalled.as_secs(),
+                    supervisor = by,
+                    "liveness: stalled past the limit; exiting so the supervisor starts Nebo again"
+                );
+                std::process::exit(crate::process::EXIT_STALL);
+            }
+            match stall {
                 Some(stall) if !reported => {
                     reported = true;
                     let (connections, idle) = store.pool_state();
@@ -147,6 +209,30 @@ pub(crate) fn start(store: Arc<db::Store>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only awake time while stalled counts toward the exit, and any tick
+    /// that is not stalled starts the count over.
+    #[test]
+    fn stall_time_counts_awake_ticks_and_resets() {
+        let tick = WATCH_EVERY;
+        let mut stalled = Duration::ZERO;
+        for _ in 0..(EXIT_AFTER.as_secs() / tick.as_secs() - 1) {
+            stalled = stalled_for(stalled, true, tick);
+        }
+        assert!(stalled < EXIT_AFTER);
+        assert!(stalled_for(stalled, true, tick) >= EXIT_AFTER);
+        assert_eq!(stalled_for(stalled, false, tick), Duration::ZERO);
+        // A tick across a sleep adds only its awake part.
+        assert_eq!(stalled_for(Duration::ZERO, true, Duration::from_secs(5)), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn awake_clock_moves_forward() {
+        let a = awake_now();
+        std::thread::sleep(Duration::from_millis(20));
+        let b = awake_now();
+        assert!(b > a && b - a >= Duration::from_millis(10));
+    }
 
     #[test]
     fn not_watching_is_never_a_stall() {

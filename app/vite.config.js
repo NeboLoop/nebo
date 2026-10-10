@@ -67,19 +67,23 @@ function katexWoff2Only() {
 	};
 }
 
+// The engine's port: the default, or NEBO_PORT as the engine reads it (a dev
+// engine on another port, beside an installed Nebo).
+const engine = `localhost:${process.env.NEBO_PORT ?? 27895}`;
+
 // Shared by dev and preview so `vite preview` can exercise the PRODUCTION
 // bundle against the same live backend (WebKit prod-bundle debugging).
 const backendProxy = {
 			'/api': {
-				target: 'http://localhost:27895',
+				target: `http://${engine}`,
 				changeOrigin: true
 			},
 			'/health': {
-				target: 'http://localhost:27895',
+				target: `http://${engine}`,
 				changeOrigin: true
 			},
 			'/subscription/plans': {
-				target: 'http://localhost:27895',
+				target: `http://${engine}`,
 				changeOrigin: true
 			},
 			// Only proxy app-sidecar sub-paths (/apps/<agent_id>/ui|api|storage|…) to
@@ -87,15 +91,15 @@ const backendProxy = {
 			// proxying it (the old `'/apps'` prefix) shadowed that page in dev. The
 			// `^` key is a regex, so it matches /apps/<seg>/… but not bare /apps.
 			'^/apps/[^/]+/': {
-				target: 'http://localhost:27895',
+				target: `http://${engine}`,
 				changeOrigin: true
 			},
 			'/sdk': {
-				target: 'http://localhost:27895',
+				target: `http://${engine}`,
 				changeOrigin: true
 			},
 			'/ws': {
-				target: 'ws://localhost:27895',
+				target: `ws://${engine}`,
 				ws: true,
 				changeOrigin: true
 			}
