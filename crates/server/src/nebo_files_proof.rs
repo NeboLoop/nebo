@@ -895,6 +895,30 @@ async fn an_employee_command_is_refused_by_nebo_own_api() {
     };
     assert_eq!(api("same-origin").await.unwrap().status(), 200, "the signed-in app calls its API");
     assert_eq!(api("same-site").await.unwrap().status(), 401, "another page on this computer can't ride the session");
+
+    // An app the web UI opened in a browser window (`/apps/<id>/ui/`): its
+    // page holds the session, and its SDK reaches its own app's data with
+    // it, never another app's, and nothing that is not an app's page does.
+    let app_store = |app: &str, referer: Option<String>| {
+        let mut req = browser
+            .get(format!("http://localhost:{}/api/v1/apps/{app}/storage", nebo.port))
+            .header("cookie", &session)
+            .header("sec-fetch-site", "same-origin");
+        if let Some(r) = referer {
+            req = req.header("referer", r);
+        }
+        req.send()
+    };
+    let page_of = |app: &str| Some(format!("http://localhost:{}/apps/{app}/ui/index.html?thread=t1", nebo.port));
+    let own = app_store("design-a", page_of("design-a")).await.unwrap();
+    assert_eq!(own.status(), 200, "the app's page reads its own store: {}", own.text().await.unwrap_or_default());
+    assert_eq!(app_store("design-b", page_of("design-a")).await.unwrap().status(), 401, "one app's page never reads another's");
+    assert_eq!(app_store("design-a", None).await.unwrap().status(), 401, "a request naming no app page");
+    assert_eq!(
+        app_store("design-a", Some(format!("http://localhost:{}/", nebo.port))).await.unwrap().status(),
+        401,
+        "Nebo's own page is not the app's"
+    );
     let bare = browser.get(format!("http://localhost:{}/", nebo.port)).header("accept", "text/html").send().await.unwrap();
     assert_eq!(bare.status(), 401);
     assert!(bare.text().await.unwrap().contains("nebo open"), "a browser with no session is told how to sign in");
