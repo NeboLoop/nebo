@@ -1023,9 +1023,14 @@ async fn handle_comm_install_event(
                 tracing::debug!(tool_id = %event.tool_id, slug = %item.slug, "install event: already installed, skipping");
                 return Ok(());
             }
-            if event.event_type == "tool_updated"
-                && artifact_updates::on_update_notice(state, &api, &event, &detail).await
-            {
+            // An update notice updates what is installed here and never
+            // installs: something the owner removed (or never had) here stays
+            // away when a new version is approved, whatever the hub's install
+            // rows say. Only an install event installs.
+            if event.event_type == "tool_updated" {
+                if !artifact_updates::on_update_notice(state, &api, &event, &detail).await {
+                    tracing::info!(tool_id = %event.tool_id, slug = %item.slug, "update notice for an artifact not installed here: ignored");
+                }
                 return Ok(());
             }
             // Backstop against any echo the check above misses: the same

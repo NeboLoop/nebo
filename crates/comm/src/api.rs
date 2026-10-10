@@ -565,7 +565,12 @@ impl NeboAIApi {
         .await
     }
 
-    /// Uninstall an app for this bot.
+    /// Uninstall a marketplace artifact of any type (app, employee, skill,
+    /// plugin) for this bot: the hub's one uninstall route resolves any
+    /// artifact id and removes this bot's install row, so it stops sending
+    /// the artifact's update notices here. (There is no
+    /// `/api/v1/products/{id}/install` on the hub: an uninstall sent there
+    /// was a 404 and the row stayed.)
     pub async fn uninstall_app(&self, id: &str) -> Result<(), CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
         self.do_void(
@@ -789,17 +794,6 @@ impl NeboAIApi {
             Ok(serde_json::from_str(&text)
                 .unwrap_or_else(|_| serde_json::json!({ "success": true })))
         }
-    }
-
-    /// Uninstall a product for this bot by product ID.
-    pub async fn uninstall_product(&self, id: &str) -> Result<(), CommError> {
-        let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_void(
-            reqwest::Method::DELETE,
-            &format!("/api/v1/products/{}/install", id),
-            Some(&body),
-        )
-        .await
     }
 
     /// Download a sealed .napp archive from a URL to `dest`.
@@ -2284,6 +2278,36 @@ mod tests {
         api.lease.granted(1, std::time::Duration::from_secs(60), std::time::Instant::now());
         let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
         assert!(!matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+    }
+
+    /// An uninstall goes to the hub's uninstall route, DELETE
+    /// /api/v1/apps/{id}/install, which takes every artifact type; a refusal
+    /// comes back as an error the caller can log.
+    #[tokio::test]
+    async fn an_uninstall_goes_to_the_hubs_uninstall_route() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else { return };
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            let body = r#"{"status":"uninstalled"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let api = NeboAIApi::new(format!("http://{addr}"), "bot".into(), "token".into());
+        api.uninstall_app("6cd4d527").await.expect("uninstalled");
+        let head = rx.await.unwrap();
+        assert!(head.starts_with("DELETE /api/v1/apps/6cd4d527/install "), "{head}");
+
+        let refused = NeboAIApi::new("http://127.0.0.1:9".into(), "bot".into(), "token".into());
+        assert!(refused.uninstall_app("6cd4d527").await.is_err(), "a failed uninstall is an error, not Ok");
     }
 
     /// A file the hub removed after its keeping period answers 410; the
