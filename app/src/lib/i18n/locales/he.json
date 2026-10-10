@@ -311,7 +311,6 @@
 		"roleSuggestion1": "במה תוכל לעזור לי?",
 		"roleSuggestion2": "תן לי היכרות קצרה",
 		"messageChannel": "הודעה ל-#{channel}...",
-		"messagedCoworker": "שלח הודעה",
 		"disclaimer": "Nebo עלול לטעות. ודא מידע חשוב.",
 		"uploadsKept": "{days, plural, one {העלאות נשמרות למשך יום אחד.} two {העלאות נשמרות למשך יומיים.} other {העלאות נשמרות למשך # ימים.}}",
 		"goodMorning": "בוקר טוב",
@@ -4221,6 +4220,22 @@
 			"running": "עובד",
 			"scheduled": "טיימרים",
 			"watching": "מעקבים"
+		}
+	},
+	"handoff": {
+		"fromAsk": "מאת {name}: {ask}",
+		"toAsk": "← {name}: {ask}",
+		"openSender": "פתח את השיחה של {name}",
+		"openReceiver": "פתח את העבודה של {name}",
+		"doneWith": "הושלם: {result}",
+		"failedWith": "נכשל: {error}",
+		"stop": "עצור",
+		"status": {
+			"queued": "בתור",
+			"running": "בעבודה",
+			"done": "הושלם",
+			"failed": "נכשל",
+			"stopped": "נעצר"
 		}
 	}
 }

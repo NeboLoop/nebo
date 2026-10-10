@@ -311,7 +311,6 @@
 		"roleSuggestion1": "何をお手伝いできますか？",
 		"roleSuggestion2": "簡単な自己紹介をして",
 		"messageChannel": "#{channel} にメッセージ...",
-		"messagedCoworker": "メッセージ送信済み",
 		"disclaimer": "Neboは間違えることがあります。重要な情報はご確認ください。",
 		"uploadsKept": "アップロードは{days}日間保存されます。",
 		"goodMorning": "おはようございます",
@@ -4221,6 +4220,22 @@
 			"running": "作業中",
 			"scheduled": "タイマー",
 			"watching": "監視"
+		}
+	},
+	"handoff": {
+		"fromAsk": "{name} から: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name} の会話を開く",
+		"openReceiver": "{name} の作業を開く",
+		"doneWith": "完了: {result}",
+		"failedWith": "失敗: {error}",
+		"stop": "停止",
+		"status": {
+			"queued": "待機中",
+			"running": "作業中",
+			"done": "完了",
+			"failed": "失敗",
+			"stopped": "停止済み"
 		}
 	}
 }

@@ -14,6 +14,7 @@ pub mod entity_config;
 pub mod feedback;
 pub mod files;
 pub mod goal;
+pub mod handoffs;
 pub mod import;
 pub mod integrations;
 pub mod mcp_server;

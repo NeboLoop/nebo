@@ -24,6 +24,7 @@ pub fn spawn(
     state: AppState,
 ) {
     tokio::spawn(async move {
+        let booted = chrono::Utc::now().timestamp();
         // Initial delay to let the server boot
         tokio::time::sleep(Duration::from_secs(10)).await;
 
@@ -40,6 +41,14 @@ pub fn spawn(
         // Session wakes persisted but not delivered before a crash (session
         // wake rail, R1): redeliver on boot.
         crate::wake::recover_pending_wakes(&state).await;
+
+        // Hand-offs between employees whose runs died with the last process
+        // are ended as stopped, so none shows as running forever.
+        match state.store.stop_orphaned_handoffs(booted, chrono::Utc::now().timestamp()) {
+            Ok(0) => {}
+            Ok(n) => info!(count = n, "hand-offs left running by the last process recorded stopped"),
+            Err(e) => warn!(error = %e, "hand-offs left running by the last process not swept"),
+        }
 
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {

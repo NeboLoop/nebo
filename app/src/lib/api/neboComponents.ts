@@ -698,6 +698,62 @@ export interface HandleAvailableResponse {
 	available: boolean
 }
 
+export interface Handoff {
+	id: string
+	parentId?: string
+	kind: string
+	fromAgentId: string
+	toAgentId: string
+	teamId: string
+	senderSession: string
+	senderRunId?: string
+	receiverSession: string
+	receiverRunId?: string
+	ask: string
+	status: string
+	result: string
+	error: string
+	createdAt: number
+	startedAt?: number
+	finishedAt?: number
+}
+
+export interface HandoffDetail {
+	handoff: HandoffView
+	descendants: HandoffView[]
+}
+
+export interface HandoffList {
+	handoffs: HandoffView[]
+}
+
+export interface HandoffStopResponse {
+	stopped: boolean
+}
+
+export interface HandoffView {
+	id: string
+	parentId?: string
+	kind: string
+	fromAgentId: string
+	fromName: string
+	toAgentId: string
+	toName: string
+	teamId: string
+	senderSession: string
+	senderRunId?: string
+	senderLink: string
+	receiverSession: string
+	receiverLink: string
+	ask: string
+	status: string
+	result: string
+	error: string
+	createdAt: number
+	startedAt?: number
+	finishedAt?: number
+}
+
 export interface HealthResponse {
 	status: string
 	version: string

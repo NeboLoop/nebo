@@ -20,6 +20,12 @@ export function appKey(agentId: string, ctx?: string): string {
 	return `agent:${agentId}:app${ctx ? ':' + ctx : ''}`;
 }
 
+/** Session key of one of an employee's cases: `agent:<agentId>:case:<caseId>`
+ *  (an assignment is worked in one). */
+export function caseKey(agentId: string, caseId: string): string {
+	return `agent:${agentId}:case:${caseId}`;
+}
+
 /** Session key of a team's own thread: `team:<teamId>`. */
 export function teamKey(teamId: string): string {
 	return `team:${teamId}`;

@@ -15,6 +15,7 @@
   import type { ChatMessage } from '$lib/api/neboComponents';
   import { parseMarkdown } from '$lib/markdown';
   import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
+  import HandoffHeader from '$lib/components/handoffs/HandoffHeader.svelte';
 
   let {
     threadKey,
@@ -57,6 +58,7 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col">
+  <HandoffHeader sessionKey={threadKey} />
   <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4">
     {#if loading}
       <div class="flex justify-center py-16">

@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Wobei kannst du mir helfen?",
 		"roleSuggestion2": "Stell dich kurz vor",
 		"messageChannel": "Nachricht an #{channel}...",
-		"messagedCoworker": "Nachricht geschickt",
 		"disclaimer": "Nebo kann Fehler machen. Überprüfe wichtige Informationen.",
 		"uploadsKept": "Hochgeladene Dateien werden {days, plural, one {# Tag} other {# Tage}} aufbewahrt.",
 		"goodMorning": "Guten Morgen",
@@ -4221,6 +4220,22 @@
 			"running": "Arbeitet",
 			"scheduled": "Timer",
 			"watching": "Überwachungen"
+		}
+	},
+	"handoff": {
+		"fromAsk": "Von {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Unterhaltung von {name} öffnen",
+		"openReceiver": "Arbeit von {name} öffnen",
+		"doneWith": "Erledigt: {result}",
+		"failedWith": "Fehlgeschlagen: {error}",
+		"stop": "Stoppen",
+		"status": {
+			"queued": "In Warteschlange",
+			"running": "In Arbeit",
+			"done": "Erledigt",
+			"failed": "Fehlgeschlagen",
+			"stopped": "Gestoppt"
 		}
 	}
 }

@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Waar kun je me mee helpen?",
 		"roleSuggestion2": "Geef me een korte introductie",
 		"messageChannel": "Bericht #{channel}...",
-		"messagedCoworker": "Bericht gestuurd",
 		"disclaimer": "Nebo kan fouten maken. Controleer belangrijke informatie.",
 		"uploadsKept": "Uploads worden {days} dagen bewaard.",
 		"goodMorning": "Goedemorgen",
@@ -4221,6 +4220,22 @@
 			"running": "Aan het werk",
 			"scheduled": "Timers",
 			"watching": "Bewakingen"
+		}
+	},
+	"handoff": {
+		"fromAsk": "Van {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Gesprek van {name} openen",
+		"openReceiver": "Werk van {name} openen",
+		"doneWith": "Klaar: {result}",
+		"failedWith": "Mislukt: {error}",
+		"stop": "Stoppen",
+		"status": {
+			"queued": "In de wachtrij",
+			"running": "Bezig",
+			"done": "Klaar",
+			"failed": "Mislukt",
+			"stopped": "Gestopt"
 		}
 	}
 }

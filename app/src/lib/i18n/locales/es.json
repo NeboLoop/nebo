@@ -311,7 +311,6 @@
 		"roleSuggestion1": "¿En qué puedes ayudarme?",
 		"roleSuggestion2": "Dame una breve introducción",
 		"messageChannel": "Mensaje a #{channel}...",
-		"messagedCoworker": "Mensaje enviado",
 		"disclaimer": "Nebo puede cometer errores. Verifica la información importante.",
 		"uploadsKept": "{days, plural, one {Los archivos subidos se guardan durante # día.} other {Los archivos subidos se guardan durante # días.}}",
 		"goodMorning": "Buenos días",
@@ -4221,6 +4220,22 @@
 			"running": "Trabajando",
 			"scheduled": "Temporizadores",
 			"watching": "Vigilancias"
+		}
+	},
+	"handoff": {
+		"fromAsk": "De {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Abrir la conversación de {name}",
+		"openReceiver": "Abrir el trabajo de {name}",
+		"doneWith": "Hecho: {result}",
+		"failedWith": "Falló: {error}",
+		"stop": "Detener",
+		"status": {
+			"queued": "En cola",
+			"running": "Trabajando en ello",
+			"done": "Hecho",
+			"failed": "Falló",
+			"stopped": "Detenido"
 		}
 	}
 }

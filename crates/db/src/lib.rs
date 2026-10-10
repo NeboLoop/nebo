@@ -17,6 +17,7 @@ pub use queries::{AUTOMATION_KEY, is_automation_notice};
 pub use queries::InboundMailRow;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::{cron_ref, is_one_shot};
+pub use queries::{HANDOFF_ASK_CAP, HANDOFF_LIVE, HANDOFF_RESULT_CAP, Handoff, HandoffQuery, NewHandoff};
 pub use queries::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
 pub use queries::{PermissionActivityFilter, PermissionActivityRow, PermissionAskRow, PermissionSpend, ask_wait_key};
 pub use queries::{

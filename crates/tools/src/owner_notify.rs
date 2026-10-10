@@ -183,6 +183,11 @@ pub mod link {
         chat(agent_id, &conversation(store, session_key))
     }
 
+    /// A team's own thread.
+    pub fn team(team_id: &str) -> String {
+        format!("/teams/{}", urlencoding::encode(team_id))
+    }
+
     /// One run of an employee's work.
     pub fn run(agent_id: &str, run_id: &str) -> String {
         format!("/{agent_id}/runs/{}", urlencoding::encode(run_id))
@@ -191,6 +196,11 @@ pub mod link {
     /// An employee's cases.
     pub fn cases(agent_id: &str) -> String {
         format!("/{agent_id}/cases")
+    }
+
+    /// One of an employee's cases, opened in its cases.
+    pub fn case(agent_id: &str, case_id: &str) -> String {
+        format!("/{agent_id}/cases?case={}", urlencoding::encode(case_id))
     }
 
     /// An Inbox item opened as itself in the Inbox's reader: a proposal the

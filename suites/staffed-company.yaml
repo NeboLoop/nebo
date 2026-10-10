@@ -99,3 +99,5 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc85-an-owner-message-sent-while-busy-is-named-from-shown-to-taken-in.yaml
   - ../fixtures/staffed-company/conversation/sc86-an-in-app-card-is-skipped-by-the-owners-spoken-skip.yaml
   - ../fixtures/staffed-company/conversation/sc93-every-file-a-turn-hands-over-rides-its-final-reply.yaml
+  - ../fixtures/staffed-company/conversation/sc110-a-handoff-chain-traces-as-one-tree.yaml
+  - ../fixtures/staffed-company/conversation/sc111-a-stopped-handoff-stays-on-record-as-stopped.yaml

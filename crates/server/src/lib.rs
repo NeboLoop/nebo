@@ -18,6 +18,7 @@ pub mod deps;
 mod default_artifacts;
 pub mod entity_config;
 pub mod handlers;
+pub mod handoff;
 mod engine;
 mod heartbeat;
 mod workforce_reporter;

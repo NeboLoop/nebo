@@ -1,0 +1,9 @@
+id: sc110-a-handoff-chain-traces-as-one-tree
+name: "SC110 — A hand-off chain traces as one tree"
+description: |
+  Work passed A -> B -> C is recorded as hand-offs: who sent what to whom, running while the
+  receiver works, done with what came back; the hand-off B makes while working A's is nested
+  under it.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_handoff_chain_traces_as_one_tree
+conversation: []

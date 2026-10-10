@@ -311,7 +311,6 @@
 		"roleSuggestion1": "무엇을 도와드릴까요?",
 		"roleSuggestion2": "간단한 자기소개를 해줘",
 		"messageChannel": "#{channel} 메시지...",
-		"messagedCoworker": "메시지 보냄",
 		"disclaimer": "Nebo는 실수할 수 있습니다. 중요한 정보를 확인하세요.",
 		"uploadsKept": "업로드한 파일은 {days}일 동안 보관됩니다.",
 		"goodMorning": "좋은 아침이에요",
@@ -4221,6 +4220,22 @@
 			"running": "작업 중",
 			"scheduled": "타이머",
 			"watching": "감시"
+		}
+	},
+	"handoff": {
+		"fromAsk": "{name}님으로부터: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name}님의 대화 열기",
+		"openReceiver": "{name}님의 작업 열기",
+		"doneWith": "완료: {result}",
+		"failedWith": "실패: {error}",
+		"stop": "중지",
+		"status": {
+			"queued": "대기 중",
+			"running": "작업 중",
+			"done": "완료",
+			"failed": "실패",
+			"stopped": "중지됨"
 		}
 	}
 }

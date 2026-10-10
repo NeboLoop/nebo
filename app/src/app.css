@@ -919,3 +919,40 @@
 .bg-notice-failed {
   @apply text-error;
 }
+
+/* Hand-offs between employees: the line in the sender's chat ("→ Name:
+   ask" with its status beneath) and the header of the receiving thread
+   ("From Name: ask", back to where it came from). A failure stays visible. */
+.handoff-header {
+  @apply shrink-0 flex flex-col gap-0.5 border-b border-base-300 px-5 py-2.5 text-sm;
+}
+.handoff-header-line {
+  @apply flex items-center gap-1.5 min-w-0 text-base-content/70;
+}
+.handoff-header-from {
+  @apply truncate text-base-content/80 no-underline hover:text-base-content;
+}
+.handoff-status {
+  @apply truncate text-xs text-base-content/50;
+}
+.handoff-status-failed {
+  @apply text-error;
+}
+.handoff-status-stopped {
+  @apply text-warning;
+}
+.handoff-line {
+  @apply flex flex-col min-w-0 my-1.5 text-xs no-underline;
+}
+.handoff-line-link {
+  @apply cursor-pointer;
+}
+.handoff-line-ask {
+  @apply min-w-0 truncate font-medium text-base-content/80;
+}
+.handoff-line-link:hover .handoff-line-ask {
+  @apply text-base-content;
+}
+.handoff-line-status {
+  @apply mt-0.5 flex min-w-0 items-baseline gap-1.5 ps-1;
+}
