@@ -194,6 +194,34 @@ impl OsTool {
         }
     }
 
+    /// The owner's own app a call reads or drives: his mail, calendar,
+    /// reminders and contacts (their data is his), Shortcuts (a shortcut can
+    /// do anything his apps can), and an app it opens, brings forward, hides
+    /// or quits. Reads included: what is on his calendar is his. The one
+    /// permission check asks the owner for each, in every mode, until he
+    /// allows it always for that employee (`CallEffects::reaches_owner`), so
+    /// no schedule, workflow or helper runs it by default (bake-off
+    /// 2026-10-10: a test employee's workflow read the owner's Calendar and
+    /// tried Mail and Messages). Listing what is running is not his app.
+    pub(crate) fn owner_app(input: &serde_json::Value) -> Option<types::permissions::OwnerReach> {
+        use types::permissions::OwnerReach;
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let named = |app: &str| Some(OwnerReach::App { app: Some(app.to_string()) });
+        match Self::resolved_resource(input) {
+            "mail" => named("Mail"),
+            "calendar" => named("Calendar"),
+            "reminders" => named("Reminders"),
+            "contacts" => named("Contacts"),
+            "shortcut" if action == "run" => named("Shortcuts"),
+            "app" if matches!(action, "launch" | "activate" | "hide" | "quit" | "quit_all") => {
+                Some(OwnerReach::App {
+                    app: input.get("app").and_then(|v| v.as_str()).filter(|a| !a.trim().is_empty()).map(str::to_string),
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Actions one resource owns by name that another resource also uses,
     /// settled by the parameters the call carries. Each arm is a misroute the
     /// 2026-09-05 audit found live: a window `move` with `app` went to the
@@ -770,7 +798,7 @@ impl DynTool for OsTool {
             return CallEffects::none();
         }
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        match (OsTool::resolved_resource(input), action) {
+        let mut effects = match (OsTool::resolved_resource(input), action) {
             ("mail", "send") => CallEffects {
                 recipients: input
                     .get("to")
@@ -781,7 +809,9 @@ impl DynTool for OsTool {
                 ..CallEffects::default()
             },
             _ => CallEffects::unknown(),
-        }
+        };
+        effects.reaches_owner = Self::owner_app(input);
+        effects
     }
 
     fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {

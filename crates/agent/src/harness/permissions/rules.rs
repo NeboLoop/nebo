@@ -153,8 +153,16 @@ impl RuleSet {
     /// that command himself, on the Permissions page or by answering "Allow
     /// always". An allow of the whole shell, a capability or one a package
     /// wrote never covers them, and a call whose command can't be read
-    /// isn't covered.
+    /// isn't covered. A call that is not a command (the `os` tool reading
+    /// his calendar, the `message` tool on his Messages) is covered by an
+    /// allow he wrote for that very call's key (`calendar_event_list`),
+    /// never by one for the whole tool, a family or a capability.
     pub fn reach_allowed(&self, t: &Target) -> bool {
+        if !matches!(t.field, Some(RuleField::CommandPrefix(_))) {
+            return self.allowed_by(t, |r| {
+                r.key == RuleKey::Tool(t.key.clone()) && matches!(r.source, RuleSource::Owner | RuleSource::AllowAlways { .. })
+            });
+        }
         let reaching: Vec<Subcommand> =
             pieces(t).into_iter().flatten().filter(|s| tools::policy::reach_of(s).is_some()).collect();
         !reaching.is_empty() && reaching.iter().all(|s| self.reach_piece_allowed(t, s))
