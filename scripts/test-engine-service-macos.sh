@@ -9,14 +9,16 @@
 # verb (`nebo --engine-service install`), then checks what the spec's
 # macOS column asks (neboloop docs/prd/desktop-engine-service.md §15):
 # register → serving; ProcessType Interactive; no sleep assertion; kill -9
-# → back; a stall → exit 70 → back; Quit → stays down; kickstart → back; a
-# held port → exit 75 → takes over; unregister → nothing left.
+# → back; a stall → exit 70 → back; Quit → stays down; kickstart → back; an
+# update swapped and health-gated, a bad one rolled back; a held port → exit
+# 75 → takes over; unregister → nothing left.
 #
 #   NEBO_BIN=target/debug/nebo scripts/test-engine-service-macos.sh
 #
 # Env: NEBO_BIN (required), SIGN_IDENTITY (Developer ID; SMAppService will
 # not register an unsigned bundle), PORT (37895), SKIP_STALL=1 (skips the
-# ~4 min stall check).
+# ~4 min stall check), SKIP_UPDATE=1 (skips the update checks, which run
+# `cargo test -p nebo-updater` against the registered agent).
 set -uo pipefail
 
 NEBO_BIN=${NEBO_BIN:?set NEBO_BIN to a built nebo (the desktop executable)}
@@ -149,6 +151,25 @@ if down && [ -z "$(engine_pid)" ]; then pass "Quit: not started again in 60 s (l
 # ── kickstart → back ────────────────────────────────────────────────────
 verb kickstart >/dev/null
 wait_for 60 serving && pass "kickstart: serving" || fail "kickstart: not serving"
+
+# ── An app update under launchd: swap, start, health gate, rollback ─────
+if [ "${SKIP_UPDATE:-}" != 1 ]; then
+  # The same app, its Info.plist naming a version its engine never reports.
+  NEVER="$WORK/never/NeboEngineTest.app"
+  mkdir -p "$WORK/never" && cp -R "$APP" "$NEVER"
+  $PB -c "Set :CFBundleShortVersionString 0.0.0-never" "$NEVER/Contents/Info.plist"
+  codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" --options runtime \
+    --entitlements "$ROOT/assets/macos/nebo.entitlements" "$NEVER" >/dev/null 2>&1
+  if (cd "$ROOT" && NEBO_TEST_APP="$APP" NEBO_TEST_APP_NEVER="$NEVER" NEBO_TEST_LABEL="$LABEL" NEBO_TEST_PORT="$PORT" NEBO_TEST_KEY="$KEY" \
+      NEBO_TEST_VERSION="$VERSION" NEBO_TEST_HOME="$HOME_DIR" \
+      cargo test -p nebo-updater --lib -- --ignored --exact apply::tests::macos_service_update_under_launchd) \
+      > "$WORK/update-test.log" 2>&1 && grep -q 'test result: ok. 1 passed' "$WORK/update-test.log"; then
+    pass "update: swapped + gated; a never-healthy and an unsigned update rolled back"
+  else
+    fail "update: $(tail -20 "$WORK/update-test.log")"
+  fi
+  wait_for 60 serving && pass "serving after the updates" || fail "not serving after the updates"
+fi
 
 # ── A held port → exit 75 → takes over once free ────────────────────────
 quit_engine; wait_for 15 down

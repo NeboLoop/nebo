@@ -122,7 +122,7 @@ pub fn run_engine() -> ! {
     config::ensure_data_dir().expect("failed to create data directory");
 
     let supervisor = server::process::supervisor();
-    tracing::info!(pid = std::process::id(), port = cfg.port, supervisor = ?supervisor, "starting the Nebo engine");
+    tracing::info!(pid = std::process::id(), port = cfg.port, supervisor = ?supervisor, exe = ?std::env::current_exe().ok(), "starting the Nebo engine");
     if supervisor.as_deref() == Some(SHELL) {
         hold_lifeline();
     }

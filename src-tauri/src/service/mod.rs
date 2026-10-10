@@ -421,6 +421,15 @@ mod tests {
         assert!(!is_transient(Path::new("/Applications/Nebo.app/Contents/MacOS/nebo")));
     }
 
+    /// The update helper's health gate compares the new app's Info.plist
+    /// version (tauri.conf's) with the one its engine reports (Cargo's): a
+    /// difference would roll back every update.
+    #[test]
+    fn the_app_and_the_engine_carry_one_version() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
+    }
+
     #[test]
     fn the_bundled_plist_is_the_rendered_one() {
         let bundled = include_str!("../../LaunchAgents/dev.neboai.nebo.engine.plist");
