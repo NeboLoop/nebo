@@ -7,6 +7,10 @@
 //! engine in a scratch folder, and the fake engine answers `/health` on its
 //! own port as one version. Windows only (the house runner, stadium-win).
 //!
+//! The house runner is a service account (NETWORK SERVICE), so a task there
+//! runs in a session of its own; the owner's runs in their logon session.
+//! What the helper does is the same either way.
+//!
 //! Run:
 //!   cargo test -p nebo-updater --test windows_update_helper
 #![cfg(windows)]
@@ -16,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nebo_updater::{WindowsHelper, build_windows_helper};
+use nebo_updater::{WindowsHelper, build_windows_helper, start_helper_task};
 
 struct Scratch {
     dir: PathBuf,
@@ -89,6 +93,7 @@ while ($true) {{
         let pid = gone.id();
         let _ = gone.wait_with_output();
         WindowsHelper {
+            self_task: String::new(),
             pid,
             setup: setup.display().to_string(),
             previous: previous.display().to_string(),
@@ -193,4 +198,34 @@ fn without_the_gate_a_failed_installer_leaves_the_marker_and_nebo_starts() {
         std::thread::sleep(Duration::from_millis(250));
     }
     assert!(s.path("engine.pid").exists(), "the app was started again");
+}
+
+/// An engine the Windows task runs gets its helper as a task of its own:
+/// the helper finishes there (installer, start, gate) after the process
+/// that started it is gone, then deletes its task.
+#[test]
+fn the_helper_runs_to_the_end_as_its_own_task_and_removes_it() {
+    let s = Scratch::new("task");
+    let setup = s.installer("new", Some("2.0.0"), 0);
+    let previous = s.path("data/updates/previous-setup.cmd");
+    let task = format!(r"\NeboAI\Nebo Update Test {}", std::process::id());
+    let mut h = s.helper(&setup, &previous, 60);
+    h.self_task = task.clone();
+    start_helper_task(&task, &build_windows_helper(&h)).expect("the helper task starts");
+    let deadline = Instant::now() + Duration::from_secs(150);
+    while !s.log().contains("update complete") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let log = s.log();
+    // Whatever happened, no test task is left behind.
+    let gone = Instant::now() + Duration::from_secs(20);
+    while command::task::query(&task).is_some() && Instant::now() < gone {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let left = command::task::query(&task).is_some();
+    let _ = command::task::delete(&task);
+    assert!(log.contains("engine answers as 2.0.0"), "log:\n{log}");
+    assert!(log.contains("update complete"), "log:\n{log}");
+    assert!(previous.exists());
+    assert!(!left, "the helper deletes its own task");
 }

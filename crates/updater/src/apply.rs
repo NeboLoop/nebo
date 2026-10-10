@@ -375,6 +375,7 @@ fn apply_app_bundle(setup_path: &Path, data_dir: &Path) -> Result<(), UpdateErro
     let gated = std::env::var("NEBO_SUPERVISED").is_ok_and(|s| s == "taskscheduler");
     let previous = data_dir.join("updates").join("previous-setup.exe");
     let script = build_windows_helper(&WindowsHelper {
+        self_task: if gated { UPDATE_TASK.to_string() } else { String::new() },
         pid: std::process::id(),
         setup: setup.to_string_lossy().into_owned(),
         previous: previous.to_string_lossy().into_owned(),
@@ -387,9 +388,50 @@ fn apply_app_bundle(setup_path: &Path, data_dir: &Path) -> Result<(), UpdateErro
         log: log_path(data_dir).to_string_lossy().into_owned(),
     });
     run_pre_apply();
+    // An engine the task runs ends with its task, and Task Scheduler takes
+    // what the task's processes started with it (seen on the house runner:
+    // children die when the task ends, breakaway or not). So that engine's
+    // helper runs as a task of its own.
+    if gated {
+        match start_helper_task(UPDATE_TASK, &script) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => tracing::warn!(error = %e, "update helper task did not start; starting the helper directly"),
+        }
+    }
     spawn_detached_powershell(&script)?;
 
     std::process::exit(0);
+}
+
+/// The update helper's own task, for an engine the Windows task runs.
+#[cfg(target_os = "windows")]
+const UPDATE_TASK: &str = r"\NeboAI\Nebo Update";
+
+/// The helper as `powershell -EncodedCommand`'s argument: UTF-16, base64.
+#[cfg(target_os = "windows")]
+fn encode_powershell(script: &str) -> String {
+    use base64::Engine;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// Run the helper as the one-shot task `name` in the user's session, apart
+/// from the task the engine ran in. `conhost --headless` gives PowerShell a
+/// console no one sees: a task's console program would open a window.
+#[cfg(target_os = "windows")]
+pub fn start_helper_task(name: &str, script: &str) -> Result<(), UpdateError> {
+    let conhost = std::path::Path::new(&std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
+        .join("System32")
+        .join("conhost.exe");
+    let arguments = format!("--headless powershell.exe -NoProfile -NonInteractive -EncodedCommand {}", encode_powershell(script));
+    let task = command::task::Task {
+        description: "Installs a Nebo update, then removes itself.",
+        command: &conhost.to_string_lossy(),
+        arguments: &arguments,
+        at_logon: false,
+    };
+    command::task::register(name, &task).map_err(UpdateError::Other)?;
+    command::task::run(name).map_err(UpdateError::Other)
 }
 
 /// The engine's Windows task (`src-tauri/src/service/windows.rs`).
@@ -399,6 +441,9 @@ const WINDOWS_TASK: &str = r"\NeboAI\Nebo Engine";
 /// What the Windows update helper works on.
 #[cfg(any(target_os = "windows", test))]
 pub struct WindowsHelper {
+    /// The helper's own task, deleted when it is done (empty: started
+    /// directly).
+    pub self_task: String,
     /// The engine process to wait for.
     pub pid: u32,
     /// The new version's installer.
@@ -446,6 +491,10 @@ function Healthy($want) {
   }
   return $false
 }
+function Done($code) {
+  if ('__SELF_TASK__' -ne '') { schtasks /Delete /TN '__SELF_TASK__' /F 2>&1 | Out-Null }
+  exit $code
+}
 function Marker($json) { New-Item -ItemType Directory -Force (Split-Path '__MARKER__') | Out-Null; Set-Content -Encoding ascii -NoNewline -Path '__MARKER__' -Value $json }
 
 Log "waiting for pid __PID__ to exit"
@@ -458,7 +507,7 @@ if (__GATE__ -eq 0) {
   Start-Nebo
   Remove-Item -Force '__SETUP__' -ErrorAction SilentlyContinue
   Log "update done (no health gate)"
-  exit 0
+  Done 0
 }
 if ($code -eq 0) {
   Start-Nebo
@@ -466,7 +515,7 @@ if ($code -eq 0) {
     New-Item -ItemType Directory -Force (Split-Path '__PREVIOUS__') | Out-Null
     Move-Item -Force '__SETUP__' '__PREVIOUS__'
     Log "update complete"
-    exit 0
+    Done 0
   }
   Log "FAILED: the new version did not answer within __GATE__ s"
 }
@@ -483,11 +532,12 @@ if (Test-Path '__PREVIOUS__') {
   Marker '__INSTALL_FAILED_JSON__'
 }
 Remove-Item -Force '__SETUP__' -ErrorAction SilentlyContinue
-exit 1
+Done 1
 "#;
     // Inside single-quoted PowerShell strings a quote is doubled.
     let q = |s: &str| s.replace('\'', "''");
     TEMPLATE
+        .replace("__SELF_TASK__", &q(&h.self_task))
         .replace("__PID__", &h.pid.to_string())
         .replace("__SETUP__", &q(&h.setup))
         .replace("__PREVIOUS__", &q(&h.previous))
@@ -506,11 +556,8 @@ exit 1
 /// hidden console (`Console::Detached`).
 #[cfg(target_os = "windows")]
 fn spawn_detached_powershell(script: &str) -> Result<(), UpdateError> {
-    use base64::Engine;
-    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
     command::new::<std::process::Command>("powershell", command::Console::Detached)
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encode_powershell(script)])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -788,6 +835,7 @@ mod tests {
 
     fn windows_helper(gate_secs: u64) -> String {
         build_windows_helper(&WindowsHelper {
+            self_task: r"\NeboAI\Nebo Update".into(),
             pid: 99,
             setup: r"C:\Temp\Nebo-update-x-setup.exe".into(),
             previous: r"C:\Users\O'Brien\AppData\Roaming\Nebo\updates\previous-setup.exe".into(),
@@ -813,6 +861,7 @@ mod tests {
         // A quote in a path is doubled inside PowerShell's single quotes.
         assert!(script.contains(r"'C:\Users\O''Brien\AppData\Local\Nebo\nebo.exe'"));
         assert!(script.contains("rolled back to the previous version"));
+        assert!(script.contains(r"schtasks /Delete /TN '\NeboAI\Nebo Update' /F"));
     }
 
     #[test]
