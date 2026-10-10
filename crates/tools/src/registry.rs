@@ -382,6 +382,11 @@ enum Invalid {
 }
 
 /// Registry manages available tools.
+/// Every registered tool's definition by name, shared with what reads them
+/// outside the registry (the employee tools check a builder's workflow
+/// steps against them).
+pub type ToolDefinitions = Arc<RwLock<HashMap<String, ToolDefinition>>>;
+
 pub struct Registry {
     // Arc, not Box: execute() clones the handle and drops the map lock BEFORE
     // awaiting the tool (snapshot-then-release). A Box'd map forced holding
@@ -391,7 +396,7 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn DynTool>>>>,
     /// Cached tool definitions (description + schema) computed at registration time.
     /// Avoids regenerating descriptions and JSON schemas on every LLM iteration.
-    def_cache: Arc<RwLock<HashMap<String, ToolDefinition>>>,
+    def_cache: ToolDefinitions,
     /// Each tool's compiled input schema, built with its definition.
     validators: Arc<RwLock<HashMap<String, Arc<jsonschema::Validator>>>>,
     /// Deferred tools (`DynTool::should_defer`): listed by name until
@@ -1439,7 +1444,8 @@ impl Registry {
                     .with_coworker_rail(self.coworker_rail.clone())
                     .with_notify_fn(self.notify_fn.clone())
                     .with_plugin_runner(self.plugin_runner.clone())
-                    .with_live_triggers(self.live_triggers.clone());
+                    .with_live_triggers(self.live_triggers.clone())
+                    .with_tool_definitions(self.def_cache.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }

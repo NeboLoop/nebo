@@ -55,6 +55,12 @@ const KEPT_CONFIDENTIAL: &str = "Local memory was not touched: this employee kee
      confidential, and local memory changes only when the owner asks for something to be kept for \
      everyone. This conversation's confidential memory was used instead.";
 
+/// What a workflow run's write to local memory is told: it went to the
+/// employee's own memory, which is where the employee's later runs read
+/// their state.
+const KEPT_FOR_LATER_RUNS: &str = "Local memory was not touched: it changes only at the owner's own request. \
+     This was kept in this employee's own memory instead, where its later runs recall it.";
+
 /// A scope bound to one conversation, read back from its `user_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConversationScope<'a> {
@@ -243,7 +249,8 @@ impl Memory {
     /// read by every employee on this Nebo, so only the owner's own request
     /// (his message in his own chat or his team thread, or his own call)
     /// puts something there — an unattended run, a caller or a coworker
-    /// cannot publish to everyone.
+    /// cannot publish to everyone. A workflow run's write is kept in the
+    /// employee's own memory instead: that is its state between runs.
     /// The refusal says to tell the owner, never to save it elsewhere: told
     /// to save it privately, the owner's assistant did so on his call and
     /// told him Nebo blocks shared memory (live 2026-09-28).
@@ -264,6 +271,13 @@ impl Memory {
             && !(ctx.owner_request && ctx.owner_shares)
         {
             return Ok((&ctx.user_id, Some(KEPT_CONFIDENTIAL)));
+        }
+        // A workflow run keeps its state for the employee's next run: it
+        // writes the employee's own memory, and says so (bake-off
+        // 2026-10-10: refused here, steps hunted for state in made-up files
+        // and Nebo's own database).
+        if !ctx.owner_request && ctx.origin == crate::origin::Origin::Workflow {
+            return Ok((&ctx.user_id, Some(KEPT_FOR_LATER_RUNS)));
         }
         if !ctx.owner_request {
             return Err(ToolResult::error(
@@ -1347,6 +1361,29 @@ mod tests {
         assert!(kept.is_error, "{}", kept.content);
         let gone = rig.forget.execute_dyn(&employee("o", "a", true), json!({"key": "team/standup", "scope": "local"})).await;
         assert!(gone.content.starts_with("Forgot 1") && gone.content.contains("local memory"), "{}", gone.content);
+    }
+
+    /// Bake-off 2026-10-10 (B7): a workflow step that saved its state with
+    /// `scope: "local"` was refused, and later runs hunted for the state in
+    /// made-up files and Nebo's database. A workflow run's write is kept in
+    /// the employee's own memory, says so, and its next run recalls it;
+    /// local memory is untouched.
+    #[tokio::test]
+    async fn a_workflow_run_keeps_its_state_in_the_employees_memory() {
+        let rig = Rig::new(false);
+        let run = ToolContext { origin: crate::origin::Origin::Workflow, ..employee("o", "a", false) };
+        let saved = rig
+            .remember
+            .execute_dyn(&run, json!({"key": "watchlist/flagged", "value": "Flagged Hilton and Loews as stalled on 2026-10-09.", "scope": "local"}))
+            .await;
+        assert!(!saved.is_error, "{}", saved.content);
+        assert!(saved.content.contains("kept in this employee's own memory"), "{}", saved.content);
+        assert!(rig.store.get_memory_by_key_and_user(DEFAULT_NAMESPACE, "watchlist/flagged", "o:agent:a").unwrap().is_some());
+        assert!(rig.store.get_memory_by_key_and_user(DEFAULT_NAMESPACE, "watchlist/flagged", "o").unwrap().is_none(), "local memory untouched");
+
+        let next_run = ToolContext { origin: crate::origin::Origin::Workflow, ..employee("o", "a", false) };
+        let recalled = rig.recall.execute_dyn(&next_run, json!({"query": "watchlist/flagged"})).await;
+        assert!(recalled.content.contains("Hilton and Loews"), "{}", recalled.content);
     }
 
     /// Nothing the memory tools say names a global memory: this Nebo's
