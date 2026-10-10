@@ -28,7 +28,9 @@ use db;
 /// owner-authenticated it, so an app UI opened at /t/<botID>/apps/… may invoke
 /// without holding the sidecar's NEBO_APP_TOKEN. A drive-by page can't forge
 /// the stamp — the secret never leaves this process, and the tunnel strips
-/// inbound copies.
+/// inbound copies. On this computer the owner's browser proves itself the
+/// same way, with its session (`signed_in_app_page`): the app's own page in
+/// a browser window opened from Nebo's web UI.
 /// Returns 401 if the token is missing/invalid, or if the app has no running lifecycle.
 async fn validate_app_token(
     state: &AppState,
@@ -38,7 +40,11 @@ async fn validate_app_token(
     if crate::middleware::came_through_tunnel(headers) {
         return Ok(());
     }
-    if desktop_window_reaches(headers, agent_id, config::read_install_key().as_deref()) {
+    let install_key = config::read_install_key();
+    if desktop_window_reaches(headers, agent_id, install_key.as_deref()) {
+        return Ok(());
+    }
+    if signed_in_app_page(headers, agent_id, install_key.as_deref()) {
         return Ok(());
     }
     // The app's page as Nebo's headless browser opened it for a screenshot:
@@ -82,6 +88,33 @@ async fn validate_app_token(
 /// (`ws::from_its_desktop_window`). A window reaches only its own app.
 fn desktop_window_reaches(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
     bearer_is(headers, install_key) && crate::handlers::ws::from_its_desktop_window(headers, agent_id)
+}
+
+/// The app's own page in the owner's signed-in browser reaching its own
+/// app's routes: Nebo's web UI opens an app in a browser window at
+/// `/apps/<id>/ui/` on this server (`launcher.ts`), and that page holds the
+/// owner's session cookie (`local_access`), as a page through the tunnel
+/// holds the hub's sign-in. The request must carry the session, be
+/// same-origin (`Sec-Fetch-Site`, so no other site on this computer rides
+/// the cookie), and come from this app's page (its Referer, at
+/// `/apps/<id>/ui/`): one app's page never reaches another app's data, and
+/// a request naming no app page gets nothing.
+fn signed_in_app_page(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
+    let Some(key) = install_key.filter(|k| !k.is_empty()) else { return false };
+    if agent_id.is_empty() || !crate::middleware::carries_session(headers, &crate::local_access::session_for(key)) {
+        return false;
+    }
+    let same_origin = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("same-origin");
+    let page_app = headers
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|r| url::Url::parse(r).ok())
+        .and_then(|u| {
+            let rest = u.path().strip_prefix("/apps/")?;
+            let (id, ui) = rest.split_once('/')?;
+            (ui == "ui" || ui.starts_with("ui/")).then(|| urlencoding::decode(id).map(|c| c.into_owned()).unwrap_or_else(|_| id.to_string()))
+        });
+    same_origin && page_app.as_deref() == Some(agent_id)
 }
 
 /// Check that the app has `network:{domain}` permission for the target URL.
@@ -2229,6 +2262,59 @@ mod developer_mode_tests {
         let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
         assert_eq!(tools::app_data::decode(&raw), contact);
         assert_eq!(tools::app_data::read(&store, "notes", "contact:john").unwrap(), None);
+    }
+
+    /// The app's page in the owner's signed-in browser (Open App from the
+    /// web UI on this computer) reaches its own app's store with the session
+    /// cookie; another app's page, a page that is not an app's, another
+    /// site, a wrong or missing session, and no install key are refused.
+    #[test]
+    fn a_signed_in_browser_reaches_only_the_app_whose_page_it_is() {
+        let session = crate::local_access::session_for("key-1");
+        let page = |cookie: Option<&str>, site: Option<&str>, referer: Option<&str>| {
+            let mut h = axum::http::HeaderMap::new();
+            if let Some(c) = cookie {
+                h.insert(header::COOKIE, c.parse().unwrap());
+            }
+            if let Some(s) = site {
+                h.insert("sec-fetch-site", s.parse().unwrap());
+            }
+            if let Some(r) = referer {
+                h.insert(header::REFERER, r.parse().unwrap());
+            }
+            h
+        };
+        let cookie = format!("theme=dark; nebo_session={session}");
+        let own = "http://localhost:27895/apps/crm/ui/index.html?thread=t1&client=c1";
+        let h = page(Some(&cookie), Some("same-origin"), Some(own));
+        assert!(signed_in_app_page(&h, "crm", Some("key-1")));
+        assert!(
+            signed_in_app_page(&page(Some(&cookie), Some("same-origin"), Some("http://localhost:27895/apps/crm/ui/")), "crm", Some("key-1")),
+            "the page's root"
+        );
+        assert!(!signed_in_app_page(&h, "notes", Some("key-1")), "another app's routes");
+        assert!(!signed_in_app_page(&h, "crm", Some("key-2")), "a session from another key");
+        assert!(!signed_in_app_page(&h, "crm", None), "no key on this install");
+        assert!(!signed_in_app_page(&h, "", Some("key-1")));
+        assert!(!signed_in_app_page(&page(None, Some("same-origin"), Some(own)), "crm", Some("key-1")), "no session");
+        assert!(
+            !signed_in_app_page(&page(Some("nebo_session=forged"), Some("same-origin"), Some(own)), "crm", Some("key-1")),
+            "a forged session"
+        );
+        for site in [Some("same-site"), Some("cross-site"), Some("none"), None] {
+            assert!(!signed_in_app_page(&page(Some(&cookie), site, Some(own)), "crm", Some("key-1")), "{site:?}");
+        }
+        for referer in [
+            None,
+            Some("http://localhost:27895/"),
+            Some("http://localhost:27895/agents/crm/chat"),
+            Some("http://localhost:27895/apps/notes/ui/index.html"),
+            Some("http://localhost:27895/apps/crm/api/x"),
+            Some("http://localhost:27895/apps/crmx/ui/index.html"),
+            Some("http://localhost:27895/files/apps/crm/ui/index.html"),
+        ] {
+            assert!(!signed_in_app_page(&page(Some(&cookie), Some("same-origin"), referer), "crm", Some("key-1")), "{referer:?}");
+        }
     }
 
     /// `nebo.decide` (POST /apps/{id}/janus/decide) is admitted like
