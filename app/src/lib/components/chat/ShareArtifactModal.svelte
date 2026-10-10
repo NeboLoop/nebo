@@ -2,7 +2,8 @@
   Share Artifact Modal — shares a Work-panel file by link
   (https://neboai.com/s/<token>): who can open it (anyone with the link,
   a password, or only you), an optional expiry, whether the link follows the
-  file or keeps this version, copy, and turn off. The bot
+  file or keeps this version, publishing a web page as a site at
+  <address>.nebo.page, copy, and turn off. The bot
   uploads the file through the one upload path and the hub keeps the link;
   see $lib/chat/shareLink.
 -->
@@ -10,7 +11,7 @@
 <script lang="ts">
   import { t, locale } from 'svelte-i18n';
   import type { FileShare } from '$lib/api/neboComponents';
-  import { expiresAtFor, loadShareLink, saveShareLink, turnOffShareLink, type ShareAccess, type ShareExpiry, type ShareState } from '$lib/chat/shareLink';
+  import { expiresAtFor, loadShareLink, saveShareLink, siteAddressFor, turnOffShareLink, type ShareAccess, type ShareExpiry, type ShareState } from '$lib/chat/shareLink';
   import { addToast } from '$lib/stores/toast';
 
   interface Props {
@@ -30,6 +31,13 @@
   let expiry = $state<ShareExpiry>('never');
   let live = $state(true);
   let outdated = $state(false);
+  let publish = $state(false);
+  let address = $state('');
+
+  // A web page can also be published as a site of its own, at
+  // <address>.nebo.page (the hub's sites domain).
+  const SITES_DOMAIN = '.nebo.page';
+  const isPage = $derived(/\.html?$/i.test(title) || /\.html?$/i.test(url));
 
   $effect(() => {
     if (show) load();
@@ -43,6 +51,8 @@
     password = '';
     expiry = s?.expiresAt ? 'keep' : 'never';
     live = s?.live ?? true;
+    publish = !!s?.address;
+    address = s?.address || siteAddressFor(title);
   }
 
   async function load() {
@@ -79,6 +89,8 @@
       access !== share.access ||
       password !== '' ||
       live !== share.live ||
+      publish !== !!share.address ||
+      (publish && address !== share.address) ||
       expiresAtFor(expiry, share.expiresAt) !== share.expiresAt
   );
 
@@ -87,7 +99,8 @@
     saving = true;
     try {
       const created = !share;
-      adopt(await saveShareLink(url, access, password, expiresAtFor(expiry, share?.expiresAt ?? ''), live, newVersion));
+      const site = publish ? address.trim().toLowerCase() : share?.address ? '' : undefined;
+      adopt(await saveShareLink(url, access, password, expiresAtFor(expiry, share?.expiresAt ?? ''), live, newVersion, site));
       if (created) await copy();
     } catch (e) {
       addToast(e instanceof Error ? e.message : $t('chat.shareFailed'), 'error');
@@ -96,10 +109,10 @@
     }
   }
 
-  async function copy() {
-    if (!share) return;
+  async function copy(text = share?.url) {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(share.url);
+      await navigator.clipboard.writeText(text);
       addToast($t('chat.shareCopied'), 'success');
     } catch {
       addToast($t('chat.copyFailed'), 'error');
@@ -143,7 +156,7 @@
           {#if share}
             <div class="flex items-center gap-2">
               <input type="text" class="input input-sm input-bordered flex-1 min-w-0 text-sm" readonly value={share.url} aria-label={share.url} onfocus={(e) => e.currentTarget.select()} />
-              <button class="btn btn-sm btn-primary" onclick={copy}>{$t('chat.shareCopy')}</button>
+              <button class="btn btn-sm btn-primary" onclick={() => copy()}>{$t('chat.shareCopy')}</button>
             </div>
           {/if}
 
@@ -193,6 +206,30 @@
               </div>
             {/if}
           </fieldset>
+
+          {#if isPage}
+            <fieldset class="flex flex-col gap-2">
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary mt-0.5" bind:checked={publish} />
+                <span class="flex flex-col">
+                  <span class="text-sm font-medium">{$t('chat.sharePublish')}</span>
+                  <span class="text-xs text-base-content/60">{$t('chat.sharePublishHint')}</span>
+                </span>
+              </label>
+              {#if publish}
+                <label class="input input-sm input-bordered flex items-center gap-1 text-sm">
+                  <input type="text" class="grow min-w-0" spellcheck="false" autocomplete="off" aria-label={$t('chat.sharePublishAddress')} bind:value={address} />
+                  <span class="text-base-content/50">{SITES_DOMAIN}</span>
+                </label>
+                {#if share?.siteUrl && share.address === address}
+                  <div class="flex items-center gap-2">
+                    <a class="link text-sm flex-1 truncate" href={share.siteUrl} target="_blank" rel="noopener">{share.siteUrl}</a>
+                    <button class="btn btn-xs btn-outline" onclick={() => copy(share?.siteUrl)}>{$t('chat.shareCopy')}</button>
+                  </div>
+                {/if}
+              {/if}
+            </fieldset>
+          {/if}
 
           <label class="flex items-center gap-3">
             <span class="text-sm flex-1">{$t('chat.shareExpires')}</span>
