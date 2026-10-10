@@ -1732,6 +1732,7 @@
       <!-- What the run has made so far, shown the moment each call ends,
            until the turn's own attachments carry it at the run's end. -->
       {@const made = unkept ? artifactsToAttachments(tools.flatMap((tl) => (tl.status === 'success' ? (tl.files ?? []) : []))) : []}
+      {@const failedCount = tools.filter((tl) => tl.status === 'error').length}
       <div class="chat-activity max-w-[640px]">
         <button
           type="button"
@@ -1740,6 +1741,7 @@
           onclick={() => (activityOpen[keyId] = !open)}
         >
           <span class="min-w-0 truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? groupSummary(tools, $t) : $t('chat.working')}</span>
+          {#if failedCount}<span class="shrink-0 text-error">· {$t('chat.call.failedCount', { values: { count: failedCount } })}</span>{/if}
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 

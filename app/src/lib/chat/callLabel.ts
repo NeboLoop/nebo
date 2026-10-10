@@ -144,13 +144,19 @@ export function resultLine(tool: CallTool, tr: Tr): string {
 }
 
 /** A group's summary: each kind with how many calls it made, the first
- *  three ("Read ×3 · Run · Search"), how many more, and how many failed. The
- *  call running now reads instead, as its own line. */
+ *  three ("Read ×3 · Run · Search") and how many more. The call running now
+ *  reads instead, as its own line, and so does a group of one call ("Run
+ *  ls -la"). How many failed is said beside it (`chat.call.failedCount`), so
+ *  the cut never hides it. */
 export function groupSummary(tools: CallTool[], tr: Tr): string {
   const running = tools.filter((t) => t.status === 'running');
   if (running.length) {
     const line = callLine(running[running.length - 1], tr);
     return `${spaced(line.label, line.subject)}…`;
+  }
+  if (tools.length === 1) {
+    const line = callLine(tools[0], tr);
+    return spaced(line.label, line.subject);
   }
   const counts = new Map<string, number>();
   for (const t of tools) {
@@ -158,8 +164,6 @@ export function groupSummary(tools: CallTool[], tr: Tr): string {
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   const parts = [...counts.entries()].map(([label, n]) => (n > 1 ? `${label} ×${n}` : label));
-  let line = parts.slice(0, 3).join(' · ');
-  if (parts.length > 3) line += ` ${tr('chat.moreCount', { values: { count: parts.length - 3 } })}`;
-  const failed = tools.filter((t) => t.status === 'error').length;
-  return failed ? `${line} · ${tr('chat.call.failedCount', { values: { count: failed } })}` : line;
+  const line = parts.slice(0, 3).join(' · ');
+  return parts.length > 3 ? `${line} ${tr('chat.moreCount', { values: { count: parts.length - 3 } })}` : line;
 }

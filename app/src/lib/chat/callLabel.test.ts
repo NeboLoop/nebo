@@ -66,8 +66,13 @@ describe('groupSummary', () => {
   it('counts calls by kind, failed ones included', () => {
     const read = (status = 'success') => tool({ status, call: { kind: 'read', params: { path: '/a' } } });
     const run = tool({ call: { kind: 'command', params: { command: 'ls' } } });
-    expect(groupSummary([read(), read(), read('error'), run], EN)).toBe('Read ×3 · Run · 1 failed');
+    expect(groupSummary([read(), read(), read('error'), run], EN)).toBe('Read ×3 · Run');
     expect(groupSummary([read(), run], JA)).toBe('読み取り · 実行');
+  });
+
+  it('reads a group of one call as that call', () => {
+    expect(groupSummary([tool({ call: { kind: 'command', params: { command: 'ls -la' } } })], EN)).toBe('Run ls -la');
+    expect(groupSummary([tool({ status: 'error', call: { kind: 'read', params: { path: '/a/b.txt' } } })], EN)).toBe('Read b.txt');
   });
 
   it('names the call running now', () => {
