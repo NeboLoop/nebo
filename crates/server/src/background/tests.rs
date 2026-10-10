@@ -402,3 +402,49 @@ async fn a_stopped_turn_retires_the_schedules_it_made() {
     turn_ended(state, &stalled, &stalled_token);
     assert_eq!(state.store.get_cron_job(also_kept.id).unwrap().unwrap().enabled, Some(1), "a stall is not the owner's stop");
 }
+
+fn handoff(id: &str, kind: &str, status: &str) -> crate::handoff::HandoffView {
+    crate::handoff::HandoffView {
+        id: id.into(),
+        parent_id: None,
+        kind: kind.into(),
+        from_agent_id: "lead".into(),
+        from_name: "Office Lead".into(),
+        to_agent_id: "bk".into(),
+        to_name: "Bookkeeper".into(),
+        team_id: String::new(),
+        sender_session: "agent:lead:web".into(),
+        sender_run_id: Some("run-3".into()),
+        sender_link: String::new(),
+        receiver_session: "agent:bk:coworker:lead".into(),
+        receiver_link: String::new(),
+        ask: "\nPull last month's invoices\nand total them".into(),
+        status: status.into(),
+        result: String::new(),
+        error: String::new(),
+        created_at: 100,
+        started_at: if status == "queued" { None } else { Some(105) },
+        finished_at: None,
+    }
+}
+
+/// Work one employee passed to another is the receiving employee's row,
+/// passed on by the sender from its conversation, so it shows in both
+/// employees' lists. A message hand-off can be stopped; an assignment
+/// closes from its case.
+#[test]
+fn a_handoff_is_the_receivers_row_passed_on_by_the_sender() {
+    let rows = handoffs(vec![handoff("h1", "message", "running"), handoff("a1", "assignment", "queued")]);
+    let msg = &rows[0];
+    assert_eq!((msg.id.as_str(), msg.kind, msg.source, msg.status), ("handoff:h1", Kind::Agent, Source::Handoff, Status::Running));
+    assert_eq!(msg.agent_id, "bk");
+    assert_eq!(msg.title, "Pull last month's invoices");
+    assert_eq!((msg.from_agent_id.as_deref(), msg.from_session_key.as_deref()), (Some("lead"), Some("agent:lead:web")));
+    assert_eq!(msg.session_key.as_deref(), Some("agent:bk:coworker:lead"));
+    assert_eq!((msg.started_at, msg.source_run_id.as_deref(), msg.created_by.as_str()), (Some(105), Some("run-3"), "message"));
+    assert_eq!(msg.actions, vec![Action::Stop]);
+    assert!(msg.belongs_to("bk") && msg.belongs_to("lead") && !msg.belongs_to("other"));
+    let asg = &rows[1];
+    assert_eq!((asg.status, asg.started_at), (Status::Waiting, Some(100)));
+    assert!(asg.actions.is_empty(), "an assignment closes from its case");
+}

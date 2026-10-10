@@ -43,6 +43,8 @@ pub enum Source {
     Watch,
     Heartbeat,
     Shell,
+    /// Work one employee passed to another (`crate::handoff`).
+    Handoff,
 }
 
 impl Source {
@@ -55,6 +57,7 @@ impl Source {
             Source::Watch => "watch",
             Source::Heartbeat => "heartbeat",
             Source::Shell => "shell",
+            Source::Handoff => "handoff",
         }
     }
 }
@@ -209,7 +212,12 @@ pub async fn collect(state: &AppState, agent_id: Option<&str>) -> Vec<Background
     tasks.extend(helpers(state.helpers.list(None)));
     tasks.extend(shells(state.tools.process_registry().running_for(None).await));
     let asks: HashSet<String> = state.run_registry.pending_asks().await.into_iter().map(|(s, _)| s).collect();
-    tasks.extend(turns(state.run_registry.list_top_level().await, &asks, now()));
+    // A turn in a conversation a hand-off is worked in IS that hand-off:
+    // listed once, as the hand-off.
+    let handed = crate::handoff::receiver_sessions(state);
+    let runs = state.run_registry.list_top_level().await.into_iter().filter(|r| !handed.contains(&r.session_key)).collect();
+    tasks.extend(turns(runs, &asks, now()));
+    tasks.extend(handoffs(crate::handoff::live(state)));
     match state.store.list_live_workflow_runs() {
         Ok(runs) => {
             for mut task in workflows(runs, |id| state.workflow_manager.turns_used(id)) {
@@ -340,6 +348,29 @@ pub(crate) fn turns(runs: Vec<crate::run_registry::RunSnapshot>, parked: &HashSe
             .to_string();
             t.session_key = Some(r.session_key);
             t.actions = vec![Action::Stop];
+            t
+        })
+        .collect()
+}
+
+/// Work one employee passed to another, still going: the receiving
+/// employee's row, passed on by the sender from its conversation. A
+/// message hand-off can be stopped; an assignment is the assignee's own
+/// case and closes from there.
+pub(crate) fn handoffs(live: Vec<crate::handoff::HandoffView>) -> Vec<BackgroundTask> {
+    live.into_iter()
+        .map(|h| {
+            let status = if h.status == "queued" { Status::Waiting } else { Status::Running };
+            let mut t = BackgroundTask::new(Source::Handoff, &h.id, Kind::Agent, status);
+            t.agent_id = employee_id(&h.to_agent_id).to_string();
+            t.title = h.ask.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().chars().take(200).collect();
+            t.started_at = Some(h.started_at.unwrap_or(h.created_at));
+            t.created_by = "message".into();
+            t.source_run_id = h.sender_run_id.clone();
+            t.session_key = Some(h.receiver_session.clone());
+            t.from_agent_id = Some(employee_id(&h.from_agent_id).to_string());
+            t.from_session_key = Some(h.sender_session.clone());
+            t.actions = if h.kind == "message" { vec![Action::Stop] } else { Vec::new() };
             t
         })
         .collect()
@@ -553,6 +584,7 @@ pub async fn act(state: &AppState, id: &str, action: &str) -> Result<(), ActErro
             }
             state.run_registry.cancel(native).await.then_some(()).ok_or(ActError::NotFound)
         }
+        (Source::Handoff, Action::Stop) => crate::handoff::stop(state, native).await.map_err(failed),
         (Source::Workflow, Action::Stop | Action::Cancel) => crate::handlers::workflows::cancel_workflow_run(state, native).await.map_err(failed),
         (Source::Workflow, Action::Approve) => {
             use agent::harness::permissions::{AnsweredVia, Answer};
@@ -748,6 +780,11 @@ async fn outcome_of(state: &AppState, task: &BackgroundTask) -> Outcome {
             None => Outcome::Done,
         },
         Source::Turn => Outcome::Done,
+        Source::Handoff => match state.store.get_handoff(native).ok().flatten().map(|h| h.status) {
+            Some(s) if s == "failed" => Outcome::Failed,
+            Some(s) if s == "stopped" => Outcome::Stopped,
+            _ => Outcome::Done,
+        },
         Source::Timer => match timer_id(native).ok().and_then(|id| state.store.get_cron_job(id).ok().flatten()) {
             // A one-shot that fired is done; anything else that left was
             // switched off or deleted.
@@ -850,7 +887,7 @@ pub fn note(tasks: &[BackgroundTask], session_key: &str, zone: tools::owner_cloc
     };
     let lines: Vec<String> = tasks
         .iter()
-        .filter(|t| !(t.source == Source::Turn && t.session_key.as_deref() == Some(session_key)))
+        .filter(|t| !(matches!(t.source, Source::Turn | Source::Handoff) && t.session_key.as_deref() == Some(session_key)))
         .filter(|t| !matches!(t.source, Source::Watch | Source::Heartbeat))
         .map(|t| {
             let here = t.session_key.as_deref() == Some(session_key);
@@ -868,6 +905,12 @@ pub fn note(tasks: &[BackgroundTask], session_key: &str, zone: tools::owner_cloc
                     t.started_at.map(at).unwrap_or_default(),
                 ),
                 Source::Turn => format!("- a {} turn is running (since {}).", t.created_by, t.started_at.map(at).unwrap_or_default()),
+                Source::Handoff => format!(
+                    "- {} is working on \"{}\", passed on (since {}). Its answer comes as a notification to the conversation that passed it; don't pass it again or do it yourself.",
+                    t.employee,
+                    t.title,
+                    t.started_at.map(at).unwrap_or_default(),
+                ),
                 Source::Workflow if t.status == Status::Waiting => format!(
                     "- workflow run {id} \"{}\" is waiting for {}.",
                     t.title,

@@ -72,6 +72,9 @@ pub fn view(store: &db::Store, h: db::Handoff) -> HandoffView {
 }
 
 fn broadcast(state: &AppState, h: db::Handoff) {
+    // The background list (`background::collect`) reads hand-offs still
+    // going: it hears every change at once.
+    crate::background::changed();
     let v = view(&state.store, h);
     match serde_json::to_value(&v) {
         Ok(payload) => state.hub.broadcast(EVENT, payload),
@@ -170,8 +173,10 @@ pub(crate) fn turn_ended(state: &AppState, receiver_session: &str, reply: &str, 
 /// going into it is stopped. Store-only (the Stop has no hub); the stopped
 /// run's end announces it ([`turn_ended`]).
 pub(crate) fn stopped_into(store: &db::Store, session_key: &str) {
-    if let Err(e) = store.finish_handoffs_into(session_key, "stopped", "", "", now()) {
-        tracing::warn!(error = %e, session = %session_key, "handoff: stop not recorded");
+    match store.finish_handoffs_into(session_key, "stopped", "", "", now()) {
+        Ok(ended) if !ended.is_empty() => crate::background::changed(),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, session = %session_key, "handoff: stop not recorded"),
     }
 }
 
