@@ -144,6 +144,25 @@ fn step_task(
     (objective, instruction)
 }
 
+/// `text` with one "Not sent: …" line per delivery in `messages` (the
+/// turn's stored conversation) that failed and was never made good. An
+/// empty output stays empty: it claims nothing, and it is what ends a
+/// branch.
+fn with_failed_deliveries(text: String, messages: &[db::models::ChatMessage]) -> String {
+    if text.trim().is_empty() {
+        return text;
+    }
+    let parse = |s: Option<&String>| s.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let parsed: Vec<(Option<serde_json::Value>, Option<serde_json::Value>)> =
+        messages.iter().map(|m| (parse(m.tool_calls.as_ref()), parse(m.tool_results.as_ref()))).collect();
+    let failed = super::turn_end::failed_deliveries(parsed.iter().map(|(c, r)| (c.as_ref(), r.as_ref())));
+    if failed.is_empty() {
+        return text;
+    }
+    let lines: Vec<String> = failed.iter().map(super::turn_end::FailedDelivery::line).collect();
+    format!("{}\n\n{}", text.trim_end(), lines.join("\n"))
+}
+
 /// The workflow engine's loop: each activity turn runs on the harness.
 pub struct WorkflowTurns {
     harness: Harness,
@@ -500,6 +519,10 @@ impl ActivityLoop for WorkflowTurns {
         if text.trim().is_empty() {
             text = self.synthesize_output(&session_id);
         }
+        // What the step says it sent is not the record: each delivery that
+        // didn't go through is stated in its output, whatever the model
+        // wrote (bake-off 2026-10-10: "has been sent" after a refusal).
+        text = with_failed_deliveries(text, &self.harness.sessions.get_messages(&session_id).unwrap_or_default());
         info!(
             activity = %turn.activity.id,
             run_id = %turn.trace.run_id,
@@ -543,6 +566,48 @@ mod tests {
 
     fn assistant(text: &str) -> ai::Message {
         ai::Message { role: "assistant".into(), content: text.into(), ..Default::default() }
+    }
+
+    fn row(role: &str, calls: Option<serde_json::Value>, results: Option<serde_json::Value>, content: &str) -> db::models::ChatMessage {
+        db::models::ChatMessage {
+            id: String::new(),
+            chat_id: String::new(),
+            role: role.into(),
+            content: content.into(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: calls.map(|c| c.to_string()),
+            tool_results: results.map(|r| r.to_string()),
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// Bake-off 2026-10-10: the step's send_message was refused and it
+    /// reported the forecast "sent to the Sales Floor Manager". Its output
+    /// now says it was not sent, from the stored calls; a step that sent
+    /// nothing, or whose send went through, is left as it is.
+    #[test]
+    fn a_refused_send_is_stated_in_the_steps_output() {
+        let stored = [
+            row("assistant", Some(serde_json::json!([{"id": "c1", "name": "send_message", "input": {"to": "Sales Floor Manager", "message": "forecast"}}])), None, ""),
+            row(
+                "tool",
+                None,
+                Some(serde_json::json!([{"tool_call_id": "c1", "content": "Not sent: you have messaged Sales Floor Manager 6 times in the last five minutes.\nFinish with what you have.", "is_error": true}])),
+                "",
+            ),
+            row("assistant", None, None, "The forecast has been sent to the Sales Floor Manager."),
+        ];
+        let out = super::with_failed_deliveries("The forecast has been sent to the Sales Floor Manager.".into(), &stored);
+        assert_eq!(
+            out,
+            "The forecast has been sent to the Sales Floor Manager.\n\nNot sent: send_message to Sales Floor Manager — \
+             Not sent: you have messaged Sales Floor Manager 6 times in the last five minutes."
+        );
+        assert_eq!(super::with_failed_deliveries(String::new(), &stored), "", "an empty output stays empty");
+        assert_eq!(super::with_failed_deliveries("Done.".into(), &stored[2..]), "Done.");
     }
 
     #[test]
