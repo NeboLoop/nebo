@@ -1051,6 +1051,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "tool": tc.name,
                                         "input": tc.input,
                                         "label": activity,
+                                        "call": tools::humanize::call(&tc.name, &tc.input),
                                     ),
                                 );
                                 // Mirror the tool event to the loop so it shows live
@@ -1098,6 +1099,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
                                 None => tools::humanize::raw_name(tool_name).1,
                             };
+                            let call = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| tools::humanize::call(&tc.name, &tc.input));
                             // The files this call hands the owner, as app URLs: on
                             // the event so the chat shows each one under its row
                             // the moment the call ends, mid-run.
@@ -1110,6 +1115,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
                                     "outcome": outcome,
+                                    "call": call,
                                     "payload": event.payload,
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
                                     "files": &files,

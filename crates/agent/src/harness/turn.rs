@@ -2803,7 +2803,7 @@ async fn settle_opening(st: &mut TurnState, wait: std::time::Duration) {
 /// the background work.
 pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit) {
     let h = &cx.harness;
-    show_a_folded_answer(cx, &mut st.folds).await;
+    fold_repeats_of_the_answer(cx, &mut st.folds).await;
     if *exit == TurnExit::Cancelled {
         let why = if cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) {
             conversation::Interrupt::Stalled
@@ -2880,14 +2880,11 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
 }
 
 /// The turn's last verdicts, on the stream and where each segment is
-/// stored: the earlier paragraphs the answer says again fold, so the owner
-/// reads it once; and when every segment folded and no answer followed, the
-/// longest is shown, so the turn leaves something to read.
-async fn show_a_folded_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds) {
-    let repeated = folds.fold_repeats_of_the_answer().into_iter().map(|(segment, row)| (segment, row, text_fold::Fold::Folded));
-    let net = folds.safety_net().map(|(segment, row)| (segment, row, text_fold::Fold::Shown));
-    for (segment, row, fold) in repeated.chain(net) {
-        let fold = fold.as_str();
+/// stored: the earlier paragraphs the answer says again word for word fold,
+/// so the owner reads it once.
+async fn fold_repeats_of_the_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds) {
+    for (segment, row) in folds.fold_repeats_of_the_answer() {
+        let fold = text_fold::Fold::Folded.as_str();
         let _ = cx.tx.send(StreamEvent::text_verdict(segment, fold)).await;
         if let Some(row) = row {
             let path = format!("$.contentBlocks[{}].fold", row.block);
@@ -3629,11 +3626,10 @@ mod tests {
     }
 
     /// Text between calls gets its verdict before the call that closed it,
-    /// on the stream and stored with its row: the owner's example stays in
-    /// the reply deep in the turn, a short next step folds, the answer has
-    /// none.
+    /// on the stream and stored with its row: short or long, early or deep
+    /// in the turn, it is shown; the answer has none.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn text_between_calls_is_shown_or_folded_and_stored() {
+    async fn text_between_calls_is_shown_and_stored() {
         const REPORT: &str = "That worked — the workflow was created with 2 activities and proper steps. The problem is \
             that update_employee with automations stored them as metadata… I need to recreate all 10 workflows properly \
             through create_workflow. Let me delete the bad ones first, then rebuild";
@@ -3651,7 +3647,7 @@ mod tests {
         assert_eq!(exit_of(&events), "text_response");
         assert_eq!(
             verdicts(&events),
-            vec![(0, "shown".to_string()), (1, "folded".to_string()), (2, "shown".to_string())]
+            vec![(0, "shown".to_string()), (1, "shown".to_string()), (2, "shown".to_string())]
         );
         // Each verdict comes right before the call that closed its segment.
         for (i, e) in events.iter().enumerate() {
@@ -3659,14 +3655,14 @@ mod tests {
                 assert_eq!(events[i + 1].event_type, ai::StreamEventType::ToolCall);
             }
         }
-        assert_eq!(stored_folds(&h), vec!["shown", "folded", "shown"]);
+        assert_eq!(stored_folds(&h), vec!["shown", "shown", "shown"]);
     }
 
     /// Live 2026-10-08: the owner sent one clip and read "Four clips in,
     /// still holding" four times, the model writing it again beside each of
-    /// four identical `remember` calls. One owner message, one reply: the
-    /// repeats fold, the answer that says it again folds the first copy,
-    /// and the second identical call is told it already has its answer.
+    /// four identical `remember` calls. A word-for-word repeat folds; one
+    /// that says something more ("Got it") is shown once; the second
+    /// identical call is told it already has its answer.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_message_one_reply_when_the_model_says_it_again() {
         let input = serde_json::json!({});
@@ -3683,12 +3679,11 @@ mod tests {
             verdicts(&events),
             vec![
                 (0, "shown".to_string()),
-                (1, "folded".to_string()),
+                (1, "shown".to_string()),
                 (2, "folded".to_string()),
-                (0, "folded".to_string()),
             ]
         );
-        assert_eq!(stored_folds(&h), vec!["folded", "folded", "folded"], "only the answer is left to read");
+        assert_eq!(stored_folds(&h), vec!["shown", "shown", "folded"]);
         let results: Vec<String> =
             stored(&h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect();
         assert_eq!(results.len(), 3, "{results:#?}");
@@ -3748,10 +3743,10 @@ mod tests {
         assert!(second[0].contains("earlier message stopped mid-sentence") && second[0].contains("read the two as one instruction"), "{second:?}");
     }
 
-    /// A turn that folded every paragraph and ended with no answer shows the
-    /// longest, on the stream and in its stored row.
+    /// A turn that ended with no answer leaves every paragraph it wrote in
+    /// view: nothing folded, nothing to bring back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_turn_that_folded_everything_shows_its_longest_paragraph() {
+    async fn a_turn_without_an_answer_keeps_its_paragraphs_shown() {
         let model = Scripted::new(vec![
             Step::Narrated("Let me check the first file.", "echo"),
             Step::Narrated("Now the second file, which holds the rest of the invoices.", "echo"),
@@ -3762,11 +3757,8 @@ mod tests {
         ]);
         let h = harness(&model).await;
         let events = run_turn(&h, owner("Check the invoices")).await;
-        assert_eq!(
-            verdicts(&events),
-            vec![(0, "folded".to_string()), (1, "folded".to_string()), (1, "shown".to_string())]
-        );
-        assert_eq!(stored_folds(&h), vec!["folded", "shown"]);
+        assert_eq!(verdicts(&events), vec![(0, "shown".to_string()), (1, "shown".to_string())]);
+        assert_eq!(stored_folds(&h), vec!["shown", "shown"]);
     }
 
     /// A linked bot's stand-in: answers every turn and records it, or, when

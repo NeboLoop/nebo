@@ -49,8 +49,8 @@
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
-  import { stepMeta } from '$lib/chat/stepMeta';
-  import { turnBlocks, turnProse, noteLabel, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
+  import { callLine, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
+  import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -88,6 +88,8 @@
     statusText?: string;
     label?: string;     // human activity label (gerund), from the start phase
     outcome?: string;   // past-tense outcome, from the result phase
+    /** The call's structured name: its kind worded here, its values verbatim. */
+    call?: CallName;
     durationMs?: number;
     /** Structured rendering payload (ToolResult.payload) — known kinds render
      *  as rich cards; unknown kinds are ignored. */
@@ -109,7 +111,8 @@
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
-    | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
+    | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean }
+    | { type: 'runError'; content: string; time?: string; id?: string };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
@@ -1271,20 +1274,49 @@
   let isDragging = $state(false);
   let dragCounter = $state(0);
 
-  // Tool timeline collapse state, keyed by the owning reply's id (stable across
-  // re-renders — index keys would drift as new messages stream in).
   // ── Activity groups: the work inside an assistant turn ──────────────────
-  // A turn is every assistant segment between two user messages. Its text
-  // segments read as prose or fold into the work as notes — the server's
-  // verdict (`turnBlocks`) — and each run of notes and tool calls between two
-  // paragraphs is one group under a summary line ("Searched the web, read a
-  // page, ran a command"). Rows open on click.
+  // A turn is every assistant segment between two user messages. The text
+  // the employee wrote between its calls reads as compact notes, always in
+  // view; its calls sit between them in groups, each under one summary line
+  // ("Read ×3 · Run"), folded until it is clicked. The last text, the
+  // answer, reads as prose (`turnBlocks`). Each call is one line — its kind
+  // and its own value — with what came back on a line under it.
   type AssistantMsg = Extract<Message, { type: 'assistant' }>;
   type ActivityStep = TurnStep<ToolMsg>;
 
   /** Open state per group; unset means folded — live or not. A long turn is
-   *  one shimmering summary line, not a card of every call it made. */
+   *  one summary line, not a card of every call it made. */
   let activityOpen = $state<Record<string, boolean>>({});
+  /** The notes the reader saw stream in. They stay open once the turn ends,
+   *  so words being read never fold away mid-sentence; a thread opened
+   *  later shows its notes compact. Not state: rendering records it. */
+  const notesSeenLive = new Set<string>();
+  function noteOpen(key: string, live: boolean): boolean {
+    if (live) notesSeenLive.add(key);
+    return expandedResults[key] ?? notesSeenLive.has(key);
+  }
+  /** Notes cut off by the width of the thread, by key: those get a chevron
+   *  to open them. Measured, so a note that fits shows no control. */
+  let notesCut = $state<Record<string, boolean>>({});
+  function measureCut(el: HTMLElement, key: string) {
+    let current = key;
+    const measure = () => {
+      const cut = el.scrollWidth > el.clientWidth + 1;
+      if (notesCut[current] !== cut) notesCut[current] = cut;
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return {
+      update(next: string) {
+        current = next;
+        measure();
+      },
+      destroy() {
+        ro.disconnect();
+      },
+    };
+  }
 
   function turnSegments(idx: number): AssistantMsg[] {
     const out: AssistantMsg[] = [];
@@ -1295,22 +1327,16 @@
     }
     return out;
   }
-  /** The turn's prose and activity groups, in order. */
-  function blocksOf(segs: AssistantMsg[], keyId: string): TurnBlock<ToolMsg>[] {
-    return turnBlocks(segs, keyId, shownTools, (tools) => nonCoworkerTools(tools).length > 0);
+  /** The turn's notes, prose and activity groups, in order. */
+  function blocksOf(segs: AssistantMsg[], keyId: string, ended: boolean): TurnBlock<ToolMsg>[] {
+    return turnBlocks(segs, keyId, shownTools, (tools) => nonCoworkerTools(tools).length > 0, ended);
   }
-  /** The calls a user should see. A call that failed and was retried is the
-   *  employee's business — nothing the user can act on — so it is left out,
-   *  except in developer mode, where someone is debugging. */
+  /** The calls a user sees: every one, failed ones too — a failure is one
+   *  red line the reader can open, never a gap in the work. */
   function shownTools(tools: ToolMsg[] | undefined): ToolMsg[] {
-    const all = nonCoworkerTools(tools);
-    return $devMode ? all : all.filter((t) => t.status !== 'error');
+    return nonCoworkerTools(tools);
   }
-  /** A note's row shows plain words; markdown marks are for the answer. */
-  function plainNote(line: string): string {
-    return line.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
-  }
-  /** The command a call ran, shown as code under its row. */
+  /** The command a call ran, shown as code when its row opens. */
   function shellCommand(tool: ToolMsg): string {
     const r = (tool.request ?? {}) as Record<string, unknown>;
     return typeof r.command === 'string' ? r.command : '';
@@ -1363,33 +1389,19 @@
     const total = tools.reduce((s, t) => s + (t.durationMs ?? 0), 0);
     return total > 0 ? fmtDuration(total) : '';
   }
-  /** What a step did, in the past tense — the same words for a step that
-   *  failed, so the summary line groups it with its siblings; the row and
-   *  the summary mark the failure separately. */
-  function stepOutcome(tool: ToolMsg): string {
-    const resource = (tool.request as { resource?: string } | undefined)?.resource;
-    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: resource || tool.name } });
-  }
-  function workLineLabel(tools: ToolMsg[]): string {
-    const running = tools.filter((t) => t.status === 'running');
-    if (running.length) {
-      const cur = running[running.length - 1];
-      return `${cur.label ?? $t('chat.workingWithTool', { values: { name: cur.name } })}…`;
+  /** The call running now in the live turn, for the working line: the
+   *  same words its row says. */
+  const runningCall = $derived.by(() => {
+    if (!isLoading) return null;
+    for (let i = groupedMessages.length - 1; i >= 0; i--) {
+      const m = groupedMessages[i];
+      if (m.type === 'user') return null;
+      if (m.type !== 'assistant') continue;
+      const tools = nonCoworkerTools(m.tools);
+      for (let j = tools.length - 1; j >= 0; j--) if (tools[j].status === 'running') return callLine(tools[j], $t);
     }
-    // Group completed steps by outcome, preserving first-seen order.
-    const groups = new Map<string, number>();
-    for (const t of tools) groups.set(stepOutcome(t), (groups.get(stepOutcome(t)) ?? 0) + 1);
-    const parts = [...groups.entries()].map(([label, n], i) => {
-      let s = label;
-      if (n > 1) {
-        const m = label.match(/^(\w+) an? (.+)$/);
-        s = m ? `${m[1]} ${n} ${m[2]}${m[2].endsWith('s') ? '' : 's'}` : `${label} ×${n}`;
-      }
-      return i === 0 ? s : s.charAt(0).toLowerCase() + s.slice(1);
-    });
-    const line = parts.slice(0, 3).join(', ');
-    return groups.size > 3 ? `${line}, ${$t('chat.moreCount', { values: { count: groups.size - 3 } })}` : line;
-  }
+    return null;
+  });
 
   // Tools now live on the assistant message that ran them (msg.tools[]), so there
   // are no sibling tool messages to collapse — the rendered list IS the message
@@ -1686,6 +1698,31 @@
       </div>
     {/if}
 
+    <!-- A note: text the employee wrote between its calls. One line, cut
+         with an ellipsis, the whole of it in the tooltip; opened, every
+         word of it. A note being read as it streams stays open. -->
+    {#snippet noteLine(key: string, text: string, live: boolean)}
+      {@const open = noteOpen(key, live)}
+      {@const cut = !!notesCut[key] || text.includes('\n')}
+      <div class="chat-note">
+        {#if open}
+          <p dir="auto" class="chat-note-full">{noteText(text, false)}</p>
+        {:else}
+          <p dir="auto" class="chat-note-line" title={noteText(text)} use:measureCut={key}>{noteText(text)}</p>
+        {/if}
+        {#if open || cut}
+          <button
+            type="button"
+            class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/60 hover:text-base-content transition-transform {open ? 'rotate-90' : ''}"
+            aria-expanded={open}
+            aria-label={open ? $t('chat.noteLess') : $t('chat.noteMore')}
+            title={open ? $t('chat.noteLess') : $t('chat.noteMore')}
+            onclick={() => (expandedResults[key] = !open)}
+          >&rsaquo;</button>
+        {/if}
+      </div>
+    {/snippet}
+
     <!-- One activity group: notes and tool calls in order, folded under a
          summary line until it is clicked, live or not. Rows open on click;
          a page's address is a link. -->
@@ -1695,6 +1732,7 @@
       <!-- What the run has made so far, shown the moment each call ends,
            until the turn's own attachments carry it at the run's end. -->
       {@const made = unkept ? artifactsToAttachments(tools.flatMap((tl) => (tl.status === 'success' ? (tl.files ?? []) : []))) : []}
+      {@const failedCount = tools.filter((tl) => tl.status === 'error').length}
       <div class="chat-activity max-w-[640px]">
         <button
           type="button"
@@ -1702,7 +1740,8 @@
           aria-expanded={open}
           onclick={() => (activityOpen[keyId] = !open)}
         >
-          <span class="min-w-0 truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
+          <span class="min-w-0 truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? groupSummary(tools, $t) : $t('chat.working')}</span>
+          {#if failedCount}<span class="shrink-0 text-error">· {$t('chat.call.failedCount', { values: { count: failedCount } })}</span>{/if}
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 
@@ -1729,59 +1768,57 @@
           <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
             {#each rows as step (step.key)}
               {#if step.kind === 'note'}
-                {@const latest = step.lines[step.lines.length - 1]}
-                {@const label = noteLabel(latest)}
-                {@const expandable = step.lines.length > 1 || label !== latest.trim()}
-                {@const isExpanded = !!expandedResults[step.key]}
                 <div class="px-3 py-2 text-xs">
-                  <button
-                    type="button"
-                    class="flex w-full items-center gap-1.5 text-start bg-transparent border-none p-0 text-base-content/70 {expandable ? 'cursor-pointer hover:text-base-content/90' : 'cursor-default'}"
-                    disabled={!expandable}
-                    aria-expanded={expandable ? isExpanded : undefined}
-                    onclick={() => toggleResult(step.key)}
-                  >
-                    <span class="truncate flex-1">{plainNote(label)}</span>
-                    {#if expandable}<span class="shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
-                  </button>
-                  {#if expandable && isExpanded}
-                    <div class="mt-1.5 flex flex-col gap-1 text-base-content/70">
-                      {#each step.lines as line}<p class="m-0">{plainNote(line)}</p>{/each}
-                    </div>
-                  {/if}
+                  {@render noteLine(step.key, step.lines.join('\n\n'), false)}
                 </div>
               {:else}
                 {@const tool = step.tool}
-                {@const meta = stepMeta(tool.request)}
+                {@const line = callLine(tool, $t)}
+                {@const result = resultLine(tool, $t)}
                 {@const expandable = canExpand(tool)}
                 {@const isExpanded = !!expandedResults[step.key]}
                 {@const cmd = shellCommand(tool)}
+                {@const failed = tool.status === 'error'}
                 <div class="px-3 py-2 text-xs">
                   <div class="flex items-center gap-2 min-w-0">
                     {#if tool.status === 'running'}
                       <svg width="12" height="12" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
+                    {:else if failed}
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="text-error shrink-0" aria-label={$t('chat.failed')}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     {/if}
                     <button
                       type="button"
-                      class="flex min-w-0 items-center gap-2 text-start bg-transparent border-none p-0 {expandable ? 'cursor-pointer' : 'cursor-default'} {meta?.href ? 'shrink-0' : 'flex-1'}"
+                      class="call-row-label {failed ? 'text-error' : 'text-base-content/80'} {expandable ? 'cursor-pointer' : 'cursor-default'}"
                       disabled={!expandable}
-                      aria-expanded={expandable ? isExpanded : undefined}
+                      title={line.label}
                       onclick={() => toggleResult(step.key, tool)}
-                    >
-                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ms-1">{tool.statusText}</span>{/if}</span>
-                      {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
-                      {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
-                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{tool.name}</span>{/if}
-                      {#if tool.durationMs}<span class="text-base-content/70 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
-                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
-                    </button>
-                    {#if meta?.href}
-                      <a href={meta.href} target="_blank" rel="noopener noreferrer" class="truncate text-primary underline flex-1" title={meta.href}>{meta.text}</a>
-                      {#if expandable}
-                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key, tool)}>&rsaquo;</button>
-                      {/if}
+                    >{line.label}</button>
+                    {#if line.href}
+                      <a href={line.href} target="_blank" rel="noopener noreferrer" class="call-row-subject text-primary underline" title={line.title}>{line.subject}</a>
+                    {:else}
+                      <button
+                        type="button"
+                        class="call-row-subject font-mono text-base-content/70 {expandable ? 'cursor-pointer' : 'cursor-default'}"
+                        disabled={!expandable}
+                        title={line.title || undefined}
+                        onclick={() => toggleResult(step.key, tool)}
+                      >{line.subject}</button>
+                    {/if}
+                    {#if $devMode}<span class="font-mono text-base-content/50 shrink-0">{tool.name}</span>{/if}
+                    {#if tool.durationMs}<span class="text-base-content/60 shrink-0 tabular-nums">{fmtDuration(tool.durationMs)}</span>{/if}
+                    {#if expandable}
+                      <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key, tool)}>&rsaquo;</button>
                     {/if}
                   </div>
+                  {#if result}
+                    <button
+                      type="button"
+                      class="call-row-result {failed ? 'text-error' : 'text-base-content/60'} {expandable ? 'cursor-pointer' : 'cursor-default'}"
+                      disabled={!expandable}
+                      title={result}
+                      onclick={() => toggleResult(step.key, tool)}
+                    ><span class="shrink-0" aria-hidden="true">⎿</span><span class="min-w-0 truncate">{result}</span></button>
+                  {/if}
                   {#if isExpanded}
                     <div class="mt-2 flex flex-col gap-2">
                   {#if researchState(tool)}
@@ -1879,29 +1916,16 @@
                       </div>
                     {/each}
                   {/if}
-                      {#if cmd}
-                        <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
-                          <div class="text-[11px] font-mono text-base-content/50 mb-1">bash</div>
-                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{cmd}</pre>
+                      {#if !searchPayload(tool) && !researchState(tool) && !runReceipt(tool)}
+                        <div class="call-detail">
+                          <div class="call-detail-head">{$t('chat.request')}</div>
+                          <pre class="call-detail-body">{cmd || JSON.stringify(tool.request, null, 2)}</pre>
                         </div>
-                        {#if tool.response}
-                          <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
-                            <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{toolResponse(tool)}</pre>
-                          </div>
-                        {/if}
-                      {:else if !searchPayload(tool) && !researchState(tool) && !runReceipt(tool)}
-                        <div class="rounded-lg border border-base-300 bg-base-100 overflow-y-auto max-h-[200px]">
-                          <div class="px-3 pt-2 pb-1.5">
-                            <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.request')}</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{JSON.stringify(tool.request, null, 2)}</pre>
-                          </div>
-                          {#if tool.response}
-                            <div class="px-3 pt-1.5 pb-2 border-t border-base-300">
-                              <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
-                              <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{toolResponse(tool)}</pre>
-                            </div>
-                          {/if}
+                      {/if}
+                      {#if tool.response && !searchPayload(tool)}
+                        <div class="call-detail {failed ? 'call-detail-error' : ''}">
+                          <div class="call-detail-head">{$t('chat.output')}</div>
+                          <pre class="call-detail-body">{toolResponse(tool)}</pre>
                         </div>
                       {/if}
                     </div>
@@ -2062,6 +2086,26 @@
           {/if}
         </div>
 
+      {:else if msg.type === 'runError'}
+        <!-- Where a run stopped on an error: it stays in the thread. -->
+        {@const link = trailingLink(msg.content)}
+        <div class="chat-run-error" role="note">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 mt-0.5 text-error" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div class="min-w-0">
+            <div class="font-medium text-error">{$t('chat.runStopped')}</div>
+            <div class="chat-run-error-text">
+              {#if msg.content.includes('USAGE_LIMIT_EXCEEDED')}
+                {$t('chat.outOfBalance')}
+              {:else if link}
+                {link.text} <a class="link" href={link.url} target="_blank" rel="noopener noreferrer">{link.label}</a>
+              {:else}
+                {msg.content}
+              {/if}
+            </div>
+          </div>
+          {#if msg.time}<span class="ms-auto shrink-0 text-base-content/50 font-mono">{msg.time}</span>{/if}
+        </div>
+
       {:else if msg.type === 'compactBoundary'}
         <div class="divider my-4 text-xs text-base-content/50">{$t(msg.cleared ? 'chat.clearedBoundary' : 'chat.compactBoundary')}</div>
 
@@ -2078,10 +2122,10 @@
           {@const lastIdx = idx + segs.length - 1}
           {@const lastOrigIdx = originalIndices[lastIdx]}
           {@const nextGroup = groupedMessages[lastIdx + 1]}
-          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary') : !isLoading}
+          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary' || nextGroup.type === 'runError') : !isLoading}
           {@const keyId = msg.id ?? `m${origIdx}`}
-          {@const blocks = blocksOf(segs, keyId)}
-          {@const answer = turnProse(blocks)}
+          {@const blocks = blocksOf(segs, keyId, isTurnEnd)}
+          {@const answer = turnText(blocks)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
           <div class="max-w-[640px] mt-3">
             {#if msg.delegateAgentName}
@@ -2094,6 +2138,8 @@
             {#each blocks as block, bi (block.key)}
               {#if block.kind === 'group'}
                 {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1, !turnAttachments.length)}
+              {:else if block.kind === 'note'}
+                {@render noteLine(block.key, block.text, !isTurnEnd)}
               {:else}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
@@ -2219,9 +2265,10 @@
          including while the reply text is streaming or a tool grinds after the
          last text chunk — not only before the first assistant message. -->
     {#if isLoading && groupedMessages.length > 0}
-      <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
-        <span class="loading loading-spinner loading-xs text-primary"></span>
-        <span class="text-sm text-base-content/70 animate-pulse">{activityStatus || $t('chat.working')}</span>
+      {@const working = runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working')}
+      <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2 min-w-0">
+        <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
+        <span class="min-w-0 truncate text-sm text-base-content/70 animate-pulse" title={working}>{working}</span>
       </div>
     {/if}
     {#if !isLoading && helpers.length > 0}

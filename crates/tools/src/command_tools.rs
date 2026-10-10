@@ -140,14 +140,14 @@ impl DynTool for RunCommandTool {
             return reach.sentence();
         }
         match str_arg(input, "description") {
-            Some(d) => d.to_string(),
+            Some(d) => crate::humanize::cap(d, crate::humanize::DESCRIPTION_CAP),
             None => format!("running `{}`", short(str_arg(input, "command").unwrap_or(""), 72)),
         }
     }
 
     fn outcome(&self, input: &Value) -> String {
         match str_arg(input, "description") {
-            Some(d) => d.to_string(),
+            Some(d) => crate::humanize::cap(d, crate::humanize::DESCRIPTION_CAP),
             None => format!("Ran `{}`", short(str_arg(input, "command").unwrap_or(""), 72)),
         }
     }

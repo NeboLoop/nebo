@@ -24,6 +24,7 @@ import { endsRun } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
+import { isCallName, type CallName } from '$lib/chat/callLabel';
 import { formatTime } from '$lib/time';
 import { clientId } from '$lib/websocket/origin';
 import { userMessageRow } from '$lib/chat/userMessage';
@@ -77,6 +78,9 @@ export interface ToolUse {
   label?: string;
   /** Past-tense outcome, from the result phase. */
   outcome?: string;
+  /** The call's structured name, `{kind, params}`: the thread words its
+   *  kind in the owner's language and shows its values verbatim. */
+  call?: CallName;
   /** Live sub-step text (e.g. "Initialized sub-agent"). */
   statusText?: string;
   startedAt?: number;
@@ -115,6 +119,8 @@ export type ChatMessage =
   /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
    *  prose or a note in the turn's work; `segment`: its index in the turn. */
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
+  /** The error a run ended on: it stays in the thread where it happened. */
+  | { type: 'runError'; content: string; time?: string; id?: string }
   /** The boundary the backend leaves where earlier conversation was
    *  summarized, or (`cleared`) where the owner cleared it. */
   | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
@@ -615,6 +621,7 @@ export function createChatController(config: ChatControllerConfig) {
         // STRAP → "name · resource.action"); label + outcome come from the backend.
         name: data.tool || 'tool',
         label: data.label,
+        ...(isCallName(data.call) ? { call: data.call } : {}),
         status: 'running',
         request,
         response: '',
@@ -648,6 +655,7 @@ export function createChatController(config: ChatControllerConfig) {
         status,
         response,
         outcome: data.outcome,
+        ...(isCallName(data.call) ? { call: data.call } : {}),
         ...(data.payload && typeof data.payload === 'object' ? { payload: data.payload } : {}),
         ...(Array.isArray(data.files) && data.files.length ? { files: data.files.filter((f: unknown): f is string => typeof f === 'string') } : {}),
         durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : (started ? Date.now() - started : undefined),
@@ -663,6 +671,7 @@ export function createChatController(config: ChatControllerConfig) {
         ...m,
         tools: [...(m.tools ?? []), {
           toolId, name: data.tool_name || 'tool', status, outcome: data.outcome, request: {}, response,
+          ...(isCallName(data.call) ? { call: data.call } : {}),
         }],
       };
     }
@@ -721,6 +730,12 @@ export function createChatController(config: ChatControllerConfig) {
     phaseStartTime = 0;
     activityStatus = '';
     chatError = data.error || get(t)('common.errorOccurred');
+    // The banner can be dismissed; the thread keeps where the run stopped,
+    // as a reloaded thread shows the row the server stored for it.
+    const last = messages[messages.length - 1];
+    if (!(last?.type === 'runError' && last.content === chatError)) {
+      messages = [...messages, { type: 'runError' as const, content: chatError, time: formatTime(Date.now()) }];
+    }
   }
 
   function handleAskRequest(data: any) {

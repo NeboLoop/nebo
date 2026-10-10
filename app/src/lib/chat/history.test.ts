@@ -151,8 +151,9 @@ describe('parseMessages compact boundary', () => {
 });
 
 // A run that ended on an error leaves it in the thread (a system row flagged
-// runError): no bubble, and the chat raises its error banner from it when the
-// error is the newest row. A later row means the thread moved on.
+// runError): an entry where the run stopped, never an assistant bubble, and
+// the chat raises its error banner from it when the error is the newest row.
+// A later row means the thread moved on.
 describe('run error rows', () => {
   const user = { id: 'u1', role: 'user', content: 'Hi', createdAt: 0 };
   const failed = {
@@ -160,8 +161,10 @@ describe('run error rows', () => {
     metadata: JSON.stringify({ runError: true }),
   };
 
-  it('never renders as a bubble', () => {
-    expect(parseMessages([user, failed] as never).map((m) => m.type)).toEqual(['user']);
+  it('stays in the thread as an error entry, never a bubble', () => {
+    const msgs = parseMessages([user, failed] as never);
+    expect(msgs.map((m) => m.type)).toEqual(['user', 'runError']);
+    expect(msgs[1]).toMatchObject({ type: 'runError', id: 'e1', content: 'USAGE_LIMIT_EXCEEDED: no balance' });
   });
 
   it('is the banner when it is the newest row', () => {

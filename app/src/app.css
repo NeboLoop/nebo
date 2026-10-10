@@ -184,6 +184,59 @@
   .activity-live { animation: none; color: inherit; background-image: none; }
 }
 
+/* Text the employee wrote between its calls: one muted line cut with an
+   ellipsis, opened to every word. Its names and paths wrap anywhere. */
+.chat-note {
+  @apply flex items-start gap-1.5 min-w-0 my-1.5 text-sm text-base-content/70;
+}
+.chat-activity .chat-note {
+  @apply my-0 text-xs;
+}
+.chat-note-line {
+  @apply m-0 min-w-0 flex-1 truncate;
+}
+.chat-note-full {
+  @apply m-0 min-w-0 flex-1 whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* One line per call: its kind, then its own value cut with an ellipsis; the
+   duration and the chevron never leave the row. Under it, what came back. */
+.call-row-label {
+  @apply shrink-0 max-w-[45%] truncate font-medium text-start bg-transparent border-none p-0;
+}
+.call-row-subject {
+  @apply min-w-0 flex-1 truncate text-start bg-transparent border-none p-0;
+}
+.call-row-result {
+  @apply mt-0.5 flex w-full min-w-0 items-baseline gap-1.5 ps-1 text-start bg-transparent border-none p-0;
+}
+
+/* An opened call: what was asked and what came back, each in its own box,
+   long tokens wrapped, tall output scrolled within. */
+.call-detail {
+  @apply rounded-lg border border-base-300 bg-base-200/40 px-3 py-2;
+}
+.call-detail-error {
+  @apply border-error/40 bg-error/5;
+}
+.call-detail-head {
+  @apply mb-1 text-[11px] font-medium text-base-content/50;
+}
+.call-detail-body {
+  @apply m-0 max-h-60 overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Where a run stopped on an error, kept in the thread. */
+.chat-run-error {
+  @apply max-w-[640px] mt-3 flex items-start gap-2 rounded-lg border border-error/30 bg-error/5 px-3 py-2 text-xs;
+}
+.chat-run-error-text {
+  @apply mt-0.5 text-base-content/80;
+  overflow-wrap: anywhere;
+}
+
 /* Contenteditable placeholder */
 [contenteditable][data-placeholder]:empty::before {
   content: attr(data-placeholder);
