@@ -301,6 +301,7 @@
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}
+  turnStartedAt={chat.turnStartedAt}
   helpers={chat.helpers}
   askQueueLength={chat.askQueueLength}
   hasMore={chat.hasMore}

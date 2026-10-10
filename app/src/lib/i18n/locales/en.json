@@ -4141,5 +4141,85 @@
 		"text": "Nebo runs only while the app is open. To keep it working after you quit, turn on Nebo in Login Items.",
 		"open": "Open Login Items",
 		"unavailable": "Nebo runs only while the app is open. This computer can't keep Nebo running after you quit."
+	},
+	"background": {
+		"title": "Background tasks",
+		"runningN": "{n} running",
+		"runningTasks": "{n, plural, one {# running task} other {# running tasks}}",
+		"tasksFinished": "{n, plural, one {# task finished} other {# tasks finished}}",
+		"finishedN": "{n} finished",
+		"showMore": "Show more",
+		"showLess": "Show less",
+		"next": "Next {when}",
+		"stopping": "Stopping…",
+		"noOutput": "No output yet",
+		"outputUnavailable": "Output unavailable",
+		"outputTruncated": "Showing the end of the output",
+		"taskStopped": "Task stopped",
+		"actionFailed": "That didn't work: {error}",
+		"degraded": "Needs attention",
+		"heartbeat": "Heartbeat",
+		"turns": "{used} of {cap} turns",
+		"runningNow": "Running now",
+		"runningNowSub": "Everything working, waiting or set to run in the background",
+		"stopEverything": "Stop everything",
+		"stopEverythingConfirm": "Stop every helper, command, scheduled turn and workflow run? Timers and watches stay on.",
+		"stoppedN": "{n, plural, =0 {Nothing was running} one {Stopped # task} other {Stopped # tasks}}",
+		"nothingRunning": "Nothing is running in the background.",
+		"action": {
+			"stop": "Stop",
+			"cancel": "Cancel",
+			"approve": "Approve",
+			"pause": "Pause",
+			"delete": "Delete",
+			"off": "Turn off"
+		},
+		"wait": {
+			"approval": "Needs your approval",
+			"answer": "Needs your answer",
+			"expert": "Waiting for an expert",
+			"reply": "Waiting for a reply"
+		},
+		"trigger": {
+			"event": "Waits for an event",
+			"watch": "Watches a connection",
+			"folder": "Watches a folder",
+			"heartbeat": "Checks in regularly",
+			"schedule": "On a schedule"
+		},
+		"createdBy": {
+			"owner": "Set up by you",
+			"chat": "Started in a chat",
+			"workflow": "Started by a workflow",
+			"schedule": "Started by a schedule",
+			"system": "Started by Nebo",
+			"watch": "Started by a watch",
+			"message": "Started by a message",
+			"unknown": "Origin unknown"
+		},
+		"outcome": {
+			"done": "Finished",
+			"failed": "Failed",
+			"stopped": "Stopped",
+			"removed": "Turned off"
+		},
+		"status": {
+			"thinking": "Thinking…",
+			"stillThinking": "Still thinking…",
+			"thinkingMore": "Thinking more…",
+			"connecting": "Connecting…"
+		},
+		"notice": {
+			"done": "{what} finished",
+			"failed": "{what} failed",
+			"stopped": "{what} was stopped",
+			"removed": "{what} was turned off",
+			"timer": "New timer: {what}"
+		},
+		"group": {
+			"running": "Working",
+			"scheduled": "Timers",
+			"watching": "Watches"
+		}
 	}
 }

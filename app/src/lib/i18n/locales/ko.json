@@ -4141,5 +4141,85 @@
 		"text": "Nebo는 앱이 열려 있을 때만 실행됩니다. 종료 후에도 계속 작동하게 하려면 로그인 항목에서 Nebo를 켜세요.",
 		"open": "로그인 항목 열기",
 		"unavailable": "Nebo는 앱이 열려 있는 동안에만 실행됩니다. 이 컴퓨터는 앱을 종료한 후 Nebo를 계속 실행할 수 없습니다."
+	},
+	"background": {
+		"title": "백그라운드 작업",
+		"runningN": "{n}개 실행 중",
+		"runningTasks": "{n, plural, other {실행 중인 작업 #개}}",
+		"tasksFinished": "{n, plural, other {작업 #개 완료}}",
+		"finishedN": "{n}개 완료",
+		"showMore": "더 보기",
+		"showLess": "간단히 보기",
+		"next": "다음 {when}",
+		"stopping": "중지하는 중…",
+		"noOutput": "아직 출력이 없습니다",
+		"outputUnavailable": "출력을 볼 수 없습니다",
+		"outputTruncated": "출력의 끝부분을 표시합니다",
+		"taskStopped": "작업이 중지되었습니다",
+		"actionFailed": "실패했습니다: {error}",
+		"degraded": "확인 필요",
+		"heartbeat": "하트비트",
+		"turns": "{used}/{cap} 턴",
+		"runningNow": "지금 실행 중",
+		"runningNowSub": "백그라운드에서 작업 중이거나 대기 중이거나 예약된 모든 것",
+		"stopEverything": "모두 중지",
+		"stopEverythingConfirm": "모든 도우미, 명령, 예약된 턴, 워크플로 실행을 중지할까요? 타이머와 감시는 계속 켜져 있습니다.",
+		"stoppedN": "{n, plural, =0 {실행 중인 것이 없었습니다} other {작업 #개를 중지했습니다}}",
+		"nothingRunning": "백그라운드에서 실행 중인 것이 없습니다.",
+		"action": {
+			"stop": "중지",
+			"cancel": "취소",
+			"approve": "승인",
+			"pause": "일시 중지",
+			"delete": "삭제",
+			"off": "끄기"
+		},
+		"wait": {
+			"approval": "승인이 필요합니다",
+			"answer": "답변이 필요합니다",
+			"expert": "전문가를 기다리는 중",
+			"reply": "답장을 기다리는 중"
+		},
+		"trigger": {
+			"event": "이벤트를 기다림",
+			"watch": "연결을 감시",
+			"folder": "폴더를 감시",
+			"heartbeat": "정기적으로 확인",
+			"schedule": "일정에 따라"
+		},
+		"createdBy": {
+			"owner": "직접 설정함",
+			"chat": "채팅에서 시작됨",
+			"workflow": "워크플로가 시작함",
+			"schedule": "일정이 시작함",
+			"system": "Nebo가 시작함",
+			"watch": "감시가 시작함",
+			"message": "메시지가 시작함",
+			"unknown": "출처 알 수 없음"
+		},
+		"outcome": {
+			"done": "완료",
+			"failed": "실패",
+			"stopped": "중지됨",
+			"removed": "꺼짐"
+		},
+		"status": {
+			"thinking": "생각 중…",
+			"stillThinking": "아직 생각 중…",
+			"thinkingMore": "조금 더 생각 중…",
+			"connecting": "연결 중…"
+		},
+		"notice": {
+			"done": "{what} 완료",
+			"failed": "{what} 실패",
+			"stopped": "{what} 중지됨",
+			"removed": "{what} 꺼짐",
+			"timer": "새 타이머: {what}"
+		},
+		"group": {
+			"running": "작업 중",
+			"scheduled": "타이머",
+			"watching": "감시"
+		}
 	}
 }

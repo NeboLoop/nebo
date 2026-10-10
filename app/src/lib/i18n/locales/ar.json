@@ -4141,5 +4141,85 @@
 		"text": "يعمل Nebo فقط أثناء فتح التطبيق. لإبقائه يعمل بعد الإغلاق، شغّل Nebo في عناصر تسجيل الدخول.",
 		"open": "فتح عناصر تسجيل الدخول",
 		"unavailable": "يعمل Nebo فقط أثناء فتح التطبيق. لا يستطيع هذا الكمبيوتر إبقاء Nebo قيد التشغيل بعد الخروج من التطبيق."
+	},
+	"background": {
+		"title": "المهام في الخلفية",
+		"runningN": "{n} قيد التشغيل",
+		"runningTasks": "{n, plural, zero {لا مهام قيد التشغيل} one {مهمة واحدة قيد التشغيل} two {مهمتان قيد التشغيل} few {# مهام قيد التشغيل} many {# مهمة قيد التشغيل} other {# مهمة قيد التشغيل}}",
+		"tasksFinished": "{n, plural, zero {لم تنتهِ أي مهمة} one {انتهت مهمة واحدة} two {انتهت مهمتان} few {انتهت # مهام} many {انتهت # مهمة} other {انتهت # مهمة}}",
+		"finishedN": "انتهى: {n}",
+		"showMore": "عرض المزيد",
+		"showLess": "عرض أقل",
+		"next": "التالي {when}",
+		"stopping": "جارٍ الإيقاف…",
+		"noOutput": "لا مخرجات بعد",
+		"outputUnavailable": "المخرجات غير متاحة",
+		"outputTruncated": "عرض نهاية المخرجات",
+		"taskStopped": "تم إيقاف المهمة",
+		"actionFailed": "لم ينجح ذلك: {error}",
+		"degraded": "يحتاج إلى انتباه",
+		"heartbeat": "نبض",
+		"turns": "{used} من {cap} دورة",
+		"runningNow": "قيد التشغيل الآن",
+		"runningNowSub": "كل ما يعمل أو ينتظر أو مجدول في الخلفية",
+		"stopEverything": "إيقاف الكل",
+		"stopEverythingConfirm": "إيقاف كل المساعدين والأوامر والدورات المجدولة وتشغيلات سير العمل؟ تبقى المؤقتات وعمليات المراقبة قيد التشغيل.",
+		"stoppedN": "{n, plural, =0 {لم يكن هناك شيء قيد التشغيل} one {تم إيقاف مهمة واحدة} two {تم إيقاف مهمتين} few {تم إيقاف # مهام} many {تم إيقاف # مهمة} other {تم إيقاف # مهمة}}",
+		"nothingRunning": "لا شيء يعمل في الخلفية.",
+		"action": {
+			"stop": "إيقاف",
+			"cancel": "إلغاء",
+			"approve": "موافقة",
+			"pause": "إيقاف مؤقت",
+			"delete": "حذف",
+			"off": "إطفاء"
+		},
+		"wait": {
+			"approval": "بانتظار موافقتك",
+			"answer": "بانتظار إجابتك",
+			"expert": "بانتظار خبير",
+			"reply": "بانتظار رد"
+		},
+		"trigger": {
+			"event": "ينتظر حدثًا",
+			"watch": "يراقب اتصالًا",
+			"folder": "يراقب مجلدًا",
+			"heartbeat": "يتواصل بانتظام",
+			"schedule": "حسب جدول"
+		},
+		"createdBy": {
+			"owner": "أعددته أنت",
+			"chat": "بدأ في محادثة",
+			"workflow": "بدأه سير عمل",
+			"schedule": "بدأه جدول",
+			"system": "بدأه Nebo",
+			"watch": "بدأته مراقبة",
+			"message": "بدأته رسالة",
+			"unknown": "المصدر غير معروف"
+		},
+		"outcome": {
+			"done": "انتهى",
+			"failed": "فشل",
+			"stopped": "أُوقف",
+			"removed": "أُطفئ"
+		},
+		"status": {
+			"thinking": "يفكر…",
+			"stillThinking": "ما زال يفكر…",
+			"thinkingMore": "يفكر أكثر…",
+			"connecting": "جارٍ الاتصال…"
+		},
+		"notice": {
+			"done": "انتهى {what}",
+			"failed": "فشل {what}",
+			"stopped": "تم إيقاف {what}",
+			"removed": "تم إطفاء {what}",
+			"timer": "مؤقت جديد: {what}"
+		},
+		"group": {
+			"running": "يعمل",
+			"scheduled": "المؤقتات",
+			"watching": "المراقبات"
+		}
 	}
 }

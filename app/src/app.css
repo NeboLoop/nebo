@@ -777,3 +777,145 @@
 .consent-chip-hint {
   @apply text-xs text-base-content/50;
 }
+
+/* ===== Background work =====
+   The line above the composer (BackgroundStatus), the task list it opens,
+   and the workspace's "Running now" (BackgroundPanel, BackgroundRow). One
+   line high, never wrapping: pieces are separated by a middle dot and
+   enter and leave by width and fade (widthFade). */
+:root {
+  --bg-row-icon-size: 1.25rem;
+  --bg-thinking-dim: 0.75;
+}
+.bg-status {
+  /* In line with the composer card under it (ChatComposer's px-6). */
+  @apply relative px-7 -mb-2;
+}
+.bg-status-row {
+  @apply flex items-center min-w-0 h-6 overflow-hidden whitespace-nowrap text-xs text-base-content/60 tabular-nums;
+}
+.bg-status-piece {
+  @apply inline-flex items-center shrink-0;
+}
+.bg-status-piece + .bg-status-piece::before {
+  content: '·';
+  @apply mx-1.5 text-base-content/40;
+}
+.bg-status-phrase {
+  @apply shrink truncate min-w-0;
+}
+.bg-status-tasks {
+  @apply btn btn-ghost btn-xs h-6 min-h-6 px-1.5 font-normal text-base-content/70 border-0;
+}
+.bg-status-tasks[aria-pressed='true'] {
+  @apply bg-base-200 text-base-content;
+}
+.bg-status-thinking {
+  animation: bg-thinking 2s ease-in-out 3s infinite;
+}
+@keyframes bg-thinking {
+  0%, 100% { opacity: 1; }
+  50% { opacity: var(--bg-thinking-dim); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bg-status-thinking { animation: none; }
+}
+.bg-status-backdrop {
+  @apply fixed inset-0 z-40 cursor-default;
+}
+.bg-status-popover {
+  @apply absolute bottom-full start-6 end-6 z-50 mb-1 max-h-[60vh] overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg;
+}
+
+.bg-panel {
+  @apply rounded-2xl border border-base-content/15 bg-base-100 shadow-sm min-w-0;
+}
+.bg-status-popover .bg-panel {
+  @apply rounded-none border-0 shadow-none;
+}
+.bg-panel-empty {
+  @apply px-4 py-3 text-xs text-base-content/50;
+}
+.bg-panel-header {
+  @apply flex w-full items-center gap-2 px-3 py-2 text-start;
+}
+.bg-panel-title {
+  @apply flex-1 min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-base-content/50;
+}
+.bg-panel-count {
+  @apply text-xs text-base-content/50 tabular-nums;
+}
+.bg-panel-chevron {
+  @apply w-3.5 h-3.5 shrink-0 text-base-content/40 transition-transform;
+}
+.bg-panel-rows {
+  @apply flex flex-col pb-1;
+}
+.bg-panel-more {
+  @apply mx-1 rounded-lg px-2 py-1.5 text-start text-xs text-base-content/60 hover:bg-base-200;
+}
+
+.bg-row {
+  @apply mx-1 rounded-lg;
+}
+.bg-row-open {
+  @apply bg-base-200/60;
+}
+.bg-row-line {
+  @apply flex items-center gap-1 min-w-0;
+}
+.bg-row-main {
+  @apply flex flex-1 items-center gap-2 min-w-0 rounded-lg px-2 py-1.5 text-start text-[13px] hover:bg-base-200;
+}
+.bg-row-finished .bg-row-main {
+  @apply hover:bg-transparent text-base-content/60;
+}
+.bg-row-icon {
+  width: var(--bg-row-icon-size);
+  height: var(--bg-row-icon-size);
+  @apply inline-flex shrink-0 items-center justify-center text-base-content/50;
+}
+.bg-row-title {
+  @apply flex-1 min-w-0 truncate;
+}
+.bg-row-employee {
+  @apply text-base-content/50;
+}
+.bg-row-meta {
+  @apply shrink-0 text-xs text-base-content/50 tabular-nums;
+}
+.bg-row-stop {
+  @apply btn btn-ghost btn-xs btn-square h-6 min-h-6 w-6 me-1 text-base-content/50 opacity-0 transition-opacity;
+}
+.bg-row:hover .bg-row-stop,
+.bg-row-stop:focus-visible,
+.bg-row-stop:disabled {
+  @apply opacity-100;
+}
+@media (hover: none) {
+  .bg-row-stop { @apply opacity-100; }
+}
+.bg-row-detail {
+  @apply flex flex-col gap-1.5 px-2 pb-2 ps-9;
+}
+.bg-row-detail-line {
+  @apply text-xs text-base-content/70 break-words;
+}
+.bg-row-muted {
+  @apply text-base-content/50;
+}
+.bg-output {
+  @apply max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-base-100 px-2 py-1.5 font-mono text-[11px] text-base-content/80;
+}
+.bg-row-actions {
+  @apply flex flex-wrap gap-1;
+}
+
+/* A conversation hears its employee's background work end, fail, or set a
+   timer: one quiet line in the thread, never a message. */
+.bg-notice {
+  @apply max-w-[640px] mt-2 text-xs text-base-content/55;
+}
+.bg-notice-failed {
+  @apply text-error;
+}

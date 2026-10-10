@@ -273,7 +273,7 @@ export function createChatController(config: ChatControllerConfig) {
   let helpers = $state<HelperLine[]>([]);
 
   // --- Internal tracking ---
-  let phaseStartTime = 0;
+  let phaseStartTime = $state(0);
   /** What the model has thought since its last call or text (`thinking`). */
   let thought = '';
   let usageClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -843,7 +843,8 @@ export function createChatController(config: ChatControllerConfig) {
   }
 
   function handleChatCancelled(data: any) {
-    if (!isMyEvent(data)) return;
+    // "all": the owner stopped everything, this conversation's turn with it.
+    if (data?.session_id !== 'all' && !isMyEvent(data)) return;
     isLoading = false;
     resetStreaming();
     phaseStartTime = 0;
@@ -1315,6 +1316,8 @@ export function createChatController(config: ChatControllerConfig) {
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
+    /** When the running turn started (ms), 0 while none runs. */
+    get turnStartedAt() { return phaseStartTime; },
     get goal() { return goal; },
     get helpers() { return helpers; },
     set activityStatus(v: string) { activityStatus = v; },

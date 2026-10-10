@@ -4141,5 +4141,85 @@
 		"text": "Nebo funziona solo mentre l'app è aperta. Per farlo continuare dopo la chiusura, attiva Nebo in Elementi login.",
 		"open": "Apri Elementi login",
 		"unavailable": "Nebo funziona solo quando l'app è aperta. Questo computer non può mantenere Nebo in esecuzione dopo che esci dall'app."
+	},
+	"background": {
+		"title": "Attività in background",
+		"runningN": "{n} in corso",
+		"runningTasks": "{n, plural, one {# attività in corso} other {# attività in corso}}",
+		"tasksFinished": "{n, plural, one {# attività completata} other {# attività completate}}",
+		"finishedN": "{n} completate",
+		"showMore": "Mostra altro",
+		"showLess": "Mostra meno",
+		"next": "Prossima {when}",
+		"stopping": "Arresto…",
+		"noOutput": "Ancora nessun output",
+		"outputUnavailable": "Output non disponibile",
+		"outputTruncated": "Fine dell'output",
+		"taskStopped": "Attività fermata",
+		"actionFailed": "Non ha funzionato: {error}",
+		"degraded": "Richiede attenzione",
+		"heartbeat": "Battito",
+		"turns": "{used} di {cap} turni",
+		"runningNow": "In corso ora",
+		"runningNowSub": "Tutto ciò che lavora, attende o è pianificato in background",
+		"stopEverything": "Ferma tutto",
+		"stopEverythingConfirm": "Fermare ogni assistente, comando, turno pianificato ed esecuzione di workflow? Timer e monitoraggi restano attivi.",
+		"stoppedN": "{n, plural, =0 {Non c'era nulla in corso} one {# attività fermata} other {# attività fermate}}",
+		"nothingRunning": "Nulla è in corso in background.",
+		"action": {
+			"stop": "Ferma",
+			"cancel": "Annulla",
+			"approve": "Approva",
+			"pause": "Metti in pausa",
+			"delete": "Elimina",
+			"off": "Disattiva"
+		},
+		"wait": {
+			"approval": "Serve la tua approvazione",
+			"answer": "Serve la tua risposta",
+			"expert": "In attesa di un esperto",
+			"reply": "In attesa di una risposta"
+		},
+		"trigger": {
+			"event": "Attende un evento",
+			"watch": "Controlla una connessione",
+			"folder": "Controlla una cartella",
+			"heartbeat": "Si fa sentire regolarmente",
+			"schedule": "Secondo un programma"
+		},
+		"createdBy": {
+			"owner": "Impostato da te",
+			"chat": "Avviato in una chat",
+			"workflow": "Avviato da un workflow",
+			"schedule": "Avviato da un programma",
+			"system": "Avviato da Nebo",
+			"watch": "Avviato da un monitoraggio",
+			"message": "Avviato da un messaggio",
+			"unknown": "Origine sconosciuta"
+		},
+		"outcome": {
+			"done": "Completata",
+			"failed": "Non riuscita",
+			"stopped": "Fermata",
+			"removed": "Disattivata"
+		},
+		"status": {
+			"thinking": "Sto pensando…",
+			"stillThinking": "Sto ancora pensando…",
+			"thinkingMore": "Ci penso ancora un po'…",
+			"connecting": "Connessione…"
+		},
+		"notice": {
+			"done": "{what} è terminato",
+			"failed": "{what} non è riuscito",
+			"stopped": "{what} è stato fermato",
+			"removed": "{what} è stato disattivato",
+			"timer": "Nuovo timer: {what}"
+		},
+		"group": {
+			"running": "Al lavoro",
+			"scheduled": "Timer",
+			"watching": "Monitoraggi"
+		}
 	}
 }

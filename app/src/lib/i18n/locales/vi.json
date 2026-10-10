@@ -4141,5 +4141,85 @@
 		"text": "Nebo chỉ chạy khi ứng dụng đang mở. Để Nebo tiếp tục làm việc sau khi thoát, hãy bật Nebo trong Mục đăng nhập.",
 		"open": "Mở Mục đăng nhập",
 		"unavailable": "Nebo chỉ chạy khi ứng dụng đang mở. Máy tính này không thể giữ Nebo chạy sau khi bạn thoát ứng dụng."
+	},
+	"background": {
+		"title": "Tác vụ nền",
+		"runningN": "{n} đang chạy",
+		"runningTasks": "{n, plural, other {# tác vụ đang chạy}}",
+		"tasksFinished": "{n, plural, other {# tác vụ đã xong}}",
+		"finishedN": "{n} đã xong",
+		"showMore": "Hiện thêm",
+		"showLess": "Ẩn bớt",
+		"next": "Lần tới {when}",
+		"stopping": "Đang dừng…",
+		"noOutput": "Chưa có đầu ra",
+		"outputUnavailable": "Không có đầu ra",
+		"outputTruncated": "Đang hiện phần cuối của đầu ra",
+		"taskStopped": "Đã dừng tác vụ",
+		"actionFailed": "Không được: {error}",
+		"degraded": "Cần chú ý",
+		"heartbeat": "Nhịp",
+		"turns": "{used}/{cap} lượt",
+		"runningNow": "Đang chạy",
+		"runningNowSub": "Mọi thứ đang làm, đang chờ hoặc đã lên lịch trong nền",
+		"stopEverything": "Dừng tất cả",
+		"stopEverythingConfirm": "Dừng mọi trợ lý, lệnh, lượt theo lịch và lần chạy quy trình? Bộ hẹn giờ và theo dõi vẫn bật.",
+		"stoppedN": "{n, plural, =0 {Không có gì đang chạy} other {Đã dừng # tác vụ}}",
+		"nothingRunning": "Không có gì chạy trong nền.",
+		"action": {
+			"stop": "Dừng",
+			"cancel": "Hủy",
+			"approve": "Duyệt",
+			"pause": "Tạm dừng",
+			"delete": "Xóa",
+			"off": "Tắt"
+		},
+		"wait": {
+			"approval": "Cần bạn duyệt",
+			"answer": "Cần bạn trả lời",
+			"expert": "Đang chờ chuyên gia",
+			"reply": "Đang chờ phản hồi"
+		},
+		"trigger": {
+			"event": "Chờ một sự kiện",
+			"watch": "Theo dõi một kết nối",
+			"folder": "Theo dõi một thư mục",
+			"heartbeat": "Báo cáo định kỳ",
+			"schedule": "Theo lịch"
+		},
+		"createdBy": {
+			"owner": "Do bạn thiết lập",
+			"chat": "Bắt đầu trong cuộc trò chuyện",
+			"workflow": "Do quy trình bắt đầu",
+			"schedule": "Do lịch bắt đầu",
+			"system": "Do Nebo bắt đầu",
+			"watch": "Do theo dõi bắt đầu",
+			"message": "Do tin nhắn bắt đầu",
+			"unknown": "Không rõ nguồn"
+		},
+		"outcome": {
+			"done": "Đã xong",
+			"failed": "Thất bại",
+			"stopped": "Đã dừng",
+			"removed": "Đã tắt"
+		},
+		"status": {
+			"thinking": "Đang suy nghĩ…",
+			"stillThinking": "Vẫn đang suy nghĩ…",
+			"thinkingMore": "Suy nghĩ thêm…",
+			"connecting": "Đang kết nối…"
+		},
+		"notice": {
+			"done": "{what} đã xong",
+			"failed": "{what} thất bại",
+			"stopped": "{what} đã dừng",
+			"removed": "{what} đã tắt",
+			"timer": "Hẹn giờ mới: {what}"
+		},
+		"group": {
+			"running": "Đang làm",
+			"scheduled": "Hẹn giờ",
+			"watching": "Theo dõi"
+		}
 	}
 }

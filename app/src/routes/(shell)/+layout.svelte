@@ -260,7 +260,8 @@
     working = startWork(working, agentId, sessionId, label);
   }
   function clearWorking(agentId: unknown, sessionId: unknown) {
-    working = endWork(working, agentId, sessionId);
+    // "all": the owner stopped everything.
+    working = sessionId === 'all' ? {} : endWork(working, agentId, sessionId);
   }
   /** Seed who is working from the bot's live runs (`GET /runs/active`), at
    *  start and after a reconnect, rather than wait for the next snapshot. */

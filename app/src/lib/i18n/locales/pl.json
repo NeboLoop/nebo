@@ -4141,5 +4141,85 @@
 		"text": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Aby działało po jej zamknięciu, włącz Nebo w Rzeczach otwieranych podczas logowania.",
 		"open": "Otwórz rzeczy otwierane podczas logowania",
 		"unavailable": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Ten komputer nie może utrzymać działania Nebo po zamknięciu aplikacji."
+	},
+	"background": {
+		"title": "Zadania w tle",
+		"runningN": "{n} w toku",
+		"runningTasks": "{n, plural, one {# zadanie w toku} few {# zadania w toku} many {# zadań w toku} other {# zadania w toku}}",
+		"tasksFinished": "{n, plural, one {Zakończono # zadanie} few {Zakończono # zadania} many {Zakończono # zadań} other {Zakończono # zadania}}",
+		"finishedN": "Zakończone: {n}",
+		"showMore": "Pokaż więcej",
+		"showLess": "Pokaż mniej",
+		"next": "Następne {when}",
+		"stopping": "Zatrzymywanie…",
+		"noOutput": "Brak wyników",
+		"outputUnavailable": "Wynik niedostępny",
+		"outputTruncated": "Koniec wyniku",
+		"taskStopped": "Zadanie zatrzymane",
+		"actionFailed": "Nie udało się: {error}",
+		"degraded": "Wymaga uwagi",
+		"heartbeat": "Puls",
+		"turns": "{used} z {cap} tur",
+		"runningNow": "Teraz w toku",
+		"runningNowSub": "Wszystko, co pracuje, czeka lub jest zaplanowane w tle",
+		"stopEverything": "Zatrzymaj wszystko",
+		"stopEverythingConfirm": "Zatrzymać wszystkich pomocników, polecenia, zaplanowane tury i przebiegi przepływów? Minutniki i obserwacje zostaną włączone.",
+		"stoppedN": "{n, plural, =0 {Nic nie było w toku} one {Zatrzymano # zadanie} few {Zatrzymano # zadania} many {Zatrzymano # zadań} other {Zatrzymano # zadania}}",
+		"nothingRunning": "Nic nie działa w tle.",
+		"action": {
+			"stop": "Zatrzymaj",
+			"cancel": "Anuluj",
+			"approve": "Zatwierdź",
+			"pause": "Wstrzymaj",
+			"delete": "Usuń",
+			"off": "Wyłącz"
+		},
+		"wait": {
+			"approval": "Czeka na Twoją zgodę",
+			"answer": "Czeka na Twoją odpowiedź",
+			"expert": "Czeka na eksperta",
+			"reply": "Czeka na odpowiedź"
+		},
+		"trigger": {
+			"event": "Czeka na zdarzenie",
+			"watch": "Obserwuje połączenie",
+			"folder": "Obserwuje folder",
+			"heartbeat": "Regularnie się odzywa",
+			"schedule": "Według harmonogramu"
+		},
+		"createdBy": {
+			"owner": "Ustawione przez Ciebie",
+			"chat": "Uruchomione na czacie",
+			"workflow": "Uruchomione przez przepływ",
+			"schedule": "Uruchomione przez harmonogram",
+			"system": "Uruchomione przez Nebo",
+			"watch": "Uruchomione przez obserwację",
+			"message": "Uruchomione przez wiadomość",
+			"unknown": "Pochodzenie nieznane"
+		},
+		"outcome": {
+			"done": "Zakończone",
+			"failed": "Nieudane",
+			"stopped": "Zatrzymane",
+			"removed": "Wyłączone"
+		},
+		"status": {
+			"thinking": "Myślę…",
+			"stillThinking": "Nadal myślę…",
+			"thinkingMore": "Myślę jeszcze chwilę…",
+			"connecting": "Łączenie…"
+		},
+		"notice": {
+			"done": "Zakończono: {what}",
+			"failed": "Nie powiodło się: {what}",
+			"stopped": "Zatrzymano: {what}",
+			"removed": "Wyłączono: {what}",
+			"timer": "Nowy minutnik: {what}"
+		},
+		"group": {
+			"running": "Pracuje",
+			"scheduled": "Minutniki",
+			"watching": "Obserwacje"
+		}
 	}
 }

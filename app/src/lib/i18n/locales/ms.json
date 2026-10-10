@@ -4141,5 +4141,85 @@
 		"text": "Nebo hanya berjalan semasa apl dibuka. Untuk terus berfungsi selepas ditutup, hidupkan Nebo dalam Item Log Masuk.",
 		"open": "Buka Item Log Masuk",
 		"unavailable": "Nebo hanya berjalan semasa apl dibuka. Komputer ini tidak dapat memastikan Nebo terus berjalan selepas anda keluar daripada apl."
+	},
+	"background": {
+		"title": "Tugas latar",
+		"runningN": "{n} sedang berjalan",
+		"runningTasks": "{n, plural, other {# tugas sedang berjalan}}",
+		"tasksFinished": "{n, plural, other {# tugas selesai}}",
+		"finishedN": "{n} selesai",
+		"showMore": "Tunjuk lagi",
+		"showLess": "Tunjuk kurang",
+		"next": "Seterusnya {when}",
+		"stopping": "Menghentikan…",
+		"noOutput": "Belum ada output",
+		"outputUnavailable": "Output tidak tersedia",
+		"outputTruncated": "Menunjukkan hujung output",
+		"taskStopped": "Tugas dihentikan",
+		"actionFailed": "Tidak berjaya: {error}",
+		"degraded": "Perlukan perhatian",
+		"heartbeat": "Denyutan",
+		"turns": "{used} daripada {cap} giliran",
+		"runningNow": "Sedang berjalan",
+		"runningNowSub": "Semua yang bekerja, menunggu atau dijadualkan di latar",
+		"stopEverything": "Hentikan semua",
+		"stopEverythingConfirm": "Hentikan semua pembantu, arahan, giliran berjadual dan larian aliran kerja? Pemasa dan pemantauan kekal aktif.",
+		"stoppedN": "{n, plural, =0 {Tiada yang berjalan} other {# tugas dihentikan}}",
+		"nothingRunning": "Tiada apa-apa berjalan di latar.",
+		"action": {
+			"stop": "Hentikan",
+			"cancel": "Batal",
+			"approve": "Luluskan",
+			"pause": "Jeda",
+			"delete": "Padam",
+			"off": "Matikan"
+		},
+		"wait": {
+			"approval": "Perlukan kelulusan anda",
+			"answer": "Perlukan jawapan anda",
+			"expert": "Menunggu pakar",
+			"reply": "Menunggu balasan"
+		},
+		"trigger": {
+			"event": "Menunggu sesuatu peristiwa",
+			"watch": "Memantau sambungan",
+			"folder": "Memantau folder",
+			"heartbeat": "Melapor secara berkala",
+			"schedule": "Mengikut jadual"
+		},
+		"createdBy": {
+			"owner": "Ditetapkan oleh anda",
+			"chat": "Dimulakan dalam sembang",
+			"workflow": "Dimulakan oleh aliran kerja",
+			"schedule": "Dimulakan oleh jadual",
+			"system": "Dimulakan oleh Nebo",
+			"watch": "Dimulakan oleh pemantauan",
+			"message": "Dimulakan oleh mesej",
+			"unknown": "Asal tidak diketahui"
+		},
+		"outcome": {
+			"done": "Selesai",
+			"failed": "Gagal",
+			"stopped": "Dihentikan",
+			"removed": "Dimatikan"
+		},
+		"status": {
+			"thinking": "Sedang berfikir…",
+			"stillThinking": "Masih berfikir…",
+			"thinkingMore": "Berfikir lebih lama…",
+			"connecting": "Menyambung…"
+		},
+		"notice": {
+			"done": "{what} selesai",
+			"failed": "{what} gagal",
+			"stopped": "{what} dihentikan",
+			"removed": "{what} dimatikan",
+			"timer": "Pemasa baharu: {what}"
+		},
+		"group": {
+			"running": "Bekerja",
+			"scheduled": "Pemasa",
+			"watching": "Pemantauan"
+		}
 	}
 }

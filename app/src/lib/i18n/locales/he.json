@@ -4141,5 +4141,85 @@
 		"text": "Nebo פועל רק כשהאפליקציה פתוחה. כדי שימשיך לעבוד אחרי הסגירה, הפעילו את Nebo בפריטי התחברות.",
 		"open": "פתיחת פריטי התחברות",
 		"unavailable": "Nebo פועל רק כשהאפליקציה פתוחה. המחשב הזה לא יכול להשאיר את Nebo פועל אחרי שתצא מהאפליקציה."
+	},
+	"background": {
+		"title": "משימות ברקע",
+		"runningN": "{n} פועלות",
+		"runningTasks": "{n, plural, one {משימה אחת פועלת} other {# משימות פועלות}}",
+		"tasksFinished": "{n, plural, one {משימה אחת הסתיימה} other {# משימות הסתיימו}}",
+		"finishedN": "הסתיימו: {n}",
+		"showMore": "הצג עוד",
+		"showLess": "הצג פחות",
+		"next": "הבא {when}",
+		"stopping": "עוצר…",
+		"noOutput": "אין פלט עדיין",
+		"outputUnavailable": "הפלט אינו זמין",
+		"outputTruncated": "מוצג סוף הפלט",
+		"taskStopped": "המשימה נעצרה",
+		"actionFailed": "זה לא הצליח: {error}",
+		"degraded": "דורש תשומת לב",
+		"heartbeat": "דופק",
+		"turns": "{used} מתוך {cap} סבבים",
+		"runningNow": "פועל עכשיו",
+		"runningNowSub": "כל מה שעובד, ממתין או מתוזמן ברקע",
+		"stopEverything": "עצור הכול",
+		"stopEverythingConfirm": "לעצור את כל העוזרים, הפקודות, הסבבים המתוזמנים והרצות תהליכי העבודה? הטיימרים והמעקבים נשארים פעילים.",
+		"stoppedN": "{n, plural, =0 {שום דבר לא פעל} one {נעצרה משימה אחת} other {נעצרו # משימות}}",
+		"nothingRunning": "שום דבר לא פועל ברקע.",
+		"action": {
+			"stop": "עצור",
+			"cancel": "ביטול",
+			"approve": "אשר",
+			"pause": "השהה",
+			"delete": "מחק",
+			"off": "כבה"
+		},
+		"wait": {
+			"approval": "ממתין לאישורך",
+			"answer": "ממתין לתשובתך",
+			"expert": "ממתין למומחה",
+			"reply": "ממתין לתשובה"
+		},
+		"trigger": {
+			"event": "ממתין לאירוע",
+			"watch": "עוקב אחר חיבור",
+			"folder": "עוקב אחר תיקייה",
+			"heartbeat": "מדווח באופן קבוע",
+			"schedule": "לפי לוח זמנים"
+		},
+		"createdBy": {
+			"owner": "הוגדר על ידך",
+			"chat": "התחיל בצ'אט",
+			"workflow": "התחיל מתהליך עבודה",
+			"schedule": "התחיל מלוח זמנים",
+			"system": "התחיל מ-Nebo",
+			"watch": "התחיל ממעקב",
+			"message": "התחיל מהודעה",
+			"unknown": "המקור לא ידוע"
+		},
+		"outcome": {
+			"done": "הסתיים",
+			"failed": "נכשל",
+			"stopped": "נעצר",
+			"removed": "כובה"
+		},
+		"status": {
+			"thinking": "חושב…",
+			"stillThinking": "עדיין חושב…",
+			"thinkingMore": "חושב עוד קצת…",
+			"connecting": "מתחבר…"
+		},
+		"notice": {
+			"done": "{what} הסתיים",
+			"failed": "{what} נכשל",
+			"stopped": "{what} נעצר",
+			"removed": "{what} כובה",
+			"timer": "טיימר חדש: {what}"
+		},
+		"group": {
+			"running": "עובד",
+			"scheduled": "טיימרים",
+			"watching": "מעקבים"
+		}
 	}
 }

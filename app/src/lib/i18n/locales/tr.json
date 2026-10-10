@@ -4141,5 +4141,85 @@
 		"text": "Nebo yalnızca uygulama açıkken çalışır. Çıktıktan sonra da çalışması için Giriş Öğeleri'nde Nebo'yu açın.",
 		"open": "Giriş Öğeleri'ni aç",
 		"unavailable": "Nebo yalnızca uygulama açıkken çalışır. Bu bilgisayar, uygulamadan çıktıktan sonra Nebo'yu çalışır durumda tutamaz."
+	},
+	"background": {
+		"title": "Arka plan görevleri",
+		"runningN": "{n} çalışıyor",
+		"runningTasks": "{n, plural, one {# çalışan görev} other {# çalışan görev}}",
+		"tasksFinished": "{n, plural, one {# görev bitti} other {# görev bitti}}",
+		"finishedN": "{n} bitti",
+		"showMore": "Daha fazla göster",
+		"showLess": "Daha az göster",
+		"next": "Sonraki {when}",
+		"stopping": "Durduruluyor…",
+		"noOutput": "Henüz çıktı yok",
+		"outputUnavailable": "Çıktı kullanılamıyor",
+		"outputTruncated": "Çıktının sonu gösteriliyor",
+		"taskStopped": "Görev durduruldu",
+		"actionFailed": "Olmadı: {error}",
+		"degraded": "İlgi bekliyor",
+		"heartbeat": "Nabız",
+		"turns": "{used}/{cap} tur",
+		"runningNow": "Şu an çalışanlar",
+		"runningNowSub": "Arka planda çalışan, bekleyen veya zamanlanan her şey",
+		"stopEverything": "Hepsini durdur",
+		"stopEverythingConfirm": "Tüm yardımcılar, komutlar, zamanlanmış turlar ve iş akışı çalıştırmaları durdurulsun mu? Zamanlayıcılar ve izlemeler açık kalır.",
+		"stoppedN": "{n, plural, =0 {Çalışan bir şey yoktu} one {# görev durduruldu} other {# görev durduruldu}}",
+		"nothingRunning": "Arka planda çalışan bir şey yok.",
+		"action": {
+			"stop": "Durdur",
+			"cancel": "İptal",
+			"approve": "Onayla",
+			"pause": "Duraklat",
+			"delete": "Sil",
+			"off": "Kapat"
+		},
+		"wait": {
+			"approval": "Onayını bekliyor",
+			"answer": "Yanıtını bekliyor",
+			"expert": "Bir uzmanı bekliyor",
+			"reply": "Yanıt bekliyor"
+		},
+		"trigger": {
+			"event": "Bir olay bekliyor",
+			"watch": "Bir bağlantıyı izliyor",
+			"folder": "Bir klasörü izliyor",
+			"heartbeat": "Düzenli olarak haber veriyor",
+			"schedule": "Bir zamanlamaya göre"
+		},
+		"createdBy": {
+			"owner": "Senin kurduğun",
+			"chat": "Bir sohbette başlatıldı",
+			"workflow": "Bir iş akışı başlattı",
+			"schedule": "Bir zamanlama başlattı",
+			"system": "Nebo başlattı",
+			"watch": "Bir izleme başlattı",
+			"message": "Bir mesaj başlattı",
+			"unknown": "Kaynağı bilinmiyor"
+		},
+		"outcome": {
+			"done": "Bitti",
+			"failed": "Başarısız",
+			"stopped": "Durduruldu",
+			"removed": "Kapatıldı"
+		},
+		"status": {
+			"thinking": "Düşünüyor…",
+			"stillThinking": "Hâlâ düşünüyor…",
+			"thinkingMore": "Biraz daha düşünüyor…",
+			"connecting": "Bağlanıyor…"
+		},
+		"notice": {
+			"done": "{what} bitti",
+			"failed": "{what} başarısız oldu",
+			"stopped": "{what} durduruldu",
+			"removed": "{what} kapatıldı",
+			"timer": "Yeni zamanlayıcı: {what}"
+		},
+		"group": {
+			"running": "Çalışıyor",
+			"scheduled": "Zamanlayıcılar",
+			"watching": "İzlemeler"
+		}
 	}
 }
