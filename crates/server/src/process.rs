@@ -15,7 +15,10 @@
 
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
-use std::sync::LazyLock;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -123,6 +126,7 @@ fn hold_app_nap_opt_out() {
     );
     // Never ended: the activity lasts as long as the process.
     std::mem::forget(activity);
+    FULL_SPEED_HELD.store(true, Ordering::Relaxed);
     info!("App Nap opt-out held (idle system sleep still allowed)");
 }
 
@@ -154,9 +158,187 @@ fn opt_out_of_power_throttling() {
         )
     };
     if ok != 0 {
+        FULL_SPEED_HELD.store(true, Ordering::Relaxed);
         info!("power throttling opt-out held (EcoQoS and timer coarsening off; the PC still sleeps)");
     } else {
         tracing::warn!(error = %std::io::Error::last_os_error(), "power throttling opt-out not taken");
+    }
+}
+
+/// The App Nap (macOS) or power-throttling (Windows) opt-out is held.
+static FULL_SPEED_HELD: AtomicBool = AtomicBool::new(false);
+
+// ── What a stall report says about this machine ─────────────────────────
+
+/// The desktop window as the shell last told it (`POST /api/v1/client/events`,
+/// event `window`): focused, background, hidden. "none" until the shell says.
+static WINDOW_STATE: Mutex<String> = Mutex::new(String::new());
+
+/// The shell's word on its window, kept for stall reports.
+pub(crate) fn set_window_state(state: &str) {
+    let state: String = state.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(16).collect();
+    *WINDOW_STATE.lock().unwrap_or_else(|e| e.into_inner()) = state;
+}
+
+static OS_VERSION: LazyLock<String> =
+    LazyLock::new(|| sysinfo::System::os_version().unwrap_or_default());
+
+/// The OS version: macOS's product version (kern.osproductversion), Linux's
+/// os-release VERSION_ID, Windows's version with its build.
+pub(crate) fn os_version() -> String {
+    OS_VERSION.clone()
+}
+
+/// This process and machine now, for a stall report (`types::stall`). No
+/// user content.
+pub(crate) fn stall_context() -> types::stall::Context {
+    let window = WINDOW_STATE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    types::stall::Context {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        os: std::env::consts::OS.to_string(),
+        os_version: os_version(),
+        cpus: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        load: sysinfo::System::load_average().one,
+        window_state: if window.is_empty() { "none".into() } else { window },
+        app_nap_opt_out: FULL_SPEED_HELD.load(Ordering::Relaxed),
+        supervisor: supervisor().unwrap_or_default(),
+    }
+}
+
+// ── engine-run.json: how the last run ended ─────────────────────────────
+
+/// The file each run keeps in the data directory, so the next one knows
+/// whether it ended on purpose. The same on every OS and every supervisor.
+const RUN_FILE: &str = "engine-run.json";
+const DAY_SECS: i64 = 24 * 3600;
+
+/// One run of this server, as `engine-run.json` holds it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineRun {
+    pid: u32,
+    started_at: i64,
+    /// Last seen alive (the watchdog stamps it): when a crash happened, near enough.
+    #[serde(default)]
+    alive_at: i64,
+    /// Set by a run that stopped on purpose. Missing: it crashed, was
+    /// killed, or the watchdog exited it.
+    #[serde(default)]
+    clean_exit: bool,
+    /// When each restart in the last 24 hours happened, unix seconds.
+    #[serde(default)]
+    restarts: Vec<i64>,
+}
+
+/// How the previous run ended, when it did not stop on purpose.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LastExit {
+    /// The exit code when known: [`EXIT_STALL`] for the watchdog.
+    code: Option<i32>,
+    /// `stall` (the watchdog exited it) or `crash` (a crash, a kill, a power loss).
+    reason: &'static str,
+    /// When, unix seconds (for a crash: when it was last seen alive).
+    at: i64,
+}
+
+/// This run, from the previous one: a run that did not end cleanly makes
+/// this one a restart.
+fn next_run(prev: Option<EngineRun>, stalled: Option<i64>, pid: u32, now: i64) -> (EngineRun, Option<LastExit>) {
+    let mut run = EngineRun { pid, started_at: now, alive_at: now, ..Default::default() };
+    let Some(prev) = prev else { return (run, None) };
+    run.restarts = prev.restarts.into_iter().filter(|t| now - t < DAY_SECS).collect();
+    if prev.clean_exit {
+        return (run, None);
+    }
+    run.restarts.push(now);
+    let last = match stalled {
+        Some(at) => LastExit { code: Some(EXIT_STALL), reason: "stall", at },
+        None => LastExit { code: None, reason: "crash", at: prev.alive_at.max(prev.started_at) },
+    };
+    (run, Some(last))
+}
+
+struct RunState {
+    dir: std::path::PathBuf,
+    run: EngineRun,
+    last_exit: Option<LastExit>,
+}
+
+static RUN: Mutex<Option<RunState>> = Mutex::new(None);
+
+fn unix_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn write_run(dir: &Path, run: &EngineRun) {
+    let tmp = dir.join(format!("{RUN_FILE}.tmp"));
+    let written = serde_json::to_vec(run)
+        .map_err(std::io::Error::other)
+        .and_then(|body| std::fs::write(&tmp, body))
+        .and_then(|()| std::fs::rename(&tmp, dir.join(RUN_FILE)));
+    if let Err(e) = written {
+        tracing::warn!(error = %e, "engine-run.json not written");
+    }
+}
+
+/// This run begins: read how the last one ended (and the stall it ended
+/// inside, `stalled_at`), then record this one. Called once the port is held.
+pub(crate) fn begin_run(dir: &Path, stalled_at: Option<i64>) {
+    let prev = std::fs::read(dir.join(RUN_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let (run, last_exit) = next_run(prev, stalled_at, std::process::id(), unix_now());
+    if let Some(last) = &last_exit {
+        tracing::warn!(reason = last.reason, code = ?last.code, restarts_24h = run.restarts.len(), "the last run did not stop on purpose");
+    }
+    write_run(dir, &run);
+    *RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some(RunState { dir: dir.to_path_buf(), run, last_exit });
+}
+
+/// The watchdog's stamp: this run is alive now.
+pub(crate) fn alive() {
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_mut() {
+        state.run.alive_at = unix_now();
+        write_run(&state.dir, &state.run);
+    }
+}
+
+/// This run stops on purpose: the next one is not a restart.
+pub(crate) fn end_run() {
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_mut() {
+        state.run.clean_exit = true;
+        state.run.alive_at = unix_now();
+        write_run(&state.dir, &state.run);
+    }
+}
+
+/// The `engine` object of the workforce report: who supervises this
+/// engine, the OS version, restarts in the last 24 hours, and how the last
+/// run ended until the platform has acked it once ([`engine_reported`]).
+pub(crate) fn engine_report() -> serde_json::Value {
+    let guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    let now = unix_now();
+    let (restarts, last_exit) = match guard.as_ref() {
+        Some(s) => (s.run.restarts.iter().filter(|t| now - **t < DAY_SECS).count(), s.last_exit.clone()),
+        None => (0, None),
+    };
+    let mut engine = serde_json::json!({
+        "supervisor": supervisor().unwrap_or_default(),
+        "osVersion": os_version(),
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "restarts24h": restarts,
+    });
+    if let Some(last) = last_exit {
+        engine["lastExit"] = serde_json::json!(last);
+    }
+    engine
+}
+
+/// The platform has this run's `lastExit`: it is not sent again.
+pub(crate) fn engine_reported() {
+    if let Some(state) = RUN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        state.last_exit = None;
     }
 }
 
@@ -179,5 +361,42 @@ mod tests {
         assert_eq!(exit_code(&Err(NeboError::PortInUse(27895))), EXIT_PORT_HELD);
         assert_eq!(exit_code(&Err(NeboError::Server("boom".into()))), 1);
         assert_ne!(EXIT_STALL, EXIT_PORT_HELD);
+    }
+
+    #[test]
+    fn a_first_run_and_a_clean_stop_are_not_restarts() {
+        let (run, last) = next_run(None, None, 7, 1_000);
+        assert_eq!((run.pid, run.started_at, run.clean_exit, last), (7, 1_000, false, None));
+        let prev = EngineRun { clean_exit: true, restarts: vec![900], ..run };
+        let (run, last) = next_run(Some(prev), None, 8, 2_000);
+        assert_eq!(last, None);
+        assert_eq!(run.restarts, vec![900]);
+    }
+
+    #[test]
+    fn a_run_that_did_not_stop_cleanly_counts_as_a_restart() {
+        let prev = EngineRun { pid: 1, started_at: 1_000, alive_at: 1_500, clean_exit: false, restarts: vec![] };
+        let (run, last) = next_run(Some(prev.clone()), None, 2, 1_600);
+        assert_eq!(last, Some(LastExit { code: None, reason: "crash", at: 1_500 }));
+        assert_eq!(run.restarts, vec![1_600]);
+        // The watchdog exited it inside a stall.
+        let (_, last) = next_run(Some(prev), Some(1_400), 2, 1_600);
+        assert_eq!(last, Some(LastExit { code: Some(EXIT_STALL), reason: "stall", at: 1_400 }));
+    }
+
+    #[test]
+    fn restarts_older_than_a_day_drop_off() {
+        let now = 10 * DAY_SECS;
+        let prev = EngineRun { restarts: vec![now - DAY_SECS - 1, now - 60], ..Default::default() };
+        let (run, _) = next_run(Some(prev), None, 3, now);
+        assert_eq!(run.restarts, vec![now - 60, now]);
+    }
+
+    #[test]
+    fn window_state_keeps_only_a_short_word() {
+        set_window_state("hidden<script>alert(1)</script>");
+        assert_eq!(stall_context().window_state, "hiddenscriptaler");
+        set_window_state("focused");
+        assert_eq!(stall_context().window_state, "focused");
     }
 }

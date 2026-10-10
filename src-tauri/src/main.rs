@@ -1127,6 +1127,14 @@ fn main() {
             }
             match event {
                 tauri::WindowEvent::Focused(focused) => {
+                    if window.label() == "main" {
+                        // A hidden window loses focus too: it stays "hidden".
+                        engine::window_state(match (*focused, window.is_visible().unwrap_or(true)) {
+                            (true, _) => "focused",
+                            (false, true) => "background",
+                            (false, false) => "hidden",
+                        });
+                    }
                     // Only an app window showing one of the owner's own apps
                     // offers "Publish This App…".
                     let is_app = shows_own_app(window.label());
@@ -1165,6 +1173,7 @@ fn main() {
                         // Users quit via tray menu "Quit Nebo" or Cmd+Q.
                         api.prevent_close();
                         let _ = window.hide();
+                        engine::window_state("hidden");
                     }
                     // App windows (app-*) close normally — state was saved above.
                 }

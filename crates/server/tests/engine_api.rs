@@ -2,6 +2,8 @@
 //! handshake, an app window's facts (`GET /api/v1/apps/{id}/desktop`) and
 //! "Quit Nebo" (`POST /api/v1/engine/quit`). The last two answer only the
 //! shell's own call: the install key as its bearer token, no page behind it.
+//! Each run records how it ended in `engine-run.json`, and a stall the last
+//! run ended inside (`stall.json`) is taken at start.
 //!
 //! Run:
 //!   cargo test -p nebo-server --test engine_api
@@ -88,6 +90,9 @@ async fn quit_stops_the_engine_for_the_shell_only() {
     assert_eq!(page.status(), 401, "a page behind the shell's proxy");
     assert!(server.client.get(server.health_url()).send().await.unwrap().status().is_success(), "still serving");
 
+    let run_file = config::data_dir().unwrap().join("engine-run.json");
+    assert_eq!(engine_run(&run_file)["cleanExit"], false, "a run in progress");
+
     let quit = server.client.post(&url).bearer_auth(&server.key).send().await.unwrap();
     assert_eq!(quit.status(), 202);
 
@@ -100,4 +105,39 @@ async fn quit_stops_the_engine_for_the_shell_only() {
         assert!(tokio::time::Instant::now() < deadline, "the engine still serves 60 s after Quit");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // Stopped on purpose: the next run is not a restart.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while engine_run(&run_file)["cleanExit"] != true {
+        assert!(tokio::time::Instant::now() < deadline, "engine-run.json never says cleanExit");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+fn engine_run(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(path).expect("engine-run.json")).unwrap()
+}
+
+/// The last run ended inside a stall (the watchdog exited it): this run
+/// takes `stall.json` (to send as unrecovered) and counts a restart.
+#[tokio::test]
+async fn a_run_that_ended_in_a_stall_is_a_restart() {
+    if !common::in_own_process().await {
+        return;
+    }
+    let dir = config::data_dir().unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    let stall = types::stall::Report { kind: "stalled".into(), at: 1_000, ..Default::default() };
+    types::stall::write_unrecovered(&dir, &stall).unwrap();
+    std::fs::write(dir.join("engine-run.json"), r#"{"pid":1,"startedAt":900,"aliveAt":990}"#).unwrap();
+
+    let _server = TestServer::boot().await;
+    assert!(!dir.join("stall.json").exists(), "taken at start");
+    let run = engine_run(&dir.join("engine-run.json"));
+    assert_eq!(run["pid"], std::process::id());
+    assert_eq!(run["cleanExit"], false);
+    assert_eq!(run["restarts"].as_array().map(Vec::len), Some(1));
+    let pending = types::stall::pending();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].unrecovered && pending[0].kind == "stalled" && pending[0].at == 1_000);
 }

@@ -60,17 +60,25 @@ pub fn spawn(state: AppState) {
             let run_reports: Vec<serde_json::Value> =
                 runs.iter().map(|r| run_report(&state, r)).collect();
 
-            if send_roster || !run_reports.is_empty() {
+            // Stalls (types::stall) and the engine's state ride along: no
+            // endpoint of their own. The roster goes on the first pass, so
+            // a restart and the OS version reach the platform at start.
+            let stalls = types::stall::pending();
+            if send_roster || !run_reports.is_empty() || !stalls.is_empty() {
                 let mut body = json!({ "runs": run_reports });
                 if send_roster {
                     body["duties"] = json!(duties);
                 }
+                body["stalls"] = json!(stalls);
+                body["engine"] = crate::process::engine_report();
                 // The review queue: runs parked waiting on a human. Sent with
                 // every report (small, replace-on-arrival) so the console's
                 // "waiting on you" is never stale by more than a drain.
                 body["suspensions"] = json!(collect_suspensions(&state));
                 match api.report_workforce(&body).await {
                     Ok(()) => {
+                        types::stall::ack(stalls.len());
+                        crate::process::engine_reported();
                         if send_roster {
                             last_roster_hash = hash;
                             cycles_since_roster = 0;

@@ -20,6 +20,13 @@
 //! that lasts [`EXIT_AFTER`] of the machine's awake time exits it with
 //! `process::EXIT_STALL` from the watchdog's own thread, and its supervisor
 //! starts it again. A server nothing restarts only logs.
+//!
+//! The watchdog counts in the machine's awake time and tells a sleep from a
+//! stall (`types::stall`): after a sleep, or a gap in which the whole process
+//! got no CPU (`throttled`), the heartbeats start over. Each stall is
+//! reported to the platform on the workforce report; a stall in progress is
+//! kept in `stall.json`, so one the process does not survive is sent by the
+//! next launch as `unrecovered`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -107,33 +114,63 @@ fn stalled_for(before: Duration, stalled: bool, awake: Duration) -> Duration {
     if stalled { before + awake } else { Duration::ZERO }
 }
 
-/// The machine's awake time: it stops while the machine sleeps, so a laptop
-/// with its lid closed for an hour never counts as a stall. (`Instant` is
-/// this clock on macOS and Linux, but on Windows it counts sleep too.)
-fn awake_now() -> Duration {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    let clock = libc::CLOCK_UPTIME_RAW;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let clock = libc::CLOCK_MONOTONIC;
-    #[cfg(unix)]
-    {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        // SAFETY: a valid clock id and a timespec to write into.
-        unsafe { libc::clock_gettime(clock, &mut ts) };
-        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-    }
-    #[cfg(windows)]
-    {
-        let mut hundred_ns: u64 = 0;
-        // SAFETY: writes one u64.
-        unsafe { windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut hundred_ns) };
-        Duration::from_nanos(hundred_ns.saturating_mul(100))
+/// Seconds since the epoch, for a report's `at`.
+fn unix_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// The report for a heartbeat stall that began now, with the pool's and the
+/// runtime's state at its start.
+fn stalled_report(stall: Stall, store: &db::Store, runtime: &tokio::runtime::Handle) -> types::stall::Report {
+    let heartbeat = match (stall.runtime_age > STALE_AFTER, stall.db_age > STALE_AFTER) {
+        (true, true) => "both",
+        (true, false) => "runtime",
+        _ => "db",
+    };
+    let (connections, idle) = store.pool_state();
+    let metrics = runtime.metrics();
+    let silent = stall.runtime_age.max(stall.db_age);
+    types::stall::Report {
+        kind: "stalled".into(),
+        at: unix_now() - silent.as_secs() as i64,
+        heartbeat: Some(heartbeat.into()),
+        runtime_silent_secs: Some(stall.runtime_age.as_secs()),
+        db_silent_secs: Some(stall.db_age.as_secs()),
+        pool_connections: Some(connections),
+        pool_idle: Some(idle),
+        runtime: Some(types::stall::RuntimeState {
+            workers: metrics.num_workers(),
+            alive_tasks: metrics.num_alive_tasks(),
+            global_queue_depth: metrics.global_queue_depth(),
+        }),
+        context: types::stall::context(),
+        ..Default::default()
     }
 }
 
+/// Watchdog ticks between the stamps that say this run is alive (`process::alive`).
+const ALIVE_EVERY_TICKS: u32 = 12;
+
 /// Start both heartbeats and the watchdog. Called once, inside the runtime,
-/// after the store opens.
+/// after the store opens and the port is held.
+///
+/// Before anything else: how the last run ended. A stall it ended inside
+/// (`stall.json`) is sent as `unrecovered`, and a run that did not stop on
+/// purpose counts as a restart (`process::begin_run`).
 pub(crate) fn start(store: Arc<db::Store>) {
+    types::stall::set_context(crate::process::stall_context);
+    let data_dir = config::data_dir().ok();
+    if let Some(dir) = &data_dir {
+        let unrecovered = types::stall::take_unrecovered(dir);
+        let stalled_at = unrecovered.as_ref().map(|r| r.at);
+        if let Some(report) = unrecovered {
+            tracing::error!(kind = %report.kind, at = report.at, "liveness: the last run ended inside a stall");
+            // Its context is the stalled run's, kept as written.
+            types::stall::record(report);
+        }
+        crate::process::begin_run(dir, stalled_at);
+    }
+
     let live = &*LIVENESS;
     live.begin(Instant::now());
 
@@ -158,16 +195,50 @@ pub(crate) fn start(store: Arc<db::Store>) {
     }
 
     let supervisor = crate::process::supervisor();
+    let runtime = tokio::runtime::Handle::current();
     let watchdog = std::thread::Builder::new().name("nebo-watchdog".into()).spawn(move || {
-        let mut reported = false;
+        // The stall in progress, reported when it clears.
+        let mut current: Option<types::stall::Report> = None;
         let mut stalled = Duration::ZERO;
-        let mut awake = awake_now();
+        let mut clocks = types::stall::now();
+        let mut ticks: u32 = 0;
         loop {
             std::thread::sleep(WATCH_EVERY);
+            ticks = ticks.wrapping_add(1);
+            if ticks.is_multiple_of(ALIVE_EVERY_TICKS) {
+                crate::process::alive();
+            }
+            let now = types::stall::now();
+            let gap = types::stall::classify(clocks, now, WATCH_EVERY);
+            clocks = now;
+            if gap.slept() || gap.stalled() {
+                if gap.slept() {
+                    tracing::info!(slept_secs = gap.slept.as_secs(), "liveness: the machine slept");
+                }
+                if gap.stalled() {
+                    // This thread needs no tokio worker: when it ran late,
+                    // the whole process got no CPU (App Nap, EcoQoS, a
+                    // machine out of memory).
+                    tracing::error!(
+                        lag_secs = gap.lag.as_secs(),
+                        "liveness: the whole process got no CPU while the machine was awake (throttled)"
+                    );
+                    types::stall::record(types::stall::Report {
+                        kind: "throttled".into(),
+                        at: unix_now() - gap.lag.as_secs() as i64,
+                        duration_secs: Some(gap.lag.as_secs()),
+                        ..Default::default()
+                    });
+                }
+                // The heartbeats aged while the process was asleep or
+                // starved, not stuck (on Windows `Instant` counts sleep):
+                // they count from now.
+                live.begin(Instant::now());
+                stalled = Duration::ZERO;
+                continue;
+            }
             let stall = live.stall(Instant::now());
-            let now = awake_now();
-            stalled = stalled_for(stalled, stall.is_some(), now.saturating_sub(awake));
-            awake = now;
+            stalled = stalled_for(stalled, stall.is_some(), gap.awake);
             if let Some(by) = supervisor.as_deref()
                 && stalled >= EXIT_AFTER
                 && SERVING.load(Ordering::Relaxed)
@@ -177,25 +248,40 @@ pub(crate) fn start(store: Arc<db::Store>) {
                     supervisor = by,
                     "liveness: stalled past the limit; exiting so the supervisor starts Nebo again"
                 );
+                // stall.json was written when the stall began: the next run sends it.
                 std::process::exit(crate::process::EXIT_STALL);
             }
             match stall {
-                Some(stall) if !reported => {
-                    reported = true;
-                    let (connections, idle) = store.pool_state();
+                Some(stall) if current.is_none() => {
+                    let report = stalled_report(stall, &store, &runtime);
                     tracing::error!(
+                        heartbeat = report.heartbeat.as_deref().unwrap_or_default(),
                         runtime_silent_secs = stall.runtime_age.as_secs(),
                         db_silent_secs = stall.db_age.as_secs(),
-                        pool_connections = connections,
-                        pool_idle = idle,
+                        pool_connections = report.pool_connections.unwrap_or_default(),
+                        pool_idle = report.pool_idle.unwrap_or_default(),
+                        runtime = ?report.runtime,
                         pid = std::process::id(),
                         "liveness: server stalled; /health answers 503. `sample <pid> 5` (macOS) \
                          shows where the workers wait"
                     );
+                    if let Some(dir) = &data_dir
+                        && let Err(e) = types::stall::write_unrecovered(dir, &report)
+                    {
+                        tracing::warn!(error = %e, "liveness: stall.json not written");
+                    }
+                    current = Some(report);
                 }
-                None if reported => {
-                    reported = false;
-                    tracing::warn!("liveness: server answering again after a stall");
+                None => {
+                    if let Some(mut report) = current.take() {
+                        let lasted = (unix_now() - report.at).max(0) as u64;
+                        tracing::warn!(stalled_secs = lasted, "liveness: server answering again after a stall");
+                        if let Some(dir) = &data_dir {
+                            types::stall::clear_unrecovered(dir);
+                        }
+                        report.duration_secs = Some(lasted);
+                        types::stall::record(report);
+                    }
                 }
                 _ => {}
             }
@@ -224,14 +310,6 @@ mod tests {
         assert_eq!(stalled_for(stalled, false, tick), Duration::ZERO);
         // A tick across a sleep adds only its awake part.
         assert_eq!(stalled_for(Duration::ZERO, true, Duration::from_secs(5)), Duration::from_secs(5));
-    }
-
-    #[test]
-    fn awake_clock_moves_forward() {
-        let a = awake_now();
-        std::thread::sleep(Duration::from_millis(20));
-        let b = awake_now();
-        assert!(b > a && b - a >= Duration::from_millis(10));
     }
 
     #[test]
