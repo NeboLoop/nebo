@@ -2764,6 +2764,9 @@ export interface FileShare {
 	/** The link follows its file; otherwise it keeps the version it has. */
 	live: boolean
 	contentHash: string
+	/** Published as a site: its address and https://<address>.nebo.page. */
+	address?: string
+	siteUrl?: string
 }
 
 export interface ImportItem {

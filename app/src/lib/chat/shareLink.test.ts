@@ -23,7 +23,7 @@ vi.mock('$lib/api/gocliRequest', () => ({
 	}
 }));
 
-import { expiresAtFor, loadShareLink, saveShareLink, turnOffShareLink } from './shareLink';
+import { expiresAtFor, loadShareLink, saveShareLink, siteAddressFor, turnOffShareLink } from './shareLink';
 
 const artifact = '/api/v1/files/Q3 plan & notes.md';
 
@@ -56,6 +56,17 @@ describe('share by link', () => {
 		expect(calls).toEqual([
 			{ method: 'PUT', url: '/api/v1/neboai/share', body: { artifact, access: 'link', expiresAt: '', live: false, newVersion: true } }
 		]);
+	});
+
+	it('publishes as a site at an address, or stops with an empty one', async () => {
+		await saveShareLink(artifact, 'link', '', '', true, false, 'grandview');
+		await saveShareLink(artifact, 'link', '', '', true, false, '');
+		expect(calls.map((c) => (c.body as Record<string, unknown>).address)).toEqual(['grandview', '']);
+	});
+
+	it('suggests a site address from the file’s title', () => {
+		expect(siteAddressFor('Grandview Neighborhood.html')).toBe('grandview-neighborhood');
+		expect(siteAddressFor('Café & Bar — Menu 2026.html')).toBe('cafe-bar-menu-2026');
 	});
 
 	it('turns the link off with a DELETE', async () => {

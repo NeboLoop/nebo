@@ -1453,6 +1453,9 @@ pub struct SetShareLinkRequest {
     /// Put the file as it is now behind the link, live or not.
     #[serde(default)]
     pub new_version: bool,
+    /// Publish as a site at <address>.nebo.page; "" stops; absent keeps.
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 /// Only files in this bot's Work panel can be shared: a link makes a file
@@ -1531,6 +1534,7 @@ pub async fn set_share_link(
         password: body.password.clone(),
         expires_at: body.expires_at.clone(),
         live: body.live,
+        address: body.address.clone(),
         ..Default::default()
     };
     if let Some(existing) = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next() {

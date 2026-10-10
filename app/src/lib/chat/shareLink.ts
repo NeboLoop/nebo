@@ -47,19 +47,36 @@ export async function loadShareLink(artifact: string): Promise<ShareState> {
 /** Give the file a link with these settings (creates one when it has none).
  *  An empty password keeps a password link's current one. A live link
  *  follows the file; otherwise it keeps its version, and `newVersion` puts
- *  the file as it is now behind it. */
+ *  the file as it is now behind it. `address` publishes it as a site at
+ *  <address>.nebo.page ('' stops; undefined keeps). */
 export async function saveShareLink(
 	artifact: string,
 	access: ShareAccess,
 	password: string,
 	expiresAt: string,
 	live: boolean,
-	newVersion = false
+	newVersion = false,
+	address?: string
 ): Promise<ShareState> {
 	const body: Record<string, unknown> = { artifact, access, expiresAt, live };
 	if (access === 'password' && password) body.password = password;
 	if (newVersion) body.newVersion = true;
+	if (address !== undefined) body.address = address;
 	return stateOf(await neboAISetShareLink(body));
+}
+
+/** A site address made from a file's title: "Grandview Party.html" →
+ *  "grandview-party". The hub has the last word on what it accepts. */
+export function siteAddressFor(title: string): string {
+	return title
+		.replace(/\.[a-z0-9]+$/i, '')
+		.normalize('NFKD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 40)
+		.replace(/-+$/, '');
 }
 
 /** Turn the file's link off, for good. */

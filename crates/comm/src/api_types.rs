@@ -959,6 +959,10 @@ pub struct FileShare {
     pub live: bool,
     /// The bot's hash of the version the link opens now.
     pub content_hash: String,
+    /// Published as a site: its address, and `site_url`
+    /// (https://<address>.nebo.page). Empty when it isn't.
+    pub address: String,
+    pub site_url: String,
 }
 
 /// A link opened (`POST /api/v1/shares/open`): `state` is ok, password,
@@ -993,6 +997,9 @@ pub struct FileShareSettings {
     pub file_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub content_hash: String,
+    /// Publish as a site at this address; `Some("")` stops; None keeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 // ── Feedback to the NeboAI team ──────────────────────────────────────
