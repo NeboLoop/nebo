@@ -18,6 +18,7 @@ import { opensHere } from './origin';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { loadWaitingAsks, setWaitingAsks, waitingAsks } from '$lib/stores/waitingAsks';
+import { loadBackground, setBackground, backgroundEnded, timerCreated } from '$lib/stores/background';
 import { newBlockingAsks, seedBlockingAsks, openAsk, answerById, inAsksChat } from '$lib/stores/blockingAsks';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 import { addToast, removeToast } from '$lib/stores/toast';
@@ -108,6 +109,14 @@ export function attachWebSocketListeners(): void {
       for (const ask of newBlockingAsks(data?.asks ?? [])) tellBlockingAsk(ask);
     })
   );
+
+  // --- Background work: the "Running now" list and each chat's strip,
+  // loaded once and replaced whole on every change; an ended piece or a new
+  // timer is told to its employee's chats. ---
+  void loadBackground().catch(() => log.debug('Background API unavailable'));
+  unsubs.push(ws.on('background_changed', (data: any) => setBackground(data)));
+  unsubs.push(ws.on('background_finished', (data: any) => backgroundEnded(data)));
+  unsubs.push(ws.on('background_timer_created', (data: any) => timerCreated(data)));
 
   // --- An app's page handed the owner a file to share (`nebo.share`): on
   // the client whose page asked, and only there, bring this window forward
@@ -300,6 +309,8 @@ export function attachWebSocketListeners(): void {
     ws.onStatus((status) => {
       if (status === 'connected') {
         clearReconnect();
+        // What changed while the socket was down was never told.
+        void loadBackground().catch(() => log.debug('Background API unavailable'));
         return;
       }
       if ((status === 'error' || status === 'disconnected') && !reconnectSoon && reconnectToast === null) {

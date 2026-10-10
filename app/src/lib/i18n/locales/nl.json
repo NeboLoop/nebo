@@ -4141,5 +4141,85 @@
 		"text": "Nebo werkt alleen zolang de app open is. Zet Nebo aan bij Inloggen om het te laten doorwerken na het afsluiten.",
 		"open": "Inlogonderdelen openen",
 		"unavailable": "Nebo draait alleen zolang de app open is. Deze computer kan Nebo niet laten draaien nadat je de app afsluit."
+	},
+	"background": {
+		"title": "Achtergrondtaken",
+		"runningN": "{n} actief",
+		"runningTasks": "{n, plural, one {# actieve taak} other {# actieve taken}}",
+		"tasksFinished": "{n, plural, one {# taak klaar} other {# taken klaar}}",
+		"finishedN": "{n} klaar",
+		"showMore": "Meer tonen",
+		"showLess": "Minder tonen",
+		"next": "Volgende {when}",
+		"stopping": "Bezig met stoppen…",
+		"noOutput": "Nog geen uitvoer",
+		"outputUnavailable": "Uitvoer niet beschikbaar",
+		"outputTruncated": "Het einde van de uitvoer",
+		"taskStopped": "Taak gestopt",
+		"actionFailed": "Dat lukte niet: {error}",
+		"degraded": "Vraagt aandacht",
+		"heartbeat": "Hartslag",
+		"turns": "{used} van {cap} beurten",
+		"runningNow": "Nu actief",
+		"runningNowSub": "Alles wat op de achtergrond werkt, wacht of gepland staat",
+		"stopEverything": "Alles stoppen",
+		"stopEverythingConfirm": "Elke helper, elk commando, elke geplande beurt en elke workflowrun stoppen? Timers en bewakingen blijven aan.",
+		"stoppedN": "{n, plural, =0 {Er liep niets} one {# taak gestopt} other {# taken gestopt}}",
+		"nothingRunning": "Er draait niets op de achtergrond.",
+		"action": {
+			"stop": "Stoppen",
+			"cancel": "Annuleren",
+			"approve": "Goedkeuren",
+			"pause": "Pauzeren",
+			"delete": "Verwijderen",
+			"off": "Uitzetten"
+		},
+		"wait": {
+			"approval": "Wacht op je goedkeuring",
+			"answer": "Wacht op je antwoord",
+			"expert": "Wacht op een expert",
+			"reply": "Wacht op een antwoord"
+		},
+		"trigger": {
+			"event": "Wacht op een gebeurtenis",
+			"watch": "Bewaakt een verbinding",
+			"folder": "Bewaakt een map",
+			"heartbeat": "Meldt zich regelmatig",
+			"schedule": "Volgens een schema"
+		},
+		"createdBy": {
+			"owner": "Door jou ingesteld",
+			"chat": "Gestart in een chat",
+			"workflow": "Gestart door een workflow",
+			"schedule": "Gestart door een schema",
+			"system": "Gestart door Nebo",
+			"watch": "Gestart door een bewaking",
+			"message": "Gestart door een bericht",
+			"unknown": "Herkomst onbekend"
+		},
+		"outcome": {
+			"done": "Klaar",
+			"failed": "Mislukt",
+			"stopped": "Gestopt",
+			"removed": "Uitgezet"
+		},
+		"status": {
+			"thinking": "Aan het denken…",
+			"stillThinking": "Nog aan het denken…",
+			"thinkingMore": "Denkt nog even verder…",
+			"connecting": "Verbinden…"
+		},
+		"notice": {
+			"done": "{what} is klaar",
+			"failed": "{what} is mislukt",
+			"stopped": "{what} is gestopt",
+			"removed": "{what} is uitgezet",
+			"timer": "Nieuwe timer: {what}"
+		},
+		"group": {
+			"running": "Aan het werk",
+			"scheduled": "Timers",
+			"watching": "Bewakingen"
+		}
 	}
 }

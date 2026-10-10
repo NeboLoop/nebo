@@ -133,6 +133,7 @@
     if (chatId) goto(`/${agentId}/threads/${chatId}?active=1`);
   }}
   isLoading={chat.isLoading}
+  turnStartedAt={chat.turnStartedAt}
   quotaWarning={chat.quotaWarning}
   ondismisswarning={() => chat.dismissWarning()}
   chatError={chat.chatError}

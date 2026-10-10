@@ -2474,6 +2474,7 @@
               onsend={(text) => helpChat?.send(text)}
               onstop={() => helpChat?.stop()}
               isLoading={helpChat.isLoading}
+              turnStartedAt={helpChat.turnStartedAt}
             />
           </div>
         </div>

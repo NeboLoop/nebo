@@ -4141,5 +4141,85 @@
 		"text": "Nebo はアプリが開いている間だけ動作します。終了後も動かし続けるには、ログイン項目で Nebo をオンにしてください。",
 		"open": "ログイン項目を開く",
 		"unavailable": "Nebo はアプリが開いている間だけ実行されます。このコンピュータでは、アプリを終了した後に Nebo を実行し続けることができません。"
+	},
+	"background": {
+		"title": "バックグラウンドのタスク",
+		"runningN": "{n}件実行中",
+		"runningTasks": "{n, plural, other {実行中のタスク #件}}",
+		"tasksFinished": "{n, plural, other {#件のタスクが完了}}",
+		"finishedN": "完了 {n}件",
+		"showMore": "さらに表示",
+		"showLess": "表示を減らす",
+		"next": "次回 {when}",
+		"stopping": "停止中…",
+		"noOutput": "まだ出力はありません",
+		"outputUnavailable": "出力を表示できません",
+		"outputTruncated": "出力の末尾を表示しています",
+		"taskStopped": "タスクを停止しました",
+		"actionFailed": "うまくいきませんでした: {error}",
+		"degraded": "対応が必要",
+		"heartbeat": "ハートビート",
+		"turns": "{used}/{cap} ターン",
+		"runningNow": "実行中",
+		"runningNowSub": "バックグラウンドで作業中・待機中・予定されているもの",
+		"stopEverything": "すべて停止",
+		"stopEverythingConfirm": "すべてのヘルパー、コマンド、予定ターン、ワークフロー実行を停止しますか?タイマーと監視はオンのままです。",
+		"stoppedN": "{n, plural, =0 {実行中のものはありませんでした} other {#件のタスクを停止しました}}",
+		"nothingRunning": "バックグラウンドで実行中のものはありません。",
+		"action": {
+			"stop": "停止",
+			"cancel": "キャンセル",
+			"approve": "承認",
+			"pause": "一時停止",
+			"delete": "削除",
+			"off": "オフにする"
+		},
+		"wait": {
+			"approval": "承認待ち",
+			"answer": "回答待ち",
+			"expert": "専門家の返答待ち",
+			"reply": "返信待ち"
+		},
+		"trigger": {
+			"event": "イベントを待機",
+			"watch": "接続を監視",
+			"folder": "フォルダを監視",
+			"heartbeat": "定期的に確認",
+			"schedule": "スケジュールどおり"
+		},
+		"createdBy": {
+			"owner": "あなたが設定",
+			"chat": "チャットで開始",
+			"workflow": "ワークフローが開始",
+			"schedule": "スケジュールが開始",
+			"system": "Nebo が開始",
+			"watch": "監視が開始",
+			"message": "メッセージで開始",
+			"unknown": "開始元不明"
+		},
+		"outcome": {
+			"done": "完了",
+			"failed": "失敗",
+			"stopped": "停止",
+			"removed": "オフ"
+		},
+		"status": {
+			"thinking": "考え中…",
+			"stillThinking": "まだ考え中…",
+			"thinkingMore": "もう少し考え中…",
+			"connecting": "接続中…"
+		},
+		"notice": {
+			"done": "{what}が完了しました",
+			"failed": "{what}が失敗しました",
+			"stopped": "{what}を停止しました",
+			"removed": "{what}をオフにしました",
+			"timer": "新しいタイマー: {what}"
+		},
+		"group": {
+			"running": "作業中",
+			"scheduled": "タイマー",
+			"watching": "監視"
+		}
 	}
 }

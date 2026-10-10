@@ -4141,5 +4141,85 @@
 		"text": "O Nebo só funciona enquanto o app está aberto. Para que continue trabalhando depois de fechar, ative o Nebo em Itens de Início.",
 		"open": "Abrir Itens de Início",
 		"unavailable": "O Nebo só funciona enquanto o app está aberto. Este computador não consegue manter o Nebo funcionando depois que você fecha o app."
+	},
+	"background": {
+		"title": "Tarefas em segundo plano",
+		"runningN": "{n} em andamento",
+		"runningTasks": "{n, plural, one {# tarefa em andamento} other {# tarefas em andamento}}",
+		"tasksFinished": "{n, plural, one {# tarefa concluída} other {# tarefas concluídas}}",
+		"finishedN": "{n} concluídas",
+		"showMore": "Mostrar mais",
+		"showLess": "Mostrar menos",
+		"next": "Próxima {when}",
+		"stopping": "Parando…",
+		"noOutput": "Ainda sem saída",
+		"outputUnavailable": "Saída indisponível",
+		"outputTruncated": "Mostrando o fim da saída",
+		"taskStopped": "Tarefa parada",
+		"actionFailed": "Não deu certo: {error}",
+		"degraded": "Precisa de atenção",
+		"heartbeat": "Pulsação",
+		"turns": "{used} de {cap} turnos",
+		"runningNow": "Em andamento agora",
+		"runningNowSub": "Tudo o que está trabalhando, esperando ou agendado em segundo plano",
+		"stopEverything": "Parar tudo",
+		"stopEverythingConfirm": "Parar todos os ajudantes, comandos, turnos agendados e execuções de fluxos? Os timers e as vigilâncias continuam ativos.",
+		"stoppedN": "{n, plural, =0 {Nada estava em andamento} one {# tarefa parada} other {# tarefas paradas}}",
+		"nothingRunning": "Nada está rodando em segundo plano.",
+		"action": {
+			"stop": "Parar",
+			"cancel": "Cancelar",
+			"approve": "Aprovar",
+			"pause": "Pausar",
+			"delete": "Excluir",
+			"off": "Desligar"
+		},
+		"wait": {
+			"approval": "Precisa da sua aprovação",
+			"answer": "Precisa da sua resposta",
+			"expert": "Esperando um especialista",
+			"reply": "Esperando uma resposta"
+		},
+		"trigger": {
+			"event": "Espera um evento",
+			"watch": "Vigia uma conexão",
+			"folder": "Vigia uma pasta",
+			"heartbeat": "Dá notícias regularmente",
+			"schedule": "Conforme um horário"
+		},
+		"createdBy": {
+			"owner": "Configurado por você",
+			"chat": "Iniciado em um chat",
+			"workflow": "Iniciado por um fluxo",
+			"schedule": "Iniciado por um horário",
+			"system": "Iniciado pelo Nebo",
+			"watch": "Iniciado por uma vigilância",
+			"message": "Iniciado por uma mensagem",
+			"unknown": "Origem desconhecida"
+		},
+		"outcome": {
+			"done": "Concluída",
+			"failed": "Falhou",
+			"stopped": "Parada",
+			"removed": "Desligada"
+		},
+		"status": {
+			"thinking": "Pensando…",
+			"stillThinking": "Ainda pensando…",
+			"thinkingMore": "Pensando mais um pouco…",
+			"connecting": "Conectando…"
+		},
+		"notice": {
+			"done": "{what} terminou",
+			"failed": "{what} falhou",
+			"stopped": "{what} foi parado",
+			"removed": "{what} foi desligado",
+			"timer": "Novo timer: {what}"
+		},
+		"group": {
+			"running": "Trabalhando",
+			"scheduled": "Timers",
+			"watching": "Vigilâncias"
+		}
 	}
 }

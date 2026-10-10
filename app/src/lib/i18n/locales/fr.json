@@ -4141,5 +4141,85 @@
 		"text": "Nebo ne fonctionne que lorsque l'app est ouverte. Pour qu'il continue après la fermeture, activez Nebo dans Ouverture.",
 		"open": "Ouvrir les éléments d'ouverture",
 		"unavailable": "Nebo ne fonctionne que lorsque l'app est ouverte. Cet ordinateur ne peut pas laisser Nebo fonctionner une fois l'app quittée."
+	},
+	"background": {
+		"title": "Tâches en arrière-plan",
+		"runningN": "{n} en cours",
+		"runningTasks": "{n, plural, one {# tâche en cours} other {# tâches en cours}}",
+		"tasksFinished": "{n, plural, one {# tâche terminée} other {# tâches terminées}}",
+		"finishedN": "{n} terminées",
+		"showMore": "Afficher plus",
+		"showLess": "Afficher moins",
+		"next": "Prochaine {when}",
+		"stopping": "Arrêt en cours…",
+		"noOutput": "Pas encore de sortie",
+		"outputUnavailable": "Sortie indisponible",
+		"outputTruncated": "Fin de la sortie",
+		"taskStopped": "Tâche arrêtée",
+		"actionFailed": "Cela n'a pas marché : {error}",
+		"degraded": "Demande votre attention",
+		"heartbeat": "Pulsation",
+		"turns": "{used} sur {cap} tours",
+		"runningNow": "En cours",
+		"runningNowSub": "Tout ce qui travaille, attend ou est planifié en arrière-plan",
+		"stopEverything": "Tout arrêter",
+		"stopEverythingConfirm": "Arrêter tous les assistants, commandes, tours planifiés et exécutions de workflow ? Les minuteurs et surveillances restent actifs.",
+		"stoppedN": "{n, plural, =0 {Rien n'était en cours} one {# tâche arrêtée} other {# tâches arrêtées}}",
+		"nothingRunning": "Rien ne tourne en arrière-plan.",
+		"action": {
+			"stop": "Arrêter",
+			"cancel": "Annuler",
+			"approve": "Approuver",
+			"pause": "Mettre en pause",
+			"delete": "Supprimer",
+			"off": "Désactiver"
+		},
+		"wait": {
+			"approval": "Attend votre accord",
+			"answer": "Attend votre réponse",
+			"expert": "Attend un expert",
+			"reply": "Attend une réponse"
+		},
+		"trigger": {
+			"event": "Attend un événement",
+			"watch": "Surveille une connexion",
+			"folder": "Surveille un dossier",
+			"heartbeat": "Fait un point régulier",
+			"schedule": "Selon un horaire"
+		},
+		"createdBy": {
+			"owner": "Configuré par vous",
+			"chat": "Lancé dans un chat",
+			"workflow": "Lancé par un workflow",
+			"schedule": "Lancé par un horaire",
+			"system": "Lancé par Nebo",
+			"watch": "Lancé par une surveillance",
+			"message": "Lancé par un message",
+			"unknown": "Origine inconnue"
+		},
+		"outcome": {
+			"done": "Terminée",
+			"failed": "Échec",
+			"stopped": "Arrêtée",
+			"removed": "Désactivée"
+		},
+		"status": {
+			"thinking": "Réflexion…",
+			"stillThinking": "Réflexion en cours…",
+			"thinkingMore": "Réflexion approfondie…",
+			"connecting": "Connexion…"
+		},
+		"notice": {
+			"done": "{what} est terminé",
+			"failed": "{what} a échoué",
+			"stopped": "{what} a été arrêté",
+			"removed": "{what} a été désactivé",
+			"timer": "Nouveau minuteur : {what}"
+		},
+		"group": {
+			"running": "En cours",
+			"scheduled": "Minuteurs",
+			"watching": "Surveillances"
+		}
 	}
 }

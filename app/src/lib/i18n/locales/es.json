@@ -4141,5 +4141,85 @@
 		"text": "Nebo solo funciona mientras la app está abierta. Para que siga trabajando después de cerrarla, activa Nebo en Ítems de inicio de sesión.",
 		"open": "Abrir Ítems de inicio de sesión",
 		"unavailable": "Nebo solo funciona mientras la app está abierta. Este equipo no puede mantener Nebo en funcionamiento después de salir."
+	},
+	"background": {
+		"title": "Tareas en segundo plano",
+		"runningN": "{n} en curso",
+		"runningTasks": "{n, plural, one {# tarea en curso} other {# tareas en curso}}",
+		"tasksFinished": "{n, plural, one {# tarea terminada} other {# tareas terminadas}}",
+		"finishedN": "{n} terminadas",
+		"showMore": "Mostrar más",
+		"showLess": "Mostrar menos",
+		"next": "Próxima {when}",
+		"stopping": "Deteniendo…",
+		"noOutput": "Aún no hay salida",
+		"outputUnavailable": "Salida no disponible",
+		"outputTruncated": "Mostrando el final de la salida",
+		"taskStopped": "Tarea detenida",
+		"actionFailed": "No funcionó: {error}",
+		"degraded": "Requiere atención",
+		"heartbeat": "Latido",
+		"turns": "{used} de {cap} turnos",
+		"runningNow": "En curso ahora",
+		"runningNowSub": "Todo lo que trabaja, espera o está programado en segundo plano",
+		"stopEverything": "Detener todo",
+		"stopEverythingConfirm": "¿Detener todos los ayudantes, comandos, turnos programados y ejecuciones de flujos? Los temporizadores y las vigilancias siguen activos.",
+		"stoppedN": "{n, plural, =0 {No había nada en curso} one {Se detuvo # tarea} other {Se detuvieron # tareas}}",
+		"nothingRunning": "No hay nada en segundo plano.",
+		"action": {
+			"stop": "Detener",
+			"cancel": "Cancelar",
+			"approve": "Aprobar",
+			"pause": "Pausar",
+			"delete": "Eliminar",
+			"off": "Desactivar"
+		},
+		"wait": {
+			"approval": "Necesita tu aprobación",
+			"answer": "Necesita tu respuesta",
+			"expert": "Esperando a un experto",
+			"reply": "Esperando una respuesta"
+		},
+		"trigger": {
+			"event": "Espera un evento",
+			"watch": "Vigila una conexión",
+			"folder": "Vigila una carpeta",
+			"heartbeat": "Se reporta con regularidad",
+			"schedule": "Según un horario"
+		},
+		"createdBy": {
+			"owner": "Configurado por ti",
+			"chat": "Iniciado en un chat",
+			"workflow": "Iniciado por un flujo",
+			"schedule": "Iniciado por un horario",
+			"system": "Iniciado por Nebo",
+			"watch": "Iniciado por una vigilancia",
+			"message": "Iniciado por un mensaje",
+			"unknown": "Origen desconocido"
+		},
+		"outcome": {
+			"done": "Terminada",
+			"failed": "Falló",
+			"stopped": "Detenida",
+			"removed": "Desactivada"
+		},
+		"status": {
+			"thinking": "Pensando…",
+			"stillThinking": "Sigue pensando…",
+			"thinkingMore": "Pensando un poco más…",
+			"connecting": "Conectando…"
+		},
+		"notice": {
+			"done": "{what} terminó",
+			"failed": "{what} falló",
+			"stopped": "{what} se detuvo",
+			"removed": "{what} se desactivó",
+			"timer": "Nuevo temporizador: {what}"
+		},
+		"group": {
+			"running": "Trabajando",
+			"scheduled": "Temporizadores",
+			"watching": "Vigilancias"
+		}
 	}
 }

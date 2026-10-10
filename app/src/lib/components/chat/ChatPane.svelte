@@ -51,6 +51,8 @@
   import { trailingLink } from '$lib/chat/errorLink';
   import { callLine, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
+  import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
+  import { backgroundNotices, belongsTo } from '$lib/stores/background';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -116,7 +118,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -158,6 +160,8 @@
     emptyDesc?: string;
     allAgents?: AgentInfo[];
     activityStatus?: string;
+    /** When the running turn started (ms); 0 while none runs. */
+    turnStartedAt?: number;
     /** Helpers started from this conversation that are still working. */
     helpers?: HelperLine[];
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
@@ -187,6 +191,13 @@
      *  no composer. */
     readOnly?: boolean;
   } = $props();
+
+  // The employee's background work told while this conversation is open:
+  // what finished, failed or stopped, and the timers it made.
+  const openedAt = Date.now();
+  /** Background notices shown at once, newest last. */
+  const NOTICES_SHOWN = 3;
+  const chatNotices = $derived($backgroundNotices.filter((n) => n.at >= openedAt && belongsTo(n.task, agentId)).slice(-NOTICES_SHOWN));
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
@@ -1402,6 +1413,8 @@
     }
     return null;
   });
+  /** The working line's words: the running call's, else the turn's status. */
+  const workingLine = $derived(runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working'));
 
   // Tools now live on the assistant message that ran them (msg.tools[]), so there
   // are no sibling tool messages to collapse — the rendered list IS the message
@@ -2264,14 +2277,20 @@
     <!-- Live working indicator: shown for the WHOLE run,
          including while the reply text is streaming or a tool grinds after the
          last text chunk — not only before the first assistant message. -->
-    {#if isLoading && groupedMessages.length > 0}
-      {@const working = runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working')}
+    {#each chatNotices as n (n.key)}
+      <div class="bg-notice {n.kind === 'failed' ? 'bg-notice-failed' : ''}">
+        {$t(`background.notice.${n.kind}`, { values: { what: n.task.title || $t('background.heartbeat') } })}
+      </div>
+    {/each}
+    <!-- A conversation with a composer shows its working line above the
+         composer (BackgroundStatus); one watched from outside shows it here. -->
+    {#if readOnly && isLoading && groupedMessages.length > 0}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2 min-w-0">
         <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
-        <span class="min-w-0 truncate text-sm text-base-content/70 animate-pulse" title={working}>{working}</span>
+        <span class="min-w-0 truncate text-sm text-base-content/70 animate-pulse" title={workingLine}>{workingLine}</span>
       </div>
     {/if}
-    {#if !isLoading && helpers.length > 0}
+    {#if readOnly && !isLoading && helpers.length > 0}
       <div class="helper-status">
         <span class="loading loading-dots loading-xs"></span>
         <span>{helpers.length === 1
@@ -2375,6 +2394,7 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
+    <BackgroundStatus {agentId} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} />
     <ChatComposer
       {agentName}
       {agentId}

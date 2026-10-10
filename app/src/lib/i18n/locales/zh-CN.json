@@ -4141,5 +4141,85 @@
 		"text": "Nebo 仅在应用打开时运行。若要在退出后继续工作，请在“登录项”中打开 Nebo。",
 		"open": "打开登录项",
 		"unavailable": "Nebo 仅在应用打开时运行。退出应用后，这台电脑无法让 Nebo 继续运行。"
+	},
+	"background": {
+		"title": "后台任务",
+		"runningN": "{n} 个运行中",
+		"runningTasks": "{n, plural, other {# 个任务运行中}}",
+		"tasksFinished": "{n, plural, other {# 个任务已完成}}",
+		"finishedN": "{n} 个已完成",
+		"showMore": "显示更多",
+		"showLess": "收起",
+		"next": "下次 {when}",
+		"stopping": "正在停止…",
+		"noOutput": "尚无输出",
+		"outputUnavailable": "输出不可用",
+		"outputTruncated": "显示输出的结尾",
+		"taskStopped": "任务已停止",
+		"actionFailed": "未成功:{error}",
+		"degraded": "需要处理",
+		"heartbeat": "心跳",
+		"turns": "{used}/{cap} 轮",
+		"runningNow": "正在运行",
+		"runningNowSub": "在后台工作、等待或已排期的一切",
+		"stopEverything": "全部停止",
+		"stopEverythingConfirm": "停止所有助手、命令、定时轮次和工作流运行?计时器和监视保持开启。",
+		"stoppedN": "{n, plural, =0 {没有正在运行的内容} other {已停止 # 个任务}}",
+		"nothingRunning": "后台没有正在运行的内容。",
+		"action": {
+			"stop": "停止",
+			"cancel": "取消",
+			"approve": "批准",
+			"pause": "暂停",
+			"delete": "删除",
+			"off": "关闭"
+		},
+		"wait": {
+			"approval": "等待你的批准",
+			"answer": "等待你的回答",
+			"expert": "等待专家",
+			"reply": "等待回复"
+		},
+		"trigger": {
+			"event": "等待事件",
+			"watch": "监视一个连接",
+			"folder": "监视一个文件夹",
+			"heartbeat": "定期汇报",
+			"schedule": "按计划"
+		},
+		"createdBy": {
+			"owner": "由你设置",
+			"chat": "在聊天中启动",
+			"workflow": "由工作流启动",
+			"schedule": "由计划启动",
+			"system": "由 Nebo 启动",
+			"watch": "由监视启动",
+			"message": "由消息启动",
+			"unknown": "来源未知"
+		},
+		"outcome": {
+			"done": "已完成",
+			"failed": "失败",
+			"stopped": "已停止",
+			"removed": "已关闭"
+		},
+		"status": {
+			"thinking": "思考中…",
+			"stillThinking": "仍在思考…",
+			"thinkingMore": "再想一想…",
+			"connecting": "连接中…"
+		},
+		"notice": {
+			"done": "{what} 已完成",
+			"failed": "{what} 失败",
+			"stopped": "{what} 已停止",
+			"removed": "{what} 已关闭",
+			"timer": "新计时器:{what}"
+		},
+		"group": {
+			"running": "工作中",
+			"scheduled": "计时器",
+			"watching": "监视"
+		}
 	}
 }

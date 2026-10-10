@@ -4141,5 +4141,85 @@
 		"text": "Nebo hanya berjalan selama aplikasi terbuka. Agar tetap bekerja setelah ditutup, aktifkan Nebo di Item Login.",
 		"open": "Buka Item Login",
 		"unavailable": "Nebo hanya berjalan saat aplikasi terbuka. Komputer ini tidak dapat membuat Nebo tetap berjalan setelah Anda keluar dari aplikasi."
+	},
+	"background": {
+		"title": "Tugas latar belakang",
+		"runningN": "{n} berjalan",
+		"runningTasks": "{n, plural, other {# tugas berjalan}}",
+		"tasksFinished": "{n, plural, other {# tugas selesai}}",
+		"finishedN": "{n} selesai",
+		"showMore": "Tampilkan lebih banyak",
+		"showLess": "Tampilkan lebih sedikit",
+		"next": "Berikutnya {when}",
+		"stopping": "Menghentikan…",
+		"noOutput": "Belum ada keluaran",
+		"outputUnavailable": "Keluaran tidak tersedia",
+		"outputTruncated": "Menampilkan akhir keluaran",
+		"taskStopped": "Tugas dihentikan",
+		"actionFailed": "Tidak berhasil: {error}",
+		"degraded": "Perlu perhatian",
+		"heartbeat": "Detak",
+		"turns": "{used} dari {cap} giliran",
+		"runningNow": "Berjalan sekarang",
+		"runningNowSub": "Semua yang bekerja, menunggu, atau terjadwal di latar belakang",
+		"stopEverything": "Hentikan semua",
+		"stopEverythingConfirm": "Hentikan semua pembantu, perintah, giliran terjadwal, dan jalannya alur kerja? Pengatur waktu dan pemantauan tetap aktif.",
+		"stoppedN": "{n, plural, =0 {Tidak ada yang berjalan} other {# tugas dihentikan}}",
+		"nothingRunning": "Tidak ada yang berjalan di latar belakang.",
+		"action": {
+			"stop": "Hentikan",
+			"cancel": "Batal",
+			"approve": "Setujui",
+			"pause": "Jeda",
+			"delete": "Hapus",
+			"off": "Matikan"
+		},
+		"wait": {
+			"approval": "Perlu persetujuan Anda",
+			"answer": "Perlu jawaban Anda",
+			"expert": "Menunggu pakar",
+			"reply": "Menunggu balasan"
+		},
+		"trigger": {
+			"event": "Menunggu sebuah peristiwa",
+			"watch": "Memantau sebuah koneksi",
+			"folder": "Memantau sebuah folder",
+			"heartbeat": "Melapor secara berkala",
+			"schedule": "Sesuai jadwal"
+		},
+		"createdBy": {
+			"owner": "Diatur oleh Anda",
+			"chat": "Dimulai di obrolan",
+			"workflow": "Dimulai oleh alur kerja",
+			"schedule": "Dimulai oleh jadwal",
+			"system": "Dimulai oleh Nebo",
+			"watch": "Dimulai oleh pemantauan",
+			"message": "Dimulai oleh pesan",
+			"unknown": "Asal tidak diketahui"
+		},
+		"outcome": {
+			"done": "Selesai",
+			"failed": "Gagal",
+			"stopped": "Dihentikan",
+			"removed": "Dimatikan"
+		},
+		"status": {
+			"thinking": "Berpikir…",
+			"stillThinking": "Masih berpikir…",
+			"thinkingMore": "Berpikir lebih lama…",
+			"connecting": "Menghubungkan…"
+		},
+		"notice": {
+			"done": "{what} selesai",
+			"failed": "{what} gagal",
+			"stopped": "{what} dihentikan",
+			"removed": "{what} dimatikan",
+			"timer": "Pengatur waktu baru: {what}"
+		},
+		"group": {
+			"running": "Bekerja",
+			"scheduled": "Pengatur waktu",
+			"watching": "Pemantauan"
+		}
 	}
 }

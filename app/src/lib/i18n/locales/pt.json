@@ -4141,5 +4141,85 @@
 		"text": "O Nebo só funciona enquanto a app está aberta. Para continuar a trabalhar depois de a fechar, ative o Nebo em Elementos de início de sessão.",
 		"open": "Abrir Elementos de início de sessão",
 		"unavailable": "O Nebo só funciona enquanto a app está aberta. Este computador não consegue manter o Nebo a funcionar depois de sair da app."
+	},
+	"background": {
+		"title": "Tarefas em segundo plano",
+		"runningN": "{n} em curso",
+		"runningTasks": "{n, plural, one {# tarefa em curso} other {# tarefas em curso}}",
+		"tasksFinished": "{n, plural, one {# tarefa concluída} other {# tarefas concluídas}}",
+		"finishedN": "{n} concluídas",
+		"showMore": "Mostrar mais",
+		"showLess": "Mostrar menos",
+		"next": "Próxima {when}",
+		"stopping": "A parar…",
+		"noOutput": "Ainda sem resultado",
+		"outputUnavailable": "Resultado indisponível",
+		"outputTruncated": "A mostrar o fim do resultado",
+		"taskStopped": "Tarefa parada",
+		"actionFailed": "Não resultou: {error}",
+		"degraded": "Precisa de atenção",
+		"heartbeat": "Pulsação",
+		"turns": "{used} de {cap} turnos",
+		"runningNow": "Em curso agora",
+		"runningNowSub": "Tudo o que está a trabalhar, à espera ou agendado em segundo plano",
+		"stopEverything": "Parar tudo",
+		"stopEverythingConfirm": "Parar todos os ajudantes, comandos, turnos agendados e execuções de fluxos? Os temporizadores e as vigilâncias continuam ativos.",
+		"stoppedN": "{n, plural, =0 {Nada estava em curso} one {Parou # tarefa} other {Pararam # tarefas}}",
+		"nothingRunning": "Nada está a correr em segundo plano.",
+		"action": {
+			"stop": "Parar",
+			"cancel": "Cancelar",
+			"approve": "Aprovar",
+			"pause": "Pausar",
+			"delete": "Eliminar",
+			"off": "Desligar"
+		},
+		"wait": {
+			"approval": "Precisa da sua aprovação",
+			"answer": "Precisa da sua resposta",
+			"expert": "À espera de um especialista",
+			"reply": "À espera de uma resposta"
+		},
+		"trigger": {
+			"event": "Espera por um evento",
+			"watch": "Vigia uma ligação",
+			"folder": "Vigia uma pasta",
+			"heartbeat": "Dá notícias regularmente",
+			"schedule": "Segundo um horário"
+		},
+		"createdBy": {
+			"owner": "Configurado por si",
+			"chat": "Iniciado num chat",
+			"workflow": "Iniciado por um fluxo",
+			"schedule": "Iniciado por um horário",
+			"system": "Iniciado pelo Nebo",
+			"watch": "Iniciado por uma vigilância",
+			"message": "Iniciado por uma mensagem",
+			"unknown": "Origem desconhecida"
+		},
+		"outcome": {
+			"done": "Concluída",
+			"failed": "Falhou",
+			"stopped": "Parada",
+			"removed": "Desligada"
+		},
+		"status": {
+			"thinking": "A pensar…",
+			"stillThinking": "Ainda a pensar…",
+			"thinkingMore": "A pensar mais um pouco…",
+			"connecting": "A ligar…"
+		},
+		"notice": {
+			"done": "{what} terminou",
+			"failed": "{what} falhou",
+			"stopped": "{what} foi parado",
+			"removed": "{what} foi desligado",
+			"timer": "Novo temporizador: {what}"
+		},
+		"group": {
+			"running": "A trabalhar",
+			"scheduled": "Temporizadores",
+			"watching": "Vigilâncias"
+		}
 	}
 }

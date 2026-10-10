@@ -4141,5 +4141,85 @@
 		"text": "Nebo körs bara medan appen är öppen. Slå på Nebo under Inloggningsobjekt för att det ska fortsätta efter att du avslutat.",
 		"open": "Öppna Inloggningsobjekt",
 		"unavailable": "Nebo körs bara medan appen är öppen. Den här datorn kan inte hålla Nebo igång efter att du avslutat appen."
+	},
+	"background": {
+		"title": "Bakgrundsuppgifter",
+		"runningN": "{n} pågår",
+		"runningTasks": "{n, plural, one {# pågående uppgift} other {# pågående uppgifter}}",
+		"tasksFinished": "{n, plural, one {# uppgift klar} other {# uppgifter klara}}",
+		"finishedN": "{n} klara",
+		"showMore": "Visa mer",
+		"showLess": "Visa mindre",
+		"next": "Nästa {when}",
+		"stopping": "Stoppar…",
+		"noOutput": "Ingen utdata än",
+		"outputUnavailable": "Utdata otillgänglig",
+		"outputTruncated": "Visar slutet av utdatan",
+		"taskStopped": "Uppgiften stoppades",
+		"actionFailed": "Det gick inte: {error}",
+		"degraded": "Behöver uppmärksamhet",
+		"heartbeat": "Puls",
+		"turns": "{used} av {cap} omgångar",
+		"runningNow": "Pågår nu",
+		"runningNowSub": "Allt som arbetar, väntar eller är schemalagt i bakgrunden",
+		"stopEverything": "Stoppa allt",
+		"stopEverythingConfirm": "Stoppa alla hjälpare, kommandon, schemalagda omgångar och arbetsflödeskörningar? Timrar och bevakningar fortsätter.",
+		"stoppedN": "{n, plural, =0 {Inget pågick} one {Stoppade # uppgift} other {Stoppade # uppgifter}}",
+		"nothingRunning": "Inget körs i bakgrunden.",
+		"action": {
+			"stop": "Stoppa",
+			"cancel": "Avbryt",
+			"approve": "Godkänn",
+			"pause": "Pausa",
+			"delete": "Ta bort",
+			"off": "Stäng av"
+		},
+		"wait": {
+			"approval": "Behöver ditt godkännande",
+			"answer": "Behöver ditt svar",
+			"expert": "Väntar på en expert",
+			"reply": "Väntar på ett svar"
+		},
+		"trigger": {
+			"event": "Väntar på en händelse",
+			"watch": "Bevakar en anslutning",
+			"folder": "Bevakar en mapp",
+			"heartbeat": "Hör av sig regelbundet",
+			"schedule": "Enligt ett schema"
+		},
+		"createdBy": {
+			"owner": "Inställd av dig",
+			"chat": "Startad i en chatt",
+			"workflow": "Startad av ett arbetsflöde",
+			"schedule": "Startad av ett schema",
+			"system": "Startad av Nebo",
+			"watch": "Startad av en bevakning",
+			"message": "Startad av ett meddelande",
+			"unknown": "Okänt ursprung"
+		},
+		"outcome": {
+			"done": "Klar",
+			"failed": "Misslyckades",
+			"stopped": "Stoppad",
+			"removed": "Avstängd"
+		},
+		"status": {
+			"thinking": "Tänker…",
+			"stillThinking": "Tänker fortfarande…",
+			"thinkingMore": "Tänker lite till…",
+			"connecting": "Ansluter…"
+		},
+		"notice": {
+			"done": "{what} är klar",
+			"failed": "{what} misslyckades",
+			"stopped": "{what} stoppades",
+			"removed": "{what} stängdes av",
+			"timer": "Ny timer: {what}"
+		},
+		"group": {
+			"running": "Arbetar",
+			"scheduled": "Timrar",
+			"watching": "Bevakningar"
+		}
 	}
 }
