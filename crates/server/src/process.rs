@@ -44,6 +44,24 @@ pub fn supervisor() -> Option<String> {
     std::env::var("NEBO_SUPERVISED").ok().filter(|s| !s.is_empty())
 }
 
+/// This executable where it stays, for anything that starts it later (the
+/// browser's native-messaging manifest, the OS service): an AppImage's own
+/// file (`$APPIMAGE`), never the `/tmp/.mount_*` copy its runtime runs, which
+/// is gone once it exits.
+pub fn stable_exe() -> std::io::Result<std::path::PathBuf> {
+    stable_exe_from(std::env::var_os("APPIMAGE"), std::env::current_exe)
+}
+
+fn stable_exe_from(
+    appimage: Option<std::ffi::OsString>,
+    current: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+) -> std::io::Result<std::path::PathBuf> {
+    match appimage.filter(|p| !p.is_empty()) {
+        Some(file) => Ok(file.into()),
+        None => current(),
+    }
+}
+
 static STOP: LazyLock<Notify> = LazyLock::new(Notify::new);
 
 /// Stop this server the graceful way a shutdown signal does: drain, close,
@@ -145,6 +163,15 @@ fn opt_out_of_power_throttling() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_appimage_is_its_own_file_not_its_mount() {
+        let mount = || Ok(std::path::PathBuf::from("/tmp/.mount_NeboAbc/usr/bin/nebo"));
+        let file = stable_exe_from(Some("/home/a/Applications/Nebo.AppImage".into()), mount).unwrap();
+        assert_eq!(file, std::path::PathBuf::from("/home/a/Applications/Nebo.AppImage"));
+        assert_eq!(stable_exe_from(Some("".into()), mount).unwrap(), mount().unwrap());
+        assert_eq!(stable_exe_from(None, mount).unwrap(), mount().unwrap());
+    }
 
     #[test]
     fn exit_codes_tell_the_supervisor_what_happened() {
