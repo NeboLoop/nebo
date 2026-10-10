@@ -2937,6 +2937,12 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .tools
         .set_coworker_rail(Arc::new(coworker::CoworkerRailImpl::new(state.clone())));
 
+    // Wire the worker restart into create_employee / update_employee (late,
+    // like the rail above): a duty made, changed, toggled or removed in chat
+    // is registered by its worker at once, not when the directory watcher
+    // or a restart gets to it.
+    state.tools.set_live_triggers(Arc::new(LiveTriggersImpl(state.clone())));
+
     // Restart workers that have DB channel bindings (they were started before the
     // channel dispatcher was wired, so channels didn't start).
     {
@@ -3767,6 +3773,18 @@ async fn handle_plugin_fs_event(state: &AppState, event: napp::plugin::PluginFsE
         }
     }
     state.hub.broadcast("plugin_changed", serde_json::json!({"slug": slug, "action": action}));
+}
+
+/// The worker restart behind the employee tools' live triggers
+/// (`tools::agent_tool::LiveTriggers`): the one owner of an employee's live
+/// trigger registration is its worker.
+struct LiveTriggersImpl(AppState);
+
+#[async_trait::async_trait]
+impl tools::agent_tool::LiveTriggers for LiveTriggersImpl {
+    async fn resync(&self, agent_id: &str) {
+        handlers::agents::restart_agent_worker_if_active(&self.0, agent_id).await;
+    }
 }
 
 /// Process filesystem agent change events: sync DB, update registry, broadcast WS.
