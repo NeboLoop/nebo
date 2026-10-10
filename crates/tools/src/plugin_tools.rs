@@ -264,6 +264,34 @@ impl DynTool for PluginCliTool {
         self.name.clone()
     }
 
+    /// A call is a read only when the plugin's manifest declares it one
+    /// (`reads`); everything else, and a plugin that declares nothing, is
+    /// a change. A messaging op (`reply`, `post`, `upload`, `dm`) goes out
+    /// through the bridge and is never a read.
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        let Ok(mut call) = serde_json::from_value::<PluginCall>(input.clone()) else {
+            return false;
+        };
+        call.slug = self.slug.clone();
+        let verb = call.command.split_whitespace().next().unwrap_or("");
+        if matches!(verb, "reply" | "post" | "upload" | "dm") {
+            return false;
+        }
+        let Some(argv) = crate::plugin_tool::call_argv(&call) else {
+            return false;
+        };
+        self.runner
+            .plugin_store()
+            .get_manifest(&self.slug)
+            .is_some_and(|m| m.declares_read(&argv))
+    }
+
+    /// A read can still park on the connect card when the account has
+    /// lapsed: a call that may ask runs alone.
+    fn concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+
     /// `args: {command: "doctor"}` is the command, not a `--command` flag:
     /// the model nests the one field it was asked for under the object it
     /// was also offered (live, 2026-09-06).
@@ -765,6 +793,49 @@ triggers:
             tool.description()
         );
         assert!(registry.get("mail_message_send").await.is_none());
+    }
+
+    fn office_tool(tmp: &std::path::Path, manifest: serde_json::Value) -> PluginCliTool {
+        install(tmp, "office", manifest, &[]);
+        let ps = Arc::new(napp::plugin::PluginStore::new(tmp.join("plugins"), tmp.join("user_plugins"), None));
+        let db = Arc::new(db::Store::new(tmp.join("t.db").to_str().unwrap()).unwrap());
+        PluginCliTool::new(Arc::new(PluginRunner::new(ps, db)), "office")
+    }
+
+    /// A call is read-only when the manifest declares it a read: its words
+    /// and the flags it may carry, whether a flag came in `command` or in
+    /// `args`.
+    #[test]
+    fn a_declared_read_is_read_only_and_nothing_else_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = office_tool(
+            tmp.path(),
+            serde_json::json!({"reads": ["read -o --output", "xlsx sheet --get", "post"]}),
+        );
+        let read = |input: serde_json::Value| tool.read_only(&input);
+        assert!(read(serde_json::json!({"command": "read report.docx"})));
+        assert!(read(serde_json::json!({"command": "office read report.docx"})), "a leading plugin name is dropped");
+        assert!(read(serde_json::json!({"command": "read 'Q3 report.docx' --account work"})), "--account is Nebo's own");
+        assert!(read(serde_json::json!({"command": "xlsx sheet book.xlsx"})));
+        assert!(read(serde_json::json!({"command": "xlsx sheet book.xlsx", "args": {"get": "Totals"}})));
+        assert!(!read(serde_json::json!({"command": "xlsx sheet book.xlsx", "args": {"replace": 2, "json": "{}"}})));
+        assert!(!read(serde_json::json!({"command": "xlsx sheet book.xlsx --get 1 --delete 2"})));
+        assert!(!read(serde_json::json!({"command": "xlsx sheets book.xlsx"})));
+        assert!(!read(serde_json::json!({"command": "xlsx create spec.json -o out.xlsx"})));
+        assert!(!read(serde_json::json!({"command": "read 'unbalanced.docx"})));
+        assert!(!read(serde_json::json!({"command": "post --channel C1 --text hi"})), "a message out is never a read");
+        // The tool still runs one call at a time: a read can park on a connect card.
+        assert!(!tool.concurrency_safe(&serde_json::json!({"command": "read report.docx"})));
+    }
+
+    /// A plugin that declares no reads behaves as before: every call is a change.
+    #[test]
+    fn a_plugin_with_no_reads_declared_reads_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = office_tool(tmp.path(), serde_json::json!({}));
+        for command in ["read report.docx", "help", "doctor", "xlsx sheet book.xlsx"] {
+            assert!(!tool.read_only(&serde_json::json!({"command": command})), "{command}");
+        }
     }
 
     #[test]

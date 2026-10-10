@@ -89,6 +89,14 @@ pub struct PluginManifest {
     /// begin. Names that match no bundled skill are ignored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entry_skills: Vec<String>,
+    /// The commands that only read: each entry is the command's words then
+    /// the flags it may carry, e.g. `"invoice get --realm-id --json"` or
+    /// `"xlsx sheet --get"`. A call is a read when its leading words are the
+    /// entry's words, token for token, and every flag it carries is one the
+    /// entry names; any other flag makes it not a read. Reads run without
+    /// asking in Ask mode; everything else asks. See [`Self::declares_read`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
     /// Channel bridge capability. When present, this plugin can act as a
     /// bidirectional messaging bridge (e.g., Slack, Discord, Telegram).
     /// The user enables it per-agent in Settings → Plugins → Channel Routing.
@@ -513,9 +521,6 @@ pub struct PluginToolDef {
     /// JSON Schema for typed input. If absent, a generic object schema is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
-    /// Whether this tool requires user approval before execution.
-    #[serde(default = "default_true")]
-    pub approval: bool,
     /// Maximum execution time in seconds.
     #[serde(default = "default_120")]
     pub timeout_seconds: u64,
@@ -589,9 +594,35 @@ pub struct PluginProviderDef {
     pub auth_command: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
+/// A flag token: `--name`, `--name=value` or `-n`. A lone `-` is a value
+/// (stdin or stdout), not a flag.
+fn is_flag(token: &str) -> bool {
+    token.starts_with('-') && token != "-"
 }
+
+/// One `reads` entry against a call's arguments. The entry's words must be
+/// the call's first arguments, compared whole (so `invoice list` never
+/// matches `invoice list-and-delete`), and each flag the call carries must
+/// be one the entry names (so `xlsx sheet --get` never matches
+/// `xlsx sheet --replace`). Arguments after the words that are not flags
+/// (a file, an id, a flag's value) are the call's own. An entry with no
+/// words, or a word after a flag, matches nothing.
+fn read_matches(entry: &str, argv: &[String]) -> bool {
+    let tokens: Vec<&str> = entry.split_whitespace().collect();
+    let words = tokens.iter().take_while(|t| !is_flag(t)).count();
+    let flags = &tokens[words..];
+    if words == 0 || !flags.iter().all(|f| is_flag(f)) || argv.len() < words {
+        return false;
+    }
+    if argv.iter().zip(&tokens[..words]).any(|(a, w)| a != w) {
+        return false;
+    }
+    argv[words..]
+        .iter()
+        .filter(|a| is_flag(a))
+        .all(|a| flags.contains(&a.split_once('=').map_or(a.as_str(), |(name, _)| name)))
+}
+
 fn default_120() -> u64 {
     120
 }
@@ -738,6 +769,12 @@ fn parse_placeholder(inner: &str, template: &str) -> Result<BindingPart, String>
 }
 
 impl PluginManifest {
+    /// Whether `argv`, the arguments as the plugin binary receives them, is
+    /// one of the reads this manifest declares (`reads`).
+    pub fn declares_read(&self, argv: &[String]) -> bool {
+        self.reads.iter().any(|entry| read_matches(entry, argv))
+    }
+
     /// Returns true if this plugin declares tool capabilities (connector pattern).
     pub fn is_connector(&self) -> bool {
         self.capabilities
@@ -3506,6 +3543,7 @@ mod tests {
             category: String::new(),
             triggers: vec![],
             entry_skills: vec![],
+            reads: vec![],
             channel: None,
             setup: None,
             interface_bindings: HashMap::new(),
@@ -3672,6 +3710,7 @@ mod tests {
             category: String::new(),
             triggers: vec![],
             entry_skills: vec![],
+            reads: vec![],
             channel: None,
             setup: None,
             interface_bindings: HashMap::new(),
@@ -3982,9 +4021,88 @@ mod tests {
         assert_eq!(caps.tools.len(), 1);
         assert_eq!(caps.tools[0].name, "gws.gmail.triage");
         assert_eq!(caps.tools[0].command, "gmail +triage");
-        assert!(caps.tools[0].approval); // default true
         assert_eq!(caps.tools[0].timeout_seconds, 180);
         assert!(caps.tools[0].input_schema.is_some());
+    }
+
+    /// Manifests published before `approval` was removed still carry it on
+    /// every tool. A manifest that fails to parse drops the whole plugin, so
+    /// the old key must be ignored, not refused.
+    #[test]
+    fn a_manifest_with_the_old_approval_key_still_parses() {
+        let json = r#"{
+            "id": "quickbooks",
+            "slug": "quickbooks",
+            "name": "QuickBooks",
+            "version": "0.4.0",
+            "platforms": {},
+            "capabilities": {
+                "tools": [
+                    {"name": "quickbooks.invoice.get", "description": "Get", "command": "invoice get", "approval": false},
+                    {"name": "quickbooks.invoice.void", "description": "Void", "command": "invoice void", "approval": true}
+                ]
+            },
+            "reads": ["invoice get --realm-id"]
+        }"#;
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.capabilities.unwrap().tools.len(), 2);
+        assert_eq!(parsed.reads, vec!["invoice get --realm-id".to_string()]);
+    }
+
+    fn argv(call: &str) -> Vec<String> {
+        call.split_whitespace().map(str::to_string).collect()
+    }
+
+    fn reading(reads: &[&str]) -> PluginManifest {
+        let mut m: PluginManifest = serde_json::from_str(
+            r#"{"id": "p", "slug": "p", "name": "P", "version": "1.0.0", "platforms": {}}"#,
+        )
+        .unwrap();
+        m.reads = reads.iter().map(|r| r.to_string()).collect();
+        m
+    }
+
+    #[test]
+    fn a_read_is_the_declared_words_token_for_token() {
+        let m = reading(&["invoice list --limit", "read -o --output"]);
+        assert!(m.declares_read(&argv("invoice list")));
+        assert!(m.declares_read(&argv("invoice list --limit 5")));
+        assert!(m.declares_read(&argv("invoice list --limit=5")));
+        assert!(m.declares_read(&argv("read report.docx")));
+        assert!(m.declares_read(&argv("read report.docx -o -")));
+        // Whole words only: a longer word is another command.
+        assert!(!m.declares_read(&argv("invoice list-and-delete")));
+        assert!(!m.declares_read(&argv("invoice lis")));
+        assert!(!m.declares_read(&argv("invoice")));
+        assert!(!m.declares_read(&argv("invoice delete 5")));
+        // The words come first: a flag before them is not this command.
+        assert!(!m.declares_read(&argv("--json invoice list")));
+        assert!(!m.declares_read(&[]));
+    }
+
+    #[test]
+    fn a_flag_the_read_does_not_name_is_not_a_read() {
+        let m = reading(&["xlsx sheet --get", "invoice get --realm-id --json"]);
+        assert!(m.declares_read(&argv("xlsx sheet book.xlsx")), "listing the sheets");
+        assert!(m.declares_read(&argv("xlsx sheet book.xlsx --get 2")));
+        assert!(!m.declares_read(&argv("xlsx sheet book.xlsx --replace 2 --json new.json")));
+        assert!(!m.declares_read(&argv("xlsx sheet book.xlsx --get 2 --delete 3")));
+        assert!(!m.declares_read(&argv("xlsx sheet book.xlsx --get 2 -o other.xlsx")));
+        assert!(m.declares_read(&argv("invoice get 42 --realm-id 9 --json")));
+        // A flag that sends the call elsewhere is not one the read names.
+        assert!(!m.declares_read(&argv("invoice get 42 --base-url https://elsewhere.example")));
+        // `--` and bundled short flags are flags too.
+        assert!(!m.declares_read(&argv("invoice get -- 42")));
+        assert!(!m.declares_read(&argv("invoice get -jx 42")));
+    }
+
+    #[test]
+    fn a_malformed_or_missing_declaration_reads_nothing() {
+        assert!(!reading(&[]).declares_read(&argv("invoice list")));
+        let m = reading(&["", "--json", "invoice --json list"]);
+        for call in ["invoice list", "invoice", "--json", "invoice --json list"] {
+            assert!(!m.declares_read(&argv(call)), "{call}");
+        }
     }
 
     #[test]
@@ -4051,7 +4169,6 @@ mod tests {
                 description: "A test tool".into(),
                 command: "run test".into(),
                 input_schema: None,
-                approval: true,
                 timeout_seconds: 60,
             }],
             hooks: vec![],

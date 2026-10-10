@@ -313,6 +313,49 @@ async fn ask_mode_asks_every_change_not_owner_allowed() {
     assert_eq!((write_ran.load(Ordering::SeqCst), edit_ran.load(Ordering::SeqCst)), (0, 1));
 }
 
+/// A plugin call its manifest declares a read runs in Ask mode without
+/// asking; a call it doesn't declare, a write flag on a declared read, and
+/// any call to a plugin that declares nothing still ask.
+#[tokio::test]
+async fn ask_mode_runs_a_plugins_declared_reads_and_asks_the_rest() {
+    let (dir, store) = store();
+    let install = |slug: &str, reads: serde_json::Value| {
+        let v = dir.path().join("plugins").join(slug).join("0.1.0");
+        std::fs::create_dir_all(&v).unwrap();
+        let manifest = json!({"id": slug, "slug": slug, "name": slug, "version": "0.1.0", "platforms": {}, "reads": reads});
+        std::fs::write(v.join("plugin.json"), manifest.to_string()).unwrap();
+        let bin = v.join(slug);
+        std::fs::write(&bin, b"#!/bin/sh\necho ran\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    install("office", json!(["read", "xlsx sheet --get"]));
+    install("plain", json!([]));
+    std::fs::create_dir_all(dir.path().join("user_plugins")).unwrap();
+    let plugins = Arc::new(napp::plugin::PluginStore::new(dir.path().join("plugins"), dir.path().join("user_plugins"), None));
+    let runner = Arc::new(tools::plugin_tool::PluginRunner::new(plugins, store.clone()));
+    let reg = registry(&store, vec![]).await;
+    for slug in ["office", "plain"] {
+        reg.register(Box::new(tools::plugin_tools::PluginCliTool::new(runner.clone(), slug))).await;
+    }
+    let ask = with_mode(ctx(&store, "", Origin::User), Mode::Ask);
+    for command in ["read report.docx", "xlsx sheet book.xlsx --get 2"] {
+        let r = reg.execute(&ask, "plugin__office", json!({ "command": command })).await;
+        assert!(r.parked_ask.is_none() && r.content.contains("ran"), "{command}: {}", r.content);
+    }
+    for (tool, command) in [
+        ("plugin__office", "xlsx sheet book.xlsx --replace 2 --json new.json"),
+        ("plugin__office", "docx create spec.json -o out.docx"),
+        ("plugin__plain", "read report.docx"),
+    ] {
+        let r = reg.execute(&ask, tool, json!({ "command": command })).await;
+        assert!(r.parked_ask.is_some(), "{tool} {command} should ask: {}", r.content);
+    }
+}
+
 #[tokio::test]
 async fn every_door_goes_through_the_check() {
     let (_d, store) = store();

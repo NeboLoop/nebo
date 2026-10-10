@@ -502,7 +502,6 @@ Plugins declare structured capabilities and permissions in `plugin.json`. These 
         "name": "gws.gmail.triage",
         "description": "Triage unread emails",
         "command": "gmail +triage",
-        "approval": true,
         "timeout_seconds": 120
       }
     ],
