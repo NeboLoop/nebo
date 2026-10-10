@@ -16,11 +16,11 @@ const ROLLBACK_MARKER_JSON: &str =
 
 /// How long an app-bundle update waits for the new engine to answer
 /// `/health` before it rolls back (the helper's health gate).
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 const HEALTH_GATE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The port the engine serves on: `NEBO_PORT`, else the default.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn engine_port() -> u16 {
     std::env::var("NEBO_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(27895)
 }
@@ -706,20 +706,208 @@ fn apply_app_bundle(appimage_path: &Path, data_dir: &Path) -> Result<(), UpdateE
     let _ = std::fs::remove_file(appimage_path);
 
     run_pre_apply();
-    let script = build_linux_appimage_helper(
-        std::process::id(),
-        &dest.to_string_lossy(),
-        &staged.to_string_lossy(),
-        &format!("{}.old-{}", dest.to_string_lossy(), uuid::Uuid::new_v4()),
-        &marker_path(data_dir).to_string_lossy(),
-        &log_path(data_dir).to_string_lossy(),
-    );
-    if let Err(e) = spawn_detached_sh(&script) {
+    let old = format!("{}.old-{}", dest.to_string_lossy(), uuid::Uuid::new_v4());
+    let (marker, log) = (marker_path(data_dir), log_path(data_dir));
+    let spawned = match linux_service_unit() {
+        // The engine runs as a `systemd --user` unit (the engine service,
+        // off by default): the helper restarts the unit and holds the new
+        // version to a health gate.
+        Some(unit) => {
+            let updating = data_dir.join(crate::UPDATING_MARKER);
+            let _ = std::fs::write(&updating, std::process::id().to_string());
+            let script = build_linux_service_helper(&LinuxServiceSwap {
+                pid: std::process::id(),
+                dest: &dest.to_string_lossy(),
+                staged: &staged.to_string_lossy(),
+                old: &old,
+                marker: &marker.to_string_lossy(),
+                log: &log.to_string_lossy(),
+                unit: &unit,
+                port: &engine_port().to_string(),
+                updating: &updating.to_string_lossy(),
+            });
+            let spawned = spawn_outside_unit(&script);
+            if spawned.is_err() {
+                let _ = std::fs::remove_file(&updating);
+            }
+            spawned
+        }
+        None => spawn_detached_sh(&build_linux_appimage_helper(
+            std::process::id(),
+            &dest.to_string_lossy(),
+            &staged.to_string_lossy(),
+            &old,
+            &marker.to_string_lossy(),
+            &log.to_string_lossy(),
+        ))
+        .map(drop),
+    };
+    if let Err(e) = spawned {
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
 
     std::process::exit(0);
+}
+
+/// The `systemd --user` unit this engine runs as (`NEBO_SERVICE_UNIT`, set by
+/// the unit the desktop app writes), if it runs as one.
+#[cfg(target_os = "linux")]
+fn linux_service_unit() -> Option<String> {
+    (std::env::var("NEBO_SUPERVISED").ok()? == "systemd")
+        .then(|| std::env::var("NEBO_SERVICE_UNIT").ok())
+        .flatten()
+        .filter(|u| !u.is_empty())
+}
+
+/// Start the helper as a transient unit of its own: when the engine exits,
+/// systemd stops every process in the engine's unit, a `setsid` helper
+/// included. `KillMode=process`: the app the helper opens again outlives
+/// it. Falls back to the detached helper if `systemd-run` won't.
+#[cfg(target_os = "linux")]
+fn spawn_outside_unit(script: &str) -> Result<(), UpdateError> {
+    use std::os::unix::fs::PermissionsExt;
+    let id = uuid::Uuid::new_v4();
+    let path = std::env::temp_dir().join(format!("nebo-update-helper-{id}.sh"));
+    std::fs::write(&path, script)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    let ran = command::new::<std::process::Command>("systemd-run", command::Console::Hidden)
+        .args(["--user", "--collect", "--quiet", "--property=KillMode=process", "--description=Nebo update"])
+        .arg(format!("--unit=nebo-update-{id}"))
+        .arg("sh")
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .output();
+    match ran {
+        Ok(out) if out.status.success() => Ok(()),
+        other => {
+            tracing::warn!(result = ?other.map(|o| o.status), "systemd-run would not start the update helper; detaching it");
+            let _ = std::fs::remove_file(&path);
+            spawn_detached_sh(script).map(drop)
+        }
+    }
+}
+
+/// What the service helper swaps, and how it checks the new engine.
+#[cfg(target_os = "linux")]
+struct LinuxServiceSwap<'a> {
+    /// The engine, which exits right after spawning the helper.
+    pid: u32,
+    dest: &'a str,
+    staged: &'a str,
+    old: &'a str,
+    marker: &'a str,
+    log: &'a str,
+    /// The engine's unit.
+    unit: &'a str,
+    /// The engine's port, for the health gate.
+    port: &'a str,
+    /// [`crate::UPDATING_MARKER`] in the data dir, removed when done.
+    updating: &'a str,
+}
+
+/// The AppImage swap for an engine that runs as a `systemd --user` unit, the
+/// macOS service helper's flow:
+///
+/// - waits for the engine, then for the app's window processes (this
+///   AppImage's `nebo`, not its engine nor a browser relay), which close on
+///   their own once they see the engine gone and the update marker; stopped
+///   after 20 s;
+/// - swaps (move-aside, move-in), then `systemctl --user restart`s the unit
+///   (its `ExecStart` is the AppImage's path, so a same-path swap keeps it)
+///   and reopens the app only if it was open;
+/// - health gate: keeps the new AppImage only once `/health` reports the
+///   new one's own version within [`HEALTH_GATE`] (asked by the new
+///   executable, `--engine-service health`, so one that can't run fails
+///   too); otherwise puts the previous AppImage back, starts its engine and
+///   writes `UPDATE_FAILED.json`.
+#[cfg(target_os = "linux")]
+fn build_linux_service_helper(s: &LinuxServiceSwap) -> String {
+    const TEMPLATE: &str = r#"#!/bin/sh
+DEST="__DEST__"
+STAGED="__STAGED__"
+OLD="__OLD__"
+MARKER="__MARKER__"
+LOG="__LOG__"
+UNIT="__UNIT__"
+UPDATING="__UPDATING__"
+PID=__PID__
+GATE=__GATE__
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+log() { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] $1" >> "$LOG" 2>/dev/null; }
+# The app's window processes: this AppImage's nebo, not its engine, not a relay.
+shells() {
+  for p in $(pgrep -u "$(id -u)" -x nebo); do
+    case "$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null)" in *--engine*|*chrome-extension:*) continue ;; esac
+    tr '\0' '\n' < /proc/$p/environ 2>/dev/null | grep -qxF "APPIMAGE=$DEST" && echo "$p"
+  done
+}
+stop_shells() {
+  n=0
+  while [ -n "$(shells)" ] && [ $n -lt $1 ]; do sleep 1; n=$((n + 1)); done
+  for p in $(shells); do kill -TERM "$p" 2>/dev/null; done
+  sleep 2
+  for p in $(shells); do kill -KILL "$p" 2>/dev/null; done
+}
+reopen() {
+  [ "$HAD_SHELL" = 1 ] && ( "$DEST" >/dev/null 2>&1 & )
+}
+fail() {
+  log "FAILED: $1 — rolling back"
+  stop_shells 0
+  systemctl --user stop "$UNIT" >> "$LOG" 2>&1
+  if [ -e "$OLD" ]; then
+    rm -f "$DEST" 2>/dev/null
+    mv "$OLD" "$DEST" 2>/dev/null
+  fi
+  chmod +x "$DEST" 2>/dev/null
+  mkdir -p "$(dirname "$MARKER")" 2>/dev/null
+  printf '%s' '__MARKER_JSON__' > "$MARKER" 2>/dev/null
+  rm -f "$UPDATING" 2>/dev/null
+  systemctl --user reset-failed "$UNIT" 2>/dev/null
+  systemctl --user start "$UNIT" >> "$LOG" 2>&1
+  log "rolled back; the previous engine started"
+  reopen
+  rm -f "$0" 2>/dev/null
+  exit 1
+}
+log "waiting for engine pid $PID to exit"
+while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
+HAD_SHELL=0
+[ -n "$(shells)" ] && HAD_SHELL=1
+log "pid $PID gone; waiting for the app to close"
+stop_shells 20
+log "swapping"
+if [ -e "$DEST" ]; then
+  mv "$DEST" "$OLD" || fail "move-aside current AppImage"
+fi
+mv "$STAGED" "$DEST" || fail "move staged AppImage into place"
+chmod +x "$DEST" || fail "chmod new AppImage"
+[ -s "$DEST" ] || fail "staged AppImage is empty"
+systemctl --user daemon-reload >> "$LOG" 2>&1
+systemctl --user reset-failed "$UNIT" 2>/dev/null
+systemctl --user restart "$UNIT" >> "$LOG" 2>&1 || fail "start $UNIT"
+log "swap OK, waiting for the new engine"
+"$DEST" --engine-service health --port "__PORT__" --within "$GATE" >> "$LOG" 2>&1 || fail "the new engine did not report its version within ${GATE}s"
+log "the new engine reports its version; update complete"
+rm -f "$UPDATING" 2>/dev/null
+rm -f "$OLD" 2>/dev/null
+reopen
+rm -f "$0" 2>/dev/null
+exit 0
+"#;
+    TEMPLATE
+        .replace("__DEST__", s.dest)
+        .replace("__STAGED__", s.staged)
+        .replace("__OLD__", s.old)
+        .replace("__MARKER__", s.marker)
+        .replace("__LOG__", s.log)
+        .replace("__UNIT__", s.unit)
+        .replace("__UPDATING__", s.updating)
+        .replace("__PORT__", s.port)
+        .replace("__GATE__", &HEALTH_GATE.as_secs().to_string())
+        .replace("__PID__", &s.pid.to_string())
+        .replace("__MARKER_JSON__", ROLLBACK_MARKER_JSON)
 }
 
 #[cfg(target_os = "linux")]
@@ -971,6 +1159,35 @@ mod tests {
         assert!(!script.contains("__"), "unsubstituted placeholder: {script}");
         assert!(script.contains("PID=7"));
         assert!(script.contains(ROLLBACK_MARKER_JSON));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_service_helper_restarts_the_unit_and_gates_on_health() {
+        let script = build_linux_service_helper(&LinuxServiceSwap {
+            pid: 7,
+            dest: "/home/a/Nebo.AppImage",
+            staged: "/home/a/.nebo-update-x.AppImage",
+            old: "/home/a/Nebo.AppImage.old-y",
+            marker: "/data/UPDATE_FAILED.json",
+            log: "/data/logs/update.log",
+            unit: "nebo-engine.service",
+            port: "27895",
+            updating: "/data/UPDATING",
+        });
+        assert!(!script.contains("__"), "unsubstituted placeholder: {script}");
+        assert!(script.contains("PID=7"));
+        assert!(script.contains("GATE=90"));
+        assert!(script.contains("systemctl --user restart \"$UNIT\""));
+        assert!(script.contains("--engine-service health --port \"27895\" --within \"$GATE\""));
+        assert!(script.contains(ROLLBACK_MARKER_JSON));
+        assert!(script.contains("rm -f \"$UPDATING\""));
+        // The script parses.
+        let path = std::env::temp_dir().join(format!("nebo-linux-helper-{}.sh", std::process::id()));
+        std::fs::write(&path, &script).unwrap();
+        let ok = command::new::<std::process::Command>("sh", command::Console::Hidden).arg("-n").arg(&path).status().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(ok.success(), "sh -n rejects the helper");
     }
 
     fn windows_helper(gate_secs: u64) -> String {
