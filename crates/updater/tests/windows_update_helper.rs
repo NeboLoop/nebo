@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use updater::{WindowsHelper, build_windows_helper};
+use nebo_updater::{WindowsHelper, build_windows_helper};
 
 struct Scratch {
     dir: PathBuf,
