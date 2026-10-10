@@ -831,9 +831,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // Template variables are expanded at activation time.
                 let skill_content = load_activity_skills(skill_loader.as_deref(), &store, &mut def, "").await;
 
-                // Deferred tool names (MCP proxies etc.): activities only get
-                // their schemas when they declare or reference them.
-                let deferred_names = tools_registry.get_deferred_names().await;
                 let (wf_memory_user_id, wf_memory_writes_disabled) =
                     workflow_memory_scope(&store, "");
                 let wf_result = workflow::engine::execute_workflow(
@@ -848,7 +845,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                     decide.as_deref(),
                     &*wf_loop,
                     &resolved_tools,
-                    Some(&deferred_names),
                     Some(&run_id_clone),
                     Some(&cancel_token),
                     skill_content.as_ref(),
@@ -1659,9 +1655,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                     });
                 }
 
-                // Deferred tool names (MCP proxies etc.): activities only get
-                // their schemas when they declare or reference them.
-                let deferred_names = tools_registry.get_deferred_names().await;
                 let (wf_memory_user_id, wf_memory_writes_disabled) =
                     workflow_memory_scope(&store, &agent_id_owned);
                 let wf_result = workflow::engine::execute_workflow(
@@ -1676,7 +1669,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                     decide.as_deref(),
                     &*wf_loop,
                     &resolved_tools,
-                    Some(&deferred_names),
                     Some(&run_id_clone),
                     Some(&cancel_token),
                     skill_content.as_ref(),
@@ -3265,8 +3257,8 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
 
 /// The declared skills of a run's activities: each skill's expanded body
 /// (injected into the activity's prompt, keyed by the name it is declared
-/// by), and — for an activity that declares its tools — the tools the skill
-/// brings, added to its declaration: the `plugin__<slug>` of every plugin it
+/// by), and the tools the skill brings, added to its activity's
+/// declaration: the `plugin__<slug>` of every plugin it
 /// depends on (a plugin's own skill depends on its plugin) and its
 /// `allowed-tools`. Global scope: learned skills are per-employee and not
 /// declarable in workflow activities.
@@ -3308,12 +3300,11 @@ fn skill_tools(skill: &tools::skills::Skill) -> Vec<String> {
         .collect()
 }
 
-/// Add each declared skill's tools to the declaration of every activity
-/// that declares its tools. An undeclared activity is left as it is.
+/// Add each declared skill's tools to its activity's declaration.
 fn add_skill_tools(def: &mut workflow::WorkflowDef, brought: &HashMap<String, Vec<String>>) {
     for activity in &mut def.activities {
         let skills = activity.skills.clone();
-        let Some(tools) = activity.tools.as_mut() else { continue };
+        let tools = &mut activity.tools;
         for tool in skills.iter().filter_map(|s| brought.get(s)).flatten() {
             if !tools.contains(tool) {
                 tools.push(tool.clone());
@@ -3625,8 +3616,8 @@ mod list_tests {
         assert!(a.is_cancelled() && b.is_cancelled(), "every run's turns stop");
     }
 
-    /// A declared skill brings its plugin's tool and its allowed-tools to an
-    /// activity that declares its tools; an undeclared one is left as it is.
+    /// A declared skill brings its plugin's tool and its allowed-tools to
+    /// the activity that declares it.
     #[test]
     fn declared_skills_bring_their_tools() {
         let mut def = workflow::parser::parse_workflow(
@@ -3640,8 +3631,8 @@ mod list_tests {
         let brought: std::collections::HashMap<String, Vec<String>> =
             [("fo".to_string(), vec!["plugin__odoo".to_string(), "read_file".to_string()])].into();
         super::add_skill_tools(&mut def, &brought);
-        assert_eq!(def.activities[0].tools, Some(vec!["read_file".to_string(), "plugin__odoo".to_string()]));
-        assert_eq!(def.activities[1].tools, None);
-        assert_eq!(def.activities[2].tools, None);
+        assert_eq!(def.activities[0].tools, ["read_file", "plugin__odoo"]);
+        assert_eq!(def.activities[1].tools, ["plugin__odoo", "read_file"]);
+        assert!(def.activities[2].tools.is_empty());
     }
 }

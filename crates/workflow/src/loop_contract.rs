@@ -32,9 +32,7 @@ pub struct LoopTurn<'a> {
     pub workflow_name: &'a str,
     /// The activity's tools, including `exit`, and `emit` when granted: the
     /// deferred ones are what its listing names. The tools it declares are
-    /// every turn's. For a declared activity this is also the hard limit at
-    /// dispatch (`engine::enforced_tools`); for an undeclared one it is
-    /// context scoping only.
+    /// every turn's, and the limit at dispatch (`engine::enforced_tools`).
     pub advertised_tools: Vec<String>,
     pub agent_id: &'a str,
     /// Caller-resolved memory scope user id (rides ToolContext.user_id).

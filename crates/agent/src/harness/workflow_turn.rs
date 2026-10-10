@@ -365,9 +365,9 @@ impl ActivityLoop for WorkflowTurns {
                 cwd: None,
                 seed_taint: Vec::new(),
                 audience: None,
-                // A declared activity's step may call only its tools; a call
-                // outside them pauses the run for the owner.
-                tool_allowlist: workflow::enforced_tools(turn.activity, &turn.advertised_tools),
+                // A step may call only its activity's tools; a call outside
+                // them pauses the run for the owner.
+                tool_allowlist: Some(workflow::enforced_tools(&turn.advertised_tools)),
                 tool_denial_hint: Some(STEP_TOOL_DENIAL.to_string()),
                 handoff_depth: 0,
                 model_override: turn.model.clone(),

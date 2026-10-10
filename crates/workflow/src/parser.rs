@@ -106,17 +106,17 @@ pub struct Activity {
     /// worse than none (the ballast interfaceBindings incident).
     #[serde(default, alias = "requiresTools")]
     pub requires_tools: Vec<String>,
-    /// The tools this activity may use. Declared (`Some`, `[]` included),
-    /// it is the activity's whole toolset and a limit at dispatch: the named
-    /// tools (exact name, a dotted prefix — `"odoo"` covers every `odoo.*`
-    /// tool — or a `prefix*` family), what its `mcps`, `cmds` and skills
-    /// bring, and the minimal runtime set (`engine::RUNTIME_TOOLS`). A call
-    /// to anything else pauses the run for the owner, who can add the tool
-    /// (`AskCase::StepTool`) (2026-10-08: a Vivid step created schedules to
-    /// "retry in 30 seconds", and those runs created more). Undeclared
-    /// (`None`): see `engine::enforced_tools`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
+    /// The tools this activity may use — its whole toolset and the limit at
+    /// dispatch: the named tools (exact name, a dotted prefix — `"odoo"`
+    /// covers every `odoo.*` tool — or a `prefix*` family), what its `mcps`,
+    /// `cmds` and skills bring, and the minimal runtime set
+    /// (`engine::RUNTIME_TOOLS`). An activity that declares none gets only
+    /// the runtime set. A call to anything else pauses the run for the
+    /// owner, who can add the tool (`AskCase::StepTool`) (2026-10-08: a
+    /// Vivid step created schedules to "retry in 30 seconds", and those
+    /// runs created more).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
 }
 
 /// Token budget for an activity.
@@ -1243,16 +1243,10 @@ mod declared_tools_tests {
         let a: Activity =
             serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":["odoo","os"]}"#)
                 .expect("parse with tools");
-        assert_eq!(a.tools, Some(vec!["odoo".to_string(), "os".to_string()]));
+        assert_eq!(a.tools, vec!["odoo".to_string(), "os".to_string()]);
 
         let b: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows"}"#)
             .expect("parse without tools");
-        assert!(b.tools.is_none());
-
-        // `[]` is a declaration: the minimal runtime set and nothing else.
-        let c: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":[]}"#)
-            .expect("parse with empty tools");
-        assert_eq!(c.tools, Some(Vec::new()));
-        assert!(serde_json::to_string(&c).unwrap().contains(r#""tools":[]"#), "an empty declaration survives a round trip");
+        assert!(b.tools.is_empty());
     }
 }
