@@ -32,7 +32,8 @@ pub fn names_tool(entry: &str, n: &str) -> bool {
 }
 
 /// Complete a declared activity's `tools` and check the calls its words
-/// write. An activity without `tools` is left as it is: it isn't limited.
+/// write. An activity without `tools` is left as it is: it isn't limited;
+/// nor is one with `tools: []`, a judging step that calls nothing.
 ///
 /// Added, unless an entry already names them: [`STATE_TOOLS`], and every
 /// tool in `defs` the activity's intent or steps name, as a call
@@ -50,6 +51,11 @@ pub fn complete(activity: &mut Value, defs: &HashMap<String, ToolDefinition>) ->
     let words = activity_words(activity);
     for (place, text) in &words {
         check_calls(place, text, defs)?;
+    }
+    // `tools: []` is a judging step: one call, no tools, safe to run many at
+    // once (`workflows::authoring`). It stays exactly that.
+    if entries.is_empty() {
+        return Ok(Vec::new());
     }
     let mut wanted: Vec<&str> = STATE_TOOLS.to_vec();
     for (_, text) in &words {
@@ -222,6 +228,15 @@ mod tests {
         let mut activity = json!({"id": "a", "intent": "recall(query: \"watchlist\")", "tools": ["recall", "remember"]});
         assert!(complete(&mut activity, &defs()).unwrap().is_empty());
         assert_eq!(activity["tools"], json!(["recall", "remember"]));
+    }
+
+    /// `tools: []` is a judging step (one call, nothing to call): it gets
+    /// no tools, memory included.
+    #[test]
+    fn a_judging_step_stays_without_tools() {
+        let mut activity = json!({"id": "judge", "intent": "Decide which deals are stalled.", "steps": ["Save nothing; write_file is for later steps."], "tools": []});
+        assert!(complete(&mut activity, &defs()).unwrap().is_empty());
+        assert_eq!(activity["tools"], json!([]));
     }
 
     /// An undeclared activity isn't limited, so nothing is added to it.

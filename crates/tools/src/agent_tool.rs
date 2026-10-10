@@ -4308,11 +4308,14 @@ mod tests {
         let added = persona
             .handle_update(&serde_json::json!({
                 "name": "pipeline-watch",
-                "add_automations": [{"name": "morning-brief", "schedule": "0 7 * * *", "steps": ["Brief the owner with message_owner."], "tools": []}]
+                "add_automations": [{"name": "morning-brief", "schedule": "0 7 * * *", "steps": ["Pull the deals with mcp__hubspot__hubspot_search_deals and brief the owner with message_owner."], "tools": ["mcp__hubspot__hubspot_search_deals"]}]
             }))
             .await;
         assert!(!added.is_error, "{}", added.content);
-        assert_eq!(tools_of("emp-1", "morning-brief"), serde_json::json!(["recall", "remember", "message_owner"]));
+        assert_eq!(
+            tools_of("emp-1", "morning-brief"),
+            serde_json::json!(["mcp__hubspot__hubspot_search_deals", "recall", "remember", "message_owner"])
+        );
 
         let refused = persona
             .handle_create(
