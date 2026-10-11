@@ -74,7 +74,7 @@
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import AskReceipt from './AskReceipt.svelte';
 	import { authLoginAccount, listPlugins, submitCode } from '$lib/api/nebo';
-	import { isSignInFor } from '$lib/utils/pluginSignIn';
+	import { isSignInFor, openSignInLink } from '$lib/utils/pluginSignIn';
 	import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
@@ -130,12 +130,13 @@
 		connecting = true;
 		connectError = null;
 		try {
-			await authLoginAccount(w.plugin, {
+			const resp = await authLoginAccount(w.plugin, {
 				agentId: w.agentId,
 				accountLabel: accountLabel.trim() || 'Primary',
 				accountNumber: '',
 				...(credFields.length ? { credentials: creds } : {})
 			});
+			openSignInLink(resp);
 		} catch (e) {
 			// The card stays open with what went wrong: the owner corrects it
 			// and signs in again, or skips.
