@@ -340,6 +340,15 @@ impl SkillCore {
     /// A skill switched off on disk is switched on and loaded in the same
     /// call.
     async fn load(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str, args: Option<&str>) -> ToolResult {
+        // A retired bundle's skill for work another plugin has taken over
+        // here: that plugin's own skills say how (`superseded`).
+        if let Some(successor) = self.loader.replaced_by(name).await {
+            return ToolResult::error(format!(
+                "The skill {name} is not used on this bot: {successor} has replaced it. Do the work with {} \
+                 and load {successor}'s own skills (its tool names them).",
+                crate::plugin_tools::plugin_tool_name(successor)
+            ));
+        }
         if !self.loader.get(name, scope.agent).await.is_some_and(|s| s.enabled) {
             // Switched off on disk: switch it back on, then load it.
             let skill_dir = match Self::user_skill_dir(name) {
