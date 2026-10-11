@@ -379,8 +379,8 @@ export function chatWithAgent(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "List agent chats"
  */
-export function listAgentChats(id: string, limit?: number, offset?: number, cursor?: string, q?: string) {
-	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`, { limit, offset, cursor, q })
+export function listAgentChats(id: string, limit?: number, cursor?: string, q?: string) {
+	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`, { limit, cursor, q })
 }
 
 /**
