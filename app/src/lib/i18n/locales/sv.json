@@ -4277,7 +4277,6 @@
 		"allowTitle": "Tillåt alltid",
 		"allowDesc": "Använder verktyget utan att fråga.",
 		"allToolsNote": "Gäller alla verktyg som {name} erbjuder, även de som läggs till senare.",
-		"managedNote": "De här verktygen följer dina inställningar för företagsminnet.",
 		"noTools": "Inga verktyg än. Anslut för att se vad kopplingen erbjuder.",
 		"locked": "Den här inställningen bestäms av företagets regler.",
 		"disconnectTitle": "Koppla från {name}?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "Nebo glömmer adressen och inloggningen. Du kan lägga till den igen när som helst.",
 		"connect": "Anslut",
 		"disconnect": "Koppla bort",
-		"connected": "Ansluten"
+		"connected": "Ansluten",
+		"refreshTools": "Uppdatera verktyg",
+		"updated": "{count, plural, other{Uppdaterat · {count} verktyg}}"
 	},
 	"chatMode": {
 		"title": "Behörighet",

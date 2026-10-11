@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { PermissionsPage, PermissionSwitch } from '$lib/api/neboComponents';
 import {
+	groupTools,
+	toolSummary,
 	allToolsEdits,
 	allToolsValue,
-	connectorIconUrl,
+	connectorIconUrls,
 	connectorState,
 	switchesById,
 	toolValue,
@@ -64,8 +66,9 @@ describe('connector address and icon', () => {
 		expect(validConnectorUrl('mcp.example.com')).toBe(false);
 	});
 	it('shows the server favicon over https only', () => {
-		expect(connectorIconUrl('https://edge.example.test/mcp')).toBe('https://edge.example.test/favicon.ico');
-		expect(connectorIconUrl('http://localhost:9/mcp')).toBeNull();
+		expect(connectorIconUrls('https://mcp.edge.example/mcp')).toEqual(['https://mcp.edge.example/favicon.ico', 'https://edge.example/favicon.ico']);
+		expect(connectorIconUrls('https://example.com/mcp')).toEqual(['https://example.com/favicon.ico']);
+		expect(connectorIconUrls('http://localhost:9/mcp')).toEqual([]);
 	});
 });
 
@@ -91,5 +94,25 @@ describe('tool settings', () => {
 	it('all alike: the default is the summary', () => {
 		const s = switchesById(page([sw('tool:mcp__edge__logs', 'ask'), sw('tool:mcp__edge__nodes', 'ask')], 'ask'));
 		expect(allToolsValue(s, family, keys)).toBe('ask');
+	});
+});
+
+describe('tool rows', () => {
+	const t = (name: string, title = name) => ({ key: `mcp__crm__${name}`, title });
+	it('groups tools that share a first word when that makes more than one row', () => {
+		expect(groupTools([t('calendar_list'), t('calendar_create'), t('mail_send')]).map((g) => [g.title, g.tools.length])).toEqual([
+			['Calendar', 2],
+			['mail_send', 1]
+		]);
+	});
+	it('otherwise lists each tool, by its own title', () => {
+		expect(groupTools([t('memory_link'), t('memory_search')]).map((g) => g.title)).toEqual(['memory_link', 'memory_search']);
+		expect(groupTools([t('agent', 'Agent Management'), t('catalog', 'Catalog Management')]).map((g) => g.title)).toEqual([
+			'Agent Management',
+			'Catalog Management'
+		]);
+	});
+	it('a footnote is the first paragraph', () => {
+		expect(toolSummary('Manage agents.\n\nActions:\n- list')).toBe('Manage agents.');
 	});
 });

@@ -4277,7 +4277,6 @@
 		"allowTitle": "Sempre permitir",
 		"allowDesc": "Usa esta ferramenta sem perguntar.",
 		"allToolsNote": "Vale para todas as ferramentas de {name}, inclusive as adicionadas depois.",
-		"managedNote": "Essas ferramentas seguem as configurações da Memória da empresa.",
 		"noTools": "Ainda não há ferramentas. Conecte para ver o que ele oferece.",
 		"locked": "Esta configuração é definida pelas regras da sua empresa.",
 		"disconnectTitle": "Desconectar {name}?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "O Nebo esquece o endereço e o login. Você pode adicioná-lo de novo quando quiser.",
 		"connect": "Conectar",
 		"disconnect": "Desconectar",
-		"connected": "Conectado"
+		"connected": "Conectado",
+		"refreshTools": "Atualizar ferramentas",
+		"updated": "{count, plural, =1{Atualizado · 1 ferramenta} other{Atualizado · {count} ferramentas}}"
 	},
 	"chatMode": {
 		"title": "Permissão",

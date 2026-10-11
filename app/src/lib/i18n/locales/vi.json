@@ -4277,7 +4277,6 @@
 		"allowTitle": "Luôn cho phép",
 		"allowDesc": "Dùng công cụ này mà không hỏi.",
 		"allToolsNote": "Áp dụng cho mọi công cụ của {name}, kể cả công cụ thêm sau này.",
-		"managedNote": "Các công cụ này theo cài đặt Bộ nhớ công ty của bạn.",
 		"noTools": "Chưa có công cụ. Hãy kết nối để xem trình kết nối này cung cấp gì.",
 		"locked": "Cài đặt này do quy tắc của công ty bạn đặt cố định.",
 		"disconnectTitle": "Ngắt kết nối {name}?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "Nebo quên địa chỉ và thông tin đăng nhập của nó. Bạn có thể thêm lại bất cứ lúc nào.",
 		"connect": "Kết nối",
 		"disconnect": "Ngắt kết nối",
-		"connected": "Đã kết nối"
+		"connected": "Đã kết nối",
+		"refreshTools": "Làm mới công cụ",
+		"updated": "{count, plural, other{Đã cập nhật · {count} công cụ}}"
 	},
 	"chatMode": {
 		"title": "Quyền",

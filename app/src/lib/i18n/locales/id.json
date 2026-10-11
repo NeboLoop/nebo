@@ -4277,7 +4277,6 @@
 		"allowTitle": "Selalu izinkan",
 		"allowDesc": "Menggunakan alat ini tanpa bertanya.",
 		"allToolsNote": "Berlaku untuk setiap alat dari {name}, termasuk yang ditambahkan nanti.",
-		"managedNote": "Alat-alat ini mengikuti pengaturan Memori Perusahaan Anda.",
 		"noTools": "Belum ada alat. Sambungkan untuk melihat apa yang ditawarkan konektor ini.",
 		"locked": "Pengaturan ini ditetapkan oleh aturan perusahaan Anda.",
 		"disconnectTitle": "Putuskan {name}?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "Nebo melupakan alamat dan login-nya. Anda dapat menambahkannya lagi kapan saja.",
 		"connect": "Hubungkan",
 		"disconnect": "Putuskan",
-		"connected": "Terhubung"
+		"connected": "Terhubung",
+		"refreshTools": "Segarkan alat",
+		"updated": "{count, plural, other{Diperbarui · {count} alat}}"
 	},
 	"chatMode": {
 		"title": "Izin",

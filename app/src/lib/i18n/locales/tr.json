@@ -4277,7 +4277,6 @@
 		"allowTitle": "Her zaman izin ver",
 		"allowDesc": "Bu aracı sormadan kullanır.",
 		"allToolsNote": "{name} tarafından sunulan her araca, sonradan eklenenler dahil, uygulanır.",
-		"managedNote": "Bu araçlar Şirket Belleği ayarlarınızı izler.",
 		"noTools": "Henüz araç yok. Neler sunduğunu görmek için bağlanın.",
 		"locked": "Bu ayar şirketinizin kurallarıyla sabitlenmiştir.",
 		"disconnectTitle": "{name} bağlantısı kesilsin mi?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "Nebo adresini ve oturumunu unutur. İstediğiniz zaman yeniden ekleyebilirsiniz.",
 		"connect": "Bağlan",
 		"disconnect": "Bağlantıyı kes",
-		"connected": "Bağlı"
+		"connected": "Bağlı",
+		"refreshTools": "Araçları yenile",
+		"updated": "{count, plural, other{Güncellendi · {count} araç}}"
 	},
 	"chatMode": {
 		"title": "İzin",

@@ -837,7 +837,9 @@ pub struct ConnectorTool {
     /// The rule key its setting is stored under (`mcp__<server>__<tool>`):
     /// its Permissions switch is `tool:<key>`.
     pub key: String,
-    /// The tool's name in plain words, as the Permissions page shows it.
+    /// The tool's name in plain words: the server's own title ("Agent
+    /// Management") when it gives one, else its name as the Permissions
+    /// page writes it.
     pub title: String,
     /// What the server says the tool does; empty while it isn't connected.
     pub description: String,
@@ -849,9 +851,6 @@ pub struct ConnectorTool {
 pub struct ConnectorToolsResponse {
     /// The rule key of the connector's default ("All tools"): `mcp__<server>__*`.
     pub family: String,
-    /// Whether the tools take Blocked / Needs approval / Always allow here.
-    /// A platform server (Company Memory) is governed on its own page.
-    pub settable: bool,
     pub tools: Vec<ConnectorTool>,
 }
 
@@ -870,25 +869,20 @@ pub async fn list_integration_tools(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let prefix = mcp::bridge::tool_name_prefix(&integration.name);
     let family = format!("mcp__{}__", mcp::bridge::server_slug(&prefix));
+    let live = state.bridge.tool_defs(&id).await;
     let mut tools = Vec::new();
     for name in state.store.get_mcp_known_tools(&id).map_err(to_error_response)? {
         let key = mcp::bridge::make_tool_name(&prefix, &name);
-        let tool = key.strip_prefix(&family).unwrap_or(&key);
-        let title = super::permissions::sentence_case(&super::permissions::words(tool));
-        let description = state
-            .tools
-            .definition(&key)
-            .await
-            .map(|d| d.description)
-            .unwrap_or_default();
+        let def = live.iter().find(|d| d.name == name);
+        let title = def.and_then(|d| d.display_title()).unwrap_or_else(|| {
+            let tool = key.strip_prefix(&family).unwrap_or(&key);
+            super::permissions::sentence_case(&super::permissions::words(tool))
+        });
+        let description = def.map(|d| d.description.clone()).unwrap_or_default();
         tools.push(ConnectorTool { name, key, title, description });
     }
     tools.sort_by(|a, b| a.title.cmp(&b.title));
-    Ok(Json(ConnectorToolsResponse {
-        family: format!("{family}*"),
-        settable: integration.auth_type != "neboai",
-        tools,
-    }))
+    Ok(Json(ConnectorToolsResponse { family: format!("{family}*"), tools }))
 }
 
 /// POST /api/v1/integrations/:id/test

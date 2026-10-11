@@ -4277,7 +4277,6 @@
 		"allowTitle": "Sentiasa benarkan",
 		"allowDesc": "Menggunakan alat ini tanpa bertanya.",
 		"allToolsNote": "Terpakai pada setiap alat {name}, termasuk yang ditambah kemudian.",
-		"managedNote": "Alat ini mengikut tetapan Memori Syarikat anda.",
 		"noTools": "Belum ada alat. Sambung untuk melihat apa yang ditawarkan penyambung ini.",
 		"locked": "Tetapan ini ditetapkan oleh peraturan syarikat anda.",
 		"disconnectTitle": "Putuskan sambungan {name}?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "Nebo melupakan alamat dan log masuknya. Anda boleh menambahnya semula bila-bila masa.",
 		"connect": "Sambung",
 		"disconnect": "Putuskan",
-		"connected": "Disambungkan"
+		"connected": "Disambungkan",
+		"refreshTools": "Muat semula alat",
+		"updated": "{count, plural, other{Dikemas kini · {count} alat}}"
 	},
 	"chatMode": {
 		"title": "Kebenaran",

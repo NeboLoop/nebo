@@ -4277,7 +4277,6 @@
 		"allowTitle": "Permitir siempre",
 		"allowDesc": "Usa esta herramienta sin preguntar.",
 		"allToolsNote": "Se aplica a todas las herramientas de {name}, incluidas las que añada más adelante.",
-		"managedNote": "Estas herramientas siguen tu configuración de Memoria de la empresa.",
 		"noTools": "Aún no hay herramientas. Conéctalo para ver qué ofrece.",
 		"locked": "Esta configuración la fijan las reglas de tu empresa.",
 		"disconnectTitle": "¿Desconectar {name}?",
@@ -4287,7 +4286,9 @@
 		"removeBody": "Nebo olvida su dirección y su inicio de sesión. Puedes volver a añadirlo cuando quieras.",
 		"connect": "Conectar",
 		"disconnect": "Desconectar",
-		"connected": "Conectado"
+		"connected": "Conectado",
+		"refreshTools": "Actualizar herramientas",
+		"updated": "{count, plural, =1{Actualizado · 1 herramienta} other{Actualizado · {count} herramientas}}"
 	},
 	"chatMode": {
 		"title": "Permiso",
