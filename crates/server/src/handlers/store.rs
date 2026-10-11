@@ -475,17 +475,17 @@ pub async fn uninstall_store_product(
         state.event_dispatcher.unsubscribe_agent(agent_id).await;
         let _ = state.store.delete_agent_workflows(agent_id);
         let _ = state.store.delete_agent(agent_id);
-        // Clean up filesystem: napp_path, nebo/agents/{slug}, user/agents/{slug}
-        if let Some(ref napp_path) = agent_rec.napp_path {
-            let path = std::path::Path::new(napp_path);
-            if path.exists() {
-                let _ = std::fs::remove_dir_all(path);
-            }
-        }
-        if let Ok(user_dir) = config::user_dir() {
-            let dir = user_dir.join("agents").join(&slug);
-            if dir.exists() {
-                let _ = std::fs::remove_dir_all(&dir);
+        // Clean up filesystem: the store-install folders its recorded paths
+        // lie in. A recorded path outside `nebo/agents/` (the owner's own
+        // `user/agents/`) is never the store's to delete.
+        if let Ok(nebo_dir) = config::nebo_dir() {
+            let installed = nebo_dir.join("agents");
+            for recorded in [&agent_rec.napp_path, &agent_rec.app_ui_path].into_iter().flatten() {
+                if let Some(dir) = store_install_dir(&installed, std::path::Path::new(recorded.trim())) {
+                    if dir.exists() {
+                        let _ = std::fs::remove_dir_all(&dir);
+                    }
+                }
             }
         }
         // Deregister agent from NeboAI (non-blocking)
@@ -500,13 +500,16 @@ pub async fn uninstall_store_product(
         }
     }
 
-    // Clean up filesystem
+    // Clean up filesystem: the store installs a product to
+    // `nebo/agents|skills/<slug>`, never to the owner's `user/`.
     if !slug.is_empty() {
         if let Ok(nebo_dir) = config::nebo_dir() {
             let subdir = if is_agent { "agents" } else { "skills" };
-            let artifact_dir = nebo_dir.join(subdir).join(&slug);
-            if artifact_dir.exists() {
-                let _ = std::fs::remove_dir_all(&artifact_dir);
+            let installed = nebo_dir.join(subdir);
+            if let Some(artifact_dir) = store_install_dir(&installed, &installed.join(&slug)) {
+                if artifact_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&artifact_dir);
+                }
             }
         }
         // A default skill the owner removes stays removed at startup.
@@ -535,6 +538,16 @@ pub async fn uninstall_store_product(
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// The store-install folder `<installed>/<dir>` that `path` lies in, or
+/// `None` when it lies anywhere else (the owner's own `user/` above all) or
+/// would climb out of `installed` (`..`). Never `installed` itself.
+fn store_install_dir(installed: &std::path::Path, path: &std::path::Path) -> Option<std::path::PathBuf> {
+    match path.strip_prefix(installed).ok()?.components().next()? {
+        std::path::Component::Normal(dir) => Some(installed.join(dir)),
+        _ => None,
+    }
 }
 
 /// The local employee a marketplace product installed: the record with the
@@ -697,6 +710,67 @@ mod tests {
         let _ = nebo.state.store.delete_agent(&own);
         let _ = std::fs::remove_dir_all(&own_dir);
         nebo.state.store.delete_auth_profile(&profile).unwrap();
+    }
+
+    /// Removing the marketplace Design Studio (slug `design-studio`) deletes
+    /// the folder the store installed it to, and leaves the owner's own
+    /// `user/agents/design-studio` with its AGENT.md.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn removing_a_product_leaves_the_owners_folder_of_its_slug() {
+        use crate::staffed_proof::{hub_lists, session};
+        let nebo = session().await;
+        let profile = uuid::Uuid::new_v4().to_string();
+        nebo.state
+            .store
+            .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+            .unwrap();
+        let product = format!("market-{}", uuid::Uuid::new_v4().simple());
+        hub_lists(&product, Some(("Design Studio", "app", "0.3.7", false)));
+
+        // The owner's own folder, named exactly like the product's slug.
+        let own_dir = config::user_dir().unwrap().join("agents").join("design-studio");
+        std::fs::create_dir_all(&own_dir).unwrap();
+        std::fs::write(own_dir.join("AGENT.md"), "---\nname: My Design Studio\n---\n\nMine.\n").unwrap();
+
+        // The store's install of the product, recorded on its employee.
+        let installed = config::nebo_dir().unwrap().join("agents").join("design-studio");
+        let version_dir = installed.join("0.3.7");
+        std::fs::create_dir_all(version_dir.join("ui")).unwrap();
+        std::fs::write(version_dir.join("ui").join("index.html"), "<p>app</p>").unwrap();
+        let s = &nebo.state.store;
+        s.create_agent(&product, Some("APPS-TEST-0001"), "Design Studio 2", "", "", "{}", None, None).unwrap();
+        s.set_agent_napp_path(&product, &version_dir.to_string_lossy()).unwrap();
+        s.set_agent_app_fields(&product, true, Some(&version_dir.join("ui").to_string_lossy()), None, None).unwrap();
+
+        let (status, body) = nebo.delete(&format!("/store/products/{product}/install")).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(s.get_agent(&product).unwrap().is_none(), "the installed employee is removed");
+        assert!(!installed.exists(), "with the folder the store installed it to");
+        assert!(own_dir.join("AGENT.md").exists(), "the owner's own folder of that name stays");
+
+        hub_lists(&product, None);
+        for a in s.list_agents(1000, 0).unwrap_or_default() {
+            if a.napp_path.as_deref().is_some_and(|p| std::path::Path::new(p).starts_with(&own_dir)) {
+                let _ = s.delete_agent(&a.id);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&own_dir);
+        s.delete_auth_profile(&profile).unwrap();
+    }
+
+    /// Only a folder under the store's install root is ever the store's.
+    #[test]
+    fn a_store_install_dir_is_only_ever_under_the_install_root() {
+        use super::store_install_dir;
+        use std::path::Path;
+        let installed = Path::new("/data/nebo/agents");
+        let ds = Some(installed.join("design-studio"));
+        assert_eq!(store_install_dir(installed, &installed.join("design-studio")), ds);
+        assert_eq!(store_install_dir(installed, &installed.join("design-studio/0.3.7/ui")), ds);
+        assert_eq!(store_install_dir(installed, Path::new("/data/user/agents/design-studio")), None);
+        assert_eq!(store_install_dir(installed, &installed.join("../../user/agents/design-studio")), None);
+        assert_eq!(store_install_dir(installed, &installed.join("/data/user/agents/design-studio")), None);
+        assert_eq!(store_install_dir(installed, installed), None);
     }
 
     /// An install whose local id differs from the product's is found by the
