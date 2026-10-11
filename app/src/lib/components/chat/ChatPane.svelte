@@ -42,7 +42,7 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom, captureAnchor, restoredScrollTop } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
-  import { openAsks, settledAsks, chatAsksOf } from '$lib/stores/permissionAsks';
+  import { openAsks, settledAsks, chatAsksOf, placeAsks } from '$lib/stores/permissionAsks';
   import { approvals, chatApprovalsOf } from '$lib/stores/approvals';
   import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
   import { publishRequest } from '$lib/stores/appPublish';
@@ -1456,8 +1456,19 @@
   let fullOutputs = $state<Record<string, string>>({});
   const outputChatId = $derived(threadId || sessionId);
   const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
-  // Only the asks this conversation's own flow raised, inline at the bottom.
+  // Only the asks this conversation's own flow raised. Each keeps the message
+  // that was last when its card first showed: answered, it stays there in the
+  // conversation; open, it waits at the bottom by the composer.
   const chatAsks = $derived(chatAsksOf($openAsks, $settledAsks, threadId));
+  let askAnchors = $state<Record<string, string | number>>({});
+  const messageKeys = $derived(messages.map((m, i) => ('id' in m && m.id ? m.id : i)));
+  $effect(() => {
+    const last = messageKeys[messageKeys.length - 1];
+    if (last === undefined) return;
+    const fresh = chatAsks.filter((a) => !(a.id in askAnchors));
+    if (fresh.length) askAnchors = { ...askAnchors, ...Object.fromEntries(fresh.map((a) => [a.id, last])) };
+  });
+  const placedAsks = $derived(placeAsks(chatAsks, askAnchors, messageKeys));
   // The approvals this chat's own session raised, the same way.
   const chatApprovals = $derived(chatApprovalsOf($approvals, chatSessionKey));
   async function toggleResult(key: string, tool?: ToolMsg) {
@@ -2346,12 +2357,17 @@
           </div>
         {/if}
       {/if}
+      {#each placedAsks.after.get('id' in msg && msg.id ? msg.id : idx) ?? [] as ask (ask.id)}
+        <div class="mt-2">
+          <PermissionAskCard {ask} via="chat" />
+        </div>
+      {/each}
     {/each}
 
     <!-- The asks this chat's work is waiting on, in the conversation: the
          same card as the Inbox; answered anywhere, it leaves everywhere.
          Never pinned over the chat or the composer. -->
-    {#each chatAsks as ask (ask.id)}
+    {#each placedAsks.bottom as ask (ask.id)}
       <div class="mt-2 ask-rise">
         <PermissionAskCard {ask} via="chat" />
       </div>
