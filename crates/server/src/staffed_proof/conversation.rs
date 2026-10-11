@@ -718,7 +718,8 @@ async fn a_handoff_chain_traces_as_one_tree() {
     .await;
     assert!(nebo.store().get_handoff(&below.id).unwrap().unwrap().result.contains("LEAF-RESULT"));
     assert!(nebo.store().get_handoff(&top_id).unwrap().unwrap().result.contains("MID-RESULT"));
-    assert!(crate::handoff::live(&nebo.state).is_empty(), "nothing is left running");
+    // A hand-off is recorded done before its run lets go of the live list.
+    rig.until(30, "nothing is left running", || crate::handoff::live(&nebo.state).is_empty()).await;
 }
 
 /// The owner stops a hand-off while its employee works: the receiving run
