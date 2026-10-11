@@ -388,9 +388,10 @@ impl SkillCore {
             .unwrap_or_default();
         let studio = self.store.as_deref().and_then(|store| app_studio_developer_mode(store, &skill.name)).unwrap_or_default();
         ToolResult::ok(format!(
-            "Loaded skill '{}'. {studio}Follow its instructions:\n\n{base}{body}{}",
+            "Loaded skill '{}'. {studio}Follow its instructions:\n\n{base}{body}{}{}",
             skill.name,
-            files_line(&skill.name, skill.list_resources().unwrap_or_default())
+            files_line(&skill.name, skill.list_resources().unwrap_or_default()),
+            step_check_rule(&body)
         ))
     }
 
@@ -1276,6 +1277,22 @@ impl DynTool for SkillTool {
     }
 }
 
+/// How a skill whose steps carry step checks (a task learned from a
+/// demonstration writes each step's expected after-state as a browser_expect
+/// call) is run: one step at a time, each checked before the next. Empty for
+/// any other skill.
+fn step_check_rule(body: &str) -> &'static str {
+    if body.contains("browser_expect") {
+        "\n\nRun these steps in order. Find each step's element by its locators, strongest first \
+         (role and name with browser_find or browser_read), and use coordinates only when nothing else \
+         matches. After each step, call browser_expect with that step's expected state before starting \
+         the next (load it with find_tools, query \"select:browser_expect\", if you don't have it). \
+         If a check fails, stop: don't try the remaining steps another way."
+    } else {
+        ""
+    }
+}
+
 /// The skill's other files, named at the end of its instructions with the
 /// call that reads one: its instructions point at them by relative path
 /// ("see reference/actions.md"), and on 2026-09-26 runs asked use_skill for
@@ -1297,6 +1314,15 @@ fn files_line(name: &str, mut files: Vec<String>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_skill_with_step_checks_is_run_step_by_step() {
+        let learned = "1. Click link \"Orders\" (role=link[name=\"Orders\"]).\n   Expect: browser_expect(step: \"1\", heading: \"Orders\")";
+        let rule = super::step_check_rule(learned);
+        assert!(rule.contains("After each step, call browser_expect"));
+        assert!(rule.contains("If a check fails, stop"));
+        assert_eq!(super::step_check_rule("Write a haiku about the sea."), "");
+    }
+
     use super::*;
     use serde_json::json;
 

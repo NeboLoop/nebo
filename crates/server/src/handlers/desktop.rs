@@ -101,6 +101,11 @@ pub async fn teach_start(
             return teach_err(&e);
         }
     };
+    // Every browser with the extension records each action as the element it
+    // was done to, on the recording's clock.
+    if let Some(started_ms) = tools::desktop_session::recording_started_ms() {
+        state.extension_bridge.teach_start(&id, dir.clone(), started_ms).await;
+    }
     let field = |k: &str| body.as_ref().and_then(|b| b[k].as_str()).unwrap_or("").to_string();
     *teaching().lock().unwrap_or_else(|p| p.into_inner()) =
         Some(Teaching { id: id.clone(), agent_id: field("agentId"), session_key: field("sessionKey") });
@@ -138,6 +143,7 @@ async fn stop_at_cap(state: &AppState, id: &str, where_: tools::desktop_session:
     info!(session = %id, "teach: the recording reached its cap; stopping it");
     if agent_id.is_empty() {
         // Nobody to learn it: the recording still ends.
+        stop_element_recording(state, Some(id)).await;
         if let Err(e) = tools::desktop_session::stop_recording(Some(id)).await {
             warn!(session = %id, error = %e, "teach: the capped recording did not stop");
         }
@@ -146,6 +152,16 @@ async fn stop_at_cap(state: &AppState, id: &str, where_: tools::desktop_session:
     match finish(state, Some(id), &agent_id, &session_key, None).await {
         Ok(stopped) => *capped().lock().unwrap_or_else(|p| p.into_inner()) = Some(stopped),
         Err(e) => warn!(session = %id, error = %e, "teach: the capped recording did not stop"),
+    }
+}
+
+/// End the extension's element recording (`only`: just that session) and
+/// write its `elements.jsonl` and `actions.json` beside the recording.
+async fn stop_element_recording(state: &AppState, only: Option<&str>) {
+    match state.extension_bridge.teach_stop(only).await {
+        Some(Ok(n)) => info!(actions = n, "teach: element records written"),
+        Some(Err(e)) => warn!(error = %e, "teach: element records were not written"),
+        None => {}
     }
 }
 
@@ -335,6 +351,9 @@ async fn finish(
     requested_key: &str,
     narration: Option<NarrationUpload>,
 ) -> Result<Stopped, String> {
+    // The element records go down first: the timeline is built from them
+    // when the recording stops.
+    stop_element_recording(state, only).await;
     let rec = tools::desktop_session::stop_recording(only).await?;
     {
         let mut held = teaching().lock().unwrap_or_else(|p| p.into_inner());

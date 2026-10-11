@@ -2293,8 +2293,14 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                 "extension_ws forwarding tool request"
             );
             let msg = if req.is_command {
-                // Fire-and-forget command (show_indicators, hide_indicators)
+                // Fire-and-forget command (show_indicators, teach_record_start, …);
+                // its args ride as fields of the message.
                 let mut m = serde_json::json!({ "type": req.tool });
+                if let Some(args) = req.args.as_object() {
+                    for (k, v) in args {
+                        m[k.as_str()] = v.clone();
+                    }
+                }
                 if let Some(ref sid) = req.session_id {
                     m["session_id"] = serde_json::Value::String(sid.clone());
                 }
@@ -2361,6 +2367,16 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     };
                                     bridge_recv.deliver_result(conn_id, id, result).await;
                                 }
+                            }
+                            // Teach recording: one thing the person did, with its crop.
+                            "teach_event" => {
+                                let session = parsed["session"].as_str().unwrap_or("").to_string();
+                                let crop = parsed["crop"].as_str().map(str::to_string);
+                                let event = parsed.get("event").cloned().unwrap_or_default();
+                                bridge_recv.teach_event(&session, event, crop.as_deref()).await;
+                            }
+                            "teach_flushed" => {
+                                bridge_recv.teach_flushed(parsed["session"].as_str().unwrap_or(""));
                             }
                             "hello" | "connected" => {
                                 debug!("extension bridge handshake: {}", msg_type);

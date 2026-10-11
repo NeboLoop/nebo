@@ -1789,6 +1789,7 @@ enum Kind {
     BrowserBatch,
     BrowserPageTools,
     BrowserCallPageTool,
+    BrowserExpect,
 }
 
 const KINDS: &[Kind] = &[
@@ -1813,6 +1814,7 @@ const KINDS: &[Kind] = &[
     Kind::BrowserBatch,
     Kind::BrowserPageTools,
     Kind::BrowserCallPageTool,
+    Kind::BrowserExpect,
 ];
 
 impl Kind {
@@ -1839,6 +1841,7 @@ impl Kind {
             Kind::BrowserBatch => "browser_batch",
             Kind::BrowserPageTools => "browser_page_tools",
             Kind::BrowserCallPageTool => "browser_call_page_tool",
+            Kind::BrowserExpect => "browser_expect",
         }
     }
 
@@ -1851,7 +1854,7 @@ impl Kind {
         self.is_browser()
             && !matches!(
                 self,
-                Kind::BrowserBatch | Kind::BrowserFillForm | Kind::BrowserHistory | Kind::BrowserStatus
+                Kind::BrowserBatch | Kind::BrowserFillForm | Kind::BrowserHistory | Kind::BrowserStatus | Kind::BrowserExpect
             )
     }
 
@@ -1878,6 +1881,7 @@ impl Kind {
             Kind::BrowserBatch => "run several browser steps at once",
             Kind::BrowserPageTools => "list the tools a page offers",
             Kind::BrowserCallPageTool => "call a tool the page offers",
+            Kind::BrowserExpect => "check the page reached a step's expected state",
         }
     }
 
@@ -1960,6 +1964,12 @@ impl Kind {
                 - When a site offers a tool for the job, call it with browser_call_page_tool rather than clicking through the page."
                 .to_string(),
             Kind::BrowserCallPageTool => "Calls one of the tools the current page offers (listed by browser_page_tools) with its arguments.".to_string(),
+            Kind::BrowserExpect => "Checks that the current page reached a step's expected state: the step check of a learned task.\n\
+                - Give what the step should leave on screen: url (a part of it, like /orders), title, heading, text that shows, and elements that show ({role, name} as browser_read prints them).\n\
+                - It waits up to wait_ms (default 5000) for the page to get there.\n\
+                - When the page doesn't match, the task stops and the owner is told which step and what differed. Don't work around it.\n\
+                - The window or viewport size doesn't matter: it checks what's on the page, not where."
+                .to_string(),
         }
     }
 
@@ -2148,6 +2158,30 @@ impl Kind {
                 },
                 "required": ["name"]
             }),
+            Kind::BrowserExpect => json!({
+                "type": "object",
+                "properties": {
+                    "step": {"type": "string", "description": "Which step this checks, as the skill numbers or names it, e.g. \"3\" or \"3: open Orders\"."},
+                    "url": {"type": "string", "description": "A part the page's URL must contain, e.g. /orders."},
+                    "title": {"type": "string", "description": "A part the page title must contain."},
+                    "heading": {"type": "string", "description": "A part one of the page's visible headings must contain."},
+                    "text": {"type": "array", "items": {"type": "string"}, "description": "Text that must show on the page."},
+                    "visible": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string", "description": "The role as browser_read prints it: button, link, textbox, heading, …"},
+                                "name": {"type": "string", "description": "Its name as browser_read prints it."}
+                            },
+                            "required": ["role", "name"]
+                        },
+                        "description": "Elements that must show, e.g. the next step's button."
+                    },
+                    "wait_ms": {"type": "integer", "minimum": 0, "maximum": 15000, "description": "How long to wait for the page to match (default 5000)."}
+                },
+                "required": ["step"]
+            }),
         }
     }
 
@@ -2163,7 +2197,8 @@ impl Kind {
             | Kind::BrowserConsole
             | Kind::BrowserNetwork
             | Kind::BrowserStatus
-            | Kind::BrowserPageTools => true,
+            | Kind::BrowserPageTools
+            | Kind::BrowserExpect => true,
             Kind::HttpRequest => matches!(str_field(input, "method"), Some("GET" | "HEAD")),
             Kind::BrowserAct => matches!(str_field(input, "action"), Some("wait" | "screenshot")),
             _ => false,
@@ -2227,6 +2262,18 @@ impl Kind {
                     kind.validate(step_input).map_err(|e| format!("Step {} ({name}): {e}", i + 1))?;
                 }
                 Ok(())
+            }
+            Kind::BrowserExpect => {
+                let has = |k: &str| match input.get(k) {
+                    Some(serde_json::Value::String(v)) => !v.trim().is_empty(),
+                    Some(serde_json::Value::Array(v)) => !v.is_empty(),
+                    _ => false,
+                };
+                if ["url", "title", "heading", "text", "visible"].iter().any(|k| has(k)) {
+                    Ok(())
+                } else {
+                    Err("browser_expect needs at least one of url, title, heading, text or visible.".into())
+                }
             }
             _ => Ok(()),
         }
@@ -2295,6 +2342,7 @@ impl Kind {
             }
             Kind::BrowserPageTools => ("webmcp_list", serde_json::json!({})),
             Kind::BrowserCallPageTool => ("webmcp_call", pick(&[("name", "name"), ("args", "args")])),
+            Kind::BrowserExpect => ("expect", expect_page_args(input)),
             Kind::SearchWeb | Kind::FetchUrl | Kind::HttpRequest => return None,
         })
     }
@@ -2348,6 +2396,7 @@ impl Kind {
                 let tool = str_field(input, "name").unwrap_or("a").replace('_', " ");
                 (format!("using the page's {tool} tool"), format!("Used the page's {tool} tool"))
             }
+            Kind::BrowserExpect => pair("checking the step's result", "Checked the step's result"),
         }
     }
 }
@@ -2526,6 +2575,7 @@ impl DynTool for WebTool {
                     };
                     self.core.handle_http(m, &input).await
                 }
+                Kind::BrowserExpect => self.core.handle_expect(&input, session_id, &group_key).await,
                 kind => match kind.browser_step(&input) {
                     Some((action, args)) => self.core.handle_browser(action, &args, session_id, &group_key).await,
                     None => ToolResult::error(format!("{} is not a browser step.", kind.name())),
@@ -2590,6 +2640,117 @@ async fn auto_snapshot(
     }
 }
 
+/// The longest a step check waits for the page to match.
+const EXPECT_MAX_WAIT_MS: u64 = 15_000;
+const EXPECT_DEFAULT_WAIT_MS: u64 = 5_000;
+const EXPECT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+impl WebCore {
+    /// browser_expect: ask the page for the facts the step names, compare,
+    /// and poll until they match or the wait is over. A mismatch is a
+    /// terminal error: the run stops and the owner reads which step and what
+    /// differed, instead of the next step running on the wrong page.
+    async fn handle_expect(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
+        let step = str_field(input, "step").unwrap_or("").trim().to_string();
+        let wait = std::time::Duration::from_millis(
+            input.get("wait_ms").and_then(|v| v.as_u64()).unwrap_or(EXPECT_DEFAULT_WAIT_MS).min(EXPECT_MAX_WAIT_MS),
+        );
+        let args = expect_page_args(input);
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let read = self.handle_browser("expect", &args, session_id, group_key).await;
+            if read.is_error {
+                if read.content.contains("Unknown tool") {
+                    return ToolResult::error(
+                        "This browser can't check a step yet: browser_expect needs the NeboAI extension 0.5.0 or later. \
+                         Check the step yourself with browser_read.",
+                    );
+                }
+                return read;
+            }
+            let facts: serde_json::Value = match serde_json::from_str(&read.content) {
+                Ok(v) => v,
+                Err(_) => return ToolResult::error(format!("The page's answer to the step check was unreadable: {}", read.content)),
+            };
+            let misses = expect_mismatches(input, &facts);
+            if misses.is_empty() {
+                return ToolResult::ok(format!("Step {step} check passed: the page is where the step should leave it."));
+            }
+            if tokio::time::Instant::now() + EXPECT_POLL > deadline {
+                let mut r = ToolResult::error(format!(
+                    "Step {step} did not reach its expected state, so the task stopped there.\n- {}",
+                    misses.join("\n- ")
+                ));
+                r.terminal = true;
+                return r;
+            }
+            tokio::time::sleep(EXPECT_POLL).await;
+        }
+    }
+}
+
+/// What the page is asked for: the texts and elements to look for (url,
+/// title and headings come back always).
+fn expect_page_args(input: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "text": input.get("text").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "elements": input.get("visible").cloned().unwrap_or_else(|| serde_json::json!([])),
+    })
+}
+
+/// Each way the page differs from what the step expects, in words. Empty
+/// when it matches. Comparisons ignore case and runs of whitespace; url,
+/// title and heading match on a part.
+fn expect_mismatches(spec: &serde_json::Value, facts: &serde_json::Value) -> Vec<String> {
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let want = |k: &str| str_field(spec, k).map(str::trim).filter(|v| !v.is_empty());
+    let page_url = str_field(facts, "url").unwrap_or("");
+    let page_title = str_field(facts, "title").unwrap_or("");
+    let headings: Vec<&str> = facts["headings"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).collect();
+    let mut misses = Vec::new();
+    if let Some(check) = str_field(facts, "personCheck").filter(|c| !c.is_empty()) {
+        misses.push(format!("the page is asking to confirm a person is using it (\"{check}\"); the owner has to finish that"));
+    }
+    if let Some(u) = want("url")
+        && !page_url.to_lowercase().contains(&u.to_lowercase())
+    {
+        misses.push(format!("expected the address to contain \"{u}\"; the page is at {page_url}"));
+    }
+    if let Some(t) = want("title")
+        && !norm(page_title).contains(&norm(t))
+    {
+        misses.push(format!("expected the title to contain \"{t}\"; the title is \"{page_title}\""));
+    }
+    if let Some(h) = want("heading")
+        && !headings.iter().any(|x| norm(x).contains(&norm(h)))
+    {
+        let shown = if headings.is_empty() {
+            "no headings".to_string()
+        } else {
+            format!("headings {}", headings.iter().map(|x| format!("\"{x}\"")).collect::<Vec<_>>().join(", "))
+        };
+        misses.push(format!("expected a heading \"{h}\"; the page shows {shown}"));
+    }
+    for t in spec["text"].as_array().into_iter().flatten().filter_map(|t| t.as_str()) {
+        if !facts["text"][t].as_bool().unwrap_or(false) {
+            misses.push(format!("expected the text \"{t}\" to show; it doesn't"));
+        }
+    }
+    let found = facts["elements"].as_array().cloned().unwrap_or_default();
+    for e in spec["visible"].as_array().into_iter().flatten() {
+        let (role, name) = (str_field(e, "role").unwrap_or(""), str_field(e, "name").unwrap_or(""));
+        let shown = found
+            .iter()
+            .find(|f| str_field(f, "role") == Some(role) && str_field(f, "name") == Some(name))
+            .and_then(|f| f["visible"].as_u64())
+            .unwrap_or(0);
+        if shown == 0 {
+            misses.push(format!("expected {role} \"{name}\" to show; it isn't on the page"));
+        }
+    }
+    misses
+}
+
 /// Map a web tool action name to the corresponding extension tool name.
 /// Returns None for actions that don't map (status, new_tab validation, etc.)
 fn map_action_to_tool(action: &str) -> Option<&'static str> {
@@ -2619,6 +2780,7 @@ fn map_action_to_tool(action: &str) -> Option<&'static str> {
         "find" => Some("find"),
         "webmcp_list" => Some("webmcp_list"),
         "webmcp_call" => Some("webmcp_call"),
+        "expect" => Some("expect"),
         _ => None,
     }
 }
@@ -2648,6 +2810,7 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
         "file_upload" => vec!["paths", "ref"],
         "find" => vec!["query"],
         "webmcp_call" => vec!["name", "args"],
+        "expect" => vec!["text", "elements"],
         _ => vec![],
     };
 
@@ -3490,6 +3653,65 @@ fn sanitize_html(html: &str) -> String {
 mod tests {
     use super::*;
 
+    fn page_facts() -> serde_json::Value {
+        serde_json::json!({
+            "url": "https://shop.test/orders?page=1",
+            "title": "Orders · Shop admin",
+            "headings": ["Orders", "Recent"],
+            "text": {"Order saved": true, "Refunded": false},
+            "elements": [
+                {"role": "button", "name": "New order", "visible": 1, "exact": 1},
+                {"role": "link", "name": "Export", "visible": 0, "exact": 0}
+            ]
+        })
+    }
+
+    #[test]
+    fn a_step_check_passes_when_the_page_matches_regardless_of_case_or_spacing() {
+        let spec = serde_json::json!({
+            "step": "3", "url": "/orders", "title": "orders", "heading": "  ORDERS ",
+            "text": ["Order saved"], "visible": [{"role": "button", "name": "New order"}]
+        });
+        assert!(expect_mismatches(&spec, &page_facts()).is_empty());
+    }
+
+    #[test]
+    fn a_step_check_says_each_way_the_page_differs() {
+        let spec = serde_json::json!({
+            "step": "4", "url": "/orders/new", "heading": "New order",
+            "text": ["Refunded"], "visible": [{"role": "link", "name": "Export"}]
+        });
+        let misses = expect_mismatches(&spec, &page_facts());
+        assert_eq!(misses.len(), 4, "{misses:?}");
+        assert!(misses[0].contains("/orders/new") && misses[0].contains("https://shop.test/orders?page=1"));
+        assert!(misses[1].contains("\"New order\"") && misses[1].contains("\"Orders\", \"Recent\""));
+        assert!(misses[2].contains("Refunded"));
+        assert!(misses[3].contains("link \"Export\""));
+    }
+
+    #[test]
+    fn a_person_check_on_the_page_is_a_mismatch() {
+        let mut facts = page_facts();
+        facts["personCheck"] = serde_json::json!("Press & Hold");
+        let misses = expect_mismatches(&serde_json::json!({"step": "1", "url": "/orders"}), &facts);
+        assert_eq!(misses.len(), 1);
+        assert!(misses[0].contains("Press & Hold"));
+    }
+
+    #[test]
+    fn a_step_check_needs_something_to_check_and_never_runs_in_a_batch() {
+        assert!(Kind::BrowserExpect.validate(&serde_json::json!({"step": "1"})).is_err());
+        assert!(Kind::BrowserExpect.validate(&serde_json::json!({"step": "1", "text": []})).is_err());
+        assert!(Kind::BrowserExpect.validate(&serde_json::json!({"step": "1", "heading": "Orders"})).is_ok());
+        assert!(!Kind::BrowserExpect.batchable());
+        assert!(Kind::BrowserExpect.read_only(&serde_json::json!({})));
+        let (action, args) = Kind::BrowserExpect
+            .browser_step(&serde_json::json!({"step": "1", "visible": [{"role": "button", "name": "Go"}]}))
+            .unwrap();
+        assert_eq!(action, "expect");
+        assert_eq!(args["elements"][0]["name"], "Go");
+    }
+
     /// A user's own search key never reaches tool output — what the model
     /// (Janus, when it is the model) reads — through a printed URL.
     const SENTINEL: &str = "SENTINEL-byo-search-key-0000000000";
@@ -4140,7 +4362,9 @@ mod interface_tests {
         for r in &web_rows {
             assert!(names.contains(&r.to), "{r:?}");
         }
-        for name in &names {
+        // Tools born after the split never had an old `web(...)` shape.
+        const NO_OLD_SHAPE: &[&str] = &["browser_expect"];
+        for name in names.iter().filter(|n| !NO_OLD_SHAPE.contains(n)) {
             assert!(web_rows.iter().any(|r| r.to == *name), "{name} has no old shape");
         }
     }
