@@ -3260,19 +3260,21 @@
 		"pack": "חבילת בינה",
 		"packsTitle": "חבילות בינה",
 		"neboAi": "Nebo AI",
-		"customPack": "חבילה מותאמת",
 		"packBuiltIn": "מובנית ומוכנה לעבודה",
 		"packOwn": "הבינה המלאכותית שלך",
 		"custom": "מותאם",
 		"customModel": "מודל מותאם",
 		"customModelDesc": "מוגדר בהגדרות",
 		"levelDesc": {
+			"auto": "Nebo בוחר את הרמה לכל משימה",
 			"instant": "התשובות המהירות ביותר",
 			"low": "מהיר, עם קצת חשיבה",
 			"medium": "עבודה יומיומית",
 			"high": "בעיות קשות יותר",
 			"max": "היסודי ביותר"
-		}
+		},
+		"autoCustom": "בוחר מבין הרמות של החבילה הזו",
+		"fromNeboAi": "מ-Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "שכבות",
@@ -4096,7 +4098,7 @@
 			"max": "מקסימלי"
 		},
 		"autoRunsOn": "Nebo AI בוחר את הרמה בכל שלב",
-		"emptyLevel": "הרמה הקרובה שמעל",
+		"emptyLevel": "משתמש ב-Nebo AI",
 		"vision": "ראייה",
 		"voice": "קול",
 		"decisions": "החלטות",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "לא ניתן להסיר את החבילה.",
 		"nameRequired": "תן שם לחבילה.",
 		"effortLevels": "רמות מאמץ",
-		"effortLevelsHint": "כל מודל מכל ספק. רמה ריקה משתמשת ברמה הקרובה שמעל.",
+		"effortLevelsHint": "כל מודל מכל ספק. רמה ריקה משתמשת במודל של Nebo AI לאותה רמה.",
 		"effortDefault": "ברירת מחדל",
 		"providerEffortNamed": "מאמץ הספק ל{level}",
 		"lanes": "מסלולים",

@@ -1259,3 +1259,7 @@ button.connector-row {
 .chat-mode-foot {
   @apply px-1 text-xs text-base-content/60;
 }
+/* A level an owner's pack leaves empty: said, but quieter. */
+.intel-desc-muted {
+	@apply text-base-content/50 italic;
+}

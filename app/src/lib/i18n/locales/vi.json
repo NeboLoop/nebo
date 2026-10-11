@@ -3260,19 +3260,21 @@
 		"pack": "Gói trí tuệ",
 		"packsTitle": "Gói trí tuệ",
 		"neboAi": "Nebo AI",
-		"customPack": "Gói tùy chỉnh",
 		"packBuiltIn": "Tích hợp sẵn và sẵn sàng dùng",
 		"packOwn": "AI của riêng bạn",
 		"custom": "Tùy chỉnh",
 		"customModel": "Mô hình tùy chỉnh",
 		"customModelDesc": "Đặt trong Cài đặt",
 		"levelDesc": {
+			"auto": "Nebo chọn mức cho từng tác vụ",
 			"instant": "Trả lời nhanh nhất",
 			"low": "Nhanh, có suy nghĩ một chút",
 			"medium": "Công việc hằng ngày",
 			"high": "Vấn đề khó hơn",
 			"max": "Kỹ lưỡng nhất"
-		}
+		},
+		"autoCustom": "Chọn trong các mức của gói này",
+		"fromNeboAi": "từ Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Lớp",
@@ -4096,7 +4098,7 @@
 			"max": "Tối đa"
 		},
 		"autoRunsOn": "Nebo AI chọn mức ở mỗi bước",
-		"emptyLevel": "Mức gần nhất ở trên",
+		"emptyLevel": "Dùng Nebo AI",
 		"vision": "Thị giác",
 		"voice": "Giọng nói",
 		"decisions": "Quyết định",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Không thể xóa gói.",
 		"nameRequired": "Đặt tên cho gói.",
 		"effortLevels": "Mức nỗ lực",
-		"effortLevelsHint": "Bất kỳ mô hình nào từ bất kỳ nhà cung cấp nào. Mức để trống sẽ dùng mức gần nhất ở trên.",
+		"effortLevelsHint": "Bất kỳ mô hình nào từ bất kỳ nhà cung cấp nào. Mức để trống dùng mô hình của Nebo AI cho mức đó.",
 		"effortDefault": "Mặc định",
 		"providerEffortNamed": "Mức nỗ lực của nhà cung cấp cho {level}",
 		"lanes": "Luồng",

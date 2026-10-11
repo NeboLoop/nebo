@@ -3260,19 +3260,21 @@
 		"pack": "インテリジェンスパック",
 		"packsTitle": "インテリジェンスパック",
 		"neboAi": "Nebo AI",
-		"customPack": "カスタムパック",
 		"packBuiltIn": "組み込み済みですぐに使えます",
 		"packOwn": "あなた自身のAI",
 		"custom": "カスタム",
 		"customModel": "カスタムモデル",
 		"customModelDesc": "設定で指定",
 		"levelDesc": {
+			"auto": "Neboがタスクごとにレベルを選びます",
 			"instant": "最速の返答",
 			"low": "速く、少し考えて",
 			"medium": "日常の作業",
 			"high": "より難しい問題",
 			"max": "最も丁寧"
-		}
+		},
+		"autoCustom": "このパックのレベルから選びます",
+		"fromNeboAi": "Nebo AIから"
 	},
 	"settingsLayers": {
 		"title": "レイヤー",
@@ -4096,7 +4098,7 @@
 			"max": "最大"
 		},
 		"autoRunsOn": "Nebo AIが各ステップでレベルを選びます",
-		"emptyLevel": "1つ上の最も近いレベル",
+		"emptyLevel": "Nebo AIを使用",
 		"vision": "ビジョン",
 		"voice": "ボイス",
 		"decisions": "判断",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "パックを削除できませんでした。",
 		"nameRequired": "パックに名前を付けてください。",
 		"effortLevels": "労力レベル",
-		"effortLevelsHint": "どのプロバイダーのどのモデルでも使えます。空のレベルは1つ上の最も近いレベルを使います。",
+		"effortLevelsHint": "どのプロバイダーのどのモデルでも使えます。空のレベルはそのレベルのNebo AIのモデルを使います。",
 		"effortDefault": "デフォルト",
 		"providerEffortNamed": "{level} のプロバイダーの労力",
 		"lanes": "レーン",

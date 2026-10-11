@@ -3260,19 +3260,21 @@
 		"pack": "Pack d'intelligence",
 		"packsTitle": "Packs d'intelligence",
 		"neboAi": "Nebo AI",
-		"customPack": "Pack personnalisé",
 		"packBuiltIn": "Intégré et prêt à l'emploi",
 		"packOwn": "Votre propre IA",
 		"custom": "Personnalisé",
 		"customModel": "Modèle personnalisé",
 		"customModelDesc": "Défini dans les Réglages",
 		"levelDesc": {
+			"auto": "Nebo choisit le niveau pour chaque tâche",
 			"instant": "Réponses les plus rapides",
 			"low": "Rapide, avec un peu de réflexion",
 			"medium": "Travail courant",
 			"high": "Problèmes plus difficiles",
 			"max": "Le plus approfondi"
-		}
+		},
+		"autoCustom": "Choisit parmi les niveaux de ce pack",
+		"fromNeboAi": "de Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Couches",
@@ -4096,7 +4098,7 @@
 			"max": "Maximal"
 		},
 		"autoRunsOn": "Nebo AI choisit le niveau à chaque étape",
-		"emptyLevel": "Le niveau le plus proche au-dessus",
+		"emptyLevel": "Utilise Nebo AI",
 		"vision": "Vision",
 		"voice": "Voix",
 		"decisions": "Décisions",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Impossible de retirer le pack.",
 		"nameRequired": "Nommez le pack.",
 		"effortLevels": "Niveaux d'effort",
-		"effortLevelsHint": "N'importe quel modèle de n'importe quel fournisseur. Un niveau vide utilise le niveau le plus proche au-dessus.",
+		"effortLevelsHint": "N'importe quel modèle de n'importe quel fournisseur. Un niveau vide utilise le modèle de Nebo AI pour ce niveau.",
 		"effortDefault": "Par défaut",
 		"providerEffortNamed": "Effort du fournisseur pour {level}",
 		"lanes": "Voies",

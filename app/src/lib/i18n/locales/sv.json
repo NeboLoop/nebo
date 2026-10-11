@@ -3260,19 +3260,21 @@
 		"pack": "Intelligenspaket",
 		"packsTitle": "Intelligenspaket",
 		"neboAi": "Nebo AI",
-		"customPack": "Eget paket",
 		"packBuiltIn": "Inbyggt och redo att användas",
 		"packOwn": "Din egen AI",
 		"custom": "Anpassad",
 		"customModel": "Egen modell",
 		"customModelDesc": "Inställd i Inställningar",
 		"levelDesc": {
+			"auto": "Nebo väljer nivå för varje uppgift",
 			"instant": "Snabbaste svaren",
 			"low": "Snabbt, med lite eftertanke",
 			"medium": "Vardagligt arbete",
 			"high": "Svårare problem",
 			"max": "Det grundligaste"
-		}
+		},
+		"autoCustom": "Väljer bland paketets nivåer",
+		"fromNeboAi": "från Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Lager",
@@ -4096,7 +4098,7 @@
 			"max": "Max"
 		},
 		"autoRunsOn": "Nebo AI väljer nivån för varje steg",
-		"emptyLevel": "Närmaste nivå ovanför",
+		"emptyLevel": "Använder Nebo AI",
 		"vision": "Syn",
 		"voice": "Röst",
 		"decisions": "Beslut",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Kunde inte ta bort paketet.",
 		"nameRequired": "Namnge paketet.",
 		"effortLevels": "Ansträngningsnivåer",
-		"effortLevelsHint": "Valfri modell från valfri leverantör. En tom nivå använder närmaste nivå ovanför den.",
+		"effortLevelsHint": "Vilken modell som helst från vilken leverantör som helst. En tom nivå använder Nebo AI:s modell för den nivån.",
 		"effortDefault": "Standard",
 		"providerEffortNamed": "Leverantörsansträngning för {level}",
 		"lanes": "Spår",

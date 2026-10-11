@@ -3260,19 +3260,21 @@
 		"pack": "इंटेलिजेंस पैक",
 		"packsTitle": "इंटेलिजेंस पैक",
 		"neboAi": "Nebo AI",
-		"customPack": "कस्टम पैक",
 		"packBuiltIn": "बिल्ट-इन और इस्तेमाल के लिए तैयार",
 		"packOwn": "आपका अपना AI",
 		"custom": "कस्टम",
 		"customModel": "कस्टम मॉडल",
 		"customModelDesc": "सेटिंग्स में सेट",
 		"levelDesc": {
+			"auto": "Nebo हर काम के लिए स्तर चुनता है",
 			"instant": "सबसे तेज़ जवाब",
 			"low": "तेज़, थोड़ा सोचकर",
 			"medium": "रोज़मर्रा का काम",
 			"high": "कठिन समस्याएँ",
 			"max": "सबसे गहन"
-		}
+		},
+		"autoCustom": "इस पैक के स्तरों में से चुनता है",
+		"fromNeboAi": "Nebo AI से"
 	},
 	"settingsLayers": {
 		"title": "परतें",
@@ -4096,7 +4098,7 @@
 			"max": "मैक्स"
 		},
 		"autoRunsOn": "Nebo AI हर चरण में स्तर चुनता है",
-		"emptyLevel": "ऊपर का निकटतम स्तर",
+		"emptyLevel": "Nebo AI इस्तेमाल करता है",
 		"vision": "विज़न",
 		"voice": "वॉइस",
 		"decisions": "डिसीज़न",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "पैक हटाया नहीं जा सका।",
 		"nameRequired": "पैक को नाम दें।",
 		"effortLevels": "प्रयास स्तर",
-		"effortLevelsHint": "किसी भी प्रदाता का कोई भी मॉडल। खाली स्तर ऊपर के निकटतम स्तर का उपयोग करता है।",
+		"effortLevelsHint": "किसी भी प्रदाता का कोई भी मॉडल। खाली स्तर उस स्तर के लिए Nebo AI का मॉडल इस्तेमाल करता है।",
 		"effortDefault": "डिफ़ॉल्ट",
 		"providerEffortNamed": "{level} प्रदाता प्रयास",
 		"lanes": "लेन",

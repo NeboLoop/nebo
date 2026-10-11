@@ -3260,19 +3260,21 @@
 		"pack": "Pek kecerdasan",
 		"packsTitle": "Pek kecerdasan",
 		"neboAi": "Nebo AI",
-		"customPack": "Pek tersuai",
 		"packBuiltIn": "Terbina dalam dan sedia digunakan",
 		"packOwn": "AI anda sendiri",
 		"custom": "Tersuai",
 		"customModel": "Model tersuai",
 		"customModelDesc": "Ditetapkan dalam Tetapan",
 		"levelDesc": {
+			"auto": "Nebo memilih tahap untuk setiap tugas",
 			"instant": "Balasan terpantas",
 			"low": "Pantas, dengan sedikit pemikiran",
 			"medium": "Kerja harian",
 			"high": "Masalah lebih sukar",
 			"max": "Paling teliti"
-		}
+		},
+		"autoCustom": "Memilih daripada tahap pek ini",
+		"fromNeboAi": "daripada Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Lapisan",
@@ -4096,7 +4098,7 @@
 			"max": "Maksimum"
 		},
 		"autoRunsOn": "Nebo AI memilih tahap pada setiap langkah",
-		"emptyLevel": "Tahap terdekat di atas",
+		"emptyLevel": "Menggunakan Nebo AI",
 		"vision": "Penglihatan",
 		"voice": "Suara",
 		"decisions": "Keputusan",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Tidak dapat mengalih keluar pek.",
 		"nameRequired": "Namakan pek.",
 		"effortLevels": "Tahap usaha",
-		"effortLevelsHint": "Mana-mana model daripada mana-mana pembekal. Tahap yang kosong menggunakan tahap terdekat di atasnya.",
+		"effortLevelsHint": "Mana-mana model daripada mana-mana pembekal. Tahap kosong menggunakan model Nebo AI untuk tahap itu.",
 		"effortDefault": "Lalai",
 		"providerEffortNamed": "Usaha pembekal {level}",
 		"lanes": "Lorong",

@@ -3260,19 +3260,21 @@
 		"pack": "智慧包",
 		"packsTitle": "智慧包",
 		"neboAi": "Nebo AI",
-		"customPack": "自訂包",
 		"packBuiltIn": "內建，立即可用",
 		"packOwn": "你自己的 AI",
 		"custom": "自訂",
 		"customModel": "自訂模型",
 		"customModelDesc": "在設定中指定",
 		"levelDesc": {
+			"auto": "Nebo 為每項任務選擇等級",
 			"instant": "最快回覆",
 			"low": "快速，稍作思考",
 			"medium": "日常工作",
 			"high": "更難的問題",
 			"max": "最周全"
-		}
+		},
+		"autoCustom": "從此智慧包的等級中選擇",
+		"fromNeboAi": "來自 Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "層級",
@@ -4096,7 +4098,7 @@
 			"max": "最高"
 		},
 		"autoRunsOn": "Nebo AI 在每一步選擇等級",
-		"emptyLevel": "上方最接近的等級",
+		"emptyLevel": "使用 Nebo AI",
 		"vision": "視覺",
 		"voice": "語音",
 		"decisions": "決策",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "無法移除智慧包。",
 		"nameRequired": "為智慧包命名。",
 		"effortLevels": "投入等級",
-		"effortLevelsHint": "任意供應商的任意模型。空等級會使用上方最接近的等級。",
+		"effortLevelsHint": "任何供應商的任何模型。空白等級會使用 Nebo AI 在該等級的模型。",
 		"effortDefault": "預設",
 		"providerEffortNamed": "{level} 的供應商投入等級",
 		"lanes": "通道",

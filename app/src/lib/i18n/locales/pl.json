@@ -3260,19 +3260,21 @@
 		"pack": "Pakiet inteligencji",
 		"packsTitle": "Pakiety inteligencji",
 		"neboAi": "Nebo AI",
-		"customPack": "Własny pakiet",
 		"packBuiltIn": "Wbudowany i gotowy do pracy",
 		"packOwn": "Twoja własna AI",
 		"custom": "Niestandardowy",
 		"customModel": "Własny model",
 		"customModelDesc": "Ustawione w Ustawieniach",
 		"levelDesc": {
+			"auto": "Nebo wybiera poziom dla każdego zadania",
 			"instant": "Najszybsze odpowiedzi",
 			"low": "Szybko, z odrobiną namysłu",
 			"medium": "Codzienna praca",
 			"high": "Trudniejsze problemy",
 			"max": "Najdokładniejszy"
-		}
+		},
+		"autoCustom": "Wybiera spośród poziomów tego pakietu",
+		"fromNeboAi": "z Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Warstwy",
@@ -4096,7 +4098,7 @@
 			"max": "Maks."
 		},
 		"autoRunsOn": "Nebo AI wybiera poziom na każdym kroku",
-		"emptyLevel": "Najbliższy poziom powyżej",
+		"emptyLevel": "Używa Nebo AI",
 		"vision": "Widzenie",
 		"voice": "Głos",
 		"decisions": "Decyzje",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Nie udało się usunąć pakietu.",
 		"nameRequired": "Nazwij pakiet.",
 		"effortLevels": "Poziomy wysiłku",
-		"effortLevelsHint": "Każdy model od każdego dostawcy. Pusty poziom używa najbliższego poziomu powyżej.",
+		"effortLevelsHint": "Dowolny model od dowolnego dostawcy. Pusty poziom używa modelu Nebo AI dla tego poziomu.",
 		"effortDefault": "Domyślny",
 		"providerEffortNamed": "Wysiłek dostawcy dla poziomu {level}",
 		"lanes": "Pasma",

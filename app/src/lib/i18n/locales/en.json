@@ -3260,19 +3260,21 @@
 		"pack": "Intelligence pack",
 		"packsTitle": "Intelligence packs",
 		"neboAi": "Nebo AI",
-		"customPack": "Custom pack",
 		"packBuiltIn": "Built in and ready to go",
 		"packOwn": "Your own AI",
 		"custom": "Custom",
 		"customModel": "Custom model",
 		"customModelDesc": "Set in Settings",
 		"levelDesc": {
+			"auto": "Nebo picks the level for each task",
 			"instant": "Fastest replies",
 			"low": "Quick, with a little thinking",
 			"medium": "Everyday work",
 			"high": "Harder problems",
 			"max": "The most thorough"
-		}
+		},
+		"autoCustom": "Picks from this pack's levels",
+		"fromNeboAi": "from Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Layers",
@@ -4096,7 +4098,7 @@
 			"max": "Max"
 		},
 		"autoRunsOn": "Nebo AI picks the level each step",
-		"emptyLevel": "The nearest level above",
+		"emptyLevel": "Uses Nebo AI",
 		"vision": "Vision",
 		"voice": "Voice",
 		"decisions": "Decisions",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Could not remove the pack.",
 		"nameRequired": "Name the pack.",
 		"effortLevels": "Effort levels",
-		"effortLevelsHint": "Any model from any provider. An empty level uses the nearest level above it.",
+		"effortLevelsHint": "Any model from any provider. An empty level uses Nebo AI's model for that level.",
 		"effortDefault": "Default",
 		"providerEffortNamed": "{level} provider effort",
 		"lanes": "Lanes",

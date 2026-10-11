@@ -3260,19 +3260,21 @@
 		"pack": "Zekâ paketi",
 		"packsTitle": "Zekâ paketleri",
 		"neboAi": "Nebo AI",
-		"customPack": "Özel paket",
 		"packBuiltIn": "Yerleşik ve kullanıma hazır",
 		"packOwn": "Kendi yapay zekânız",
 		"custom": "Özel",
 		"customModel": "Özel model",
 		"customModelDesc": "Ayarlar'da belirlendi",
 		"levelDesc": {
+			"auto": "Nebo her görev için seviyeyi seçer",
 			"instant": "En hızlı yanıtlar",
 			"low": "Hızlı, biraz düşünerek",
 			"medium": "Günlük işler",
 			"high": "Daha zor sorunlar",
 			"max": "En kapsamlı"
-		}
+		},
+		"autoCustom": "Bu paketin seviyeleri arasından seçer",
+		"fromNeboAi": "Nebo AI'dan"
 	},
 	"settingsLayers": {
 		"title": "Katmanlar",
@@ -4096,7 +4098,7 @@
 			"max": "Maks"
 		},
 		"autoRunsOn": "Nebo AI her adımda düzeyi seçer",
-		"emptyLevel": "Üstündeki en yakın düzey",
+		"emptyLevel": "Nebo AI'ı kullanır",
 		"vision": "Görme",
 		"voice": "Ses",
 		"decisions": "Kararlar",
@@ -4114,7 +4116,7 @@
 		"removeFailed": "Paket kaldırılamadı.",
 		"nameRequired": "Pakete bir ad verin.",
 		"effortLevels": "Çaba düzeyleri",
-		"effortLevelsHint": "Herhangi bir sağlayıcıdan herhangi bir model. Boş bir düzey, üstündeki en yakın düzeyi kullanır.",
+		"effortLevelsHint": "Herhangi bir sağlayıcıdan herhangi bir model. Boş bir seviye o seviye için Nebo AI modelini kullanır.",
 		"effortDefault": "Varsayılan",
 		"providerEffortNamed": "{level} sağlayıcı çaba düzeyi",
 		"lanes": "Şeritler",

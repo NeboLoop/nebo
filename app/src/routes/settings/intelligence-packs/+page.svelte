@@ -18,7 +18,7 @@
   import Alert from '$lib/components/ui/Alert.svelte';
   import * as api from '$lib/api/nebo';
   import type { LevelEffort, Pack, PackChoice, PackLanes, PackLevels } from '$lib/api/neboComponents';
-  import { EFFORTS, packName, type Effort } from '$lib/models/speeds';
+  import { EFFORTS, type Effort } from '$lib/models/speeds';
   import { choiceProviderLabel, isDefaultPack, levelRows, packUsesLocal, runsOn } from '$lib/models/connections';
 
   // PLACEHOLDER — the Janus routing fee is not decided yet. Replace with the
@@ -83,16 +83,11 @@
     }
   }
 
-  /** A pack's name on screen: never an internal id (the editor keeps the real one). */
-  function shownName(p: Pack): string {
-    return packName({ id: p.id, name: p.name, builtIn: !!p.builtIn }, $t);
-  }
-
   /** The bot-default options: each pack (Auto or its default level), then each of its levels. */
   const defaultOptions = $derived(
     packs.flatMap((p) => [
-      { value: `pack/${p.id}`, label: p.levels.auto ? `${shownName(p)} · ${levelLabel('auto')}` : shownName(p) },
-      ...EFFORTS.map((e) => ({ value: `pack/${p.id}/${e}`, label: `${shownName(p)} · ${levelLabel(e)}` })),
+      { value: `pack/${p.id}`, label: p.levels.auto ? `${p.name} · ${levelLabel('auto')}` : p.name },
+      ...EFFORTS.map((e) => ({ value: `pack/${p.id}/${e}`, label: `${p.name} · ${levelLabel(e)}` })),
     ]),
   );
   /** A default that is a model rather than a pack still shows as itself. */
@@ -163,7 +158,7 @@
   }
 
   async function remove(pack: Pack) {
-    if (!confirm($t('settingsPacks.removeConfirm', { values: { name: shownName(pack) } }))) return;
+    if (!confirm($t('settingsPacks.removeConfirm', { values: { name: pack.name } }))) return;
     try {
       await api.deletePack(pack.id);
       await load();
@@ -248,7 +243,7 @@
           <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
             <div class="flex items-center justify-between gap-3 mb-3">
               <div class="flex items-center gap-2 flex-wrap min-w-0">
-                <span class="text-sm font-medium">{shownName(pack)}</span>
+                <span class="text-sm font-medium">{pack.name}</span>
                 {#if pack.builtIn}
                   <span class="badge badge-ghost badge-sm">{$t('settingsPacks.builtIn')}</span>
                 {/if}
@@ -266,10 +261,10 @@
                 <span class="text-xs text-base-content/40 shrink-0">{$t('settingsPacks.readOnly')}</span>
               {:else}
                 <div class="flex items-center gap-3 shrink-0">
-                  <button type="button" class="text-xs text-base-content/50 hover:text-primary transition-colors cursor-pointer" onclick={() => openEditor(pack)} aria-label={$t('settingsPacks.editNamed', { values: { name: shownName(pack) } })}>
+                  <button type="button" class="text-xs text-base-content/50 hover:text-primary transition-colors cursor-pointer" onclick={() => openEditor(pack)} aria-label={$t('settingsPacks.editNamed', { values: { name: pack.name } })}>
                     {$t('common.edit')}
                   </button>
-                  <button type="button" class="text-base-content/30 hover:text-error transition-colors cursor-pointer" onclick={() => remove(pack)} aria-label={$t('settingsPacks.removeNamed', { values: { name: shownName(pack) } })}>
+                  <button type="button" class="text-base-content/30 hover:text-error transition-colors cursor-pointer" onclick={() => remove(pack)} aria-label={$t('settingsPacks.removeNamed', { values: { name: pack.name } })}>
                     <Trash2 class="w-3.5 h-3.5" />
                   </button>
                 </div>
