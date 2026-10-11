@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Ordinateur cloud",
 			"cloudComputerNamed": "Ordinateur cloud · {name}",
 			"memory": "Mémoire",
-			"media": "Médias"
+			"media": "Médias",
+			"email": "E-mail"
 		}
 	},
 	"settingsFamily": {

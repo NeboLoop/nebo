@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Komputer w chmurze",
 			"cloudComputerNamed": "Komputer w chmurze · {name}",
 			"memory": "Pamięć",
-			"media": "Multimedia"
+			"media": "Multimedia",
+			"email": "E-mail"
 		}
 	},
 	"settingsFamily": {

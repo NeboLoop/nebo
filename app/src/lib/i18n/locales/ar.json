@@ -1796,7 +1796,8 @@
 			"cloudComputer": "كمبيوتر سحابي",
 			"cloudComputerNamed": "كمبيوتر سحابي · {name}",
 			"memory": "الذاكرة",
-			"media": "الوسائط"
+			"media": "الوسائط",
+			"email": "البريد الإلكتروني"
 		}
 	},
 	"settingsFamily": {

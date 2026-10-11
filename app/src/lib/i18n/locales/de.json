@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Cloud-Computer",
 			"cloudComputerNamed": "Cloud-Computer · {name}",
 			"memory": "Speicher",
-			"media": "Medien"
+			"media": "Medien",
+			"email": "E-Mail"
 		}
 	},
 	"settingsFamily": {

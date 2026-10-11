@@ -1796,7 +1796,8 @@
 			"cloudComputer": "클라우드 컴퓨터",
 			"cloudComputerNamed": "클라우드 컴퓨터 · {name}",
 			"memory": "메모리",
-			"media": "미디어"
+			"media": "미디어",
+			"email": "이메일"
 		}
 	},
 	"settingsFamily": {

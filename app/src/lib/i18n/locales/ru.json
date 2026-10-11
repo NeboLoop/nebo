@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Облачный компьютер",
 			"cloudComputerNamed": "Облачный компьютер · {name}",
 			"memory": "Память",
-			"media": "Медиа"
+			"media": "Медиа",
+			"email": "Электронная почта"
 		}
 	},
 	"settingsFamily": {

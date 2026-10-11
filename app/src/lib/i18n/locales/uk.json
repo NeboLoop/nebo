@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Хмарний комп'ютер",
 			"cloudComputerNamed": "Хмарний комп'ютер · {name}",
 			"memory": "Пам'ять",
-			"media": "Медіа"
+			"media": "Медіа",
+			"email": "Електронна пошта"
 		}
 	},
 	"settingsFamily": {

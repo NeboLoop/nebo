@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Bulut bilgisayar",
 			"cloudComputerNamed": "Bulut bilgisayar · {name}",
 			"memory": "Bellek",
-			"media": "Medya"
+			"media": "Medya",
+			"email": "E-posta"
 		}
 	},
 	"settingsFamily": {

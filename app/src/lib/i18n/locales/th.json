@@ -1796,7 +1796,8 @@
 			"cloudComputer": "คอมพิวเตอร์คลาวด์",
 			"cloudComputerNamed": "คอมพิวเตอร์คลาวด์ · {name}",
 			"memory": "หน่วยความจำ",
-			"media": "สื่อ"
+			"media": "สื่อ",
+			"email": "อีเมล"
 		}
 	},
 	"settingsFamily": {

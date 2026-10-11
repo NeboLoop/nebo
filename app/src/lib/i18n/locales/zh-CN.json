@@ -1796,7 +1796,8 @@
 			"cloudComputer": "云电脑",
 			"cloudComputerNamed": "云电脑 · {name}",
 			"memory": "记忆",
-			"media": "媒体"
+			"media": "媒体",
+			"email": "电子邮件"
 		}
 	},
 	"settingsFamily": {

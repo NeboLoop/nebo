@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Komputer awan",
 			"cloudComputerNamed": "Komputer awan · {name}",
 			"memory": "Memori",
-			"media": "Media"
+			"media": "Media",
+			"email": "E-mel"
 		}
 	},
 	"settingsFamily": {

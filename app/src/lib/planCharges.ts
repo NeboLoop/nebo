@@ -44,6 +44,8 @@ export function chargeText(line: PlanChargeLine): ChargeText {
 			return { key: k + 'memory' };
 		case 'media':
 			return { key: k + 'media' };
+		case 'email':
+			return { key: k + 'email' };
 		default:
 			return { key: '', raw: line.label || line.kind };
 	}

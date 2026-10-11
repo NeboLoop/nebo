@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Molndator",
 			"cloudComputerNamed": "Molndator · {name}",
 			"memory": "Minne",
-			"media": "Media"
+			"media": "Media",
+			"email": "E-post"
 		}
 	},
 	"settingsFamily": {

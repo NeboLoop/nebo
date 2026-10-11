@@ -20,7 +20,7 @@ describe('Charged to your plan', () => {
 		expect(chargeText(line({ kind: 'calls', quantity: 42 })).values).toEqual({ minutes: 42 });
 		expect(chargeText(line({ kind: 'texts', quantity: 120 })).values).toEqual({ count: 120 });
 		expect(chargeText(line({ kind: 'cloud_computer', detail: 'Ada' })).values).toEqual({ name: 'Ada' });
-		for (const kind of ['phone_number', 'calls', 'texts', 'texting_registration', 'texting_monthly', 'cloud_bot', 'cloud_computer', 'memory', 'media']) {
+		for (const kind of ['phone_number', 'calls', 'texts', 'texting_registration', 'texting_monthly', 'cloud_bot', 'cloud_computer', 'memory', 'media', 'email']) {
 			const t = chargeText(line({ kind }));
 			expect(t.raw).toBeUndefined();
 			expect(has(t.key), t.key).toBe(true);

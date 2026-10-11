@@ -1796,7 +1796,8 @@
 			"cloudComputer": "Máy tính đám mây",
 			"cloudComputerNamed": "Máy tính đám mây · {name}",
 			"memory": "Bộ nhớ",
-			"media": "Phương tiện"
+			"media": "Phương tiện",
+			"email": "Email"
 		}
 	},
 	"settingsFamily": {

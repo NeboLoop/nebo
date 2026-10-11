@@ -1796,7 +1796,8 @@
 			"cloudComputer": "क्लाउड कंप्यूटर",
 			"cloudComputerNamed": "क्लाउड कंप्यूटर · {name}",
 			"memory": "मेमोरी",
-			"media": "मीडिया"
+			"media": "मीडिया",
+			"email": "ईमेल"
 		}
 	},
 	"settingsFamily": {

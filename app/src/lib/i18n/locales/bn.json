@@ -1796,7 +1796,8 @@
 			"cloudComputer": "ক্লাউড কম্পিউটার",
 			"cloudComputerNamed": "ক্লাউড কম্পিউটার · {name}",
 			"memory": "মেমরি",
-			"media": "মিডিয়া"
+			"media": "মিডিয়া",
+			"email": "ইমেইল"
 		}
 	},
 	"settingsFamily": {

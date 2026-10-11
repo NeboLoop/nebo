@@ -1796,7 +1796,8 @@
 			"cloudComputer": "מחשב ענן",
 			"cloudComputerNamed": "מחשב ענן · {name}",
 			"memory": "זיכרון",
-			"media": "מדיה"
+			"media": "מדיה",
+			"email": "אימייל"
 		}
 	},
 	"settingsFamily": {

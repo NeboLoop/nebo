@@ -1796,7 +1796,8 @@
 			"cloudComputer": "雲端電腦",
 			"cloudComputerNamed": "雲端電腦 · {name}",
 			"memory": "記憶",
-			"media": "媒體"
+			"media": "媒體",
+			"email": "電子郵件"
 		}
 	},
 	"settingsFamily": {
