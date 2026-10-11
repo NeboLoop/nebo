@@ -33,9 +33,26 @@ pub fn is_transcribable(filename: &str, mime_type: &str) -> bool {
     }
 }
 
-/// Transcribe an audio file. Returns the spoken text.
+/// What was said in an audio file: the text, and when each part of it was
+/// said (seconds into the audio). A response that rates no segments, or
+/// times none, has one segment at the start holding all the text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Transcript {
+    pub text: String,
+    pub segments: Vec<Segment>,
+}
+
+/// One stretch of speech and when it was said, in seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// Transcribe an audio file: the spoken text, with its segments' times.
 ///
-/// An empty transcript is returned as `Ok("")` — silence is a real answer, and
+/// An empty transcript (no text, no segments) — silence is a real answer, and
 /// the caller says so in words rather than presenting nothing. Sound with no
 /// speech in it is silence too: what the transcriber wrote for it is dropped
 /// ([`speech_in`]). Live 2026-10-08: eight phone clips of a warehouse came back
@@ -48,7 +65,7 @@ pub async fn transcribe(
     model: &str,
     filename: &str,
     bytes: Vec<u8>,
-) -> Result<String, ProviderError> {
+) -> Result<Transcript, ProviderError> {
     if bytes.len() > MAX_AUDIO_BYTES {
         return Err(ProviderError::Request(format!(
             "audio file is {:.1} MB; the transcription limit is {} MB",
@@ -94,7 +111,31 @@ pub async fn transcribe(
         });
     }
 
-    Ok(speech_in(&body))
+    Ok(transcript_in(&body))
+}
+
+/// The speech in a transcription response with its times: [`speech_in`]'s
+/// text, and the segments that hold it.
+pub fn transcript_in(body: &str) -> Transcript {
+    let text = speech_in(body);
+    if text.is_empty() {
+        return Transcript::default();
+    }
+    let timed = match serde_json::from_str::<serde_json::Value>(body.trim()) {
+        Ok(v) => v["segments"].as_array().cloned().unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let segments: Vec<Segment> = timed
+        .iter()
+        .filter(|s| is_speech(s))
+        .filter_map(|s| {
+            let text = s["text"].as_str()?.trim();
+            let start = s["start"].as_f64()?;
+            (!text.is_empty()).then(|| Segment { start, end: s["end"].as_f64().unwrap_or(start).max(start), text: text.to_string() })
+        })
+        .collect();
+    let segments = if segments.is_empty() { vec![Segment { start: 0.0, end: 0.0, text: text.clone() }] } else { segments };
+    Transcript { text, segments }
 }
 
 /// A segment the transcriber itself rates this likely to hold no speech is
@@ -128,18 +169,22 @@ fn spoken_segments(v: &serde_json::Value) -> Option<String> {
     }
     let spoken: Vec<&str> = segments
         .iter()
-        .filter(|s| {
-            let no_speech = s["no_speech_prob"].as_f64().unwrap_or(0.0);
-            let logprob = s["avg_logprob"].as_f64().unwrap_or(0.0);
-            let compression = s["compression_ratio"].as_f64().unwrap_or(0.0);
-            no_speech < NO_SPEECH
-                && !(no_speech >= UNSURE_NO_SPEECH && logprob < UNSURE_LOGPROB)
-                && compression <= LOOPING_COMPRESSION
-        })
+        .filter(|s| is_speech(s))
         .filter_map(|s| s["text"].as_str().map(str::trim))
         .filter(|t| !t.is_empty())
         .collect();
     Some(spoken.join(" "))
+}
+
+/// Whether the transcriber's own ratings of a segment say it holds speech.
+/// A segment it did not rate is speech.
+fn is_speech(s: &serde_json::Value) -> bool {
+    let no_speech = s["no_speech_prob"].as_f64().unwrap_or(0.0);
+    let logprob = s["avg_logprob"].as_f64().unwrap_or(0.0);
+    let compression = s["compression_ratio"].as_f64().unwrap_or(0.0);
+    no_speech < NO_SPEECH
+        && !(no_speech >= UNSURE_NO_SPEECH && logprob < UNSURE_LOGPROB)
+        && compression <= LOOPING_COMPRESSION
 }
 
 /// Lines speech-to-text models write for music, noise and silence: the
@@ -270,5 +315,32 @@ mod tests {
         assert_eq!(speech_in(r#"{"text": "Продолжение следует...", "segments": [{"text": "Продолжение следует...", "start": 0, "end": 2}]}"#), "");
         assert_eq!(speech_in("Order 4471 ships Friday."), "Order 4471 ships Friday.");
         assert_eq!(speech_in(""), "");
+    }
+
+    /// The segments that hold speech keep their times; a response without
+    /// times has its text at the start; silence has nothing.
+    #[test]
+    fn a_transcript_keeps_when_each_part_was_said() {
+        let body = serde_json::json!({
+            "text": "Go to the orders page. Copy the PO number.",
+            "segments": [
+                {"text": " Go to the orders page.", "start": 1.5, "end": 3.0, "no_speech_prob": 0.02, "avg_logprob": -0.2, "compression_ratio": 1.1},
+                {"text": " Thanks for watching.", "start": 5.0, "end": 6.0, "no_speech_prob": 0.8, "avg_logprob": -0.2, "compression_ratio": 1.1},
+                {"text": " Copy the PO number.", "start": 12.25, "end": 14.0, "no_speech_prob": 0.05, "avg_logprob": -0.3, "compression_ratio": 1.0},
+            ]
+        })
+        .to_string();
+        let t = transcript_in(&body);
+        assert_eq!(t.text, "Go to the orders page. Copy the PO number.");
+        assert_eq!(
+            t.segments,
+            [
+                Segment { start: 1.5, end: 3.0, text: "Go to the orders page.".into() },
+                Segment { start: 12.25, end: 14.0, text: "Copy the PO number.".into() },
+            ]
+        );
+        let untimed = transcript_in(r#"{"text": "Order 4471 ships Friday."}"#);
+        assert_eq!(untimed.segments, [Segment { start: 0.0, end: 0.0, text: "Order 4471 ships Friday.".into() }]);
+        assert_eq!(transcript_in("Thanks for watching."), Transcript::default());
     }
 }

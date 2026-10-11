@@ -1015,10 +1015,14 @@ pub(crate) async fn prepare(
     .filter(|p| !p.trim().is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    // The workflow builder's chat writes workflows from its first step; any
-    // other turn moves to the build lane when it starts building.
+    // The workflow builder's chat writes workflows from its first step, and
+    // so does a session held to build (a taught task's learning run and its
+    // follow-ups, `Harness::build_session`); any other turn moves to the
+    // build lane when it starts building.
     let build = if matches!(req.mode, TurnMode::Workflow(_)) { None } else { build_model(h, &model, employee.linked) };
-    let builder = build.is_some() && types::keyparser::parse_session_key(&req.session_key).rest == types::keyparser::WORKFLOW_BUILDER;
+    let builder = build.is_some()
+        && (types::keyparser::parse_session_key(&req.session_key).rest == types::keyparser::WORKFLOW_BUILDER
+            || h.builds_session(&req.session_key));
     let lane = if builder { Some(types::packs::Lane::Build) } else { lane_of(&req.seat) };
     let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort } = turn_model(h, &model, lane)?;
     if let Some(notice) = pack_notice {
@@ -3491,6 +3495,52 @@ mod tests {
             [("fast".to_string(), "agent_turn"), ("fast".to_string(), "agent_turn"), ("strong".to_string(), "build")],
             "built on the build lane from the step after create_employee"
         );
+    }
+
+    /// A taught task's learning run builds from its first step: on Nebo AI
+    /// (a bot left on Auto) that is Deep, `janus/nebo-1-pro`, sent as the
+    /// `build` purpose Janus serves on its strongest model. The owner's own
+    /// choice is untouched, and the hold ends with its window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_taught_tasks_learning_run_requests_deep() {
+        use types::packs::{Effort, LevelEffort, Pack, PackLanes, PackLevels};
+        // On Auto, the build lane is Deep.
+        let auto = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        auto.selector.set_loaded_providers(vec!["janus".into()]);
+        assert_eq!(build_model(&auto, "janus/nebo-1", false).unwrap().model, "janus/nebo-1-pro", "Auto learns on Deep");
+
+        // The learning run, from its first step.
+        let model = Scripted::new(vec![Step::Say("I learned how to file the orders.")]);
+        let h = harness_selecting(&model, vec![], pack_selector()).await;
+        h.selector.set_loaded_providers(vec!["scripted".into()]);
+        h.store
+            .save_intelligence_pack(&Pack {
+                id: "auto".into(),
+                name: "Like Nebo AI".into(),
+                levels: PackLevels { low: Some("scripted/fast".into()), high: Some("scripted/strong".into()), ..Default::default() },
+                fallback: false,
+                built_in: false,
+                route_through_janus: false,
+                lanes: PackLanes { build: Some(Effort::High), ..Default::default() },
+                level_effort: LevelEffort::default(),
+            })
+            .unwrap();
+        h.build_session(KEY, std::time::Duration::from_secs(3600));
+        let mut req = owner("I just demonstrated a task for you on your computer.");
+        req.seat.model_override = "pack/auto/low".into();
+        run_turn(&h, req).await;
+        let calls: Vec<(String, &str)> = model.calls().iter().map(|c| (c.model.clone(), c.trace.purpose)).collect();
+        assert_eq!(calls, [("strong".to_string(), "build")], "the learning run asks for deep from its first step");
+        assert_eq!(
+            h.store.get_intelligence_pack("auto").unwrap().unwrap().lanes.build,
+            Some(Effort::High),
+            "the owner's setting is untouched"
+        );
+
+        // Another session, and this one once its hold ends, chat as chosen.
+        assert!(!h.builds_session("agent:ops:other"));
+        h.build_session(KEY, std::time::Duration::ZERO);
+        assert!(!h.builds_session(KEY), "the hold ends with its window");
     }
 
     async fn harness_selecting(

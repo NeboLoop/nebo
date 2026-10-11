@@ -2713,14 +2713,17 @@ export interface TeachStartResponse {
 	sessionId: string
 	dir: unknown
 	where: unknown
+	capSeconds: number
 }
 
 export interface TeachStopResponse {
 	sessionId: string
-	dir: unknown
-	keyframes: unknown
+	dir: string
+	keyframes: number
 	message: string
 	sessionKey: string
+	narrated: boolean
+	capped: boolean
 }
 
 export interface TeamWorkingResponse {

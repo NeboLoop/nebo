@@ -7118,7 +7118,7 @@ fn extract_message_text(content: &str) -> String {
 ///
 /// An explicit OpenAI-compatible key wins; otherwise the Janus gateway the user
 /// already bills through, which speaks the same `/audio/transcriptions` shape.
-fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
+pub(crate) fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
     const DEFAULT_STT_MODEL: &str = "whisper-1";
 
     let profiles = state.store.list_auth_profiles().ok()?;
@@ -7157,11 +7157,11 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
     match transcription_endpoint(state) {
         Some((key, base_url, model)) => {
             match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &key, &base_url, &model, named, bytes).await {
-                Ok(text) if text.is_empty() => audio(
+                Ok(heard) if heard.text.is_empty() => audio(
                     "transcribed, but no speech was found in it. Say so rather than \
                      guessing at its contents.",
                 ),
-                Ok(text) => crate::attachments::transcript(filename, size, &text),
+                Ok(heard) => crate::attachments::transcript(filename, size, &heard.text),
                 Err(e) => {
                     tracing::warn!(file = %filename, error = %e, "transcription failed");
                     audio(&format!(

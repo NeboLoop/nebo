@@ -1918,6 +1918,19 @@ impl NeboAIApi {
         self.fetch_raw(&url, FILE_TRANSFER_TIMEOUT).await
     }
 
+    /// A short-lived signed link to a file this bot stored (`GET
+    /// /api/v1/files/{id}/link`): a teach recording's replay, played
+    /// straight from storage.
+    pub async fn file_link(&self, file_id: &str) -> Result<String, CommError> {
+        #[derive(serde::Deserialize)]
+        struct Link {
+            url: String,
+        }
+        let path = format!("/api/v1/files/{}/link", urlencoding::encode(file_id));
+        let link: Link = self.do_json(reqwest::Method::GET, &path, None::<&()>).await?;
+        Ok(link.url)
+    }
+
     // ── File share links ──────────────────────────────────────────────
 
     /// The live link for a file this bot shared before, found by what the
