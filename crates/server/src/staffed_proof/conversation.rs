@@ -1890,7 +1890,9 @@ async fn a_colleagues_thread_is_never_the_employees_own_chat() {
     assert_eq!(session_names(&first["chats"]), vec![own.clone()], "{first}");
     assert_eq!(session_names(&first["teammates"]), vec![colleague.clone()], "{first}");
     assert_eq!(first["total"], 1, "{first}");
-    let next = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1&offset=1")).await;
+    assert!(first["nextCursor"].is_null(), "one conversation is one page: {first}");
+    let cursor = format!("{}:{}", first["chats"][0]["updatedAtEpoch"], first["chats"][0]["id"].as_str().unwrap());
+    let next = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1&cursor={}", urlencoding::encode(&cursor))).await;
     assert!(session_names(&next["chats"]).is_empty(), "{next}");
     assert!(session_names(&next["teammates"]).is_empty(), "{next}");
     assert_eq!(next["total"], 1, "{next}");
@@ -4149,11 +4151,7 @@ async fn pinned_conversations_head_a_paged_list() {
     let mut walked = ids(&first["chats"]);
     let mut cursor = first["nextCursor"].as_str().expect("more to come").to_string();
     loop {
-        // An app sends the offset too, for a bot from before the cursor;
-        // the cursor wins.
-        let page = nebo
-            .get_ok(&format!("/agents/{clerk}/chats?limit=2&offset={}&cursor={}", walked.len(), urlencoding::encode(&cursor)))
-            .await;
+        let page = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2&cursor={}", urlencoding::encode(&cursor))).await;
         assert!(ids(&page["pinned"]).is_empty(), "{page}");
         walked.extend(ids(&page["chats"]));
         match page["nextCursor"].as_str() {

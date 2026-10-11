@@ -4750,14 +4750,12 @@ fn per_employee_needs(
 /// (`pinned`, `pinnedAt`).
 ///
 /// `chats` comes a page at a time: `limit` rows, and `nextCursor` to pass as
-/// `cursor` for the ones after them (null when there are no more). `offset`
-/// still pages the way GET /api/v1/chats does, for an app from before the
-/// cursor; with a `cursor` it is ignored. `total` counts all the owner's
-/// conversations. With no `limit` the
-/// whole list comes back, as it did before paging. `q` narrows every list to
+/// `cursor` for the ones after them (null when there are no more). `total`
+/// counts all the owner's conversations. With no `limit` the whole list
+/// comes back in one (the desktop's own list). `q` narrows every list to
 /// the conversations whose title, or anything said in them, matches.
 ///
-/// The first page (no `cursor`, `offset` 0) also carries `pinned`: the
+/// The first page (no `cursor`) also carries `pinned`: the
 /// owner's pinned conversations, most recently pinned first, whatever page
 /// of `chats` they fall on — so the app shows them above the recent ones
 /// without reading the whole list — and `teammates`, whole. The pages after
@@ -4777,42 +4775,20 @@ pub async fn list_agent_chats(
         ),
         None => None,
     };
-    // The cursor wins: an app sends `offset` beside it for a bot from
-    // before the cursor, which pages by `offset` alone.
-    let offset = if before.is_some() { 0 } else { page.offset };
-    let first_page = before.is_none() && offset == 0;
+    let first_page = before.is_none();
 
-    // Resolve active chat_id from the legacy web session (if it exists).
-    let legacy_session_key = types::keyparser::build_agent_session_key(&id, "web");
+    // The conversation the app console's web session (`agent:<id>:web`)
+    // has open, if it has one.
+    let web_session_key = types::keyparser::build_agent_session_key(&id, "web");
     let active_chat_id = state
         .harness
         .sessions()
-        .resolve_session_id_by_key(&legacy_session_key)
+        .resolve_session_id_by_key(&web_session_key)
         .ok()
         .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
-    // Backfill: legacy agent chats store messages under the session key as chat_id
-    // but have no `chats` row. If the owner has no conversation listed but
-    // messages exist, create the row.
     let owners = ConversationQuery { whose: Conversations::Owners, ..Default::default() };
-    if state.store.count_conversations(&session_prefix, &owners).unwrap_or(0) == 0 {
-        let legacy_chat_id = if active_chat_id.is_empty() {
-            &legacy_session_key
-        } else {
-            &active_chat_id
-        };
-        let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
-        if msg_count > 0 {
-            let _ = state.store.create_chat_for_session(
-                legacy_chat_id,
-                &legacy_session_key,
-                "Chat 1",
-                None,
-            );
-        }
-    }
-
     let search = page.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let owners = ConversationQuery { search, ..owners };
     let total = state.store.count_conversations(&session_prefix, &owners).unwrap_or(0);
@@ -4824,7 +4800,6 @@ pub async fn list_agent_chats(
             &ConversationQuery {
                 before,
                 limit: page.limit.map(|l| l as i64 + 1),
-                offset: offset as i64,
                 ..owners
             },
         )
@@ -4907,8 +4882,6 @@ fn parse_chats_cursor(cursor: &str) -> Option<(i64, &str)> {
 #[derive(Debug, Default, Deserialize)]
 pub struct AgentChatsQuery {
     pub limit: Option<usize>,
-    #[serde(default)]
-    pub offset: usize,
     /// Where the page before ended (its `nextCursor`).
     pub cursor: Option<String>,
     /// Only the conversations whose title, or anything said in them, matches.
@@ -4916,7 +4889,7 @@ pub struct AgentChatsQuery {
 }
 
 /// A conversation's title as the owner sees it. A chat the runner made for
-/// a session that had no row yet (the legacy `agent:<id>:web` one the app
+/// a session that had no row yet (the `agent:<id>:web` one the app
 /// console's Send to writes in) is titled with its own session key; the
 /// employee's name stands in for it, so a raw key never reaches a screen.
 fn shown_title(title: &str, employee: &str) -> String {
@@ -6961,7 +6934,7 @@ mod needs_connecting_tests {
 mod chats_cursor_tests {
     use super::parse_chats_cursor;
 
-    /// A page's cursor is its last conversation's time and id; a legacy
+    /// A page's cursor is its last conversation's time and id; the web
     /// conversation's id is a session key, colons and all.
     #[test]
     fn a_cursor_names_the_time_and_the_whole_id() {

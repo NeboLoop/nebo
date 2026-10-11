@@ -550,7 +550,7 @@ async fn run() -> anyhow::Result<()> {
             println!("Core:");
             println!("  - AI Providers: Anthropic, OpenAI, Ollama");
             println!("  - Tool System: STRAP (Single Tool Resource Action Pattern)");
-            println!("  - Memory: 3-tier (tacit/daily/entity)");
+            println!("  - Memory: layered (tacit/project/entity)");
             println!("  - Sessions: multi-turn with context compaction");
             println!("  - Skills: YAML-based, hot-reloadable");
             println!("  - Advisors: multi-voice deliberation");

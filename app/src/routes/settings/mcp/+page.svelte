@@ -3,8 +3,9 @@
   // phone's: a list (icon, name, tool count, a status line that fixes it),
   // a + that browses the marketplace or adds one by its address, each
   // connector's own view with real buttons and its tools, and each tool's
-  // setting (Blocked, Needs approval, Always allow: the company Permissions
-  // page's own `tool:` switches).
+  // setting (Blocked, Needs approval, Always allow), all read from the
+  // connector's tools list; a setting is changed by its company Permissions
+  // switch (`tool:<key>`).
   import { onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import Plus from 'lucide-svelte/icons/plus';
@@ -24,7 +25,7 @@
   import KeyRound from 'lucide-svelte/icons/key-round';
   import Unlink from 'lucide-svelte/icons/unlink';
   import Trash2 from 'lucide-svelte/icons/trash-2';
-  import type { McpIntegration, PermissionSwitch } from '$lib/api/neboComponents';
+  import type { ConnectorTool, McpIntegration, PermissionSwitch } from '$lib/api/neboComponents';
   import { openSignInLink } from '$lib/utils/pluginSignIn';
   import {
     allToolsEdits,
@@ -41,7 +42,7 @@
     type ConnectorState,
   } from '$lib/connectors';
 
-  interface Tool { name: string; key: string; title: string; description: string }
+  type Tool = ConnectorTool;
 
   let connectors = $state<Connector[]>([]);
   let loaded = $state(false);
@@ -240,18 +241,17 @@
   async function loadTools(id: string) {
     const api = await import('$lib/api/nebo');
     try {
-      const [r, page] = await Promise.all([api.listIntegrationTools(id), api.getCompanyPermissions()]);
+      const r = await api.listIntegrationTools(id);
       if (openId !== id) return;
       tools = r.tools;
       family = r.family;
-      switches = switchesById(page);
+      switches = switchesById(r);
     } catch { /* the view says it has no tools */ }
   }
 
   async function setSwitch(id: string, value: string) {
     const api = await import('$lib/api/nebo');
-    const page = await api.updateCompanyPermissions({ set: { id, value } });
-    switches = switchesById(page);
+    await api.updateCompanyPermissions({ set: { id, value } });
   }
 
   const word = (v: string) =>
@@ -299,6 +299,7 @@
     const before = setting.value;
     setting.value = v;
     try { await setting.pick(v); } catch { if (setting) setting.value = before; }
+    if (openId) await loadTools(openId);
   }
 
   async function copyUrl(url: string) {

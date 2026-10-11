@@ -68,7 +68,7 @@ impl Conversations {
 /// Which of an employee's conversations [`Store::list_chats_by_session_enriched`]
 /// reads, and how many. Every field narrows; the default reads every
 /// conversation, newest first. [`Store::count_conversations`] counts the
-/// same set, without the paging (`before`, `limit`, `offset`).
+/// same set, without the paging (`before`, `limit`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConversationQuery<'a> {
     /// Whose conversations.
@@ -82,8 +82,6 @@ pub struct ConversationQuery<'a> {
     pub before: Option<(i64, &'a str)>,
     /// At most this many.
     pub limit: Option<i64>,
-    /// Skipping this many first.
-    pub offset: i64,
 }
 
 /// The WHERE clause and its values for `q` over the chats `c` under
@@ -1043,7 +1041,7 @@ impl Store {
 
     /// An employee's conversations under its session prefix, as `q` picks
     /// them, each with its message count and last-message preview: the
-    /// owner's (legacy `agent:<id>:web`, per-thread `agent:<id>:thread:<uuid>`)
+    /// owner's (the console's `agent:<id>:web`, per-thread `agent:<id>:thread:<uuid>`)
     /// and its threads with colleagues and teams. The caller tells them apart
     /// with `types::keyparser::conversation_of`. Newest first (last activity,
     /// then id); the pinned ones by when they were pinned, newest pin first.
@@ -1064,7 +1062,6 @@ impl Store {
             filter.push_str(&format!(" AND (c.updated_at < ?{at} OR (c.updated_at = ?{at} AND c.id < ?{id}))"));
         }
         values.push(Value::Integer(q.limit.unwrap_or(-1)));
-        values.push(Value::Integer(q.offset));
         let order = if q.pinned { "c.pinned_at DESC, c.id DESC" } else { "c.updated_at DESC, c.id DESC" };
         let mut stmt = conn
             .prepare(&format!(
@@ -1074,10 +1071,9 @@ impl Store {
                  FROM chats c
                  WHERE {filter}
                  ORDER BY {order}
-                 LIMIT ?{limit} OFFSET ?{offset}",
+                 LIMIT ?{limit}",
                 last_visible = last_visible_message_sql("c.id"),
-                limit = values.len() - 1,
-                offset = values.len(),
+                limit = values.len(),
             ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -2598,10 +2594,6 @@ mod tests {
             walked.extend(ids(page));
         }
         assert_eq!(walked, vec!["b", "f", "d", "c", "e", "a"]);
-
-        // The offset paging an app from before the cursor asks for.
-        let second = ConversationQuery { limit: Some(2), offset: 2, ..owners };
-        assert_eq!(ids(store.list_chats_by_session_enriched("agent:nm:", &second).unwrap()), vec!["d", "c"]);
     }
 
     /// A search narrows the list to the conversations whose title, or
