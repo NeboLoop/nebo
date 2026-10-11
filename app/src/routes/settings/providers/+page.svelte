@@ -377,7 +377,7 @@
   // --- Browse models ---
   const CONTEXT_STEPS = [32_000, 128_000, 200_000, 1_000_000];
   let browse = $state<{
-    profile: AuthProfile; loading: boolean; error: string; total: number; refreshedAt?: number;
+    profile: AuthProfile; loading: boolean; error: string; total: number; refreshedAt?: number | null;
     models: CatalogModel[]; selected: string[]; adding: boolean;
   } | null>(null);
   let bSearch = $state('');

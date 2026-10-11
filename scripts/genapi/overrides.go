@@ -91,6 +91,20 @@ var typeOverrides = map[string]string{
 	// ── Model picker: provider id → that provider's models (a map, NOT an array) ──
 	"list_models.models": "Record<string, unknown[]>",
 
+	// ── Intelligence packs (Pack is generated from types::packs::Pack) ──
+	// The bot's default: a pack ref `pack/<id>[/<level>]` or a model.
+	"list_packs.default":         "string",
+	"set_default_pack.default":   "string",
+	"list_pack_choices.chat":     "PackChoice[]",
+	"list_pack_choices.decision": "PackChoice[]",
+
+	// ── A connection's models (ConnectionModel/CatalogModel are generated) ──
+	"list_connection_models.models":         "ConnectionModel[]",
+	"add_connection_model.model":            "ConnectionModel",
+	"update_connection_model.model":         "ConnectionModel",
+	"browse_connection_catalog.models":      "CatalogModel[]",
+	"browse_connection_catalog.refreshedAt": "number | null",
+
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
 	"list_aliases.aliases":        "AliasEntry[]",
@@ -219,6 +233,25 @@ export interface RunDisplay {
 	/** RFC 3339; empty = never. */
 	expiresAt: string
 	createdAt: string
+	/** The Work-panel reference of the file. */
+	source: string
+	/** The link follows its file; otherwise it keeps the version it has. */
+	live: boolean
+	contentHash: string
+	/** Published as a site: its address and https://<address>.nebo.page. */
+	address?: string
+	siteUrl?: string
+}`,
+
+	// One model a pack slot may name (GET /intelligence-packs/choices):
+	// value is the provider/model string the slot stores.
+	"PackChoice": `export interface PackChoice {
+	value: string
+	provider: string
+	connection: string
+	modelId: string
+	capabilities?: string[]
+	local: boolean
 }`,
 
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {

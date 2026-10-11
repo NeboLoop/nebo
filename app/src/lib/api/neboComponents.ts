@@ -312,6 +312,18 @@ export interface BillingSubscription {
 	currentPeriodEnd?: string
 }
 
+export interface BorderSide {
+	style: string
+	color?: string
+}
+
+export interface Borders {
+	top?: BorderSide
+	right?: BorderSide
+	bottom?: BorderSide
+	left?: BorderSide
+}
+
 export interface BotEmailResponse {
 	address: string
 	employeeAddress: string
@@ -402,6 +414,35 @@ export interface CasesList {
 	cases: CaseSummary[]
 }
 
+export interface CatalogModel {
+	modelId: string
+	displayName: string
+	family: string
+	kind: string
+	contextWindow?: number
+	capabilities: string[]
+	pricing?: Pricing
+	created?: number
+	added: boolean
+}
+
+export interface CellView {
+	r: number
+	c: number
+	display: string
+	value: unknown
+	formula?: string
+	style: number
+	editable: boolean
+}
+
+export interface Changed {
+	sheet: string
+	cell: string
+	display: string
+	value: unknown
+}
+
 export interface Channel {
 	id: string
 	name: string
@@ -413,6 +454,13 @@ export interface Channel {
 	messageCount?: number
 	createdAt: number
 	updatedAt: number
+}
+
+export interface Chart {
+	type: string
+	title?: string
+	anchor: string
+	series: Series[]
 }
 
 export interface Chat {
@@ -482,6 +530,27 @@ export interface CommanderTeam {
 export interface CommanderTeamMember {
 	teamId: string
 	agentId: string
+}
+
+export interface ConnectionModel {
+	modelId: string
+	displayName: string
+	kind: string
+	contextWindow?: number
+	capabilities: string[]
+	source: string
+	isActive: boolean
+}
+
+export interface Context {
+	appVersion: string
+	os: string
+	osVersion: string
+	cpus: number
+	load: number
+	windowState: string
+	appNapOptOut: boolean
+	supervisor: string
 }
 
 export interface CronHistory {
@@ -617,8 +686,24 @@ export interface DetectedInstall {
 	importable: boolean
 }
 
+export interface Dims {
+	rows: number
+	cols: number
+}
+
 export interface DisconnectResponse {
 	message: string
+}
+
+export interface EditError {
+	sheet: string
+	cell: string
+	error: string
+}
+
+export interface Edited {
+	changed: Changed[]
+	errors: EditError[]
 }
 
 export interface EmbeddingCache {
@@ -757,6 +842,10 @@ export interface HandoffView {
 export interface HealthResponse {
 	status: string
 	version: string
+	role: string
+	pid: number
+	supervised: boolean
+	startedAt: string
 }
 
 export interface InvoiceInfo {
@@ -768,6 +857,11 @@ export interface InvoiceInfo {
 	createdAt?: string
 	hostedUrl?: string
 	pdfUrl?: string
+}
+
+export interface InvokeResponse {
+	text: string
+	tools?: unknown[]
 }
 
 export interface LayerApplyResponse {
@@ -856,6 +950,14 @@ export interface Lead {
 	status: string
 	metadata?: string
 	created_at: number
+}
+
+export interface LevelEffort {
+	instant?: ProviderEffort
+	low?: ProviderEffort
+	medium?: ProviderEffort
+	high?: ProviderEffort
+	max?: ProviderEffort
 }
 
 export interface ListExtensionsResponse {
@@ -989,6 +1091,38 @@ export interface OutcomeCount {
 	outcome: string
 	count: number
 	costMicrocents: number
+}
+
+export interface Pack {
+	id: string
+	name: string
+	levels: PackLevels
+	fallback: boolean
+	builtIn: boolean
+	routeThroughJanus?: boolean
+	lanes?: PackLanes
+	levelEffort?: LevelEffort
+}
+
+export interface PackLanes {
+	heartbeat?: Effort
+	scheduled?: Effort
+	communication?: Effort
+	helpers?: Effort
+	build?: Effort
+	workflow?: Effort
+}
+
+export interface PackLevels {
+	auto?: string
+	instant?: string
+	low?: string
+	medium?: string
+	high?: string
+	max?: string
+	vision?: string
+	voice?: string
+	decisions?: string
 }
 
 export interface PaymentMethodInfo {
@@ -1175,6 +1309,11 @@ export interface PluginSetting {
 	updatedAt: number
 }
 
+export interface Pricing {
+	input: number
+	output: number
+}
+
 export interface ProviderModel {
 	id: string
 	provider: string
@@ -1190,6 +1329,9 @@ export interface ProviderModel {
 	kind?: string
 	preferred?: boolean
 	seededVersion?: string
+	modelKind: string
+	source: string
+	rank?: number
 	createdAt: number
 	updatedAt: number
 }
@@ -1200,6 +1342,20 @@ export interface RefreshToken {
 	tokenHash: string
 	expiresAt: number
 	createdAt: number
+}
+
+export interface Report extends Context {
+	kind: string
+	at: number
+	durationSecs?: number
+	heartbeat?: string
+	runtimeSilentSecs?: number
+	dbSilentSecs?: number
+	poolConnections?: number
+	poolIdle?: number
+	runtime?: RuntimeState
+	unrecovered?: boolean
+	suppressed?: number
 }
 
 export interface RunExit {
@@ -1226,6 +1382,16 @@ export interface RunUsage {
 	createdAt: number
 }
 
+export interface RuntimeState {
+	workers: number
+	aliveTasks: number
+	globalQueueDepth: number
+}
+
+export interface Saved {
+	version: number
+}
+
 export interface ScanInstallResponse {
 	manifest: ImportManifest
 	needsConfirmation: boolean
@@ -1233,6 +1399,12 @@ export interface ScanInstallResponse {
 
 export interface SendFeedbackResponse {
 	status: string
+}
+
+export interface Series {
+	name?: string
+	ref: string
+	categories?: string
 }
 
 export interface Session {
@@ -1303,6 +1475,26 @@ export interface ShareLinkResponse {
 	outdated: boolean
 }
 
+export interface SheetResponse extends View {
+	documentId: string
+	version: number
+	session: string
+}
+
+export interface SheetView {
+	name: string
+	tabColor?: string
+	hidden: boolean
+	protected: boolean
+	dims: Dims
+	freeze: Dims
+	colWidths: Record<string, number>
+	rowHeights: Record<string, number>
+	merges: string[]
+	cells: CellView[]
+	charts: Chart[]
+}
+
 export interface SkillSecretInfo {
 	key: string
 	label: string
@@ -1313,6 +1505,20 @@ export interface SkillSecretInfo {
 
 export interface StopEverythingResponse {
 	stopped: number
+}
+
+export interface Style {
+	bold?: boolean
+	italic?: boolean
+	underline?: boolean
+	wrap?: boolean
+	fill?: string
+	color?: string
+	size?: number
+	align?: string
+	valign?: string
+	numFmt?: string
+	border?: Borders
 }
 
 export interface Team {
@@ -1389,6 +1595,12 @@ export interface UserProfile {
 	termsAcceptedAt?: number
 	accountType?: string
 	approvedCommands?: string
+}
+
+export interface View {
+	sheets: SheetView[]
+	styles: Style[]
+	names: Record<string, string>
 }
 
 export interface WaitingAsk {
@@ -1505,6 +1717,12 @@ export interface WorkflowToolBinding {
 	tool: string
 }
 
+// ── Rust Enums ─────────────────────────────────────────────────────
+
+export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
+
+export type ProviderEffort = 'low' | 'medium' | 'high'
+
 // ── API Response Types (inferred from handlers) ────────────────────
 
 export interface ActivateAgentChatResponse {
@@ -1524,6 +1742,10 @@ export interface ActivateAgentResponse {
 export interface AddCollectionItemResponse {
 	collection: unknown
 	added: unknown
+}
+
+export interface AddConnectionModelResponse {
+	model: ConnectionModel
 }
 
 export interface AgentMcpHandlerResponse {
@@ -1556,6 +1778,13 @@ export interface AuthLogoutResponse {
 
 export interface AuthStatusResponse {
 	authenticated: boolean
+}
+
+export interface BrowseConnectionCatalogResponse {
+	browsable: boolean
+	total: number
+	refreshedAt: number | null
+	models: CatalogModel[]
 }
 
 export interface BrowseResponse {
@@ -1619,7 +1848,7 @@ export interface CreateAdminResponse {
 
 export interface CreateAgentApiKeyResponse {
 	key: ApiKey
-	secret: unknown
+	secret: string
 }
 
 export interface CreateAgentResponse {
@@ -1655,6 +1884,10 @@ export interface CreateNewAgentChatResponse {
 	messages: unknown[]
 	totalMessages: number
 	sessionKey: string
+}
+
+export interface CreatePackResponse {
+	pack: Pack
 }
 
 export interface CreateSkillResponse {
@@ -1702,6 +1935,10 @@ export interface DeleteChatResponse {
 	success: boolean
 }
 
+export interface DeleteConnectionModelResponse {
+	deleted: string
+}
+
 export interface DeleteEdgeResponse {
 	ok: boolean
 }
@@ -1720,6 +1957,10 @@ export interface DeleteMemoryResponse {
 
 export interface DeleteNotificationResponse {
 	success: boolean
+}
+
+export interface DeletePackResponse {
+	deleted: unknown
 }
 
 export interface DeleteProviderResponse {
@@ -1803,14 +2044,14 @@ export interface GetAgentResponse {
 	version: string
 	inputFields: unknown[]
 	inputValues: unknown
-	personaProperties: unknown
+	personaProperties: unknown[]
 	persona: unknown
 	model: unknown
 	skills: string[]
 	interfaces: unknown
 	subscribes: unknown
 	ceiling: unknown
-	pluginsNeedingAuth: unknown
+	pluginsNeedingAuth: unknown[]
 	needsSetup: unknown
 	memoryMode: unknown
 }
@@ -2059,6 +2300,10 @@ export interface ListChatsResponse {
 	total: number
 }
 
+export interface ListConnectionModelsResponse {
+	models: ConnectionModel[]
+}
+
 export interface ListDependentsResponse {
 	skills: unknown[]
 	agents: unknown[]
@@ -2095,6 +2340,16 @@ export interface ListModelsResponse {
 
 export interface ListNotificationsResponse {
 	notifications: Notification[]
+}
+
+export interface ListPackChoicesResponse {
+	chat: PackChoice[]
+	decision: PackChoice[]
+}
+
+export interface ListPacksResponse {
+	packs: Pack[]
+	default: string
 }
 
 export interface ListPersonalityPresetsResponse {
@@ -2136,10 +2391,6 @@ export interface ListSessionsResponse {
 
 export interface ListSkillSecretsResponse {
 	secrets: unknown[]
-}
-
-export interface ListStorageResponse {
-	items: unknown[]
 }
 
 export interface ListTaskHistoryResponse {
@@ -2243,6 +2494,7 @@ export interface NeboAIForceReconnectResponse {
 export interface NeboAIJanusUsageResponse {
 	session: unknown
 	weekly: unknown
+	plan: string
 	budget: unknown
 }
 
@@ -2388,7 +2640,9 @@ export interface SearchMessagesResponse {
 }
 
 export interface SendDevlogResponse {
-	prompt: unknown
+	sessionId: string
+	agentId: string
+	status: string
 }
 
 export interface SendTeamMessageResponse {
@@ -2406,6 +2660,10 @@ export interface SetArtifactAutoUpdateResponse {
 	ok: boolean
 }
 
+export interface SetDefaultPackResponse {
+	default: string
+}
+
 export interface SetPluginConfigResponse {
 	success: boolean
 }
@@ -2417,6 +2675,10 @@ export interface SetSkillSecretResponse {
 
 export interface SetUpdateSettingsResponse {
 	ok: boolean
+}
+
+export interface ShareFileResponse {
+	artifact: string
 }
 
 export interface SidecarStateResponse {
@@ -2536,6 +2798,10 @@ export interface UpdateCliProviderResponse {
 	message: string
 }
 
+export interface UpdateConnectionModelResponse {
+	model: ConnectionModel
+}
+
 export interface UpdateEntityConfigResponse {
 	config: unknown
 }
@@ -2555,6 +2821,10 @@ export interface UpdateModelConfigResponse {
 
 export interface UpdateModelResponse {
 	message: string
+}
+
+export interface UpdatePackResponse {
+	pack: Pack
 }
 
 export interface UpdateResponse {
@@ -2947,6 +3217,15 @@ export interface LinkedComputerEntry {
 	agents: LinkedAgentEntry[]
 }
 
+export interface PackChoice {
+	value: string
+	provider: string
+	connection: string
+	modelId: string
+	capabilities?: string[]
+	local: boolean
+}
+
 export interface RunDisplayFact {
 	key: string
 	value: string
@@ -3006,13 +3285,14 @@ export interface UserProfileFull {
 export type WSServerEventType =
 	| "app_action"
 	| "app_ping"
+	| "chat_ack"
 	| "chat_cancelled"
-	| "chat_message"
+	| "chat_withdrawn"
 	| "session_reset"
 	| "chat_complete"
-	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "chat_user_message"
 	| "session_compact"
 
 export interface AppActionEvent {
@@ -3029,23 +3309,15 @@ export interface ChatCancelledEvent {
 	session_id: string
 }
 
-export interface ChatMessageEvent {
-	id: string
-	content: unknown
-	createdAt: unknown
-	agentId: string
+export interface ChatWithdrawnEvent {
 	session_id: string
-	artifacts: unknown
+	message_id: string
+	withdrawn: unknown
 }
 
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
-}
-
-export interface ChatAckEvent {
-	session_id: string
-	status: string
 }
 
 export interface ChatStreamEvent {
@@ -3056,6 +3328,16 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface ChatUserMessageEvent {
+	session_id: string
+	agentId: string
+	id: unknown
+	content: unknown
+	createdAt: unknown
+	client_id: string
+	message_id: string
 }
 
 /** Client → Server WebSocket message types */
@@ -3069,127 +3351,3 @@ export type WSClientMessageType =
 	| "session_reset"
 	| "session_compact"
 
-export interface Pack {
-	id: string
-	name: string
-	levels: PackLevels
-	fallback: boolean
-	builtIn: boolean
-	routeThroughJanus?: boolean
-	lanes?: PackLanes
-	levelEffort?: LevelEffort
-}
-
-export interface PackLevels {
-	auto?: string
-	instant?: string
-	low?: string
-	medium?: string
-	high?: string
-	max?: string
-	vision?: string
-	voice?: string
-	decisions?: string
-}
-
-export interface PackLanes {
-	heartbeat?: string
-	scheduled?: string
-	communication?: string
-	helpers?: string
-	build?: string
-	workflow?: string
-}
-
-export interface LevelEffort {
-	instant?: string
-	low?: string
-	medium?: string
-	high?: string
-	max?: string
-}
-
-export interface ListPacksResponse {
-	packs: Pack[]
-	default: string
-}
-
-export interface CreatePackResponse {
-	pack: unknown
-}
-
-export interface UpdatePackResponse {
-	pack: unknown
-}
-
-export interface DeletePackResponse {
-	deleted: unknown
-}
-
-export interface SetDefaultPackResponse {
-	default: string
-}
-
-export interface PackChoice {
-	value: string
-	provider: string
-	connection: string
-	modelId: string
-	capabilities?: string[]
-	local: boolean
-}
-
-export interface ListPackChoicesResponse {
-	chat: PackChoice[]
-	decision: PackChoice[]
-}
-
-export interface ConnectionModel {
-	modelId: string
-	displayName: string
-	kind: string
-	contextWindow?: number
-	capabilities: string[]
-	source: string
-	isActive: boolean
-}
-
-export interface ListConnectionModelsResponse {
-	models: ConnectionModel[]
-}
-
-export interface AddConnectionModelResponse {
-	model: ConnectionModel
-}
-
-export interface UpdateConnectionModelResponse {
-	model: ConnectionModel
-}
-
-export interface DeleteConnectionModelResponse {
-	deleted: string
-}
-
-export interface Pricing {
-	input: number
-	output: number
-}
-
-export interface CatalogModel {
-	modelId: string
-	displayName: string
-	family: string
-	kind: string
-	contextWindow?: number
-	capabilities: string[]
-	pricing?: Pricing
-	created?: number
-	added: boolean
-}
-
-export interface BrowseConnectionCatalogResponse {
-	browsable: boolean
-	total: number
-	refreshedAt?: number
-	models: CatalogModel[]
-}
