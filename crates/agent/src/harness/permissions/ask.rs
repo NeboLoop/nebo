@@ -575,8 +575,47 @@ impl Asks {
     /// The owner's answer. The first answer anywhere wins; a later one
     /// gets [`AskError::Settled`]. The answer is recorded, the card cleared
     /// everywhere, and the answer signalled to the ask's wait; the engine
-    /// wakes the run and [`Asks::resume`] applies it.
+    /// wakes the run and [`Asks::resume`] applies it. "Allow always" also
+    /// answers every other open card of this employee its standing allows
+    /// fully cover, so the owner never answers the same thing twice.
     pub fn answer(&self, id: &str, answer: Answer, via: AnsweredVia) -> Result<Ask, AskError> {
+        let ask = self.settle_answer(id, answer, via)?;
+        if answer == Answer::AllowAlways {
+            self.answer_covered(&ask, via);
+        }
+        Ok(ask)
+    }
+
+    /// 2026-10-11: two parallel screen captures raised two cards; "Allow
+    /// always" on the first wrote the allow but left the second open, and the
+    /// owner answered it again. Each open card of the same employee that,
+    /// with the first one's allows in its grant, would need nothing those
+    /// allows don't already say is answered with it. A card that can't be
+    /// allowed for good is left alone.
+    fn answer_covered(&self, ask: &Ask, via: AnsweredVia) {
+        if ask.kind() != AskKind::Permission || !ask.allow_always_offered(&self.store) {
+            return;
+        }
+        let Some(written) = allow_always_rules(&self.store, ask) else { return };
+        let Ok(open) = self.open(None) else { return };
+        for other in open {
+            if other.id == ask.id || other.agent_id != ask.agent_id || other.kind() != AskKind::Permission {
+                continue;
+            }
+            if !other.allow_always_offered(&self.store) {
+                continue;
+            }
+            let mut probe = other.clone();
+            probe.seat.grant.rules.extend(written.iter().cloned());
+            let Some(needs) = allow_always_rules(&self.store, &probe) else { continue };
+            let covered = needs.iter().all(|n| written.iter().any(|w| w.key == n.key && w.field == n.field));
+            if covered && let Err(e) = self.settle_answer(&other.id, Answer::AllowAlways, via) {
+                tracing::warn!(ask = %other.id, error = %e, "covered ask not answered with the allow that covers it");
+            }
+        }
+    }
+
+    fn settle_answer(&self, id: &str, answer: Answer, via: AnsweredVia) -> Result<Ask, AskError> {
         let mut ask = self.get(id)?.ok_or(AskError::NotFound)?;
         if !ask.kind().takes(answer) {
             return Err(AskError::NotOffered);
@@ -2197,10 +2236,10 @@ mod tests {
             r.mode(agent, mode);
             let parked = r.reg.execute(&ctx(&format!("agent:{agent}:web"), Door::Chat), "run_command", command("screencapture -x /tmp/a.png")).await;
             let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?}: {}", parked.content));
-            assert!(parked.content.starts_with("Waiting for the owner to allow: capturing your screen."), "{}", parked.content);
+            assert!(parked.content.starts_with("Waiting for the owner to allow: capturing your screen (screencapture)."), "{}", parked.content);
             let ask = r.asks.get(&id).unwrap().unwrap();
             assert_eq!(ask.case, AskCase::ReachesOwner { reach: OwnerReach::Screen });
-            assert_eq!((ask.sentence.as_str(), ask.reason()), ("capturing your screen", "It would see what's on your screen."));
+            assert_eq!((ask.sentence.as_str(), ask.reason()), ("capturing your screen (screencapture)", "It would see what's on your screen."));
             assert!(ask.allow_always_offered(&r.store) && ask.this_once_offered(), "{mode:?}: all three answers");
         }
         assert!(ran.lock().unwrap().is_empty(), "nothing ran before the owner answered");
@@ -2236,6 +2275,38 @@ mod tests {
         assert!(other.parked_ask.is_some(), "{}", other.content);
     }
 
+    /// 2026-10-11: two captures in a row raised two cards; "Allow always" on
+    /// the first answers the second too (the same allow covers it), and both
+    /// run. Another employee's card, and a card the allow doesn't cover,
+    /// stay open.
+    #[tokio::test]
+    async fn allow_always_answers_the_other_open_cards_it_covers() {
+        let r = rig().await;
+        let ran = r.shell().await;
+        r.mode("emp", Mode::FullAccess);
+        r.mode("other", Mode::FullAccess);
+        let first = r.reg.execute(&ctx("agent:emp:web", Door::Chat), "run_command", command("screencapture -x /tmp/a.png")).await.parked_ask.unwrap();
+        let second = r.reg.execute(&ctx("agent:emp:web", Door::Chat), "run_command", command("screencapture -x -t png /tmp/b.png")).await.parked_ask.unwrap();
+        // Another program on the screen is its own allow (the owner's two
+        // cards that night were ffmpeg and /usr/sbin/screencapture).
+        let elsewhere = r.reg.execute(&ctx("agent:emp:web", Door::Chat), "run_command", command("/usr/sbin/screencapture -x /tmp/d.png")).await.parked_ask;
+        let theirs = r.reg.execute(&ctx("agent:other:web", Door::Chat), "run_command", command("screencapture -x /tmp/c.png")).await.parked_ask.unwrap();
+
+        r.answer(&first, Answer::AllowAlways, AnsweredVia::Chat).await.unwrap();
+        let b = r.asks.get(&second).unwrap().unwrap();
+        assert_eq!(b.status, AskStatus::Answered { answer: Answer::AllowAlways, via: Some(AnsweredVia::Chat) });
+        if let Some(h) = r.asks.resume(&r.reg, &second, chrono::Utc::now().timestamp()).unwrap() {
+            h.await.unwrap();
+        }
+        assert_eq!(*ran.lock().unwrap(), vec!["screencapture -x /tmp/a.png", "screencapture -x -t png /tmp/b.png"]);
+        let open: Vec<String> = r.asks.open(None).unwrap().into_iter().map(|a| a.id).collect();
+        assert!(open.contains(&theirs), "another employee is still asked");
+        if let Some(id) = elsewhere {
+            assert!(open.contains(&id), "a card the allow doesn't cover stays open");
+        }
+        assert!(!open.contains(&second));
+    }
+
     /// No: it doesn't run, the employee is told plainly, and the same call
     /// isn't asked again. A run that can't wait for the owner is refused.
     #[tokio::test]
@@ -2248,16 +2319,16 @@ mod tests {
         r.answer(&parked.parked_ask.unwrap(), Answer::No, AnsweredVia::Chat).await.unwrap();
         assert!(ran.lock().unwrap().is_empty());
         let told = r.seen.notes();
-        assert!(told[0].1.contains("\"capturing your screen\": declined\nIt did not run."), "{}", told[0].1);
+        assert!(told[0].1.contains("\"capturing your screen (screencapture)\": declined\nIt did not run."), "{}", told[0].1);
         let again = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", shot.clone()).await;
         assert!(again.is_error && again.parked_ask.is_none(), "{}", again.content);
-        assert!(again.content.starts_with("The owner already said no to this (capturing your screen)"), "{}", again.content);
+        assert!(again.content.starts_with("The owner already said no to this (capturing your screen (screencapture))"), "{}", again.content);
         let mut scheduled = ctx("agent:emp:cron:shots", Door::Schedule);
         scheduled.cannot_wait = true;
         let cron = r.reg.execute(&scheduled, "run_command", shot).await;
         assert_eq!(
             cron.content,
-            "Didn't run: capturing your screen. It needs the owner's OK, and a scheduled command can't wait for one. \
+            "Didn't run: capturing your screen (screencapture). It needs the owner's OK, and a scheduled command can't wait for one. \
              It would see what's on your screen."
         );
         assert_eq!((ran.lock().unwrap().len(), r.seen.cards()), (0, 1));

@@ -546,6 +546,15 @@ pub fn owner_reach(cmd: &str) -> Option<types::permissions::OwnerReach> {
     None
 }
 
+/// The program a command reaches the owner's computer with, as people name
+/// it (`ffmpeg`, `screencapture`): the card says which, so two asks for two
+/// programs never read as one (2026-10-11).
+pub fn owner_reach_program(cmd: &str) -> Option<String> {
+    let subs = subcommands(cmd);
+    let sub = subs.iter().find(|s| reach_of(s).is_some())?;
+    Some(program_name(sub.words.first()?.as_deref()?))
+}
+
 /// What one command reaches on the owner's computer (see [`owner_reach`]).
 pub fn reach_of(sub: &Subcommand) -> Option<types::permissions::OwnerReach> {
     use types::permissions::OwnerReach;

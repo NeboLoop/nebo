@@ -134,10 +134,17 @@ impl DynTool for RunCommandTool {
 
     /// The model's description of the command, except for one that watches
     /// the owner or drives his apps: that says what it does in Nebo's words
-    /// ("capturing your screen"), whatever the description says.
+    /// and with which program ("capturing your screen (ffmpeg)"), whatever
+    /// the description says. An app it names is already plain enough.
     fn describe(&self, input: &Value) -> String {
-        if let Some(reach) = str_arg(input, "command").and_then(crate::policy::owner_reach) {
-            return reach.sentence();
+        let command = str_arg(input, "command").unwrap_or("");
+        if let Some(reach) = crate::policy::owner_reach(command) {
+            return match crate::policy::owner_reach_program(command) {
+                Some(program) if !matches!(reach, types::permissions::OwnerReach::App { app: Some(_) }) => {
+                    format!("{} ({program})", reach.sentence())
+                }
+                _ => reach.sentence(),
+            };
         }
         match str_arg(input, "description") {
             Some(d) => crate::humanize::cap(d, crate::humanize::DESCRIPTION_CAP),
