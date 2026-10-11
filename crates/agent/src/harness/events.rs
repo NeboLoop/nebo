@@ -367,7 +367,14 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             }
             let lines: Vec<String> = shown
                 .iter()
-                .map(|m| format!("- {}: {}", m.memory.key, m.memory.value))
+                .map(|m| {
+                    format!(
+                        "- {}: {} ({})",
+                        m.memory.key,
+                        m.memory.value,
+                        tools::memory_tools::local_source(&m.memory.namespace)
+                    )
+                })
                 .collect();
             // The row keeps the ids it surfaced, so what this session was
             // already shown is folded back from its rows
@@ -1457,6 +1464,7 @@ mod tests {
         let text = attachment_for(&TurnEvent::RelevantMemories(found)).unwrap().text;
         assert!(text.starts_with("Memories that may apply:"));
         assert_eq!(text.lines().filter(|l| l.starts_with("- ")).count(), 5);
+        assert!(text.contains("- k0: v (local:tacit)"), "each memory says where it lives: {text}");
     }
 
     #[test]

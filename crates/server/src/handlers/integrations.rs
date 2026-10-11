@@ -594,10 +594,15 @@ fn notify_plugin_needs_reauth(state: &AppState, p: &db::PluginAccountProfile) {
 pub async fn list_integrations(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     // Auto-fix legacy "stdio" records that have HTTP URLs
     fix_server_type(&state);
-    let integrations = state
+    // Shared memory (the Nebo KB) is not a connector: it is wired
+    // automatically and managed on the website, so it is never listed.
+    let integrations: Vec<_> = state
         .store
         .list_mcp_integrations()
-        .map_err(to_error_response)?;
+        .map_err(to_error_response)?
+        .into_iter()
+        .filter(|i| !tools::mcp_tool::is_shared_memory(i))
+        .collect();
     Ok(Json(serde_json::json!({"integrations": integrations})))
 }
 

@@ -1604,18 +1604,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // sealed employee the whole company graph.
                 let isolated_employee = agent_memory_mode(&store, &agent_id_owned).separates_conversations();
                 if isolated_employee {
-                    let memory_url = config::memory_url();
-                    let memory_ids: std::collections::HashSet<String> = if memory_url.is_empty() {
-                        std::collections::HashSet::new()
-                    } else {
-                        store
-                            .list_mcp_integrations()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
-                            .map(|i| i.id)
-                            .collect()
-                    };
+                    let memory_ids: std::collections::HashSet<String> = store
+                        .list_mcp_integrations()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(tools::mcp_tool::is_shared_memory)
+                        .map(|i| i.id)
+                        .collect();
                     if !memory_ids.is_empty() {
                         let mut withheld = 0usize;
                         let mut keep = Vec::with_capacity(tool_defs.len());

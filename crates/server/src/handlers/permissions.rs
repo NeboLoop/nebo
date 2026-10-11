@@ -815,7 +815,9 @@ fn page(
 
     // The MCP servers, and any other a rule names, each with its tools.
     let mut servers: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
-    for integration in store.list_mcp_integrations()? {
+    // Shared memory (the Nebo KB) takes no tool permissions: the website
+    // governs it and the server enforces it.
+    for integration in store.list_mcp_integrations()?.into_iter().filter(|i| !tools::mcp_tool::is_shared_memory(i)) {
         let prefix = mcp::bridge::tool_name_prefix(&integration.name);
         let tools = store.get_mcp_known_tools(&integration.id)?;
         let entry = servers.entry(mcp::bridge::server_slug(&prefix)).or_insert_with(|| (integration.name.clone(), BTreeSet::new()));
