@@ -261,6 +261,9 @@
 		"working": "作業中",
 		"newReply": "新しい返信",
 		"chatActions": "チャットの操作",
+		"pinToTop": "上部にピン留め",
+		"unpin": "ピン留めを外す",
+		"pinned": "ピン留め",
 		"deleteChatTitle": "「{name}」を削除しますか？",
 		"deleteChatBody": "このチャットとすべてのメッセージが削除されます。元に戻すことはできません。",
 		"offline": "オフライン"

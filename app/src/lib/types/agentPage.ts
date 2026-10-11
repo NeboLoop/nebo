@@ -41,6 +41,10 @@ export interface EnrichedChat {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
+	/** The owner pinned it to the top of the employee's list. */
+	pinned?: boolean
+	/** When he pinned it (unix seconds); null when not pinned. */
+	pinnedAt?: number | null
 }
 
 /** Workflow trigger configuration. */

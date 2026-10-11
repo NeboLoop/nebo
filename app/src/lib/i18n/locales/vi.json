@@ -261,6 +261,9 @@
 		"working": "Đang làm việc",
 		"newReply": "Phản hồi mới",
 		"chatActions": "Thao tác trò chuyện",
+		"pinToTop": "Ghim lên đầu",
+		"unpin": "Bỏ ghim",
+		"pinned": "Đã ghim",
 		"deleteChatTitle": "Xóa \"{name}\"?",
 		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác.",
 		"offline": "Ngoại tuyến"

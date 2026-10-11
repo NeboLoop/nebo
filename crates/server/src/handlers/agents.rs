@@ -4743,18 +4743,41 @@ fn per_employee_needs(
 /// colleagues and its teams — work the owner can read but did not have —
 /// each naming who is on the other side (`with`). Every row says which it is
 /// (`kind`: `owner`, `colleague` or `team`), from the ONE key classifier
-/// (`types::keyparser::conversation_of`).
+/// (`types::keyparser::conversation_of`), and whether the owner pinned it
+/// (`pinned`, `pinnedAt`).
 ///
-/// `chats` pages the way GET /api/v1/chats does: `limit` and `offset`, with
-/// `total` the count of all the owner's conversations. With no `limit` the
-/// whole list comes back, as it did before paging. `teammates` comes whole
-/// with the first page (`offset` 0) and empty with the ones after it.
+/// `chats` comes a page at a time: `limit` rows, and `nextCursor` to pass as
+/// `cursor` for the ones after them (null when there are no more). `offset`
+/// still pages the way GET /api/v1/chats does, for an app from before the
+/// cursor; with a `cursor` it is ignored. `total` counts all the owner's
+/// conversations. With no `limit` the
+/// whole list comes back, as it did before paging. `q` narrows every list to
+/// the conversations whose title, or anything said in them, matches.
+///
+/// The first page (no `cursor`, `offset` 0) also carries `pinned`: the
+/// owner's pinned conversations, most recently pinned first, whatever page
+/// of `chats` they fall on — so the app shows them above the recent ones
+/// without reading the whole list — and `teammates`, whole. The pages after
+/// it carry neither. A pinned conversation is listed in `chats` too, in its
+/// place by time.
 pub async fn list_agent_chats(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(page): Query<AgentChatsQuery>,
 ) -> HandlerResult<serde_json::Value> {
+    use db::{ConversationQuery, Conversations};
     let session_prefix = types::keyparser::agent_session_prefix(&id);
+    let before = match page.cursor.as_deref() {
+        Some(cursor) => Some(
+            parse_chats_cursor(cursor)
+                .ok_or_else(|| to_error_response(types::NeboError::Validation("invalid cursor".into())))?,
+        ),
+        None => None,
+    };
+    // The cursor wins: an app sends `offset` beside it for a bot from
+    // before the cursor, which pages by `offset` alone.
+    let offset = if before.is_some() { 0 } else { page.offset };
+    let first_page = before.is_none() && offset == 0;
 
     // Resolve active chat_id from the legacy web session (if it exists).
     let legacy_session_key = types::keyparser::build_agent_session_key(&id, "web");
@@ -4766,20 +4789,11 @@ pub async fn list_agent_chats(
         .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
-    // Prefix query: catches both legacy `agent:<id>:web` and new `agent:<id>:thread:<uuid>`.
-    let mut enriched_chats = state
-        .store
-        .list_chats_by_session_enriched(&session_prefix)
-        .unwrap_or_default();
-
     // Backfill: legacy agent chats store messages under the session key as chat_id
     // but have no `chats` row. If the owner has no conversation listed but
     // messages exist, create the row.
-    let owners = |chat: &db::models::Chat| {
-        chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
-            == Some(types::keyparser::Conversation::Owner)
-    };
-    if !enriched_chats.iter().any(|(chat, _, _)| owners(chat)) {
+    let owners = ConversationQuery { whose: Conversations::Owners, ..Default::default() };
+    if state.store.count_conversations(&session_prefix, &owners).unwrap_or(0) == 0 {
         let legacy_chat_id = if active_chat_id.is_empty() {
             &legacy_session_key
         } else {
@@ -4787,39 +4801,55 @@ pub async fn list_agent_chats(
         };
         let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
         if msg_count > 0 {
-            if let Ok(chat) = state.store.create_chat_for_session(
+            let _ = state.store.create_chat_for_session(
                 legacy_chat_id,
                 &legacy_session_key,
                 "Chat 1",
                 None,
-            ) {
-                enriched_chats.push((chat, msg_count, String::new()));
-            }
+            );
         }
     }
+
+    let search = page.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let owners = ConversationQuery { search, ..owners };
+    let total = state.store.count_conversations(&session_prefix, &owners).unwrap_or(0);
+    // One more than the page, to know whether another follows it.
+    let mut owned = state
+        .store
+        .list_chats_by_session_enriched(
+            &session_prefix,
+            &ConversationQuery {
+                before,
+                limit: page.limit.map(|l| l as i64 + 1),
+                offset: offset as i64,
+                ..owners
+            },
+        )
+        .unwrap_or_default();
+    let next_cursor = match page.limit {
+        Some(limit) if owned.len() > limit => {
+            owned.truncate(limit);
+            owned.last().map(|(chat, _, _)| format!("{}:{}", chat.updated_at, chat.id))
+        }
+        _ => None,
+    };
+    let (pinned, teammates) = if first_page {
+        let pinned = ConversationQuery { pinned: true, ..owners };
+        let teammates = ConversationQuery { whose: Conversations::Teammates, search, ..Default::default() };
+        (
+            state.store.list_chats_by_session_enriched(&session_prefix, &pinned).unwrap_or_default(),
+            state.store.list_chats_by_session_enriched(&session_prefix, &teammates).unwrap_or_default(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     // Format response
     let now = chrono::Utc::now().timestamp();
     let zone = tools::owner_clock::OwnerZone::of(&state.store);
     let employee = state.store.get_agent(&id).ok().flatten().map(|a| a.name).unwrap_or_default();
-    // Classify first, so only the rows on this page read their status.
-    let (owned, others): (Vec<_>, Vec<_>) = enriched_chats
-        .iter()
-        .filter_map(|row| {
-            let conversation =
-                row.0.session_name.as_deref().and_then(types::keyparser::conversation_of)?;
-            Some((row, conversation))
-        })
-        .partition(|(_, c)| *c == types::keyparser::Conversation::Owner);
-    let total = owned.len();
-    let shown = owned
-        .into_iter()
-        .skip(page.offset)
-        .take(page.limit.unwrap_or(usize::MAX))
-        .chain(others.into_iter().filter(|_| page.offset == 0));
-    let mut chats = Vec::new();
-    let mut teammates = Vec::new();
-    for ((chat, msg_count, last_content), conversation) in shown {
+    let row = |(chat, msg_count, last_content): &(db::models::Chat, i64, String)| {
+        let conversation = chat.session_name.as_deref().and_then(types::keyparser::conversation_of)?;
         // The enriched row's last content is the fallback for a thread
         // whose newest rows could not be read.
         let status = thread_status(&state.store, &chat.id);
@@ -4830,7 +4860,7 @@ pub async fn list_agent_chats(
             _ => Some(teammate_name(&state, &conversation, chat)),
         };
         let title = shown_title(&chat.title, &employee);
-        let row = serde_json::json!({
+        Some(serde_json::json!({
             "id": chat.id,
             "name": title,
             "title": title,
@@ -4845,19 +4875,29 @@ pub async fn list_agent_chats(
             "createdAt": chat.created_at,
             "updatedAtEpoch": chat.updated_at,
             "sessionName": chat.session_name,
-        });
-        match conversation {
-            types::keyparser::Conversation::Owner => chats.push(row),
-            _ => teammates.push(row),
-        }
-    }
+            "pinned": chat.pinned_at.is_some(),
+            "pinnedAt": chat.pinned_at,
+        }))
+    };
+    let rows = |list: &[(db::models::Chat, i64, String)]| list.iter().filter_map(row).collect::<Vec<_>>();
 
     Ok(Json(serde_json::json!({
-        "chats": chats,
-        "teammates": teammates,
+        "chats": rows(&owned),
+        "pinned": rows(&pinned),
+        "teammates": rows(&teammates),
         "activeChatId": active_chat_id,
         "total": total,
+        "nextCursor": next_cursor,
     })))
+}
+
+/// A `nextCursor` of GET /api/v1/agents/{id}/chats: the last activity and
+/// id of the conversation a page ended at (`<updated_at>:<id>`; an id may
+/// itself hold colons).
+fn parse_chats_cursor(cursor: &str) -> Option<(i64, &str)> {
+    let (at, id) = cursor.split_once(':')?;
+    let at = at.parse().ok()?;
+    (!id.is_empty()).then_some((at, id))
 }
 
 /// GET /api/v1/agents/{id}/chats paging: no `limit` is the whole list.
@@ -4866,6 +4906,10 @@ pub struct AgentChatsQuery {
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: usize,
+    /// Where the page before ended (its `nextCursor`).
+    pub cursor: Option<String>,
+    /// Only the conversations whose title, or anything said in them, matches.
+    pub q: Option<String>,
 }
 
 /// A conversation's title as the owner sees it. A chat the runner made for
@@ -6907,5 +6951,21 @@ mod needs_connecting_tests {
             needs("bk").is_empty(),
             "a connected Bookkeeper no longer waits on it"
         );
+    }
+}
+
+#[cfg(test)]
+mod chats_cursor_tests {
+    use super::parse_chats_cursor;
+
+    /// A page's cursor is its last conversation's time and id; a legacy
+    /// conversation's id is a session key, colons and all.
+    #[test]
+    fn a_cursor_names_the_time_and_the_whole_id() {
+        assert_eq!(parse_chats_cursor("1700:abc"), Some((1700, "abc")));
+        assert_eq!(parse_chats_cursor("1700:agent:nm:web"), Some((1700, "agent:nm:web")));
+        assert_eq!(parse_chats_cursor("nonsense"), None);
+        assert_eq!(parse_chats_cursor("x:abc"), None);
+        assert_eq!(parse_chats_cursor("1700:"), None);
     }
 }

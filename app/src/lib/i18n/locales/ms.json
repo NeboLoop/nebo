@@ -261,6 +261,9 @@
 		"working": "Bekerja",
 		"newReply": "Balasan baharu",
 		"chatActions": "Tindakan sembang",
+		"pinToTop": "Semat di atas",
+		"unpin": "Nyahsemat",
+		"pinned": "Disematkan",
 		"deleteChatTitle": "Padam \"{name}\"?",
 		"deleteChatBody": "Sembang ini dan semua mesejnya akan dipadam. Tindakan ini tidak boleh dibatalkan.",
 		"offline": "Luar talian"

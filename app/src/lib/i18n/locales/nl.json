@@ -261,6 +261,9 @@
 		"working": "Werkt",
 		"newReply": "Nieuw antwoord",
 		"chatActions": "Chatacties",
+		"pinToTop": "Bovenaan vastzetten",
+		"unpin": "Losmaken",
+		"pinned": "Vastgezet",
 		"deleteChatTitle": "\"{name}\" verwijderen?",
 		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt.",
 		"offline": "Offline"

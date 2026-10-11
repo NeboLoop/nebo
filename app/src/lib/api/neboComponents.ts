@@ -472,6 +472,7 @@ export interface Chat {
 	sessionName?: string
 	model?: string
 	folder?: string
+	pinnedAt?: number
 }
 
 export interface ChatMessage {
@@ -2260,9 +2261,11 @@ export interface ListAgentChannelsResponse {
 
 export interface ListAgentChatsResponse {
 	chats: EnrichedChat[]
+	pinned: EnrichedChat[]
 	teammates: EnrichedChat[]
 	activeChatId: string
 	total: number
+	nextCursor: string | null
 }
 
 export interface ListAgentRunsResponse {
@@ -2539,6 +2542,12 @@ export interface PickFilesResponse {
 
 export interface PickFolderResponse {
 	path: string
+}
+
+export interface PinChatResponse {
+	success: boolean
+	pinned: boolean
+	pinnedAt: number | null
 }
 
 export interface PluginProxyResponse {
@@ -3127,6 +3136,10 @@ export interface EnrichedChat {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
+	/** Whether the owner pinned it to the top of the employee's list. */
+	pinned: boolean
+	/** When he pinned it (unix seconds); null when not pinned. */
+	pinnedAt: number | null
 }
 
 export interface EventSourceOption {

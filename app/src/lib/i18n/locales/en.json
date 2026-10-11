@@ -261,6 +261,9 @@
 		"working": "Working",
 		"newReply": "New reply",
 		"chatActions": "Chat actions",
+		"pinToTop": "Pin to top",
+		"unpin": "Unpin",
+		"pinned": "Pinned",
 		"deleteChatTitle": "Delete \"{name}\"?",
 		"deleteChatBody": "This chat and all its messages are removed. This can't be undone.",
 		"offline": "Offline"

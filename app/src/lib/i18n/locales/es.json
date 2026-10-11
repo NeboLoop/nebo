@@ -261,6 +261,9 @@
 		"working": "Trabajando",
 		"newReply": "Nueva respuesta",
 		"chatActions": "Acciones del chat",
+		"pinToTop": "Fijar arriba",
+		"unpin": "Desfijar",
+		"pinned": "Fijadas",
 		"deleteChatTitle": "¿Eliminar \"{name}\"?",
 		"deleteChatBody": "Se eliminarán este chat y todos sus mensajes. No se puede deshacer.",
 		"offline": "Sin conexión"

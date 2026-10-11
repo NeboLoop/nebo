@@ -4086,3 +4086,97 @@ async fn every_file_a_turn_hands_over_rides_its_final_reply() {
     }
     assert_eq!(cards, vec!["proof-reel.mp4", "proof-cover.jpg"], "{}", tool_results(&rig, &thread));
 }
+
+/// An employee with many conversations: the app reads them a page at a time
+/// and pins the ones the owner keeps at the top. The first page carries
+/// every pinned conversation, most recently pinned first, whatever page it
+/// falls on, and the cursor walks the rest newest first with none twice and
+/// none missed. A pin is kept on the bot, told to every open app, and never
+/// moves a conversation by time; an unpin takes it off. A search narrows
+/// every list and its count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_conversations_head_a_paged_list() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof Pin Clerk", json!({ "workflows": {} })).await;
+    // Five of the owner's conversations, a second apart.
+    let mut made = Vec::new();
+    for at in 1..=5 {
+        let id = format!("pin-proof-{at}");
+        nebo.store()
+            .create_chat_imported(&id, &format!("agent:{clerk}:thread:{id}"), &format!("Matter {at}"), 1_000 + at, 1_000 + at)
+            .unwrap();
+        made.push(id);
+    }
+    // Newest first: the last one made is the most recently active.
+    let newest_first: Vec<String> = made.iter().rev().cloned().collect();
+    let ids = |rows: &Value| -> Vec<String> {
+        rows.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect()
+    };
+
+    // The owner pins the two oldest, the very oldest last.
+    let mut events = nebo.state.hub.subscribe();
+    for id in [&made[1], &made[0]] {
+        let pinned = nebo.put_ok(&format!("/chats/{id}/pin"), &json!({"pinned": true})).await;
+        assert_eq!(pinned["pinned"], true, "{pinned}");
+        // Pins are stamped in whole seconds: the next is a second later.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+    }
+    let told = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(e) = events.recv().await {
+                if e.event_type == "chat_pinned" && e.payload["chatId"] == made[1].as_str() {
+                    break e.payload;
+                }
+            }
+        }
+    })
+    .await
+    .expect("every open app is told of the pin");
+    assert_eq!(told["pinned"], true, "{told}");
+    assert_eq!(told["agentId"], clerk.as_str(), "whose list it moves in: {told}");
+
+    // The first page: two recent conversations, the pinned ones with it.
+    let first = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2")).await;
+    assert_eq!(ids(&first["chats"]), newest_first[..2].to_vec(), "{first}");
+    assert_eq!(ids(&first["pinned"]), vec![made[0].clone(), made[1].clone()], "newest pin first: {first}");
+    assert_eq!(first["pinned"][0]["pinned"], true, "{first}");
+    assert_eq!(first["chats"][0]["pinned"], false, "{first}");
+    assert_eq!(first["total"], 5, "{first}");
+
+    // The cursor walks the rest; the pages after the first carry no pins.
+    let mut walked = ids(&first["chats"]);
+    let mut cursor = first["nextCursor"].as_str().expect("more to come").to_string();
+    loop {
+        // An app sends the offset too, for a bot from before the cursor;
+        // the cursor wins.
+        let page = nebo
+            .get_ok(&format!("/agents/{clerk}/chats?limit=2&offset={}&cursor={}", walked.len(), urlencoding::encode(&cursor)))
+            .await;
+        assert!(ids(&page["pinned"]).is_empty(), "{page}");
+        walked.extend(ids(&page["chats"]));
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+    }
+    assert_eq!(walked, newest_first, "every conversation once, newest first, pinned ones in their place by time");
+
+    // A pin is not activity: the pinned conversations keep their times.
+    let whole = nebo.get_ok(&format!("/agents/{clerk}/chats")).await;
+    assert_eq!(ids(&whole["chats"]), newest_first, "{whole}");
+    assert!(whole["nextCursor"].is_null(), "{whole}");
+
+    // A search narrows the list, its pins and its count.
+    let found = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2&q=Matter%201")).await;
+    assert_eq!(ids(&found["chats"]), vec![made[0].clone()], "{found}");
+    assert_eq!(ids(&found["pinned"]), vec![made[0].clone()], "{found}");
+    assert_eq!(found["total"], 1, "{found}");
+
+    // Unpinned, it leaves the pins.
+    nebo.put_ok(&format!("/chats/{}/pin", made[0]), &json!({"pinned": false})).await;
+    let after = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2")).await;
+    assert_eq!(ids(&after["pinned"]), vec![made[1].clone()], "{after}");
+
+    assert_eq!(nebo.put("/chats/no-such-chat/pin", &json!({"pinned": true})).await.0, 404);
+    assert_eq!(nebo.get(&format!("/agents/{clerk}/chats?limit=2&cursor=nonsense")).await.0, 400);
+}

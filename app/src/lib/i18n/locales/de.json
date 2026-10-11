@@ -261,6 +261,9 @@
 		"working": "Arbeitet",
 		"newReply": "Neue Antwort",
 		"chatActions": "Chat-Aktionen",
+		"pinToTop": "Oben anheften",
+		"unpin": "Lösen",
+		"pinned": "Angeheftet",
 		"deleteChatTitle": "„{name}“ löschen?",
 		"deleteChatBody": "Dieser Chat und alle seine Nachrichten werden entfernt. Das lässt sich nicht rückgängig machen.",
 		"offline": "Offline"

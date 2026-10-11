@@ -2822,7 +2822,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     // colleague or a team is not one the owner talks in.
     for (local_id, loop_agent_id) in &chat_sync_targets {
         let prefix = types::keyparser::agent_session_prefix(local_id);
-        let chats = match state.store.list_chats_by_session_enriched(&prefix) {
+        let chats = match state.store.list_chats_by_session_enriched(&prefix, &db::ConversationQuery::default()) {
             Ok(rows) => rows
                 .into_iter()
                 .filter(|(chat, _, _)| {

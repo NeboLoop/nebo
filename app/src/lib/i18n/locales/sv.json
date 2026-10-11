@@ -261,6 +261,9 @@
 		"working": "Arbetar",
 		"newReply": "Nytt svar",
 		"chatActions": "Chattåtgärder",
+		"pinToTop": "Fäst överst",
+		"unpin": "Lossa",
+		"pinned": "Fästa",
 		"deleteChatTitle": "Radera \"{name}\"?",
 		"deleteChatBody": "Den här chatten och alla dess meddelanden tas bort. Det går inte att ångra.",
 		"offline": "Offline"

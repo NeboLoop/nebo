@@ -261,6 +261,9 @@
 		"working": "يعمل",
 		"newReply": "رد جديد",
 		"chatActions": "إجراءات المحادثة",
+		"pinToTop": "تثبيت في الأعلى",
+		"unpin": "إلغاء التثبيت",
+		"pinned": "المثبّتة",
 		"deleteChatTitle": "حذف \"{name}\"؟",
 		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك.",
 		"offline": "غير متصل"

@@ -46,6 +46,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(handlers::chat::mark_chat_read),
         )
         .route(
+            "/chats/{id}/pin",
+            axum::routing::put(handlers::chat::pin_chat),
+        )
+        .route(
             "/chats/{id}/messages",
             axum::routing::get(handlers::chat::get_chat_messages),
         )
