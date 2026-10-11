@@ -415,6 +415,20 @@ async fn learn(
     session_key: String,
     audio: Option<(std::path::PathBuf, Duration)>,
 ) {
+    // The owner's replay, the narration in it. The learner never reads it,
+    // so it leaves for NeboAI storage as soon as it is made, not after the
+    // learning run.
+    let replay = match tools::desktop_session::finish_video(&rec, audio.as_ref().map(|(p, o)| (p.as_path(), *o))).await {
+        Ok(path) => Some(path),
+        Err(e) => {
+            warn!(session = %rec.id, error = %e, "teach: no replay was made");
+            None
+        }
+    };
+    let replay_size = replay.as_ref().map(|path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
+    if replay.is_some() {
+        queue_replay_upload(state, &rec.id, &rec.dir);
+    }
     let (narration, transcribed) = match &audio {
         None => (Narration::None, false),
         Some((path, offset)) => match narrate(state, &rec, path, *offset).await {
@@ -425,14 +439,6 @@ async fn learn(
             }
         },
     };
-    // The owner's replay, the narration in it. The learner never reads it.
-    let replay = match tools::desktop_session::finish_video(&rec, audio.as_ref().map(|(p, o)| (p.as_path(), *o))).await {
-        Ok(path) => Some(path),
-        Err(e) => {
-            warn!(session = %rec.id, error = %e, "teach: no replay was made");
-            None
-        }
-    };
     // The raw narration leaves once it is both transcribed and in the
     // replay; otherwise the week's sweep takes it.
     if let Some((path, _)) = &audio
@@ -441,14 +447,13 @@ async fn learn(
     {
         let _ = tokio::fs::remove_file(path).await;
     }
-    let attachments = replay
-        .as_ref()
-        .map(|path| {
+    let attachments = replay_size
+        .map(|size| {
             vec![comm::wire::Attachment {
                 file_id: String::new(),
                 filename: REPLAY_NAME.to_string(),
                 mime_type: "video/mp4".to_string(),
-                size: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+                size,
                 url: replay_url(&rec.id),
                 thumbnail_url: None,
                 width: None,
@@ -497,9 +502,6 @@ async fn learn(
         message_id: None,
     };
     crate::chat_dispatch::run_chat(state, config).await;
-    if replay.is_some() {
-        offload_replay(state, &rec, &session_key).await;
-    }
 }
 
 /// What the owner's replay is called on the teach message.
@@ -513,38 +515,150 @@ fn replay_url(id: &str) -> String {
 /// Where a replay offloaded to NeboAI is recorded: its file id there.
 const REPLAY_STORED: &str = "video.json";
 
-/// How long the learning run gets before the replay leaves this disk anyway.
-const LEARNING_RUN_WAIT: Duration = Duration::from_secs(2 * 3600);
+/// Beside a replay still waiting to move to NeboAI storage. It outlives a
+/// restart, so the upload picks up again on the next start.
+const REPLAY_PENDING: &str = "video.pending";
 
-/// Once the learning run finishes, the replay leaves this disk for NeboAI's
-/// storage (the teach-recordings shelf, kept a week there), and the owner
-/// plays it through a short-lived signed link. Not signed in, or the upload
-/// failing, it stays here until the week's sweep.
-async fn offload_replay(state: &AppState, rec: &tools::desktop_session::Finished, session_key: &str) {
-    // The run is queued: wait for it to start, then to finish.
-    let started = tokio::time::Instant::now();
-    while !state.run_registry.is_session_active(session_key).await && started.elapsed() < Duration::from_secs(60) {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+/// How long to wait after the `failures`-th failed upload before the next
+/// try: about 30 s, then 2 min, then 10 min, then hourly. The hub being
+/// down, or not yet serving teach uploads, is waited out.
+fn replay_retry_wait(failures: u32) -> Duration {
+    match failures {
+        0 | 1 => Duration::from_secs(30),
+        2 => Duration::from_secs(2 * 60),
+        3 => Duration::from_secs(10 * 60),
+        _ => Duration::from_secs(3600),
     }
-    while state.run_registry.is_session_active(session_key).await && started.elapsed() < LEARNING_RUN_WAIT {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+}
+
+/// The replays being uploaded now, by session: one upload each, whether the
+/// stop or the start-up resume queued it.
+fn uploading() -> &'static Mutex<std::collections::HashSet<String>> {
+    static UPLOADING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    UPLOADING.get_or_init(Default::default)
+}
+
+/// Move a session's replay to NeboAI storage (the teach-recordings shelf,
+/// kept a week there) as soon as it is made, retrying until the hub takes
+/// it; the owner then plays it through a short-lived signed link. The
+/// pending mark is written first, so a restart resumes it
+/// ([`resume_replay_uploads`]). Should it never land, the week's sweep
+/// takes the local copy.
+fn queue_replay_upload(state: &AppState, id: &str, dir: &std::path::Path) {
+    if let Err(e) = std::fs::write(dir.join(REPLAY_PENDING), b"") {
+        warn!(session = %id, error = %e, "teach: the replay upload could not be marked pending; it will not resume after a restart");
     }
-    let path = rec.dir.join(tools::desktop_session::VIDEO);
-    let Ok(api) = crate::codes::build_api_client(state) else { return };
-    let Ok(bytes) = tokio::fs::read(&path).await else { return };
-    let fields = [("purpose".to_string(), "teach".to_string()), ("session".to_string(), rec.id.clone())];
-    match api.upload_file(tools::desktop_session::VIDEO, "video/mp4", bytes, &fields).await {
-        Ok(stored) => {
-            let record = serde_json::json!({ "fileId": stored.file_id }).to_string();
-            if let Err(e) = tokio::fs::write(rec.dir.join(REPLAY_STORED), record).await {
-                warn!(session = %rec.id, error = %e, "teach: the offloaded replay was not recorded; keeping it here");
-                return;
+    let (state, id, dir) = (state.clone(), id.to_string(), dir.to_path_buf());
+    tokio::spawn(async move {
+        offload_replay(&id, &dir, replay_retry_wait, |bytes| {
+            let (state, id) = (state.clone(), id.clone());
+            async move {
+                let api = crate::codes::build_api_client(&state).map_err(|e| e.to_string())?;
+                let fields = [("purpose".to_string(), "teach".to_string()), ("session".to_string(), id)];
+                api.upload_file(tools::desktop_session::VIDEO, "video/mp4", bytes, &fields)
+                    .await
+                    .map(|stored| stored.file_id)
+                    .map_err(|e| e.to_string())
             }
-            let _ = tokio::fs::remove_file(&path).await;
-            info!(session = %rec.id, "teach: the replay moved to NeboAI storage");
-        }
-        Err(e) => warn!(session = %rec.id, error = %e, "teach: the replay stays on this disk"),
+        })
+        .await;
+    });
+}
+
+/// On start: the replays whose upload a restart cut short go up again.
+pub fn resume_replay_uploads(state: &AppState) {
+    for (id, dir) in pending_replays(&tools::desktop_session::teach_root()) {
+        info!(session = %id, "teach: resuming the replay upload");
+        queue_replay_upload(state, &id, &dir);
     }
+}
+
+/// The sessions under `root` with a replay upload pending.
+fn pending_replays(root: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    let Ok(sessions) = std::fs::read_dir(root) else { return vec![] };
+    sessions
+        .flatten()
+        .map(|s| s.path())
+        .filter(|dir| dir.join(REPLAY_PENDING).exists())
+        .filter_map(|dir| Some((dir.file_name()?.to_string_lossy().into_owned(), dir)))
+        .collect()
+}
+
+/// Upload `dir`'s replay with `upload` (answering the stored file's id)
+/// until it lands, waiting `wait(failures)` after each failure. Once the
+/// hub confirms, its id is recorded and only then is the local copy
+/// deleted, so playback always has one or the other. Ends when there is no
+/// local replay left to move (swept, or already moved).
+async fn offload_replay<W, U, F>(id: &str, dir: &std::path::Path, wait: W, upload: U)
+where
+    W: Fn(u32) -> Duration,
+    U: Fn(Vec<u8>) -> F,
+    F: std::future::Future<Output = Result<String, String>>,
+{
+    struct Uploading(String);
+    impl Drop for Uploading {
+        fn drop(&mut self) {
+            uploading().lock().unwrap_or_else(|p| p.into_inner()).remove(&self.0);
+        }
+    }
+    let key = dir.to_string_lossy().into_owned();
+    if !uploading().lock().unwrap_or_else(|p| p.into_inner()).insert(key.clone()) {
+        return;
+    }
+    let _uploading = Uploading(key);
+    let local = dir.join(tools::desktop_session::VIDEO);
+    let mut failures = 0u32;
+    loop {
+        // Already recorded as stored (a restart between the record and the
+        // delete): the local copy just goes.
+        if dir.join(REPLAY_STORED).exists() {
+            let _ = tokio::fs::remove_file(&local).await;
+            break;
+        }
+        let Ok(bytes) = tokio::fs::read(&local).await else { break };
+        let stored = match upload(bytes).await {
+            Ok(file_id) => {
+                let record = serde_json::json!({ "fileId": file_id }).to_string();
+                tokio::fs::write(dir.join(REPLAY_STORED), record).await.map_err(|e| format!("the stored replay was not recorded: {e}"))
+            }
+            Err(e) => Err(e),
+        };
+        match stored {
+            Ok(()) => {
+                let _ = tokio::fs::remove_file(&local).await;
+                info!(session = %id, "teach: the replay moved to NeboAI storage");
+                break;
+            }
+            Err(e) => {
+                failures += 1;
+                let next = wait(failures);
+                warn!(session = %id, error = %e, failures, retry_in_secs = next.as_secs(), "teach: the replay upload failed; trying again");
+                tokio::time::sleep(next).await;
+            }
+        }
+    }
+    let _ = tokio::fs::remove_file(dir.join(REPLAY_PENDING)).await;
+}
+
+/// Where a session's replay plays from.
+#[derive(Debug, PartialEq)]
+enum ReplayAt {
+    /// Still on this disk.
+    Local(std::path::PathBuf),
+    /// Moved to NeboAI storage: its file id there.
+    Stored(String),
+}
+
+/// Where `dir`'s replay is: this disk while it is here, else NeboAI storage.
+fn replay_at(dir: &std::path::Path) -> Option<ReplayAt> {
+    let local = dir.join(tools::desktop_session::VIDEO);
+    if local.exists() {
+        return Some(ReplayAt::Local(local));
+    }
+    std::fs::read_to_string(dir.join(REPLAY_STORED))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v["fileId"].as_str().map(|id| ReplayAt::Stored(id.to_string())))
 }
 
 /// GET /api/v1/desktop/teach/{id}/video — the owner's replay of a teach
@@ -558,16 +672,17 @@ pub async fn teach_video(
     let Some(dir) = tools::desktop_session::session_dir(&id) else {
         return axum::http::StatusCode::NOT_FOUND.into_response();
     };
-    let local = dir.join(tools::desktop_session::VIDEO);
-    if local.exists() {
-        return crate::handlers::files::stream_file(&local, "video/mp4", request).await;
-    }
-    let stored = std::fs::read_to_string(dir.join(REPLAY_STORED))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|v| v["fileId"].as_str().map(str::to_string));
-    let Some(file_id) = stored else {
-        return axum::http::StatusCode::NOT_FOUND.into_response();
+    let file_id = match replay_at(&dir) {
+        Some(ReplayAt::Local(local)) => {
+            let played = crate::handlers::files::stream_file(&local, "video/mp4", request).await;
+            // Moved away between the look and the read: the link has it.
+            match (played.status() == axum::http::StatusCode::NOT_FOUND, replay_at(&dir)) {
+                (true, Some(ReplayAt::Stored(file_id))) => file_id,
+                _ => return played,
+            }
+        }
+        Some(ReplayAt::Stored(file_id)) => file_id,
+        None => return axum::http::StatusCode::NOT_FOUND.into_response(),
     };
     let link = match crate::codes::build_api_client(&state) {
         Ok(api) => api.file_link(&file_id).await,
@@ -854,6 +969,138 @@ mod tests {
         assert!(!narrate.contains("info!") && !narrate.contains("warn!") && !narrate.contains("debug!"));
         let deleted = &learn[learn.find("let _ = tokio::fs::remove_file(path)").unwrap() - 120..];
         assert!(deleted.contains("transcribed") && deleted.contains("replay.is_some()"), "the raw audio leaves once transcribed and muxed");
+    }
+
+    /// A teach session folder with a replay in it, under a fresh root.
+    fn session_with_replay() -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("teach-replays-{}", uuid::Uuid::new_v4()));
+        let dir = root.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(tools::desktop_session::VIDEO), b"replay").unwrap();
+        (root, dir)
+    }
+
+    /// The replay's upload is queued the moment it is muxed, before the
+    /// learning run is even dispatched; nothing waits on the run.
+    #[test]
+    fn the_replay_upload_starts_on_stop_not_after_the_learning_run() {
+        let src = include_str!("desktop.rs");
+        let learn = &src[src.find("async fn learn(").unwrap()..];
+        let learn = &learn[..learn.find("\n}\n").unwrap()];
+        let muxed = learn.find("finish_video(").unwrap();
+        let queued = learn.find("queue_replay_upload(state").unwrap();
+        assert!(muxed < queued, "queued once the replay is muxed");
+        assert!(queued < learn.find("narrate(state").unwrap(), "before the narration is transcribed");
+        assert!(queued < learn.find("run_chat(").unwrap(), "before the learning run");
+        assert!(!learn.contains("is_session_active"), "the upload never waits for the learning run");
+        let offload = &src[src.find("async fn offload_replay<").unwrap()..];
+        let offload = &offload[..offload.find("\n}\n").unwrap()];
+        assert!(!offload.contains("run_registry"), "the upload never waits for the learning run");
+    }
+
+    /// About 30 s, then 2 min, then 10 min, then hourly.
+    #[test]
+    fn a_failed_replay_upload_backs_off_to_hourly() {
+        let waits: Vec<u64> = (1..=6).map(|n| replay_retry_wait(n).as_secs()).collect();
+        assert_eq!(waits, [30, 120, 600, 3600, 3600, 3600]);
+    }
+
+    /// A failed upload is tried again until the hub takes it; once it
+    /// confirms, the file id is recorded, the local copy is deleted and the
+    /// upload is no longer pending.
+    #[tokio::test]
+    async fn a_failed_replay_upload_is_retried_and_the_local_copy_goes_on_confirm() {
+        let (root, dir) = session_with_replay();
+        std::fs::write(dir.join(REPLAY_PENDING), b"").unwrap();
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        let waited = Mutex::new(Vec::new());
+        offload_replay(
+            "s1",
+            &dir,
+            |n| {
+                waited.lock().unwrap().push(n);
+                Duration::ZERO
+            },
+            |bytes| {
+                let n = tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    assert_eq!(bytes, b"replay");
+                    if n < 2 { Err("hub down".to_string()) } else { Ok("file-1".to_string()) }
+                }
+            },
+        )
+        .await;
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(*waited.lock().unwrap(), [1, 2]);
+        assert!(!dir.join(tools::desktop_session::VIDEO).exists(), "the local copy is deleted once stored");
+        assert!(!dir.join(REPLAY_PENDING).exists(), "no longer pending");
+        assert_eq!(replay_at(&dir), Some(ReplayAt::Stored("file-1".into())));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A restart finds the uploads it cut short by their pending mark and
+    /// finishes them; one recorded as stored just drops its local copy.
+    #[tokio::test]
+    async fn a_pending_replay_upload_resumes_after_a_restart() {
+        let (root, dir) = session_with_replay();
+        let done = root.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&done).unwrap();
+        std::fs::write(done.join(tools::desktop_session::VIDEO), b"replay").unwrap();
+        assert!(pending_replays(&root).is_empty(), "nothing pending yet");
+        std::fs::write(dir.join(REPLAY_PENDING), b"").unwrap();
+        std::fs::write(done.join(REPLAY_PENDING), b"").unwrap();
+        std::fs::write(done.join(REPLAY_STORED), r#"{"fileId":"file-0"}"#).unwrap();
+        let mut pending = pending_replays(&root);
+        pending.sort();
+        assert_eq!(pending.len(), 2);
+        let uploads = std::sync::atomic::AtomicU32::new(0);
+        for (id, d) in pending {
+            offload_replay(&id, &d, |_| Duration::ZERO, |_| {
+                uploads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { Ok("file-2".to_string()) }
+            })
+            .await;
+        }
+        assert_eq!(uploads.load(std::sync::atomic::Ordering::SeqCst), 1, "only the one never stored is uploaded");
+        assert_eq!(replay_at(&dir), Some(ReplayAt::Stored("file-2".into())));
+        assert_eq!(replay_at(&done), Some(ReplayAt::Stored("file-0".into())));
+        assert!(!done.join(tools::desktop_session::VIDEO).exists());
+        assert!(pending_replays(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Playback is from this disk while the replay is here and from the
+    /// stored file once it moved, with no moment where it is neither.
+    #[tokio::test]
+    async fn playback_switches_from_the_local_copy_to_the_stored_link() {
+        let (root, dir) = session_with_replay();
+        let local = dir.join(tools::desktop_session::VIDEO);
+        assert_eq!(replay_at(&dir), Some(ReplayAt::Local(local.clone())));
+        let seen = Mutex::new(Vec::new());
+        offload_replay("s1", &dir, |_| Duration::ZERO, |_| {
+            // While the hub takes it, the local copy still plays.
+            seen.lock().unwrap().push(replay_at(&dir));
+            async { Ok("file-3".to_string()) }
+        })
+        .await;
+        assert_eq!(*seen.lock().unwrap(), [Some(ReplayAt::Local(local))]);
+        assert_eq!(replay_at(&dir), Some(ReplayAt::Stored("file-3".into())));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A replay swept before it ever landed ends the retrying.
+    #[tokio::test]
+    async fn a_swept_replay_ends_its_upload() {
+        let (root, dir) = session_with_replay();
+        std::fs::write(dir.join(REPLAY_PENDING), b"").unwrap();
+        offload_replay("s1", &dir, |_| Duration::ZERO, |_| {
+            let _ = std::fs::remove_file(dir.join(tools::desktop_session::VIDEO));
+            async { Err("hub down".to_string()) }
+        })
+        .await;
+        assert_eq!(replay_at(&dir), None);
+        assert!(!dir.join(REPLAY_PENDING).exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Every step is found again through its locator chain and checked
