@@ -82,13 +82,9 @@ impl DynTool for RequestPermissionTool {
         CallEffects { widens: true, ..CallEffects::unknown() }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let p = permission(input);
         format!("have \u{201c}{}\u{201d} turned back on", named(p))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("\u{201c}{}\u{201d} is on again", named(permission(input)))
     }
 
     fn execute_dyn<'a>(

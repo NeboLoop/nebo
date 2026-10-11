@@ -506,12 +506,21 @@
 			"fetch": "Завантаження",
 			"request": "Запит",
 			"browser": "Браузер",
+			"computer": "Комп’ютер",
 			"research": "Дослідження",
 			"helper": "Помічник",
 			"task": "Завдання",
 			"fileCount": "{count, plural, one {# файл} few {# файли} many {# файлів} other {# файлу}}",
 			"resultCount": "{count, plural, one {# результат} few {# результати} many {# результатів} other {# результату}}",
-			"failedCount": "Помилок: {count}"
+			"failedCount": "Помилок: {count}",
+			"reach": {
+				"screen": "Знімок екрана",
+				"microphone": "Запис із мікрофона",
+				"camera": "Знімок камерою",
+				"input": "Керування мишею та клавіатурою",
+				"app": "Керування {app}",
+				"apps": "Керування застосунками"
+			}
 		},
 		"callVerb": {
 			"create": "Створити",

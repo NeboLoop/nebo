@@ -506,12 +506,21 @@
 			"fetch": "가져오기",
 			"request": "요청",
 			"browser": "브라우저",
+			"computer": "컴퓨터",
 			"research": "리서치",
 			"helper": "도우미",
 			"task": "작업",
 			"fileCount": "{count, plural, other {파일 #개}}",
 			"resultCount": "{count, plural, other {결과 #개}}",
-			"failedCount": "{count}개 실패"
+			"failedCount": "{count}개 실패",
+			"reach": {
+				"screen": "화면 캡처 중",
+				"microphone": "마이크로 녹음 중",
+				"camera": "카메라로 촬영 중",
+				"input": "마우스와 키보드 제어 중",
+				"app": "{app} 제어 중",
+				"apps": "앱 제어 중"
+			}
 		},
 		"callVerb": {
 			"create": "만들기",

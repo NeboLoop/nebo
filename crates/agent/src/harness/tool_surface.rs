@@ -463,7 +463,6 @@ mod tests {
             is_error: false,
             image_url: None,
             payload: None,
-            outcome: None,
             duration_ms: None,
             loaded_tools: defs.iter().map(function_entry).collect(),
         };

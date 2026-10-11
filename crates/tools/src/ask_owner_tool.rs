@@ -233,12 +233,8 @@ impl DynTool for AskOwnerTool {
         Ok(())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "asking you".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Asked you".to_string()
     }
 
     fn execute_dyn<'a>(

@@ -3,12 +3,12 @@ import { isThinking, latestThought } from './progress';
 
 describe('isThinking', () => {
 	it('is true while the conversation’s run has no call running', () => {
-		const runs = [{ sessionKey: 'agent:ops:web', currentTool: '', activity: '' }];
+		const runs = [{ sessionKey: 'agent:ops:web', currentTool: '', call: null }];
 		expect(isThinking(runs, 'agent:ops:web')).toBe(true);
 	});
 
-	it('is false while a call runs: the call’s own label is the status', () => {
-		const runs = [{ sessionKey: 'agent:ops:web', currentTool: 'read', activity: 'Reading notes.md' }];
+	it('is false while a call runs: the call is the status', () => {
+		const runs = [{ sessionKey: 'agent:ops:web', currentTool: 'read', call: { kind: 'read', params: { path: 'notes.md' } } }];
 		expect(isThinking(runs, 'agent:ops:web')).toBe(false);
 	});
 

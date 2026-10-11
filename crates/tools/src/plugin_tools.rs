@@ -344,12 +344,8 @@ impl DynTool for PluginCliTool {
         ))
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
+    fn describe(&self, input: &serde_json::Value) -> String {
         display(input).unwrap_or_else(|| format!("using {}", self.service))
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        display(input).unwrap_or_else(|| format!("Used {}", self.service))
     }
 
     /// A file on this result is one the plugin made for the owner (its
@@ -489,12 +485,8 @@ impl DynTool for FindPluginsTool {
         false
     }
 
-    fn activity(&self, _input: &serde_json::Value) -> String {
+    fn describe(&self, _input: &serde_json::Value) -> String {
         "browsing the marketplace".to_string()
-    }
-
-    fn outcome(&self, _input: &serde_json::Value) -> String {
-        "Browsed the marketplace".to_string()
     }
 
     fn execute_dyn<'a>(
@@ -804,13 +796,13 @@ triggers:
         // An explicit command wins; args stay flags.
         let kept = serde_json::json!({"command": "query run", "args": {"command": "x", "query": "SELECT 1"}});
         assert_eq!(tool.normalize_input(kept.clone()), kept);
-        // The owner reads the service's name, or the model's own sentence.
+        // The call reads as the service's name, or the model's own sentence.
         assert_eq!(
-            tool.activity(&serde_json::json!({"command": "doctor"})),
+            tool.describe(&serde_json::json!({"command": "doctor"})),
             "using Ledgerly"
         );
         assert_eq!(
-            tool.outcome(&serde_json::json!({"display": "Send invoice 1041"})),
+            tool.describe(&serde_json::json!({"display": "Send invoice 1041"})),
             "Send invoice 1041"
         );
         assert_eq!(tool.rule_key(&serde_json::json!({})), "plugin__ledgerly");

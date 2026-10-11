@@ -3744,7 +3744,7 @@ async fn the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_
     let bo_seat = format!("agent:{bo}:coworker:team:{TEAM}");
     let working = until_working(&nebo, TEAM, "Bo at work, and Ann's helper on its tool step", |w| {
         let bo_working = w.iter().any(|e| e["kind"] == "member" && e["agentId"] == bo.as_str());
-        let helper = w.iter().any(|e| e["kind"] == "helper" && e["activity"].as_str().is_some_and(|a| !a.is_empty()));
+        let helper = w.iter().any(|e| e["kind"] == "helper" && e["call"]["kind"].is_string());
         let ann_done = !w.iter().any(|e| e["kind"] == "member" && e["agentId"] == ann.as_str());
         bo_working && helper && ann_done
     })

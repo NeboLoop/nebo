@@ -1205,4 +1205,60 @@ Two leads.', NULL, 3),
         assert_eq!(timers.iter().filter(|e| e.target_id == wait.id.to_string()).count(), 1, "the reminder is the wait's timer");
         assert!(store.engine_get_run("old-1").unwrap().is_none(), "a settled ask waits on nothing");
     }
+
+    /// Every stored reply with calls leaves 0220 in the one shape the
+    /// thread reads: calls kept only in metadata move to `tool_calls` with
+    /// their outputs on a `tool` row; a reply with no block order gets one
+    /// (text, a note, then the calls); a text block beside calls with no
+    /// verdict reads as the note it was. A reply already in shape is left
+    /// as it is.
+    #[test]
+    fn stored_calls_take_one_shape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("calls.db")).unwrap();
+        run_migrations_to(&conn, 219).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title) VALUES ('c', 'C');
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
+                ('old', 'c', 'assistant', 'Reading it.', '{"toolCalls":[{"id":"t1","name":"read_file","input":"{\"path\":\"/a/b.txt\"}","status":"error","output":"no such file"}],"artifacts":["x"]}', 1);
+             INSERT INTO chat_messages (id, chat_id, role, content, tool_calls, created_at) VALUES
+                ('bare', 'c', 'assistant', 'Two things.', '[{"id":"t2","name":"a","input":{}},{"id":"t3","name":"b","input":{}}]', 2),
+                ('quiet', 'c', 'assistant', '', '[{"id":"t4","name":"a","input":{}}]', 3);
+             INSERT INTO chat_messages (id, chat_id, role, content, tool_calls, metadata, created_at) VALUES
+                ('early', 'c', 'assistant', 'Checking.', '[{"id":"t5","name":"a","input":{}}]', '{"contentBlocks":[{"type":"text"},{"type":"tool","toolCallIndex":0}],"heardThrough":"m1"}', 4),
+                ('now', 'c', 'assistant', 'Again.', '[{"id":"t6","name":"a","input":{}}]', '{"contentBlocks":[{"type":"tool","toolCallIndex":0},{"type":"text","fold":"folded"}]}', 5);"#,
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let get = |id: &str, col: &str| -> serde_json::Value {
+            let raw: Option<String> = conn
+                .query_row(&format!("SELECT {col} FROM chat_messages WHERE id = ?1"), [id], |r| r.get(0))
+                .unwrap();
+            serde_json::from_str(raw.as_deref().unwrap_or("null")).unwrap()
+        };
+        assert_eq!(get("old", "tool_calls"), serde_json::json!([{"id": "t1", "name": "read_file", "input": {"path": "/a/b.txt"}}]));
+        assert_eq!(
+            get("old", "metadata"),
+            serde_json::json!({"artifacts": ["x"], "contentBlocks": [{"type": "text", "fold": "shown"}, {"type": "tool", "toolCallIndex": 0}]})
+        );
+        assert_eq!(
+            get("old:results", "tool_results"),
+            serde_json::json!([{"tool_call_id": "t1", "content": "no such file", "is_error": true}])
+        );
+        assert_eq!(
+            get("bare", "metadata")["contentBlocks"],
+            serde_json::json!([{"type": "text", "fold": "shown"}, {"type": "tool", "toolCallIndex": 0}, {"type": "tool", "toolCallIndex": 1}])
+        );
+        assert_eq!(get("quiet", "metadata")["contentBlocks"], serde_json::json!([{"type": "tool", "toolCallIndex": 0}]));
+        assert_eq!(
+            get("early", "metadata"),
+            serde_json::json!({"contentBlocks": [{"type": "text", "fold": "shown"}, {"type": "tool", "toolCallIndex": 0}], "heardThrough": "m1"})
+        );
+        assert_eq!(
+            get("now", "metadata"),
+            serde_json::json!({"contentBlocks": [{"type": "tool", "toolCallIndex": 0}, {"type": "text", "fold": "folded"}]})
+        );
+    }
 }

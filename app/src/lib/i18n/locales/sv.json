@@ -506,12 +506,21 @@
 			"fetch": "Hämta",
 			"request": "Begäran",
 			"browser": "Webbläsare",
+			"computer": "Dator",
 			"research": "Research",
 			"helper": "Hjälpare",
 			"task": "Uppgift",
 			"fileCount": "{count, plural, one {# fil} other {# filer}}",
 			"resultCount": "{count, plural, one {# resultat} other {# resultat}}",
-			"failedCount": "{count} misslyckades"
+			"failedCount": "{count} misslyckades",
+			"reach": {
+				"screen": "Fångar din skärm",
+				"microphone": "Spelar in från din mikrofon",
+				"camera": "Tar en bild med din kamera",
+				"input": "Styr din mus och ditt tangentbord",
+				"app": "Styr {app}",
+				"apps": "Styr dina appar"
+			}
 		},
 		"callVerb": {
 			"create": "Skapa",

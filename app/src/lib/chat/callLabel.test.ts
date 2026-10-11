@@ -39,11 +39,25 @@ describe('callLine', () => {
     expect(callLine(tool({ name: 'send_invoice', call: { kind: 'tool', params: { name: 'send invoice', target: 'ACME' } } }), EN)).toMatchObject({ label: 'send invoice', subject: 'ACME' });
   });
 
-  // A row stored before calls had structured names reads by its stored line.
-  it('reads an old row by the line it stored', () => {
-    expect(callLine(tool({ name: 'search_web', outcome: 'Searched the web', request: { queries: ['vat uk'] } }), EN)).toEqual({ label: 'Searched the web', subject: 'vat uk', title: 'vat uk', href: undefined });
-    expect(callLine(tool({ name: 'run_command', outcome: 'Ran `ls`', request: { command: 'ls' } }), EN).subject).toBe('ls');
-    expect(callLine(tool({ name: 'mystery' }), EN).label).toBe('mystery');
+  // A command that watches the owner says so, whatever the model wrote.
+  it('says what of the owner a command touches', () => {
+    const shot = tool({ call: { kind: 'command', params: { command: 'screencapture -x a.png', desc: 'List files', reach: 'screen' } } });
+    expect(callLine(shot, EN)).toMatchObject({ label: 'Capturing your screen', subject: 'screencapture -x a.png' });
+    expect(callLine(shot, JA).label).toBe('画面をキャプチャ中');
+    const app = (a?: string) => tool({ call: { kind: 'command', params: { command: 'osascript x', reach: 'app', ...(a ? { app: a } : {}) } } });
+    expect(callLine(app('Safari'), EN).label).toBe('Controlling Safari');
+    expect(callLine(app(), EN).label).toBe('Controlling your apps');
+  });
+
+  it('names a click and a look at the screen by what they touched', () => {
+    const click = tool({ call: { kind: 'computer', params: { step: 'double_click', target: '(223,900)', app: 'Simulator' } } });
+    expect(callLine(click, EN)).toMatchObject({ label: 'Computer', subject: 'double click · (223,900) · Simulator' });
+  });
+
+  it('reads the line the model wrote for a plugin call', () => {
+    const send = tool({ name: 'quickbooks', call: { kind: 'tool', params: { name: 'quickbooks', target: 'invoice send', desc: 'Send invoice 1041' } } });
+    expect(callLine(send, EN)).toMatchObject({ label: 'quickbooks', subject: 'Send invoice 1041' });
+    expect(callLine(tool({ name: 'mystery_tool' }), EN).label).toBe('mystery tool');
   });
 });
 

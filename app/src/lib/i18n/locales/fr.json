@@ -506,12 +506,21 @@
 			"fetch": "Récupérer",
 			"request": "Requête",
 			"browser": "Navigateur",
+			"computer": "Ordinateur",
 			"research": "Recherche",
 			"helper": "Assistant",
 			"task": "Tâche",
 			"fileCount": "{count, plural, one {# fichier} other {# fichiers}}",
 			"resultCount": "{count, plural, one {# résultat} other {# résultats}}",
-			"failedCount": "{count} en échec"
+			"failedCount": "{count} en échec",
+			"reach": {
+				"screen": "Capture de votre écran",
+				"microphone": "Enregistrement depuis votre micro",
+				"camera": "Photo avec votre caméra",
+				"input": "Contrôle de votre souris et clavier",
+				"app": "Contrôle de {app}",
+				"apps": "Contrôle de vos apps"
+			}
 		},
 		"callVerb": {
 			"create": "Créer",

@@ -506,12 +506,21 @@
 			"fetch": "ดึงข้อมูล",
 			"request": "คำขอ",
 			"browser": "เบราว์เซอร์",
+			"computer": "คอมพิวเตอร์",
 			"research": "ค้นคว้า",
 			"helper": "ผู้ช่วย",
 			"task": "งาน",
 			"fileCount": "{count, plural, other {# ไฟล์}}",
 			"resultCount": "{count, plural, other {# ผลลัพธ์}}",
-			"failedCount": "ล้มเหลว {count}"
+			"failedCount": "ล้มเหลว {count}",
+			"reach": {
+				"screen": "กำลังจับภาพหน้าจอ",
+				"microphone": "กำลังบันทึกจากไมโครโฟน",
+				"camera": "กำลังถ่ายภาพด้วยกล้อง",
+				"input": "กำลังควบคุมเมาส์และคีย์บอร์ด",
+				"app": "กำลังควบคุม {app}",
+				"apps": "กำลังควบคุมแอปของคุณ"
+			}
 		},
 		"callVerb": {
 			"create": "สร้าง",

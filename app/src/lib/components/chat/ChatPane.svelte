@@ -52,7 +52,7 @@
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
-  import { callLine, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
+  import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
   import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
@@ -92,8 +92,6 @@
     request: Record<string, unknown>;
     response: string;
     statusText?: string;
-    label?: string;     // human activity label (gerund), from the start phase
-    outcome?: string;   // past-tense outcome, from the result phase
     /** The call's structured name: its kind worded here, its values verbatim. */
     call?: CallName;
     durationMs?: number;
@@ -1433,7 +1431,7 @@
   }
   /** The turn's notes, prose and activity groups, in order. */
   function blocksOf(segs: AssistantMsg[], keyId: string, ended: boolean): TurnBlock<ToolMsg>[] {
-    return turnBlocks(segs, keyId, shownTools, (tools) => nonCoworkerTools(tools).length > 0, ended);
+    return turnBlocks(segs, keyId, shownTools, ended);
   }
   /** The calls a user sees: every one, failed ones too — a failure is one
    *  red line the reader can open, never a gap in the work. */
@@ -1483,9 +1481,7 @@
     return (tool.toolId && fullOutputs[tool.toolId]) || tool.response;
   }
 
-  // Friendly tool-use display (mirrors the NeboLoop web timeline). The backend
-  // (chat_dispatch.rs humanize_tool_call) supplies `label` (gerund) + `outcome`
-  // (past-tense); these helpers turn them into a doer-flavored work line.
+  // A group's work line: how long its calls took.
   function fmtDuration(ms: number): string {
     return ms < 1000 ? '<1s' : `${Math.round(ms / 1000)}s`;
   }
@@ -2386,7 +2382,7 @@
       <div class="helper-status">
         <span class="loading loading-dots loading-xs"></span>
         <span>{helpers.length === 1
-          ? $t('chat.helperWorking', { values: { what: helpers[0].activity || helpers[0].description } })
+          ? $t('chat.helperWorking', { values: { what: (helpers[0].call ? callWords(helpers[0].call, $t) : helpers[0].activity) || helpers[0].description } })
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
       </div>
     {/if}

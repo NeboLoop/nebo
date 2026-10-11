@@ -1061,19 +1061,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                             if let Some(ref tc) = event.tool_call {
-                                // Humanize once and feed every consumer: the desktop
-                                // broadcast (friendly label), the loop emission, and the
-                                // typing indicator — one tool-naming source of truth.
-                                let activity = spec_tools.labels(&tc.name, &tc.input).await.0;
-                                _run_handle.show_activity(&activity);
+                                // Every screen names the call by its structured name:
+                                // the desktop broadcast, the progress snapshot, the loop.
+                                let call = tools::humanize::call(&tc.name, &tc.input);
+                                _run_handle.show_call(&tc.name, &tc.input);
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
                                         "tool_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
-                                        "label": activity,
-                                        "call": tools::humanize::call(&tc.name, &tc.input),
+                                        "call": call,
                                     ),
                                 );
                                 // Mirror the tool event to the loop so it shows live
@@ -1089,18 +1087,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "start",
                                         &tc.name,
                                         &tc.id,
-                                        activity.clone(),
+                                        String::new(),
                                         Some(request.as_str()),
                                         None,
-                                        None,
+                                        Some(&call),
                                     )
                                     .await;
                                 }
                                 if let Some(ref cm) = comm_manager {
                                     if let Some(ref cr) = comm_reply {
-                                        let _ = cm
-                                            .send_typing(&cr.conversation_id, true, Some(&activity))
-                                            .await;
+                                        let _ = cm.send_typing(&cr.conversation_id, true, None).await;
                                     }
                                 }
                             }
@@ -1116,11 +1112,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .as_ref()
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("");
-                            // Humanize once for both the desktop broadcast and the loop.
-                            let outcome = match event.tool_call.as_ref() {
-                                Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
-                                None => tools::humanize::raw_name(tool_name).1,
-                            };
                             let call = event
                                 .tool_call
                                 .as_ref()
@@ -1136,7 +1127,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "tool_name": tool_name,
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
-                                    "outcome": outcome,
                                     "call": call,
                                     "payload": event.payload,
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
@@ -1189,7 +1179,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     response,
                                     None,
                                     Some(event.error.is_some()),
-                                    Some(outcome),
+                                    call.as_ref(),
                                 )
                                 .await;
                             }
@@ -1242,7 +1232,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
-                                let summary = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                let summary = spec_tools.describe(&tc.name, &tc.input).await;
                                 let request = approvals_origin.stamp(serde_json::json!({
                                     "request_id": tc.id,
                                     "tool": tc.name,
@@ -2785,7 +2775,7 @@ async fn send_comm_tool_activity(
     content: String,
     request: Option<&str>,
     is_error: Option<bool>,
-    outcome: Option<String>,
+    call: Option<&tools::humanize::Call>,
 ) {
     let mut metadata = HashMap::new();
     metadata.insert("phase".to_string(), phase.to_string());
@@ -2800,10 +2790,10 @@ async fn send_comm_tool_activity(
     if let Some(err) = is_error {
         metadata.insert("is_error".to_string(), err.to_string());
     }
-    // The result phase carries the past-tense outcome label — collapsed work
-    // lines report what WAS DONE ("Read a file"), not effort.
-    if let Some(outcome) = outcome {
-        metadata.insert("outcome".to_string(), outcome);
+    // Both phases carry the call's structured name (`tools::humanize::call`,
+    // as JSON in the string map): the loop words it as the local app does.
+    if let Some(call) = call {
+        metadata.insert("call".to_string(), serde_json::to_string(call).unwrap_or_default());
     }
     send_comm_msg(
         cfg,
@@ -2917,7 +2907,6 @@ mod tests {
         let helpers = agent::harness::delegation::Helpers::new(
             store.clone(),
             Arc::new(harness.sessions().clone()),
-            tools,
             Arc::new(harness.clone()),
             None,
             None,

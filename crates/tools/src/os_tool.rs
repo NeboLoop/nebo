@@ -121,11 +121,9 @@ impl OsTool {
         }
     }
 
-    /// An os call's owner-facing lines say WHAT was done. "Checked the
-    /// workspace ×17" hid a model tapping the same point seven times and
-    /// never looking (2026-09-19); the command, the app and the point are what
-    /// the owner needs to see.
-    pub(crate) fn labels(input: &serde_json::Value) -> (String, String) {
+    /// What an os call does, as a sentence: the command, the app and the
+    /// point it touched, never "checking the workspace".
+    pub(crate) fn sentence(input: &serde_json::Value) -> String {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let app = input.get("app").and_then(|v| v.as_str()).unwrap_or("");
         let point = input
@@ -134,7 +132,7 @@ impl OsTool {
             .filter(|a| a.len() == 2)
             .map(|a| format!("({},{})", a[0], a[1]))
             .or_else(|| Some(format!("({},{})", input.get("x")?.as_i64()?, input.get("y")?.as_i64()?)));
-        let labelled = match action {
+        let said = match action {
             "click" | "double_click" | "right_click" => {
                 let what = input
                     .get("ref")
@@ -143,7 +141,7 @@ impl OsTool {
                     .or(point)
                     .unwrap_or_default();
                 let where_ = if app.is_empty() { what } else { format!("{what} in {app}") };
-                Some((format!("clicking {where_}"), format!("Clicked {where_}")))
+                Some(format!("clicking {where_}"))
             }
             "screenshot" | "see" | "capture" => {
                 let what = if !app.is_empty() {
@@ -153,14 +151,13 @@ impl OsTool {
                 } else {
                     "the screen".to_string()
                 };
-                Some((format!("capturing {what}"), format!("Captured {what}")))
+                Some(format!("capturing {what}"))
             }
-            "activate" | "launch" if !app.is_empty() => Some((format!("opening {app}"), format!("Opened {app}"))),
+            "activate" | "launch" if !app.is_empty() => Some(format!("opening {app}")),
             _ => None,
         };
-        labelled.unwrap_or_else(|| crate::humanize::call_labels("os", input))
+        said.unwrap_or_else(|| crate::humanize::sentence("os", input))
     }
-
 
     /// Resolve the effective resource of an os call — THE canonical chain:
     /// explicit non-empty `resource` field → [`Self::infer_resource`] from the
@@ -716,11 +713,9 @@ impl DynTool for OsTool {
         })
     }
 
-
     fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
         Self::normalized(input)
     }
-
 
     fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
         match OsTool::resolved_resource(input) {
@@ -837,12 +832,8 @@ impl DynTool for OsTool {
         )
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        Self::labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        Self::labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        Self::sentence(input)
     }
 
     /// Pre-interface: it settles its own call shapes (see

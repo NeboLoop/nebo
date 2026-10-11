@@ -253,7 +253,6 @@ impl WorkflowTurns {
             is_error: result.is_error,
             image_url: None,
             payload: None,
-            outcome: None,
             duration_ms: None,
             loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
         };

@@ -192,19 +192,11 @@ impl DynTool for OwnerTool {
         Ok(())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         match self.op {
             OwnerOp::Message => "messaging you".to_string(),
             OwnerOp::Notify => "notifying you".to_string(),
             OwnerOp::CheckDnd => "checking Do Not Disturb".to_string(),
-        }
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        match self.op {
-            OwnerOp::Message => "Messaged you".to_string(),
-            OwnerOp::Notify => "Notified you".to_string(),
-            OwnerOp::CheckDnd => "Checked Do Not Disturb".to_string(),
         }
     }
 

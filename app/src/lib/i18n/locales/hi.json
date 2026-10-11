@@ -506,12 +506,21 @@
 			"fetch": "लाएँ",
 			"request": "अनुरोध",
 			"browser": "ब्राउज़र",
+			"computer": "कंप्यूटर",
 			"research": "शोध",
 			"helper": "सहायक",
 			"task": "कार्य",
 			"fileCount": "{count, plural, one {# फ़ाइल} other {# फ़ाइलें}}",
 			"resultCount": "{count, plural, one {# परिणाम} other {# परिणाम}}",
-			"failedCount": "{count} विफल"
+			"failedCount": "{count} विफल",
+			"reach": {
+				"screen": "आपकी स्क्रीन कैप्चर कर रहा है",
+				"microphone": "आपके माइक्रोफ़ोन से रिकॉर्ड कर रहा है",
+				"camera": "आपके कैमरे से फ़ोटो ले रहा है",
+				"input": "आपका माउस और कीबोर्ड नियंत्रित कर रहा है",
+				"app": "{app} नियंत्रित कर रहा है",
+				"apps": "आपके ऐप नियंत्रित कर रहा है"
+			}
 		},
 		"callVerb": {
 			"create": "बनाएँ",

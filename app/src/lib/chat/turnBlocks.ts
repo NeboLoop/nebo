@@ -4,11 +4,10 @@
 // Text between calls is always shown, as a compact note the reader opens
 // (`note`); the answer — the last text, with no calls after it — reads as
 // prose. The server gives each text segment a verdict once a call follows
-// it: `shown` is a note in the thread; `folded` is a word-for-word repeat of
-// text the turn already shows, and sits as a note row inside the group
-// (rows stored before this rule folded more; they read the same way and
-// open the same way). A segment with no verdict is the answer when it ran
-// no calls, and a note when it did (stored before verdicts existed).
+// it, live and stored alike: `shown` is a note in the thread; `folded` is a
+// word-for-word repeat of text the turn already shows, and sits as a note
+// row inside the group. A segment with no verdict has no call after it: the
+// answer.
 
 export type Fold = 'shown' | 'folded';
 
@@ -28,17 +27,14 @@ export type TurnBlock<T> =
   | { kind: 'group'; key: string; steps: TurnStep<T>[]; tools: T[] };
 
 /**
- * The turn's blocks in order. `shown` picks the calls a reader sees;
- * `work` says whether a segment ran calls that belong in a group at all (a
- * coworker send is an event, not work). `ended`: the turn is over — when it
- * ended without an answer, its last note reads as the answer, so a turn
- * always leaves something to read.
+ * The turn's blocks in order. `shown` picks the calls a reader sees.
+ * `ended`: the turn is over — when it ended without an answer, its last
+ * note reads as the answer, so a turn always leaves something to read.
  */
 export function turnBlocks<T>(
   segs: TurnSegment<T>[],
   keyId: string,
   shown: (tools: T[] | undefined) => T[],
-  work: (tools: T[] | undefined) => boolean,
   ended = false,
 ): TurnBlock<T>[] {
   const blocks: TurnBlock<T>[] = [];
@@ -66,9 +62,8 @@ export function turnBlocks<T>(
           g.steps.push({ kind: 'note', key: `${keyId}-n${si}`, lines: [text] });
       } else {
         group = null;
-        const between = seg.fold === 'shown' || work(seg.tools);
         blocks.push(
-          between
+          seg.fold === 'shown'
             ? { kind: 'note', key: `${keyId}-n${si}`, text }
             : { kind: 'prose', key: `${keyId}-p${si}`, text: seg.content },
         );

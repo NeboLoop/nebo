@@ -662,15 +662,15 @@ impl Kind {
         matches!(self, Kind::List | Kind::Members | Kind::Messages)
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let named = |key: &str| input[key].as_str().unwrap_or("").trim().to_string();
         match self {
-            Kind::Create => (format!("creating the {} team", named("name")), format!("Created the {} team", named("name"))),
-            Kind::Update => (format!("updating the {} team", named("team")), format!("Updated the {} team", named("team"))),
-            Kind::List => ("checking the teams".into(), "Checked the teams".into()),
-            Kind::Members => (format!("checking who is on {}", named("team")), format!("Checked who is on {}", named("team"))),
-            Kind::Messages => (format!("reading the {} team", named("team")), format!("Read the {} team", named("team"))),
-            Kind::Stop => (format!("stopping the {} team's work", named("team")), format!("Stopped the {} team's work", named("team"))),
+            Kind::Create => format!("creating the {} team", named("name")),
+            Kind::Update => format!("updating the {} team", named("team")),
+            Kind::List => "checking the teams".into(),
+            Kind::Members => format!("checking who is on {}", named("team")),
+            Kind::Messages => format!("reading the {} team", named("team")),
+            Kind::Stop => format!("stopping the {} team's work", named("team")),
         }
     }
 }
@@ -707,12 +707,8 @@ impl DynTool for TeamTool {
         self.kind.read_only()
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(

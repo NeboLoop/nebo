@@ -785,11 +785,6 @@ async fn run_chat(
                         let _ = std::io::stdout().flush();
                     }
                 }
-                "activity" => {
-                    if let Some(label) = data["label"].as_str() {
-                        eprintln!("[tool] {label}");
-                    }
-                }
                 "chat_error" => {
                     println!();
                     anyhow::bail!(

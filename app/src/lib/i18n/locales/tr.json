@@ -506,12 +506,21 @@
 			"fetch": "Getir",
 			"request": "İstek",
 			"browser": "Tarayıcı",
+			"computer": "Bilgisayar",
 			"research": "Araştırma",
 			"helper": "Yardımcı",
 			"task": "Görev",
 			"fileCount": "{count, plural, one {# dosya} other {# dosya}}",
 			"resultCount": "{count, plural, one {# sonuç} other {# sonuç}}",
-			"failedCount": "{count} başarısız"
+			"failedCount": "{count} başarısız",
+			"reach": {
+				"screen": "Ekranınız kaydediliyor",
+				"microphone": "Mikrofonunuzdan kayıt yapılıyor",
+				"camera": "Kameranızla fotoğraf çekiliyor",
+				"input": "Fare ve klavyeniz denetleniyor",
+				"app": "{app} denetleniyor",
+				"apps": "Uygulamalarınız denetleniyor"
+			}
 		},
 		"callVerb": {
 			"create": "Oluştur",

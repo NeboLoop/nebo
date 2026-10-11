@@ -1,25 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { parseMessages, lastRunError } from './history';
 
-// A tool row carries the outcome and duration the live stream showed; the
-// reloaded timeline must read the same ("Ran shell · <1s"), not fall back to
-// the static "shell: exec" name. Older rows without them still map.
+// A tool row carries its structured name and the duration the live stream
+// showed: the reloaded timeline reads the same as the live one.
 describe('parseMessages', () => {
   const call = { id: 'c1' };
   const base = {
     id: 'a1', role: 'assistant', content: '', createdAt: 0,
     toolCalls: JSON.stringify([call]),
-    metadata: JSON.stringify({ toolCalls: [{ name: 'os', input: { resource: 'shell', action: 'exec', command: 'ls' } }], contentBlocks: [{ type: 'tool', toolCallIndex: 0 }] }),
+    metadata: JSON.stringify({ toolCalls: [{ name: 'os', input: { resource: 'shell', action: 'exec', command: 'ls' }, call: { kind: 'action', params: { verb: 'run', noun: 'shell' } } }], contentBlocks: [{ type: 'tool', toolCallIndex: 0 }] }),
   };
   const result = (extra: Record<string, unknown>) => ({
     id: 't1', role: 'tool', content: '', createdAt: 0,
     toolResults: JSON.stringify([{ tool_call_id: 'c1', content: 'ok', ...extra }]),
   });
 
-  it('carries the persisted outcome and duration onto the tool', () => {
-    const msgs = parseMessages([base, result({ outcome: 'Ran shell', duration_ms: 412 })] as never);
-    const tool = (msgs[0] as { tools?: { outcome?: string; durationMs?: number }[] }).tools?.[0];
-    expect(tool?.outcome).toBe('Ran shell');
+  it('carries the call\'s structured name and its duration onto the tool', () => {
+    const msgs = parseMessages([base, result({ duration_ms: 412 })] as never);
+    const tool = (msgs[0] as { tools?: { call?: unknown; durationMs?: number }[] }).tools?.[0];
+    expect(tool?.call).toEqual({ kind: 'action', params: { verb: 'run', noun: 'shell' } });
     expect(tool?.durationMs).toBe(412);
   });
 
@@ -59,13 +58,6 @@ describe('parseMessages', () => {
     const msgs = parseMessages([base, result({})] as never);
     const tool = (msgs[0] as { tools?: { truncated?: boolean }[] }).tools?.[0];
     expect(tool?.truncated).toBeUndefined();
-  });
-
-  it('maps rows written before outcomes were persisted', () => {
-    const msgs = parseMessages([base, result({})] as never);
-    const tool = (msgs[0] as { tools?: { outcome?: string; label?: string }[] }).tools?.[0];
-    expect(tool?.outcome).toBeUndefined();
-    expect(tool?.label).toBeTruthy();
   });
 });
 

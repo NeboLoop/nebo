@@ -511,7 +511,7 @@ impl DynTool for TaskTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match self.op {
             TaskOp::Create => format!("adding a task: {}", crate::humanize::cap(input["subject"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP)),
             TaskOp::Update => format!("marking a task {}", input["status"].as_str().unwrap_or("")),
@@ -522,20 +522,6 @@ impl DynTool for TaskTool {
             ),
             TaskOp::Assignments => "checking assignments".to_string(),
             TaskOp::Runs => "checking running work".to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match self.op {
-            TaskOp::Create => format!("Added a task: {}", crate::humanize::cap(input["subject"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP)),
-            TaskOp::Update => format!("Marked a task {}", input["status"].as_str().unwrap_or("")),
-            TaskOp::Get | TaskOp::List => "Checked tasks".to_string(),
-            TaskOp::Assign => format!(
-                "Assigned work to {}",
-                input["to"].as_str().unwrap_or("a coworker")
-            ),
-            TaskOp::Assignments => "Checked assignments".to_string(),
-            TaskOp::Runs => "Checked running work".to_string(),
         }
     }
 

@@ -328,21 +328,12 @@ impl DynTool for ResearchTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match self.op {
             ResearchOp::Deep | ResearchOp::Quick => {
                 format!("researching {}", input["query"].as_str().unwrap_or(""))
             }
             ResearchOp::SubmitFindings => "handing back findings".to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match self.op {
-            ResearchOp::Deep | ResearchOp::Quick => {
-                format!("Researched {}", input["query"].as_str().unwrap_or(""))
-            }
-            ResearchOp::SubmitFindings => "Handed back findings".to_string(),
         }
     }
 
