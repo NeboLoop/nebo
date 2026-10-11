@@ -139,16 +139,48 @@ pub async fn generate_session_title(
     user_prompt: &str,
     model: &str,
 ) -> Option<String> {
-    one_line(
+    let line = one_line(
         trace,
         providers,
         model,
         "Generate a 3-7 word title for this conversation. \
-         Output ONLY the title, no quotes, no punctuation at the end.",
+         Output ONLY the title as plain text: no markdown, no quotes, \
+         no punctuation at the end.",
         truncate_str(user_prompt, 300),
         30,
     )
-    .await
+    .await?;
+    plain_title(&line)
+}
+
+/// A title as plain words. The model sometimes answers in markdown
+/// (`**Title**`, often cut before the closing marks by the token cap), and a
+/// title is shown as one plain line everywhere, so the marks come off.
+/// `None` when nothing but marks was written.
+fn plain_title(line: &str) -> Option<String> {
+    let mut s = line.trim();
+    // A heading, quote or list mark at the start.
+    s = s.trim_start_matches('#').trim_start();
+    s = s.strip_prefix("> ").unwrap_or(s);
+    s = s.strip_prefix("- ").unwrap_or(s);
+    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let keep = match c {
+            '*' | '`' => false,
+            '~' => chars.get(i + 1) != Some(&'~') && (i == 0 || chars[i - 1] != '~'),
+            // Inside a word (snake_case) an underscore is a letter.
+            '_' => word(i.checked_sub(1).map(|p| chars[p])) && word(chars.get(i + 1).copied()),
+            _ => true,
+        };
+        if keep {
+            out.push(c);
+        }
+    }
+    let title = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = title.trim_matches(|c| c == '"' || c == '\u{201c}' || c == '\u{201d}').trim();
+    (!title.is_empty()).then(|| title.to_string())
 }
 
 /// One short line written by the cheap model from `text` under
@@ -221,3 +253,28 @@ pub async fn one_line(
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::plain_title;
+
+    #[test]
+    fn a_title_comes_out_as_plain_words() {
+        // Live: bold, cut before its closing stars by the token cap.
+        assert_eq!(plain_title("**Xi Jinping's Name in Chinese Characters").as_deref(), Some("Xi Jinping's Name in Chinese Characters"));
+        assert_eq!(plain_title("**Quarterly Sales Review**").as_deref(), Some("Quarterly Sales Review"));
+        assert_eq!(plain_title("# Trip Planning for Kyoto").as_deref(), Some("Trip Planning for Kyoto"));
+        assert_eq!(plain_title("_Draft_ the `README` update").as_deref(), Some("Draft the README update"));
+        assert_eq!(plain_title("~~Old~~ New Budget").as_deref(), Some("Old New Budget"));
+        assert_eq!(plain_title("\"Weekly Standup Notes\"").as_deref(), Some("Weekly Standup Notes"));
+    }
+
+    #[test]
+    fn ordinary_titles_stay_as_written() {
+        assert_eq!(plain_title("Fix snake_case parser").as_deref(), Some("Fix snake_case parser"));
+        assert_eq!(plain_title("Q3 plan: 10% growth (draft)").as_deref(), Some("Q3 plan: 10% growth (draft)"));
+        assert_eq!(plain_title("Approx ~5 hours of work").as_deref(), Some("Approx ~5 hours of work"));
+        assert_eq!(plain_title("Reunión con el equipo").as_deref(), Some("Reunión con el equipo"));
+        assert_eq!(plain_title("****"), None);
+    }
+}
