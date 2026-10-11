@@ -39,6 +39,8 @@
   import { createClipRecorder, clipClock, CLIP_CAP_MS, type ClipNotice } from '$lib/chat/clipRecorder';
   import { choiceLabel, loadIntelligence, resolve, valueFor, type Effort, type Intelligence } from '$lib/models/speeds';
   import IntelligencePicker from './IntelligencePicker.svelte';
+  import ChatModeSheet from './ChatModeSheet.svelte';
+  import { chatModeName, differs, effective, fromBot, pendingFor, picked, setPending, type ConversationMode } from '$lib/chat/chatMode';
   import * as api from '$lib/api/nebo';
   import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
 
@@ -187,21 +189,48 @@
   // Follow the conversation: opening another thread re-reads its model.
   $effect(() => { void threadId; void agentId; loadModel(); });
 
-  // The + menu's Permission item: the employee's mode, opening its own
-  // Permissions page.
-  let permissionMode = $state('');
-  const permissionModeKey: Record<string, string> = {
-    automatic: 'permissions.modeAutomatic',
-    ask: 'permissions.modeAsk',
-    plan: 'permissions.modePlan',
-    full_access: 'permissions.modeFullAccess',
-  };
+  // ── Which permission mode this conversation runs in ──────────────────
+  // The + menu's Permission item opens the Permission sheet: the four modes
+  // for this one conversation (PUT /chats/:id/permission-mode). The
+  // employee's own setting never changes. Before the first send there is no
+  // conversation yet: the pick waits (`setPending`) and the New chat page
+  // saves it on the conversation it makes before the first message. The
+  // employee's own mode is '' until read (the item stays hidden).
+  let chatMode = $state<ConversationMode>({ mode: '', employeeMode: '' });
+  let modeSheetOpen = $state(false);
   $effect(() => {
-    const id = agentId;
-    permissionMode = '';
+    const id = agentId, chat = threadId;
+    chatMode = { mode: '', employeeMode: '' };
     if (!id) return;
-    api.getAgentPermissions(id).then((p) => { if (id === agentId) permissionMode = p.mode; }).catch(() => {});
+    if (chat) {
+      api.getChatPermissionMode(chat).then((m) => { if (chat === threadId) chatMode = fromBot(m); }).catch(() => {});
+    } else {
+      api.getAgentPermissions(id).then((p) => { if (id === agentId && !threadId) chatMode = { mode: pendingFor(id), employeeMode: p.mode }; }).catch(() => {});
+    }
   });
+  // A mode picked here or on another device: every open composer of this
+  // conversation follows it.
+  $effect(() => {
+    const chat = threadId;
+    if (!chat) return;
+    return getWebSocketClient().on('chat_mode', (data: { chatId?: string; mode?: string | null; employeeMode?: string }) => {
+      if (data?.chatId === chat) chatMode = fromBot(data);
+    });
+  });
+
+  async function pickChatMode(choice: string) {
+    modeSheetOpen = false;
+    const next = picked(chatMode, choice);
+    if (next.mode === chatMode.mode) return;
+    const previous = chatMode;
+    chatMode = next;
+    if (!threadId) { setPending(agentId, next.mode); return; }
+    try {
+      chatMode = fromBot(await api.setChatPermissionMode(threadId, { mode: next.mode || null }));
+    } catch {
+      chatMode = previous;
+    }
+  }
 
   function saveDraft() {
     if (!editor || !draftKey) return;
@@ -867,12 +896,12 @@
                   {$t('chatInput.teachTask')}
                 </button>
               </li>
-              {#if agentId && permissionModeKey[permissionMode]}
+              {#if agentId && chatMode.employeeMode}
                 <li>
-                  <a class="composer-menu-value" href="/{agentId}/settings/permissions" onclick={() => (document.activeElement as HTMLElement | null)?.blur()}>
+                  <button class="composer-menu-value" onclick={() => { modeSheetOpen = true; (document.activeElement as HTMLElement | null)?.blur(); }}>
                     <span>{$t('chatInput.permission')}</span>
-                    <span class="composer-menu-value-text">{$t(permissionModeKey[permissionMode])}</span>
-                  </a>
+                    <span class="composer-menu-value-text">{$t(chatModeName(effective(chatMode)))}</span>
+                  </button>
                 </li>
               {/if}
               <li>
@@ -938,6 +967,10 @@
             {/if}
           </div>
         {/if}
+        {#if differs(chatMode)}
+          <!-- This conversation runs in a mode other than the employee's own. -->
+          <span class="composer-mode-tag" title={$t('chatMode.footnote')}>{$t(chatModeName(chatMode.mode))}</span>
+        {/if}
       </div>
 
       <div class="flex items-center gap-1">
@@ -997,3 +1030,10 @@
     onclose={handleCloseConversation}
   />
 {/if}
+
+<ChatModeSheet
+  open={modeSheetOpen}
+  selected={effective(chatMode)}
+  onpick={pickChatMode}
+  onclose={() => (modeSheetOpen = false)}
+/>

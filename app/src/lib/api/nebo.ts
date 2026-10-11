@@ -881,6 +881,20 @@ export function getChatMessages(id: string, max_chars?: number, before?: string)
 }
 
 /**
+ * @description "Get chat permission mode"
+ */
+export function getChatPermissionMode(id: string) {
+	return webapi.get<components.ChatPermissionMode>(`/api/v1/chats/${id}/permission-mode`)
+}
+
+/**
+ * @description "Set chat permission mode"
+ */
+export function setChatPermissionMode(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.ChatPermissionMode>(`/api/v1/chats/${id}/permission-mode`, req)
+}
+
+/**
  * @description "Pin chat"
  */
 export function pinChat(id: string, req: Record<string, unknown> = {}) {

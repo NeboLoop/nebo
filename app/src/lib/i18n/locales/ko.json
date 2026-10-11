@@ -4287,5 +4287,19 @@
 		"connect": "연결",
 		"disconnect": "연결 해제",
 		"connected": "연결됨"
+	},
+	"chatMode": {
+		"title": "권한",
+		"automatic": "자동",
+		"automaticDesc": "맡은 일을 하고 정말 필요할 때만 물어봅니다",
+		"recommended": "권장",
+		"ask": "먼저 묻기",
+		"askDesc": "무언가를 바꾸는 작업 전에는 항상 물어봅니다",
+		"plan": "계획만",
+		"planDesc": "읽고 계획만 하며 아무것도 바꾸지 않습니다",
+		"fullAccess": "전체 액세스",
+		"fullAccessDesc": "묻도록 설정한 것만 묻습니다. 차단된 도구와 고정 한도는 계속 적용됩니다",
+		"useWithCare": "주의해서 사용",
+		"footnote": "이 대화에만 적용됩니다. 직원의 평소 설정은 그대로 유지됩니다."
 	}
 }

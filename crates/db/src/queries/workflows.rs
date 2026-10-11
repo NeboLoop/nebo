@@ -274,6 +274,31 @@ impl Store {
         Ok(())
     }
 
+    /// Hold a workflow run to `mode`: started from a conversation in a mode
+    /// stricter than its employee's own, every turn of it runs no looser
+    /// (`Grant::narrow`). Written once, before the run's first turn; a
+    /// resumed or relaunched run keeps it.
+    pub fn set_workflow_run_narrow(&self, id: &str, mode: types::permissions::Mode) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE workflow_runs SET permission_mode = ?2 WHERE id = ?1",
+            params![id, mode.as_str()],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The mode a workflow run is held to, if what started it carried one.
+    pub fn workflow_run_narrow(&self, id: &str) -> Result<Option<types::permissions::Mode>, NeboError> {
+        let conn = self.conn()?;
+        let mode: Option<String> = conn
+            .query_row("SELECT permission_mode FROM workflow_runs WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?
+            .flatten();
+        Ok(mode.as_deref().and_then(types::permissions::Mode::parse))
+    }
+
     /// The `provider/model` a run was routed to, once known.
     pub fn workflow_run_model(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;

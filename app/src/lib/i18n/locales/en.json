@@ -4287,5 +4287,19 @@
 		"connect": "Connect",
 		"disconnect": "Disconnect",
 		"connected": "Connected"
+	},
+	"chatMode": {
+		"title": "Permission",
+		"automatic": "Automatic",
+		"automaticDesc": "Does its job and only asks when it really needs you",
+		"recommended": "Recommended",
+		"ask": "Ask first",
+		"askDesc": "Asks before anything that changes something",
+		"plan": "Plan only",
+		"planDesc": "Reads and plans, changes nothing",
+		"fullAccess": "Full access",
+		"fullAccessDesc": "Asks only what you set to ask. Blocked tools and hard limits still apply",
+		"useWithCare": "Use with care",
+		"footnote": "Applies to this conversation. The employee's usual setting stays the same."
 	}
 }

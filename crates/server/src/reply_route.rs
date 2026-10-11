@@ -60,6 +60,12 @@ pub(crate) struct CoworkerRoute {
     /// stored before there was one reads as a colleague's request.
     #[serde(default)]
     pub authority: tools::coworker::Authority,
+    /// The mode the message that started the thread's work carries
+    /// (`CoworkerMessage::narrow`): its turns, the message's and every one
+    /// a notification wakes, run in the employee's own mode no looser than
+    /// it, and what the seat sends on carries it. `None` = its own mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrow: Option<types::permissions::Mode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +214,7 @@ mod tests {
                 team_name: "Floor".into(),
             }),
             authority: tools::coworker::Authority::OwnersRequest { request: "p1".into() },
+            narrow: Some(types::permissions::Mode::Ask),
         });
         let channel = ReplyRoute::Channel {
             channel_ctx: tools::ChannelContext { kind: "slack".into(), channel_id: "C1".into(), thread_ts: Some("1.2".into()) },

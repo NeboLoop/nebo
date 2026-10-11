@@ -13,6 +13,7 @@
   import { createChatController } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { threadIdFromKey, threadKey } from '$lib/chat/sessionKey';
+  import { takePending } from '$lib/chat/chatMode';
   import { uploadFailureMessage, uploadFiles } from '$lib/api/upload';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -65,6 +66,10 @@
         chat.isLoading = false;
         return;
       }
+      // A permission mode picked before the conversation existed is saved on
+      // it before its first message, so the first turn already runs in it.
+      const mode = takePending(agentId);
+      if (mode) await api.setChatPermissionMode(newChatId, { mode });
 
       // Files can't ride sessionStorage, so they upload here and the stash
       // carries what the upload returned. Dropping them sent the first message

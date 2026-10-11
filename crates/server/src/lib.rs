@@ -4813,6 +4813,7 @@ async fn run_webhook_workflow(
             Some(binding_name.to_string()),
             agent_id,
             emit_sources,
+            None,
         )
         .await
     {
@@ -5283,6 +5284,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel: "neboai".to_string(),
             origin: comm_origin(is_personal && !is_outside),
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -5469,6 +5471,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             // says otherwise — enforced in the runner, not by prompt.
             origin: tools::Origin::Visitor,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -5754,6 +5757,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 channel: "neboai".to_string(),
                 origin: comm_origin(is_personal),
                 door: types::permissions::Door::Chat,
+                narrow: None,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -5869,6 +5873,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -6634,6 +6639,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
                 door: types::permissions::Door::Chat,
+                narrow: None,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),

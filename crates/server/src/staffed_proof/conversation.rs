@@ -322,6 +322,7 @@ impl<'a> Rig<'a> {
             channel: LOOP.to_string(),
             origin: Origin::User,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.to_string(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::MAIN.to_string(),
@@ -1943,6 +1944,7 @@ async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
         channel: "slack".to_string(),
         origin: Origin::Comm,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: String::new(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),
@@ -4179,4 +4181,249 @@ async fn pinned_conversations_head_a_paged_list() {
 
     assert_eq!(nebo.put("/chats/no-such-chat/pin", &json!({"pinned": true})).await.0, 404);
     assert_eq!(nebo.get(&format!("/agents/{clerk}/chats?limit=2&cursor=nonsense")).await.0, 400);
+}
+
+/// The modes the script saw, by marker: each `MARK-CM…` word the latest
+/// message a turn was asked names, with the permission mode that turn ran
+/// in (the last "Permission mode: …" row its thread carries). The first
+/// turn asked with a marker is the one recorded: an answer that comes back
+/// to the sender names the marker again, and is not the receiver's turn.
+type ModesSeen = Arc<Mutex<HashMap<String, String>>>;
+
+fn reports_its_mode(seen: ModesSeen) -> Rule {
+    Box::new(move |t| {
+        let asked = t.req.messages.iter().rev().find(|m| m.role == "user" && m.content.contains("MARK-CM"))?;
+        if asked.content.contains(" SAW ") {
+            return Some(Step::say("noted"));
+        }
+        let marker = asked
+            .content
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .find(|w| w.starts_with("MARK-CM"))?
+            .to_string();
+        let mode = t
+            .req
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| m.content.split("Permission mode: ").nth(1).map(|rest| rest.split('.').next().unwrap_or("").to_string()))?;
+        seen.lock().unwrap().entry(marker.clone()).or_insert_with(|| mode.clone());
+        Some(Step::say(format!("{marker} SAW {mode}")))
+    })
+}
+
+async fn mode_seen(rig: &Rig<'_>, seen: &ModesSeen, marker: &str) -> String {
+    rig.until(30, &format!("the turn asked with {marker}"), || seen.lock().unwrap().contains_key(marker)).await;
+    seen.lock().unwrap()[marker].clone()
+}
+
+/// A conversation's own mode (the composer's Permission sheet): its turns
+/// run in the mode the owner picked for it, Plan and Full Access alike, and
+/// in the employee's own mode again once he picks none. The pick is kept on
+/// the bot (a fresh read finds it), every open app is told of it
+/// (`chat_mode`), and the employee's own setting never changes. A turn the
+/// conversation did not start (a heartbeat in the same session) runs in the
+/// employee's own mode, whatever the conversation picked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conversation_runs_in_the_mode_picked_for_it() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof CM Clerk", json!({ "workflows": {} })).await;
+    let seen: ModesSeen = Default::default();
+    let rig = Rig::new(&nebo, vec![reports_its_mode(seen.clone())]).await;
+    let key = format!("agent:{clerk}:web");
+
+    rig.owner_writes(&key, &clerk, None, "MARK-CM0 hello").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM0").await, "Automatic", "no pick: the employee's own");
+    let sessions = nebo.state.harness.sessions();
+    let chat_id = sessions.active_chat_id(&sessions.resolve_session_id_by_key(&key).unwrap());
+    let view = nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await;
+    assert!(view["mode"].is_null(), "{view}");
+    assert_eq!(view["employeeMode"], "automatic", "{view}");
+
+    // Plan, picked for this conversation: every open app hears it.
+    let mut events = nebo.state.hub.subscribe();
+    let put = nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "plan" })).await;
+    assert_eq!((put["mode"].as_str(), put["employeeMode"].as_str()), (Some("plan"), Some("automatic")), "{put}");
+    let told = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(e) = events.recv().await
+                && e.event_type == "chat_mode"
+                && e.payload["chatId"] == chat_id.as_str()
+            {
+                break e.payload;
+            }
+        }
+    })
+    .await
+    .expect("every open app is told of the conversation's mode");
+    assert_eq!(told["mode"], "plan", "{told}");
+    assert_eq!(told["agentId"], clerk.as_str(), "whose conversation: {told}");
+    assert_eq!(nebo.store().get_chat(&chat_id).unwrap().unwrap().permission_mode, Some(types::permissions::Mode::Plan), "kept on the bot");
+    assert_eq!(nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await["mode"], "plan", "a fresh read finds it");
+    rig.owner_writes(&key, &clerk, None, "MARK-CM1 plan this").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM1").await, "Plan");
+
+    // A turn the conversation did not start runs in the employee's own mode.
+    let heartbeat = crate::chat_dispatch::ChatConfig {
+        session_key: key.clone(),
+        prompt: "MARK-CM2 heartbeat".to_string(),
+        user_id: String::new(),
+        channel: "heartbeat".to_string(),
+        origin: Origin::System,
+        door: types::permissions::Door::Heartbeat,
+        narrow: None,
+        agent_id: clerk.clone(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config: None,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+        client_id: None,
+        platform: None,
+        message_id: None,
+    };
+    crate::chat_dispatch::run_chat(&nebo.state, heartbeat).await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM2").await, "Automatic", "unattended work ignores the conversation's mode");
+
+    // Full Access, looser than the employee's own, holds this conversation.
+    nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "full_access" })).await;
+    rig.owner_writes(&key, &clerk, None, "MARK-CM3 go").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM3").await, "Full Access");
+
+    // None picked: the employee's own again. Its own setting never moved.
+    let cleared = nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": null })).await;
+    assert!(cleared["mode"].is_null(), "{cleared}");
+    rig.owner_writes(&key, &clerk, None, "MARK-CM4 back").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM4").await, "Automatic");
+    assert_eq!(nebo.store().permission_mode(&types::permissions::Scope::Employee(clerk.clone())).unwrap(), None);
+
+    assert_eq!(nebo.put(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "anything" })).await.0, 400);
+    assert_eq!(nebo.put("/chats/no-such-chat/permission-mode", &json!({ "mode": "plan" })).await.0, 404);
+}
+
+/// The context of a turn in `agent_id`'s own conversation that carries
+/// `narrow` (what a conversation picked stricter than the employee's own
+/// holds what it starts to: `seat::run_grant`), as the runner hands it to
+/// a tool.
+fn conversation_ctx(nebo: &Nebo, rig: &Rig<'_>, agent_id: &str, narrow: Option<types::permissions::Mode>) -> tools::ToolContext {
+    let key = format!("agent:{agent_id}:web");
+    rig.open_session(&key);
+    let mut grant = agent::harness::permissions::resolve_grant(nebo.store(), agent_id, narrow);
+    grant.narrow = narrow;
+    let mut ctx = tools::ToolContext::new(Origin::User).with_session(key, "s1");
+    ctx.grant = Some(Arc::new(grant));
+    ctx
+}
+
+/// What a conversation starts follows its mode only when it is stricter:
+/// a colleague it hands work to and a team it posts to run in their own
+/// mode narrowed to the conversation's (an Ask conversation holds a Full
+/// Access colleague to Ask), never loosened by it (a Plan colleague stays
+/// in Plan), and in their own mode when the conversation carries nothing.
+/// A workflow run it starts is held to it the same way; a scheduled run of
+/// the same workflow runs in the employee's own mode. (In Ask the owner
+/// allows the hand-off; here an allow rule stands in for his yes. A Plan
+/// conversation starts nothing that changes anything: the hand-off itself
+/// does not run.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
+    use types::permissions::{Effect, Mode, Rule, RuleKey, RuleSource, Scope, Writer};
+    let nebo = session().await;
+    let asker = nebo.hire("Proof CMS Asker", json!({ "workflows": {} })).await;
+    let builder = nebo.hire("Proof CMS Builder", json!({ "workflows": {} })).await;
+    let planner = nebo.hire("Proof CMS Planner", json!({ "workflows": {} })).await;
+    let lead = nebo.hire("Proof CMS Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof CMS Member", json!({ "workflows": {} })).await;
+    let runner = nebo
+        .hire(
+            "Proof CMS Runner",
+            json!({ "workflows": { "mode-check": {
+                "trigger": { "type": "manual" },
+                "activities": [{ "id": "work", "type": "custom", "intent": "MARK-CMW1 report the mode you run in" }]
+            } } }),
+        )
+        .await;
+    for (seat, mode) in [(&builder, Mode::FullAccess), (&planner, Mode::Plan), (&lead, Mode::FullAccess), (&runner, Mode::FullAccess)] {
+        nebo.store().set_permission_mode(&Scope::Employee(seat.clone()), mode).unwrap();
+    }
+    for (seat, tool) in [(&asker, "send_message"), (&runner, "run_workflow")] {
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee(seat.clone()),
+            key: RuleKey::Tool(tool.into()),
+            field: None,
+            effect: Effect::Allow,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        nebo.store().write_permission_rule(&rule, &Writer::Owner).unwrap();
+    }
+    nebo.activate(&runner).await;
+    const TEAM: &str = "proof-team-cms";
+    nebo.store()
+        .create_team(TEAM, "Proof CMS Team", "ship it", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let seen: ModesSeen = Default::default();
+    let rig = Rig::new(&nebo, vec![reports_its_mode(seen.clone())]).await;
+    // A workflow step is its own kind of call (`workflow_activity`).
+    rig.answer_background(reports_its_mode(seen.clone()));
+
+    let send = |ctx: tools::ToolContext, to: &'static str, text: &'static str| {
+        let nebo = &nebo;
+        async move {
+            let sent = nebo.tool(&ctx, "send_message", json!({ "to": to, "message": text })).await;
+            assert!(!sent.is_error, "{}", sent.content);
+        }
+    };
+
+    // A hand-off from an Ask conversation: the Full Access colleague asks.
+    send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Builder", "MARK-CMH1 build it").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH1").await, "Ask");
+    // Nothing carried: the colleague's own mode.
+    send(conversation_ctx(&nebo, &rig, &asker, None), "Proof CMS Builder", "MARK-CMH2 build it").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH2").await, "Full Access");
+    // Never loosened: an Ask conversation leaves a Plan colleague in Plan.
+    send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Planner", "MARK-CMH3 look").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH3").await, "Plan");
+
+    // A team post from an Ask conversation: the Full Access lead asks.
+    send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Team", "MARK-CMT1 ship the page").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMT1").await, "Ask");
+
+    // A workflow run started from an Ask conversation is held to Ask.
+    let ctx = conversation_ctx(&nebo, &rig, &runner, Some(Mode::Ask));
+    let started = nebo.tool(&ctx, "run_workflow", json!({ "workflow": "mode-check" })).await;
+    assert!(!started.is_error, "{}", started.content);
+    let run_id = serde_json::from_str::<Value>(&started.content).unwrap()["runId"].as_str().unwrap().to_string();
+    assert_eq!(nebo.store().workflow_run_narrow(&run_id).unwrap(), Some(Mode::Ask), "the run is held to it");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMW1").await, "Ask", "its step runs in Ask");
+
+    // The same workflow fired by its schedule carries nothing: the
+    // employee's own mode.
+    let scheduled = tools::workflows::WorkflowManager::run(
+        &*nebo.state.workflow_manager,
+        &format!("agent:{runner}:mode-check"),
+        json!({}),
+        "cron",
+        None,
+    )
+    .await
+    .expect("the scheduled run starts");
+    assert_eq!(nebo.store().workflow_run_narrow(&scheduled).unwrap(), None, "nothing scheduled is affected");
 }

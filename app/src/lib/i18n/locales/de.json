@@ -4287,5 +4287,19 @@
 		"connect": "Verbinden",
 		"disconnect": "Trennen",
 		"connected": "Verbunden"
+	},
+	"chatMode": {
+		"title": "Berechtigung",
+		"automatic": "Automatisch",
+		"automaticDesc": "Erledigt seine Arbeit und fragt nur, wenn es Sie wirklich braucht",
+		"recommended": "Empfohlen",
+		"ask": "Erst fragen",
+		"askDesc": "Fragt vor allem, was etwas verändert",
+		"plan": "Nur planen",
+		"planDesc": "Liest und plant, ändert nichts",
+		"fullAccess": "Vollzugriff",
+		"fullAccessDesc": "Fragt nur, was Sie fragen lassen. Gesperrte Tools und feste Grenzen gelten weiterhin",
+		"useWithCare": "Mit Vorsicht verwenden",
+		"footnote": "Gilt für diese Unterhaltung. Die übliche Einstellung des Mitarbeiters bleibt gleich."
 	}
 }

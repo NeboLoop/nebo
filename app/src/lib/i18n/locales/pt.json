@@ -4287,5 +4287,19 @@
 		"connect": "Ligar",
 		"disconnect": "Desligar",
 		"connected": "Ligado"
+	},
+	"chatMode": {
+		"title": "Permissão",
+		"automatic": "Automático",
+		"automaticDesc": "Faz o seu trabalho e só pergunta quando precisa mesmo de si",
+		"recommended": "Recomendado",
+		"ask": "Perguntar primeiro",
+		"askDesc": "Pergunta antes de qualquer coisa que altere algo",
+		"plan": "Só planear",
+		"planDesc": "Lê e planeia, não altera nada",
+		"fullAccess": "Acesso total",
+		"fullAccessDesc": "Só pergunta o que definiu para perguntar. Ferramentas bloqueadas e limites fixos continuam a aplicar-se",
+		"useWithCare": "Usar com cuidado",
+		"footnote": "Aplica-se a esta conversa. A definição habitual do funcionário mantém-se."
 	}
 }

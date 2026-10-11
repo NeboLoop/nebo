@@ -4287,5 +4287,19 @@
 		"connect": "连接",
 		"disconnect": "断开连接",
 		"connected": "已连接"
+	},
+	"chatMode": {
+		"title": "权限",
+		"automatic": "自动",
+		"automaticDesc": "做好本职工作，只在真正需要你时才询问",
+		"recommended": "推荐",
+		"ask": "先询问",
+		"askDesc": "在做任何会改变内容的事之前先询问",
+		"plan": "仅规划",
+		"planDesc": "只阅读和规划，不做任何更改",
+		"fullAccess": "完全访问",
+		"fullAccessDesc": "只询问你设置为需要询问的内容。已屏蔽的工具和硬性限制仍然有效",
+		"useWithCare": "请谨慎使用",
+		"footnote": "仅适用于此对话。员工的常规设置保持不变。"
 	}
 }

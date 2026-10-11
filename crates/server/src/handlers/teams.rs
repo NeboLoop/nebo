@@ -273,6 +273,8 @@ pub async fn send_team_message(
             mention,
             handoff_depth: 0,
             provenance: Vec::new(),
+            // His own post from the team view: no conversation's mode.
+            narrow: None,
             // The owner reads the team thread.
             reply_to: None,
         },

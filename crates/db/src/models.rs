@@ -237,6 +237,10 @@ pub struct Chat {
     /// the top of the employee's list until he unpins it. None = not pinned.
     #[serde(default)]
     pub pinned_at: Option<i64>,
+    /// The permission mode the owner picked for this conversation: its
+    /// turns run in it. None = the employee's own mode.
+    #[serde(default)]
+    pub permission_mode: Option<types::permissions::Mode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

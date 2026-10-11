@@ -1120,6 +1120,24 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Set the permission mode this conversation runs in (`None` = the
+    /// employee's own). Never activity: the conversation keeps its place.
+    /// Returns the row, or `None` when there is no such conversation.
+    pub fn set_chat_permission_mode(
+        &self,
+        id: &str,
+        mode: Option<types::permissions::Mode>,
+    ) -> Result<Option<Chat>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "UPDATE chats SET permission_mode = ?2 WHERE id = ?1 RETURNING *",
+            params![id, mode.map(|m| m.as_str())],
+            row_to_chat,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Chats that were mid-turn when the server stopped: the last message is the user's (or a
     /// tool result) with no assistant reply, and recent enough (`since_epoch`) to be a live
     /// interruption rather than an abandoned thread. Returns (chat_id, session_name). Used at
@@ -1553,6 +1571,10 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         linked_window_tokens: row.get("linked_window_tokens")?,
         linked_turn_at: row.get("linked_turn_at")?,
         pinned_at: row.get("pinned_at")?,
+        permission_mode: row
+            .get::<_, Option<String>>("permission_mode")?
+            .as_deref()
+            .and_then(types::permissions::Mode::parse),
     })
 }
 
@@ -2471,6 +2493,34 @@ mod tests {
     /// through a second pin at its first time, cleared by an unpin, and
     /// never activity — the conversation keeps its place by time. A pin of
     /// a conversation that does not exist pins nothing.
+    /// A conversation's permission mode is kept on its row: it survives the
+    /// bot reopening its database, is never activity, and clearing it hands
+    /// the conversation back to the employee's own mode. A workflow run's
+    /// carried mode is kept on its row the same way.
+    #[test]
+    fn a_conversations_mode_is_kept_on_its_row() {
+        use types::permissions::Mode;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db").to_string_lossy().into_owned();
+        {
+            let store = Store::new(&path).unwrap();
+            store.create_chat_for_session("t1", "agent:nm:thread:t1", "Lease", None).unwrap();
+            set_updated_at(&store, "t1", 1_000);
+            assert_eq!(store.get_chat("t1").unwrap().unwrap().permission_mode, None, "none picked: the employee's own");
+            let set = store.set_chat_permission_mode("t1", Some(Mode::Plan)).unwrap().expect("the row");
+            assert_eq!((set.permission_mode, set.updated_at), (Some(Mode::Plan), 1_000), "not activity");
+            assert!(store.set_chat_permission_mode("missing", Some(Mode::Ask)).unwrap().is_none());
+            store.create_workflow_run("run-1", "agent:nm", "agent", Some("w"), Some("{}"), None, None).unwrap();
+            assert_eq!(store.workflow_run_narrow("run-1").unwrap(), None);
+            store.set_workflow_run_narrow("run-1", Mode::Ask).unwrap();
+        }
+        let reopened = Store::new(&path).unwrap();
+        assert_eq!(reopened.get_chat("t1").unwrap().unwrap().permission_mode, Some(Mode::Plan), "kept across a reopen");
+        assert_eq!(reopened.workflow_run_narrow("run-1").unwrap(), Some(Mode::Ask));
+        let cleared = reopened.set_chat_permission_mode("t1", None).unwrap().unwrap();
+        assert_eq!(cleared.permission_mode, None);
+    }
+
     #[test]
     fn a_pin_is_kept_until_unpinned_and_is_never_activity() {
         let (_dir, store) = store();

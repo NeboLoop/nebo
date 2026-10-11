@@ -305,6 +305,10 @@ pub struct ChatConfig {
     /// The entry this run came through; recorded with every permission
     /// decision.
     pub door: types::permissions::Door,
+    /// The mode the work that started this run holds it to
+    /// (`SeatRequest::narrow`): a hand-off or team post from a conversation
+    /// in a stricter mode. Set by the coworker rail only; `None` otherwise.
+    pub narrow: Option<types::permissions::Mode>,
     pub agent_id: String,
     pub cancel_token: tokio_util::sync::CancellationToken,
     /// Which lane to enqueue on (e.g., lanes::MAIN, lanes::COMM).
@@ -401,6 +405,16 @@ fn chat_model_for_session(harness: &agent::Harness, session_key: &str) -> Option
         .flatten()?
         .model
         .filter(|m| !m.is_empty())
+}
+
+/// The mode the owner picked for one conversation (`chats.permission_mode`),
+/// if he picked one. Resolves the session key to its active chat, as
+/// [`chat_model_for_session`] does, and is read fresh every turn: a change
+/// applies to the conversation's next turn.
+fn chat_mode_for_session(harness: &agent::Harness, session_key: &str) -> Option<types::permissions::Mode> {
+    let session_id = harness.sessions().resolve_session_id_by_key(session_key).ok()?;
+    let chat_id = harness.sessions().active_chat_id(&session_id);
+    harness.store().get_chat(&chat_id).ok().flatten()?.permission_mode
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -552,7 +566,14 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             user_id: config.user_id.clone(),
             origin: config.origin,
             door: config.door.clone(),
-            mode: None,
+            // The owner's own conversation runs in the mode he picked for it
+            // (the employee's own when none). Nothing else reads it: a
+            // schedule, a heartbeat or a workflow comes through its own door.
+            mode: match config.door {
+                types::permissions::Door::Chat => chat_mode_for_session(&state.harness, &config.session_key),
+                _ => None,
+            },
+            narrow: config.narrow,
             ceiling: None,
             cwd: run_cwd(config.cwd.as_deref()),
             seed_taint: config.seed_taint.clone(),
@@ -1868,6 +1889,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         channel: "web".to_string(),
         origin: Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),

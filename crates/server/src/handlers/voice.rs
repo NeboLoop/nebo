@@ -684,6 +684,7 @@ pub(crate) async fn run_delegated_task(
             origin,
             door: types::permissions::Door::Voice,
             mode: None,
+            narrow: None,
             ceiling: None,
             cwd: None,
             seed_taint: Vec::new(),
@@ -3347,6 +3348,7 @@ mod voice_prompt_tests {
             linked_window_tokens: None,
             linked_turn_at: None,
             pinned_at: None,
+            permission_mode: None,
         }
     }
 

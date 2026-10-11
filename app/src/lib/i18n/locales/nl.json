@@ -4287,5 +4287,19 @@
 		"connect": "Verbinden",
 		"disconnect": "Verbinding verbreken",
 		"connected": "Verbonden"
+	},
+	"chatMode": {
+		"title": "Toestemming",
+		"automatic": "Automatisch",
+		"automaticDesc": "Doet zijn werk en vraagt alleen als het je echt nodig heeft",
+		"recommended": "Aanbevolen",
+		"ask": "Eerst vragen",
+		"askDesc": "Vraagt vóór alles wat iets verandert",
+		"plan": "Alleen plannen",
+		"planDesc": "Leest en plant, verandert niets",
+		"fullAccess": "Volledige toegang",
+		"fullAccessDesc": "Vraagt alleen wat je hebt ingesteld om te vragen. Geblokkeerde tools en vaste limieten blijven gelden",
+		"useWithCare": "Voorzichtig gebruiken",
+		"footnote": "Geldt voor dit gesprek. De gewone instelling van de medewerker blijft hetzelfde."
 	}
 }

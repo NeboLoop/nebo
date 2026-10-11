@@ -415,6 +415,7 @@ pub(crate) async fn send_coworker_message(
         sender_depth: msg.handoff_depth,
         team: team.as_ref().map(|t| TeamLeg { team_id: t.id.clone(), team_name: t.name.clone() }),
         authority,
+        narrow: msg.narrow,
     };
     crate::reply_route::set(&state, &thread_key, "", Some(&ReplyRoute::Coworker(route.clone())));
 
@@ -598,8 +599,10 @@ pub(crate) async fn run_in_thread(
         user_id: String::new(),
         channel: COWORKER_CHANNEL.to_string(),
         origin,
-        // The target acts with its own grant; the requester's is never read.
+        // The target acts with its own grant; the requester's is never read,
+        // save the mode the request carries, which only narrows it.
         door,
+        narrow: route.narrow,
         agent_id: route.to_agent_id.clone(),
         cancel_token: cancel_token.clone(),
         lane: types::constants::lanes::COMM.to_string(),
@@ -696,6 +699,9 @@ async fn deliver_reply(
                     mention: Vec::new(),
                     handoff_depth: depth,
                     provenance: provenance.clone(),
+                    // The member's answer asks on (a lead's steps) under
+                    // what its thread carries.
+                    narrow: route.narrow,
                     reply_to: Some(thread_key.to_string()),
                 };
                 if let Err(e) = crate::team::post(state.clone(), post).await {

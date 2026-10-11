@@ -4287,5 +4287,19 @@
 		"connect": "Sambung",
 		"disconnect": "Putuskan",
 		"connected": "Disambungkan"
+	},
+	"chatMode": {
+		"title": "Kebenaran",
+		"automatic": "Automatik",
+		"automaticDesc": "Membuat kerjanya dan hanya bertanya apabila benar-benar memerlukan anda",
+		"recommended": "Disyorkan",
+		"ask": "Tanya dahulu",
+		"askDesc": "Bertanya sebelum apa-apa yang mengubah sesuatu",
+		"plan": "Rancang sahaja",
+		"planDesc": "Membaca dan merancang, tidak mengubah apa-apa",
+		"fullAccess": "Akses penuh",
+		"fullAccessDesc": "Hanya bertanya apa yang anda tetapkan untuk ditanya. Alat yang disekat dan had tetap masih terpakai",
+		"useWithCare": "Gunakan dengan berhati-hati",
+		"footnote": "Terpakai pada perbualan ini. Tetapan biasa pekerja kekal sama."
 	}
 }

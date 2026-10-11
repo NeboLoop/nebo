@@ -367,19 +367,27 @@ impl ActivityLoop for WorkflowTurns {
         });
 
         let cancel = turn.cancel.clone().unwrap_or_default();
+        // A run started from a conversation in a stricter mode is held to
+        // it (its row says so); every other run carries nothing.
+        let narrow = self.harness.store.workflow_run_narrow(&turn.trace.run_id).unwrap_or_else(|e| {
+            warn!(run_id = %turn.trace.run_id, error = %e, "workflow: the mode the run carries is unreadable");
+            None
+        });
         let (objective, instruction) = step_task(turn.workflow_name, turn.activity, turn.step_index, &turn.seed_messages);
         let req = TurnRequest {
             session_key: key,
             // The seed carries the work order.
             input: TurnInput::None,
-            // The activity runs under its employee's own grant, through the
-            // one permission check: an ask parks the run for the owner.
+            // The activity runs under its employee's own grant (no looser
+            // than what the run carries), through the one permission check:
+            // an ask parks the run for the owner.
             seat: SeatRequest {
                 agent_id: turn.agent_id.to_string(),
                 user_id: turn.user_id.to_string(),
                 origin: tools::Origin::Workflow,
                 door: types::permissions::Door::Workflow,
                 mode: None,
+                narrow,
                 ceiling: None,
                 cwd: None,
                 seed_taint: Vec::new(),

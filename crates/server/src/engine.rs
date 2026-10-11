@@ -1813,7 +1813,7 @@ async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     inputs["_relaunch_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "case", binding, &run.agent_id, Vec::new())
+        .run_inline(definition, inputs, "case", binding, &run.agent_id, Vec::new(), None)
         .await
     {
         Ok(_) => info!(run = %run.id, "engine: case turn started"),
@@ -1857,7 +1857,7 @@ async fn resume_after_expert(state: &AppState, run: &EngineRun, event_id: i64, t
     inputs["_relaunch_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "expert", detail, &run.agent_id, Vec::new())
+        .run_inline(definition, inputs, "expert", detail, &run.agent_id, Vec::new(), None)
         .await
     {
         Ok(_) => info!(run = %run.id, event = event_id, "engine: an expert answered or timed out; parked run resumed"),
@@ -1954,7 +1954,7 @@ async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64,
     inputs["_resume_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, Vec::new())
+        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, Vec::new(), None)
         .await
     {
         Ok(_) => info!(run = %run.id, "engine: approval accepted; parked run resumed"),

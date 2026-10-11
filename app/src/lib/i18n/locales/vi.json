@@ -4287,5 +4287,19 @@
 		"connect": "Kết nối",
 		"disconnect": "Ngắt kết nối",
 		"connected": "Đã kết nối"
+	},
+	"chatMode": {
+		"title": "Quyền",
+		"automatic": "Tự động",
+		"automaticDesc": "Làm việc của mình và chỉ hỏi khi thật sự cần bạn",
+		"recommended": "Khuyên dùng",
+		"ask": "Hỏi trước",
+		"askDesc": "Hỏi trước mọi việc làm thay đổi điều gì đó",
+		"plan": "Chỉ lập kế hoạch",
+		"planDesc": "Đọc và lập kế hoạch, không thay đổi gì",
+		"fullAccess": "Toàn quyền",
+		"fullAccessDesc": "Chỉ hỏi những gì bạn đã đặt để hỏi. Công cụ bị chặn và giới hạn cứng vẫn áp dụng",
+		"useWithCare": "Dùng cẩn thận",
+		"footnote": "Áp dụng cho cuộc trò chuyện này. Cài đặt thường lệ của nhân viên vẫn giữ nguyên."
 	}
 }

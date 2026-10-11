@@ -4287,5 +4287,19 @@
 		"connect": "Hubungkan",
 		"disconnect": "Putuskan",
 		"connected": "Terhubung"
+	},
+	"chatMode": {
+		"title": "Izin",
+		"automatic": "Otomatis",
+		"automaticDesc": "Mengerjakan tugasnya dan hanya bertanya saat benar-benar membutuhkan Anda",
+		"recommended": "Disarankan",
+		"ask": "Tanya dulu",
+		"askDesc": "Bertanya sebelum melakukan apa pun yang mengubah sesuatu",
+		"plan": "Hanya rencana",
+		"planDesc": "Membaca dan merencanakan, tidak mengubah apa pun",
+		"fullAccess": "Akses penuh",
+		"fullAccessDesc": "Hanya menanyakan yang Anda atur untuk ditanyakan. Alat yang diblokir dan batas tetap tetap berlaku",
+		"useWithCare": "Gunakan dengan hati-hati",
+		"footnote": "Berlaku untuk percakapan ini. Pengaturan biasa karyawan tetap sama."
 	}
 }

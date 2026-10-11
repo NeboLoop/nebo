@@ -186,6 +186,7 @@ fn scheduled_turn(
             origin: Origin::System,
             door: types::permissions::Door::Schedule,
             mode: None,
+            narrow: None,
             ceiling: None,
             cwd: None,
             seed_taint: Vec::new(),
@@ -488,7 +489,7 @@ async fn execute_workflow_task(
     workflow_id: &str,
 ) -> (bool, String, Option<String>) {
     match manager
-        .run(workflow_id, serde_json::Value::Null, "cron")
+        .run(workflow_id, serde_json::Value::Null, "cron", None)
         .await
     {
         Ok(run_id) => (true, format!("workflow run started: {}", run_id), None),
@@ -595,6 +596,7 @@ pub(crate) async fn execute_agent_workflow_task(
             Some(binding_name.to_string()),
             agent_id,
             emit_sources,
+            None,
         )
         .await
     {

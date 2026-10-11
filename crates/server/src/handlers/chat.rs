@@ -211,6 +211,95 @@ pub struct PinChatRequest {
     pub pinned: bool,
 }
 
+/// GET /api/v1/chats/:id/permission-mode — the mode this conversation runs
+/// in: the one the owner picked for it (`mode`, null when he picked none)
+/// and the employee's own (`employeeMode`), which it runs in otherwise.
+pub async fn get_chat_permission_mode(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<ChatPermissionMode> {
+    let chat = state
+        .store
+        .get_chat(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let view = ChatPermissionMode::of(&state, &chat).map_err(to_error_response)?;
+    Ok(Json(view))
+}
+
+/// PUT /api/v1/chats/:id/permission-mode `{mode}` — pick the mode this one
+/// conversation runs in (`automatic`, `ask`, `plan`, `full_access`), or
+/// null for the employee's own. The employee's own setting is unchanged. A
+/// stricter pick also holds what the conversation starts; a looser one
+/// stays in it. Kept on the bot and told to every open app (`chat_mode`),
+/// so the desktop, the web console and the phone show the same one.
+pub async fn set_chat_permission_mode(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ChatPermissionModeRequest>,
+) -> HandlerResult<ChatPermissionMode> {
+    let mode = match body.mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        None => None,
+        Some(m) => Some(types::permissions::Mode::parse(m).ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(format!(
+                "mode is automatic, ask, plan or full_access, not {m:?}"
+            )))
+        })?),
+    };
+    let chat = state
+        .store
+        .set_chat_permission_mode(&id, mode)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let view = ChatPermissionMode::of(&state, &chat).map_err(to_error_response)?;
+    match serde_json::to_value(&view) {
+        Ok(payload) => state.hub.broadcast("chat_mode", payload),
+        Err(e) => tracing::warn!(error = %e, "chat_mode: event not serialized"),
+    }
+    Ok(Json(view))
+}
+
+/// PUT /api/v1/chats/:id/permission-mode body. `mode`: null (or "") for the
+/// employee's own.
+#[derive(Debug, Deserialize)]
+pub struct ChatPermissionModeRequest {
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// One conversation's permission mode as every app reads it: the GET, the
+/// PUT and the `chat_mode` event alike.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPermissionMode {
+    pub chat_id: String,
+    pub session_key: Option<String>,
+    /// Whose conversation it is.
+    pub agent_id: Option<String>,
+    /// The mode the owner picked for it; null = the employee's own.
+    pub mode: Option<types::permissions::Mode>,
+    /// The employee's own mode (its own, else the company default): what
+    /// the conversation runs in when no mode is picked.
+    pub employee_mode: types::permissions::Mode,
+}
+
+impl ChatPermissionMode {
+    fn of(state: &AppState, chat: &db::models::Chat) -> Result<Self, types::NeboError> {
+        let agent_id = chat
+            .session_name
+            .as_deref()
+            .map(types::keyparser::extract_agent_id)
+            .unwrap_or_default();
+        Ok(Self {
+            chat_id: chat.id.clone(),
+            session_key: chat.session_name.clone(),
+            employee_mode: agent::harness::permissions::rules::mode_of(&state.store, &agent_id)?,
+            agent_id: (!agent_id.is_empty()).then_some(agent_id),
+            mode: chat.permission_mode,
+        })
+    }
+}
+
 /// The ONE way a conversation becomes read: record it, and tell every open
 /// app (`chat_read`), so a dot cleared on the desktop clears on the web
 /// console and the phone too.
