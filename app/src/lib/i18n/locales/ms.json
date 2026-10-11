@@ -347,6 +347,8 @@
 		"watching": "Menonton",
 		"driving": "Mengawal",
 		"startingComputer": "Menghidupkan komputer…",
+		"computerStartFailed": "Komputer tidak dapat dihidupkan. Cuba lagi.",
+		"tryAgain": "Cuba lagi",
 		"computerReconnecting": "Menyambung semula…",
 		"computerUnavailable": "Tiada komputer pada mesin ini",
 		"computerUnavailableHint": "Komputer pekerja berjalan pada pemasangan Linux dan pekerja awan.",

@@ -15,11 +15,14 @@ export function watchesComputer(where: unknown): boolean {
 	return where !== 'local';
 }
 
-/** Whether the one icon offers a choice instead of starting at once: only on
- *  a host bot in Developer mode, where the virtual computer is still
- *  reachable. Everyone else gets the one action. */
-export function offersVirtualComputer(ownScreen: boolean | null, devMode: boolean): boolean {
-	return ownScreen === true && devMode;
+/** Whether the one icon offers a choice (Teach a task, or just open the
+ *  computer) instead of starting a recording at once. A cloud or headless
+ *  bot always does: opening its computer to look at it must never record.
+ *  A host bot does in Developer mode, where its virtual computer is still
+ *  reachable. A host bot otherwise, or one not yet known, gets the one
+ *  action. */
+export function offersComputer(ownScreen: boolean | null, devMode: boolean): boolean {
+	return ownScreen === false || (ownScreen === true && devMode);
 }
 
 /** The settings pane that grants Screen Recording on macOS. */

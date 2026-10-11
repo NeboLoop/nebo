@@ -347,6 +347,8 @@
 		"watching": "يشاهد",
 		"driving": "يقود",
 		"startingComputer": "جارٍ تشغيل الحاسوب…",
+		"computerStartFailed": "تعذّر تشغيل الحاسوب. حاول مرة أخرى.",
+		"tryAgain": "حاول مرة أخرى",
 		"computerReconnecting": "جارٍ إعادة الاتصال…",
 		"computerUnavailable": "لا يوجد حاسوب على هذا الجهاز",
 		"computerUnavailableHint": "يعمل حاسوب الموظف على تثبيتات Linux والموظفين السحابيين.",

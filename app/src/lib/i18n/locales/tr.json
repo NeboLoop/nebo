@@ -347,6 +347,8 @@
 		"watching": "İzliyor",
 		"driving": "Kullanıyor",
 		"startingComputer": "Bilgisayar başlatılıyor…",
+		"computerStartFailed": "Bilgisayar başlatılamadı. Tekrar deneyin.",
+		"tryAgain": "Tekrar dene",
 		"computerReconnecting": "Yeniden bağlanıyor…",
 		"computerUnavailable": "Bu makinede bilgisayar yok",
 		"computerUnavailableHint": "Çalışan bilgisayarı Linux kurulumlarında ve bulut çalışanlarında çalışır.",

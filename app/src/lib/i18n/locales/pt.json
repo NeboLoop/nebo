@@ -347,6 +347,8 @@
 		"watching": "A ver",
 		"driving": "No comando",
 		"startingComputer": "A iniciar o computador…",
+		"computerStartFailed": "Não foi possível iniciar o computador. Tente novamente.",
+		"tryAgain": "Tentar novamente",
 		"computerReconnecting": "A voltar a ligar…",
 		"computerUnavailable": "Sem computador nesta máquina",
 		"computerUnavailableHint": "O computador do funcionário funciona nas instalações Linux e nos funcionários na cloud.",

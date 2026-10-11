@@ -347,6 +347,8 @@
 		"watching": "Sieht zu",
 		"driving": "Steuert",
 		"startingComputer": "Computer wird gestartet…",
+		"computerStartFailed": "Der Computer konnte nicht gestartet werden. Versuche es noch einmal.",
+		"tryAgain": "Erneut versuchen",
 		"computerReconnecting": "Verbindet neu…",
 		"computerUnavailable": "Kein Computer auf diesem Rechner",
 		"computerUnavailableHint": "Der Computer des Mitarbeiters läuft auf Linux-Installationen und bei Cloud-Mitarbeitern.",

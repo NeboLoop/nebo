@@ -347,6 +347,8 @@
 		"watching": "보는 중",
 		"driving": "조작 중",
 		"startingComputer": "컴퓨터를 시작하는 중…",
+		"computerStartFailed": "컴퓨터를 시작할 수 없습니다. 다시 시도하세요.",
+		"tryAgain": "다시 시도",
 		"computerReconnecting": "다시 연결하는 중…",
 		"computerUnavailable": "이 기기에는 컴퓨터가 없습니다",
 		"computerUnavailableHint": "직원의 컴퓨터는 Linux 설치본과 클라우드 직원에서 동작합니다.",

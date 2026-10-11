@@ -95,7 +95,8 @@ fn nice(cmd: &str) -> Command {
     c
 }
 
-/// Start the desktop if it isn't running; idempotent. Returns the VNC port.
+/// Start the desktop if it isn't running; idempotent. Returns the VNC port once
+/// the desktop is all the way up (x11vnc accepting, the browser on screen).
 pub async fn ensure_started() -> Result<u16, String> {
     // In the cloud, the provisioner stamps NEBO_DESKTOP=1 only on pods whose
     // owner enabled the computer — those get the bigger envelope. Without it
@@ -229,7 +230,29 @@ pub async fn ensure_started() -> Result<u16, String> {
         .spawn()
         .map_err(|e| format!("x11vnc failed to start: {e}"))?;
 
-    *guard = Some(Inner { xvfb, session, x11vnc });
+    // Return only once the desktop is all the way up, so a viewer's first
+    // frame is the finished desktop and never a half-drawn one: x11vnc
+    // accepts connections, then the browser window is on screen.
+    let inner = Inner { xvfb, session, x11vnc };
+    if !wait_until(VNC_READY_WAIT, READY_POLL, vnc_accepts).await {
+        stop_inner(inner).await;
+        return Err(format!(
+            "the desktop's screen did not come up within {} seconds",
+            VNC_READY_WAIT.as_secs()
+        ));
+    }
+    if wait_until(BROWSER_READY_WAIT, READY_POLL, browser_window_shown).await {
+        // The window maps a beat before Chromium paints into it.
+        tokio::time::sleep(BROWSER_PAINT_SETTLE).await;
+    } else {
+        // The desktop itself is up and usable from the dock; serve it.
+        warn!(
+            wait_secs = BROWSER_READY_WAIT.as_secs(),
+            "desktop: the browser window did not appear; serving the desktop without it"
+        );
+    }
+
+    *guard = Some(inner);
     ACTIVE.store(true, Ordering::Relaxed);
     info!(display = DISPLAY, "desktop session started");
 
@@ -251,6 +274,49 @@ pub async fn ensure_started() -> Result<u16, String> {
     }
 
     Ok(VNC_PORT)
+}
+
+/// How long x11vnc gets to accept connections after it is spawned.
+const VNC_READY_WAIT: Duration = Duration::from_secs(10);
+/// How long the session gets to put the browser window on screen. Chromium
+/// at `nice 10` on a cold pod is the slowest part of the boot.
+const BROWSER_READY_WAIT: Duration = Duration::from_secs(30);
+const BROWSER_PAINT_SETTLE: Duration = Duration::from_millis(750);
+const READY_POLL: Duration = Duration::from_millis(150);
+
+/// Probe until it answers true, for at most `limit`. True when it did.
+async fn wait_until<F, Fut>(limit: Duration, every: Duration, mut probe: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if probe().await {
+            return true;
+        }
+        if tokio::time::Instant::now() + every > deadline {
+            return false;
+        }
+        tokio::time::sleep(every).await;
+    }
+}
+
+async fn vnc_accepts() -> bool {
+    tokio::net::TcpStream::connect(("127.0.0.1", VNC_PORT)).await.is_ok()
+}
+
+async fn browser_window_shown() -> bool {
+    command::new::<Command>("xdotool", command::Console::Hidden)
+        .args(["search", "--onlyvisible", "--class", "chromium"])
+        .env("DISPLAY", DISPLAY)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 // --- Teach-a-task recording -------------------------------------------------
@@ -695,6 +761,41 @@ async fn stop_inner(mut inner: Inner) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_ready_gate_waits_for_its_probe() {
+        let mut calls = 0;
+        let ready = wait_until(Duration::from_secs(5), Duration::from_millis(5), || {
+            calls += 1;
+            let up = calls >= 4;
+            async move { up }
+        })
+        .await;
+        assert!(ready);
+        assert_eq!(calls, 4, "the gate opens on the first passing probe, not before");
+    }
+
+    #[tokio::test]
+    async fn the_ready_gate_gives_up_at_its_limit() {
+        let started = tokio::time::Instant::now();
+        let ready = wait_until(Duration::from_millis(200), Duration::from_millis(30), || async { false }).await;
+        assert!(!ready);
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(150), "keeps probing until the limit: {waited:?}");
+        assert!(waited < Duration::from_secs(2), "never waits far past the limit: {waited:?}");
+    }
+
+    #[test]
+    fn opening_the_computer_never_starts_a_recording() {
+        // The live view connects through ensure_started alone; recording is
+        // only ever begun by the teach handler.
+        let src = include_str!("desktop_session.rs");
+        let start = src.find("pub async fn ensure_started").unwrap();
+        let end = start + src[start..].find("\n}\n").unwrap();
+        let body = &src[start..end];
+        assert!(!body.contains("set_recording"), "ensure_started must not record");
+        assert!(!body.contains("start_recording"), "ensure_started must not record");
+    }
 
     #[test]
     fn teach_records_locally_by_default_on_a_bot_with_its_own_screen() {

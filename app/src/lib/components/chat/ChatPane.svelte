@@ -10,7 +10,7 @@
   import { historyItems, workspacePathOf, type FileHistoryItem } from '$lib/chat/fileHistory';
   import { kindForExt, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import { locateFileMention } from '$lib/chat/fileMentions';
-  import { watchesComputer, offersVirtualComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
+  import { watchesComputer, offersComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
   import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
@@ -226,8 +226,9 @@
   let teachNeedsPermission = $state(false);
   let teachSeconds = $state(0);
   let teachTimer: ReturnType<typeof setInterval> | null = null;
-  /** On a host bot in Developer mode the icon also offers the virtual computer. */
-  const teachChoice = $derived(offersVirtualComputer($ownScreen, $devMode));
+  /** The icon also offers to just open the computer, in plain view mode:
+   *  always on a cloud bot, and on a host bot in Developer mode. */
+  const teachChoice = $derived(offersComputer($ownScreen, $devMode));
   /** The recording under way is of this computer's own screen. */
   let teachLocal = $state(false);
 
@@ -1564,8 +1565,9 @@
 
 
         <!-- ONE monitor icon: Teach a task. The bot records where it can,
-             its host's own screen or its computer. On a host bot in
-             Developer mode the same icon also offers the virtual computer. -->
+             its host's own screen or its computer. On a cloud bot (and a host
+             bot in Developer mode) the same icon also opens the computer just
+             to look at it: opening never records. -->
         {#if teachChoice && !teachActive}
           <div class="dropdown dropdown-end" data-teach-icon>
             <div
@@ -1579,7 +1581,7 @@
             >{@render computerIcon()}</div>
             <ul class="dropdown-content menu z-[55] mt-1 w-56 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
               <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); teach(); }}>{$t('chatInput.teachTask')}</button></li>
-              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{$t('chat.openVirtualComputer')}</button></li>
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{$ownScreen ? $t('chat.openVirtualComputer') : $t('chat.openComputer')}</button></li>
             </ul>
           </div>
         {:else}
