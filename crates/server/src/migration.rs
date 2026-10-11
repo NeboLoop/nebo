@@ -32,6 +32,35 @@ pub fn migrate_if_needed(data_dir: &Path) {
     info!("migration complete");
 }
 
+/// Marker for [`migrate_models_yaml`].
+const MODELS_YAML_MARKER: &str = ".models-yaml-packs";
+
+/// The owner's models.yaml, rewritten once to what Nebo reads now
+/// (`config::ModelsConfig::upgrade`): a Nebo AI speed chosen as the bot's
+/// default becomes the Nebo AI pack at that level, and the Janus catalog's
+/// old ids are renamed. A file that needs nothing is left untouched.
+pub fn migrate_models_yaml() {
+    let Ok(data_dir) = config::data_dir() else {
+        return;
+    };
+    let marker = data_dir.join(MODELS_YAML_MARKER);
+    if marker.exists() {
+        return;
+    }
+    if let Some(mut cfg) = config::ModelsConfig::load_owned() {
+        if cfg.upgrade() {
+            if let Err(e) = cfg.save() {
+                warn!(error = %e, "models.yaml could not be rewritten; it is tried again at the next start");
+                return;
+            }
+            info!("models.yaml: the bot's default names the Nebo AI pack");
+        }
+    }
+    if let Err(e) = std::fs::write(&marker, "migrated") {
+        warn!(error = %e, "failed to write the models.yaml migration marker");
+    }
+}
+
 /// Move skills from `<data_dir>/skills/` → `<data_dir>/user/skills/`
 fn migrate_skills(data_dir: &Path) {
     let old_skills = data_dir.join("skills");

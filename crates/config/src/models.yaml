@@ -31,14 +31,14 @@ credentials:
 defaults:
   # The catalog's primary model, and the model a provider's connection runs
   # when it names none and this names that provider.
-  # Nebo 1 (Janus gateway) is the default — works out of the box with NeboAI auth.
-  primary: janus/nebo-1
+  # The Nebo AI pack is the default: it works out of the box with NeboAI auth.
+  primary: pack/nebo-ai
 
 # The bot's routes. `general` is the bot's default: a model, or an
 # intelligence pack (pack/<id>). `vision` reads images and video.
 task_routing:
   vision: janus/nebo-1
-  general: janus/nebo-1
+  general: pack/nebo-ai
 
 # Available models by provider
 providers:

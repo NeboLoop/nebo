@@ -221,6 +221,54 @@ impl ModelsConfig {
         })
     }
 
+    /// The owner's file, rewritten once to what Nebo reads now (the server's
+    /// `migration::migrate_models_yaml`): a Nebo AI speed chosen as the
+    /// bot's default (`defaults.primary`, `task_routing.general`) becomes the Nebo AI pack at that level, and the
+    /// Janus catalog's ids lose the `janus/` and `neboai/` prefixes and the
+    /// old `janus` id. True when anything changed.
+    pub fn upgrade(&mut self) -> bool {
+        const SPEED_PACKS: [(&str, &str); 4] = [
+            ("nebo-1", "pack/nebo-ai"),
+            ("nebo-1-flash", "pack/nebo-ai/instant"),
+            ("nebo-1-medium", "pack/nebo-ai/medium"),
+            ("nebo-1-pro", "pack/nebo-ai/high"),
+        ];
+        let mut changed = false;
+        let mut to_pack = |value: &mut String| {
+            let speed = value.trim();
+            let speed = speed.strip_prefix("janus/").unwrap_or(speed);
+            if let Some((_, pack)) = SPEED_PACKS.iter().find(|(s, _)| *s == speed) {
+                *value = pack.to_string();
+                changed = true;
+            }
+        };
+        if let Some(defaults) = self.defaults.as_mut() {
+            to_pack(&mut defaults.primary);
+        }
+        if let Some(tr) = self.task_routing.as_mut() {
+            to_pack(&mut tr.general);
+        }
+        for model in self.providers.get_mut("janus").into_iter().flatten() {
+            let id = model.id.trim_start_matches("janus/").trim_start_matches("neboai/");
+            let id = if id == "janus" { "nebo-1" } else { id };
+            if id != model.id {
+                if model.id == "janus" && model.display_name == "Janus" {
+                    model.display_name = "Nebo 1".to_string();
+                }
+                model.id = id.to_string();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The owner's own models.yaml as it is on disk, if there is one that
+    /// reads.
+    pub fn load_owned() -> Option<Self> {
+        let path = data_dir().ok()?.join(types::constants::files::MODELS_YAML);
+        serde_yaml::from_str(&fs::read_to_string(path).ok()?).ok()
+    }
+
     /// Load models config: try data_dir/models.yaml first, fall back to embedded.
     pub fn load() -> Self {
         // Try user's data directory first
@@ -237,25 +285,6 @@ impl ModelsConfig {
                         if !cfg.providers.contains_key("janus") {
                             if let Some(janus_models) = defaults.providers.get("janus") {
                                 cfg.providers.insert("janus".into(), janus_models.clone());
-                            }
-                        }
-                    }
-
-                    // Migrate janus model IDs: strip legacy prefixes
-                    if let Some(janus_models) = cfg.providers.get_mut("janus") {
-                        for model in janus_models.iter_mut() {
-                            if let Some(stripped) = model.id.strip_prefix("janus/") {
-                                model.id = stripped.to_string();
-                            }
-                            if let Some(stripped) = model.id.strip_prefix("neboai/") {
-                                model.id = stripped.to_string();
-                            }
-                            // Migrate old "janus" model ID to "nebo-1"
-                            if model.id == "janus" {
-                                model.id = "nebo-1".to_string();
-                                if model.display_name == "Janus" {
-                                    model.display_name = "Nebo 1".to_string();
-                                }
                             }
                         }
                     }
@@ -326,5 +355,38 @@ mod tests {
     #[test]
     fn sidecar_model_is_none_for_unknown_provider() {
         assert!(config().sidecar_model("not-a-provider").is_none());
+    }
+
+    /// The one-time rewrite of the owner's file: a speed chosen as the
+    /// bot's default becomes the Nebo AI pack at its level; a pack or any
+    /// other model stays; the Janus catalog's old ids are renamed; a file
+    /// that needs nothing reports no change.
+    #[test]
+    fn upgrade_names_the_nebo_ai_pack_where_a_speed_was_chosen() {
+        let mut cfg: ModelsConfig = serde_yaml::from_str(
+            "defaults:\n  primary: janus/nebo-1\ntask_routing:\n  general: nebo-1-pro\n  aux: janus/nebo-1-flash\nproviders:\n  janus:\n    - id: janus\n      displayName: Janus\n    - id: neboai/nebo-embed-small\n",
+        )
+        .unwrap();
+        assert!(cfg.upgrade());
+        assert_eq!(cfg.defaults.as_ref().unwrap().primary, "pack/nebo-ai");
+        let tr = cfg.task_routing.as_ref().unwrap();
+        assert_eq!(tr.general, "pack/nebo-ai/high");
+        assert_eq!(tr.aux, "janus/nebo-1-flash", "background work is not a choice of the bot's default");
+        let ids: Vec<(&str, &str)> =
+            cfg.providers["janus"].iter().map(|m| (m.id.as_str(), m.display_name.as_str())).collect();
+        assert_eq!(ids, [("nebo-1", "Nebo 1"), ("nebo-embed-small", "")]);
+        assert!(!cfg.upgrade(), "nothing left to change");
+
+        let mut mine: ModelsConfig =
+            serde_yaml::from_str("defaults:\n  primary: pack/abc/low\ntask_routing:\n  general: openai/gpt-5.4\n").unwrap();
+        assert!(!mine.upgrade());
+        assert_eq!(mine.task_routing.unwrap().general, "openai/gpt-5.4");
+    }
+
+    #[test]
+    fn the_bot_ships_on_the_nebo_ai_pack() {
+        let cfg = config();
+        assert_eq!(cfg.defaults.unwrap().primary, "pack/nebo-ai");
+        assert_eq!(cfg.task_routing.unwrap().general, "pack/nebo-ai");
     }
 }

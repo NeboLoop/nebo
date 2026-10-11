@@ -29,16 +29,13 @@ const checks = (out: string) => out.split('data-testid="intel-check"').length - 
 /** The text a reader sees: tags and attribute values gone. */
 const text = (out: string) => out.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 
-// Every state a conversation can be in: '' (Auto), each level, the legacy
-// speeds written both ways, a deleted pack, a raw model, the owner's packs.
+// Every state a conversation can be in: '' (Auto), each level, a deleted
+// pack, a raw model, the owner's packs.
 const STATES = [
 	'',
 	'pack/nebo-ai',
 	'pack/nebo-ai/auto',
 	...['instant', 'low', 'medium', 'high', 'max'].map((l) => `pack/nebo-ai/${l}`),
-	'janus/nebo-1-pro',
-	'nebo-1-pro',
-	'janus/nebo-1',
 	'pack/gone/high',
 	'anthropic/claude-x',
 	'linked/a0b2/codex-3',
@@ -55,12 +52,12 @@ describe('IntelligencePicker', () => {
 		});
 	}
 
-	it('nothing set (or a pack with no level) is Auto, a legacy speed its level', () => {
-		for (const v of ['', 'pack/nebo-ai', 'pack/nebo-ai/auto', 'janus/nebo-1', 'pack/w']) {
+	it('nothing set (or a pack with no level) is Auto', () => {
+		for (const v of ['', 'pack/nebo-ai', 'pack/nebo-ai/auto', 'pack/w']) {
 			expect(html(v, 'level')).toMatch(/data-level="auto"[^>]*aria-pressed="true"/);
 			expect(html(v, 'level')).not.toMatch(/data-level="medium"[^>]*aria-pressed="true"/);
 		}
-		expect(html('janus/nebo-1-pro', 'level')).toMatch(/data-level="high"[^>]*aria-pressed="true"/);
+		expect(html('pack/nebo-ai/high', 'level')).toMatch(/data-level="high"[^>]*aria-pressed="true"/);
 		expect(html('pack/j/medium', 'packs')).toMatch(/data-pack="j"[^>]*aria-pressed="true"/);
 	});
 

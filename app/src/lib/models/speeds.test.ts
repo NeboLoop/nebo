@@ -23,12 +23,7 @@ const packs: PackRow[] = [
 const t = (k: string) => `<${k}>`;
 
 describe('resolve', () => {
-	it('reads the legacy speeds as levels of Nebo AI, written either way', () => {
-		expect(resolve('janus/nebo-1-pro', packs)).toEqual({ pack: 'nebo-ai', level: 'high' });
-		expect(resolve('nebo-1-pro', packs)).toEqual({ pack: 'nebo-ai', level: 'high' });
-		expect(resolve('janus/nebo-1-flash', packs)).toEqual({ pack: 'nebo-ai', level: 'instant' });
-		expect(resolve('nebo-1-medium', packs)).toEqual({ pack: 'nebo-ai', level: 'medium' });
-		expect(resolve('janus/nebo-1', packs)).toEqual({ pack: 'nebo-ai', level: null });
+	it('nothing chosen is Nebo AI on Auto', () => {
 		expect(resolve('', packs)).toEqual({ pack: 'nebo-ai', level: null });
 	});
 
@@ -56,7 +51,7 @@ describe('valueFor', () => {
 	it('clears the override when the pick is what it would inherit', () => {
 		expect(valueFor('nebo-ai', null, '', packs)).toBe('');
 		expect(valueFor('j', 'medium', 'pack/j/medium', packs)).toBe('');
-		expect(valueFor('nebo-ai', 'high', 'janus/nebo-1-pro', packs)).toBe('');
+		expect(valueFor('nebo-ai', 'high', 'pack/nebo-ai/high', packs)).toBe('');
 	});
 });
 
@@ -71,24 +66,22 @@ describe('names', () => {
 	it('the chip: the pack and the level; no level is Auto', () => {
 		expect(shownLevel(resolve('', packs))).toBe('auto');
 		expect(choiceLabel(resolve('', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.auto>');
-		for (const v of ['pack/nebo-ai', 'pack/nebo-ai/auto', 'janus/nebo-1', 'nebo-1']) {
+		for (const v of ['pack/nebo-ai', 'pack/nebo-ai/auto']) {
 			expect(shownLevel(resolve(v, packs))).toBe('auto');
 		}
 		expect(choiceLabel(resolve('pack/w', packs), packs, t)).toBe('Work keys · <settingsPacks.level.auto>');
 		expect(choiceLabel(resolve('pack/nebo-ai/medium', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.medium>');
-		expect(choiceLabel(resolve('nebo-1-pro', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.high>');
+		expect(choiceLabel(resolve('pack/nebo-ai/high', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.high>');
 		expect(choiceLabel(resolve('pack/w/max', packs), packs, t)).toBe('Work keys · <settingsPacks.level.max>');
 		expect(choiceLabel(resolve('pack/j/low', packs), packs, t)).toBe('Janus · <settingsPacks.level.low>');
 		expect(choiceLabel(resolve('anthropic/claude-x', packs), packs, t)).toBe('<modelPick.custom>');
 	});
 
 	it('any stored model string reads without its provider or gateway', () => {
-		expect(modelName('janus/nebo-1-pro', packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.high>');
+		expect(modelName('pack/nebo-ai/high', packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.high>');
 		expect(modelName('linked/1f2e/codex-3', packs, t)).toBe('codex-3');
 		expect(modelName('pack/j/high', packs, t)).toBe('Janus · <settingsPacks.level.high>');
-		for (const v of ['janus/nebo-1', 'janus/nebo-1-flash', 'anthropic@x/claude-y']) {
-			expect(modelName(v, packs, t).toLowerCase()).not.toContain('janus');
-		}
+		expect(modelName('anthropic@x/claude-y', packs, t)).toBe('claude-y');
 	});
 });
 
@@ -147,7 +140,6 @@ describe('loadIntelligence', () => {
 describe('Auto', () => {
 	it('picking Auto sends \'\' when that is what is inherited, else the pack itself', () => {
 		expect(valueFor('nebo-ai', null, '', packs)).toBe('');
-		expect(valueFor('nebo-ai', null, 'janus/nebo-1', packs)).toBe('');
 		expect(valueFor('nebo-ai', null, 'pack/j/medium', packs)).toBe('pack/nebo-ai');
 		expect(valueFor('w', null, '', packs)).toBe('pack/w');
 		expect(valueFor('j', null, 'pack/j', packs)).toBe('');
@@ -194,10 +186,9 @@ describe('selectThenClose', () => {
 	it('the choice already in use closes without a write', () => {
 		for (const [current, pack, level] of [
 			['', 'nebo-ai', null],
-			['janus/nebo-1', 'nebo-ai', null],
 			['pack/j/medium', 'j', 'medium'],
 			['pack/w', 'w', null],
-			['nebo-1-pro', 'nebo-ai', 'high']
+			['pack/nebo-ai/high', 'nebo-ai', 'high']
 		] as const) {
 			const r = run(current, pack, level);
 			expect(r.onpick).not.toHaveBeenCalled();

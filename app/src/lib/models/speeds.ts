@@ -61,14 +61,6 @@ export function isCustom(c: Choice): c is { custom: true } {
 	return 'custom' in c;
 }
 
-/** The legacy Nebo AI speeds, as levels (display only: nothing is rewritten). */
-const LEGACY: Record<string, Effort | null> = {
-	'nebo-1': null,
-	'nebo-1-flash': 'instant',
-	'nebo-1-medium': 'medium',
-	'nebo-1-pro': 'high'
-};
-
 /** What one model string runs on. '' is the built-in pack's Auto. */
 export function resolve(value: string, packs: PackRow[]): Choice {
 	const v = value.trim();
@@ -80,12 +72,6 @@ export function resolve(value: string, packs: PackRow[]): Choice {
 		if (!id || (level && level !== 'auto' && !effort)) return { custom: true };
 		// A deleted pack runs on Nebo AI at the same level (the bot says so).
 		return { pack: known ? id : NEBO_AI_ID, level: effort };
-	}
-	const slash = v.indexOf('/');
-	const provider = slash < 0 ? '' : v.slice(0, slash);
-	const model = slash < 0 ? v : v.slice(slash + 1);
-	if ((provider === '' || provider === 'janus') && model in LEGACY) {
-		return { pack: NEBO_AI_ID, level: LEGACY[model] };
 	}
 	return { custom: true };
 }
@@ -154,8 +140,7 @@ export function choiceLabel(c: Choice, packs: PackRow[], t: Translate): string {
 }
 
 /**
- * Any stored model string as words: a pack or a Nebo AI speed as the chip
- * names it, any other model by its own id without the provider or connection
+ * Any stored model string as words: a pack as the chip names it, any other model by its own id without the provider or connection
  * in front ("anthropic@x/claude-…" → "claude-…").
  */
 export function modelName(value: string, packs: PackRow[], t: Translate): string {

@@ -1544,6 +1544,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // has-active-chat-models gate reads this table — seeding it afterwards
     // left every newly provisioned bot with NO LLM provider until a restart
     // (observed live: providers built at t+0.0s, catalog seeded at t+1.3s).
+    // The owner's models.yaml says the Nebo AI pack where it named a speed
+    // (one-time), before anything reads it.
+    migration::migrate_models_yaml();
     {
         let boot_models_cfg = config::ModelsConfig::load();
         seed_models_from_catalog(&store, &boot_models_cfg);
