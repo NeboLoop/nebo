@@ -596,7 +596,7 @@ pub async fn list_integrations(State(state): State<AppState>) -> HandlerResult<s
     fix_server_type(&state);
     // Shared memory (the Nebo KB) is not a connector: it is wired
     // automatically and managed on the website, so it is never listed.
-    let integrations: Vec<_> = state
+    let integrations: Vec<db::models::McpIntegration> = state
         .store
         .list_mcp_integrations()
         .map_err(to_error_response)?
