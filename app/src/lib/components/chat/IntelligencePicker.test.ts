@@ -104,7 +104,7 @@ describe('IntelligencePicker', () => {
 		expect(out).toContain('Janus · nebo-1-flash');
 		expect(out).toContain(`${en.modelPick.levelDesc.medium} · ${en.modelPick.fromNeboAi}`);
 		expect(out).toContain(en.modelPick.autoCustom);
-		expect(text(html('pack/w', 'level'))).toContain('OpenAI · gpt-6.1 · High effort');
+		expect(text(html('pack/w', 'level'))).toContain('OpenAI · gpt-6.1 · high effort');
 		expect(text(html('pack/w', 'level'))).not.toContain('p1');
 	});
 });

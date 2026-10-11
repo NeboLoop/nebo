@@ -136,21 +136,21 @@ export async function loadIntelligence(): Promise<Intelligence | null> {
 /** A translator, as `$t` is. */
 type Translate = (key: string, options?: { values?: Record<string, string> }) => string;
 
-/** A pack's name on screen: Nebo AI's own; the owner's as he named it ("Custom pack" when unnamed). */
+/** A pack's name on screen: Nebo AI's own; the owner's exactly as he named it. */
 export function packName(p: PackRow, t: Translate): string {
 	if (p.builtIn) return t('modelPick.neboAi');
-	return p.name.trim() || t('modelPick.customPack');
+	return p.name;
 }
 
 /**
- * The composer chip: the level ("Auto", "Medium"), after the pack's name only when it
- * is not Nebo AI ("Work keys · High"); "Custom" for a raw model.
+ * The composer chip: the pack's name and the level ("Nebo AI · Auto",
+ * "Work keys · High"); "Custom" for a raw model.
  */
 export function choiceLabel(c: Choice, packs: PackRow[], t: Translate): string {
 	if (isCustom(c)) return t('modelPick.custom');
 	const level = t(`settingsPacks.level.${shownLevel(c)}`);
 	const pack = packs.find((p) => p.id === c.pack);
-	return pack && !pack.builtIn ? `${packName(pack, t)} · ${level}` : level;
+	return `${pack ? packName(pack, t) : t('modelPick.neboAi')} · ${level}`;
 }
 
 /**
@@ -234,7 +234,7 @@ export function levelSubtitle(
 	const line = runsOnLine(value, choices);
 	return {
 		text: effort
-			? `${line} · ${t('settingsPacks.withEffort', { values: { effort: t(`settingsPacks.level.${effort}`) } })}`
+			? `${line} · ${t('settingsPacks.withEffort', { values: { effort: t(`settingsPacks.level.${effort}`).toLocaleLowerCase() } })}`
 			: line,
 		muted: false
 	};

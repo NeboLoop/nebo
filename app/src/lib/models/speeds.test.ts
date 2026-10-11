@@ -61,29 +61,29 @@ describe('valueFor', () => {
 });
 
 describe('names', () => {
-	it('an owner\'s pack reads as he named it; only an empty name is "Custom pack"', () => {
+	it('an owner\'s pack reads exactly as he named it', () => {
 		expect(packName(packs[1], t)).toBe('Janus');
 		expect(packName(packs[0], t)).toBe('<modelPick.neboAi>');
 		expect(packName(packs[2], t)).toBe('Work keys');
-		expect(packName({ id: 'x', name: '  ', builtIn: false }, t)).toBe('<modelPick.customPack>');
+		expect(packName({ id: 'x', name: ' my pack ', builtIn: false }, t)).toBe(' my pack ');
 	});
 
-	it('the chip: no level is Auto; a pack name only for the owner\'s own packs', () => {
+	it('the chip: the pack and the level; no level is Auto', () => {
 		expect(shownLevel(resolve('', packs))).toBe('auto');
-		expect(choiceLabel(resolve('', packs), packs, t)).toBe('<settingsPacks.level.auto>');
+		expect(choiceLabel(resolve('', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.auto>');
 		for (const v of ['pack/nebo-ai', 'pack/nebo-ai/auto', 'janus/nebo-1', 'nebo-1']) {
 			expect(shownLevel(resolve(v, packs))).toBe('auto');
 		}
 		expect(choiceLabel(resolve('pack/w', packs), packs, t)).toBe('Work keys · <settingsPacks.level.auto>');
-		expect(choiceLabel(resolve('pack/nebo-ai/medium', packs), packs, t)).toBe('<settingsPacks.level.medium>');
-		expect(choiceLabel(resolve('nebo-1-pro', packs), packs, t)).toBe('<settingsPacks.level.high>');
+		expect(choiceLabel(resolve('pack/nebo-ai/medium', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.medium>');
+		expect(choiceLabel(resolve('nebo-1-pro', packs), packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.high>');
 		expect(choiceLabel(resolve('pack/w/max', packs), packs, t)).toBe('Work keys · <settingsPacks.level.max>');
 		expect(choiceLabel(resolve('pack/j/low', packs), packs, t)).toBe('Janus · <settingsPacks.level.low>');
 		expect(choiceLabel(resolve('anthropic/claude-x', packs), packs, t)).toBe('<modelPick.custom>');
 	});
 
 	it('any stored model string reads without its provider or gateway', () => {
-		expect(modelName('janus/nebo-1-pro', packs, t)).toBe('<settingsPacks.level.high>');
+		expect(modelName('janus/nebo-1-pro', packs, t)).toBe('<modelPick.neboAi> · <settingsPacks.level.high>');
 		expect(modelName('linked/1f2e/codex-3', packs, t)).toBe('codex-3');
 		expect(modelName('pack/j/high', packs, t)).toBe('Janus · <settingsPacks.level.high>');
 		for (const v of ['janus/nebo-1', 'janus/nebo-1-flash', 'anthropic@x/claude-y']) {
