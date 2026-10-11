@@ -1,83 +1,96 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { writable } from 'svelte/store';
+import { describe, expect, it, vi } from 'vitest';
 
-const dev = writable(false);
-vi.mock('$lib/stores/devmode', () => ({ devMode: dev, loadDevMode: async () => {} }));
 vi.mock('$lib/api/nebo', () => ({
-	// The catalog as the DB once returned it: by name.
-	listModels: async () => ({
-		models: {
-			janus: [
-				{ id: 'nebo-1-medium', displayName: 'Balanced', description: 'Everyday', isActive: true, rank: 2 },
-				{ id: 'nebo-1-pro', displayName: 'Deep', description: 'Hard work', isActive: true, rank: 3 },
-				{ id: 'nebo-1', displayName: 'Default', description: 'Recommended', isActive: true, rank: 0 },
-				{ id: 'nebo-1-flash', displayName: 'Fast', description: 'Quick', isActive: true, rank: 1 }
-			]
-		}
-	}),
 	listPacks: async () => ({
 		default: 'pack/j/medium',
 		packs: [
-			{ id: 'nebo-ai', name: 'Nebo AI', builtIn: true, fallback: false, levels: { auto: 'janus/nebo-1', instant: 'janus/nebo-1-flash', medium: 'janus/nebo-1-medium' } },
-			{ id: 'j', name: 'Janus', builtIn: false, fallback: true, levels: { medium: 'janus/x-model', high: 'openai@p1/gpt' } }
+			{ id: 'nebo-ai', name: 'Nebo AI', builtIn: true, fallback: false, levels: {} },
+			{ id: 'j', name: 'Janus', builtIn: false, fallback: true, levels: {} },
+			{ id: 'w', name: 'Work keys', builtIn: false, fallback: true, levels: {} }
 		]
-	}),
-	setDefaultPack: async () => ({})
+	})
 }));
 
-const { loadModelOptions, modelLabel } = await import('./speeds');
-type ModelOption = import('./speeds').ModelOption;
+const { choiceLabel, isInternalName, loadIntelligence, modelName, packName, resolve, shownLevel, valueFor } = await import('./speeds');
+type PackRow = import('./speeds').PackRow;
 
-const options: ModelOption[] = [
-	{ value: '', label: 'Default', description: '' },
-	{ value: 'janus/nebo-1-pro', label: 'Deep', description: '' },
-	{ value: 'pack/a/high', label: 'Mine · High', description: '' },
-	{ value: 'pack/b/high', label: 'Work · High', description: '' }
+const packs: PackRow[] = [
+	{ id: 'nebo-ai', name: 'Nebo AI', builtIn: true },
+	{ id: 'j', name: 'Janus', builtIn: false },
+	{ id: 'w', name: 'Work keys', builtIn: false }
 ];
+const t = (k: string) => `<${k}>`;
 
-describe('modelLabel', () => {
-	it('names a speed by its bare id, written either way', () => {
-		expect(modelLabel('janus/nebo-1-pro', options)).toBe('Deep');
-		expect(modelLabel('nebo-1-pro', options)).toBe('Deep');
-		expect(modelLabel('', options)).toBe('Default');
+describe('resolve', () => {
+	it('reads the legacy speeds as levels of Nebo AI, written either way', () => {
+		expect(resolve('janus/nebo-1-pro', packs)).toEqual({ pack: 'nebo-ai', level: 'high' });
+		expect(resolve('nebo-1-pro', packs)).toEqual({ pack: 'nebo-ai', level: 'high' });
+		expect(resolve('janus/nebo-1-flash', packs)).toEqual({ pack: 'nebo-ai', level: 'instant' });
+		expect(resolve('nebo-1-medium', packs)).toEqual({ pack: 'nebo-ai', level: 'medium' });
+		expect(resolve('janus/nebo-1', packs)).toEqual({ pack: 'nebo-ai', level: null });
+		expect(resolve('', packs)).toEqual({ pack: 'nebo-ai', level: null });
 	});
 
-	it('names a pack level only by an exact match: two packs share "high"', () => {
-		expect(modelLabel('pack/b/high', options)).toBe('Work · High');
-		expect(modelLabel('pack/a/high', options)).toBe('Mine · High');
-		expect(modelLabel('pack/gone/high', options)).toBe('Default');
+	it('reads pack references, and a deleted pack as Nebo AI at the same level', () => {
+		expect(resolve('pack/w', packs)).toEqual({ pack: 'w', level: null });
+		expect(resolve('pack/w/auto', packs)).toEqual({ pack: 'w', level: null });
+		expect(resolve('pack/j/high', packs)).toEqual({ pack: 'j', level: 'high' });
+		expect(resolve('pack/gone/low', packs)).toEqual({ pack: 'nebo-ai', level: 'low' });
+	});
+
+	it('anything else is a custom model', () => {
+		for (const v of ['anthropic/claude-x', 'linked/1f2e/codex-3', 'claude-code/opus', 'pack/j/deep', 'openai@p1/gpt']) {
+			expect(resolve(v, packs)).toEqual({ custom: true });
+		}
 	});
 });
 
-describe('loadModelOptions', () => {
-	beforeEach(() => dev.set(false));
-
-	it('lists Default, then the speeds by rank, never by name', async () => {
-		const opts = await loadModelOptions();
-		expect(opts.map((o) => o.label)).toEqual(['Default', 'Fast', 'Balanced', 'Deep']);
+describe('valueFor', () => {
+	it('writes the existing model strings: a pack, or a pack at a level', () => {
+		expect(valueFor('nebo-ai', 'high', 'pack/j/medium', packs)).toBe('pack/nebo-ai/high');
+		expect(valueFor('w', null, 'pack/j/medium', packs)).toBe('pack/w');
+		expect(valueFor('nebo-ai', null, 'pack/j/medium', packs)).toBe('pack/nebo-ai');
 	});
 
-	it('lists no pack without Developer mode, but keeps the one in use', async () => {
-		const opts = await loadModelOptions('pack/j/high');
-		expect(opts.map((o) => o.label)).toEqual(['Default', 'Fast', 'Balanced', 'Deep', 'Janus · High']);
-		expect(modelLabel('pack/j/high', opts)).toBe('Janus · High');
+	it('clears the override when the pick is what it would inherit', () => {
+		expect(valueFor('nebo-ai', null, '', packs)).toBe('');
+		expect(valueFor('j', 'medium', 'pack/j/medium', packs)).toBe('');
+		expect(valueFor('nebo-ai', 'high', 'janus/nebo-1-pro', packs)).toBe('');
+	});
+});
+
+describe('names', () => {
+	it('never shows an internal pack name', () => {
+		expect(isInternalName(' Janus ')).toBe(true);
+		expect(isInternalName('janus-test')).toBe(true);
+		expect(isInternalName('Work keys')).toBe(false);
+		expect(packName(packs[1], t)).toBe('<modelPick.customPack>');
+		expect(packName(packs[0], t)).toBe('<modelPick.neboAi>');
+		expect(packName(packs[2], t)).toBe('Work keys');
 	});
 
-	it('with Developer mode: Nebo AI as one row, own packs by level, never a model id', async () => {
-		dev.set(true);
-		const opts = await loadModelOptions();
-		const packs = opts.filter((o) => o.section === 'packs');
-		expect(packs.map((o) => o.label)).toEqual([
-			'Nebo AI',
-			'Janus',
-			'Janus · Instant',
-			'Janus · Low',
-			'Janus · Medium',
-			'Janus · High',
-			'Janus · Max'
-		]);
-		expect(packs.find((o) => o.packId === 'j')?.isDefault).toBe(true);
-		expect(packs.find((o) => o.packId === 'nebo-ai')?.isDefault).toBe(false);
-		for (const o of opts) expect(o.description).not.toMatch(/janus\/|@|\//);
+	it('the chip: no level reads as Medium; a pack name only for the owner\'s own packs', () => {
+		expect(shownLevel(resolve('', packs))).toBe('medium');
+		expect(choiceLabel(resolve('', packs), packs, t)).toBe('<settingsPacks.level.medium>');
+		expect(choiceLabel(resolve('nebo-1-pro', packs), packs, t)).toBe('<settingsPacks.level.high>');
+		expect(choiceLabel(resolve('pack/w/max', packs), packs, t)).toBe('Work keys · <settingsPacks.level.max>');
+		expect(choiceLabel(resolve('pack/j/low', packs), packs, t)).toBe('<modelPick.customPack> · <settingsPacks.level.low>');
+		expect(choiceLabel(resolve('anthropic/claude-x', packs), packs, t)).toBe('<modelPick.custom>');
+	});
+
+	it('any stored model string reads without its provider or gateway', () => {
+		expect(modelName('janus/nebo-1-pro', packs, t)).toBe('<settingsPacks.level.high>');
+		expect(modelName('linked/1f2e/codex-3', packs, t)).toBe('codex-3');
+		for (const v of ['janus/nebo-1', 'janus/nebo-1-flash', 'pack/j/high', 'anthropic@x/claude-y']) {
+			expect(modelName(v, packs, t).toLowerCase()).not.toContain('janus');
+		}
+	});
+});
+
+describe('loadIntelligence', () => {
+	it('reads the packs and the bot default', async () => {
+		const i = await loadIntelligence();
+		expect(i?.botDefault).toBe('pack/j/medium');
+		expect(i?.packs.map((p) => p.id)).toEqual(['nebo-ai', 'j', 'w']);
 	});
 });

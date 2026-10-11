@@ -37,9 +37,8 @@
   import AudioLines from 'lucide-svelte/icons/audio-lines';
   import CircleDot from 'lucide-svelte/icons/circle-dot';
   import { createClipRecorder, clipClock, CLIP_CAP_MS, type ClipNotice } from '$lib/chat/clipRecorder';
-  import { loadModelOptions, makeDefaultPack, modelLabel, type ModelOption } from '$lib/models/speeds';
-  import { devMode } from '$lib/stores/devmode';
-  import { withBase } from '$lib/nav';
+  import { choiceLabel, loadIntelligence, resolve, valueFor, type Effort, type Intelligence } from '$lib/models/speeds';
+  import IntelligencePicker from './IntelligencePicker.svelte';
   import * as api from '$lib/api/nebo';
   import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
 
@@ -132,52 +131,57 @@
   let hasHydrated = $state(false);
   const draftKey = $derived(agentId ? `nebo:draft:${agentId}:${threadId || 'new'}` : '');
 
-  // ── Which model this conversation runs at ────────────────────────────
-  // The chip names the model the NEXT turn will use. Precedence: this chat's
-  // own choice, then the employee's Settings → General → MODEL, then the
-  // default speed. Picking one writes the chat row (PUT /chats/:id) and takes
-  // effect on the next turn — it never rewrites what is already said.
-  // Empty label (catalog not synced, or no employee) renders nothing.
-  let modelOptions = $state<ModelOption[]>([]);
+  // ── What this conversation runs on: a level and a pack ──────────────
+  // The chip names what the NEXT turn will use. Precedence: this chat's own
+  // choice, then the employee's (Settings → General), then the bot's default.
+  // Picking writes the chat row (PUT /chats/:id) and takes effect on the next
+  // turn — it never rewrites what is already said. No packs read (the API
+  // failed) renders no chip rather than a guess.
+  let intel = $state<Intelligence | null>(null);
   let chatModel = $state('');
   let agentModel = $state('');
-  const activeModel = $derived(chatModel || agentModel);
-  const modelName = $derived(modelLabel(activeModel, modelOptions));
+  let pickerOpen = $state(false);
+  let pickerView = $state<'level' | 'packs'>('level');
+  const activeModel = $derived(chatModel || agentModel || intel?.botDefault || '');
+  const choice = $derived(resolve(activeModel, intel?.packs ?? []));
+  const modelName = $derived(intel ? choiceLabel(choice, intel.packs, $t) : '');
 
   async function loadModel() {
     if (!agentId) return;
-    const [cfg, chat] = await Promise.all([
+    const [cfg, chat, packs] = await Promise.all([
       (api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>).catch(() => null),
       threadId ? (api.getChat(threadId) as Promise<{ model?: string | null }>).catch(() => null) : null,
+      loadIntelligence(),
     ]);
     agentModel = cfg?.config?.modelPreference ?? '';
     chatModel = chat?.model ?? '';
-    // The value in use rides along: a pack chosen in Developer mode stays a
-    // row after Developer mode is turned off.
-    modelOptions = await loadModelOptions(chatModel || agentModel);
+    intel = packs;
   }
 
-  // Developer mode: make a pack the bot's default from its row.
-  async function pickDefaultPack(packId: string) {
-    try {
-      await makeDefaultPack(packId);
-      modelOptions = await loadModelOptions(activeModel);
-    } catch { /* the row keeps its old state */ }
-  }
-
-  async function pickModel(value: string) {
-    if (value === activeModel) return;
-    const previous = chatModel;
-    chatModel = value;
+  async function pickModel(pack: string, level: Effort | null) {
+    if (!intel) return;
+    // What '' means where the pick is written: a pick equal to it clears the
+    // override instead of pinning a copy.
+    const inherited = threadId ? agentModel || intel.botDefault : intel.botDefault;
+    const value = valueFor(pack, level, inherited, intel.packs);
+    if (value === (threadId ? chatModel : agentModel)) return;
+    const previous = { chatModel, agentModel };
     // No chat row yet (nothing sent): the choice has nowhere to live, so it
     // becomes this employee's preference — which is what a first turn would
     // have used anyway.
+    if (threadId) chatModel = value;
+    else { agentModel = value; chatModel = ''; }
     try {
       if (threadId) await api.updateChat(threadId, { model: value });
-      else { await api.updateEntityConfig('agent', agentId, { modelPreference: value }); agentModel = value; chatModel = ''; }
+      else await api.updateEntityConfig('agent', agentId, { modelPreference: value });
     } catch {
-      chatModel = previous;
+      ({ chatModel, agentModel } = previous);
     }
+  }
+
+  function openPicker() {
+    pickerView = 'level';
+    pickerOpen = !pickerOpen;
   }
 
   // Follow the conversation: opening another thread re-reads its model.
@@ -879,52 +883,30 @@
         {/if}
 
         {#if modelName}
-          <!-- The model this conversation runs at. Text only, no icon: it
-               names a thing, it is not a control glyph. -->
-          <div class="dropdown dropdown-top">
+          <!-- What this conversation runs on. Text only, no icon: it names a
+               thing, it is not a control glyph. Opens the Intelligence
+               popover: the level card and the pack row. -->
+          <div class="relative">
             <button
               class="px-1.5 h-8 rounded-lg text-xs text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent whitespace-nowrap"
-              title={$t('modelPick.hint')}
+              title={$t('modelPick.intelligence')}
+              aria-haspopup="dialog"
+              aria-expanded={pickerOpen}
               tabindex={-1}
+              onclick={openPicker}
             >{modelName}</button>
-            <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-64 p-1 shadow-md border border-base-300 flex-nowrap max-h-80 overflow-y-auto">
-              {#each modelOptions as opt, i (opt.value)}
-                {#if $devMode && opt.section === 'packs' && modelOptions[i - 1]?.section !== 'packs'}
-                  <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('modelPick.packsTitle')}</span></li>
-                {/if}
-                <li>
-                  <!-- A menu item is a grid that flows its children into
-                       columns; `flex` takes it back so the name sits above
-                       its description and the check keeps to the right. -->
-                  <button
-                    class="flex flex-col items-start gap-0.5 text-start text-sm"
-                    onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
-                  >
-                    <span class="flex w-full items-center justify-between gap-1.5">
-                      <span>{opt.label}{#if $devMode && opt.packId && opt.isDefault}<span class="text-xs text-base-content/50"> · {$t('modelPick.defaultForBot')}</span>{/if}</span>
-                      {#if modelLabel(activeModel, modelOptions) === opt.label}<span class="text-primary">&check;</span>{/if}
-                    </span>
-                    {#if opt.description}
-                      <span class="text-xs text-base-content/60 whitespace-normal">{opt.description}</span>
-                    {/if}
-                  </button>
-                </li>
-                {#if $devMode && opt.packId && !opt.isDefault}
-                  <!-- A pack's own row: make it the bot's default. -->
-                  <li>
-                    <button
-                      class="text-xs text-primary"
-                      onclick={() => { pickDefaultPack(opt.packId!); (document.activeElement as HTMLElement | null)?.blur(); }}
-                    >{$t('modelPick.makeDefault', { values: { name: opt.label } })}</button>
-                  </li>
-                {/if}
-              {/each}
-              {#if $devMode}
-                <li>
-                  <a class="text-sm text-primary" href={withBase('/settings/intelligence-packs')}>{$t('modelPick.createPack')}</a>
-                </li>
-              {/if}
-            </ul>
+            {#if pickerOpen && intel}
+              <button type="button" class="intel-popover-backdrop" aria-label={$t('common.close')} tabindex={-1} onclick={() => (pickerOpen = false)}></button>
+              <div class="intel-popover">
+                <IntelligencePicker
+                  packs={intel.packs}
+                  {choice}
+                  bind:view={pickerView}
+                  onpick={(pack, level) => { pickModel(pack, level); if (pickerView === 'level') pickerOpen = false; }}
+                  onclose={() => (pickerOpen = false)}
+                />
+              </div>
+            {/if}
           </div>
         {/if}
       </div>

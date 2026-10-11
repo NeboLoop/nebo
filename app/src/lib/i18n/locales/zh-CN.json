@@ -784,7 +784,7 @@
 		"provider": {
 			"title": "连接你的 AI",
 			"subtitle": "选择 Nebo 的驱动方式",
-			"janus": "Janus",
+			"janus": "Nebo AI",
 			"recommended": "推荐",
 			"janusDesc": "NeboAI 提供的 AI——无需 API 密钥",
 			"useOwnKey": "使用你自己的 API 密钥或 CLI",
@@ -823,7 +823,7 @@
 		"neboai": {
 			"connectTitle": "连接到 NeboAI",
 			"title": "NeboAI",
-			"janusDesc": "登录或创建 NeboAI 账户以使用 Janus AI。",
+			"janusDesc": "登录或创建 NeboAI 账户以使用 Nebo AI。",
 			"marketplaceDesc": "连接到 NeboAI 市场以安装应用、技能和 AI 提供商。",
 			"connected": "已连接到 NeboAI",
 			"signInDesc": "登录或创建 NeboAI 新账户。你可以使用 Google、Apple 或邮箱。",
@@ -1218,7 +1218,7 @@
 		"devModeHint": "显示提供商、路由和密钥等高级设置。",
 		"appDevMode": "应用开发者模式",
 		"appDevModeHint": "构建应用的员工可以重新加载应用并读取其控制台，每个打开的应用都会显示一个可打开的控制台。",
-		"defaultRoutingNote": "默认情况下，Nebo 将所有请求路由到 Nebo-1 / Janus 网关。启用开发者模式以配置你自己的提供商和路由规则。",
+		"defaultRoutingNote": "默认情况下，Nebo 将所有请求路由到 Nebo AI 网关。启用开发者模式以配置你自己的提供商和路由规则。",
 		"sideloadApp": "侧载应用",
 		"appPathPlaceholder": "/path/to/your/app",
 		"howItWorksTitle": "运作方式",
@@ -3039,7 +3039,7 @@
 		"languageTitle": "选择你的语言",
 		"languageDesc": "之后可以在设置中更改。",
 		"connectTitle": "连接 NeboAI",
-		"connectDesc": "连接你的 NeboAI 账户以访问市场、账单和 Janus AI 网关。",
+		"connectDesc": "连接你的 NeboAI 账户以访问市场、账单和 Nebo AI 网关。",
 		"connectedAs": "已连接为 {email}",
 		"waitingForAuthorization": "正在等待授权...",
 		"browserOpened": "已打开浏览器窗口。请在那里完成登录，然后返回这里。",
@@ -3284,12 +3284,28 @@
 		"onHint": "任何超过这个金额的单次运行都会停下：员工还有最后一轮来汇报已有的进展，这次运行会被标记为达到上限而停止。按模型提供商为每次请求报告的金额计算。"
 	},
 	"modelPick": {
-		"title": "模型",
-		"hint": "这名员工使用的 Nebo 1 速度。默认会让每项任务自行选择合适的速度；指定某个速度后，所有任务都固定用它。",
+		"hint": "此员工的新对话开始时使用的级别和智能包。",
+		"createPack": "创建你自己的包",
+		"intelligence": "智能",
+		"levelHint": "级别越高越细致，耗时越长，消耗的点数也越多。",
+		"recommended": "推荐",
+		"mostCredits": "消耗最多点数",
+		"pack": "智能包",
 		"packsTitle": "智能包",
-		"defaultForBot": "此机器人的默认",
-		"makeDefault": "将 {name} 设为此机器人的默认",
-		"createPack": "创建智能包…"
+		"neboAi": "Nebo AI",
+		"customPack": "自定义包",
+		"packBuiltIn": "内置，开箱即用",
+		"packOwn": "你自己的 AI",
+		"custom": "自定义",
+		"customModel": "自定义模型",
+		"customModelDesc": "在设置中指定",
+		"levelDesc": {
+			"instant": "最快回复",
+			"low": "快速，稍作思考",
+			"medium": "日常工作",
+			"high": "更难的问题",
+			"max": "最细致"
+		}
 	},
 	"settingsLayers": {
 		"title": "层级",
@@ -4095,7 +4111,7 @@
 		"botDefaultHint": "适用于下一条消息。无需重启。",
 		"defaultSaveFailed": "无法更改默认设置。",
 		"badgeDefault": "默认",
-		"badgeJanus": "通过 Janus 路由",
+		"badgeJanus": "通过 Nebo AI 路由",
 		"readOnly": "只读",
 		"colLevel": "级别",
 		"colRunsOn": "运行在",
@@ -4112,7 +4128,7 @@
 			"high": "高",
 			"max": "最高"
 		},
-		"autoRunsOn": "Janus 在每一步选择级别",
+		"autoRunsOn": "Nebo AI 在每一步选择级别",
 		"emptyLevel": "上方最接近的级别",
 		"vision": "视觉",
 		"voice": "语音",
@@ -4124,7 +4140,7 @@
 		"decisionsNone": "Nebo 内置的安全默认设置（无决策模型）",
 		"decisionsDefaultOption": "Nebo AI · Jev（默认）",
 		"withEffort": "{effort} 投入",
-		"localNoJanus": "无法通过 Janus 路由：它的模型运行在这台电脑上。",
+		"localNoJanus": "无法通过 Nebo AI 路由：它的模型运行在这台电脑上。",
 		"removeConfirm": "移除 {name}？仍在使用它的员工会运行在 Nebo AI 上，并会被告知这一点。",
 		"loadFailed": "无法加载智能包。",
 		"saveFailed": "无法保存智能包。",
@@ -4143,8 +4159,8 @@
 		"laneBuild": "构建",
 		"laneWorkflow": "工作流",
 		"laneByWork": "按工作选择",
-		"routeJanus": "通过 Janus 路由",
-		"routeJanusHint": "Janus 会在此智能包的模型之间为每一步选择级别，以降低你的账单。你的密钥会随每个请求一起发送，且永不存储。路由费：{fee}。",
+		"routeJanus": "通过 Nebo AI 路由",
+		"routeJanusHint": "Nebo AI 会在此智能包的模型之间为每一步选择级别，以降低你的账单。你的密钥会随每个请求一起发送，且永不存储。路由费：{fee}。",
 		"routeJanusLocal": "这台电脑上的模型（Ollama、Claude Code、Codex）始终直接运行。语音永不路由。"
 	},
 	"loginItemsBanner": {

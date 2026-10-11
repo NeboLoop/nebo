@@ -784,7 +784,7 @@
 		"provider": {
 			"title": "Connectez votre IA",
 			"subtitle": "Choisissez comment alimenter Nebo",
-			"janus": "Janus",
+			"janus": "Nebo AI",
 			"recommended": "Recommandé",
 			"janusDesc": "IA fournie par NeboAI — aucune clé API nécessaire",
 			"useOwnKey": "Utilisez votre propre clé API ou CLI",
@@ -823,7 +823,7 @@
 		"neboai": {
 			"connectTitle": "Se connecter à NeboAI",
 			"title": "NeboAI",
-			"janusDesc": "Connectez-vous ou créez un compte NeboAI pour utiliser Janus AI.",
+			"janusDesc": "Connectez-vous ou créez un compte NeboAI pour utiliser Nebo AI.",
 			"marketplaceDesc": "Connectez-vous à la boutique NeboAI pour installer des apps, skills et fournisseurs IA.",
 			"connected": "Connecté à NeboAI",
 			"signInDesc": "Connectez-vous ou créez un nouveau compte NeboAI. Vous pouvez utiliser Google, Apple ou email.",
@@ -1218,7 +1218,7 @@
 		"devModeHint": "Afficher les paramètres avancés comme Fournisseurs, Routage et Secrets.",
 		"appDevMode": "Mode développeur d'apps",
 		"appDevModeHint": "Les employés qui créent des apps peuvent les recharger et lire leur console, et chaque app ouverte affiche une console que vous pouvez ouvrir.",
-		"defaultRoutingNote": "Par défaut, Nebo achemine toutes les requêtes via la passerelle Nebo-1 / Janus. Activez le mode développeur pour configurer vos propres fournisseurs et règles de routage.",
+		"defaultRoutingNote": "Par défaut, Nebo achemine toutes les requêtes via la passerelle Nebo AI. Activez le mode développeur pour configurer vos propres fournisseurs et règles de routage.",
 		"sideloadApp": "Charger une app locale",
 		"appPathPlaceholder": "/chemin/vers/votre/app",
 		"howItWorksTitle": "Comment ça marche",
@@ -3039,7 +3039,7 @@
 		"languageTitle": "Choisissez votre langue",
 		"languageDesc": "Vous pourrez changer cela plus tard dans les Paramètres.",
 		"connectTitle": "Connecter NeboAI",
-		"connectDesc": "Connectez votre compte NeboAI pour accéder à la boutique, à la facturation et à la passerelle IA Janus.",
+		"connectDesc": "Connectez votre compte NeboAI pour accéder à la boutique, à la facturation et à la passerelle IA Nebo AI.",
 		"connectedAs": "Connecté en tant que {email}",
 		"waitingForAuthorization": "En attente d'autorisation...",
 		"browserOpened": "Une fenêtre de navigateur s'est ouverte. Terminez la connexion là-bas, puis revenez ici.",
@@ -3284,12 +3284,28 @@
 		"onHint": "Toute exécution qui dépasse ce montant s'arrête : l'employé a un dernier tour pour rendre compte de ce qu'il a, et l'exécution est marquée arrêtée à votre limite. Compte ce que le fournisseur du modèle déclare pour chaque requête."
 	},
 	"modelPick": {
-		"title": "Modèle",
-		"hint": "À quelle vitesse de Nebo 1 cet employé travaille. Par défaut, chaque tâche choisit la bonne ; une vitesse nommée fixe toutes les tâches sur elle.",
+		"hint": "Le niveau et le pack d'intelligence avec lesquels démarrent les nouvelles conversations de cet employé.",
+		"createPack": "Créez votre propre pack",
+		"intelligence": "Intelligence",
+		"levelHint": "Les niveaux élevés sont plus approfondis, prennent plus de temps et consomment plus de crédits.",
+		"recommended": "Recommandé",
+		"mostCredits": "Consomme le plus de crédits",
+		"pack": "Pack d'intelligence",
 		"packsTitle": "Packs d'intelligence",
-		"defaultForBot": "Par défaut pour ce bot",
-		"makeDefault": "Faire de {name} le choix par défaut de ce bot",
-		"createPack": "Créer un pack d'intelligence…"
+		"neboAi": "Nebo AI",
+		"customPack": "Pack personnalisé",
+		"packBuiltIn": "Intégré et prêt à l'emploi",
+		"packOwn": "Votre propre IA",
+		"custom": "Personnalisé",
+		"customModel": "Modèle personnalisé",
+		"customModelDesc": "Défini dans les Réglages",
+		"levelDesc": {
+			"instant": "Réponses les plus rapides",
+			"low": "Rapide, avec un peu de réflexion",
+			"medium": "Travail courant",
+			"high": "Problèmes plus difficiles",
+			"max": "Le plus approfondi"
+		}
 	},
 	"settingsLayers": {
 		"title": "Couches",
@@ -4095,7 +4111,7 @@
 		"botDefaultHint": "S'applique au prochain message. Pas de redémarrage.",
 		"defaultSaveFailed": "Impossible de changer la valeur par défaut.",
 		"badgeDefault": "Par défaut",
-		"badgeJanus": "Passe par Janus",
+		"badgeJanus": "Passe par Nebo AI",
 		"readOnly": "Lecture seule",
 		"colLevel": "Niveau",
 		"colRunsOn": "Tourne sur",
@@ -4112,7 +4128,7 @@
 			"high": "Élevé",
 			"max": "Maximal"
 		},
-		"autoRunsOn": "Janus choisit le niveau à chaque étape",
+		"autoRunsOn": "Nebo AI choisit le niveau à chaque étape",
 		"emptyLevel": "Le niveau le plus proche au-dessus",
 		"vision": "Vision",
 		"voice": "Voix",
@@ -4124,7 +4140,7 @@
 		"decisionsNone": "Les valeurs par défaut sûres intégrées de Nebo (aucun modèle de décision)",
 		"decisionsDefaultOption": "Nebo AI · Jev (par défaut)",
 		"withEffort": "Effort {effort}",
-		"localNoJanus": "Ne peut pas passer par Janus : son modèle tourne sur cet ordinateur.",
+		"localNoJanus": "Ne peut pas passer par Nebo AI : son modèle tourne sur cet ordinateur.",
 		"removeConfirm": "Retirer {name} ? Un employé encore sur ce pack tournera sur Nebo AI, et en sera informé.",
 		"loadFailed": "Impossible de charger les packs.",
 		"saveFailed": "Impossible d'enregistrer le pack.",
@@ -4143,8 +4159,8 @@
 		"laneBuild": "Création",
 		"laneWorkflow": "Workflows",
 		"laneByWork": "Choisi selon la tâche",
-		"routeJanus": "Passer par Janus",
-		"routeJanusHint": "Janus choisit le niveau à chaque étape parmi les modèles de ce pack pour réduire votre facture. Vos clés accompagnent chaque requête et ne sont jamais stockées. Frais de routage : {fee}.",
+		"routeJanus": "Passer par Nebo AI",
+		"routeJanusHint": "Nebo AI choisit le niveau à chaque étape parmi les modèles de ce pack pour réduire votre facture. Vos clés accompagnent chaque requête et ne sont jamais stockées. Frais de routage : {fee}.",
 		"routeJanusLocal": "Les modèles sur cet ordinateur (Ollama, Claude Code, Codex) tournent toujours en direct. La voix ne passe jamais par ce routage."
 	},
 	"loginItemsBanner": {

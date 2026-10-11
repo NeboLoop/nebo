@@ -972,3 +972,74 @@
 .desktop-clipboard-notice {
   @apply absolute bottom-3 left-1/2 -translate-x-1/2 max-w-[90%] px-3 py-1.5 rounded-lg bg-base-100 text-base-content text-xs shadow-lg pointer-events-none text-center;
 }
+
+/* Intelligence picker (composer chip popover, employee settings): cards on a
+   sheet. One card of the five levels, one drill-in row for the pack, a
+   round close / back button beside a centered title. */
+.intel-popover-backdrop {
+	@apply fixed inset-0 z-20 cursor-default bg-transparent border-none;
+}
+.intel-popover {
+	@apply absolute bottom-full start-0 mb-2 z-30 w-80 max-w-[calc(100vw-2rem)];
+}
+.intel-picker {
+	@apply flex flex-col gap-2 rounded-2xl bg-base-200 p-3 shadow-lg border border-base-300 text-start;
+}
+.intel-head {
+	@apply flex items-center justify-between gap-2 pb-1;
+}
+.intel-title {
+	@apply text-base font-semibold text-center flex-1 truncate;
+}
+.intel-round {
+	@apply w-8 h-8 shrink-0 rounded-full grid place-items-center bg-base-100 text-base-content/70 hover:text-base-content cursor-pointer border-none;
+}
+.intel-round-spacer {
+	@apply w-8 h-8 shrink-0;
+}
+.intel-card {
+	@apply flex flex-col rounded-xl bg-base-100 divide-y divide-base-content/10 overflow-hidden;
+}
+.intel-row {
+	@apply flex w-full items-center gap-3 px-3.5 py-2.5 text-start bg-transparent border-none cursor-pointer hover:bg-base-200/60;
+}
+div.intel-row {
+	@apply cursor-default hover:bg-transparent;
+}
+.intel-icon {
+	@apply w-[1.125rem] h-[1.125rem] shrink-0 text-base-content/70;
+}
+.intel-text {
+	@apply flex flex-col min-w-0 flex-1 gap-0.5;
+}
+.intel-name {
+	@apply text-sm font-medium flex items-center gap-1.5 flex-wrap;
+}
+.intel-desc {
+	@apply text-xs text-base-content/70;
+}
+.intel-check {
+	@apply shrink-0 text-primary;
+}
+.intel-foot {
+	@apply text-xs text-base-content/60 px-1;
+}
+.intel-drill {
+	@apply flex-row items-center gap-2 px-3.5 py-3 border-none divide-y-0 cursor-pointer hover:bg-base-200/60 text-start;
+}
+.intel-drill .intel-name {
+	@apply flex-1;
+}
+.intel-value {
+	@apply text-sm text-base-content/60 truncate max-w-[50%];
+}
+.intel-link {
+	@apply text-sm text-primary hover:brightness-110 px-1 py-1;
+}
+/* Employee settings: the same cards, inline and full width. */
+.intel-settings {
+	@apply flex flex-col gap-2 max-w-2xl;
+}
+.intel-settings .intel-card {
+	@apply border border-base-300;
+}

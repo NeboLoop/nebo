@@ -784,7 +784,7 @@
 		"provider": {
 			"title": "Kết nối AI của bạn",
 			"subtitle": "Chọn cách cung cấp năng lượng cho Nebo",
-			"janus": "Janus",
+			"janus": "Nebo AI",
 			"recommended": "Khuyên dùng",
 			"janusDesc": "AI được cung cấp bởi NeboAI — không cần khóa API",
 			"useOwnKey": "Sử dụng khóa API hoặc CLI của riêng bạn",
@@ -823,7 +823,7 @@
 		"neboai": {
 			"connectTitle": "Kết nối với NeboAI",
 			"title": "NeboAI",
-			"janusDesc": "Đăng nhập hoặc tạo tài khoản trên NeboAI để sử dụng Janus AI.",
+			"janusDesc": "Đăng nhập hoặc tạo tài khoản trên NeboAI để sử dụng Nebo AI.",
 			"marketplaceDesc": "Kết nối với cửa hàng NeboAI để cài đặt ứng dụng, kỹ năng và nhà cung cấp AI.",
 			"connected": "Đã kết nối với NeboAI",
 			"signInDesc": "Đăng nhập hoặc tạo tài khoản mới trên NeboAI. Bạn có thể dùng Google, Apple hoặc email.",
@@ -1218,7 +1218,7 @@
 		"devModeHint": "Hiện các cài đặt nâng cao như Nhà cung cấp, Định tuyến và Bí mật.",
 		"appDevMode": "Chế độ nhà phát triển ứng dụng",
 		"appDevModeHint": "Nhân viên xây dựng ứng dụng có thể tải lại và đọc bảng điều khiển của chúng, và mỗi ứng dụng đang mở hiển thị một bảng điều khiển bạn có thể mở.",
-		"defaultRoutingNote": "Theo mặc định, Nebo định tuyến tất cả yêu cầu qua cổng Nebo-1 / Janus. Bật chế độ nhà phát triển để cấu hình nhà cung cấp và quy tắc định tuyến riêng.",
+		"defaultRoutingNote": "Theo mặc định, Nebo định tuyến tất cả yêu cầu qua cổng Nebo AI. Bật chế độ nhà phát triển để cấu hình nhà cung cấp và quy tắc định tuyến riêng.",
 		"sideloadApp": "Sideload ứng dụng",
 		"appPathPlaceholder": "/duong-dan/den/ung-dung",
 		"howItWorksTitle": "Cách hoạt động",
@@ -3039,7 +3039,7 @@
 		"languageTitle": "Chọn ngôn ngữ của bạn",
 		"languageDesc": "Bạn có thể thay đổi sau trong Cài đặt.",
 		"connectTitle": "Kết nối NeboAI",
-		"connectDesc": "Kết nối tài khoản NeboAI để truy cập cửa hàng, thanh toán và cổng AI Janus.",
+		"connectDesc": "Kết nối tài khoản NeboAI để truy cập cửa hàng, thanh toán và cổng AI Nebo AI.",
 		"connectedAs": "Đã kết nối với tư cách {email}",
 		"waitingForAuthorization": "Đang chờ ủy quyền...",
 		"browserOpened": "Một cửa sổ trình duyệt đã được mở. Hoàn tất đăng nhập ở đó, sau đó quay lại đây.",
@@ -3284,12 +3284,28 @@
 		"onHint": "Bất kỳ lượt chạy nào vượt số tiền này sẽ dừng: nhân viên có một lượt cuối để báo lại những gì đã có, và lượt chạy được đánh dấu là dừng tại hạn mức của bạn. Tính theo những gì nhà cung cấp mô hình báo cho mỗi yêu cầu."
 	},
 	"modelPick": {
-		"title": "Mô hình",
-		"hint": "Tốc độ Nebo 1 mà nhân viên này dùng. Mặc định để mỗi việc tự chọn tốc độ phù hợp; chọn một tốc độ cụ thể là khóa mọi việc vào tốc độ đó.",
+		"hint": "Mức và gói trí tuệ mà các cuộc trò chuyện mới của nhân viên này bắt đầu.",
+		"createPack": "Tạo gói của riêng bạn",
+		"intelligence": "Trí tuệ",
+		"levelHint": "Mức cao hơn kỹ lưỡng hơn, mất nhiều thời gian hơn và dùng nhiều tín dụng hơn.",
+		"recommended": "Đề xuất",
+		"mostCredits": "Dùng nhiều tín dụng nhất",
+		"pack": "Gói trí tuệ",
 		"packsTitle": "Gói trí tuệ",
-		"defaultForBot": "Mặc định của bot này",
-		"makeDefault": "Đặt {name} làm mặc định cho bot này",
-		"createPack": "Tạo gói trí tuệ…"
+		"neboAi": "Nebo AI",
+		"customPack": "Gói tùy chỉnh",
+		"packBuiltIn": "Tích hợp sẵn và sẵn sàng dùng",
+		"packOwn": "AI của riêng bạn",
+		"custom": "Tùy chỉnh",
+		"customModel": "Mô hình tùy chỉnh",
+		"customModelDesc": "Đặt trong Cài đặt",
+		"levelDesc": {
+			"instant": "Trả lời nhanh nhất",
+			"low": "Nhanh, có suy nghĩ một chút",
+			"medium": "Công việc hằng ngày",
+			"high": "Vấn đề khó hơn",
+			"max": "Kỹ lưỡng nhất"
+		}
 	},
 	"settingsLayers": {
 		"title": "Lớp",
@@ -4095,7 +4111,7 @@
 		"botDefaultHint": "Áp dụng cho tin nhắn tiếp theo. Không cần khởi động lại.",
 		"defaultSaveFailed": "Không thể thay đổi mặc định.",
 		"badgeDefault": "Mặc định",
-		"badgeJanus": "Định tuyến qua Janus",
+		"badgeJanus": "Định tuyến qua Nebo AI",
 		"readOnly": "Chỉ đọc",
 		"colLevel": "Mức",
 		"colRunsOn": "Chạy trên",
@@ -4112,7 +4128,7 @@
 			"high": "Cao",
 			"max": "Tối đa"
 		},
-		"autoRunsOn": "Janus chọn mức ở mỗi bước",
+		"autoRunsOn": "Nebo AI chọn mức ở mỗi bước",
 		"emptyLevel": "Mức gần nhất ở trên",
 		"vision": "Thị giác",
 		"voice": "Giọng nói",
@@ -4124,7 +4140,7 @@
 		"decisionsNone": "Mặc định an toàn tích hợp sẵn của Nebo (không có mô hình quyết định)",
 		"decisionsDefaultOption": "Nebo AI · Jev (mặc định)",
 		"withEffort": "Nỗ lực {effort}",
-		"localNoJanus": "Không thể định tuyến qua Janus: mô hình của nó chạy trên máy tính này.",
+		"localNoJanus": "Không thể định tuyến qua Nebo AI: mô hình của nó chạy trên máy tính này.",
 		"removeConfirm": "Xóa {name}? Nhân viên vẫn dùng gói này sẽ chạy trên Nebo AI, và sẽ được thông báo về điều đó.",
 		"loadFailed": "Không thể tải các gói.",
 		"saveFailed": "Không thể lưu gói.",
@@ -4143,8 +4159,8 @@
 		"laneBuild": "Xây dựng",
 		"laneWorkflow": "Quy trình",
 		"laneByWork": "Chọn theo công việc",
-		"routeJanus": "Định tuyến qua Janus",
-		"routeJanusHint": "Janus chọn mức cho mỗi bước trong số các mô hình của gói này để giảm hóa đơn của bạn. Khóa của bạn đi cùng mỗi yêu cầu và không bao giờ được lưu trữ. Phí định tuyến: {fee}.",
+		"routeJanus": "Định tuyến qua Nebo AI",
+		"routeJanusHint": "Nebo AI chọn mức cho mỗi bước trong số các mô hình của gói này để giảm hóa đơn của bạn. Khóa của bạn đi cùng mỗi yêu cầu và không bao giờ được lưu trữ. Phí định tuyến: {fee}.",
 		"routeJanusLocal": "Các mô hình trên máy tính này (Ollama, Claude Code, Codex) luôn chạy trực tiếp. Giọng nói không bao giờ được định tuyến."
 	},
 	"loginItemsBanner": {

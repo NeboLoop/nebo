@@ -784,7 +784,7 @@
 		"provider": {
 			"title": "חבר את ה-AI שלך",
 			"subtitle": "בחר כיצד להפעיל את Nebo",
-			"janus": "Janus",
+			"janus": "Nebo AI",
 			"recommended": "מומלץ",
 			"janusDesc": "AI מופעל על ידי NeboAI — ללא צורך במפתחות API",
 			"useOwnKey": "השתמש במפתח API או CLI משלך",
@@ -823,7 +823,7 @@
 		"neboai": {
 			"connectTitle": "התחבר ל-NeboAI",
 			"title": "NeboAI",
-			"janusDesc": "התחבר או צור חשבון ב-NeboAI כדי להשתמש ב-Janus AI.",
+			"janusDesc": "התחבר או צור חשבון ב-NeboAI כדי להשתמש ב-Nebo AI.",
 			"marketplaceDesc": "התחבר לחנות NeboAI כדי להתקין אפליקציות, כישורים וספקי AI.",
 			"connected": "מחובר ל-NeboAI",
 			"signInDesc": "התחבר או צור חשבון חדש ב-NeboAI. תוכל להשתמש ב-Google, Apple או אימייל.",
@@ -1218,7 +1218,7 @@
 		"devModeHint": "הצג הגדרות מתקדמות כמו ספקים, ניתוב וסודות.",
 		"appDevMode": "מצב מפתח אפליקציות",
 		"appDevModeHint": "עובדים שבונים אפליקציות יכולים לטעון אותן מחדש ולקרוא את המסוף שלהן, וכל אפליקציה פתוחה מציגה מסוף שאפשר לפתוח.",
-		"defaultRoutingNote": "כברירת מחדל, Nebo מנתב את כל הבקשות דרך שער Nebo-1 / Janus. הפעל מצב מפתח כדי להגדיר ספקים וכללי ניתוב משלך.",
+		"defaultRoutingNote": "כברירת מחדל, Nebo מנתב את כל הבקשות דרך שער Nebo AI. הפעל מצב מפתח כדי להגדיר ספקים וכללי ניתוב משלך.",
 		"sideloadApp": "טעינה צדדית של אפליקציה",
 		"appPathPlaceholder": "/path/to/your/app",
 		"howItWorksTitle": "איך זה עובד",
@@ -3039,7 +3039,7 @@
 		"languageTitle": "בחר את השפה שלך",
 		"languageDesc": "תוכל לשנות זאת מאוחר יותר בהגדרות.",
 		"connectTitle": "חבר NeboAI",
-		"connectDesc": "חבר את חשבון NeboAI שלך כדי לגשת לחנות, לחיוב ולשער ה-AI של Janus.",
+		"connectDesc": "חבר את חשבון NeboAI שלך כדי לגשת לחנות, לחיוב ולשער ה-AI של Nebo AI.",
 		"connectedAs": "מחובר בתור {email}",
 		"waitingForAuthorization": "ממתין לאישור...",
 		"browserOpened": "חלון דפדפן נפתח. השלם שם את ההתחברות, ואז חזור לכאן.",
@@ -3284,12 +3284,28 @@
 		"onHint": "כל הרצה בודדת שחוצה את הסכום הזה נעצרת: העובד מקבל תור אחרון לדווח על מה שיש לו, וההרצה מסומנת כהופסקה במגבלה שלך. נספר מה שספק המודל מדווח על כל בקשה."
 	},
 	"modelPick": {
-		"title": "מודל",
-		"hint": "באיזו מהירות Nebo 1 העובד הזה עובד. ברירת המחדל נותנת לכל משימה לבחור את המתאימה; מהירות מוגדרת מצמידה כל משימה אליה.",
+		"hint": "הרמה וחבילת הבינה שבהן מתחילות שיחות חדשות של העובד הזה.",
+		"createPack": "צור חבילה משלך",
+		"intelligence": "בינה",
+		"levelHint": "רמות גבוהות יותר יסודיות יותר, אורכות יותר זמן וצורכות יותר קרדיטים.",
+		"recommended": "מומלץ",
+		"mostCredits": "צורך הכי הרבה קרדיטים",
+		"pack": "חבילת בינה",
 		"packsTitle": "חבילות בינה",
-		"defaultForBot": "ברירת המחדל של הבוט הזה",
-		"makeDefault": "הפוך את {name} לברירת המחדל של הבוט הזה",
-		"createPack": "יצירת חבילת בינה…"
+		"neboAi": "Nebo AI",
+		"customPack": "חבילה מותאמת",
+		"packBuiltIn": "מובנית ומוכנה לעבודה",
+		"packOwn": "הבינה המלאכותית שלך",
+		"custom": "מותאם",
+		"customModel": "מודל מותאם",
+		"customModelDesc": "מוגדר בהגדרות",
+		"levelDesc": {
+			"instant": "התשובות המהירות ביותר",
+			"low": "מהיר, עם קצת חשיבה",
+			"medium": "עבודה יומיומית",
+			"high": "בעיות קשות יותר",
+			"max": "היסודי ביותר"
+		}
 	},
 	"settingsLayers": {
 		"title": "שכבות",
@@ -4095,7 +4111,7 @@
 		"botDefaultHint": "חל על ההודעה הבאה. בלי הפעלה מחדש.",
 		"defaultSaveFailed": "לא ניתן לשנות את ברירת המחדל.",
 		"badgeDefault": "ברירת מחדל",
-		"badgeJanus": "עובר דרך Janus",
+		"badgeJanus": "עובר דרך Nebo AI",
 		"readOnly": "לקריאה בלבד",
 		"colLevel": "רמה",
 		"colRunsOn": "רץ על",
@@ -4112,7 +4128,7 @@
 			"high": "גבוה",
 			"max": "מקסימלי"
 		},
-		"autoRunsOn": "Janus בוחר את הרמה בכל שלב",
+		"autoRunsOn": "Nebo AI בוחר את הרמה בכל שלב",
 		"emptyLevel": "הרמה הקרובה שמעל",
 		"vision": "ראייה",
 		"voice": "קול",
@@ -4124,7 +4140,7 @@
 		"decisionsNone": "ברירות המחדל הבטוחות המובנות של Nebo (בלי מודל החלטה)",
 		"decisionsDefaultOption": "Nebo AI · Jev (ברירת מחדל)",
 		"withEffort": "מאמץ {effort}",
-		"localNoJanus": "לא ניתן לנתב דרך Janus: המודל שלו רץ על המחשב הזה.",
+		"localNoJanus": "לא ניתן לנתב דרך Nebo AI: המודל שלו רץ על המחשב הזה.",
 		"removeConfirm": "להסיר את {name}? עובד שעדיין עליה ירוץ על Nebo AI, ויקבל על כך הודעה.",
 		"loadFailed": "לא ניתן לטעון את החבילות.",
 		"saveFailed": "לא ניתן לשמור את החבילה.",
@@ -4143,8 +4159,8 @@
 		"laneBuild": "בנייה",
 		"laneWorkflow": "תהליכי עבודה",
 		"laneByWork": "נבחר לפי העבודה",
-		"routeJanus": "נתב דרך Janus",
-		"routeJanusHint": "Janus בוחר את הרמה בכל שלב בין המודלים של חבילה זו כדי להוריד את החשבון שלך. המפתחות שלך נשלחים עם כל בקשה ולעולם לא נשמרים. עמלת ניתוב: {fee}.",
+		"routeJanus": "נתב דרך Nebo AI",
+		"routeJanusHint": "Nebo AI בוחר את הרמה בכל שלב בין המודלים של חבילה זו כדי להוריד את החשבון שלך. המפתחות שלך נשלחים עם כל בקשה ולעולם לא נשמרים. עמלת ניתוב: {fee}.",
 		"routeJanusLocal": "מודלים על המחשב הזה (Ollama, Claude Code, Codex) תמיד רצים ישירות. קול לעולם לא עובר ניתוב."
 	},
 	"loginItemsBanner": {

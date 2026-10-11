@@ -784,7 +784,7 @@
 		"provider": {
 			"title": "AI 연결",
 			"subtitle": "Nebo의 구동 방식 선택",
-			"janus": "Janus",
+			"janus": "Nebo AI",
 			"recommended": "추천",
 			"janusDesc": "NeboAI 제공 AI — API 키 불필요",
 			"useOwnKey": "자체 API 키 또는 CLI 사용",
@@ -823,7 +823,7 @@
 		"neboai": {
 			"connectTitle": "NeboAI에 연결",
 			"title": "NeboAI",
-			"janusDesc": "NeboAI에 로그인하거나 계정을 만들어 Janus AI를 사용하세요.",
+			"janusDesc": "NeboAI에 로그인하거나 계정을 만들어 Nebo AI를 사용하세요.",
 			"marketplaceDesc": "NeboAI 마켓플레이스에 연결하여 앱, 스킬, AI 제공업체를 설치하세요.",
 			"connected": "NeboAI에 연결됨",
 			"signInDesc": "NeboAI에 로그인하거나 새 계정을 만드세요. Google, Apple 또는 이메일을 사용할 수 있습니다.",
@@ -1218,7 +1218,7 @@
 		"devModeHint": "제공자, 라우팅, 시크릿 같은 고급 설정을 표시합니다.",
 		"appDevMode": "앱 개발자 모드",
 		"appDevModeHint": "앱을 만드는 직원이 앱을 새로 고치고 콘솔을 읽을 수 있으며, 열려 있는 각 앱에 열 수 있는 콘솔이 표시됩니다.",
-		"defaultRoutingNote": "기본적으로 Nebo는 모든 요청을 Nebo-1 / Janus 게이트웨이를 통해 라우팅합니다. 개발자 모드를 활성화하면 자체 제공자와 라우팅 규칙을 설정할 수 있습니다.",
+		"defaultRoutingNote": "기본적으로 Nebo는 모든 요청을 Nebo AI 게이트웨이를 통해 라우팅합니다. 개발자 모드를 활성화하면 자체 제공자와 라우팅 규칙을 설정할 수 있습니다.",
 		"sideloadApp": "앱 사이드로드",
 		"appPathPlaceholder": "/path/to/your/app",
 		"howItWorksTitle": "작동 방식",
@@ -3039,7 +3039,7 @@
 		"languageTitle": "언어 선택",
 		"languageDesc": "나중에 설정에서 변경할 수 있습니다.",
 		"connectTitle": "NeboAI 연결",
-		"connectDesc": "NeboAI 계정을 연결하면 마켓플레이스, 결제, Janus AI 게이트웨이를 이용할 수 있습니다.",
+		"connectDesc": "NeboAI 계정을 연결하면 마켓플레이스, 결제, Nebo AI 게이트웨이를 이용할 수 있습니다.",
 		"connectedAs": "{email}(으)로 연결됨",
 		"waitingForAuthorization": "인증 대기 중...",
 		"browserOpened": "브라우저 창이 열렸습니다. 거기서 로그인을 완료한 뒤 여기로 돌아오세요.",
@@ -3284,12 +3284,28 @@
 		"onHint": "이 금액을 넘는 실행은 거기서 멈춥니다: 직원은 마지막 한 턴 동안 현재 상황을 보고하고, 그 실행은 한도에서 중지됨으로 기록됩니다. 모델 제공자가 요청마다 보고한 금액으로 계산합니다."
 	},
 	"modelPick": {
-		"title": "모델",
-		"hint": "이 직원이 일하는 Nebo 1 속도입니다. 기본값은 작업마다 알맞은 것을 고르고, 속도를 지정하면 모든 작업이 그것으로 고정됩니다.",
+		"hint": "이 직원의 새 채팅이 시작될 때 쓰는 수준과 인텔리전스 팩입니다.",
+		"createPack": "나만의 팩 만들기",
+		"intelligence": "인텔리전스",
+		"levelHint": "높은 수준일수록 더 꼼꼼하고, 시간이 더 걸리며, 크레딧을 더 사용합니다.",
+		"recommended": "추천",
+		"mostCredits": "크레딧을 가장 많이 사용",
+		"pack": "인텔리전스 팩",
 		"packsTitle": "인텔리전스 팩",
-		"defaultForBot": "이 봇의 기본값",
-		"makeDefault": "{name}을(를) 이 봇의 기본값으로 설정",
-		"createPack": "인텔리전스 팩 만들기…"
+		"neboAi": "Nebo AI",
+		"customPack": "사용자 지정 팩",
+		"packBuiltIn": "기본 제공, 바로 사용 가능",
+		"packOwn": "나만의 AI",
+		"custom": "사용자 지정",
+		"customModel": "사용자 지정 모델",
+		"customModelDesc": "설정에서 지정됨",
+		"levelDesc": {
+			"instant": "가장 빠른 답변",
+			"low": "빠르게, 조금 생각해서",
+			"medium": "일상 업무",
+			"high": "더 어려운 문제",
+			"max": "가장 꼼꼼함"
+		}
 	},
 	"settingsLayers": {
 		"title": "레이어",
@@ -4095,7 +4111,7 @@
 		"botDefaultHint": "다음 메시지부터 적용됩니다. 재시작이 필요 없습니다.",
 		"defaultSaveFailed": "기본값을 변경할 수 없습니다.",
 		"badgeDefault": "기본값",
-		"badgeJanus": "Janus를 통해 라우팅됨",
+		"badgeJanus": "Nebo AI를 통해 라우팅됨",
 		"readOnly": "읽기 전용",
 		"colLevel": "수준",
 		"colRunsOn": "실행 위치",
@@ -4112,7 +4128,7 @@
 			"high": "높음",
 			"max": "최대"
 		},
-		"autoRunsOn": "Janus가 각 단계마다 수준을 선택합니다",
+		"autoRunsOn": "Nebo AI가 각 단계마다 수준을 선택합니다",
 		"emptyLevel": "바로 위의 가장 가까운 수준",
 		"vision": "비전",
 		"voice": "음성",
@@ -4124,7 +4140,7 @@
 		"decisionsNone": "Nebo의 기본 제공 안전 기본값 (판단 모델 없음)",
 		"decisionsDefaultOption": "Nebo AI · Jev (기본값)",
 		"withEffort": "{effort} 노력",
-		"localNoJanus": "Janus를 통해 라우팅할 수 없습니다: 모델이 이 컴퓨터에서 실행됩니다.",
+		"localNoJanus": "Nebo AI를 통해 라우팅할 수 없습니다: 모델이 이 컴퓨터에서 실행됩니다.",
 		"removeConfirm": "{name}을 제거할까요? 아직 이 팩을 사용하는 직원은 Nebo AI에서 실행되며, 이 사실을 안내받습니다.",
 		"loadFailed": "팩을 불러올 수 없습니다.",
 		"saveFailed": "팩을 저장할 수 없습니다.",
@@ -4143,8 +4159,8 @@
 		"laneBuild": "만들기",
 		"laneWorkflow": "워크플로",
 		"laneByWork": "작업에 따라 선택됨",
-		"routeJanus": "Janus를 통해 라우팅",
-		"routeJanusHint": "Janus는 비용을 낮추기 위해 이 팩의 모델 전체에서 각 단계의 수준을 선택합니다. 사용자의 키는 각 요청과 함께 전달되며 저장되지 않습니다. 라우팅 수수료: {fee}.",
+		"routeJanus": "Nebo AI를 통해 라우팅",
+		"routeJanusHint": "Nebo AI는 비용을 낮추기 위해 이 팩의 모델 전체에서 각 단계의 수준을 선택합니다. 사용자의 키는 각 요청과 함께 전달되며 저장되지 않습니다. 라우팅 수수료: {fee}.",
 		"routeJanusLocal": "이 컴퓨터에서 실행되는 모델(Ollama, Claude Code, Codex)은 항상 직접 실행됩니다. 음성은 라우팅되지 않습니다."
 	},
 	"loginItemsBanner": {
