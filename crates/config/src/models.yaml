@@ -58,6 +58,8 @@ providers:
         input: 3.0
         output: 15.0
         cachedInput: 0.30
+      # A connection that names no model runs this one.
+      preferred: true
       active: false
     - id: claude-haiku-4-5-20251001
       displayName: Claude Haiku 4.5

@@ -169,17 +169,16 @@ impl ModelsConfig {
 
     /// The model a provider's connection runs when the connection names
     /// none: `defaults.primary` when it names this provider, else the
-    /// provider's first catalog row.
+    /// provider's preferred catalog row (Anthropic ships with Sonnet), else
+    /// its first.
     pub fn default_model_for_provider(&self, provider: &str) -> Option<String> {
         if let Some(model_id) =
             self.defaults.as_ref().and_then(|d| Self::extract_model_for_provider(&d.primary, provider))
         {
             return Some(model_id);
         }
-        self.providers
-            .get(provider)
-            .and_then(|models| models.first())
-            .map(|m| m.id.clone())
+        let models = self.providers.get(provider)?;
+        models.iter().find(|m| m.preferred).or_else(|| models.first()).map(|m| m.id.clone())
     }
 
     /// Extract model ID from "provider/model" format if it matches the given provider.
@@ -197,8 +196,11 @@ impl ModelsConfig {
     /// `migration::migrate_models_yaml`): a Nebo AI speed chosen as the
     /// bot's default (`defaults.primary`, `task_routing.general`) becomes the Nebo AI pack at that level, and the
     /// Janus catalog's ids lose the `janus/` and `neboai/` prefixes and the
-    /// old `janus` id. True when anything changed.
-    pub fn upgrade(&mut self) -> bool {
+    /// old `janus` id. `fallbacks` is the file's old `defaults.fallbacks`:
+    /// the first one naming a provider was that provider's default model,
+    /// so it becomes the provider's preferred row (unless one already is).
+    /// True when anything changed.
+    pub fn upgrade(&mut self, fallbacks: &[String]) -> bool {
         const SPEED_PACKS: [(&str, &str); 4] = [
             ("nebo-1", "pack/nebo-ai"),
             ("nebo-1-flash", "pack/nebo-ai/instant"),
@@ -219,6 +221,16 @@ impl ModelsConfig {
         }
         if let Some(tr) = self.task_routing.as_mut() {
             to_pack(&mut tr.general);
+        }
+        for (provider, models) in self.providers.iter_mut() {
+            if models.iter().any(|m| m.preferred) {
+                continue;
+            }
+            let chosen = fallbacks.iter().find_map(|f| Self::extract_model_for_provider(f, provider));
+            if let Some(model) = chosen.and_then(|id| models.iter_mut().find(|m| m.id == id)) {
+                model.preferred = true;
+                changed = true;
+            }
         }
         for model in self.providers.get_mut("janus").into_iter().flatten() {
             let id = model.id.trim_start_matches("janus/").trim_start_matches("neboai/");
@@ -296,19 +308,44 @@ mod tests {
             "defaults:\n  primary: janus/nebo-1\ntask_routing:\n  general: nebo-1-pro\nproviders:\n  janus:\n    - id: janus\n      displayName: Janus\n    - id: neboai/nebo-embed-small\n",
         )
         .unwrap();
-        assert!(cfg.upgrade());
+        assert!(cfg.upgrade(&[]));
         assert_eq!(cfg.defaults.as_ref().unwrap().primary, "pack/nebo-ai");
         let tr = cfg.task_routing.as_ref().unwrap();
         assert_eq!(tr.general, "pack/nebo-ai/high");
         let ids: Vec<(&str, &str)> =
             cfg.providers["janus"].iter().map(|m| (m.id.as_str(), m.display_name.as_str())).collect();
         assert_eq!(ids, [("nebo-1", "Nebo 1"), ("nebo-embed-small", "")]);
-        assert!(!cfg.upgrade(), "nothing left to change");
+        assert!(!cfg.upgrade(&[]), "nothing left to change");
 
         let mut mine: ModelsConfig =
             serde_yaml::from_str("defaults:\n  primary: pack/abc/low\ntask_routing:\n  general: openai/gpt-5.4\n").unwrap();
-        assert!(!mine.upgrade());
+        assert!(!mine.upgrade(&[]));
         assert_eq!(mine.task_routing.unwrap().general, "openai/gpt-5.4");
+    }
+
+    /// A connection that names no model runs its provider's default: the
+    /// primary when it names the provider, else the preferred row
+    /// (Anthropic: Sonnet, as the old fallback list chose), else the first.
+    #[test]
+    fn a_connection_without_a_model_runs_its_providers_default() {
+        let cfg = config();
+        assert_eq!(cfg.default_model_for_provider("anthropic").as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(cfg.default_model_for_provider("openai").as_deref(), Some("gpt-5.4"));
+    }
+
+    /// The rewrite keeps each provider's default from the old fallback
+    /// list: its first entry for that provider becomes the preferred row.
+    #[test]
+    fn upgrade_keeps_each_providers_default_from_the_old_fallbacks() {
+        let mut cfg: ModelsConfig = serde_yaml::from_str(
+            "defaults:\n  primary: janus/nebo-1\nproviders:\n  anthropic:\n    - id: claude-opus-4-6\n    - id: claude-sonnet-4-6\n  openai:\n    - id: gpt-5.4\n",
+        )
+        .unwrap();
+        let old = ["anthropic/claude-sonnet-4-6".to_string(), "anthropic/claude-haiku-4-5".to_string()];
+        assert!(cfg.upgrade(&old));
+        assert_eq!(cfg.default_model_for_provider("anthropic").as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(cfg.default_model_for_provider("openai").as_deref(), Some("gpt-5.4"));
+        assert!(!cfg.upgrade(&old), "nothing left to change");
     }
 
     #[test]
