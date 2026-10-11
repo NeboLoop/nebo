@@ -4183,15 +4183,19 @@ async fn pinned_conversations_head_a_paged_list() {
     assert_eq!(nebo.get(&format!("/agents/{clerk}/chats?limit=2&cursor=nonsense")).await.0, 400);
 }
 
-/// The modes the script saw, by marker: each `MARK-CM…` word the latest
-/// message a turn was asked names, with the permission mode that turn ran
-/// in (the last "Permission mode: …" row its thread carries). The first
-/// turn asked with a marker is the one recorded: an answer that comes back
-/// to the sender names the marker again, and is not the receiver's turn.
+/// The modes the script saw, by marker and seat: each `MARK-CM…` word the
+/// latest message a turn (or a workflow step) was asked names, with the
+/// employee whose turn it was and the permission mode it ran in (the last
+/// "Permission mode: …" row its thread carries). The first such turn of a
+/// seat is the one recorded: an answer that comes back to the sender names
+/// the marker again, and is the sender's turn, not the receiver's.
 type ModesSeen = Arc<Mutex<HashMap<String, String>>>;
 
 fn reports_its_mode(seen: ModesSeen) -> Rule {
     Box::new(move |t| {
+        if !matches!(t.req.trace.purpose, "agent_turn" | "workflow_activity") {
+            return None;
+        }
         let asked = t.req.messages.iter().rev().find(|m| m.role == "user" && m.content.contains("MARK-CM"))?;
         if asked.content.contains(" SAW ") {
             return Some(Step::say("noted"));
@@ -4201,20 +4205,27 @@ fn reports_its_mode(seen: ModesSeen) -> Rule {
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
             .find(|w| w.starts_with("MARK-CM"))?
             .to_string();
+        let seat = t
+            .req
+            .messages
+            .iter()
+            .find_map(|m| m.content.split("You are Proof ").nth(1).map(|rest| format!("Proof {}", rest.split([',', '.']).next().unwrap_or(""))))?;
         let mode = t
             .req
             .messages
             .iter()
             .rev()
             .find_map(|m| m.content.split("Permission mode: ").nth(1).map(|rest| rest.split('.').next().unwrap_or("").to_string()))?;
-        seen.lock().unwrap().entry(marker.clone()).or_insert_with(|| mode.clone());
+        seen.lock().unwrap().entry(format!("{marker}@{seat}")).or_insert_with(|| mode.clone());
         Some(Step::say(format!("{marker} SAW {mode}")))
     })
 }
 
-async fn mode_seen(rig: &Rig<'_>, seen: &ModesSeen, marker: &str) -> String {
-    rig.until(30, &format!("the turn asked with {marker}"), || seen.lock().unwrap().contains_key(marker)).await;
-    seen.lock().unwrap()[marker].clone()
+/// The mode `seat`'s turn asked with `marker` ran in.
+async fn mode_seen(rig: &Rig<'_>, seen: &ModesSeen, marker: &str, seat: &str) -> String {
+    let key = format!("{marker}@{seat}");
+    rig.until(30, &format!("{seat}'s turn asked with {marker}"), || seen.lock().unwrap().contains_key(&key)).await;
+    seen.lock().unwrap()[&key].clone()
 }
 
 /// A conversation's own mode (the composer's Permission sheet): its turns
@@ -4233,7 +4244,7 @@ async fn a_conversation_runs_in_the_mode_picked_for_it() {
     let key = format!("agent:{clerk}:web");
 
     rig.owner_writes(&key, &clerk, None, "MARK-CM0 hello").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CM0").await, "Automatic", "no pick: the employee's own");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM0", "Proof CM Clerk").await, "Automatic", "no pick: the employee's own");
     let sessions = nebo.state.harness.sessions();
     let chat_id = sessions.active_chat_id(&sessions.resolve_session_id_by_key(&key).unwrap());
     let view = nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await;
@@ -4261,7 +4272,7 @@ async fn a_conversation_runs_in_the_mode_picked_for_it() {
     assert_eq!(nebo.store().get_chat(&chat_id).unwrap().unwrap().permission_mode, Some(types::permissions::Mode::Plan), "kept on the bot");
     assert_eq!(nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await["mode"], "plan", "a fresh read finds it");
     rig.owner_writes(&key, &clerk, None, "MARK-CM1 plan this").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CM1").await, "Plan");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM1", "Proof CM Clerk").await, "Plan");
 
     // A turn the conversation did not start runs in the employee's own mode.
     let heartbeat = crate::chat_dispatch::ChatConfig {
@@ -4297,18 +4308,18 @@ async fn a_conversation_runs_in_the_mode_picked_for_it() {
         message_id: None,
     };
     crate::chat_dispatch::run_chat(&nebo.state, heartbeat).await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CM2").await, "Automatic", "unattended work ignores the conversation's mode");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM2", "Proof CM Clerk").await, "Automatic", "unattended work ignores the conversation's mode");
 
     // Full Access, looser than the employee's own, holds this conversation.
     nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "full_access" })).await;
     rig.owner_writes(&key, &clerk, None, "MARK-CM3 go").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CM3").await, "Full Access");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM3", "Proof CM Clerk").await, "Full Access");
 
     // None picked: the employee's own again. Its own setting never moved.
     let cleared = nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": null })).await;
     assert!(cleared["mode"].is_null(), "{cleared}");
     rig.owner_writes(&key, &clerk, None, "MARK-CM4 back").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CM4").await, "Automatic");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM4", "Proof CM Clerk").await, "Automatic");
     assert_eq!(nebo.store().permission_mode(&types::permissions::Scope::Employee(clerk.clone())).unwrap(), None);
 
     assert_eq!(nebo.put(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "anything" })).await.0, 400);
@@ -4394,17 +4405,17 @@ async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
 
     // A hand-off from an Ask conversation: the Full Access colleague asks.
     send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Builder", "MARK-CMH1 build it").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH1").await, "Ask");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH1", "Proof CMS Builder").await, "Ask");
     // Nothing carried: the colleague's own mode.
     send(conversation_ctx(&nebo, &rig, &asker, None), "Proof CMS Builder", "MARK-CMH2 build it").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH2").await, "Full Access");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH2", "Proof CMS Builder").await, "Full Access");
     // Never loosened: an Ask conversation leaves a Plan colleague in Plan.
     send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Planner", "MARK-CMH3 look").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH3").await, "Plan");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH3", "Proof CMS Planner").await, "Plan");
 
     // A team post from an Ask conversation: the Full Access lead asks.
     send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Team", "MARK-CMT1 ship the page").await;
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CMT1").await, "Ask");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMT1", "Proof CMS Lead").await, "Ask");
 
     // A workflow run started from an Ask conversation is held to Ask.
     let ctx = conversation_ctx(&nebo, &rig, &runner, Some(Mode::Ask));
@@ -4412,7 +4423,7 @@ async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
     assert!(!started.is_error, "{}", started.content);
     let run_id = serde_json::from_str::<Value>(&started.content).unwrap()["runId"].as_str().unwrap().to_string();
     assert_eq!(nebo.store().workflow_run_narrow(&run_id).unwrap(), Some(Mode::Ask), "the run is held to it");
-    assert_eq!(mode_seen(&rig, &seen, "MARK-CMW1").await, "Ask", "its step runs in Ask");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMW1", "Proof CMS Runner").await, "Ask", "its step runs in Ask");
 
     // The same workflow fired by its schedule carries nothing: the
     // employee's own mode.
