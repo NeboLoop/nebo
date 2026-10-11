@@ -811,6 +811,32 @@ pub struct EditMessageBody {
     pub content: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepFileBody {
+    pub file_id: String,
+    pub keep: bool,
+}
+
+/// PUT /api/v1/chats/messages/:id/keep — the owner keeps a file on one of
+/// his messages (a voice note's star), or lets it go. Kept files are exempt
+/// from any chat-retention purge. `id` is the message's id or the id its
+/// client sent it under.
+pub async fn keep_message_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<KeepFileBody>,
+) -> HandlerResult<serde_json::Value> {
+    let found = state
+        .store
+        .set_chat_attachment_keep(&id, &body.file_id, body.keep)
+        .map_err(to_error_response)?;
+    if !found {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    Ok(Json(serde_json::json!({ "success": true, "keep": body.keep })))
+}
+
 /// POST /api/v1/chats/messages/:id/edit
 pub async fn edit_message(
     State(state): State<AppState>,

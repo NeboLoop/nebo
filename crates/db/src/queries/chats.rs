@@ -1128,6 +1128,51 @@ impl Store {
         Ok(())
     }
 
+    /// Mark one file on a stored message as kept, or not: `keep: true` on
+    /// that file in the message's `attachments`, which a chat-retention purge
+    /// must leave alone. `id` is the row's own id or the id its client sent it
+    /// under (`messageId`) — a phone knows a message by the latter. False when
+    /// no message carries that file.
+    pub fn set_chat_attachment_keep(
+        &self,
+        id: &str,
+        file_id: &str,
+        keep: bool,
+    ) -> Result<bool, NeboError> {
+        let found: Option<(String, Option<String>)> = {
+            let conn = self.conn()?;
+            conn.query_row(
+                "SELECT id, metadata FROM chat_messages
+                 WHERE id = ?1
+                    OR (CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.messageId') END) = ?1
+                 ORDER BY id = ?1 DESC LIMIT 1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?
+        };
+        let Some((row_id, metadata)) = found else {
+            return Ok(false);
+        };
+        let meta: serde_json::Value = metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_default();
+        let Some(index) = meta["attachments"].as_array().and_then(|all| {
+            all.iter()
+                .position(|a| a["fileId"].as_str() == Some(file_id))
+        }) else {
+            return Ok(false);
+        };
+        self.set_chat_message_metadata(
+            &row_id,
+            &format!("$.attachments[{index}].keep"),
+            &serde_json::json!(keep),
+        )?;
+        Ok(true)
+    }
+
     pub fn attach_artifacts_to_latest_assistant_message(
         &self,
         chat_id: &str,
@@ -1588,6 +1633,40 @@ mod tests {
             assert!(plan.iter().all(|step| !step.contains("TEMP B-TREE")), "{sql}: {plan:#?}");
             assert!(plan.iter().any(|step| step.contains("idx_chat_messages_chat_time")), "{sql}: {plan:#?}");
         }
+    }
+
+    /// A voice note starred on the phone is kept: the flag lands on that
+    /// file in the message's attachments, found by the id the phone sent the
+    /// message under, and nothing else in the metadata moves.
+    #[test]
+    fn a_kept_file_is_marked_on_its_message() {
+        let (_dir, store) = store();
+        store.create_chat("c", "Chat").unwrap();
+        let meta = serde_json::json!({
+            "messageId": "phone-1",
+            "attachments": [
+                {"fileId": "a", "filename": "photo.jpg"},
+                {"fileId": "b", "filename": "recording-20261010-090000.m4a"},
+            ],
+        });
+        store
+            .create_chat_message("row-1", "c", "user", "hello", Some(&meta.to_string()))
+            .unwrap();
+        assert!(store.set_chat_attachment_keep("phone-1", "b", true).unwrap());
+        let read = |id: &str| -> serde_json::Value {
+            let m = store.get_chat_message(id).unwrap().unwrap();
+            serde_json::from_str(m.metadata.as_deref().unwrap()).unwrap()
+        };
+        let m = read("row-1");
+        assert_eq!(m["attachments"][1]["keep"], true);
+        assert!(m["attachments"][0].get("keep").is_none());
+        assert_eq!(m["messageId"], "phone-1");
+        // By the row's own id too, and back off.
+        assert!(store.set_chat_attachment_keep("row-1", "b", false).unwrap());
+        assert_eq!(read("row-1")["attachments"][1]["keep"], false);
+        // A file the message does not carry, or no such message: nothing.
+        assert!(!store.set_chat_attachment_keep("row-1", "zzz", true).unwrap());
+        assert!(!store.set_chat_attachment_keep("nope", "b", true).unwrap());
     }
 
     /// The owner's conversations with an employee are the only ones counted
