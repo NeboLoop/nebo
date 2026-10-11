@@ -2400,6 +2400,34 @@ export function readUpload(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Create upload"
+ */
+export function createUpload(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/uploads`, req)
+}
+
+/**
+ * @description "Upload status"
+ */
+export function uploadStatus(id: string) {
+	return webapi.get<unknown>(`/api/v1/uploads/${id}`)
+}
+
+/**
+ * @description "Upload chunk"
+ */
+export function uploadChunk(id: string, req: Record<string, unknown> = {}) {
+	return webapi.patch<unknown>(`/api/v1/uploads/${id}`, req)
+}
+
+/**
+ * @description "Complete upload"
+ */
+export function completeUpload(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/uploads/${id}/complete`, req)
+}
+
+/**
  * @description "User get current user"
  */
 export function userGetCurrentUser() {

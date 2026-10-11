@@ -124,6 +124,23 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	// A file as it travels (comm::wire::Attachment), in an upload's status
+	// (handlers/uploads.rs UploadStatus).
+	"Attachment": `export interface Attachment {
+	fileId: string
+	filename: string
+	mimeType: string
+	size: number
+	url: string
+	thumbnailUrl?: string
+	width?: number
+	height?: number
+	duration?: number
+}`,
+
+	// Where a landed file's hub copy stands (crates/server/src/hub_sync.rs).
+	"SyncState": `export type SyncState = 'pending' | 'synced' | 'failed' | 'refused'`,
+
 	// One piece of background work (crates/server/src/background.rs).
 	"BackgroundTask": `export type BackgroundKind = 'agent' | 'shell' | 'workflow' | 'monitor' | 'loop'
 

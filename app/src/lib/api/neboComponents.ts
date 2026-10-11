@@ -1549,6 +1549,21 @@ export interface TeamMessage {
 	cleared?: boolean
 }
 
+export interface UploadStatus {
+	uploadId: string
+	offset: number
+	size: number
+	chunkSize: number
+	complete: boolean
+	attachment?: Attachment
+	sync?: UploadSync
+}
+
+export interface UploadSync {
+	state: SyncState
+	error?: string
+}
+
 export interface User {
 	id: string
 	email: string
@@ -3075,6 +3090,18 @@ export interface AppWindowConfig {
 	orientation?: 'portrait' | 'landscape' | 'any'
 }
 
+export interface Attachment {
+	fileId: string
+	filename: string
+	mimeType: string
+	size: number
+	url: string
+	thumbnailUrl?: string
+	width?: number
+	height?: number
+	duration?: number
+}
+
 export type BackgroundKind = 'agent' | 'shell' | 'workflow' | 'monitor' | 'loop'
 
 export type BackgroundSource = 'helper' | 'turn' | 'workflow' | 'timer' | 'watch' | 'heartbeat' | 'shell' | 'handoff'
@@ -3262,6 +3289,8 @@ export interface RunDisplay {
 	input: RunDisplayEntry | null
 	activities: Record<string, RunDisplayEntry>
 }
+
+export type SyncState = 'pending' | 'synced' | 'failed' | 'refused'
 
 export interface TeamWorkEntry {
 	kind: 'member' | 'helper'

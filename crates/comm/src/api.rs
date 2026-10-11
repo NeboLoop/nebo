@@ -1911,6 +1911,126 @@ impl NeboAIApi {
             .map_err(|e| CommError::Other(format!("decode upload response: {}", e)))
     }
 
+    /// Copy the file at `path` to NeboAI in chunks through its resumable door
+    /// (`/api/v1/uploads`): a large file is never one long request, and a
+    /// copy cut short resumes where the hub's own count says it stopped.
+    ///
+    /// `session` is the hub's upload id from an earlier attempt, if any; a
+    /// new one is handed to `started` before the first chunk goes, so the
+    /// caller can keep it and resume after a restart. A session the hub no
+    /// longer knows (expired) starts over. Returns the stored attachment,
+    /// as [`Self::upload_file`] does.
+    pub async fn upload_file_resumable(
+        &self,
+        path: &std::path::Path,
+        filename: &str,
+        session: Option<String>,
+        mut started: impl FnMut(&str),
+    ) -> Result<crate::wire::Attachment, CommError> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Session {
+            upload_id: String,
+            offset: u64,
+            chunk_size: u64,
+        }
+        fn session_of(body: &str) -> Result<Session, CommError> {
+            serde_json::from_str(body).map_err(|e| CommError::Transport(format!("decode upload session: {e}")))
+        }
+
+        self.gate(&reqwest::Method::POST)?;
+        let size = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| CommError::Other(format!("open {}: {}", path.display(), e)))?
+            .len();
+        let base = format!("{}/api/v1/uploads", self.api_server);
+
+        let resumed = match session {
+            Some(id) => match self.upload_request(reqwest::Method::GET, &format!("{base}/{id}"), None, None).await {
+                Ok(body) => Some(session_of(&body)?),
+                Err(CommError::Http { status: 404, .. }) => None,
+                Err(e) => return Err(e),
+            },
+            None => None,
+        };
+        let mut s = match resumed {
+            Some(s) => s,
+            None => {
+                let body = serde_json::json!({ "filename": filename, "size": size });
+                let s = session_of(&self.upload_request(reqwest::Method::POST, &base, Some(body), None).await?)?;
+                started(&s.upload_id);
+                s
+            }
+        };
+        if s.chunk_size == 0 {
+            return Err(CommError::Transport("upload session without a chunk size".into()));
+        }
+
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| CommError::Other(format!("open {}: {}", path.display(), e)))?;
+        let mut chunk = Vec::with_capacity(s.chunk_size.min(size) as usize);
+        while s.offset < size {
+            let len = s.chunk_size.min(size - s.offset);
+            chunk.resize(len as usize, 0);
+            file.seek(std::io::SeekFrom::Start(s.offset))
+                .await
+                .map_err(|e| CommError::Other(format!("read {}: {}", path.display(), e)))?;
+            file.read_exact(&mut chunk)
+                .await
+                .map_err(|e| CommError::Other(format!("read {}: {}", path.display(), e)))?;
+            let url = format!("{base}/{}", s.upload_id);
+            let next = match self.upload_request(reqwest::Method::PATCH, &url, None, Some((s.offset, chunk.clone()))).await {
+                Ok(body) => session_of(&body)?.offset,
+                // The hub has a different count than this side: go on from its.
+                Err(CommError::Http { status: 409, body }) => session_of(&body)?.offset,
+                Err(e) => return Err(e),
+            };
+            if next > size {
+                return Err(CommError::Transport(format!("hub counts {next} of {size} bytes")));
+            }
+            s.offset = next;
+        }
+        let body = self
+            .upload_request(reqwest::Method::POST, &format!("{base}/{}/complete", s.upload_id), Some(serde_json::json!({})), None)
+            .await?;
+        serde_json::from_str(&body).map_err(|e| CommError::Transport(format!("decode upload response: {e}")))
+    }
+
+    /// One request of the resumable upload: a JSON body, or a chunk sent at
+    /// its offset (`Upload-Offset`) with the time a slow line needs for it.
+    /// The answer's body on success; the hub's status and body otherwise.
+    async fn upload_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        json: Option<serde_json::Value>,
+        chunk: Option<(u64, Vec<u8>)>,
+    ) -> Result<String, CommError> {
+        let read = method == reqwest::Method::GET;
+        let resp = self
+            .send(read, |token| {
+                let req = self.client.request(method.clone(), url).bearer_auth(token);
+                match (&json, &chunk) {
+                    (_, Some((offset, bytes))) => req
+                        .timeout(upload_window(bytes.len() as u64))
+                        .header("Upload-Offset", offset.to_string())
+                        .header(reqwest::header::CONTENT_TYPE, "application/offset+octet-stream")
+                        .body(bytes.clone()),
+                    (Some(body), None) => req.json(body),
+                    (None, None) => req,
+                }
+            })
+            .await
+            .map_err(|e| CommError::Transport(e.to_string()))?;
+        match resp {
+            Ok(resp) => resp.text().await.map_err(|e| CommError::Transport(body_read_error(&e))),
+            Err((status, body)) => Err(CommError::Http { status: status.as_u16(), body }),
+        }
+    }
+
     /// Download a file by ID. Returns raw bytes. Files are as large as the
     /// upload door allows, so the download gets the upload's time.
     pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, CommError> {

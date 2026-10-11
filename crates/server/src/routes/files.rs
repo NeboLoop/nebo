@@ -33,6 +33,21 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
             axum::routing::post(handlers::files::upload_file)
                 .layer(upload_limit(max_upload_bytes)),
         )
+        // Resumable uploads for large files (handlers::uploads). Chunks are
+        // streamed to disk and capped there, not by the body limit.
+        .route(
+            "/uploads",
+            axum::routing::post(handlers::uploads::create_upload),
+        )
+        .route(
+            "/uploads/{id}",
+            axum::routing::get(handlers::uploads::upload_status)
+                .patch(handlers::uploads::upload_chunk),
+        )
+        .route(
+            "/uploads/{id}/complete",
+            axum::routing::post(handlers::uploads::complete_upload),
+        )
         .route(
             "/files/{*path}",
             axum::routing::get(handlers::files::serve_file),
