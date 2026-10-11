@@ -958,6 +958,7 @@
               <div class="intel-popover">
                 <IntelligencePicker
                   packs={intel.packs}
+                  choices={intel.choices}
                   {choice}
                   bind:view={pickerView}
                   onpick={pickModel}

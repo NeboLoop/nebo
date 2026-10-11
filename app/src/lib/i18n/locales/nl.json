@@ -3274,7 +3274,9 @@
 			"medium": "Dagelijks werk",
 			"high": "Moeilijkere problemen",
 			"max": "Het grondigst"
-		}
+		},
+		"autoCustom": "Kiest uit de niveaus van dit pakket",
+		"fromNeboAi": "van Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Lagen",
@@ -4098,7 +4100,7 @@
 			"max": "Max"
 		},
 		"autoRunsOn": "Nebo AI kiest het niveau bij elke stap",
-		"emptyLevel": "Het dichtstbijzijnde niveau daarboven",
+		"emptyLevel": "Gebruikt Nebo AI",
 		"vision": "Visie",
 		"voice": "Stem",
 		"decisions": "Beslissingen",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Kon het pakket niet verwijderen.",
 		"nameRequired": "Geef het pakket een naam.",
 		"effortLevels": "Inspanningsniveaus",
-		"effortLevelsHint": "Elk model van elke provider. Een leeg niveau gebruikt het dichtstbijzijnde niveau daarboven.",
+		"effortLevelsHint": "Elk model van elke provider. Een leeg niveau gebruikt het model van Nebo AI voor dat niveau.",
 		"effortDefault": "Standaard",
 		"providerEffortNamed": "Provider-inspanning voor {level}",
 		"lanes": "Sporen",

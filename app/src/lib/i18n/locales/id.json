@@ -3274,7 +3274,9 @@
 			"medium": "Pekerjaan sehari-hari",
 			"high": "Masalah yang lebih sulit",
 			"max": "Paling menyeluruh"
-		}
+		},
+		"autoCustom": "Memilih dari level paket ini",
+		"fromNeboAi": "dari Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Lapisan",
@@ -4098,7 +4100,7 @@
 			"max": "Maks"
 		},
 		"autoRunsOn": "Nebo AI memilih tingkat di setiap langkah",
-		"emptyLevel": "Tingkat terdekat di atasnya",
+		"emptyLevel": "Memakai Nebo AI",
 		"vision": "Visi",
 		"voice": "Suara",
 		"decisions": "Keputusan",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Tidak dapat menghapus paket.",
 		"nameRequired": "Beri nama paket.",
 		"effortLevels": "Tingkat upaya",
-		"effortLevelsHint": "Model apa pun dari penyedia apa pun. Tingkat yang kosong memakai tingkat terdekat di atasnya.",
+		"effortLevelsHint": "Model apa pun dari penyedia mana pun. Level kosong memakai model Nebo AI untuk level itu.",
 		"effortDefault": "Default",
 		"providerEffortNamed": "Upaya penyedia {level}",
 		"lanes": "Jalur",

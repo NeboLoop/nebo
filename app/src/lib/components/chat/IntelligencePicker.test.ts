@@ -15,13 +15,14 @@ beforeAll(() => {
 
 const packs: PackRow[] = [
 	{ id: 'nebo-ai', name: 'Nebo AI', builtIn: true },
-	{ id: 'j', name: 'Janus', builtIn: false },
-	{ id: 'w', name: 'Work keys', builtIn: false }
+	{ id: 'j', name: 'Janus', builtIn: false, levels: { instant: 'janus/nebo-1-flash', high: 'janus/nebo-1-pro' } },
+	{ id: 'w', name: 'Work keys', builtIn: false, levels: { medium: 'openai@p1/gpt-6.1' }, levelEffort: { medium: 'high' } }
 ];
+const choices = [{ value: 'openai@p1/gpt-6.1', provider: 'OpenAI', connection: 'Company key', modelId: 'gpt-6.1', local: false }];
 
 const html = (value: string, view: 'level' | 'packs') =>
 	render(IntelligencePicker, {
-		props: { packs, choice: resolve(value, packs), view, onpick: () => {}, onclose: () => {} }
+		props: { packs, choices, choice: resolve(value, packs), view, onpick: () => {}, onclose: () => {} }
 	}).body;
 
 const checks = (out: string) => out.split('data-testid="intel-check"').length - 1;
@@ -81,18 +82,29 @@ describe('IntelligencePicker', () => {
 		const out = text(html('pack/w/high', 'packs'));
 		expect(out).toContain('Nebo AI');
 		expect(out).toContain('Work keys');
-		expect(out).toContain(en.modelPick.customPack);
+		expect(out).toContain('Janus');
+		expect(out).toContain('OpenAI');
 		expect(out).toContain(en.modelPick.createPack);
 		expect(html('', 'packs')).toContain('href="/settings/intelligence-packs"');
 	});
 
-	it('never shows "Janus" or a model id, in any state', () => {
+	it('the built-in pack never shows "Janus" or a model id, in any state', () => {
 		for (const value of STATES) {
-			for (const view of ['level', 'packs'] as const) {
-				const out = text(html(value, view));
-				expect(out).not.toMatch(/janus/i);
-				expect(out).not.toMatch(/nebo-1|claude-x|codex-3|a0b2/);
-			}
+			if (/^pack\/(j|w)\b/.test(value)) continue;
+			const out = text(html(value, 'level'));
+			expect(out).not.toMatch(/janus/i);
+			expect(out).not.toMatch(/nebo-1|claude-x|codex-3|a0b2/);
 		}
+	});
+
+	it('an owner\'s pack shows what he set: its name and each level\'s provider and model', () => {
+		const out = text(html('pack/j/high', 'level'));
+		expect(out).toContain('Janus');
+		expect(out).toContain('Janus · nebo-1-pro');
+		expect(out).toContain('Janus · nebo-1-flash');
+		expect(out).toContain(`${en.modelPick.levelDesc.medium} · ${en.modelPick.fromNeboAi}`);
+		expect(out).toContain(en.modelPick.autoCustom);
+		expect(text(html('pack/w', 'level'))).toContain('OpenAI · gpt-6.1 · High effort');
+		expect(text(html('pack/w', 'level'))).not.toContain('p1');
 	});
 });

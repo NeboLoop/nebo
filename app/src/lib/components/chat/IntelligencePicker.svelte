@@ -23,16 +23,20 @@
   import WandSparkles from 'lucide-svelte/icons/wand-sparkles';
   import Settings2 from 'lucide-svelte/icons/settings-2';
   import { withBase } from '$lib/nav';
-  import { LEVELS, NEBO_AI_ID, isCustom, levelOf, packName, selectThenClose, shownLevel, type Choice, type Effort, type Level, type PackRow } from '$lib/models/speeds';
+  import type { PackChoice } from '$lib/api/neboComponents';
+  import { LEVELS, NEBO_AI_ID, isCustom, levelOf, levelSubtitle, packName, packSubtitle, selectThenClose, shownLevel, type Choice, type Effort, type Level, type PackRow } from '$lib/models/speeds';
 
   let {
     packs,
+    choices = [],
     choice,
     view = $bindable('level'),
     onpick,
     onclose,
   }: {
     packs: PackRow[];
+    /** The models packs name: an owner's pack shows what each level runs on. */
+    choices?: PackChoice[];
     choice: Choice;
     view?: 'level' | 'packs';
     onpick: (pack: string, level: Effort | null) => void;
@@ -80,6 +84,7 @@
       {/if}
       {#each LEVELS as level (level)}
         {@const Icon = LEVEL_ICONS[level]}
+        {@const sub = levelSubtitle(currentPackRow, level, choices, $t)}
         <button type="button" class="intel-row" data-level={level} aria-pressed={checkedLevel === level} onclick={() => pickLevel(level)}>
           <Icon class="intel-icon" />
           <span class="intel-text">
@@ -88,7 +93,7 @@
               {#if level === 'auto'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
               {#if level === 'max'}<span class="badge badge-sm badge-warning badge-soft">{$t('modelPick.mostBalance')}</span>{/if}
             </span>
-            <span class="intel-desc">{$t(`modelPick.levelDesc.${level}`)}</span>
+            <span class="intel-desc" class:intel-desc-muted={sub.muted}>{sub.text}</span>
           </span>
           {#if checkedLevel === level}<span class="intel-check" data-testid="intel-check"><Check class="w-4 h-4" /></span>{/if}
         </button>
@@ -122,7 +127,7 @@
         <button type="button" class="intel-row" data-pack={pack.id} aria-pressed={currentPack === pack.id} onclick={() => pickPack(pack.id)}>
           <span class="intel-text">
             <span class="intel-name">{packName(pack, $t)}</span>
-            <span class="intel-desc">{pack.builtIn ? $t('modelPick.packBuiltIn') : $t('modelPick.packOwn')}</span>
+            <span class="intel-desc">{packSubtitle(pack, choices, $t)}</span>
           </span>
           {#if currentPack === pack.id}<span class="intel-check" data-testid="intel-check"><Check class="w-4 h-4" /></span>{/if}
         </button>

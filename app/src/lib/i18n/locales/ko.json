@@ -3274,7 +3274,9 @@
 			"medium": "일상 업무",
 			"high": "더 어려운 문제",
 			"max": "가장 꼼꼼함"
-		}
+		},
+		"autoCustom": "이 팩의 수준 중에서 고릅니다",
+		"fromNeboAi": "Nebo AI 제공"
 	},
 	"settingsLayers": {
 		"title": "레이어",
@@ -4098,7 +4100,7 @@
 			"max": "최대"
 		},
 		"autoRunsOn": "Nebo AI가 각 단계마다 수준을 선택합니다",
-		"emptyLevel": "바로 위의 가장 가까운 수준",
+		"emptyLevel": "Nebo AI 사용",
 		"vision": "비전",
 		"voice": "음성",
 		"decisions": "판단",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "팩을 제거할 수 없습니다.",
 		"nameRequired": "팩에 이름을 지정하세요.",
 		"effortLevels": "노력 수준",
-		"effortLevelsHint": "어떤 제공업체의 어떤 모델이든 사용할 수 있습니다. 비어 있는 수준은 바로 위의 가장 가까운 수준을 사용합니다.",
+		"effortLevelsHint": "어떤 제공자의 어떤 모델이든 사용할 수 있습니다. 비어 있는 수준은 그 수준의 Nebo AI 모델을 사용합니다.",
 		"effortDefault": "기본값",
 		"providerEffortNamed": "{level} 제공업체 노력 수준",
 		"lanes": "레인",

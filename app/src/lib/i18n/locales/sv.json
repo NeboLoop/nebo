@@ -3274,7 +3274,9 @@
 			"medium": "Vardagligt arbete",
 			"high": "Svårare problem",
 			"max": "Det grundligaste"
-		}
+		},
+		"autoCustom": "Väljer bland paketets nivåer",
+		"fromNeboAi": "från Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Lager",
@@ -4098,7 +4100,7 @@
 			"max": "Max"
 		},
 		"autoRunsOn": "Nebo AI väljer nivån för varje steg",
-		"emptyLevel": "Närmaste nivå ovanför",
+		"emptyLevel": "Använder Nebo AI",
 		"vision": "Syn",
 		"voice": "Röst",
 		"decisions": "Beslut",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Kunde inte ta bort paketet.",
 		"nameRequired": "Namnge paketet.",
 		"effortLevels": "Ansträngningsnivåer",
-		"effortLevelsHint": "Valfri modell från valfri leverantör. En tom nivå använder närmaste nivå ovanför den.",
+		"effortLevelsHint": "Vilken modell som helst från vilken leverantör som helst. En tom nivå använder Nebo AI:s modell för den nivån.",
 		"effortDefault": "Standard",
 		"providerEffortNamed": "Leverantörsansträngning för {level}",
 		"lanes": "Spår",

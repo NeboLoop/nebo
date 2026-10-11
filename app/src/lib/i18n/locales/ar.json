@@ -3274,7 +3274,9 @@
 			"medium": "العمل اليومي",
 			"high": "مشكلات أصعب",
 			"max": "الأكثر دقة"
-		}
+		},
+		"autoCustom": "يختار من مستويات هذه الحزمة",
+		"fromNeboAi": "من Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "الطبقات",
@@ -4098,7 +4100,7 @@
 			"max": "أقصى"
 		},
 		"autoRunsOn": "يختار Nebo AI المستوى في كل خطوة",
-		"emptyLevel": "أقرب مستوى أعلى",
+		"emptyLevel": "يستخدم Nebo AI",
 		"vision": "الرؤية",
 		"voice": "الصوت",
 		"decisions": "القرارات",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "تعذّر إزالة الحزمة.",
 		"nameRequired": "سمِّ الحزمة.",
 		"effortLevels": "مستويات الجهد",
-		"effortLevelsHint": "أي نموذج من أي مزوّد. يستخدم المستوى الفارغ أقرب مستوى أعلى.",
+		"effortLevelsHint": "أي نموذج من أي مزود. يستخدم المستوى الفارغ نموذج Nebo AI لذلك المستوى.",
 		"effortDefault": "افتراضي",
 		"providerEffortNamed": "جهد المزوّد لمستوى {level}",
 		"lanes": "المسارات",

@@ -3274,7 +3274,9 @@
 			"medium": "Lavoro quotidiano",
 			"high": "Problemi più difficili",
 			"max": "Il più accurato"
-		}
+		},
+		"autoCustom": "Sceglie tra i livelli di questo pacchetto",
+		"fromNeboAi": "da Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Livelli",
@@ -4098,7 +4100,7 @@
 			"max": "Massimo"
 		},
 		"autoRunsOn": "Nebo AI sceglie il livello a ogni passaggio",
-		"emptyLevel": "Il livello più vicino superiore",
+		"emptyLevel": "Usa Nebo AI",
 		"vision": "Visione",
 		"voice": "Voce",
 		"decisions": "Decisioni",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Impossibile rimuovere il pacchetto.",
 		"nameRequired": "Dai un nome al pacchetto.",
 		"effortLevels": "Livelli di impegno",
-		"effortLevelsHint": "Qualsiasi modello di qualsiasi provider. Un livello vuoto usa il livello più vicino superiore.",
+		"effortLevelsHint": "Qualsiasi modello di qualsiasi provider. Un livello vuoto usa il modello di Nebo AI per quel livello.",
 		"effortDefault": "Predefinito",
 		"providerEffortNamed": "Impegno del provider per {level}",
 		"lanes": "Corsie",

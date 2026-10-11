@@ -9,11 +9,13 @@
  * - The PACK: which models those levels run on. Nebo AI is built in;
  *   the owner can add his own (Settings → Intelligence Packs).
  *
- * Never a model, provider or gateway id on screen: a pack reads as its name
- * (an internal one as "Custom pack"), a level as its word, and a raw model
- * that maps to neither as "Custom".
+ * The built-in Nebo AI pack never shows a model, provider or gateway id: its
+ * levels read as words. An owner's pack shows what he set, as he set it: its
+ * name, and each level's provider and model. A raw model that maps to no
+ * pack reads as "Custom".
  */
 import * as api from '$lib/api/nebo';
+import type { LevelEffort, PackChoice, PackLevels } from '$lib/api/neboComponents';
 
 /** The Effort ladder, lowest first (`types::packs::Effort`). */
 export const EFFORTS = ['instant', 'low', 'medium', 'high', 'max'] as const;
@@ -31,11 +33,23 @@ export function levelOf(row: Level): Effort | null {
 /** The built-in pack's id. */
 export const NEBO_AI_ID = 'nebo-ai';
 
-/** A pack as the picker shows it. */
-export type PackRow = { id: string; name: string; builtIn: boolean };
+/**
+ * A pack as the picker shows it. An owner's pack carries what each level
+ * runs on (`provider/model` strings) and each level's provider effort.
+ */
+export type PackRow = {
+	id: string;
+	name: string;
+	builtIn: boolean;
+	levels?: PackLevels;
+	levelEffort?: LevelEffort;
+};
 
-/** The packs and the bot's default model string. */
-export type Intelligence = { packs: PackRow[]; botDefault: string };
+/**
+ * The packs, the bot's default model string, and the models a pack can name
+ * (read only when the owner has a pack of his own: it names their providers).
+ */
+export type Intelligence = { packs: PackRow[]; botDefault: string; choices: PackChoice[] };
 
 /**
  * What a model string runs on: a pack at a level (null: the pack's Auto or
@@ -54,12 +68,6 @@ const LEGACY: Record<string, Effort | null> = {
 	'nebo-1-medium': 'medium',
 	'nebo-1-pro': 'high'
 };
-
-/** Pack names that are internal ids, never shown to the owner. */
-export function isInternalName(name: string): boolean {
-	const n = name.trim().toLowerCase();
-	return n.startsWith('janus') || ['nebo-ai', 'neboai', 'nebo-1'].includes(n);
-}
 
 /** What one model string runs on. '' is the built-in pack's Auto. */
 export function resolve(value: string, packs: PackRow[]): Choice {
@@ -107,9 +115,18 @@ export function shownLevel(c: Choice): Level | null {
 export async function loadIntelligence(): Promise<Intelligence | null> {
 	try {
 		const res = await api.listPacks();
-		const packs = (res.packs ?? []).map((p) => ({ id: p.id, name: p.name, builtIn: !!p.builtIn }));
+		const packs: PackRow[] = (res.packs ?? []).map((p) => ({
+			id: p.id,
+			name: p.name,
+			builtIn: !!p.builtIn,
+			levels: p.levels,
+			levelEffort: p.levelEffort
+		}));
 		if (!packs.some((p) => p.id === NEBO_AI_ID)) packs.unshift({ id: NEBO_AI_ID, name: 'Nebo AI', builtIn: true });
-		return { packs, botDefault: res.default ?? '' };
+		const choices = packs.some((p) => !p.builtIn)
+			? await (async () => (await api.listPackChoices()).chat ?? [])().catch(() => [] as PackChoice[])
+			: [];
+		return { packs, botDefault: res.default ?? '', choices };
 	} catch {
 		return null;
 	}
@@ -117,12 +134,12 @@ export async function loadIntelligence(): Promise<Intelligence | null> {
 
 
 /** A translator, as `$t` is. */
-type Translate = (key: string) => string;
+type Translate = (key: string, options?: { values?: Record<string, string> }) => string;
 
-/** A pack's name on screen: Nebo AI's own, an internal one as "Custom pack". */
+/** A pack's name on screen: Nebo AI's own; the owner's as he named it ("Custom pack" when unnamed). */
 export function packName(p: PackRow, t: Translate): string {
 	if (p.builtIn) return t('modelPick.neboAi');
-	return isInternalName(p.name) || !p.name.trim() ? t('modelPick.customPack') : p.name;
+	return p.name.trim() || t('modelPick.customPack');
 }
 
 /**
@@ -167,4 +184,70 @@ export function selectThenClose(
 	if (inUse) return onclose();
 	onpick(pack, level);
 	setTimeout(onclose, delay);
+}
+
+/** Provider kinds as words, for a model no longer among the pack choices. */
+const KIND_LABELS: Record<string, string> = {
+	anthropic: 'Anthropic',
+	openai: 'OpenAI',
+	google: 'Google',
+	openrouter: 'OpenRouter',
+	deepseek: 'DeepSeek',
+	ollama: 'Ollama',
+	janus: 'Janus'
+};
+
+/**
+ * What an owner's pack set one level to, as he set it: the provider's label
+ * and the model id verbatim ("OpenAI · gpt-6.1", "Janus · nebo-1-pro").
+ * Only the connection key (`openai@<id>`) and a linked agent's id stay out.
+ */
+export function runsOnLine(value: string, choices: PackChoice[]): string {
+	const slash = value.indexOf('/');
+	const head = slash < 0 ? '' : value.slice(0, slash);
+	const kind = head.split('@')[0];
+	let model = slash < 0 ? value : value.slice(slash + 1);
+	if (kind === 'linked') model = model.slice(model.indexOf('/') + 1);
+	const hit = choices.find((c) => c.value === value);
+	const provider = kind === 'janus' ? 'Janus' : (hit?.provider ?? KIND_LABELS[kind] ?? kind);
+	return [provider, hit?.modelId ?? model].filter(Boolean).join(' · ');
+}
+
+/**
+ * A level row's subtitle. Nebo AI: what the level is for. An owner's pack:
+ * what that pack runs the level on (with its provider effort) and Auto as
+ * picking from the pack's levels. A level the pack leaves empty runs on Nebo
+ * AI's model for that level: Nebo AI's line with a quiet "from Nebo AI"
+ * (`muted`).
+ */
+export function levelSubtitle(
+	pack: PackRow | undefined,
+	row: Level,
+	choices: PackChoice[],
+	t: Translate
+): { text: string; muted: boolean } {
+	if (!pack || pack.builtIn) return { text: t(`modelPick.levelDesc.${row}`), muted: false };
+	if (row === 'auto') return { text: t('modelPick.autoCustom'), muted: false };
+	const value = pack.levels?.[row]?.trim();
+	if (!value) return { text: `${t(`modelPick.levelDesc.${row}`)} · ${t('modelPick.fromNeboAi')}`, muted: true };
+	const effort = pack.levelEffort?.[row];
+	const line = runsOnLine(value, choices);
+	return {
+		text: effort
+			? `${line} · ${t('settingsPacks.withEffort', { values: { effort: t(`settingsPacks.level.${effort}`) } })}`
+			: line,
+		muted: false
+	};
+}
+
+/** A pack row's subtitle: Nebo AI's own line, an owner's pack by its providers ("OpenAI, Anthropic"). */
+export function packSubtitle(pack: PackRow, choices: PackChoice[], t: Translate): string {
+	if (pack.builtIn) return t('modelPick.packBuiltIn');
+	const providers: string[] = [];
+	for (const e of EFFORTS) {
+		const value = pack.levels?.[e]?.trim();
+		const provider = value ? runsOnLine(value, choices).split(' · ')[0] : '';
+		if (provider && !providers.includes(provider)) providers.push(provider);
+	}
+	return providers.length ? providers.join(', ') : t('modelPick.packOwn');
 }

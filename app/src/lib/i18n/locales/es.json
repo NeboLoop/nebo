@@ -3274,7 +3274,9 @@
 			"medium": "Trabajo diario",
 			"high": "Problemas más difíciles",
 			"max": "Lo más minucioso"
-		}
+		},
+		"autoCustom": "Elige entre los niveles de este paquete",
+		"fromNeboAi": "de Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Capas",
@@ -4098,7 +4100,7 @@
 			"max": "Máximo"
 		},
 		"autoRunsOn": "Nebo AI elige el nivel en cada paso",
-		"emptyLevel": "El nivel más cercano por encima",
+		"emptyLevel": "Usa Nebo AI",
 		"vision": "Visión",
 		"voice": "Voz",
 		"decisions": "Decisiones",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "No se pudo quitar el paquete.",
 		"nameRequired": "Ponle nombre al paquete.",
 		"effortLevels": "Niveles de esfuerzo",
-		"effortLevelsHint": "Cualquier modelo de cualquier proveedor. Un nivel vacío usa el nivel más cercano por encima.",
+		"effortLevelsHint": "Cualquier modelo de cualquier proveedor. Un nivel vacío usa el modelo de Nebo AI para ese nivel.",
 		"effortDefault": "Predeterminado",
 		"providerEffortNamed": "Esfuerzo del proveedor en {level}",
 		"lanes": "Carriles",

@@ -24,6 +24,8 @@
   import {
     LEVELS,
     levelOf,
+    levelSubtitle,
+    packSubtitle,
     NEBO_AI_ID,
     isCustom,
     loadIntelligence,
@@ -112,6 +114,7 @@
       {#if isCustom(choice)}{@render customRow()}{/if}
       {#each LEVELS as level (level)}
         {@const Icon = LEVEL_ICONS[level]}
+        {@const sub = levelSubtitle(intel.packs.find((p) => p.id === currentPack), level, intel.choices, $t)}
         <button
           type="button"
           class="intel-row"
@@ -127,7 +130,7 @@
               {#if level === 'auto'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
               {#if level === 'max'}<span class="badge badge-sm badge-warning badge-soft">{$t('modelPick.mostBalance')}</span>{/if}
             </span>
-            <span class="intel-desc">{$t(`modelPick.levelDesc.${level}`)}</span>
+            <span class="intel-desc" class:intel-desc-muted={sub.muted}>{sub.text}</span>
           </span>
           {#if checkedLevel === level}<span class="intel-check" data-testid="intel-check"><Check class="w-4 h-4" /></span>{/if}
         </button>
@@ -149,7 +152,7 @@
         >
           <span class="intel-text">
             <span class="intel-name">{packName(pack, $t)}</span>
-            <span class="intel-desc">{pack.builtIn ? $t('modelPick.packBuiltIn') : $t('modelPick.packOwn')}</span>
+            <span class="intel-desc">{packSubtitle(pack, intel.choices, $t)}</span>
           </span>
           {#if currentPack === pack.id}<span class="intel-check" data-testid="intel-check"><Check class="w-4 h-4" /></span>{/if}
         </button>

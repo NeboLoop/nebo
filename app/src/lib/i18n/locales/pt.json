@@ -3274,7 +3274,9 @@
 			"medium": "Trabalho do dia a dia",
 			"high": "Problemas mais difíceis",
 			"max": "O mais minucioso"
-		}
+		},
+		"autoCustom": "Escolhe entre os níveis deste pacote",
+		"fromNeboAi": "do Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Camadas",
@@ -4098,7 +4100,7 @@
 			"max": "Máximo"
 		},
 		"autoRunsOn": "O Nebo AI escolhe o nível em cada etapa",
-		"emptyLevel": "O nível mais próximo acima",
+		"emptyLevel": "Usa o Nebo AI",
 		"vision": "Visão",
 		"voice": "Voz",
 		"decisions": "Decisões",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Não foi possível remover o pacote.",
 		"nameRequired": "Dê um nome ao pacote.",
 		"effortLevels": "Níveis de esforço",
-		"effortLevelsHint": "Qualquer modelo de qualquer fornecedor. Um nível vazio usa o nível mais próximo acima dele.",
+		"effortLevelsHint": "Qualquer modelo de qualquer fornecedor. Um nível vazio usa o modelo do Nebo AI para esse nível.",
 		"effortDefault": "Predefinição",
 		"providerEffortNamed": "Esforço do fornecedor para {level}",
 		"lanes": "Faixas",

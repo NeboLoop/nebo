@@ -3274,7 +3274,9 @@
 			"medium": "Alltägliche Arbeit",
 			"high": "Schwierigere Probleme",
 			"max": "Am gründlichsten"
-		}
+		},
+		"autoCustom": "Wählt aus den Stufen dieses Pakets",
+		"fromNeboAi": "von Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Ebenen",
@@ -4098,7 +4100,7 @@
 			"max": "Maximal"
 		},
 		"autoRunsOn": "Nebo AI wählt die Stufe für jeden Schritt",
-		"emptyLevel": "Die nächste Stufe darüber",
+		"emptyLevel": "Nutzt Nebo AI",
 		"vision": "Bildverständnis",
 		"voice": "Stimme",
 		"decisions": "Entscheidungen",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Das Paket konnte nicht entfernt werden.",
 		"nameRequired": "Benenne das Paket.",
 		"effortLevels": "Aufwandsstufen",
-		"effortLevelsHint": "Jedes Modell von jedem Anbieter. Eine leere Stufe nutzt die nächste Stufe darüber.",
+		"effortLevelsHint": "Jedes Modell von jedem Anbieter. Eine leere Stufe nutzt das Modell von Nebo AI für diese Stufe.",
 		"effortDefault": "Standard",
 		"providerEffortNamed": "{level}-Anbieteraufwand",
 		"lanes": "Spuren",

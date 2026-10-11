@@ -8,10 +8,11 @@ vi.mock('$lib/api/nebo', () => ({
 			{ id: 'j', name: 'Janus', builtIn: false, fallback: true, levels: {} },
 			{ id: 'w', name: 'Work keys', builtIn: false, fallback: true, levels: {} }
 		]
-	})
+	}),
+	listPackChoices: async () => ({ chat: [{ value: 'openai/gpt', provider: 'OpenAI', connection: '', modelId: 'gpt', local: false }], decision: [] })
 }));
 
-const { CLOSE_AFTER_MS, selectThenClose, choiceLabel, isInternalName, loadIntelligence, modelName, packName, resolve, shownLevel, valueFor } = await import('./speeds');
+const { CLOSE_AFTER_MS, selectThenClose, choiceLabel, levelSubtitle, loadIntelligence, packSubtitle, runsOnLine, modelName, packName, resolve, shownLevel, valueFor } = await import('./speeds');
 type PackRow = import('./speeds').PackRow;
 
 const packs: PackRow[] = [
@@ -60,13 +61,11 @@ describe('valueFor', () => {
 });
 
 describe('names', () => {
-	it('never shows an internal pack name', () => {
-		expect(isInternalName(' Janus ')).toBe(true);
-		expect(isInternalName('janus-test')).toBe(true);
-		expect(isInternalName('Work keys')).toBe(false);
-		expect(packName(packs[1], t)).toBe('<modelPick.customPack>');
+	it('an owner\'s pack reads as he named it; only an empty name is "Custom pack"', () => {
+		expect(packName(packs[1], t)).toBe('Janus');
 		expect(packName(packs[0], t)).toBe('<modelPick.neboAi>');
 		expect(packName(packs[2], t)).toBe('Work keys');
+		expect(packName({ id: 'x', name: '  ', builtIn: false }, t)).toBe('<modelPick.customPack>');
 	});
 
 	it('the chip: no level is Auto; a pack name only for the owner\'s own packs', () => {
@@ -79,16 +78,60 @@ describe('names', () => {
 		expect(choiceLabel(resolve('pack/nebo-ai/medium', packs), packs, t)).toBe('<settingsPacks.level.medium>');
 		expect(choiceLabel(resolve('nebo-1-pro', packs), packs, t)).toBe('<settingsPacks.level.high>');
 		expect(choiceLabel(resolve('pack/w/max', packs), packs, t)).toBe('Work keys · <settingsPacks.level.max>');
-		expect(choiceLabel(resolve('pack/j/low', packs), packs, t)).toBe('<modelPick.customPack> · <settingsPacks.level.low>');
+		expect(choiceLabel(resolve('pack/j/low', packs), packs, t)).toBe('Janus · <settingsPacks.level.low>');
 		expect(choiceLabel(resolve('anthropic/claude-x', packs), packs, t)).toBe('<modelPick.custom>');
 	});
 
 	it('any stored model string reads without its provider or gateway', () => {
 		expect(modelName('janus/nebo-1-pro', packs, t)).toBe('<settingsPacks.level.high>');
 		expect(modelName('linked/1f2e/codex-3', packs, t)).toBe('codex-3');
-		for (const v of ['janus/nebo-1', 'janus/nebo-1-flash', 'pack/j/high', 'anthropic@x/claude-y']) {
+		expect(modelName('pack/j/high', packs, t)).toBe('Janus · <settingsPacks.level.high>');
+		for (const v of ['janus/nebo-1', 'janus/nebo-1-flash', 'anthropic@x/claude-y']) {
 			expect(modelName(v, packs, t).toLowerCase()).not.toContain('janus');
 		}
+	});
+});
+
+describe('an owner\'s pack, as he set it', () => {
+	const choices = [
+		{ value: 'openai@p1/gpt-6.1', provider: 'OpenAI', connection: 'Company key', modelId: 'gpt-6.1', local: false },
+		{ value: 'janus/nebo-1-pro', provider: 'Nebo AI', connection: '', modelId: 'nebo-1-pro', local: false }
+	];
+	const mine: PackRow = {
+		id: 'm',
+		name: 'Janus',
+		builtIn: false,
+		levels: { instant: 'janus/nebo-1-flash', high: 'janus/nebo-1-pro', max: 'openai@p1/gpt-6.1' },
+		levelEffort: { max: 'high' }
+	};
+
+	it('each level: the provider and the model verbatim, no connection key', () => {
+		expect(runsOnLine('openai@p1/gpt-6.1', choices)).toBe('OpenAI · gpt-6.1');
+		expect(runsOnLine('janus/nebo-1-pro', choices)).toBe('Janus · nebo-1-pro');
+		expect(runsOnLine('anthropic@zz/claude-sonnet-5', [])).toBe('Anthropic · claude-sonnet-5');
+		expect(runsOnLine('openrouter@k/anthropic/claude-x', [])).toBe('OpenRouter · anthropic/claude-x');
+		expect(runsOnLine('linked/1f2e/codex-3', [])).toBe('linked · codex-3');
+	});
+
+	it('the level rows: set, with effort, Auto, and an empty level from Nebo AI', () => {
+		expect(levelSubtitle(mine, 'high', choices, t)).toEqual({ text: 'Janus · nebo-1-pro', muted: false });
+		expect(levelSubtitle(mine, 'instant', choices, t).text).toBe('Janus · nebo-1-flash');
+		expect(levelSubtitle(mine, 'max', choices, t).text).toBe('OpenAI · gpt-6.1 · <settingsPacks.withEffort>');
+		expect(levelSubtitle(mine, 'auto', choices, t).text).toBe('<modelPick.autoCustom>');
+		expect(levelSubtitle(mine, 'medium', choices, t)).toEqual({ text: '<modelPick.levelDesc.medium> · <modelPick.fromNeboAi>', muted: true });
+	});
+
+	it('Nebo AI keeps its own words, never a model id', () => {
+		for (const row of ['auto', 'instant', 'low', 'medium', 'high', 'max'] as const) {
+			const sub = levelSubtitle(packs[0], row, choices, t);
+			expect(sub.text).toBe(`<modelPick.levelDesc.${row}>`);
+		}
+		expect(packSubtitle(packs[0], choices, t)).toBe('<modelPick.packBuiltIn>');
+	});
+
+	it('the pack list names an owner\'s pack by its providers', () => {
+		expect(packSubtitle(mine, choices, t)).toBe('Janus, OpenAI');
+		expect(packSubtitle({ id: 'e', name: 'Empty', builtIn: false }, choices, t)).toBe('<modelPick.packOwn>');
 	});
 });
 
@@ -97,6 +140,7 @@ describe('loadIntelligence', () => {
 		const i = await loadIntelligence();
 		expect(i?.botDefault).toBe('pack/j/medium');
 		expect(i?.packs.map((p) => p.id)).toEqual(['nebo-ai', 'j', 'w']);
+		expect(i?.choices.map((c) => c.provider)).toEqual(['OpenAI']);
 	});
 });
 

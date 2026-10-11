@@ -3274,7 +3274,9 @@
 			"medium": "Everyday work",
 			"high": "Harder problems",
 			"max": "The most thorough"
-		}
+		},
+		"autoCustom": "Picks from this pack's levels",
+		"fromNeboAi": "from Nebo AI"
 	},
 	"settingsLayers": {
 		"title": "Layers",
@@ -4098,7 +4100,7 @@
 			"max": "Max"
 		},
 		"autoRunsOn": "Nebo AI picks the level each step",
-		"emptyLevel": "The nearest level above",
+		"emptyLevel": "Uses Nebo AI",
 		"vision": "Vision",
 		"voice": "Voice",
 		"decisions": "Decisions",
@@ -4116,7 +4118,7 @@
 		"removeFailed": "Could not remove the pack.",
 		"nameRequired": "Name the pack.",
 		"effortLevels": "Effort levels",
-		"effortLevelsHint": "Any model from any provider. An empty level uses the nearest level above it.",
+		"effortLevelsHint": "Any model from any provider. An empty level uses Nebo AI's model for that level.",
 		"effortDefault": "Default",
 		"providerEffortNamed": "{level} provider effort",
 		"lanes": "Lanes",
