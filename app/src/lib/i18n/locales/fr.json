@@ -349,7 +349,6 @@
 		"startingComputer": "Démarrage de l'ordinateur…",
 		"computerStartFailed": "Impossible de démarrer l'ordinateur. Réessayez.",
 		"tryAgain": "Réessayer",
-		"computerReconnecting": "Reconnexion…",
 		"computerUnavailable": "Pas d'ordinateur sur cette machine",
 		"computerUnavailableHint": "L'ordinateur de l'employé fonctionne sur les installations Linux et les employés dans le cloud.",
 		"watchingAndLearning": "{name} observe et apprend",

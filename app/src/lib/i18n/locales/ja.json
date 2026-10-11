@@ -349,7 +349,6 @@
 		"startingComputer": "コンピュータを起動しています…",
 		"computerStartFailed": "コンピュータを起動できませんでした。もう一度お試しください。",
 		"tryAgain": "もう一度試す",
-		"computerReconnecting": "再接続しています…",
 		"computerUnavailable": "このマシンにはコンピュータがありません",
 		"computerUnavailableHint": "社員のコンピュータはLinuxインストールとクラウド社員で動作します。",
 		"watchingAndLearning": "{name}が見て学んでいます",

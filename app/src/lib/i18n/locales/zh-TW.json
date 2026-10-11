@@ -349,7 +349,6 @@
 		"startingComputer": "正在啟動電腦…",
 		"computerStartFailed": "無法啟動電腦。請再試一次。",
 		"tryAgain": "再試一次",
-		"computerReconnecting": "正在重新連線…",
 		"computerUnavailable": "這台機器上沒有電腦",
 		"computerUnavailableHint": "員工的電腦可在 Linux 安裝版和雲端員工上執行。",
 		"watchingAndLearning": "{name} 正在旁觀學習",

@@ -349,7 +349,6 @@
 		"startingComputer": "Starting the computer…",
 		"computerStartFailed": "Could not start the computer. Try again.",
 		"tryAgain": "Try again",
-		"computerReconnecting": "Reconnecting…",
 		"computerUnavailable": "No computer on this machine",
 		"computerUnavailableHint": "The employee's computer runs on Linux installs and cloud employees.",
 		"watchingAndLearning": "{name} is watching and learning",

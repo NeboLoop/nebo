@@ -349,7 +349,6 @@
 		"startingComputer": "Menyalakan komputer…",
 		"computerStartFailed": "Komputer tidak dapat dinyalakan. Coba lagi.",
 		"tryAgain": "Coba lagi",
-		"computerReconnecting": "Menyambungkan ulang…",
 		"computerUnavailable": "Tidak ada komputer di mesin ini",
 		"computerUnavailableHint": "Komputer karyawan berjalan di instalasi Linux dan karyawan cloud.",
 		"watchingAndLearning": "{name} sedang menonton dan belajar",

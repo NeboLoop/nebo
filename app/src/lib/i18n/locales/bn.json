@@ -349,7 +349,6 @@
 		"startingComputer": "কম্পিউটার চালু হচ্ছে…",
 		"computerStartFailed": "কম্পিউটার চালু করা যায়নি। আবার চেষ্টা করুন।",
 		"tryAgain": "আবার চেষ্টা করুন",
-		"computerReconnecting": "আবার সংযোগ হচ্ছে…",
 		"computerUnavailable": "এই মেশিনে কোনো কম্পিউটার নেই",
 		"computerUnavailableHint": "কর্মীর কম্পিউটার Linux ইনস্টলেশন ও ক্লাউড কর্মীদের ক্ষেত্রে চলে।",
 		"watchingAndLearning": "{name} দেখছেন এবং শিখছেন",
