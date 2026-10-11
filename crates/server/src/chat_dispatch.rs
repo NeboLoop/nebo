@@ -50,8 +50,8 @@ pub(crate) async fn announce_ask(state: &AppState, session_key: &str, event: &ai
 /// stops, whichever turn started it, then the running turn. The colleagues
 /// it asked and is still waiting on stop with it, and the ones they asked,
 /// down the chain: nobody waits for their answers any more, so none wakes
-/// the stopped conversation. Returns whether a turn was running in any of
-/// them.
+/// the stopped conversation. A hand-off worked in any of them is recorded
+/// stopped. Returns whether a turn was running in any of them.
 pub(crate) async fn stop_session(
     store: &db::Store,
     helpers: &agent::harness::delegation::Helpers,
@@ -71,6 +71,7 @@ pub(crate) async fn stop_session(
         }
         helpers.stop_session(Some(&key));
         running |= runs.cancel_by_session(&key).await;
+        crate::handoff::stopped_into(store, &key);
         stopped.push(key);
     }
     running

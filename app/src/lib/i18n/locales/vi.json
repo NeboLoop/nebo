@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Bạn có thể giúp tôi điều gì?",
 		"roleSuggestion2": "Hãy giới thiệu ngắn về bạn",
 		"messageChannel": "Tin nhắn #{channel}...",
-		"messagedCoworker": "Đã nhắn tin",
 		"disclaimer": "Nebo có thể mắc sai sót. Hãy kiểm tra lại thông tin quan trọng.",
 		"uploadsKept": "Tệp tải lên được giữ trong {days} ngày.",
 		"goodMorning": "Chào buổi sáng",
@@ -4221,6 +4220,22 @@
 			"running": "Đang làm",
 			"scheduled": "Hẹn giờ",
 			"watching": "Theo dõi"
+		}
+	},
+	"handoff": {
+		"fromAsk": "Từ {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Mở cuộc trò chuyện của {name}",
+		"openReceiver": "Mở công việc của {name}",
+		"doneWith": "Xong: {result}",
+		"failedWith": "Thất bại: {error}",
+		"stop": "Dừng",
+		"status": {
+			"queued": "Đang chờ",
+			"running": "Đang làm",
+			"done": "Xong",
+			"failed": "Thất bại",
+			"stopped": "Đã dừng"
 		}
 	}
 }

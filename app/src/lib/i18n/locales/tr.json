@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Bana ne konuda yardımcı olabilirsin?",
 		"roleSuggestion2": "Kısaca kendini tanıt",
 		"messageChannel": "#{channel} kanalına mesaj...",
-		"messagedCoworker": "Mesaj gönderdi",
 		"disclaimer": "Nebo hata yapabilir. Önemli bilgileri doğrulayın.",
 		"uploadsKept": "Yüklemeler {days} gün saklanır.",
 		"goodMorning": "Günaydın",
@@ -4221,6 +4220,22 @@
 			"running": "Çalışıyor",
 			"scheduled": "Zamanlayıcılar",
 			"watching": "İzlemeler"
+		}
+	},
+	"handoff": {
+		"fromAsk": "{name} kişisinden: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "{name} ile konuşmayı aç",
+		"openReceiver": "{name} işini aç",
+		"doneWith": "Tamamlandı: {result}",
+		"failedWith": "Başarısız: {error}",
+		"stop": "Durdur",
+		"status": {
+			"queued": "Sırada",
+			"running": "Üzerinde çalışılıyor",
+			"done": "Tamamlandı",
+			"failed": "Başarısız",
+			"stopped": "Durduruldu"
 		}
 	}
 }

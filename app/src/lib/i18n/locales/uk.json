@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Чим ти можеш мені допомогти?",
 		"roleSuggestion2": "Коротко представся",
 		"messageChannel": "Повідомлення #{channel}...",
-		"messagedCoworker": "Написав",
 		"disclaimer": "Nebo може помилятися. Перевіряйте важливу інформацію.",
 		"uploadsKept": "{days, plural, one {Завантаження зберігаються # день.} few {Завантаження зберігаються # дні.} many {Завантаження зберігаються # днів.} other {Завантаження зберігаються # дня.}}",
 		"goodMorning": "Доброго ранку",
@@ -4221,6 +4220,22 @@
 			"running": "У роботі",
 			"scheduled": "Таймери",
 			"watching": "Спостереження"
+		}
+	},
+	"handoff": {
+		"fromAsk": "Від {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Відкрити розмову з {name}",
+		"openReceiver": "Відкрити роботу {name}",
+		"doneWith": "Готово: {result}",
+		"failedWith": "Помилка: {error}",
+		"stop": "Зупинити",
+		"status": {
+			"queued": "У черзі",
+			"running": "У роботі",
+			"done": "Готово",
+			"failed": "Помилка",
+			"stopped": "Зупинено"
 		}
 	}
 }

@@ -311,7 +311,6 @@
 		"roleSuggestion1": "你能帮我做什么？",
 		"roleSuggestion2": "做个简单的自我介绍",
 		"messageChannel": "消息 #{channel}...",
-		"messagedCoworker": "已发送消息",
 		"disclaimer": "Nebo 可能会犯错。请核实重要信息。",
 		"uploadsKept": "上传的文件保留 {days} 天。",
 		"goodMorning": "早上好",
@@ -4221,6 +4220,22 @@
 			"running": "工作中",
 			"scheduled": "计时器",
 			"watching": "监视"
+		}
+	},
+	"handoff": {
+		"fromAsk": "来自 {name}：{ask}",
+		"toAsk": "→ {name}：{ask}",
+		"openSender": "打开 {name} 的对话",
+		"openReceiver": "打开 {name} 的工作",
+		"doneWith": "已完成：{result}",
+		"failedWith": "失败：{error}",
+		"stop": "停止",
+		"status": {
+			"queued": "排队中",
+			"running": "处理中",
+			"done": "已完成",
+			"failed": "失败",
+			"stopped": "已停止"
 		}
 	}
 }

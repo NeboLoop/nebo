@@ -311,7 +311,6 @@
 		"roleSuggestion1": "W czym możesz mi pomóc?",
 		"roleSuggestion2": "Przedstaw się krótko",
 		"messageChannel": "Wiadomość #{channel}...",
-		"messagedCoworker": "Napisał",
 		"disclaimer": "Nebo może popełniać błędy. Weryfikuj ważne informacje.",
 		"uploadsKept": "{days, plural, one {Przesłane pliki są przechowywane przez # dzień.} few {Przesłane pliki są przechowywane przez # dni.} many {Przesłane pliki są przechowywane przez # dni.} other {Przesłane pliki są przechowywane przez # dnia.}}",
 		"goodMorning": "Dzień dobry",
@@ -4221,6 +4220,22 @@
 			"running": "Pracuje",
 			"scheduled": "Minutniki",
 			"watching": "Obserwacje"
+		}
+	},
+	"handoff": {
+		"fromAsk": "Od {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Otwórz rozmowę z {name}",
+		"openReceiver": "Otwórz pracę {name}",
+		"doneWith": "Gotowe: {result}",
+		"failedWith": "Niepowodzenie: {error}",
+		"stop": "Zatrzymaj",
+		"status": {
+			"queued": "W kolejce",
+			"running": "W toku",
+			"done": "Gotowe",
+			"failed": "Niepowodzenie",
+			"stopped": "Zatrzymano"
 		}
 	}
 }

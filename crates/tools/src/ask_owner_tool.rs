@@ -60,7 +60,16 @@ impl AskOwnerTool {
                  then carry on with anything that doesn't depend on it, and don't treat it as \
                  decided.",
                 name = delivery.to_name
-            ))),
+            ))
+            // The same hand-off line a message to a coworker shows.
+            .with_payload(serde_json::json!({
+                "kind": "coworker_message",
+                "to": delivery.to_name,
+                "toAgentId": delivery.to_agent_id,
+                "threadKey": delivery.thread_key,
+                "text": text,
+                "handoffId": delivery.handoff_id,
+            }))),
             Err(e) => {
                 tracing::warn!(agent = %me, manager = %manager_id, error = %e,
                     "escalation up the reporting line failed; the seat decides for itself");

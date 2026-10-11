@@ -57,6 +57,10 @@ pub struct CoworkerMessage {
     /// one a notification woke, a schedule, a helper, a colleague's request —
     /// whatever its words say.
     pub owners_turn: Option<String>,
+    /// The sending turn's run id (`ToolContext.run_id`), kept on the
+    /// hand-off record so the trace names the turn that handed the work on.
+    /// `None` when no run sent it (a team post's fan-out).
+    pub sender_run_id: Option<String>,
 }
 
 /// A linked employee's conversation a message goes into (see
@@ -141,6 +145,10 @@ pub struct CoworkerDelivery {
     pub to_name: String,
     /// The target-side thread (session key) the message was delivered into.
     pub thread_key: String,
+    /// The hand-off record the delivery is traced by (`server::handoff`);
+    /// `None` when it could not be recorded or is not a hand-off between
+    /// employees (the owner's own team post).
+    pub handoff_id: Option<String>,
 }
 
 /// One post into a team (`crate::team`). The rail appends it to the team's
@@ -277,6 +285,7 @@ pub async fn deliver(
         provenance: ctx.run_taint.clone(),
         team: None,
         owners_turn: owners_turn(ctx),
+        sender_run_id: ctx.run_id.clone(),
     })
     .await
 }

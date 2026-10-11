@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Apa yang bisa Anda bantu?",
 		"roleSuggestion2": "Berikan saya pengenalan singkat",
 		"messageChannel": "Pesan #{channel}...",
-		"messagedCoworker": "Dikirimi pesan",
 		"disclaimer": "Nebo bisa melakukan kesalahan. Verifikasi informasi penting.",
 		"uploadsKept": "Unggahan disimpan selama {days} hari.",
 		"goodMorning": "Selamat pagi",
@@ -4221,6 +4220,22 @@
 			"running": "Bekerja",
 			"scheduled": "Pengatur waktu",
 			"watching": "Pemantauan"
+		}
+	},
+	"handoff": {
+		"fromAsk": "Dari {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Buka percakapan {name}",
+		"openReceiver": "Buka pekerjaan {name}",
+		"doneWith": "Selesai: {result}",
+		"failedWith": "Gagal: {error}",
+		"stop": "Hentikan",
+		"status": {
+			"queued": "Dalam antrean",
+			"running": "Sedang dikerjakan",
+			"done": "Selesai",
+			"failed": "Gagal",
+			"stopped": "Dihentikan"
 		}
 	}
 }

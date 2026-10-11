@@ -311,7 +311,6 @@
 		"roleSuggestion1": "คุณช่วยอะไรฉันได้บ้าง?",
 		"roleSuggestion2": "แนะนำตัวสั้นๆ ให้หน่อย",
 		"messageChannel": "ข้อความ #{channel}...",
-		"messagedCoworker": "ส่งข้อความแล้ว",
 		"disclaimer": "Nebo อาจทำผิดพลาดได้ กรุณาตรวจสอบข้อมูลสำคัญ",
 		"uploadsKept": "ไฟล์ที่อัปโหลดจะถูกเก็บไว้ {days} วัน",
 		"goodMorning": "สวัสดีตอนเช้า",
@@ -4221,6 +4220,22 @@
 			"running": "กำลังทำงาน",
 			"scheduled": "ตัวจับเวลา",
 			"watching": "การเฝ้าดู"
+		}
+	},
+	"handoff": {
+		"fromAsk": "จาก {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "เปิดการสนทนาของ {name}",
+		"openReceiver": "เปิดงานของ {name}",
+		"doneWith": "เสร็จแล้ว: {result}",
+		"failedWith": "ล้มเหลว: {error}",
+		"stop": "หยุด",
+		"status": {
+			"queued": "อยู่ในคิว",
+			"running": "กำลังทำงาน",
+			"done": "เสร็จแล้ว",
+			"failed": "ล้มเหลว",
+			"stopped": "หยุดแล้ว"
 		}
 	}
 }

@@ -311,7 +311,6 @@
 		"roleSuggestion1": "كيف يمكنك مساعدتي؟",
 		"roleSuggestion2": "قدّم لي نبذة تعريفية",
 		"messageChannel": "اكتب في #{channel}...",
-		"messagedCoworker": "أرسل رسالة",
 		"disclaimer": "قد يخطئ Nebo. تحقق من المعلومات المهمة.",
 		"uploadsKept": "{days, plural, zero {لا يُحتفظ بالملفات المرفوعة.} one {يُحتفظ بالملفات المرفوعة لمدة يوم واحد.} two {يُحتفظ بالملفات المرفوعة لمدة يومين.} few {يُحتفظ بالملفات المرفوعة لمدة # أيام.} many {يُحتفظ بالملفات المرفوعة لمدة # يومًا.} other {يُحتفظ بالملفات المرفوعة لمدة # يوم.}}",
 		"goodMorning": "صباح الخير",
@@ -4221,6 +4220,22 @@
 			"running": "يعمل",
 			"scheduled": "المؤقتات",
 			"watching": "المراقبات"
+		}
+	},
+	"handoff": {
+		"fromAsk": "من {name}: {ask}",
+		"toAsk": "← {name}: {ask}",
+		"openSender": "افتح محادثة {name}",
+		"openReceiver": "افتح عمل {name}",
+		"doneWith": "تم: {result}",
+		"failedWith": "فشل: {error}",
+		"stop": "إيقاف",
+		"status": {
+			"queued": "في الانتظار",
+			"running": "قيد العمل",
+			"done": "تم",
+			"failed": "فشل",
+			"stopped": "تم الإيقاف"
 		}
 	}
 }

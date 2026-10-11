@@ -187,6 +187,7 @@ pub(crate) fn post(
                 conversation: None,
                 // The delivery carries the post's authority, decided above.
                 owners_turn: None,
+                sender_run_id: None,
             };
             match crate::coworker::send_coworker_message(state.clone(), msg).await {
                 Ok(_) => asked.push(member_name.clone()),

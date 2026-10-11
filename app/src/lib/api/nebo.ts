@@ -1042,6 +1042,27 @@ export function serveFile(path: string) {
 }
 
 /**
+ * @description "List handoffs"
+ */
+export function listHandoffs(from?: string, into?: string, agent?: string, live?: boolean, limit?: number) {
+	return webapi.get<components.HandoffList>(`/api/v1/handoffs`, { from, into, agent, live, limit })
+}
+
+/**
+ * @description "Get handoff"
+ */
+export function getHandoff(id: string) {
+	return webapi.get<components.HandoffDetail>(`/api/v1/handoffs/${id}`)
+}
+
+/**
+ * @description "Stop handoff"
+ */
+export function stopHandoff(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.HandoffStopResponse>(`/api/v1/handoffs/${id}/stop`, req)
+}
+
+/**
  * @description "Apply install"
  */
 export function applyInstall(req: Record<string, unknown> = {}) {

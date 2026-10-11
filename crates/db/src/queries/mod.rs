@@ -22,6 +22,7 @@ mod employee_drafts;
 mod engine;
 mod event_dedup;
 mod file_history;
+mod handoffs;
 mod inbound_mail;
 mod intelligence_packs;
 mod entity_config;
@@ -55,6 +56,7 @@ pub use agents::agent_slug;
 pub use inbound_mail::InboundMailRow;
 pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::{cron_ref, is_one_shot};
+pub use handoffs::{HANDOFF_ASK_CAP, HANDOFF_LIVE, HANDOFF_RESULT_CAP, Handoff, HandoffQuery, NewHandoff};
 pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
 pub use chats::{AUTOMATION_KEY, is_automation_notice};
 pub use engine::{

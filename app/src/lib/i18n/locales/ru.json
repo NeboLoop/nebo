@@ -311,7 +311,6 @@
 		"roleSuggestion1": "Чем ты можешь мне помочь?",
 		"roleSuggestion2": "Кратко представься",
 		"messageChannel": "Сообщение #{channel}...",
-		"messagedCoworker": "Написал",
 		"disclaimer": "Nebo может ошибаться. Проверяйте важную информацию.",
 		"uploadsKept": "Загрузки хранятся {days, plural, one {# день} few {# дня} many {# дней} other {# дня}}.",
 		"goodMorning": "Доброе утро",
@@ -4221,6 +4220,22 @@
 			"running": "В работе",
 			"scheduled": "Таймеры",
 			"watching": "Наблюдения"
+		}
+	},
+	"handoff": {
+		"fromAsk": "От {name}: {ask}",
+		"toAsk": "→ {name}: {ask}",
+		"openSender": "Открыть разговор с {name}",
+		"openReceiver": "Открыть работу {name}",
+		"doneWith": "Готово: {result}",
+		"failedWith": "Ошибка: {error}",
+		"stop": "Остановить",
+		"status": {
+			"queued": "В очереди",
+			"running": "В работе",
+			"done": "Готово",
+			"failed": "Ошибка",
+			"stopped": "Остановлено"
 		}
 	}
 }

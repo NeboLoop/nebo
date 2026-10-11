@@ -50,6 +50,7 @@
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
   import { callLine, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
+  import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
   import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
   import { backgroundNotices, belongsTo } from '$lib/stores/background';
@@ -821,14 +822,16 @@
       : null;
   }
 
-  // Coworker sends are events the owner reads ("Messaged Search Analyst"),
-  // never plumbing inside the collapsed tool group.
+  // Hand-offs to another employee are lines the owner reads ("→ Search
+  // Analyst: …" with its status beneath), never plumbing inside the
+  // collapsed tool group: a failure stays in sight.
   interface CoworkerEventPayload {
     kind: 'coworker_message';
     to?: string;
     toAgentId?: string;
     threadKey?: string;
     text?: string;
+    handoffId?: string;
     [k: string]: unknown;
   }
   function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {
@@ -2164,15 +2167,12 @@
               {/if}
             {/each}
             {#each segs.flatMap((sg) => coworkerEvents(sg.tools)) as ev, evIdx (evIdx)}
-              <a
-                href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
-                class="flex items-center justify-center gap-1.5 my-2.5 text-xs text-base-content/60 no-underline {ev.threadKey ? 'hover:text-base-content transition-colors' : ''}"
-                title={ev.threadKey ? $t('coworkerThread.open') : undefined}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
-                <span>{$t('chat.messagedCoworker')}</span>
-                <span class="font-medium text-base-content/80">{ev.to}</span>
-              </a>
+              <HandoffLine
+                to={ev.to ?? ''}
+                ask={ev.text ?? ''}
+                handoffId={ev.handoffId ?? ''}
+                fallbackHref={ev.threadKey ? cwHref(ev.threadKey) : undefined}
+              />
             {/each}
             {#each segs.flatMap((sg) => consentLines(sg.tools)) as consent, cIdx (cIdx)}
               <ConsentChip {consent} />
