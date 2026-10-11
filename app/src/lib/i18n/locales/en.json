@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Commands, MCPs, Skills, Employees...",
-		"mcp": "MCP",
+		"placeholder": "Commands, Connectors, Skills, Employees...",
+		"mcp": "Connector",
 		"skill": "Skill",
 		"agent": "Employee",
 		"command": "Command",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "We found your {source} setup",
-		"pitch": "Bring your employees, skills, MCP servers, memory, and conversation history over — your old install stays untouched.",
+		"pitch": "Bring your employees, skills, connectors, memory, and conversation history over — your old install stays untouched.",
 		"bringOver": "Bring it over",
 		"scanning": "Scanning…",
 		"importAll": "Import everything",
@@ -1571,13 +1571,13 @@
 		"failed": "Import didn't complete — you can run it any time from Settings → Import.",
 		"employees": "employees",
 		"skills": "skills",
-		"mcpServers": "MCP servers",
+		"mcpServers": "connectors",
 		"memoryFiles": "memory files",
 		"runLocally": "run locally"
 	},
 	"settingsImport": {
 		"title": "Import",
-		"description": "Bring your setup over from another AI tool — skills, MCP servers, and your employee's persona",
+		"description": "Bring your setup over from another AI tool — skills, connectors, and your employee's persona",
 		"detectedTitle": "Detected installs",
 		"comingSoon": "Coming soon",
 		"pathTitle": "Install location",
@@ -1588,12 +1588,12 @@
 		"runsCode": "runs code",
 		"importAll": "Import everything",
 		"importing": "Importing…",
-		"doneSummary": "Imported {agents} employee(s), {skills} skill(s), {mcp} MCP server(s), {memories} memory(ies), {chats} conversation(s), and {keys} provider key(s).",
+		"doneSummary": "Imported {agents} employee(s), {skills} skill(s), {mcp} connector(s), {memories} memory(ies), {chats} conversation(s), and {keys} provider key(s).",
 		"skippedTitle": "Not imported",
 		"kinds": {
 			"agent": "Employees",
 			"skill": "Skills",
-			"mcp_server": "MCP servers",
+			"mcp_server": "Connectors",
 			"memory": "Memory",
 			"session": "Conversations",
 			"cron": "Schedules",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Employee Status",
 		"description": "Monitor connected employees and system health",
-		"mcpServer": "MCP Server",
+		"mcpServer": "Connectors",
 		"database": "Database",
 		"webSocket": "Live connection",
 		"uptime": "Uptime",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Persona",
-		"assistantPlaceholder": "Define the employee's personality, role, and behavioral guidelines. e.g. You are an AI employee who helps manage daily tasks... Type / to mention an MCP, skill, or employee.",
-		"personaPlaceholder": "Define this employee's personality, role, and behavioral guidelines. e.g. You are an executive assistant who runs the owner's inbox and calendar... Type / to mention an MCP, skill, or employee.",
+		"assistantPlaceholder": "Define the employee's personality, role, and behavioral guidelines. e.g. You are an AI employee who helps manage daily tasks... Type / to mention a connector, skill, or employee.",
+		"personaPlaceholder": "Define this employee's personality, role, and behavioral guidelines. e.g. You are an executive assistant who runs the owner's inbox and calendar... Type / to mention a connector, skill, or employee.",
 		"undo": "Undo",
 		"redo": "Redo",
 		"properties": "Properties",
@@ -2980,7 +2980,7 @@
 			"plugin": "Installing plugin…",
 			"app": "Installing app…",
 			"collection": "Installing collection…",
-			"connection": "Adding MCP connection…"
+			"connection": "Adding connector…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Your data stays local",
 		"featureMarketplace": "Skills & roles marketplace",
 		"featureDesktop": "Desktop automation",
-		"featureMcp": "MCP integrations",
+		"featureMcp": "Connectors",
 		"featureMemory": "Memory system",
 		"backToPlans": "Back to plans",
 		"loadingCheckout": "Loading checkout...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Could not start update",
 		"never": "never",
 		"checkNow": "Check now",
-		"description": "Available updates for your installed plugins, employees, skills, MCP connectors, and apps. You approve each update; turn on auto-update per item to apply silently.",
+		"description": "Available updates for your installed plugins, employees, skills, connectors, and apps. You approve each update; turn on auto-update per item to apply silently.",
 		"availableUpdates": "Available updates",
 		"updatingAll": "Updating all…",
 		"updateAll": "Update all ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugins",
 		"typeAgents": "Employees",
 		"typeSkills": "Skills",
-		"typeConnectors": "MCP Connectors",
+		"typeConnectors": "Connectors",
 		"checkEvery": "Check every",
 		"hours6": "6 hours",
 		"history": "History",
@@ -3535,8 +3535,8 @@
 						"description": "Comma-separated plugin slugs."
 					},
 					"mcp": {
-						"label": "Allowed MCP servers",
-						"description": "Comma-separated connected MCP server names."
+						"label": "Allowed connectors",
+						"description": "Comma-separated connector names."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Connector",
-				"description": "Use an MCP integration",
+				"description": "Use a connector",
 				"params": {
 					"serverId": {
-						"label": "MCP Server",
-						"description": "Connected MCP server to use"
+						"label": "Connector",
+						"description": "The connector to use"
 					},
 					"tool": {
 						"label": "Tool",
-						"description": "Which tool to invoke on the MCP server",
+						"description": "Which tool to use on the connector",
 						"placeholder": "e.g. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Activities",
 				"callTree": "Call Tree",
 				"flowControl": "Flow Control",
-				"connectors": "Connectors (MCP)",
+				"connectors": "Connectors",
 				"agents": "Agents",
 				"output": "Output"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 tool} other{{count} tools}}",
 		"name": "Name",
 		"nameHelper": "Shown in the connectors list.",
-		"url": "MCP server URL",
+		"url": "Connector URL",
 		"urlHelper": "The HTTPS address where the server accepts MCP requests, for example https://mcp.example.com/mcp",
 		"urlInvalid": "Enter an address that starts with https://",
 		"trust": "Only add connectors from developers you trust. Nebo doesn't control what tools a connector offers or how they change.",

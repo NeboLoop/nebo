@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "指令、MCP、技能、員工...",
-		"mcp": "MCP",
+		"placeholder": "指令、連接器、技能、員工...",
+		"mcp": "連接器",
 		"skill": "技能",
 		"agent": "員工",
 		"command": "指令",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "我們找到了你的 {source} 設定",
-		"pitch": "把你的員工、技能、MCP 伺服器、記憶和對話紀錄一起帶過來 — 原本的安裝不會有任何更動。",
+		"pitch": "把你的員工、技能、連接器、記憶和對話紀錄一起帶過來 — 原本的安裝不會有任何更動。",
 		"bringOver": "一起帶過來",
 		"scanning": "正在掃描…",
 		"importAll": "全部匯入",
@@ -1571,13 +1571,13 @@
 		"failed": "匯入未完成 — 你可以隨時到設定 → 匯入重新執行。",
 		"employees": "員工",
 		"skills": "技能",
-		"mcpServers": "MCP 伺服器",
+		"mcpServers": "連接器",
 		"memoryFiles": "記憶檔案",
 		"runLocally": "本機執行"
 	},
 	"settingsImport": {
 		"title": "匯入",
-		"description": "從其他 AI 工具把你的設定帶過來 — 技能、MCP 伺服器，以及員工的人設",
+		"description": "從其他 AI 工具把你的設定帶過來 — 技能、連接器，以及員工的人設",
 		"detectedTitle": "偵測到的安裝",
 		"comingSoon": "即將推出",
 		"pathTitle": "安裝位置",
@@ -1588,12 +1588,12 @@
 		"runsCode": "會執行程式碼",
 		"importAll": "全部匯入",
 		"importing": "正在匯入…",
-		"doneSummary": "已匯入 {agents} 位員工、{skills} 個技能、{mcp} 個 MCP 伺服器、{memories} 則記憶、{chats} 段對話和 {keys} 把供應商金鑰。",
+		"doneSummary": "已匯入 {agents} 位員工、{skills} 個技能、{mcp} 個 連接器、{memories} 則記憶、{chats} 段對話和 {keys} 把供應商金鑰。",
 		"skippedTitle": "未匯入的項目",
 		"kinds": {
 			"agent": "員工",
 			"skill": "技能",
-			"mcp_server": "MCP 伺服器",
+			"mcp_server": "連接器",
 			"memory": "記憶",
 			"session": "對話",
 			"cron": "排程",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "員工狀態",
 		"description": "監控已連線的員工和系統健康狀況",
-		"mcpServer": "MCP 伺服器",
+		"mcpServer": "連接器",
 		"database": "資料庫",
 		"webSocket": "WebSocket",
 		"uptime": "運行時間",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "人設",
-		"assistantPlaceholder": "定義員工的個性、角色和行為準則。例如：你是一位協助管理日常工作的 AI 員工... 輸入 / 來參照 MCP、技能或員工。",
-		"personaPlaceholder": "定義此員工的個性、角色和行為準則。例如：你是管理主管日常節奏的幕僚長... 輸入 / 來參照 MCP、技能或員工。",
+		"assistantPlaceholder": "定義員工的個性、角色和行為準則。例如：你是一位協助管理日常工作的 AI 員工... 輸入 / 來參照連接器、技能或員工。",
+		"personaPlaceholder": "定義此員工的個性、角色和行為準則。例如：你是管理主管日常節奏的幕僚長... 輸入 / 來參照連接器、技能或員工。",
 		"undo": "復原",
 		"redo": "重做",
 		"properties": "屬性",
@@ -2980,7 +2980,7 @@
 			"plugin": "正在安裝外掛…",
 			"app": "正在安裝應用程式…",
 			"collection": "正在安裝合輯…",
-			"connection": "正在新增 MCP 連線…"
+			"connection": "正在新增連接器…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "你的資料留在本機",
 		"featureMarketplace": "技能與職務市集",
 		"featureDesktop": "桌面自動化",
-		"featureMcp": "MCP 整合",
+		"featureMcp": "連接器",
 		"featureMemory": "記憶系統",
 		"backToPlans": "返回方案",
 		"loadingCheckout": "載入結帳中...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "無法啟動更新",
 		"never": "從未",
 		"checkNow": "立即檢查",
-		"description": "你已安裝的外掛、員工、技能、MCP 連接器和應用程式的可用更新。每項更新由你核准；可為個別項目開啟自動更新以靜默套用。",
+		"description": "你已安裝的外掛、員工、技能、連接器和應用程式的可用更新。每項更新由你核准；可為個別項目開啟自動更新以靜默套用。",
 		"availableUpdates": "可用更新",
 		"updatingAll": "全部更新中…",
 		"updateAll": "全部更新（{count}）",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "外掛",
 		"typeAgents": "員工",
 		"typeSkills": "技能",
-		"typeConnectors": "MCP 連接器",
+		"typeConnectors": "連接器",
 		"checkEvery": "檢查頻率",
 		"hours6": "6 小時",
 		"history": "歷史紀錄",
@@ -3535,8 +3535,8 @@
 						"description": "外掛 slug，以逗號分隔。"
 					},
 					"mcp": {
-						"label": "允許的 MCP 伺服器",
-						"description": "已連線的 MCP 伺服器名稱，以逗號分隔。"
+						"label": "允許的連接器",
+						"description": "連接器名稱，以逗號分隔。"
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "連接器",
-				"description": "使用 MCP 整合",
+				"description": "使用連接器",
 				"params": {
 					"serverId": {
-						"label": "MCP 伺服器",
-						"description": "要使用的已連線 MCP 伺服器"
+						"label": "連接器",
+						"description": "要使用的連接器"
 					},
 					"tool": {
 						"label": "工具",
-						"description": "要在 MCP 伺服器上呼叫哪個工具",
+						"description": "要在連接器上使用哪個工具",
 						"placeholder": "例如 read_file、send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "活動",
 				"callTree": "來電選單",
 				"flowControl": "流程控制",
-				"connectors": "連接器（MCP）",
+				"connectors": "連接器",
 				"agents": "員工",
 				"output": "輸出"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, other{{count} 個工具}}",
 		"name": "名稱",
 		"nameHelper": "顯示在連接器清單中。",
-		"url": "MCP 伺服器 URL",
+		"url": "連接器 URL",
 		"urlHelper": "伺服器接收 MCP 要求的 HTTPS 位址,例如 https://mcp.example.com/mcp",
 		"urlInvalid": "請輸入以 https:// 開頭的位址",
 		"trust": "只新增你信任的開發者提供的連接器。Nebo 無法控制連接器提供哪些工具或這些工具如何變化。",

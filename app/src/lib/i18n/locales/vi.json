@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Lệnh, MCP, Kỹ năng, Nhân viên...",
-		"mcp": "MCP",
+		"placeholder": "Lệnh, Trình kết nối, Kỹ năng, Nhân viên...",
+		"mcp": "Trình kết nối",
 		"skill": "Kỹ năng",
 		"agent": "Nhân viên",
 		"command": "Lệnh",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "Chúng tôi tìm thấy thiết lập {source} của bạn",
-		"pitch": "Mang theo nhân viên, kỹ năng, máy chủ MCP, bộ nhớ và lịch sử trò chuyện của bạn — bản cài cũ vẫn nguyên vẹn.",
+		"pitch": "Mang theo nhân viên, kỹ năng, trình kết nối, bộ nhớ và lịch sử trò chuyện của bạn — bản cài cũ vẫn nguyên vẹn.",
 		"bringOver": "Mang sang đây",
 		"scanning": "Đang quét…",
 		"importAll": "Nhập tất cả",
@@ -1571,13 +1571,13 @@
 		"failed": "Việc nhập chưa hoàn tất — bạn có thể chạy lại bất cứ lúc nào tại Cài đặt → Nhập.",
 		"employees": "nhân viên",
 		"skills": "kỹ năng",
-		"mcpServers": "máy chủ MCP",
+		"mcpServers": "trình kết nối",
 		"memoryFiles": "tệp bộ nhớ",
 		"runLocally": "chạy tại máy"
 	},
 	"settingsImport": {
 		"title": "Nhập",
-		"description": "Mang thiết lập của bạn từ công cụ AI khác sang — kỹ năng, máy chủ MCP và chân dung nhân viên của bạn",
+		"description": "Mang thiết lập của bạn từ công cụ AI khác sang — kỹ năng, trình kết nối và chân dung nhân viên của bạn",
 		"detectedTitle": "Bản cài được phát hiện",
 		"comingSoon": "Sắp có",
 		"pathTitle": "Vị trí bản cài",
@@ -1588,12 +1588,12 @@
 		"runsCode": "chạy mã",
 		"importAll": "Nhập tất cả",
 		"importing": "Đang nhập…",
-		"doneSummary": "Đã nhập {agents} nhân viên, {skills} kỹ năng, {mcp} máy chủ MCP, {memories} bộ nhớ, {chats} cuộc trò chuyện và {keys} khóa nhà cung cấp.",
+		"doneSummary": "Đã nhập {agents} nhân viên, {skills} kỹ năng, {mcp} trình kết nối, {memories} bộ nhớ, {chats} cuộc trò chuyện và {keys} khóa nhà cung cấp.",
 		"skippedTitle": "Không nhập",
 		"kinds": {
 			"agent": "Nhân viên",
 			"skill": "Kỹ năng",
-			"mcp_server": "Máy chủ MCP",
+			"mcp_server": "Trình kết nối",
 			"memory": "Bộ nhớ",
 			"session": "Cuộc trò chuyện",
 			"cron": "Lịch chạy",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Trạng thái nhân viên",
 		"description": "Theo dõi các nhân viên đã kết nối và sức khỏe hệ thống",
-		"mcpServer": "Máy chủ MCP",
+		"mcpServer": "Trình kết nối",
 		"database": "Cơ sở dữ liệu",
 		"webSocket": "WebSocket",
 		"uptime": "Thời gian hoạt động",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Hình mẫu",
-		"assistantPlaceholder": "Xác định tính cách, vai trò và hướng dẫn hành vi của nhân viên. vd. Bạn là một nhân viên AI giúp quản lý công việc hàng ngày... Nhập / để đề cập MCP, kỹ năng hoặc nhân viên.",
-		"personaPlaceholder": "Xác định tính cách, vai trò và hướng dẫn hành vi của nhân viên này. vd. Bạn là trưởng ban tham mưu quản lý nhịp làm việc hàng ngày của giám đốc... Nhập / để đề cập MCP, kỹ năng hoặc nhân viên.",
+		"assistantPlaceholder": "Xác định tính cách, vai trò và hướng dẫn hành vi của nhân viên. vd. Bạn là một nhân viên AI giúp quản lý công việc hàng ngày... Nhập / để đề cập trình kết nối, kỹ năng hoặc nhân viên.",
+		"personaPlaceholder": "Xác định tính cách, vai trò và hướng dẫn hành vi của nhân viên này. vd. Bạn là trưởng ban tham mưu quản lý nhịp làm việc hàng ngày của giám đốc... Nhập / để đề cập trình kết nối, kỹ năng hoặc nhân viên.",
 		"undo": "Hoàn tác",
 		"redo": "Làm lại",
 		"properties": "Thuộc tính",
@@ -2980,7 +2980,7 @@
 			"plugin": "Đang cài plugin…",
 			"app": "Đang cài ứng dụng…",
 			"collection": "Đang cài bộ sưu tập…",
-			"connection": "Đang thêm kết nối MCP…"
+			"connection": "Đang thêm trình kết nối…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Dữ liệu của bạn ở lại cục bộ",
 		"featureMarketplace": "Cửa hàng kỹ năng & vai trò",
 		"featureDesktop": "Tự động hóa máy tính",
-		"featureMcp": "Tích hợp MCP",
+		"featureMcp": "Trình kết nối",
 		"featureMemory": "Hệ thống ký ức",
 		"backToPlans": "Quay lại các gói",
 		"loadingCheckout": "Đang tải trang thanh toán...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Không thể bắt đầu cập nhật",
 		"never": "không bao giờ",
 		"checkNow": "Kiểm tra ngay",
-		"description": "Cập nhật khả dụng cho plugin, nhân viên, kỹ năng, trình kết nối MCP và ứng dụng đã cài. Bạn phê duyệt từng cập nhật; bật tự động cập nhật cho từng mục để áp dụng âm thầm.",
+		"description": "Cập nhật khả dụng cho plugin, nhân viên, kỹ năng, trình kết nối và ứng dụng đã cài. Bạn phê duyệt từng cập nhật; bật tự động cập nhật cho từng mục để áp dụng âm thầm.",
 		"availableUpdates": "Cập nhật khả dụng",
 		"updatingAll": "Đang cập nhật tất cả…",
 		"updateAll": "Cập nhật tất cả ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugin",
 		"typeAgents": "Nhân viên",
 		"typeSkills": "Kỹ năng",
-		"typeConnectors": "Trình kết nối MCP",
+		"typeConnectors": "Trình kết nối",
 		"checkEvery": "Kiểm tra mỗi",
 		"hours6": "6 giờ",
 		"history": "Lịch sử",
@@ -3535,8 +3535,8 @@
 						"description": "Slug plugin, phân tách bằng dấu phẩy."
 					},
 					"mcp": {
-						"label": "Máy chủ MCP được phép",
-						"description": "Tên các máy chủ MCP đã kết nối, phân tách bằng dấu phẩy."
+						"label": "Trình kết nối được phép",
+						"description": "Tên các trình kết nối, phân tách bằng dấu phẩy."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Trình kết nối",
-				"description": "Dùng một tích hợp MCP",
+				"description": "Dùng một trình kết nối",
 				"params": {
 					"serverId": {
-						"label": "Máy chủ MCP",
-						"description": "Máy chủ MCP đã kết nối cần dùng"
+						"label": "Trình kết nối",
+						"description": "Trình kết nối cần dùng"
 					},
 					"tool": {
 						"label": "Công cụ",
-						"description": "Công cụ cần gọi trên máy chủ MCP",
+						"description": "Công cụ cần dùng trên trình kết nối",
 						"placeholder": "vd. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Hoạt động",
 				"callTree": "Cây cuộc gọi",
 				"flowControl": "Điều khiển luồng",
-				"connectors": "Trình kết nối (MCP)",
+				"connectors": "Trình kết nối",
 				"agents": "Nhân viên",
 				"output": "Đầu ra"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 công cụ} other{{count} công cụ}}",
 		"name": "Tên",
 		"nameHelper": "Hiển thị trong danh sách trình kết nối.",
-		"url": "URL máy chủ MCP",
+		"url": "URL trình kết nối",
 		"urlHelper": "Địa chỉ HTTPS nơi máy chủ nhận yêu cầu MCP, ví dụ https://mcp.example.com/mcp",
 		"urlInvalid": "Nhập địa chỉ bắt đầu bằng https://",
 		"trust": "Chỉ thêm trình kết nối từ nhà phát triển bạn tin tưởng. Nebo không kiểm soát công cụ mà trình kết nối cung cấp hay cách chúng thay đổi.",

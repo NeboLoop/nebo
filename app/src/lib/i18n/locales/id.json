@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Perintah, MCP, Skill, Karyawan...",
-		"mcp": "MCP",
+		"placeholder": "Perintah, Konektor, Skill, Karyawan...",
+		"mcp": "Konektor",
 		"skill": "Skill",
 		"agent": "Karyawan",
 		"command": "Perintah",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "Kami menemukan pengaturan {source} Anda",
-		"pitch": "Bawa karyawan, skill, server MCP, memori, dan riwayat percakapan Anda — instalasi lama Anda tetap utuh.",
+		"pitch": "Bawa karyawan, skill, konektor, memori, dan riwayat percakapan Anda — instalasi lama Anda tetap utuh.",
 		"bringOver": "Bawa ke sini",
 		"scanning": "Memindai…",
 		"importAll": "Impor semuanya",
@@ -1571,13 +1571,13 @@
 		"failed": "Impor tidak selesai — Anda bisa menjalankannya kapan saja dari Pengaturan → Impor.",
 		"employees": "karyawan",
 		"skills": "skill",
-		"mcpServers": "server MCP",
+		"mcpServers": "konektor",
 		"memoryFiles": "berkas memori",
 		"runLocally": "berjalan secara lokal"
 	},
 	"settingsImport": {
 		"title": "Impor",
-		"description": "Bawa pengaturan Anda dari alat AI lain — skill, server MCP, dan persona karyawan Anda",
+		"description": "Bawa pengaturan Anda dari alat AI lain — skill, konektor, dan persona karyawan Anda",
 		"detectedTitle": "Instalasi terdeteksi",
 		"comingSoon": "Segera hadir",
 		"pathTitle": "Lokasi instalasi",
@@ -1588,12 +1588,12 @@
 		"runsCode": "menjalankan kode",
 		"importAll": "Impor semuanya",
 		"importing": "Mengimpor…",
-		"doneSummary": "Mengimpor {agents} karyawan, {skills} skill, {mcp} server MCP, {memories} memori, {chats} percakapan, dan {keys} kunci penyedia.",
+		"doneSummary": "Mengimpor {agents} karyawan, {skills} skill, {mcp} konektor, {memories} memori, {chats} percakapan, dan {keys} kunci penyedia.",
 		"skippedTitle": "Tidak diimpor",
 		"kinds": {
 			"agent": "Karyawan",
 			"skill": "Skill",
-			"mcp_server": "Server MCP",
+			"mcp_server": "Konektor",
 			"memory": "Memori",
 			"session": "Percakapan",
 			"cron": "Jadwal",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Status Karyawan",
 		"description": "Pantau karyawan yang terhubung dan kesehatan sistem",
-		"mcpServer": "Server MCP",
+		"mcpServer": "Konektor",
 		"database": "Basis data",
 		"webSocket": "WebSocket",
 		"uptime": "Waktu Aktif",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Persona",
-		"assistantPlaceholder": "Definisikan kepribadian, peran, dan pedoman perilaku karyawan. mis. Anda adalah karyawan AI yang membantu mengelola tugas harian... Ketik / untuk menyebut MCP, skill, atau karyawan.",
-		"personaPlaceholder": "Definisikan kepribadian, peran, dan pedoman perilaku karyawan ini. mis. Anda adalah kepala staf yang mengelola ritme harian eksekutif... Ketik / untuk menyebut MCP, skill, atau karyawan.",
+		"assistantPlaceholder": "Definisikan kepribadian, peran, dan pedoman perilaku karyawan. mis. Anda adalah karyawan AI yang membantu mengelola tugas harian... Ketik / untuk menyebut konektor, skill, atau karyawan.",
+		"personaPlaceholder": "Definisikan kepribadian, peran, dan pedoman perilaku karyawan ini. mis. Anda adalah kepala staf yang mengelola ritme harian eksekutif... Ketik / untuk menyebut konektor, skill, atau karyawan.",
 		"undo": "Urungkan",
 		"redo": "Ulangi",
 		"properties": "Properti",
@@ -2980,7 +2980,7 @@
 			"plugin": "Memasang plugin…",
 			"app": "Memasang aplikasi…",
 			"collection": "Memasang koleksi…",
-			"connection": "Menambahkan koneksi MCP…"
+			"connection": "Menambahkan konektor…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Data Anda tetap lokal",
 		"featureMarketplace": "Marketplace keahlian & peran",
 		"featureDesktop": "Otomasi desktop",
-		"featureMcp": "Integrasi MCP",
+		"featureMcp": "Konektor",
 		"featureMemory": "Sistem memori",
 		"backToPlans": "Kembali ke paket",
 		"loadingCheckout": "Memuat checkout...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Tidak dapat memulai pembaruan",
 		"never": "tidak pernah",
 		"checkNow": "Periksa sekarang",
-		"description": "Pembaruan yang tersedia untuk plugin, karyawan, keahlian, konektor MCP, dan aplikasi terpasang Anda. Anda menyetujui setiap pembaruan; aktifkan pembaruan otomatis per item agar diterapkan tanpa bertanya.",
+		"description": "Pembaruan yang tersedia untuk plugin, karyawan, keahlian, konektor, dan aplikasi terpasang Anda. Anda menyetujui setiap pembaruan; aktifkan pembaruan otomatis per item agar diterapkan tanpa bertanya.",
 		"availableUpdates": "Pembaruan tersedia",
 		"updatingAll": "Memperbarui semua…",
 		"updateAll": "Perbarui semua ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugin",
 		"typeAgents": "Karyawan",
 		"typeSkills": "Keahlian",
-		"typeConnectors": "Konektor MCP",
+		"typeConnectors": "Konektor",
 		"checkEvery": "Periksa setiap",
 		"hours6": "6 jam",
 		"history": "Riwayat",
@@ -3535,8 +3535,8 @@
 						"description": "Slug plugin, dipisahkan koma."
 					},
 					"mcp": {
-						"label": "Server MCP yang diizinkan",
-						"description": "Nama server MCP yang terhubung, dipisahkan koma."
+						"label": "Konektor yang diizinkan",
+						"description": "Nama konektor, dipisahkan koma."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Konektor",
-				"description": "Gunakan integrasi MCP",
+				"description": "Gunakan konektor",
 				"params": {
 					"serverId": {
-						"label": "Server MCP",
-						"description": "Server MCP terhubung yang digunakan"
+						"label": "Konektor",
+						"description": "Konektor yang digunakan"
 					},
 					"tool": {
 						"label": "Alat",
-						"description": "Alat mana yang dipanggil di server MCP",
+						"description": "Alat mana yang digunakan di konektor",
 						"placeholder": "mis. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Aktivitas",
 				"callTree": "Pohon Panggilan",
 				"flowControl": "Kontrol Alur",
-				"connectors": "Konektor (MCP)",
+				"connectors": "Konektor",
 				"agents": "Karyawan",
 				"output": "Keluaran"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 alat} other{{count} alat}}",
 		"name": "Nama",
 		"nameHelper": "Ditampilkan di daftar konektor.",
-		"url": "URL server MCP",
+		"url": "URL konektor",
 		"urlHelper": "Alamat HTTPS tempat server menerima permintaan MCP, misalnya https://mcp.example.com/mcp",
 		"urlInvalid": "Masukkan alamat yang diawali https://",
 		"trust": "Tambahkan konektor hanya dari pengembang yang Anda percayai. Nebo tidak mengendalikan alat yang ditawarkan konektor atau perubahannya.",

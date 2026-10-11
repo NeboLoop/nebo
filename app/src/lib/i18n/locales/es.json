@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Comandos, MCPs, Skills, Empleados...",
-		"mcp": "MCP",
+		"placeholder": "Comandos, Conectores, Skills, Empleados...",
+		"mcp": "Conector",
 		"skill": "Skill",
 		"agent": "Empleado",
 		"command": "Comando",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "Encontramos tu instalación de {source}",
-		"pitch": "Trae tus empleados, skills, servidores MCP, memoria e historial de conversaciones — tu instalación anterior queda intacta.",
+		"pitch": "Trae tus empleados, skills, conectores, memoria e historial de conversaciones — tu instalación anterior queda intacta.",
 		"bringOver": "Traerlo todo",
 		"scanning": "Analizando…",
 		"importAll": "Importar todo",
@@ -1571,13 +1571,13 @@
 		"failed": "La importación no se completó — puedes ejecutarla cuando quieras desde Configuración → Importar.",
 		"employees": "empleados",
 		"skills": "skills",
-		"mcpServers": "servidores MCP",
+		"mcpServers": "conectores",
 		"memoryFiles": "archivos de memoria",
 		"runLocally": "se ejecutan localmente"
 	},
 	"settingsImport": {
 		"title": "Importar",
-		"description": "Trae tu configuración desde otra herramienta de IA — skills, servidores MCP y la personalidad de tu empleado",
+		"description": "Trae tu configuración desde otra herramienta de IA — skills, conectores y la personalidad de tu empleado",
 		"detectedTitle": "Instalaciones detectadas",
 		"comingSoon": "Muy pronto",
 		"pathTitle": "Ubicación de la instalación",
@@ -1588,12 +1588,12 @@
 		"runsCode": "ejecuta código",
 		"importAll": "Importar todo",
 		"importing": "Importando…",
-		"doneSummary": "Importados: {agents} empleado(s), {skills} skill(s), {mcp} servidor(es) MCP, {memories} memoria(s), {chats} conversación(es) y {keys} clave(s) de proveedor.",
+		"doneSummary": "Importados: {agents} empleado(s), {skills} skill(s), {mcp} conector(es), {memories} memoria(s), {chats} conversación(es) y {keys} clave(s) de proveedor.",
 		"skippedTitle": "No importado",
 		"kinds": {
 			"agent": "Empleados",
 			"skill": "Skills",
-			"mcp_server": "Servidores MCP",
+			"mcp_server": "Conectores",
 			"memory": "Memoria",
 			"session": "Conversaciones",
 			"cron": "Programaciones",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Estado de empleados",
 		"description": "Supervisa los empleados conectados y la salud del sistema",
-		"mcpServer": "Servidor MCP",
+		"mcpServer": "Conectores",
 		"database": "Base de datos",
 		"webSocket": "WebSocket",
 		"uptime": "Tiempo activo",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Persona",
-		"assistantPlaceholder": "Define la personalidad, rol y pautas de comportamiento del empleado. ej. Eres un empleado de IA que ayuda a gestionar tareas diarias... Escribe / para mencionar un MCP, skill o empleado.",
-		"personaPlaceholder": "Define la personalidad, rol y pautas de comportamiento de este empleado. ej. Eres un jefe de gabinete que gestiona el ritmo diario del ejecutivo... Escribe / para mencionar un MCP, skill o empleado.",
+		"assistantPlaceholder": "Define la personalidad, rol y pautas de comportamiento del empleado. ej. Eres un empleado de IA que ayuda a gestionar tareas diarias... Escribe / para mencionar un conector, skill o empleado.",
+		"personaPlaceholder": "Define la personalidad, rol y pautas de comportamiento de este empleado. ej. Eres un jefe de gabinete que gestiona el ritmo diario del ejecutivo... Escribe / para mencionar un conector, skill o empleado.",
 		"undo": "Deshacer",
 		"redo": "Rehacer",
 		"properties": "Propiedades",
@@ -2980,7 +2980,7 @@
 			"plugin": "Instalando plugin…",
 			"app": "Instalando app…",
 			"collection": "Instalando colección…",
-			"connection": "Añadiendo conexión MCP…"
+			"connection": "Añadiendo conector…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Tus datos permanecen locales",
 		"featureMarketplace": "Tienda de skills y roles",
 		"featureDesktop": "Automatización del escritorio",
-		"featureMcp": "Integraciones MCP",
+		"featureMcp": "Conectores",
 		"featureMemory": "Sistema de memoria",
 		"backToPlans": "Volver a los planes",
 		"loadingCheckout": "Cargando el pago...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "No se pudo iniciar la actualización",
 		"never": "nunca",
 		"checkNow": "Comprobar ahora",
-		"description": "Actualizaciones disponibles para tus plugins, empleados, skills, conectores MCP y apps instalados. Tú apruebas cada actualización; activa la actualización automática por elemento para aplicarlas en silencio.",
+		"description": "Actualizaciones disponibles para tus plugins, empleados, skills, conectores y apps instalados. Tú apruebas cada actualización; activa la actualización automática por elemento para aplicarlas en silencio.",
 		"availableUpdates": "Actualizaciones disponibles",
 		"updatingAll": "Actualizando todo…",
 		"updateAll": "Actualizar todo ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugins",
 		"typeAgents": "Empleados",
 		"typeSkills": "Skills",
-		"typeConnectors": "Conectores MCP",
+		"typeConnectors": "Conectores",
 		"checkEvery": "Comprobar cada",
 		"hours6": "6 horas",
 		"history": "Historial",
@@ -3535,8 +3535,8 @@
 						"description": "Slugs de plugins separados por comas."
 					},
 					"mcp": {
-						"label": "Servidores MCP permitidos",
-						"description": "Nombres de servidores MCP conectados, separados por comas."
+						"label": "Conectores permitidos",
+						"description": "Nombres de los conectores, separados por comas."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Conector",
-				"description": "Usa una integración MCP",
+				"description": "Usa un conector",
 				"params": {
 					"serverId": {
-						"label": "Servidor MCP",
-						"description": "Servidor MCP conectado que se usará"
+						"label": "Conector",
+						"description": "Conector que se usará"
 					},
 					"tool": {
 						"label": "Herramienta",
-						"description": "Qué herramienta invocar en el servidor MCP",
+						"description": "Qué herramienta usar en el conector",
 						"placeholder": "p. ej. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Actividades",
 				"callTree": "Árbol de llamadas",
 				"flowControl": "Control de flujo",
-				"connectors": "Conectores (MCP)",
+				"connectors": "Conectores",
 				"agents": "Empleados",
 				"output": "Salida"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 herramienta} other{{count} herramientas}}",
 		"name": "Nombre",
 		"nameHelper": "Se muestra en la lista de conectores.",
-		"url": "URL del servidor MCP",
+		"url": "URL del conector",
 		"urlHelper": "La dirección HTTPS donde el servidor acepta solicitudes MCP, por ejemplo https://mcp.example.com/mcp",
 		"urlInvalid": "Escribe una dirección que empiece por https://",
 		"trust": "Añade solo conectores de desarrolladores de confianza. Nebo no controla qué herramientas ofrece un conector ni cómo cambian.",

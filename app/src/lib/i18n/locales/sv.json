@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Kommandon, MCP:er, färdigheter, medarbetare...",
-		"mcp": "MCP",
+		"placeholder": "Kommandon, kopplingar, färdigheter, medarbetare...",
+		"mcp": "Koppling",
 		"skill": "Färdighet",
 		"agent": "Medarbetare",
 		"command": "Kommando",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "Vi hittade din {source}-installation",
-		"pitch": "Ta med dina medarbetare, färdigheter, MCP-servrar, minne och samtalshistorik — din gamla installation lämnas orörd.",
+		"pitch": "Ta med dina medarbetare, färdigheter, kopplingar, minne och samtalshistorik — din gamla installation lämnas orörd.",
 		"bringOver": "Ta med det",
 		"scanning": "Söker…",
 		"importAll": "Importera allt",
@@ -1571,13 +1571,13 @@
 		"failed": "Importen slutfördes inte — du kan köra den när som helst från Inställningar → Import.",
 		"employees": "medarbetare",
 		"skills": "färdigheter",
-		"mcpServers": "MCP-servrar",
+		"mcpServers": "kopplingar",
 		"memoryFiles": "minnesfiler",
 		"runLocally": "körs lokalt"
 	},
 	"settingsImport": {
 		"title": "Importera",
-		"description": "Ta med din installation från ett annat AI-verktyg — färdigheter, MCP-servrar och din medarbetares persona",
+		"description": "Ta med din installation från ett annat AI-verktyg — färdigheter, kopplingar och din medarbetares persona",
 		"detectedTitle": "Upptäckta installationer",
 		"comingSoon": "Kommer snart",
 		"pathTitle": "Installationsplats",
@@ -1588,12 +1588,12 @@
 		"runsCode": "kör kod",
 		"importAll": "Importera allt",
 		"importing": "Importerar…",
-		"doneSummary": "Importerade {agents} medarbetare, {skills} färdigheter, {mcp} MCP-servrar, {memories} minnen, {chats} samtal och {keys} leverantörsnycklar.",
+		"doneSummary": "Importerade {agents} medarbetare, {skills} färdigheter, {mcp} kopplingar, {memories} minnen, {chats} samtal och {keys} leverantörsnycklar.",
 		"skippedTitle": "Inte importerat",
 		"kinds": {
 			"agent": "Medarbetare",
 			"skill": "Färdigheter",
-			"mcp_server": "MCP-servrar",
+			"mcp_server": "Kopplingar",
 			"memory": "Minne",
 			"session": "Samtal",
 			"cron": "Scheman",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Medarbetarstatus",
 		"description": "Övervaka anslutna medarbetare och systemhälsa",
-		"mcpServer": "MCP-server",
+		"mcpServer": "Kopplingar",
 		"database": "Databas",
 		"webSocket": "WebSocket",
 		"uptime": "Drifttid",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Persona",
-		"assistantPlaceholder": "Definiera medarbetarens personlighet, roll och beteenderiktlinjer. T.ex. Du är en AI-medarbetare som hjälper till att hantera dagliga uppgifter... Skriv / för att nämna en MCP, färdighet eller medarbetare.",
-		"personaPlaceholder": "Definiera denna medarbetares personlighet, roll och beteenderiktlinjer. T.ex. Du är en stabschef som hanterar chefens dagliga rytm... Skriv / för att nämna en MCP, färdighet eller medarbetare.",
+		"assistantPlaceholder": "Definiera medarbetarens personlighet, roll och beteenderiktlinjer. T.ex. Du är en AI-medarbetare som hjälper till att hantera dagliga uppgifter... Skriv / för att nämna en koppling, färdighet eller medarbetare.",
+		"personaPlaceholder": "Definiera denna medarbetares personlighet, roll och beteenderiktlinjer. T.ex. Du är en stabschef som hanterar chefens dagliga rytm... Skriv / för att nämna en koppling, färdighet eller medarbetare.",
 		"undo": "Ångra",
 		"redo": "Gör om",
 		"properties": "Egenskaper",
@@ -2980,7 +2980,7 @@
 			"plugin": "Installerar plugin…",
 			"app": "Installerar app…",
 			"collection": "Installerar samling…",
-			"connection": "Lägger till MCP-anslutning…"
+			"connection": "Lägger till koppling…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Din data stannar lokalt",
 		"featureMarketplace": "Marknadsplats med färdigheter & roller",
 		"featureDesktop": "Skrivbordsautomatisering",
-		"featureMcp": "MCP-integrationer",
+		"featureMcp": "Kopplingar",
 		"featureMemory": "Minnessystem",
 		"backToPlans": "Tillbaka till planer",
 		"loadingCheckout": "Laddar kassan...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Kunde inte starta uppdateringen",
 		"never": "aldrig",
 		"checkNow": "Kontrollera nu",
-		"description": "Tillgängliga uppdateringar för dina installerade plugins, medarbetare, färdigheter, MCP-anslutningar och appar. Du godkänner varje uppdatering; slå på automatisk uppdatering per objekt för att uppdatera tyst.",
+		"description": "Tillgängliga uppdateringar för dina installerade plugins, medarbetare, färdigheter, kopplingar och appar. Du godkänner varje uppdatering; slå på automatisk uppdatering per objekt för att uppdatera tyst.",
 		"availableUpdates": "Tillgängliga uppdateringar",
 		"updatingAll": "Uppdaterar alla…",
 		"updateAll": "Uppdatera alla ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugins",
 		"typeAgents": "Medarbetare",
 		"typeSkills": "Färdigheter",
-		"typeConnectors": "MCP-anslutningar",
+		"typeConnectors": "Kopplingar",
 		"checkEvery": "Kontrollera varje",
 		"hours6": "6 timmar",
 		"history": "Historik",
@@ -3535,8 +3535,8 @@
 						"description": "Kommaseparerade plugin-slugs."
 					},
 					"mcp": {
-						"label": "Tillåtna MCP-servrar",
-						"description": "Kommaseparerade namn på anslutna MCP-servrar."
+						"label": "Tillåtna kopplingar",
+						"description": "Kommaseparerade namn på kopplingar."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Anslutning",
-				"description": "Använd en MCP-integration",
+				"description": "Använd en koppling",
 				"params": {
 					"serverId": {
-						"label": "MCP-server",
-						"description": "Ansluten MCP-server att använda"
+						"label": "Koppling",
+						"description": "Koppling att använda"
 					},
 					"tool": {
 						"label": "Verktyg",
-						"description": "Vilket verktyg som ska anropas på MCP-servern",
+						"description": "Vilket verktyg som ska användas i kopplingen",
 						"placeholder": "t.ex. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Aktiviteter",
 				"callTree": "Samtalsträd",
 				"flowControl": "Flödeskontroll",
-				"connectors": "Anslutningar (MCP)",
+				"connectors": "Kopplingar",
 				"agents": "Medarbetare",
 				"output": "Utdata"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 verktyg} other{{count} verktyg}}",
 		"name": "Namn",
 		"nameHelper": "Visas i listan med kopplingar.",
-		"url": "MCP-serverns URL",
+		"url": "Kopplingens URL",
 		"urlHelper": "HTTPS-adressen där servern tar emot MCP-anrop, till exempel https://mcp.example.com/mcp",
 		"urlInvalid": "Ange en adress som börjar med https://",
 		"trust": "Lägg bara till kopplingar från utvecklare du litar på. Nebo styr inte vilka verktyg en koppling erbjuder eller hur de ändras.",

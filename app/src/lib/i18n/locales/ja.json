@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "コマンド、MCP、スキル、社員...",
-		"mcp": "MCP",
+		"placeholder": "コマンド、コネクタ、スキル、社員...",
+		"mcp": "コネクタ",
 		"skill": "スキル",
 		"agent": "社員",
 		"command": "コマンド",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "{source}の設定が見つかりました",
-		"pitch": "社員、スキル、MCPサーバー、メモリ、会話履歴を引き継げます — 元のインストールはそのまま残ります。",
+		"pitch": "社員、スキル、コネクタ、メモリ、会話履歴を引き継げます — 元のインストールはそのまま残ります。",
 		"bringOver": "引き継ぐ",
 		"scanning": "スキャンしています…",
 		"importAll": "すべてインポート",
@@ -1571,13 +1571,13 @@
 		"failed": "インポートが完了しませんでした — 設定 → インポートからいつでも実行できます。",
 		"employees": "社員",
 		"skills": "スキル",
-		"mcpServers": "MCPサーバー",
+		"mcpServers": "コネクタ",
 		"memoryFiles": "メモリファイル",
 		"runLocally": "ローカルで実行"
 	},
 	"settingsImport": {
 		"title": "インポート",
-		"description": "他のAIツールから設定を引き継ぎます — スキル、MCPサーバー、社員のペルソナ",
+		"description": "他のAIツールから設定を引き継ぎます — スキル、コネクタ、社員のペルソナ",
 		"detectedTitle": "検出されたインストール",
 		"comingSoon": "近日公開",
 		"pathTitle": "インストール場所",
@@ -1588,12 +1588,12 @@
 		"runsCode": "コードを実行",
 		"importAll": "すべてインポート",
 		"importing": "インポートしています…",
-		"doneSummary": "社員{agents}件、スキル{skills}件、MCPサーバー{mcp}件、メモリ{memories}件、会話{chats}件、プロバイダキー{keys}件をインポートしました。",
+		"doneSummary": "社員{agents}件、スキル{skills}件、コネクタ{mcp}件、メモリ{memories}件、会話{chats}件、プロバイダキー{keys}件をインポートしました。",
 		"skippedTitle": "インポートされなかったもの",
 		"kinds": {
 			"agent": "社員",
 			"skill": "スキル",
-			"mcp_server": "MCPサーバー",
+			"mcp_server": "コネクタ",
 			"memory": "メモリ",
 			"session": "会話",
 			"cron": "スケジュール",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "社員ステータス",
 		"description": "接続中の社員とシステムの健全性を監視",
-		"mcpServer": "MCPサーバー",
+		"mcpServer": "コネクタ",
 		"database": "データベース",
 		"webSocket": "WebSocket",
 		"uptime": "稼働時間",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "ペルソナ",
-		"assistantPlaceholder": "社員の人格、役割、行動指針を定義してください。例：日常のタスク管理を手伝うAI社員です... /を入力してMCP、スキル、社員を参照。",
-		"personaPlaceholder": "この社員の人格、役割、行動指針を定義してください。例：幹部の日課を管理する統括部長です... /を入力してMCP、スキル、社員を参照。",
+		"assistantPlaceholder": "社員の人格、役割、行動指針を定義してください。例：日常のタスク管理を手伝うAI社員です... /を入力してコネクタ、スキル、社員を参照。",
+		"personaPlaceholder": "この社員の人格、役割、行動指針を定義してください。例：幹部の日課を管理する統括部長です... /を入力してコネクタ、スキル、社員を参照。",
 		"undo": "元に戻す",
 		"redo": "やり直す",
 		"properties": "プロパティ",
@@ -2980,7 +2980,7 @@
 			"plugin": "プラグインをインストールしています…",
 			"app": "アプリをインストールしています…",
 			"collection": "コレクションをインストールしています…",
-			"connection": "MCP接続を追加しています…"
+			"connection": "コネクタを追加しています…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "データはローカルに保持",
 		"featureMarketplace": "スキルとロールのマーケットプレイス",
 		"featureDesktop": "デスクトップ自動化",
-		"featureMcp": "MCP連携",
+		"featureMcp": "コネクタ",
 		"featureMemory": "メモリシステム",
 		"backToPlans": "プラン一覧に戻る",
 		"loadingCheckout": "チェックアウトを読み込み中...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "アップデートを開始できませんでした",
 		"never": "なし",
 		"checkNow": "今すぐ確認",
-		"description": "インストール済みのプラグイン、社員、スキル、MCPコネクタ、アプリの利用可能なアップデートです。各アップデートはあなたが承認します。アイテムごとに自動更新をオンにすると自動的に適用されます。",
+		"description": "インストール済みのプラグイン、社員、スキル、コネクタ、アプリの利用可能なアップデートです。各アップデートはあなたが承認します。アイテムごとに自動更新をオンにすると自動的に適用されます。",
 		"availableUpdates": "利用可能なアップデート",
 		"updatingAll": "すべて更新中…",
 		"updateAll": "すべて更新({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "プラグイン",
 		"typeAgents": "社員",
 		"typeSkills": "スキル",
-		"typeConnectors": "MCPコネクタ",
+		"typeConnectors": "コネクタ",
 		"checkEvery": "確認間隔",
 		"hours6": "6時間",
 		"history": "履歴",
@@ -3535,8 +3535,8 @@
 						"description": "プラグインのスラッグをカンマ区切りで指定。"
 					},
 					"mcp": {
-						"label": "使えるMCPサーバー",
-						"description": "接続済みMCPサーバーの名前をカンマ区切りで指定。"
+						"label": "使えるコネクタ",
+						"description": "コネクタの名前をカンマ区切りで指定。"
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "コネクター",
-				"description": "MCP連携を使う",
+				"description": "コネクタを使う",
 				"params": {
 					"serverId": {
-						"label": "MCPサーバー",
-						"description": "使用する接続済みMCPサーバー"
+						"label": "コネクタ",
+						"description": "使用するコネクタ"
 					},
 					"tool": {
 						"label": "ツール",
-						"description": "MCPサーバーで呼び出すツール",
+						"description": "コネクタで使うツール",
 						"placeholder": "例: read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "アクティビティ",
 				"callTree": "コールツリー",
 				"flowControl": "フロー制御",
-				"connectors": "コネクター（MCP）",
+				"connectors": "コネクタ",
 				"agents": "社員",
 				"output": "出力"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, other{{count} 個のツール}}",
 		"name": "名前",
 		"nameHelper": "コネクタの一覧に表示されます。",
-		"url": "MCP サーバーの URL",
+		"url": "コネクタの URL",
 		"urlHelper": "サーバーが MCP リクエストを受け付ける HTTPS アドレス(例: https://mcp.example.com/mcp)",
 		"urlInvalid": "https:// で始まるアドレスを入力してください",
 		"trust": "信頼できる開発者のコネクタだけを追加してください。コネクタが提供するツールやその変更を Nebo は管理しません。",

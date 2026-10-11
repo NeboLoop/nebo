@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Commando's, MCP's, Skills, Medewerkers...",
-		"mcp": "MCP",
+		"placeholder": "Commando's, Connectors, Skills, Medewerkers...",
+		"mcp": "Connector",
 		"skill": "Skill",
 		"agent": "Medewerker",
 		"command": "Commando",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "We hebben je {source}-installatie gevonden",
-		"pitch": "Neem je medewerkers, skills, MCP-servers, geheugen en gespreksgeschiedenis mee — je oude installatie blijft ongemoeid.",
+		"pitch": "Neem je medewerkers, skills, connectors, geheugen en gespreksgeschiedenis mee — je oude installatie blijft ongemoeid.",
 		"bringOver": "Neem het mee",
 		"scanning": "Bezig met scannen…",
 		"importAll": "Alles importeren",
@@ -1571,13 +1571,13 @@
 		"failed": "Importeren is niet afgerond — je kunt het altijd starten via Instellingen → Importeren.",
 		"employees": "medewerkers",
 		"skills": "skills",
-		"mcpServers": "MCP-servers",
+		"mcpServers": "connectors",
 		"memoryFiles": "geheugenbestanden",
 		"runLocally": "draaien lokaal"
 	},
 	"settingsImport": {
 		"title": "Importeren",
-		"description": "Neem je installatie mee vanuit een andere AI-tool — skills, MCP-servers en de persona van je medewerker",
+		"description": "Neem je installatie mee vanuit een andere AI-tool — skills, connectors en de persona van je medewerker",
 		"detectedTitle": "Gevonden installaties",
 		"comingSoon": "Binnenkort",
 		"pathTitle": "Installatielocatie",
@@ -1588,12 +1588,12 @@
 		"runsCode": "voert code uit",
 		"importAll": "Alles importeren",
 		"importing": "Bezig met importeren…",
-		"doneSummary": "Geïmporteerd: {agents} medewerker(s), {skills} skill(s), {mcp} MCP-server(s), {memories} geheugen(s), {chats} gesprek(ken) en {keys} providersleutel(s).",
+		"doneSummary": "Geïmporteerd: {agents} medewerker(s), {skills} skill(s), {mcp} connector(s), {memories} geheugen(s), {chats} gesprek(ken) en {keys} providersleutel(s).",
 		"skippedTitle": "Niet geïmporteerd",
 		"kinds": {
 			"agent": "Medewerkers",
 			"skill": "Skills",
-			"mcp_server": "MCP-servers",
+			"mcp_server": "Connectors",
 			"memory": "Geheugen",
 			"session": "Gesprekken",
 			"cron": "Schema's",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Medewerkerstatus",
 		"description": "Monitor verbonden medewerkers en de systeemstatus",
-		"mcpServer": "MCP-server",
+		"mcpServer": "Connectors",
 		"database": "Database",
 		"webSocket": "WebSocket",
 		"uptime": "Uptime",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Persona",
-		"assistantPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van de medewerker. Bijv. Je bent een AI-medewerker die helpt bij het beheren van dagelijkse taken... Typ / om een MCP, skill of medewerker te vermelden.",
-		"personaPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van deze medewerker. Bijv. Je bent een executive assistant die het dagelijkse ritme van de directie beheert... Typ / om een MCP, skill of medewerker te vermelden.",
+		"assistantPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van de medewerker. Bijv. Je bent een AI-medewerker die helpt bij het beheren van dagelijkse taken... Typ / om een connector, skill of medewerker te vermelden.",
+		"personaPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van deze medewerker. Bijv. Je bent een executive assistant die het dagelijkse ritme van de directie beheert... Typ / om een connector, skill of medewerker te vermelden.",
 		"undo": "Ongedaan maken",
 		"redo": "Opnieuw",
 		"properties": "Eigenschappen",
@@ -2980,7 +2980,7 @@
 			"plugin": "Plugin installeren…",
 			"app": "App installeren…",
 			"collection": "Collectie installeren…",
-			"connection": "MCP-verbinding toevoegen…"
+			"connection": "Connector toevoegen…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Je gegevens blijven lokaal",
 		"featureMarketplace": "Marktplaats voor skills en rollen",
 		"featureDesktop": "Desktopautomatisering",
-		"featureMcp": "MCP-integraties",
+		"featureMcp": "Connectors",
 		"featureMemory": "Geheugensysteem",
 		"backToPlans": "Terug naar abonnementen",
 		"loadingCheckout": "Afrekenen laden...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Kon update niet starten",
 		"never": "nooit",
 		"checkNow": "Nu controleren",
-		"description": "Beschikbare updates voor je geïnstalleerde plugins, medewerkers, skills, MCP-connectors en apps. Je keurt elke update goed; zet auto-update per item aan om updates stil toe te passen.",
+		"description": "Beschikbare updates voor je geïnstalleerde plugins, medewerkers, skills, connectors en apps. Je keurt elke update goed; zet auto-update per item aan om updates stil toe te passen.",
 		"availableUpdates": "Beschikbare updates",
 		"updatingAll": "Alles bijwerken…",
 		"updateAll": "Alles bijwerken ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugins",
 		"typeAgents": "Medewerkers",
 		"typeSkills": "Skills",
-		"typeConnectors": "MCP-connectors",
+		"typeConnectors": "Connectors",
 		"checkEvery": "Controleren elke",
 		"hours6": "6 uur",
 		"history": "Geschiedenis",
@@ -3535,8 +3535,8 @@
 						"description": "Kommagescheiden plugin-slugs."
 					},
 					"mcp": {
-						"label": "Toegestane MCP-servers",
-						"description": "Kommagescheiden namen van verbonden MCP-servers."
+						"label": "Toegestane connectors",
+						"description": "Kommagescheiden namen van connectors."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Connector",
-				"description": "Een MCP-integratie gebruiken",
+				"description": "Een connector gebruiken",
 				"params": {
 					"serverId": {
-						"label": "MCP-server",
-						"description": "Verbonden MCP-server om te gebruiken"
+						"label": "Connector",
+						"description": "Connector om te gebruiken"
 					},
 					"tool": {
 						"label": "Tool",
-						"description": "Welke tool op de MCP-server moet worden aangeroepen",
+						"description": "Welke tool op de connector moet worden gebruikt",
 						"placeholder": "bijv. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Activiteiten",
 				"callTree": "Keuzemenu",
 				"flowControl": "Flowbesturing",
-				"connectors": "Connectoren (MCP)",
+				"connectors": "Connectors",
 				"agents": "Medewerkers",
 				"output": "Uitvoer"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 tool} other{{count} tools}}",
 		"name": "Naam",
 		"nameHelper": "Wordt getoond in de lijst met connectors.",
-		"url": "URL van MCP-server",
+		"url": "URL van connector",
 		"urlHelper": "Het HTTPS-adres waar de server MCP-verzoeken aanneemt, bijvoorbeeld https://mcp.example.com/mcp",
 		"urlInvalid": "Vul een adres in dat begint met https://",
 		"trust": "Voeg alleen connectors toe van ontwikkelaars die je vertrouwt. Nebo bepaalt niet welke tools een connector biedt of hoe die veranderen.",
