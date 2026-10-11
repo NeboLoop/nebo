@@ -618,4 +618,33 @@ mod tests {
         assert_eq!(msg.error, Some("boom".to_string()));
         assert!(msg.result.is_none());
     }
+
+    /// The cloud bot image ships its own copy of the manifest
+    /// (assets/cloud-desktop, placed system-wide by the Dockerfile): it must
+    /// name the host, and admit the extensions, this file does.
+    #[test]
+    fn cloud_image_manifest_matches() {
+        let image: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../assets/cloud-desktop/native-messaging-host.json"
+        ))
+        .unwrap();
+        assert_eq!(image["name"], "dev.neboai.nebo");
+        assert_eq!(image["type"], "stdio");
+        let origins = image["allowed_origins"].as_array().unwrap();
+        for id in [PRODUCTION_EXTENSION_ID, DEV_EXTENSION_ID] {
+            let origin = format!("chrome-extension://{id}/");
+            assert!(
+                origins.iter().any(|o| o.as_str() == Some(origin.as_str())),
+                "{origin}"
+            );
+        }
+        let policy: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../assets/cloud-desktop/chromium-policy.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            policy["ExtensionInstallForcelist"][0],
+            format!("{PRODUCTION_EXTENSION_ID};https://clients2.google.com/service/update2/crx")
+        );
+    }
 }
