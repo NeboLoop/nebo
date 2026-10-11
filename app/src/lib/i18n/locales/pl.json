@@ -349,7 +349,6 @@
 		"startingComputer": "Uruchamianie komputera…",
 		"computerStartFailed": "Nie udało się uruchomić komputera. Spróbuj ponownie.",
 		"tryAgain": "Spróbuj ponownie",
-		"computerReconnecting": "Ponowne łączenie…",
 		"computerUnavailable": "Na tej maszynie nie ma komputera",
 		"computerUnavailableHint": "Komputer pracownika działa w instalacjach na Linuksie i u pracowników w chmurze.",
 		"watchingAndLearning": "{name} patrzy i się uczy",

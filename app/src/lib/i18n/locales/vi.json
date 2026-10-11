@@ -349,7 +349,6 @@
 		"startingComputer": "Đang khởi động máy tính…",
 		"computerStartFailed": "Không thể khởi động máy tính. Hãy thử lại.",
 		"tryAgain": "Thử lại",
-		"computerReconnecting": "Đang kết nối lại…",
 		"computerUnavailable": "Máy này không có máy tính",
 		"computerUnavailableHint": "Máy tính của nhân viên chạy trên bản cài Linux và nhân viên trên đám mây.",
 		"watchingAndLearning": "{name} đang xem và học",

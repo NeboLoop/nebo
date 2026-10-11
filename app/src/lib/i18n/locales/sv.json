@@ -349,7 +349,6 @@
 		"startingComputer": "Startar datorn…",
 		"computerStartFailed": "Det gick inte att starta datorn. Försök igen.",
 		"tryAgain": "Försök igen",
-		"computerReconnecting": "Återansluter…",
 		"computerUnavailable": "Ingen dator på den här maskinen",
 		"computerUnavailableHint": "Medarbetarens dator körs på Linux-installationer och hos molnmedarbetare.",
 		"watchingAndLearning": "{name} tittar på och lär sig",

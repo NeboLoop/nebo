@@ -12,7 +12,7 @@
 	import RFB from '@novnc/novnc';
 	import { backendWsBase } from '$lib/api/base';
 	import { ownScreen } from '$lib/stores/ownScreen';
-	import { BOOT_DEADLINE_MS, afterDisconnect, onFirstFrame, type DesktopStatus } from '$lib/chat/desktopBoot';
+	import { desktopSession, lastFrameOf, type DesktopStatus } from '$lib/chat/desktopBoot';
 
 	let {
 		onclose,
@@ -21,87 +21,35 @@
 	}: { onclose?: () => void; onrecord?: () => void; recording?: boolean } = $props();
 
 	let container: HTMLDivElement | undefined = $state();
+	/** Holds the last frame of a dropped connection while the view redials. */
+	let lastFrame: HTMLDivElement | undefined = $state();
 	// Opening the computer is plain view mode: recording is only ever the
 	// owner's own choice (the Record task button). Until the desktop is all
 	// the way up and its first frame is drawn, the view stays covered by ONE
-	// loading state ($lib/chat/desktopBoot).
+	// loading state; once up, a dropped connection redials quietly behind the
+	// last frame ($lib/chat/desktopBoot).
 	let status = $state<DesktopStatus>('starting');
-	let rfb: RFB | null = null;
-	let closed = false;
 
-	// Redials are bounded: /ws/desktop 404s off Linux, so a host bot with no
-	// virtual computer must not redial forever (see afterDisconnect).
-	let attempts = 0;
-	let everReady = false;
-	let bootTimer: ReturnType<typeof setTimeout> | null = null;
-	/** Bumped by every (re)boot, so a redial queued by an earlier one is dropped. */
-	let generation = 0;
-
-	function clearBoot() {
-		if (bootTimer) {
-			clearTimeout(bootTimer);
-			bootTimer = null;
-		}
-	}
-
-	function boot() {
-		clearBoot();
-		generation += 1;
-		status = 'starting';
-		attempts = 0;
-		everReady = false;
-		bootTimer = setTimeout(() => {
-			bootTimer = null;
-			if (closed || status === 'ready') return;
-			generation += 1;
-			status = 'failed';
-			const r = rfb;
-			rfb = null;
-			r?.disconnect();
-		}, BOOT_DEADLINE_MS);
-		connect();
-	}
-
-	function connect() {
-		if (closed || !container) return;
-		attempts += 1;
-		container.replaceChildren();
-		const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
-		r.scaleViewport = true;
-		r.resizeSession = false;
-		onFirstFrame(r, () => {
-			if (rfb !== r || closed) return;
-			clearBoot();
-			status = 'ready';
-			everReady = true;
-			attempts = 0;
-		});
-		r.addEventListener('disconnect', () => {
-			// A connection we already let go (closed, timed out, replaced)
-			// says nothing about the one in view.
-			if (rfb !== r || closed) return;
-			rfb = null;
-			const next = afterDisconnect(everReady, attempts, $ownScreen);
-			status = next.status;
-			if (!next.redial) {
-				clearBoot();
-				return;
-			}
-			// The desktop survives transport loss server-side (x11vnc -forever,
-			// tunnel redial) — keep trying quietly instead of dying on a blip.
-			const gen = generation;
-			setTimeout(() => {
-				if (!closed && gen === generation && rfb === null) connect();
-			}, 3000);
-		});
-		rfb = r;
-	}
+	const session = desktopSession<RFB>({
+		dial: () => {
+			if (!container) return null;
+			container.replaceChildren();
+			const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
+			r.scaleViewport = true;
+			r.resizeSession = false;
+			return r;
+		},
+		ownScreen: () => $ownScreen,
+		onStatus: (s) => (status = s),
+		keepFrame: (dropped) => {
+			const frame = lastFrameOf(dropped);
+			if (frame) lastFrame?.replaceChildren(frame);
+		},
+		dropFrame: () => lastFrame?.replaceChildren()
+	});
 
 	function retry() {
-		const r = rfb;
-		rfb = null;
-		r?.disconnect();
-		boot();
+		session.boot();
 	}
 
 	function onkeydown(e: KeyboardEvent) {
@@ -112,20 +60,18 @@
 	}
 
 	onMount(() => {
-		boot();
+		session.boot();
 		// noVNC only rescales on window resize — a panel drag or the opening
 		// animation leaves the canvas frozen at its connect-moment size.
 		// Re-assigning scaleViewport forces a rescale to the current box.
 		const ro = new ResizeObserver(() => {
+			const rfb = session.current();
 			if (rfb) rfb.scaleViewport = true;
 		});
 		if (container) ro.observe(container);
 		return () => {
-			closed = true;
-			clearBoot();
+			session.close();
 			ro.disconnect();
-			rfb?.disconnect();
-			rfb = null;
 		};
 	});
 
@@ -143,7 +89,7 @@
 		<span
 			class="w-1.5 h-1.5 rounded-full {status === 'ready'
 				? 'bg-success'
-				: status === 'starting' || status === 'reconnecting'
+				: status === 'starting'
 					? 'bg-warning animate-pulse'
 					: 'bg-error'}"
 		></span>
@@ -172,6 +118,7 @@
 	</div>
 	<div class="flex-1 min-h-0 bg-neutral relative">
 		<div bind:this={container} class="absolute inset-0 [&_canvas]:outline-none"></div>
+		<div bind:this={lastFrame} class="absolute inset-0 pointer-events-none empty:hidden" data-desktop-last-frame></div>
 		{#if status === 'unavailable'}
 			<div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-neutral-content/80 px-6 text-center">
 				<Monitor class="w-8 h-8" />
@@ -193,11 +140,6 @@
 			<div class="absolute inset-0 bg-neutral flex flex-col items-center justify-center gap-3 text-neutral-content/80 pointer-events-none" data-desktop-starting>
 				<span class="loading loading-spinner loading-md"></span>
 				<span class="text-sm">{$t('chat.startingComputer')}</span>
-			</div>
-		{:else if status === 'reconnecting'}
-			<div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-neutral-content/80 pointer-events-none">
-				<Monitor class="w-8 h-8" />
-				<span class="text-sm">{$t('chat.computerReconnecting')}</span>
 			</div>
 		{/if}
 	</div>

@@ -349,7 +349,6 @@
 		"startingComputer": "Запуск комп'ютера…",
 		"computerStartFailed": "Не вдалося запустити комп'ютер. Спробуйте ще раз.",
 		"tryAgain": "Спробувати ще раз",
-		"computerReconnecting": "Перепідключення…",
 		"computerUnavailable": "На цій машині немає комп'ютера",
 		"computerUnavailableHint": "Комп'ютер співробітника працює на встановленнях Linux і в хмарних співробітників.",
 		"watchingAndLearning": "{name} дивиться і вчиться",

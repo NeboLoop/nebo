@@ -349,7 +349,6 @@
 		"startingComputer": "กำลังเปิดคอมพิวเตอร์…",
 		"computerStartFailed": "ไม่สามารถเปิดคอมพิวเตอร์ได้ ลองอีกครั้ง",
 		"tryAgain": "ลองอีกครั้ง",
-		"computerReconnecting": "กำลังเชื่อมต่อใหม่…",
 		"computerUnavailable": "เครื่องนี้ไม่มีคอมพิวเตอร์",
 		"computerUnavailableHint": "คอมพิวเตอร์ของพนักงานทำงานบนการติดตั้งแบบ Linux และพนักงานบนคลาวด์",
 		"watchingAndLearning": "{name} กำลังดูและเรียนรู้",

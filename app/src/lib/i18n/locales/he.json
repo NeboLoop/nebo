@@ -349,7 +349,6 @@
 		"startingComputer": "מפעיל את המחשב…",
 		"computerStartFailed": "לא ניתן היה להפעיל את המחשב. נסה שוב.",
 		"tryAgain": "נסה שוב",
-		"computerReconnecting": "מתחבר מחדש…",
 		"computerUnavailable": "אין מחשב במכונה הזו",
 		"computerUnavailableHint": "המחשב של העובד פועל בהתקנות Linux ובעובדי ענן.",
 		"watchingAndLearning": "{name} צופה ולומד",

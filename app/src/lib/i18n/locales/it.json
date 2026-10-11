@@ -349,7 +349,6 @@
 		"startingComputer": "Avvio del computer…",
 		"computerStartFailed": "Impossibile avviare il computer. Riprova.",
 		"tryAgain": "Riprova",
-		"computerReconnecting": "Riconnessione…",
 		"computerUnavailable": "Nessun computer su questa macchina",
 		"computerUnavailableHint": "Il computer del dipendente funziona sulle installazioni Linux e sui dipendenti nel cloud.",
 		"watchingAndLearning": "{name} guarda e impara",
