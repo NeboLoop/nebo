@@ -66,6 +66,7 @@ Complete mapping from every mock data import in the frontend to the real Rust ba
 | `CHAT_MESSAGES` / `THREAD_MESSAGES` | `/chats/{id}/messages` | GET |
 | Send message | `/chats/message` or WebSocket `/ws` | POST |
 | Edit message | `/chats/messages/{id}/edit` | POST |
+| Keep a file (voice note star) | `/chats/messages/{id}/keep` | PUT |
 | Tool output | `/chats/{chatId}/tool-output/{toolCallId}` | GET |
 | Search messages | `/chats/search?q=` | GET |
 | Chat history by day | `/chats/history/{day}` | GET |

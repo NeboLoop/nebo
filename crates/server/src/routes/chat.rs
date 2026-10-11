@@ -57,4 +57,8 @@ pub fn routes() -> Router<AppState> {
             "/chats/messages/{id}/edit",
             axum::routing::post(handlers::chat::edit_message),
         )
+        .route(
+            "/chats/messages/{id}/keep",
+            axum::routing::put(handlers::chat::keep_message_file),
+        )
 }
