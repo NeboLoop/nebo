@@ -999,12 +999,30 @@ pub async fn list_storage(
         return r;
     }
     match tools::app_data::list(&state.store, &agent_id) {
-        Ok(items) => axum::Json(serde_json::json!({ "items": items })).into_response(),
+        Ok(items) => axum::Json(storage_listing(items)).into_response(),
         Err(e) => {
             warn!(error = %e, "app storage list failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// The body of `GET /apps/{id}/storage`: `items`, each `[key, stored
+/// text]` as always, and `updatedAt`, each key's last write (RFC 3339, UTC,
+/// the store's own clock), so a page can tell when a key was saved without a
+/// time anyone wrote into the value.
+fn storage_listing(items: Vec<(String, String, i64)>) -> serde_json::Value {
+    let mut updated_at = serde_json::Map::new();
+    let pairs: Vec<(String, String)> = items
+        .into_iter()
+        .map(|(key, raw, at)| {
+            if let Some(t) = chrono::DateTime::from_timestamp(at, 0) {
+                updated_at.insert(key.clone(), serde_json::Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)));
+            }
+            (key, raw)
+        })
+        .collect();
+    serde_json::json!({ "items": pairs, "updatedAt": updated_at })
 }
 
 /// The longest batch one devlog POST keeps.
@@ -2262,6 +2280,35 @@ mod developer_mode_tests {
         let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
         assert_eq!(tools::app_data::decode(&raw), contact);
         assert_eq!(tools::app_data::read(&store, "notes", "contact:john").unwrap(), None);
+    }
+
+    /// The storage listing keeps `items` exactly as before (what the SDK's
+    /// `keys()` reads) and adds each key's last write time from the store.
+    #[test]
+    fn the_storage_listing_says_when_each_key_was_saved() {
+        let (_d, store) = store();
+        let before = chrono::Utc::now().timestamp();
+        tools::app_data::write(&store, "crm", "b", "\"two\"").unwrap();
+        tools::app_data::write(&store, "crm", "a", "\"one\"").unwrap();
+        let after = chrono::Utc::now().timestamp();
+        let body = storage_listing(tools::app_data::list(&store, "crm").unwrap());
+        assert_eq!(body["items"], serde_json::json!([["a", "\"one\""], ["b", "\"two\""]]), "items unchanged");
+        for key in ["a", "b"] {
+            let at = body["updatedAt"][key].as_str().unwrap_or_else(|| panic!("a time for {key}: {body}"));
+            let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp();
+            assert!((before..=after).contains(&at), "{key} saved at {at}, not in {before}..={after}");
+        }
+
+        // A later write moves its key's time; the other key's stays
+        let time = |key: &str| {
+            let body = storage_listing(tools::app_data::list(&store, "crm").unwrap());
+            chrono::DateTime::parse_from_rfc3339(body["updatedAt"][key].as_str().unwrap()).unwrap().timestamp()
+        };
+        let (a0, b0) = (time("a"), time("b"));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        tools::app_data::write(&store, "crm", "b", "\"three\"").unwrap();
+        assert_eq!(time("a"), a0, "an untouched key keeps its time");
+        assert!(time("b") > b0, "a rewritten key gets the new time");
     }
 
     /// The app's page in the owner's signed-in browser (Open App from the
