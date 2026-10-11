@@ -2420,7 +2420,6 @@ export interface ListPluginsResponse {
 
 export interface ListProvidersResponse {
 	profiles: AuthProfile[]
-	keysLocalOnly: unknown
 }
 
 export interface ListRegistryResponse {
