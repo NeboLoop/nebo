@@ -3268,6 +3268,7 @@
 		"customModel": "Custom model",
 		"customModelDesc": "Set in Settings",
 		"levelDesc": {
+			"auto": "Nebo picks the level for each task",
 			"instant": "Fastest replies",
 			"low": "Quick, with a little thinking",
 			"medium": "Everyday work",

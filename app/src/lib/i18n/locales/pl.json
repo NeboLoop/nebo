@@ -3268,6 +3268,7 @@
 		"customModel": "Własny model",
 		"customModelDesc": "Ustawione w Ustawieniach",
 		"levelDesc": {
+			"auto": "Nebo wybiera poziom dla każdego zadania",
 			"instant": "Najszybsze odpowiedzi",
 			"low": "Szybko, z odrobiną namysłu",
 			"medium": "Codzienna praca",

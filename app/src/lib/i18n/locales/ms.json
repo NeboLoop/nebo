@@ -3268,6 +3268,7 @@
 		"customModel": "Model tersuai",
 		"customModelDesc": "Ditetapkan dalam Tetapan",
 		"levelDesc": {
+			"auto": "Nebo memilih tahap untuk setiap tugas",
 			"instant": "Balasan terpantas",
 			"low": "Pantas, dengan sedikit pemikiran",
 			"medium": "Kerja harian",

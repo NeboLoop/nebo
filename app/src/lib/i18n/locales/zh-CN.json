@@ -3268,6 +3268,7 @@
 		"customModel": "自定义模型",
 		"customModelDesc": "在设置中指定",
 		"levelDesc": {
+			"auto": "Nebo 为每项任务选择级别",
 			"instant": "最快回复",
 			"low": "快速，稍作思考",
 			"medium": "日常工作",

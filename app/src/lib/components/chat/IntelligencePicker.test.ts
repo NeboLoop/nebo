@@ -33,6 +33,7 @@ const text = (out: string) => out.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
 const STATES = [
 	'',
 	'pack/nebo-ai',
+	'pack/nebo-ai/auto',
 	...['instant', 'low', 'medium', 'high', 'max'].map((l) => `pack/nebo-ai/${l}`),
 	'janus/nebo-1-pro',
 	'nebo-1-pro',
@@ -53,15 +54,22 @@ describe('IntelligencePicker', () => {
 		});
 	}
 
-	it('no level reads as Medium, a legacy speed as its level', () => {
-		expect(html('', 'level')).toMatch(/data-level="medium"[^>]*aria-pressed="true"/);
+	it('nothing set (or a pack with no level) is Auto, a legacy speed its level', () => {
+		for (const v of ['', 'pack/nebo-ai', 'pack/nebo-ai/auto', 'janus/nebo-1', 'pack/w']) {
+			expect(html(v, 'level')).toMatch(/data-level="auto"[^>]*aria-pressed="true"/);
+			expect(html(v, 'level')).not.toMatch(/data-level="medium"[^>]*aria-pressed="true"/);
+		}
 		expect(html('janus/nebo-1-pro', 'level')).toMatch(/data-level="high"[^>]*aria-pressed="true"/);
 		expect(html('pack/j/medium', 'packs')).toMatch(/data-pack="j"[^>]*aria-pressed="true"/);
 	});
 
-	it('lists the five levels with Recommended on Medium and the cost on Max, and the footnote', () => {
+	it('lists Auto first (Recommended), then the five levels with the cost on Max, and the footnote', () => {
 		const out = text(html('', 'level'));
-		for (const l of ['Instant', 'Low', 'Medium', 'High', 'Max']) expect(out).toContain(l);
+		for (const l of ['Auto', 'Instant', 'Low', 'Medium', 'High', 'Max']) expect(out).toContain(l);
+		expect(out.indexOf('Auto')).toBeLessThan(out.indexOf('Instant'));
+		expect(out).toMatch(/Auto Recommended Nebo picks the level for each task/);
+		expect(out).not.toMatch(/Medium Recommended/);
+		expect(out).not.toMatch(/credit/i);
 		expect(out).toContain(en.modelPick.recommended);
 		expect(out).toContain(en.modelPick.mostBalance);
 		expect(out).toContain(en.modelPick.levelHint);

@@ -1,8 +1,8 @@
 <!--
   IntelligencePicker — what this conversation runs on, as two choices.
 
-  Main view: ONE card of the five levels (one checkmark; a choice with no
-  level reads as Medium), the footnote, then one "Intelligence pack ›" row
+  Main view: ONE card of Auto and the five levels (one checkmark; a choice
+  with no level is Auto), the footnote, then one "Intelligence pack ›" row
   that opens the pack list (one checkmark) with a link to build a pack.
   A raw model no pack names shows as one checked "Custom model" row in both
   cards. Choosing a level or a pack closes the picker once its checkmark
@@ -20,9 +20,10 @@
   import Gauge from 'lucide-svelte/icons/gauge';
   import Brain from 'lucide-svelte/icons/brain';
   import Sparkles from 'lucide-svelte/icons/sparkles';
+  import WandSparkles from 'lucide-svelte/icons/wand-sparkles';
   import Settings2 from 'lucide-svelte/icons/settings-2';
   import { withBase } from '$lib/nav';
-  import { EFFORTS, NEBO_AI_ID, isCustom, packName, selectThenClose, shownLevel, type Choice, type Effort, type PackRow } from '$lib/models/speeds';
+  import { LEVELS, NEBO_AI_ID, isCustom, levelOf, packName, selectThenClose, shownLevel, type Choice, type Effort, type Level, type PackRow } from '$lib/models/speeds';
 
   let {
     packs,
@@ -38,7 +39,7 @@
     onclose: () => void;
   } = $props();
 
-  const LEVEL_ICONS = { instant: Zap, low: Feather, medium: Gauge, high: Brain, max: Sparkles } as const;
+  const LEVEL_ICONS = { auto: WandSparkles, instant: Zap, low: Feather, medium: Gauge, high: Brain, max: Sparkles } as const;
 
   const custom = $derived(isCustom(choice));
   const checkedLevel = $derived(shownLevel(choice));
@@ -46,11 +47,11 @@
   const currentPackRow = $derived(packs.find((p) => p.id === currentPack));
 
   // Choosing closes the picker: the checkmark moves, then it goes.
-  function pickLevel(level: Effort) {
-    selectThenClose(choice, isCustom(choice) ? NEBO_AI_ID : choice.pack, level, onpick, onclose);
+  function pickLevel(level: Level) {
+    selectThenClose(choice, isCustom(choice) ? NEBO_AI_ID : choice.pack, levelOf(level), onpick, onclose);
   }
 
-  // A pack keeps the level in use; none stays none.
+  // A pack keeps the level in use; Auto stays Auto.
   function pickPack(id: string) {
     selectThenClose(choice, id, isCustom(choice) ? null : choice.level, onpick, onclose);
   }
@@ -77,14 +78,14 @@
           <span class="intel-check" data-testid="intel-check"><Check class="w-4 h-4" /></span>
         </div>
       {/if}
-      {#each EFFORTS as level (level)}
+      {#each LEVELS as level (level)}
         {@const Icon = LEVEL_ICONS[level]}
         <button type="button" class="intel-row" data-level={level} aria-pressed={checkedLevel === level} onclick={() => pickLevel(level)}>
           <Icon class="intel-icon" />
           <span class="intel-text">
             <span class="intel-name">
               {$t(`settingsPacks.level.${level}`)}
-              {#if level === 'medium'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
+              {#if level === 'auto'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
               {#if level === 'max'}<span class="badge badge-sm badge-warning badge-soft">{$t('modelPick.mostBalance')}</span>{/if}
             </span>
             <span class="intel-desc">{$t(`modelPick.levelDesc.${level}`)}</span>

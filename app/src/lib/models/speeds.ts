@@ -3,10 +3,10 @@
  * the AI it runs on, read from and written to the same model string every
  * assignment already carries.
  *
- * - The LEVEL: always the same five, Instant · Low · Medium · High · Max
- *   (`types::packs::Effort`). A reference with no level (the pack's Auto, or
- *   its default) reads as Medium.
- * - The PACK: which models those five levels run on. Nebo AI is built in;
+ * - The LEVEL: Auto, then always the same five, Instant · Low · Medium ·
+ *   High · Max (`types::packs::Effort`). A reference with no level (the
+ *   pack's Auto, or its default) is Auto: Nebo picks the level per task.
+ * - The PACK: which models those levels run on. Nebo AI is built in;
  *   the owner can add his own (Settings → Intelligence Packs).
  *
  * Never a model, provider or gateway id on screen: a pack reads as its name
@@ -19,8 +19,14 @@ import * as api from '$lib/api/nebo';
 export const EFFORTS = ['instant', 'low', 'medium', 'high', 'max'] as const;
 export type Effort = (typeof EFFORTS)[number];
 
-/** The level a reference without one reads as: the middle of the ladder. */
-export const DEFAULT_LEVEL: Effort = 'medium';
+/** The level rows, Auto first: Auto is a reference with no level. */
+export const LEVELS = ['auto', ...EFFORTS] as const;
+export type Level = (typeof LEVELS)[number];
+
+/** A level row as the level a choice carries (Auto: none). */
+export function levelOf(row: Level): Effort | null {
+	return row === 'auto' ? null : row;
+}
 
 /** The built-in pack's id. */
 export const NEBO_AI_ID = 'nebo-ai';
@@ -92,9 +98,9 @@ export function valueFor(pack: string, level: Effort | null, inherited: string, 
 	return level ? `pack/${pack}/${level}` : `pack/${pack}`;
 }
 
-/** The level a choice shows as checked: no level reads as Medium. */
-export function shownLevel(c: Choice): Effort | null {
-	return isCustom(c) ? null : (c.level ?? DEFAULT_LEVEL);
+/** The level row a choice shows as checked: no level is Auto; none for a raw model. */
+export function shownLevel(c: Choice): Level | null {
+	return isCustom(c) ? null : (c.level ?? 'auto');
 }
 
 /** The packs and the bot's default; null when they can't be read (the chip hides). */
@@ -120,7 +126,7 @@ export function packName(p: PackRow, t: Translate): string {
 }
 
 /**
- * The composer chip: the level ("Medium"), after the pack's name only when it
+ * The composer chip: the level ("Auto", "Medium"), after the pack's name only when it
  * is not Nebo AI ("Work keys · High"); "Custom" for a raw model.
  */
 export function choiceLabel(c: Choice, packs: PackRow[], t: Translate): string {
@@ -157,8 +163,7 @@ export function selectThenClose(
 	onclose: () => void,
 	delay = CLOSE_AFTER_MS
 ): void {
-	const inUse =
-		!isCustom(current) && current.pack === pack && (level === current.level || (level !== null && shownLevel(current) === level));
+	const inUse = !isCustom(current) && current.pack === pack && current.level === level;
 	if (inUse) return onclose();
 	onpick(pack, level);
 	setTimeout(onclose, delay);

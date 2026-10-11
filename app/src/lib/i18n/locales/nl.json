@@ -3268,6 +3268,7 @@
 		"customModel": "Eigen model",
 		"customModelDesc": "Ingesteld in Instellingen",
 		"levelDesc": {
+			"auto": "Nebo kiest het niveau voor elke taak",
 			"instant": "Snelste antwoorden",
 			"low": "Snel, met een beetje nadenken",
 			"medium": "Dagelijks werk",

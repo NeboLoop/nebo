@@ -69,9 +69,14 @@ describe('names', () => {
 		expect(packName(packs[2], t)).toBe('Work keys');
 	});
 
-	it('the chip: no level reads as Medium; a pack name only for the owner\'s own packs', () => {
-		expect(shownLevel(resolve('', packs))).toBe('medium');
-		expect(choiceLabel(resolve('', packs), packs, t)).toBe('<settingsPacks.level.medium>');
+	it('the chip: no level is Auto; a pack name only for the owner\'s own packs', () => {
+		expect(shownLevel(resolve('', packs))).toBe('auto');
+		expect(choiceLabel(resolve('', packs), packs, t)).toBe('<settingsPacks.level.auto>');
+		for (const v of ['pack/nebo-ai', 'pack/nebo-ai/auto', 'janus/nebo-1', 'nebo-1']) {
+			expect(shownLevel(resolve(v, packs))).toBe('auto');
+		}
+		expect(choiceLabel(resolve('pack/w', packs), packs, t)).toBe('Work keys · <settingsPacks.level.auto>');
+		expect(choiceLabel(resolve('pack/nebo-ai/medium', packs), packs, t)).toBe('<settingsPacks.level.medium>');
 		expect(choiceLabel(resolve('nebo-1-pro', packs), packs, t)).toBe('<settingsPacks.level.high>');
 		expect(choiceLabel(resolve('pack/w/max', packs), packs, t)).toBe('Work keys · <settingsPacks.level.max>');
 		expect(choiceLabel(resolve('pack/j/low', packs), packs, t)).toBe('<modelPick.customPack> · <settingsPacks.level.low>');
@@ -92,6 +97,27 @@ describe('loadIntelligence', () => {
 		const i = await loadIntelligence();
 		expect(i?.botDefault).toBe('pack/j/medium');
 		expect(i?.packs.map((p) => p.id)).toEqual(['nebo-ai', 'j', 'w']);
+	});
+});
+
+describe('Auto', () => {
+	it('picking Auto sends \'\' when that is what is inherited, else the pack itself', () => {
+		expect(valueFor('nebo-ai', null, '', packs)).toBe('');
+		expect(valueFor('nebo-ai', null, 'janus/nebo-1', packs)).toBe('');
+		expect(valueFor('nebo-ai', null, 'pack/j/medium', packs)).toBe('pack/nebo-ai');
+		expect(valueFor('w', null, '', packs)).toBe('pack/w');
+		expect(valueFor('j', null, 'pack/j', packs)).toBe('');
+	});
+
+	it('Medium is a real pick while Auto is in use', () => {
+		vi.useFakeTimers();
+		const onpick = vi.fn();
+		const onclose = vi.fn();
+		selectThenClose(resolve('', packs), 'nebo-ai', 'medium', onpick, onclose);
+		vi.advanceTimersByTime(CLOSE_AFTER_MS);
+		vi.useRealTimers();
+		expect(onpick).toHaveBeenCalledWith('nebo-ai', 'medium');
+		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -123,7 +149,8 @@ describe('selectThenClose', () => {
 
 	it('the choice already in use closes without a write', () => {
 		for (const [current, pack, level] of [
-			['', 'nebo-ai', 'medium'],
+			['', 'nebo-ai', null],
+			['janus/nebo-1', 'nebo-ai', null],
 			['pack/j/medium', 'j', 'medium'],
 			['pack/w', 'w', null],
 			['nebo-1-pro', 'nebo-ai', 'high']

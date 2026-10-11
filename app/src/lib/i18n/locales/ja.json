@@ -3268,6 +3268,7 @@
 		"customModel": "カスタムモデル",
 		"customModelDesc": "設定で指定",
 		"levelDesc": {
+			"auto": "Neboがタスクごとにレベルを選びます",
 			"instant": "最速の返答",
 			"low": "速く、少し考えて",
 			"medium": "日常の作業",

@@ -3268,6 +3268,7 @@
 		"customModel": "사용자 지정 모델",
 		"customModelDesc": "설정에서 지정됨",
 		"levelDesc": {
+			"auto": "Nebo가 작업마다 수준을 선택합니다",
 			"instant": "가장 빠른 답변",
 			"low": "빠르게, 조금 생각해서",
 			"medium": "일상 업무",

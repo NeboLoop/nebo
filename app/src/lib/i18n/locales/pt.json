@@ -3268,6 +3268,7 @@
 		"customModel": "Modelo personalizado",
 		"customModelDesc": "Definido nas Definições",
 		"levelDesc": {
+			"auto": "O Nebo escolhe o nível para cada tarefa",
 			"instant": "Respostas mais rápidas",
 			"low": "Rápido, com um pouco de raciocínio",
 			"medium": "Trabalho do dia a dia",

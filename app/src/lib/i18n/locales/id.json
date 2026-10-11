@@ -3268,6 +3268,7 @@
 		"customModel": "Model kustom",
 		"customModelDesc": "Diatur di Pengaturan",
 		"levelDesc": {
+			"auto": "Nebo memilih level untuk setiap tugas",
 			"instant": "Balasan tercepat",
 			"low": "Cepat, dengan sedikit berpikir",
 			"medium": "Pekerjaan sehari-hari",

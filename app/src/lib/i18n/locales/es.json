@@ -3268,6 +3268,7 @@
 		"customModel": "Modelo personalizado",
 		"customModelDesc": "Configurado en Ajustes",
 		"levelDesc": {
+			"auto": "Nebo elige el nivel para cada tarea",
 			"instant": "Respuestas más rápidas",
 			"low": "Rápido, pensando un poco",
 			"medium": "Trabajo diario",

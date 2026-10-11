@@ -3,7 +3,7 @@
   (Settings → employee → General, below the spending limit).
 
   The same two choices as the composer's Intelligence popover: the level
-  (Instant … Max; none reads as Medium) and the intelligence pack those levels
+  (Auto, then Instant … Max; none is Auto) and the intelligence pack those levels
   run on. Picking writes the entity's modelPreference through the ONE
   entity-config pathway; a pick equal to the bot's default clears it. Saves on
   tap — no Save button. A raw model no pack names shows as one checked
@@ -19,9 +19,11 @@
   import Gauge from 'lucide-svelte/icons/gauge';
   import Brain from 'lucide-svelte/icons/brain';
   import Sparkles from 'lucide-svelte/icons/sparkles';
+  import WandSparkles from 'lucide-svelte/icons/wand-sparkles';
   import * as api from '$lib/api/nebo';
   import {
-    EFFORTS,
+    LEVELS,
+    levelOf,
     NEBO_AI_ID,
     isCustom,
     loadIntelligence,
@@ -35,7 +37,7 @@
 
   let { agentId }: { agentId: string } = $props();
 
-  const LEVEL_ICONS = { instant: Zap, low: Feather, medium: Gauge, high: Brain, max: Sparkles } as const;
+  const LEVEL_ICONS = { auto: WandSparkles, instant: Zap, low: Feather, medium: Gauge, high: Brain, max: Sparkles } as const;
 
   let loading = $state(true);
   let saving = $state(false);
@@ -108,7 +110,7 @@
     </div>
     <div class="intel-card" role="radiogroup" aria-label={$t('modelPick.intelligence')}>
       {#if isCustom(choice)}{@render customRow()}{/if}
-      {#each EFFORTS as level (level)}
+      {#each LEVELS as level (level)}
         {@const Icon = LEVEL_ICONS[level]}
         <button
           type="button"
@@ -116,13 +118,13 @@
           role="radio"
           aria-checked={checkedLevel === level}
           disabled={loading || saving}
-          onclick={() => pick(isCustom(choice) ? NEBO_AI_ID : choice.pack, level)}
+          onclick={() => pick(isCustom(choice) ? NEBO_AI_ID : choice.pack, levelOf(level))}
         >
           <Icon class="intel-icon" />
           <span class="intel-text">
             <span class="intel-name">
               {$t(`settingsPacks.level.${level}`)}
-              {#if level === 'medium'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
+              {#if level === 'auto'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
               {#if level === 'max'}<span class="badge badge-sm badge-warning badge-soft">{$t('modelPick.mostBalance')}</span>{/if}
             </span>
             <span class="intel-desc">{$t(`modelPick.levelDesc.${level}`)}</span>

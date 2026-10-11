@@ -3268,6 +3268,7 @@
 		"customModel": "Mô hình tùy chỉnh",
 		"customModelDesc": "Đặt trong Cài đặt",
 		"levelDesc": {
+			"auto": "Nebo chọn mức cho từng tác vụ",
 			"instant": "Trả lời nhanh nhất",
 			"low": "Nhanh, có suy nghĩ một chút",
 			"medium": "Công việc hằng ngày",

@@ -3268,6 +3268,7 @@
 		"customModel": "Özel model",
 		"customModelDesc": "Ayarlar'da belirlendi",
 		"levelDesc": {
+			"auto": "Nebo her görev için seviyeyi seçer",
 			"instant": "En hızlı yanıtlar",
 			"low": "Hızlı, biraz düşünerek",
 			"medium": "Günlük işler",
