@@ -347,6 +347,8 @@
 		"watching": "Kijkt mee",
 		"driving": "Bestuurt",
 		"startingComputer": "Computer wordt gestart…",
+		"computerStartFailed": "De computer kon niet worden gestart. Probeer het opnieuw.",
+		"tryAgain": "Opnieuw proberen",
 		"computerReconnecting": "Opnieuw verbinden…",
 		"computerUnavailable": "Geen computer op deze machine",
 		"computerUnavailableHint": "De computer van de medewerker draait op Linux-installaties en bij cloudmedewerkers.",

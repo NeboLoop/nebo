@@ -347,6 +347,8 @@
 		"watching": "閲覧中",
 		"driving": "操作中",
 		"startingComputer": "コンピュータを起動しています…",
+		"computerStartFailed": "コンピュータを起動できませんでした。もう一度お試しください。",
+		"tryAgain": "もう一度試す",
 		"computerReconnecting": "再接続しています…",
 		"computerUnavailable": "このマシンにはコンピュータがありません",
 		"computerUnavailableHint": "社員のコンピュータはLinuxインストールとクラウド社員で動作します。",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { offersVirtualComputer, teachFailure, watchesComputer, SCREEN_RECORDING_SETTINGS } from './teach';
+import { offersComputer, teachFailure, watchesComputer, SCREEN_RECORDING_SETTINGS } from './teach';
 import chatPane from '$lib/components/chat/ChatPane.svelte?raw';
+import desktopView from '$lib/components/chat/DesktopView.svelte?raw';
 
 // The header's teach icons, as rendered: every element marked data-teach-icon.
 const header = chatPane.slice(chatPane.indexOf('<div class="ms-auto max-lg:hidden'), chatPane.indexOf('<!-- Narrow widths'));
@@ -41,11 +42,32 @@ describe('where the recording is watched', () => {
 		expect(watchesComputer('computer')).toBe(true);
 	});
 
-	it('offers the virtual computer only on a host bot in Developer mode', () => {
-		expect(offersVirtualComputer(true, true)).toBe(true);
-		expect(offersVirtualComputer(true, false)).toBe(false);
-		expect(offersVirtualComputer(false, true)).toBe(false);
-		expect(offersVirtualComputer(null, true)).toBe(false);
+	it('offers the virtual computer on a host bot only in Developer mode', () => {
+		expect(offersComputer(true, true)).toBe(true);
+		expect(offersComputer(true, false)).toBe(false);
+		expect(offersComputer(null, true)).toBe(false);
+	});
+});
+
+describe('opening the computer is plain view mode, never a recording', () => {
+	it('a cloud bot can always open its computer without teaching', () => {
+		expect(offersComputer(false, false)).toBe(true);
+		expect(offersComputer(false, true)).toBe(true);
+	});
+
+	it('the open choice only shows the computer: it starts no recording', () => {
+		const menu = header.slice(header.indexOf('{#if teachChoice'), header.indexOf('{:else}'));
+		const open = menu.slice(menu.indexOf('<li>', menu.indexOf('teach();')));
+		expect(open).toContain('computerFull = true;');
+		expect(open).not.toMatch(/teach\(|startTeach|teachStart/);
+		expect(open).toContain("$t('chat.openComputer')");
+	});
+
+	it('the computer view records only from its own Record task control', () => {
+		const view = chatPane.slice(chatPane.indexOf('<DesktopView'), chatPane.indexOf('/>', chatPane.indexOf('<DesktopView')));
+		expect(view).toContain("onrecord={() => (teachActive ? stopTeach() : startTeach('computer'))}");
+		expect(view).toContain('recording={teachActive}');
+		expect(desktopView).not.toMatch(/teachStart|startTeach/);
 	});
 });
 

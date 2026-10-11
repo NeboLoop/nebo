@@ -347,6 +347,8 @@
 		"watching": "正在观看",
 		"driving": "正在操作",
 		"startingComputer": "正在启动电脑…",
+		"computerStartFailed": "无法启动电脑。请重试。",
+		"tryAgain": "重试",
 		"computerReconnecting": "正在重新连接…",
 		"computerUnavailable": "这台机器上没有电脑",
 		"computerUnavailableHint": "员工的电脑可在 Linux 安装版和云端员工上运行。",

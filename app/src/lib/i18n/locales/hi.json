@@ -347,6 +347,8 @@
 		"watching": "देख रहे हैं",
 		"driving": "चला रहे हैं",
 		"startingComputer": "कंप्यूटर शुरू हो रहा है…",
+		"computerStartFailed": "कंप्यूटर शुरू नहीं हो सका। फिर से कोशिश करें।",
+		"tryAgain": "फिर से कोशिश करें",
 		"computerReconnecting": "फिर से कनेक्ट हो रहा है…",
 		"computerUnavailable": "इस मशीन पर कोई कंप्यूटर नहीं",
 		"computerUnavailableHint": "कर्मचारी का कंप्यूटर Linux इंस्टॉलेशन और क्लाउड कर्मचारियों पर चलता है।",

@@ -347,6 +347,8 @@
 		"watching": "Mirando",
 		"driving": "Al mando",
 		"startingComputer": "Arrancando el ordenador…",
+		"computerStartFailed": "No se pudo arrancar el ordenador. Inténtalo de nuevo.",
+		"tryAgain": "Intentar de nuevo",
 		"computerReconnecting": "Reconectando…",
 		"computerUnavailable": "No hay ordenador en esta máquina",
 		"computerUnavailableHint": "El ordenador del empleado funciona en instalaciones Linux y en empleados en la nube.",

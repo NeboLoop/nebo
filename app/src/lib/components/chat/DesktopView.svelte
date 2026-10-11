@@ -11,6 +11,8 @@
 	import Monitor from 'lucide-svelte/icons/monitor';
 	import RFB from '@novnc/novnc';
 	import { backendWsBase } from '$lib/api/base';
+	import { ownScreen } from '$lib/stores/ownScreen';
+	import { BOOT_DEADLINE_MS, afterDisconnect, onFirstFrame, type DesktopStatus } from '$lib/chat/desktopBoot';
 
 	let {
 		onclose,
@@ -19,52 +21,87 @@
 	}: { onclose?: () => void; onrecord?: () => void; recording?: boolean } = $props();
 
 	let container: HTMLDivElement | undefined = $state();
-	let status = $state<'connecting' | 'connected' | 'error' | 'unavailable'>('connecting');
+	// Opening the computer is plain view mode: recording is only ever the
+	// owner's own choice (the Record task button). Until the desktop is all
+	// the way up and its first frame is drawn, the view stays covered by ONE
+	// loading state ($lib/chat/desktopBoot).
+	let status = $state<DesktopStatus>('starting');
 	let rfb: RFB | null = null;
 	let closed = false;
 
-	// Retrying forever is right for a blip and wrong for a machine that has no
-	// desktop at all: /ws/desktop 404s off Linux, so on a Mac or Windows install
-	// the old loop reconnected every 3s for as long as the pane stayed open.
-	// Never connected → give up after a few tries and say so. Connected once →
-	// it's a real desktop, so keep redialling, but still bounded.
-	const RETRIES_BEFORE_CONNECT = 3;
-	const RETRIES_AFTER_CONNECT = 10;
+	// Redials are bounded: /ws/desktop 404s off Linux, so a host bot with no
+	// virtual computer must not redial forever (see afterDisconnect).
 	let attempts = 0;
-	let everConnected = false;
+	let everReady = false;
+	let bootTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Bumped by every (re)boot, so a redial queued by an earlier one is dropped. */
+	let generation = 0;
+
+	function clearBoot() {
+		if (bootTimer) {
+			clearTimeout(bootTimer);
+			bootTimer = null;
+		}
+	}
+
+	function boot() {
+		clearBoot();
+		generation += 1;
+		status = 'starting';
+		attempts = 0;
+		everReady = false;
+		bootTimer = setTimeout(() => {
+			bootTimer = null;
+			if (closed || status === 'ready') return;
+			generation += 1;
+			status = 'failed';
+			const r = rfb;
+			rfb = null;
+			r?.disconnect();
+		}, BOOT_DEADLINE_MS);
+		connect();
+	}
 
 	function connect() {
 		if (closed || !container) return;
-		status = 'connecting';
 		attempts += 1;
 		container.replaceChildren();
 		const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
 		r.scaleViewport = true;
 		r.resizeSession = false;
-		r.addEventListener('connect', () => {
-			status = 'connected';
-			everConnected = true;
+		onFirstFrame(r, () => {
+			if (rfb !== r || closed) return;
+			clearBoot();
+			status = 'ready';
+			everReady = true;
 			attempts = 0;
 		});
 		r.addEventListener('disconnect', () => {
+			// A connection we already let go (closed, timed out, replaced)
+			// says nothing about the one in view.
+			if (rfb !== r || closed) return;
 			rfb = null;
-			if (closed) return;
-			// The desktop survives transport loss server-side (x11vnc -forever,
-			// tunnel redial) — keep trying quietly instead of dying on a blip.
-			const limit = everConnected ? RETRIES_AFTER_CONNECT : RETRIES_BEFORE_CONNECT;
-			if (attempts >= limit) {
-				status = 'unavailable';
+			const next = afterDisconnect(everReady, attempts, $ownScreen);
+			status = next.status;
+			if (!next.redial) {
+				clearBoot();
 				return;
 			}
-			status = 'error';
-			setTimeout(connect, 3000);
+			// The desktop survives transport loss server-side (x11vnc -forever,
+			// tunnel redial) — keep trying quietly instead of dying on a blip.
+			const gen = generation;
+			setTimeout(() => {
+				if (!closed && gen === generation && rfb === null) connect();
+			}, 3000);
 		});
 		rfb = r;
 	}
 
 	function retry() {
-		attempts = 0;
-		connect();
+		const r = rfb;
+		rfb = null;
+		r?.disconnect();
+		boot();
 	}
 
 	function onkeydown(e: KeyboardEvent) {
@@ -75,7 +112,7 @@
 	}
 
 	onMount(() => {
-		connect();
+		boot();
 		// noVNC only rescales on window resize — a panel drag or the opening
 		// animation leaves the canvas frozen at its connect-moment size.
 		// Re-assigning scaleViewport forces a rescale to the current box.
@@ -85,6 +122,7 @@
 		if (container) ro.observe(container);
 		return () => {
 			closed = true;
+			clearBoot();
 			ro.disconnect();
 			rfb?.disconnect();
 			rfb = null;
@@ -103,9 +141,9 @@
 		<Monitor class="w-4 h-4 opacity-70" />
 		<span class="text-sm font-medium">{$t('chat.botComputer')}</span>
 		<span
-			class="w-1.5 h-1.5 rounded-full {status === 'connected'
+			class="w-1.5 h-1.5 rounded-full {status === 'ready'
 				? 'bg-success'
-				: status === 'connecting'
+				: status === 'starting' || status === 'reconnecting'
 					? 'bg-warning animate-pulse'
 					: 'bg-error'}"
 		></span>
@@ -143,12 +181,23 @@
 				</div>
 				<button type="button" class="btn btn-xs btn-neutral" onclick={retry}>{$t('common.retry')}</button>
 			</div>
-		{:else if status !== 'connected'}
+		{:else if status === 'failed'}
+			<div class="absolute inset-0 bg-neutral flex flex-col items-center justify-center gap-3 text-neutral-content/80 px-6 text-center" data-desktop-failed>
+				<Monitor class="w-8 h-8" />
+				<p class="text-sm">{$t('chat.computerStartFailed')}</p>
+				<button type="button" class="btn btn-xs btn-neutral" onclick={retry}>{$t('chat.tryAgain')}</button>
+			</div>
+		{:else if status === 'starting'}
+			<!-- Opaque until the first frame: nothing of a desktop that is still
+			     coming up shows through. -->
+			<div class="absolute inset-0 bg-neutral flex flex-col items-center justify-center gap-3 text-neutral-content/80 pointer-events-none" data-desktop-starting>
+				<span class="loading loading-spinner loading-md"></span>
+				<span class="text-sm">{$t('chat.startingComputer')}</span>
+			</div>
+		{:else if status === 'reconnecting'}
 			<div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-neutral-content/80 pointer-events-none">
 				<Monitor class="w-8 h-8" />
-				<span class="text-sm">
-					{status === 'connecting' ? $t('chat.startingComputer') : $t('chat.computerReconnecting')}
-				</span>
+				<span class="text-sm">{$t('chat.computerReconnecting')}</span>
 			</div>
 		{/if}
 	</div>
