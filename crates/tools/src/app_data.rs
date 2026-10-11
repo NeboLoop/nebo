@@ -63,11 +63,12 @@ pub fn remove(store: &db::Store, app_id: &str, key: &str) -> Result<(), String> 
         .map_err(|e| e.to_string())
 }
 
-/// Every key with its stored text, ordered by key.
-pub fn list(store: &db::Store, app_id: &str) -> Result<Vec<(String, String)>, String> {
+/// Every key with its stored text and when it was last written (unix
+/// seconds, the store's own clock), ordered by key.
+pub fn list(store: &db::Store, app_id: &str) -> Result<Vec<(String, String, i64)>, String> {
     store
         .list_plugin_settings(&store_name(app_id))
-        .map(|items| items.into_iter().filter(|(_, raw)| !raw.is_empty()).collect())
+        .map(|items| items.into_iter().filter(|(_, raw, _)| !raw.is_empty()).collect())
         .map_err(|e| e.to_string())
 }
 
@@ -259,7 +260,7 @@ fn matches(record: &Value, conditions: &serde_json::Map<String, Value>, text: &s
 /// Records a query looks at: each key's value, and each item of a value
 /// that is a list (an app often keeps `contacts: [...]` under one key).
 pub fn query(
-    items: &[(String, String)],
+    items: &[(String, String, i64)],
     prefix: &str,
     conditions: &serde_json::Map<String, Value>,
     text: &str,
@@ -268,7 +269,7 @@ pub fn query(
     let text = text.to_lowercase();
     let mut found = Vec::new();
     let mut total = 0;
-    for (key, raw) in items.iter().filter(|(k, _)| k.starts_with(prefix)) {
+    for (key, raw, _) in items.iter().filter(|(k, _, _)| k.starts_with(prefix)) {
         let value = decode(raw);
         let mut take = |hit: Value| {
             total += 1;
@@ -507,11 +508,11 @@ impl AppDataTool {
             }
             "list" => {
                 let items = list(&self.store, &app.id)?;
-                let matching: Vec<_> = items.iter().filter(|(k, _)| k.starts_with(prefix)).collect();
+                let matching: Vec<_> = items.iter().filter(|(k, _, _)| k.starts_with(prefix)).collect();
                 let shown: Vec<Value> = matching
                     .iter()
                     .take(limit)
-                    .map(|(k, raw)| json!({ "key": k, "value": decode(raw) }))
+                    .map(|(k, raw, _)| json!({ "key": k, "value": decode(raw) }))
                     .collect();
                 Ok(json!({ "total": matching.len(), "items": shown }).to_string())
             }
