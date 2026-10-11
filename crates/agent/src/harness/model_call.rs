@@ -1297,16 +1297,7 @@ mod tests {
         config::ModelsConfig {
             version: "1.0".into(),
             defaults: None,
-            task_routing: Some(config::models::TaskRouting {
-                vision: String::new(),
-                audio: String::new(),
-                reasoning: String::new(),
-                code: String::new(),
-                general: String::new(),
-                aux: aux.to_string(),
-                fallbacks: std::collections::HashMap::new(),
-            }),
-            lane_routing: None,
+            task_routing: Some(config::models::TaskRouting { aux: aux.to_string(), ..Default::default() }),
             aliases: vec![],
             providers: std::collections::HashMap::new(),
             cli_providers: vec![],

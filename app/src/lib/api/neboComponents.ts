@@ -2377,7 +2377,6 @@ export interface ListMemoriesResponse {
 export interface ListModelsResponse {
 	models: Record<string, unknown[]>
 	taskRouting: unknown
-	laneRouting: unknown
 	aliases: unknown[]
 	availableCLIs: unknown
 	cliStatuses: unknown

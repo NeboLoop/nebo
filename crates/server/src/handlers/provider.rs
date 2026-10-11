@@ -435,44 +435,13 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
         cfg.aliases.iter().map(|a| (a.alias.clone(), a.model_id.clone())).collect();
     state.harness.selector().rebuild_fuzzy(&user_aliases);
 
-    // Task routing
+    // The bot's routes
     let task_routing = cfg.task_routing.as_ref().map(|tr| {
         serde_json::json!({
             "vision": tr.vision,
-            "audio": tr.audio,
-            "reasoning": tr.reasoning,
-            "code": tr.code,
             "general": tr.general,
             "aux": tr.aux,
-            "fallbacks": tr.fallbacks,
         })
-    });
-
-    // Lane routing
-    let lane_routing = cfg.lane_routing.as_ref().map(|lr| {
-        let mut m = serde_json::Map::new();
-        if !lr.heartbeat.is_empty() {
-            m.insert(
-                "heartbeat".into(),
-                serde_json::Value::String(lr.heartbeat.clone()),
-            );
-        }
-        if !lr.events.is_empty() {
-            m.insert(
-                "events".into(),
-                serde_json::Value::String(lr.events.clone()),
-            );
-        }
-        if !lr.comm.is_empty() {
-            m.insert("comm".into(), serde_json::Value::String(lr.comm.clone()));
-        }
-        if !lr.subagent.is_empty() {
-            m.insert(
-                "subagent".into(),
-                serde_json::Value::String(lr.subagent.clone()),
-            );
-        }
-        serde_json::Value::Object(m)
     });
 
     // Aliases
@@ -529,7 +498,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
     Ok(Json(serde_json::json!({
         "models": models,
         "taskRouting": task_routing,
-        "laneRouting": lane_routing,
         "aliases": aliases,
         "availableCLIs": available_clis,
         "cliStatuses": cli_statuses,
@@ -640,26 +608,9 @@ pub async fn update_model_config(
 ) -> HandlerResult<serde_json::Value> {
     let mut cfg = config::ModelsConfig::load();
 
-    if cfg.defaults.is_none() {
-        cfg.defaults = Some(config::models::Defaults {
-            // Routing settings do not edit the escalation model; keep what the file says.
-            escalation: cfg.defaults.as_ref().map(|d| d.escalation.clone()).unwrap_or_default(),
-            primary: String::new(),
-            fallbacks: Vec::new(),
-        });
-    }
-
-    if let Some(primary) = body.get("primary").and_then(|v| v.as_str()) {
-        if !primary.is_empty() {
-            cfg.defaults.as_mut().unwrap().primary = primary.to_string();
-        }
-    }
-
-    if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_array()) {
-        cfg.defaults.as_mut().unwrap().fallbacks = fallbacks
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
+    if let Some(primary) = body.get("primary").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+        cfg.defaults.get_or_insert_with(|| config::models::Defaults { primary: String::new() }).primary =
+            primary.to_string();
     }
 
     cfg.save()
@@ -687,26 +638,9 @@ pub async fn update_task_routing(
     // Update task routing
     let tr = cfg
         .task_routing
-        .get_or_insert_with(|| config::models::TaskRouting {
-            vision: String::new(),
-            audio: String::new(),
-            reasoning: String::new(),
-            code: String::new(),
-            general: String::new(),
-            aux: String::new(),
-            fallbacks: std::collections::HashMap::new(),
-        });
+        .get_or_insert_with(Default::default);
     if let Some(v) = body.get("vision").and_then(|v| v.as_str()) {
         tr.vision = v.to_string();
-    }
-    if let Some(v) = body.get("audio").and_then(|v| v.as_str()) {
-        tr.audio = v.to_string();
-    }
-    if let Some(v) = body.get("reasoning").and_then(|v| v.as_str()) {
-        tr.reasoning = v.to_string();
-    }
-    if let Some(v) = body.get("code").and_then(|v| v.as_str()) {
-        tr.code = v.to_string();
     }
     if let Some(v) = body.get("general").and_then(|v| v.as_str()) {
         tr.general = v.to_string();
@@ -714,45 +648,6 @@ pub async fn update_task_routing(
     if let Some(v) = body.get("aux").and_then(|v| v.as_str()) {
         tr.aux = v.to_string();
     }
-    if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_object()) {
-        let mut fb = std::collections::HashMap::new();
-        for (k, v) in fallbacks {
-            if let Some(arr) = v.as_array() {
-                fb.insert(
-                    k.clone(),
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect(),
-                );
-            }
-        }
-        tr.fallbacks = fb;
-    }
-
-    // Update lane routing
-    if let Some(lr_val) = body.get("laneRouting").and_then(|v| v.as_object()) {
-        let lr = cfg
-            .lane_routing
-            .get_or_insert_with(|| config::models::LaneRouting {
-                heartbeat: String::new(),
-                events: String::new(),
-                comm: String::new(),
-                subagent: String::new(),
-            });
-        if let Some(v) = lr_val.get("heartbeat").and_then(|v| v.as_str()) {
-            lr.heartbeat = v.to_string();
-        }
-        if let Some(v) = lr_val.get("events").and_then(|v| v.as_str()) {
-            lr.events = v.to_string();
-        }
-        if let Some(v) = lr_val.get("comm").and_then(|v| v.as_str()) {
-            lr.comm = v.to_string();
-        }
-        if let Some(v) = lr_val.get("subagent").and_then(|v| v.as_str()) {
-            lr.subagent = v.to_string();
-        }
-    }
-
     // Update aliases
     if let Some(aliases) = body.get("aliases").and_then(|v| v.as_array()) {
         cfg.aliases = aliases
@@ -1030,15 +925,7 @@ pub async fn set_default_pack(
     }
     let mut cfg = config::ModelsConfig::load();
     cfg.task_routing
-        .get_or_insert_with(|| config::models::TaskRouting {
-            vision: String::new(),
-            audio: String::new(),
-            reasoning: String::new(),
-            code: String::new(),
-            general: String::new(),
-            aux: String::new(),
-            fallbacks: std::collections::HashMap::new(),
-        })
+        .get_or_insert_with(Default::default)
         .general = value.clone();
     cfg.save().map_err(|e| to_error_response(types::NeboError::Server(e)))?;
     state.harness.selector().set_task_routing(agent::selector::task_routes(&cfg));

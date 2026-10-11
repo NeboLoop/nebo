@@ -45,17 +45,12 @@ impl ModelDef {
     }
 }
 
-/// Task-based model routing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The bot's routes in models.yaml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskRouting {
     #[serde(default)]
     pub vision: String,
-    #[serde(default)]
-    pub audio: String,
-    #[serde(default)]
-    pub reasoning: String,
-    #[serde(default)]
-    pub code: String,
+    /// The bot's default: a model, or an intelligence pack (`pack/<id>`).
     #[serde(default)]
     pub general: String,
     /// Cheap-model route for internal side-tasks (titles, memory extraction,
@@ -63,21 +58,6 @@ pub struct TaskRouting {
     /// (each side-task keeps its default provider selection).
     #[serde(default)]
     pub aux: String,
-    #[serde(default)]
-    pub fallbacks: HashMap<String, Vec<String>>,
-}
-
-/// Lane-specific model routing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaneRouting {
-    #[serde(default)]
-    pub heartbeat: String,
-    #[serde(default)]
-    pub events: String,
-    #[serde(default)]
-    pub comm: String,
-    #[serde(default)]
-    pub subagent: String,
 }
 
 /// Default model selection.
@@ -85,13 +65,6 @@ pub struct LaneRouting {
 pub struct Defaults {
     #[serde(default)]
     pub primary: String,
-    #[serde(default)]
-    pub fallbacks: Vec<String>,
-    /// Where a run goes when the reviewer would otherwise stop it: one window
-    /// of steps on this model, once per run, then back. "provider/model";
-    /// empty means the reviewer's stop stands. See agent::reviewer.
-    #[serde(default)]
-    pub escalation: String,
 }
 
 /// User-friendly model alias.
@@ -137,8 +110,6 @@ pub struct ModelsConfig {
     pub defaults: Option<Defaults>,
     #[serde(default)]
     pub task_routing: Option<TaskRouting>,
-    #[serde(default)]
-    pub lane_routing: Option<LaneRouting>,
     #[serde(default)]
     pub aliases: Vec<ModelAlias>,
     #[serde(default)]
@@ -203,44 +174,19 @@ impl ModelsConfig {
         self.save()
     }
 
-    /// Get the default model ID for a given provider name.
-    /// Checks defaults.primary first, then fallbacks, then first model in provider list.
+    /// The model a provider's connection runs when the connection names
+    /// none: `defaults.primary` when it names this provider, else the
+    /// provider's first catalog row.
     pub fn default_model_for_provider(&self, provider: &str) -> Option<String> {
-        // Check if defaults.primary targets this provider
-        if let Some(ref defaults) = self.defaults {
-            if let Some(model_id) = Self::extract_model_for_provider(&defaults.primary, provider) {
-                return Some(model_id);
-            }
-            for fb in &defaults.fallbacks {
-                if let Some(model_id) = Self::extract_model_for_provider(fb, provider) {
-                    return Some(model_id);
-                }
-            }
+        if let Some(model_id) =
+            self.defaults.as_ref().and_then(|d| Self::extract_model_for_provider(&d.primary, provider))
+        {
+            return Some(model_id);
         }
-        // Fall back to first model in provider's model list
         self.providers
             .get(provider)
             .and_then(|models| models.first())
             .map(|m| m.id.clone())
-    }
-
-    /// Get the model ID for a specific task type (vision, reasoning, code, general, audio).
-    /// Returns just the model ID portion (without the "provider/" prefix).
-    pub fn model_for_task(&self, task: &str) -> Option<String> {
-        self.task_routing.as_ref().and_then(|tr| {
-            let full = match task {
-                "vision" => &tr.vision,
-                "audio" => &tr.audio,
-                "reasoning" => &tr.reasoning,
-                "code" => &tr.code,
-                "general" => &tr.general,
-                _ => return None,
-            };
-            if full.is_empty() {
-                return None;
-            }
-            Some(full.split('/').last().unwrap_or(full).to_string())
-        })
     }
 
     /// Resolve the model a sidecar task should run on for the provider that is
@@ -324,7 +270,6 @@ impl ModelsConfig {
             version: "1.0".into(),
             defaults: None,
             task_routing: None,
-            lane_routing: None,
             aliases: Vec::new(),
             providers: HashMap::new(),
             cli_providers: Vec::new(),
