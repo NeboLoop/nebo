@@ -867,6 +867,25 @@ fn main() {
         }
     }
 
+    // `--engine-supervisor [--port P] [--home DIR]`: the Windows task's
+    // program, the engine's parent (`service::run_supervisor`). Its port and
+    // Nebo folder come as arguments (a task has no environment of its own)
+    // and pass to the engine through this process's environment.
+    let supervisor_role = std::env::args().any(|a| a == service::SUPERVISOR_ARG);
+    if supervisor_role {
+        let args: Vec<String> = std::env::args().collect();
+        let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+        // SAFETY: the top of `main`, before any other thread starts.
+        unsafe {
+            if let Some(port) = value("--port") {
+                std::env::set_var("NEBO_PORT", port);
+            }
+            if let Some(home) = value("--home") {
+                std::env::set_var("NEBO_HOME", home);
+            }
+        }
+    }
+
     // One executable, two roles: `--engine` is the server, with no window;
     // otherwise this is the shell, the window and tray.
     let engine_role = std::env::args().any(|a| a == "--engine");
@@ -878,7 +897,14 @@ fn main() {
 
     // File layer: the engine's in <data_dir>/logs/nebo.log, the shell's
     // in nebo-shell.log.
-    let file_layer = config::log_file(if engine_role { "nebo.log" } else { "nebo-shell.log" }).map(|file| {
+    let log_name = if supervisor_role {
+        "engine-supervisor.log"
+    } else if engine_role {
+        "nebo.log"
+    } else {
+        "nebo-shell.log"
+    };
+    let file_layer = config::log_file(log_name).map(|file| {
         fmt::layer()
             .with_writer(Mutex::new(file))
             .with_ansi(false)
@@ -918,6 +944,15 @@ fn main() {
         }
     }));
 
+    if supervisor_role {
+        #[cfg(windows)]
+        service::run_supervisor();
+        #[cfg(not(windows))]
+        {
+            eprintln!("{}: Windows only", service::SUPERVISOR_ARG);
+            std::process::exit(2);
+        }
+    }
     if engine_role {
         engine::run_engine();
     }

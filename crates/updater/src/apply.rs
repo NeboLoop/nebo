@@ -460,8 +460,11 @@ exit 0
 ///
 /// When the engine runs as the OS's service (its Windows task's supervisor,
 /// `NEBO_SUPERVISED=taskscheduler`; off by default) the helper also holds the
-/// new version to a health gate: the engine must answer `/health` as a version
-/// other than this one within [`HEALTH_GATE`]. When it doesn't, or the
+/// new version to a health gate: the engine must answer `/health` as a
+/// version other than this one within [`HEALTH_GATE`]; the update marker
+/// ([`crate::UPDATING_MARKER`]) tells the app's window process meanwhile that
+/// the update starts the engine, not it (the window process closes, and the
+/// installer would end it anyway). When it doesn't answer, or the
 /// installer fails, it reinstalls the previous version's installer (kept from
 /// the last update that passed the gate) and writes the rollback marker. NSIS
 /// is not transactional: the previous installer is the way back.
@@ -478,8 +481,10 @@ fn apply_app_bundle(setup_path: &Path, data_dir: &Path) -> Result<(), UpdateErro
 
     let gated = std::env::var("NEBO_SUPERVISED").is_ok_and(|s| s == "taskscheduler");
     let previous = data_dir.join("updates").join("previous-setup.exe");
+    let updating = data_dir.join(crate::UPDATING_MARKER);
     let script = build_windows_helper(&WindowsHelper {
         self_task: if gated { UPDATE_TASK.to_string() } else { String::new() },
+        updating: if gated { updating.to_string_lossy().into_owned() } else { String::new() },
         pid: std::process::id(),
         setup: setup.to_string_lossy().into_owned(),
         previous: previous.to_string_lossy().into_owned(),
@@ -492,6 +497,9 @@ fn apply_app_bundle(setup_path: &Path, data_dir: &Path) -> Result<(), UpdateErro
         log: log_path(data_dir).to_string_lossy().into_owned(),
     });
     run_pre_apply();
+    if gated {
+        let _ = std::fs::write(&updating, "");
+    }
     // An engine the task runs ends with its task, and Task Scheduler takes
     // what the task's processes started with it (seen on the house runner:
     // children die when the task ends, breakaway or not). So that engine's
@@ -561,6 +569,8 @@ pub struct WindowsHelper {
     pub port: u16,
     /// The version being replaced: the new engine must answer as another.
     pub old_version: String,
+    /// The update marker, removed when the helper is done (empty: none).
+    pub updating: String,
     /// The health gate's length; 0 turns the gate and the rollback off.
     pub gate_secs: u64,
     pub marker: String,
@@ -596,6 +606,7 @@ function Healthy($want) {
   return $false
 }
 function Done($code) {
+  if ('__UPDATING__' -ne '') { Remove-Item -Force '__UPDATING__' -ErrorAction SilentlyContinue }
   if ('__SELF_TASK__' -ne '') { schtasks /Delete /TN '__SELF_TASK__' /F 2>&1 | Out-Null }
   exit $code
 }
@@ -641,6 +652,7 @@ Done 1
     // Inside single-quoted PowerShell strings a quote is doubled.
     let q = |s: &str| s.replace('\'', "''");
     TEMPLATE
+        .replace("__UPDATING__", &q(&h.updating))
         .replace("__SELF_TASK__", &q(&h.self_task))
         .replace("__PID__", &h.pid.to_string())
         .replace("__SETUP__", &q(&h.setup))
@@ -1191,7 +1203,11 @@ mod tests {
     }
 
     fn windows_helper(gate_secs: u64) -> String {
-        build_windows_helper(&WindowsHelper {
+        build_windows_helper(&helper_args(gate_secs))
+    }
+
+    fn helper_args(gate_secs: u64) -> WindowsHelper {
+        WindowsHelper {
             self_task: r"\NeboAI\Nebo Update".into(),
             pid: 99,
             setup: r"C:\Temp\Nebo-update-x-setup.exe".into(),
@@ -1200,10 +1216,11 @@ mod tests {
             task: WINDOWS_TASK.into(),
             port: 27895,
             old_version: "0.16.15".into(),
+            updating: String::new(),
             gate_secs,
             marker: r"C:\data\UPDATE_FAILED.json".into(),
             log: r"C:\data\logs\update.log".into(),
-        })
+        }
     }
 
     #[test]
@@ -1226,6 +1243,12 @@ mod tests {
         assert!(windows_helper(0).contains("if (0 -eq 0)"));
         assert!(windows_helper(90).contains("if (90 -eq 0)"));
         assert!(windows_helper(90).contains("AddSeconds(90)"));
+    }
+
+    #[test]
+    fn windows_helper_removes_the_update_marker_when_done() {
+        let h = WindowsHelper { updating: r"C:\data\UPDATING".into(), ..helper_args(90) };
+        assert!(build_windows_helper(&h).contains(r"Remove-Item -Force 'C:\data\UPDATING'"));
     }
 
     /// An app update under launchd, end to end, on a registered TEST agent

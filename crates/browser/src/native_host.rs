@@ -356,6 +356,33 @@ pub fn install_manifest(
     Ok(())
 }
 
+/// Remove the native messaging host from every browser: the manifests, and
+/// on Windows the registry keys pointing at them. The uninstaller's: the
+/// executable they name is about to be removed. Best-effort; each failure
+/// is logged.
+pub fn uninstall_manifest() {
+    for dir in all_native_messaging_dirs() {
+        let path = std::path::Path::new(&dir).join("dev.neboai.nebo.json");
+        match std::fs::remove_file(&path) {
+            Ok(()) => info!(path = %path.display(), "removed native messaging host manifest"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!(path = %path.display(), error = %e, "could not remove native messaging host manifest"),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    for (reg_key, _) in windows_native_messaging_registry_keys() {
+        match command::new::<std::process::Command>("reg", command::Console::Hidden)
+            .args(["delete", &reg_key, "/f"])
+            .output()
+        {
+            Ok(out) if out.status.success() => info!(key = %reg_key, "removed native messaging host registry key"),
+            // Absent: that browser never had it.
+            Ok(_) => {}
+            Err(e) => warn!(key = %reg_key, error = %e, "could not run reg delete"),
+        }
+    }
+}
+
 /// Check if the native messaging host manifest is installed in at least one browser.
 pub fn is_manifest_installed() -> bool {
     all_native_messaging_dirs().iter().any(|dir| {

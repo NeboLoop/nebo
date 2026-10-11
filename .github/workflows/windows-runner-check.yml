@@ -140,6 +140,32 @@ jobs:
         run: |
           ls -la "$CARGO_TARGET_DIR/release/nebo.exe" "$CARGO_TARGET_DIR"/release/bundle/nsis/*.exe
 
+      # The installer's uninstall hook, for real, under the runner's account:
+      # install the build, register the app's engine task (never started:
+      # the account never logs on), uninstall, and nothing is left — the
+      # hook's `--engine-service uninstall --app-removed` removed the task.
+      - name: Install and uninstall the build
+        shell: powershell
+        run: |
+          # schtasks reports a missing task on stderr: an answer here, not a failure.
+          $ErrorActionPreference = 'Continue'
+          $setup = Get-ChildItem "$env:CARGO_TARGET_DIR\release\bundle\nsis\*.exe" | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList '/S' -Wait -PassThru; "install exit=$($p.ExitCode)"
+          $dir = Join-Path $env:LOCALAPPDATA 'Nebo'
+          if (-not (Test-Path "$dir\nebo.exe")) { throw "not installed at $dir" }
+          $env:NEBO_ENGINE_MODE = 'service'
+          & "$dir\nebo.exe" --engine-service install | Out-String
+          schtasks /Query /TN '\NeboAI\Nebo Engine' | Out-Null; if ($LASTEXITCODE -ne 0) { throw "the engine task did not register" }
+          $u = Start-Process "$dir\uninstall.exe" -ArgumentList '/S' -Wait -PassThru; "uninstall exit=$($u.ExitCode)"
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Test-Path "$dir\nebo.exe") -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
+          if (Test-Path "$dir\nebo.exe") { throw "nebo.exe left after uninstall" }
+          schtasks /Query /TN '\NeboAI\Nebo Engine' 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { schtasks /Delete /TN '\NeboAI\Nebo Engine' /F | Out-Null; throw "the uninstall hook left the engine task" }
+          "installed to $dir, uninstalled, engine task removed by the hook"
+          # The last schtasks' "not found" is the answer wanted, not the step's result.
+          exit 0
+
       # What only Windows can show: every child's console flags, and the
       # updater's helper outliving the process that started it.
       - name: Child-process constructor on Windows
@@ -152,3 +178,11 @@ jobs:
       - name: Update helper on Windows
         shell: bash
         run: cargo test -p nebo-updater --test windows_update_helper
+
+      # The engine as a Windows logon task, end to end with its own task,
+      # port and Nebo folder: crash, stall, held port, Quit, the supervisor
+      # ended, an update kept and one rolled back, unregister. The box's
+      # runner is a service account, so the task has no logon trigger here.
+      - name: Engine service on Windows
+        shell: bash
+        run: cargo test -p nebo --test engine_service_windows -- --nocapture

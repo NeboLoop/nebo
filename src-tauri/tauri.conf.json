@@ -34,6 +34,11 @@
       "files": {
         "Library/LaunchAgents/dev.neboai.nebo.engine.plist": "LaunchAgents/dev.neboai.nebo.engine.plist"
       }
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      }
     }
   },
   "app": {

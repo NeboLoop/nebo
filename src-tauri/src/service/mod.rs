@@ -19,6 +19,10 @@
 //! development, or when the owner switched Nebo off in Login Items, the
 //! engine runs as the app's own child (`engine::supervise`).
 //!
+//! Windows (`windows`): a per-user Task Scheduler task started at logon runs
+//! `nebo.exe --engine-supervisor`, the engine's parent that starts it again
+//! after a non-zero exit (Task Scheduler itself only retries a failed start).
+//!
 //! `nebo --engine-service <install|uninstall|status|kickstart> [--label L]
 //! [--port P]` are the same operations for installers, `make` and tests.
 
@@ -100,6 +104,12 @@ pub fn wanted_mode(env: Option<&str>, feed: Option<&str>) -> Mode {
         Some("service") => Mode::Service,
         _ => Mode::Child,
     }
+}
+
+/// The service is switched on for this app: `NEBO_ENGINE_MODE`, else the
+/// feed's last `engineMode`.
+pub fn switched_on() -> bool {
+    wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), load().engine_mode.as_deref()) == Mode::Service
 }
 
 /// What the app knows when it opens.
@@ -294,6 +304,13 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{install, job, keep_after_logout, kickstart, open_login_items, set_keep_after_logout, status, unregister};
 
+// Windows: a per-user logon task runs the engine's supervisor. Compiled on
+// every OS so what it decides is tested everywhere.
+mod windows;
+pub use windows::{SUPERVISOR_ARG, TASK_SCHEDULER};
+#[cfg(windows)]
+pub use windows::{install, job, kickstart, open_login_items, run_supervisor, status, unregister};
+
 /// Whether the engine keeps running after the owner logs out: Linux only
 /// (`loginctl enable-linger`), None where the OS has no such choice.
 #[cfg(not(target_os = "linux"))]
@@ -305,33 +322,43 @@ pub fn set_keep_after_logout(_on: bool) -> Result<(), String> {
     Err("no such setting on this OS".into())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn status(_: &Target) -> Status {
     Status::Unsupported
 }
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn install(_: &Target) -> Result<Status, String> {
     Ok(Status::Unsupported)
 }
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn unregister(_: &Target) -> Result<(), String> {
     Ok(())
 }
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn kickstart(_: &Target, _restart: bool) -> Result<(), String> {
     Err("no engine service on this OS".into())
 }
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn job(_: &Target) -> Job {
     Job::Absent
 }
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn open_login_items() {}
 
 /// `--engine-service uninstall`: stop the engine the graceful way (the
-/// install key's Quit), then remove the registration.
-pub fn uninstall(target: &Target) -> Result<(), String> {
+/// install key's Quit), then remove the registration. With `app_removed`
+/// (the Windows uninstaller's `--app-removed`), also remove the browser's
+/// native-messaging host, which names the executable being removed.
+pub fn uninstall(target: &Target, app_removed: bool) -> Result<(), String> {
+    // The uninstaller asks on every machine; until the service was switched
+    // on here (or a task is left from when it was), it changes nothing.
+    if app_removed && !switched_on() && status(target) == Status::NotRegistered {
+        return Ok(());
+    }
     crate::engine::quit_engine(target.port);
+    if app_removed {
+        browser::native_host::uninstall_manifest();
+    }
     unregister(target)
 }
 
@@ -343,12 +370,14 @@ pub fn run_verb(args: &[String]) -> ! {
     let mut verb = None;
     let mut target = Target::app();
     let mut within = 90;
+    let mut app_removed = false;
     let mut it = args.iter().skip_while(|a| *a != "--engine-service").skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--label" => target.label = it.next().cloned().unwrap_or_default(),
             "--port" => target.port = it.next().and_then(|p| p.parse().ok()).unwrap_or(target.port),
             "--within" => within = it.next().and_then(|s| s.parse().ok()).unwrap_or(within),
+            "--app-removed" => app_removed = true,
             v if verb.is_none() && !v.starts_with("--") => verb = Some(v.to_string()),
             other => fail(&format!("unknown argument {other}")),
         }
@@ -359,7 +388,7 @@ pub fn run_verb(args: &[String]) -> ! {
     let result = match verb.as_deref() {
         Some("status") => Ok(serde_json::json!({ "status": status(&target), "job": job(&target) })),
         Some("install") => install(&target).map(|s| serde_json::json!({ "status": s, "job": job(&target) })),
-        Some("uninstall") => uninstall(&target).map(|()| serde_json::json!({ "status": status(&target) })),
+        Some("uninstall") => uninstall(&target, app_removed).map(|()| serde_json::json!({ "status": status(&target) })),
         Some("kickstart") => kickstart(&target, false).map(|()| serde_json::json!({ "job": job(&target) })),
         // The session's login entry (Linux): the kill switch holds there too,
         // with no window opened; otherwise the engine gets the session's
@@ -367,7 +396,7 @@ pub fn run_verb(args: &[String]) -> ! {
         Some("login") => {
             let mode = wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), load().engine_mode.as_deref());
             if mode == Mode::Child {
-                uninstall(&target).map(|()| serde_json::json!({ "status": status(&target) }))
+                uninstall(&target, false).map(|()| serde_json::json!({ "status": status(&target) }))
             } else {
                 kickstart(&target, false).map(|()| serde_json::json!({ "job": job(&target) }))
             }
@@ -377,7 +406,7 @@ pub fn run_verb(args: &[String]) -> ! {
         // seconds.
         Some("health") => crate::engine::wait_for_engine_version(target.port, env!("CARGO_PKG_VERSION"), Duration::from_secs(within))
             .map(|()| serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
-        _ => Err("usage: nebo --engine-service <install|uninstall|status|kickstart|login|health> [--label L] [--port P]".into()),
+        _ => Err("usage: nebo --engine-service <install|uninstall|status|kickstart|login|health> [--label L] [--port P] [--app-removed]".into()),
     };
     match result {
         Ok(v) => {
@@ -470,7 +499,8 @@ mod tests {
 
     #[test]
     fn the_bundled_plist_is_the_rendered_one() {
-        let bundled = include_str!("../../LaunchAgents/dev.neboai.nebo.engine.plist");
+        // A Windows checkout may carry the file with CRLF line ends.
+        let bundled = include_str!("../../LaunchAgents/dev.neboai.nebo.engine.plist").replace("\r\n", "\n");
         assert_eq!(render_plist(LABEL, &Program::Bundle, &[]), bundled);
     }
 

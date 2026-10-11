@@ -32,6 +32,7 @@ impl Scratch {
         let dir = std::env::temp_dir().join(format!("nebo-update-helper-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("install")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let s = Self { dir, port };
         // The app's launcher: starts the installed engine, if any, hidden.
@@ -101,6 +102,7 @@ while ($true) {{
             task: r"\NeboAI\Nebo Engine Test (none)".into(),
             port: self.port,
             old_version: "1.0.0".into(),
+            updating: String::new(),
             gate_secs,
             marker: self.path("data/UPDATE_FAILED.json").display().to_string(),
             log: self.path("data/logs/update.log").display().to_string(),
@@ -211,6 +213,8 @@ fn the_helper_runs_to_the_end_as_its_own_task_and_removes_it() {
     let task = format!(r"\NeboAI\Nebo Update Test {}", std::process::id());
     let mut h = s.helper(&setup, &previous, 60);
     h.self_task = task.clone();
+    h.updating = s.path("data/UPDATING").display().to_string();
+    s.write("data/UPDATING", "2.0.0");
     start_helper_task(&task, &build_windows_helper(&h)).expect("the helper task starts");
     let deadline = Instant::now() + Duration::from_secs(150);
     while !s.log().contains("update complete") && Instant::now() < deadline {
@@ -228,4 +232,5 @@ fn the_helper_runs_to_the_end_as_its_own_task_and_removes_it() {
     assert!(log.contains("update complete"), "log:\n{log}");
     assert!(previous.exists());
     assert!(!left, "the helper deletes its own task");
+    assert!(!s.path("data/UPDATING").exists(), "the update marker is gone once the helper is done");
 }

@@ -107,6 +107,23 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 pub(crate) fn serving() {
     SERVING.store(true, Ordering::Relaxed);
     stall_for_test();
+    crash_for_test();
+}
+
+/// A test's crashing engine: `<data_dir>/TEST_CRASH` makes it abort once
+/// the server serves, as a crash would (a supervisor that can't end the
+/// process from outside, the house Windows runner's, still sees one). Read
+/// once and removed, so the engine started again serves. Only in a
+/// relocated Nebo folder (`NEBO_HOME`: a test's), never the owner's.
+fn crash_for_test() {
+    if !config::data_dir_overridden() {
+        return;
+    }
+    let Ok(path) = config::data_dir().map(|d| d.join("TEST_CRASH")) else { return };
+    if std::fs::remove_file(&path).is_ok() {
+        tracing::warn!("TEST_CRASH: aborting");
+        std::process::abort();
+    }
 }
 
 /// A test's stalled engine: `<data_dir>/TEST_STALL` holding a number of
