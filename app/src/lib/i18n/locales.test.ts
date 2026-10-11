@@ -74,6 +74,17 @@ it('the language list and the locale files are the same 25 languages', () => {
 describe.each(files)('locale %s', (code) => {
 	const messages = load(code);
 
+	// Customers see "Connectors", never "MCP". The one exception is the
+	// custom-connector address helper, where people pasting a server's URL
+	// need the technical word.
+	it('calls connectors connectors, not MCP', () => {
+		const allowed = new Set(['connectors.urlHelper']);
+		const mcp = Object.entries(messages)
+			.filter(([key, text]) => !allowed.has(key) && /\bMCPs?\b/.test(text))
+			.map(([key]) => key);
+		expect(mcp).toEqual([]);
+	});
+
 	it('has every English key and no others', () => {
 		const missing = Object.keys(en).filter((k) => !(k in messages));
 		const extra = Object.keys(messages).filter((k) => !(k in en));

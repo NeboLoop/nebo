@@ -140,10 +140,10 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 			},
 			{
 				key: 'mcp',
-				label: 'Allowed MCP servers',
+				label: 'Allowed connectors',
 				type: 'text',
 				placeholder: 'crm',
-				description: 'Comma-separated connected MCP server names.',
+				description: 'Comma-separated connector names.',
 			},
 		],
 	},
@@ -467,28 +467,28 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 	connector: {
 		type: 'connector',
 		label: 'Connector',
-		description: 'Use an MCP integration',
+		description: 'Use a connector',
 		icon: '⊞',
 		accentClass: 'border-primary',
 		defaultSkills: [],
 		defaultSteps: [
-			'Execute tool from connected MCP server',
+			'Run a tool on the connector',
 			'Process and pass results downstream',
 		],
 		parameters: [
 			{
 				key: 'serverId',
-				label: 'MCP Server',
+				label: 'Connector',
 				type: 'select',
 				options: [],
-				description: 'Connected MCP server to use',
+				description: 'The connector to use',
 			},
 			{
 				key: 'tool',
 				label: 'Tool',
 				type: 'text',
 				placeholder: 'e.g. read_file, send_message',
-				description: 'Which tool to invoke on the MCP server',
+				description: 'Which tool to use on the connector',
 			},
 			{
 				key: 'input',

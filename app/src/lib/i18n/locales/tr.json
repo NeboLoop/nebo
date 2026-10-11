@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Komutlar, MCP'ler, Beceriler, Çalışanlar...",
-		"mcp": "MCP",
+		"placeholder": "Komutlar, Bağlayıcılar, Beceriler, Çalışanlar...",
+		"mcp": "Bağlayıcı",
 		"skill": "Beceri",
 		"agent": "Çalışan",
 		"command": "Komut",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "{source} kurulumunuzu bulduk",
-		"pitch": "Çalışanlarınızı, becerilerinizi, MCP sunucularınızı, belleğinizi ve sohbet geçmişinizi taşıyın — eski kurulumunuz olduğu gibi kalır.",
+		"pitch": "Çalışanlarınızı, becerilerinizi, bağlayıcılarınızı, belleğinizi ve sohbet geçmişinizi taşıyın — eski kurulumunuz olduğu gibi kalır.",
 		"bringOver": "Hepsini taşı",
 		"scanning": "Taranıyor…",
 		"importAll": "Hepsini içe aktar",
@@ -1571,13 +1571,13 @@
 		"failed": "İçe aktarma tamamlanmadı — istediğiniz zaman Ayarlar → İçe aktar bölümünden çalıştırabilirsiniz.",
 		"employees": "çalışan",
 		"skills": "beceri",
-		"mcpServers": "MCP sunucusu",
+		"mcpServers": "bağlayıcı",
 		"memoryFiles": "bellek dosyası",
 		"runLocally": "yerel olarak çalışır"
 	},
 	"settingsImport": {
 		"title": "İçe aktar",
-		"description": "Kurulumunuzu başka bir yapay zekâ aracından taşıyın — beceriler, MCP sunucuları ve çalışanınızın karakteri",
+		"description": "Kurulumunuzu başka bir yapay zekâ aracından taşıyın — beceriler, bağlayıcılar ve çalışanınızın karakteri",
 		"detectedTitle": "Algılanan kurulumlar",
 		"comingSoon": "Yakında",
 		"pathTitle": "Kurulum konumu",
@@ -1588,12 +1588,12 @@
 		"runsCode": "kod çalıştırır",
 		"importAll": "Hepsini içe aktar",
 		"importing": "İçe aktarılıyor…",
-		"doneSummary": "{agents} çalışan, {skills} beceri, {mcp} MCP sunucusu, {memories} bellek kaydı, {chats} sohbet ve {keys} sağlayıcı anahtarı içe aktarıldı.",
+		"doneSummary": "{agents} çalışan, {skills} beceri, {mcp} bağlayıcı, {memories} bellek kaydı, {chats} sohbet ve {keys} sağlayıcı anahtarı içe aktarıldı.",
 		"skippedTitle": "İçe aktarılmadı",
 		"kinds": {
 			"agent": "Çalışanlar",
 			"skill": "Beceriler",
-			"mcp_server": "MCP sunucuları",
+			"mcp_server": "Bağlayıcılar",
 			"memory": "Bellek",
 			"session": "Sohbetler",
 			"cron": "Zamanlamalar",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Çalışan Durumu",
 		"description": "Bağlı çalışanları ve sistem sağlığını izleyin",
-		"mcpServer": "MCP Sunucusu",
+		"mcpServer": "Bağlayıcılar",
 		"database": "Veritabanı",
 		"webSocket": "WebSocket",
 		"uptime": "Çalışma süresi",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Kişilik",
-		"assistantPlaceholder": "Çalışanın kişiliğini, rolünü ve davranış kurallarını tanımlayın. örn. Günlük görevleri yönetmeye yardımcı olan bir yapay zeka çalışanısın... MCP, beceri veya çalışan belirtmek için / yazın.",
-		"personaPlaceholder": "Bu çalışanın kişiliğini, rolünü ve davranış kurallarını tanımlayın. örn. Yöneticinin günlük ritmini yöneten bir özel kalem müdürüsün... MCP, beceri veya çalışan belirtmek için / yazın.",
+		"assistantPlaceholder": "Çalışanın kişiliğini, rolünü ve davranış kurallarını tanımlayın. örn. Günlük görevleri yönetmeye yardımcı olan bir yapay zeka çalışanısın... Bağlayıcı, beceri veya çalışan belirtmek için / yazın.",
+		"personaPlaceholder": "Bu çalışanın kişiliğini, rolünü ve davranış kurallarını tanımlayın. örn. Yöneticinin günlük ritmini yöneten bir özel kalem müdürüsün... Bağlayıcı, beceri veya çalışan belirtmek için / yazın.",
 		"undo": "Geri al",
 		"redo": "Yinele",
 		"properties": "Özellikler",
@@ -2980,7 +2980,7 @@
 			"plugin": "Eklenti yükleniyor…",
 			"app": "Uygulama yükleniyor…",
 			"collection": "Koleksiyon yükleniyor…",
-			"connection": "MCP bağlantısı ekleniyor…"
+			"connection": "Bağlayıcı ekleniyor…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Verileriniz yerelde kalır",
 		"featureMarketplace": "Beceri ve rol mağazası",
 		"featureDesktop": "Masaüstü otomasyonu",
-		"featureMcp": "MCP entegrasyonları",
+		"featureMcp": "Bağlayıcılar",
 		"featureMemory": "Hafıza sistemi",
 		"backToPlans": "Planlara dön",
 		"loadingCheckout": "Ödeme yükleniyor...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Güncelleme başlatılamadı",
 		"never": "hiçbir zaman",
 		"checkNow": "Şimdi denetle",
-		"description": "Yüklü eklentileriniz, çalışanlarınız, becerileriniz, MCP bağlayıcılarınız ve uygulamalarınız için mevcut güncellemeler. Her güncellemeyi siz onaylarsınız; sessizce uygulanması için öğe başına otomatik güncellemeyi açın.",
+		"description": "Yüklü eklentileriniz, çalışanlarınız, becerileriniz, bağlayıcılarınız ve uygulamalarınız için mevcut güncellemeler. Her güncellemeyi siz onaylarsınız; sessizce uygulanması için öğe başına otomatik güncellemeyi açın.",
 		"availableUpdates": "Mevcut güncellemeler",
 		"updatingAll": "Tümü güncelleniyor…",
 		"updateAll": "Tümünü güncelle ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Eklentiler",
 		"typeAgents": "Çalışanlar",
 		"typeSkills": "Beceriler",
-		"typeConnectors": "MCP Bağlayıcıları",
+		"typeConnectors": "Bağlayıcılar",
 		"checkEvery": "Denetim aralığı",
 		"hours6": "6 saat",
 		"history": "Geçmiş",
@@ -3535,8 +3535,8 @@
 						"description": "Virgülle ayrılmış eklenti kısa adları."
 					},
 					"mcp": {
-						"label": "İzin verilen MCP sunucuları",
-						"description": "Virgülle ayrılmış bağlı MCP sunucusu adları."
+						"label": "İzin verilen bağlayıcılar",
+						"description": "Virgülle ayrılmış bağlayıcı adları."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Bağlayıcı",
-				"description": "Bir MCP entegrasyonu kullan",
+				"description": "Bir bağlayıcı kullan",
 				"params": {
 					"serverId": {
-						"label": "MCP Sunucusu",
-						"description": "Kullanılacak bağlı MCP sunucusu"
+						"label": "Bağlayıcı",
+						"description": "Kullanılacak bağlayıcı"
 					},
 					"tool": {
 						"label": "Araç",
-						"description": "MCP sunucusunda çağrılacak araç",
+						"description": "Bağlayıcıda kullanılacak araç",
 						"placeholder": "örn. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Aktiviteler",
 				"callTree": "Çağrı Ağacı",
 				"flowControl": "Akış Denetimi",
-				"connectors": "Bağlayıcılar (MCP)",
+				"connectors": "Bağlayıcılar",
 				"agents": "Çalışanlar",
 				"output": "Çıktı"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 araç} other{{count} araç}}",
 		"name": "Ad",
 		"nameHelper": "Bağlayıcılar listesinde gösterilir.",
-		"url": "MCP sunucu URL'si",
+		"url": "Bağlayıcı URL'si",
 		"urlHelper": "Sunucunun MCP isteklerini kabul ettiği HTTPS adresi, örneğin https://mcp.example.com/mcp",
 		"urlInvalid": "https:// ile başlayan bir adres girin",
 		"trust": "Yalnızca güvendiğiniz geliştiricilerin bağlayıcılarını ekleyin. Nebo, bir bağlayıcının sunduğu araçları veya bunların nasıl değiştiğini denetlemez.",

@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "Arahan, MCP, Kemahiran, Pekerja...",
-		"mcp": "MCP",
+		"placeholder": "Arahan, Penyambung, Kemahiran, Pekerja...",
+		"mcp": "Penyambung",
 		"skill": "Kemahiran",
 		"agent": "Pekerja",
 		"command": "Arahan",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "Kami menemui persediaan {source} anda",
-		"pitch": "Bawa pekerja, kemahiran, pelayan MCP, ingatan dan sejarah perbualan anda — pemasangan lama anda kekal utuh.",
+		"pitch": "Bawa pekerja, kemahiran, penyambung, ingatan dan sejarah perbualan anda — pemasangan lama anda kekal utuh.",
 		"bringOver": "Bawa ke sini",
 		"scanning": "Mengimbas…",
 		"importAll": "Import semuanya",
@@ -1571,13 +1571,13 @@
 		"failed": "Import tidak selesai — anda boleh menjalankannya bila-bila masa dari Tetapan → Import.",
 		"employees": "pekerja",
 		"skills": "kemahiran",
-		"mcpServers": "pelayan MCP",
+		"mcpServers": "penyambung",
 		"memoryFiles": "fail ingatan",
 		"runLocally": "berjalan secara setempat"
 	},
 	"settingsImport": {
 		"title": "Import",
-		"description": "Bawa persediaan anda dari alat AI lain — kemahiran, pelayan MCP dan persona pekerja anda",
+		"description": "Bawa persediaan anda dari alat AI lain — kemahiran, penyambung dan persona pekerja anda",
 		"detectedTitle": "Pemasangan dikesan",
 		"comingSoon": "Akan datang",
 		"pathTitle": "Lokasi pemasangan",
@@ -1588,12 +1588,12 @@
 		"runsCode": "menjalankan kod",
 		"importAll": "Import semuanya",
 		"importing": "Mengimport…",
-		"doneSummary": "Mengimport {agents} pekerja, {skills} kemahiran, {mcp} pelayan MCP, {memories} ingatan, {chats} perbualan dan {keys} kunci pembekal.",
+		"doneSummary": "Mengimport {agents} pekerja, {skills} kemahiran, {mcp} penyambung, {memories} ingatan, {chats} perbualan dan {keys} kunci pembekal.",
 		"skippedTitle": "Tidak diimport",
 		"kinds": {
 			"agent": "Pekerja",
 			"skill": "Kemahiran",
-			"mcp_server": "Pelayan MCP",
+			"mcp_server": "Penyambung",
 			"memory": "Ingatan",
 			"session": "Perbualan",
 			"cron": "Jadual",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "Status Pekerja",
 		"description": "Pantau pekerja yang disambungkan dan kesihatan sistem",
-		"mcpServer": "Pelayan MCP",
+		"mcpServer": "Penyambung",
 		"database": "Pangkalan Data",
 		"webSocket": "WebSocket",
 		"uptime": "Masa Aktif",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "Persona",
-		"assistantPlaceholder": "Takrifkan personaliti, peranan, dan garis panduan tingkah laku pekerja. cth. Anda adalah pekerja AI yang membantu mengurus tugas harian... Taip / untuk menyebut MCP, kemahiran, atau pekerja.",
-		"personaPlaceholder": "Takrifkan personaliti, peranan, dan garis panduan tingkah laku pekerja ini. cth. Anda adalah ketua staf yang mengurus rentak harian eksekutif... Taip / untuk menyebut MCP, kemahiran, atau pekerja.",
+		"assistantPlaceholder": "Takrifkan personaliti, peranan, dan garis panduan tingkah laku pekerja. cth. Anda adalah pekerja AI yang membantu mengurus tugas harian... Taip / untuk menyebut penyambung, kemahiran, atau pekerja.",
+		"personaPlaceholder": "Takrifkan personaliti, peranan, dan garis panduan tingkah laku pekerja ini. cth. Anda adalah ketua staf yang mengurus rentak harian eksekutif... Taip / untuk menyebut penyambung, kemahiran, atau pekerja.",
 		"undo": "Buat asal",
 		"redo": "Buat semula",
 		"properties": "Sifat",
@@ -2980,7 +2980,7 @@
 			"plugin": "Memasang plugin…",
 			"app": "Memasang aplikasi…",
 			"collection": "Memasang koleksi…",
-			"connection": "Menambah sambungan MCP…"
+			"connection": "Menambah penyambung…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "Data anda kekal setempat",
 		"featureMarketplace": "Pasaran kemahiran & peranan",
 		"featureDesktop": "Automasi desktop",
-		"featureMcp": "Integrasi MCP",
+		"featureMcp": "Penyambung",
 		"featureMemory": "Sistem memori",
 		"backToPlans": "Kembali ke pelan",
 		"loadingCheckout": "Memuatkan pembayaran...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "Tidak dapat memulakan kemas kini",
 		"never": "tidak pernah",
 		"checkNow": "Semak sekarang",
-		"description": "Kemas kini tersedia untuk plugin, pekerja, kemahiran, penyambung MCP, dan aplikasi yang anda pasang. Anda meluluskan setiap kemas kini; hidupkan kemas kini automatik bagi setiap item untuk memasang secara senyap.",
+		"description": "Kemas kini tersedia untuk plugin, pekerja, kemahiran, penyambung, dan aplikasi yang anda pasang. Anda meluluskan setiap kemas kini; hidupkan kemas kini automatik bagi setiap item untuk memasang secara senyap.",
 		"availableUpdates": "Kemas kini tersedia",
 		"updatingAll": "Mengemas kini semua…",
 		"updateAll": "Kemas kini semua ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "Plugin",
 		"typeAgents": "Pekerja",
 		"typeSkills": "Kemahiran",
-		"typeConnectors": "Penyambung MCP",
+		"typeConnectors": "Penyambung",
 		"checkEvery": "Semak setiap",
 		"hours6": "6 jam",
 		"history": "Sejarah",
@@ -3535,8 +3535,8 @@
 						"description": "Slug plugin dipisahkan koma."
 					},
 					"mcp": {
-						"label": "Pelayan MCP yang dibenarkan",
-						"description": "Nama pelayan MCP yang disambungkan, dipisahkan koma."
+						"label": "Penyambung yang dibenarkan",
+						"description": "Nama penyambung, dipisahkan koma."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "Penyambung",
-				"description": "Guna integrasi MCP",
+				"description": "Guna penyambung",
 				"params": {
 					"serverId": {
-						"label": "Pelayan MCP",
-						"description": "Pelayan MCP yang disambungkan untuk digunakan"
+						"label": "Penyambung",
+						"description": "Penyambung untuk digunakan"
 					},
 					"tool": {
 						"label": "Alat",
-						"description": "Alat mana yang hendak dipanggil pada pelayan MCP",
+						"description": "Alat mana yang hendak digunakan pada penyambung",
 						"placeholder": "cth. read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "Aktiviti",
 				"callTree": "Pokok Panggilan",
 				"flowControl": "Kawalan Aliran",
-				"connectors": "Penyambung (MCP)",
+				"connectors": "Penyambung",
 				"agents": "Pekerja",
 				"output": "Output"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, =1{1 alat} other{{count} alat}}",
 		"name": "Nama",
 		"nameHelper": "Dipaparkan dalam senarai penyambung.",
-		"url": "URL pelayan MCP",
+		"url": "URL penyambung",
 		"urlHelper": "Alamat HTTPS tempat pelayan menerima permintaan MCP, contohnya https://mcp.example.com/mcp",
 		"urlInvalid": "Masukkan alamat yang bermula dengan https://",
 		"trust": "Tambah penyambung daripada pembangun yang anda percayai sahaja. Nebo tidak mengawal alat yang ditawarkan penyambung atau cara ia berubah.",

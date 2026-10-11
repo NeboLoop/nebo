@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "命令、MCP、技能、员工...",
-		"mcp": "MCP",
+		"placeholder": "命令、连接器、技能、员工...",
+		"mcp": "连接器",
 		"skill": "技能",
 		"agent": "员工",
 		"command": "命令",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "我们找到了你的 {source} 配置",
-		"pitch": "把你的员工、技能、MCP 服务器、记忆和对话记录一起带过来 — 原来的安装不会有任何改动。",
+		"pitch": "把你的员工、技能、连接器、记忆和对话记录一起带过来 — 原来的安装不会有任何改动。",
 		"bringOver": "一起带过来",
 		"scanning": "正在扫描…",
 		"importAll": "全部导入",
@@ -1571,13 +1571,13 @@
 		"failed": "导入未完成 — 你可以随时在设置 → 导入中重新运行。",
 		"employees": "员工",
 		"skills": "技能",
-		"mcpServers": "MCP 服务器",
+		"mcpServers": "连接器",
 		"memoryFiles": "记忆文件",
 		"runLocally": "本地运行"
 	},
 	"settingsImport": {
 		"title": "导入",
-		"description": "从其他 AI 工具把你的配置带过来 — 技能、MCP 服务器，以及员工的人设",
+		"description": "从其他 AI 工具把你的配置带过来 — 技能、连接器，以及员工的人设",
 		"detectedTitle": "检测到的安装",
 		"comingSoon": "即将推出",
 		"pathTitle": "安装位置",
@@ -1588,12 +1588,12 @@
 		"runsCode": "会运行代码",
 		"importAll": "全部导入",
 		"importing": "正在导入…",
-		"doneSummary": "已导入 {agents} 名员工、{skills} 个技能、{mcp} 个 MCP 服务器、{memories} 条记忆、{chats} 段对话和 {keys} 个提供商密钥。",
+		"doneSummary": "已导入 {agents} 名员工、{skills} 个技能、{mcp} 个 连接器、{memories} 条记忆、{chats} 段对话和 {keys} 个提供商密钥。",
 		"skippedTitle": "未导入的内容",
 		"kinds": {
 			"agent": "员工",
 			"skill": "技能",
-			"mcp_server": "MCP 服务器",
+			"mcp_server": "连接器",
 			"memory": "记忆",
 			"session": "对话",
 			"cron": "日程",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "员工状态",
 		"description": "监控已连接的员工和系统健康状况",
-		"mcpServer": "MCP 服务器",
+		"mcpServer": "连接器",
 		"database": "数据库",
 		"webSocket": "WebSocket",
 		"uptime": "运行时间",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "人设",
-		"assistantPlaceholder": "定义员工的个性、角色和行为准则。例如：你是一位帮助管理日常任务的 AI 员工... 输入 / 来引用 MCP、技能或员工。",
-		"personaPlaceholder": "定义此员工的个性、角色和行为准则。例如：你是管理高管日常节奏的幕僚长... 输入 / 来引用 MCP、技能或员工。",
+		"assistantPlaceholder": "定义员工的个性、角色和行为准则。例如：你是一位帮助管理日常任务的 AI 员工... 输入 / 来引用连接器、技能或员工。",
+		"personaPlaceholder": "定义此员工的个性、角色和行为准则。例如：你是管理高管日常节奏的幕僚长... 输入 / 来引用连接器、技能或员工。",
 		"undo": "撤销",
 		"redo": "重做",
 		"properties": "属性",
@@ -2980,7 +2980,7 @@
 			"plugin": "正在安装插件…",
 			"app": "正在安装应用…",
 			"collection": "正在安装合集…",
-			"connection": "正在添加 MCP 连接…"
+			"connection": "正在添加连接器…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "你的数据保留在本地",
 		"featureMarketplace": "技能与角色市场",
 		"featureDesktop": "桌面自动化",
-		"featureMcp": "MCP 集成",
+		"featureMcp": "连接器",
 		"featureMemory": "记忆系统",
 		"backToPlans": "返回套餐",
 		"loadingCheckout": "正在加载结账页面...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "无法启动更新",
 		"never": "从未",
 		"checkNow": "立即检查",
-		"description": "已安装插件、员工、技能、MCP 连接器和应用的可用更新。每个更新由你批准；按项目开启自动更新可静默应用。",
+		"description": "已安装插件、员工、技能、连接器和应用的可用更新。每个更新由你批准；按项目开启自动更新可静默应用。",
 		"availableUpdates": "可用更新",
 		"updatingAll": "正在全部更新…",
 		"updateAll": "全部更新（{count}）",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "插件",
 		"typeAgents": "员工",
 		"typeSkills": "技能",
-		"typeConnectors": "MCP 连接器",
+		"typeConnectors": "连接器",
 		"checkEvery": "检查频率",
 		"hours6": "6 小时",
 		"history": "历史",
@@ -3535,8 +3535,8 @@
 						"description": "插件 slug，用逗号分隔。"
 					},
 					"mcp": {
-						"label": "允许的 MCP 服务器",
-						"description": "已连接的 MCP 服务器名称，用逗号分隔。"
+						"label": "允许的连接器",
+						"description": "连接器名称，用逗号分隔。"
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "连接器",
-				"description": "使用 MCP 集成",
+				"description": "使用连接器",
 				"params": {
 					"serverId": {
-						"label": "MCP 服务器",
-						"description": "要使用的已连接 MCP 服务器"
+						"label": "连接器",
+						"description": "要使用的连接器"
 					},
 					"tool": {
 						"label": "工具",
-						"description": "在 MCP 服务器上调用哪个工具",
+						"description": "在连接器上使用哪个工具",
 						"placeholder": "例如 read_file、send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "活动",
 				"callTree": "通话树",
 				"flowControl": "流程控制",
-				"connectors": "连接器（MCP）",
+				"connectors": "连接器",
 				"agents": "员工",
 				"output": "输出"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, other{{count} 个工具}}",
 		"name": "名称",
 		"nameHelper": "显示在连接器列表中。",
-		"url": "MCP 服务器 URL",
+		"url": "连接器 URL",
 		"urlHelper": "服务器接收 MCP 请求的 HTTPS 地址,例如 https://mcp.example.com/mcp",
 		"urlInvalid": "请输入以 https:// 开头的地址",
 		"trust": "只添加你信任的开发者提供的连接器。Nebo 无法控制连接器提供哪些工具或这些工具如何变化。",

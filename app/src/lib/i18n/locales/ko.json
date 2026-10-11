@@ -674,8 +674,8 @@
 		"overflow": "99+"
 	},
 	"slashPicker": {
-		"placeholder": "명령어, MCP, 스킬, 직원...",
-		"mcp": "MCP",
+		"placeholder": "명령어, 커넥터, 스킬, 직원...",
+		"mcp": "커넥터",
 		"skill": "스킬",
 		"agent": "직원",
 		"command": "명령어",
@@ -1561,7 +1561,7 @@
 	},
 	"onboardingImport": {
 		"foundTitle": "{source} 설정을 찾았습니다",
-		"pitch": "직원, 스킬, MCP 서버, 기억, 대화 기록을 그대로 옮겨오세요 — 기존 설치본은 그대로 남습니다.",
+		"pitch": "직원, 스킬, 커넥터, 기억, 대화 기록을 그대로 옮겨오세요 — 기존 설치본은 그대로 남습니다.",
 		"bringOver": "옮겨오기",
 		"scanning": "검색 중…",
 		"importAll": "전부 가져오기",
@@ -1571,13 +1571,13 @@
 		"failed": "가져오기가 완료되지 않았습니다 — 설정 → 가져오기에서 언제든 다시 실행할 수 있습니다.",
 		"employees": "직원",
 		"skills": "스킬",
-		"mcpServers": "MCP 서버",
+		"mcpServers": "커넥터",
 		"memoryFiles": "기억 파일",
 		"runLocally": "로컬 실행"
 	},
 	"settingsImport": {
 		"title": "가져오기",
-		"description": "다른 AI 도구에서 설정을 옮겨옵니다 — 스킬, MCP 서버, 직원의 페르소나",
+		"description": "다른 AI 도구에서 설정을 옮겨옵니다 — 스킬, 커넥터, 직원의 페르소나",
 		"detectedTitle": "감지된 설치본",
 		"comingSoon": "준비 중",
 		"pathTitle": "설치 위치",
@@ -1588,12 +1588,12 @@
 		"runsCode": "코드 실행",
 		"importAll": "전부 가져오기",
 		"importing": "가져오는 중…",
-		"doneSummary": "직원 {agents}명, 스킬 {skills}개, MCP 서버 {mcp}개, 기억 {memories}개, 대화 {chats}개, 제공자 키 {keys}개를 가져왔습니다.",
+		"doneSummary": "직원 {agents}명, 스킬 {skills}개, 커넥터 {mcp}개, 기억 {memories}개, 대화 {chats}개, 제공자 키 {keys}개를 가져왔습니다.",
 		"skippedTitle": "가져오지 않은 항목",
 		"kinds": {
 			"agent": "직원",
 			"skill": "스킬",
-			"mcp_server": "MCP 서버",
+			"mcp_server": "커넥터",
 			"memory": "기억",
 			"session": "대화",
 			"cron": "일정",
@@ -1678,7 +1678,7 @@
 	"settingsStatus": {
 		"title": "직원 상태",
 		"description": "연결된 직원 및 시스템 상태 모니터링",
-		"mcpServer": "MCP 서버",
+		"mcpServer": "커넥터",
 		"database": "데이터베이스",
 		"webSocket": "WebSocket",
 		"uptime": "가동 시간",
@@ -2465,8 +2465,8 @@
 	},
 	"agentPersona": {
 		"title": "페르소나",
-		"assistantPlaceholder": "직원의 성격, 역할, 행동 지침을 정의하세요. 예: 일상 작업 관리를 도와주는 AI 직원입니다... /를 입력하여 MCP, 스킬, 직원을 참조.",
-		"personaPlaceholder": "이 직원의 성격, 역할, 행동 지침을 정의하세요. 예: 임원의 일일 일정을 관리하는 비서실장입니다... /를 입력하여 MCP, 스킬, 직원을 참조.",
+		"assistantPlaceholder": "직원의 성격, 역할, 행동 지침을 정의하세요. 예: 일상 작업 관리를 도와주는 AI 직원입니다... /를 입력하여 커넥터, 스킬, 직원을 참조.",
+		"personaPlaceholder": "이 직원의 성격, 역할, 행동 지침을 정의하세요. 예: 임원의 일일 일정을 관리하는 비서실장입니다... /를 입력하여 커넥터, 스킬, 직원을 참조.",
 		"undo": "실행 취소",
 		"redo": "다시 실행",
 		"properties": "속성",
@@ -2980,7 +2980,7 @@
 			"plugin": "플러그인 설치 중…",
 			"app": "앱 설치 중…",
 			"collection": "컬렉션 설치 중…",
-			"connection": "MCP 연결 추가 중…"
+			"connection": "커넥터 추가 중…"
 		}
 	},
 	"activity": {
@@ -3024,7 +3024,7 @@
 		"featureDataLocal": "데이터는 로컬에 유지",
 		"featureMarketplace": "스킬 및 역할 마켓플레이스",
 		"featureDesktop": "데스크톱 자동화",
-		"featureMcp": "MCP 통합",
+		"featureMcp": "커넥터",
 		"featureMemory": "기억 시스템",
 		"backToPlans": "플랜으로 돌아가기",
 		"loadingCheckout": "결제 페이지 로딩 중...",
@@ -3112,7 +3112,7 @@
 		"updateStartFailed": "업데이트를 시작할 수 없습니다",
 		"never": "없음",
 		"checkNow": "지금 확인",
-		"description": "설치된 플러그인, 직원, 스킬, MCP 커넥터, 앱의 사용 가능한 업데이트입니다. 각 업데이트를 직접 승인하며, 항목별 자동 업데이트를 켜면 조용히 적용됩니다.",
+		"description": "설치된 플러그인, 직원, 스킬, 커넥터, 앱의 사용 가능한 업데이트입니다. 각 업데이트를 직접 승인하며, 항목별 자동 업데이트를 켜면 조용히 적용됩니다.",
 		"availableUpdates": "사용 가능한 업데이트",
 		"updatingAll": "전체 업데이트 중…",
 		"updateAll": "전체 업데이트 ({count})",
@@ -3121,7 +3121,7 @@
 		"typePlugins": "플러그인",
 		"typeAgents": "직원",
 		"typeSkills": "스킬",
-		"typeConnectors": "MCP 커넥터",
+		"typeConnectors": "커넥터",
 		"checkEvery": "확인 주기",
 		"hours6": "6시간",
 		"history": "기록",
@@ -3535,8 +3535,8 @@
 						"description": "플러그인 슬러그, 쉼표로 구분."
 					},
 					"mcp": {
-						"label": "허용된 MCP 서버",
-						"description": "연결된 MCP 서버 이름, 쉼표로 구분."
+						"label": "허용된 커넥터",
+						"description": "커넥터 이름, 쉼표로 구분."
 					}
 				}
 			},
@@ -3717,15 +3717,15 @@
 			},
 			"connector": {
 				"label": "커넥터",
-				"description": "MCP 연동 사용",
+				"description": "커넥터 사용",
 				"params": {
 					"serverId": {
-						"label": "MCP 서버",
-						"description": "사용할 연결된 MCP 서버"
+						"label": "커넥터",
+						"description": "사용할 커넥터"
 					},
 					"tool": {
 						"label": "도구",
-						"description": "MCP 서버에서 호출할 도구",
+						"description": "커넥터에서 사용할 도구",
 						"placeholder": "예: read_file, send_message"
 					},
 					"input": {
@@ -3828,7 +3828,7 @@
 				"activities": "활동",
 				"callTree": "통화 트리",
 				"flowControl": "흐름 제어",
-				"connectors": "커넥터(MCP)",
+				"connectors": "커넥터",
 				"agents": "직원",
 				"output": "출력"
 			},
@@ -4247,7 +4247,7 @@
 		"toolCount": "{count, plural, other{도구 {count}개}}",
 		"name": "이름",
 		"nameHelper": "커넥터 목록에 표시됩니다.",
-		"url": "MCP 서버 URL",
+		"url": "커넥터 URL",
 		"urlHelper": "서버가 MCP 요청을 받는 HTTPS 주소(예: https://mcp.example.com/mcp)",
 		"urlInvalid": "https://로 시작하는 주소를 입력하세요",
 		"trust": "신뢰하는 개발자의 커넥터만 추가하세요. 커넥터가 제공하는 도구나 그 변경 사항은 Nebo가 관리하지 않습니다.",
