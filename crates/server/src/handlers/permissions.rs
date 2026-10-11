@@ -1416,14 +1416,14 @@ fn folder_words(p: &FsPath) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn words(s: &str) -> String {
+pub(super) fn words(s: &str) -> String {
     s.split(['_', '-', '.'])
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn sentence_case(s: &str) -> String {
+pub(super) fn sentence_case(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),

@@ -1196,6 +1196,13 @@ export function testIntegration(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List integration tools"
+ */
+export function listIntegrationTools(id: string) {
+	return webapi.get<components.ConnectorToolsResponse>(`/api/v1/integrations/${id}/tools`)
+}
+
+/**
  * @description "List packs"
  */
 export function listPacks() {

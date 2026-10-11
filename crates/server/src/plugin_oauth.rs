@@ -108,6 +108,19 @@ fn take(nonce: &str) -> Option<u16> {
     (entry.expires_at > Instant::now()).then_some(entry.port)
 }
 
+/// The `state` for a sign-in whose callback the bot finishes itself (an MCP
+/// server's OAuth): the same opaque shape the hub reads `bot_id` from, with no
+/// loopback port and a fresh nonce. It is the flow's whole key on the bot
+/// (`mcp_integrations.oauth_state`), so it never enters the pending registry.
+pub fn in_process_state(bot_id: &str) -> String {
+    let nonce = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    encode_state(bot_id, 0, &nonce)
+}
+
 fn encode_state(bot_id: &str, port: u16, nonce: &str) -> String {
     use base64::Engine;
     let json = serde_json::json!({ "bot_id": bot_id, "port": port, "nonce": nonce });
@@ -203,6 +216,17 @@ mod tests {
         assert_eq!(bot_id, "bot-123");
         assert_eq!(port, 37567);
         assert_eq!(nonce, "abc123");
+    }
+
+    #[test]
+    fn in_process_state_names_the_bot_and_is_unique() {
+        let a = in_process_state("0b7f2c1a-1111-2222-3333-444455556666");
+        let b = in_process_state("0b7f2c1a-1111-2222-3333-444455556666");
+        assert_ne!(a, b, "each flow gets its own nonce");
+        let (bot_id, port, nonce) = decode_state(&a).expect("decodes");
+        assert_eq!(bot_id, "0b7f2c1a-1111-2222-3333-444455556666");
+        assert_eq!(port, 0);
+        assert_eq!(nonce.len(), 64);
     }
 
     #[test]

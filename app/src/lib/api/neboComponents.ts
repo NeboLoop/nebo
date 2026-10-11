@@ -543,6 +543,19 @@ export interface ConnectionModel {
 	isActive: boolean
 }
 
+export interface ConnectorTool {
+	name: string
+	key: string
+	title: string
+	description: string
+}
+
+export interface ConnectorToolsResponse {
+	family: string
+	settable: boolean
+	tools: ConnectorTool[]
+}
+
 export interface Context {
 	appVersion: string
 	os: string
