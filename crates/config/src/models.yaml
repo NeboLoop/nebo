@@ -34,10 +34,8 @@ defaults:
   # The Nebo AI pack is the default: it works out of the box with NeboAI auth.
   primary: pack/nebo-ai
 
-# The bot's routes. `general` is the bot's default: a model, or an
-# intelligence pack (pack/<id>). `vision` reads images and video.
+# The bot's default: a model, or an intelligence pack (pack/<id>).
 task_routing:
-  vision: janus/nebo-1
   general: pack/nebo-ai
 
 # Available models by provider

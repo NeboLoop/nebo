@@ -70,7 +70,8 @@ pub struct PackLevels {
     pub high: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<String>,
-    /// Describes images when the level's model can't see them.
+    /// Reads the turn's images and video (the vision helper). Empty: the
+    /// level's model when it sees images, else Nebo AI's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vision: Option<String>,
     /// Calls and spoken replies.
@@ -219,7 +220,9 @@ pub fn nebo_ai() -> Pack {
             medium: janus("nebo-1-medium"),
             high: janus("nebo-1-pro"),
             max: janus("nebo-1-pro"),
-            vision: None,
+            // Janus reads images and video on its image_read and
+            // video_read pools.
+            vision: janus("nebo-1"),
             voice: janus("nebo-1-voice"),
             decisions: janus("jev-latest"),
         },

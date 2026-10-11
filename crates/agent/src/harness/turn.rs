@@ -129,6 +129,8 @@ pub struct TurnContext {
     /// The model the turn's steps move to once it builds (`BUILD_TOOLS`),
     /// when its intelligence pack pins the build lane.
     build: Option<TurnModel>,
+    /// Who reads the images the turn's tools return (`Harness::eyes`).
+    pub(crate) eyes: Option<crate::sidecar::Eyes>,
 }
 
 impl TurnContext {
@@ -731,6 +733,56 @@ fn pack_pick(h: &Harness, chosen: &str) -> String {
     if chosen.trim().is_empty() { h.selector.configured() } else { chosen.to_string() }
 }
 
+/// The model that reads a turn's images and video (`sidecar`): its
+/// intelligence pack's Vision model. With Vision empty, the model the turn
+/// runs on reads when it sees images, else Nebo AI's Vision model. A Vision
+/// model this bot can't send to gives way to Nebo AI's when the pack falls
+/// back, else nothing reads. A turn on a model of its own (not a pack) is
+/// read by that model when it sees images, else by Nebo AI's.
+fn vision_model(h: &Harness, chosen: &str) -> Option<String> {
+    use types::packs::{nebo_ai, parse_ref};
+    // Nebo AI's, as a turn's Nebo AI model is sent whether or not Janus is
+    // loaded (`Harness::eyes` gives it the provider a turn's call would go to).
+    let nebo = nebo_ai().levels.vision;
+    let sees = |model: &str| {
+        h.selector.sendable(model)
+            && h.selector.get_model_info(model).is_some_and(|m| m.capabilities.iter().any(|c| c == "vision"))
+    };
+    let runs_on = || turn_model(h, chosen, None).ok().map(|t| t.model).filter(|m| sees(m));
+    let pick = pack_pick(h, chosen);
+    let Some((id, _)) = parse_ref(&pick) else {
+        return runs_on().or(nebo);
+    };
+    let Some(pack) = h.store.get_intelligence_pack(id).ok().flatten() else {
+        return nebo;
+    };
+    match pack.levels.vision.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        None => runs_on().or(nebo),
+        Some(model) if h.selector.sendable(model) => Some(model.to_string()),
+        Some(_) if pack.fallback || pack.built_in => nebo,
+        Some(model) => {
+            warn!(pack = %pack.name, model, "the pack's Vision model isn't connected and the pack doesn't fall back: nothing reads images");
+            None
+        }
+    }
+}
+
+impl Harness {
+    /// Who reads the images and video of a turn on `chosen` (its model
+    /// reference): [`vision_model`] on its provider. A model whose provider
+    /// isn't loaded is read by the first provider that takes calls, at its
+    /// own default, as a turn's call goes there (`model_call`).
+    pub(crate) async fn eyes(&self, chosen: &str) -> Option<crate::sidecar::Eyes> {
+        let model = vision_model(self, chosen)?;
+        let (provider_id, name) = selector::parse_model_id(&model);
+        let providers = self.providers.read().await;
+        match providers.iter().find(|p| p.id() == provider_id) {
+            Some(provider) => Some(crate::sidecar::Eyes { provider: provider.clone(), model: name.to_string() }),
+            None => ai::default_provider(&providers).map(|provider| crate::sidecar::Eyes { provider, model: String::new() }),
+        }
+    }
+}
+
 /// The tools that write an employee or a workflow: a turn that loads or
 /// calls one is building, and its steps from then on run in the build lane.
 const BUILD_TOOLS: &[&str] = &["create_employee", "update_employee", "create_workflow", "update_workflow"];
@@ -936,19 +988,7 @@ pub(crate) async fn prepare(
     // coworker, the phone) when the request names none. A linked employee
     // runs as its linked agent: that is not a model choice, so a request's
     // model never replaces it and nothing else answers for it.
-    let employee = employee_model(&h.store, &req.seat.agent_id);
-    let raw_model = if employee.linked {
-        employee.preference.clone().unwrap_or_default()
-    } else if !req.seat.model_override.is_empty() {
-        req.seat.model_override.clone()
-    } else {
-        req.seat.model_preference.clone().or(employee.preference).unwrap_or_default()
-    };
-    let model = if raw_model.is_empty() || types::packs::parse_ref(&raw_model).is_some() {
-        raw_model
-    } else {
-        h.selector.resolve_fuzzy(&raw_model).unwrap_or(raw_model)
-    };
+    let (model, employee) = turn_choice(h, &req);
 
     store_input(h, session_id, &req).await?;
 
@@ -1216,7 +1256,9 @@ pub(crate) async fn prepare(
         }
         _ => None,
     };
+    let eyes = h.eyes(&model).await;
     let cx = TurnContext {
+        eyes,
         harness: h.clone(),
         request: req,
         seat,
@@ -1321,7 +1363,7 @@ async fn read_pictures(
     if images.is_empty() && videos.is_empty() && named.is_empty() {
         return Vec::new();
     }
-    let provider = ai::default_provider(&h.providers.read().await);
+    let provider = h.eyes(&turn_choice(h, req).0).await;
     let trace = |purpose| RequestTrace { agent_id: req.seat.agent_id.clone(), ..RequestTrace::new(purpose) };
     let pictures = async {
         let Some(provider) = provider.clone().filter(|_| !images.is_empty()) else {
@@ -1340,7 +1382,7 @@ async fn read_pictures(
                 let Some(picture) = ai::image_norm::Picture::attached(image) else {
                     return crate::sidecar::note(&reference, None, None);
                 };
-                let reading = crate::sidecar::look(trace, provider.as_ref(), &picture, &context, None).await;
+                let reading = crate::sidecar::look(trace, &provider, &picture, &context, None).await;
                 crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref())
             }
         });
@@ -1353,7 +1395,7 @@ async fn read_pictures(
         let file = crate::uploads::by_id(&a.file_id);
         let reference = file.as_ref().map_or_else(|| a.filename.clone(), |p| p.to_string_lossy().into_owned());
         let (provider, context, trace) = (provider.clone(), context.clone(), trace("video_read"));
-        async move { crate::video::read(trace, provider.as_deref(), file.as_deref(), &a.file_id, &reference, &context).await }
+        async move { crate::video::read(trace, provider.as_ref(), file.as_deref(), &a.file_id, &reference, &context).await }
     });
     // A picture the owner named by path is looked at as an attached one is,
     // its reading naming the file.
@@ -1364,7 +1406,7 @@ async fn read_pictures(
         async move {
             let picture = ai::image_norm::Picture::load(&reference);
             let reading = match (&provider, &picture) {
-                (Some(provider), Some(picture)) => crate::sidecar::look(trace, provider.as_ref(), picture, &context, None).await,
+                (Some(provider), Some(picture)) => crate::sidecar::look(trace, provider, picture, &context, None).await,
                 _ => None,
             };
             crate::sidecar::note(&reference, picture.map(|p| (p.width, p.height)), reading.as_deref())
@@ -1798,6 +1840,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             turn_mode: Some(&cx.request.mode),
             side_trace: &side_trace,
             attended: attended(&cx.request),
+            eyes: cx.eyes.as_ref(),
         };
         // The streaming executor: safe calls start as their input completes
         // in the stream, while the reply is still arriving, so a read costs
@@ -2316,7 +2359,29 @@ async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &
     true
 }
 
-/// The provider and model name of the turn's model.
+/// The model reference a turn runs on before its pack resolves: the
+/// employee's own model preference, from its hire or its settings, for
+/// every run kind (the owner's chat, a workflow, a schedule, a coworker, the
+/// phone) when the request names none. A linked employee runs as its linked
+/// agent: that is not a model choice, so a request's model never replaces
+/// it and nothing else answers for it. Empty: the bot's default.
+fn turn_choice(h: &Harness, req: &TurnRequest) -> (String, EmployeeModel) {
+    let employee = employee_model(&h.store, &req.seat.agent_id);
+    let raw_model = if employee.linked {
+        employee.preference.clone().unwrap_or_default()
+    } else if !req.seat.model_override.is_empty() {
+        req.seat.model_override.clone()
+    } else {
+        req.seat.model_preference.clone().or(employee.preference.clone()).unwrap_or_default()
+    };
+    let model = if raw_model.is_empty() || types::packs::parse_ref(&raw_model).is_some() {
+        raw_model
+    } else {
+        h.selector.resolve_fuzzy(&raw_model).unwrap_or(raw_model)
+    };
+    (model, employee)
+}
+
 /// An employee's own model, as its entity config stores it.
 struct EmployeeModel {
     /// Its model preference (`provider/model`, or a linked agent's id).
@@ -3424,6 +3489,60 @@ mod tests {
         assert_eq!(ran_on("pack/nebo-ai").as_deref(), Some("pack/nebo-ai"));
         assert_eq!(ran_on("anthropic/claude-x").as_deref(), Some("anthropic/claude-x"));
         assert_eq!(ran_on("janus/nebo-1-pro"), None);
+    }
+
+    /// Images are read by the pack's Vision model; with none, by the model
+    /// the turn runs on when it sees images, else by Nebo AI's; a Vision
+    /// model the bot can't reach gives way to Nebo AI's only when the pack
+    /// falls back.
+    #[tokio::test]
+    async fn images_are_read_by_the_packs_vision_model() {
+        use types::packs::{Pack, PackLevels};
+        let mut config = crate::selector::ModelRoutingConfig::default();
+        let info = |id: &str, caps: &[&str]| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 200_000,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            kind: vec![],
+            preferred: false,
+            active: true,
+        };
+        config.provider_models.insert("janus".into(), vec![info("nebo-1", &[]), info("nebo-1-medium", &[])]);
+        config.provider_models.insert("anthropic".into(), vec![info("claude-eyes", &["vision"]), info("claude-text", &[])]);
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], crate::selector::ModelSelector::new(config)).await;
+        h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        let save = |id: &str, medium: &str, vision: Option<&str>, fallback: bool| {
+            h.store
+                .save_intelligence_pack(&Pack {
+                    id: id.into(),
+                    name: id.into(),
+                    levels: PackLevels { medium: Some(medium.into()), vision: vision.map(Into::into), ..Default::default() },
+                    fallback,
+                    built_in: false,
+                    ..types::packs::nebo_ai()
+                })
+                .unwrap()
+        };
+        save("set", "anthropic/claude-text", Some("anthropic/claude-eyes"), true);
+        save("sees", "anthropic/claude-eyes", None, true);
+        save("blind", "anthropic/claude-text", None, true);
+        save("gone", "anthropic/claude-text", Some("openai/gpt-eyes"), true);
+        save("strict", "anthropic/claude-text", Some("openai/gpt-eyes"), false);
+        let v = |chosen: &str| vision_model(&h, chosen);
+        assert_eq!(v("pack/set/medium").as_deref(), Some("anthropic/claude-eyes"));
+        assert_eq!(v("pack/sees/medium").as_deref(), Some("anthropic/claude-eyes"), "the level's model sees");
+        assert_eq!(v("pack/blind/medium").as_deref(), Some("janus/nebo-1"), "Nebo AI's when it doesn't");
+        assert_eq!(v("pack/gone/medium").as_deref(), Some("janus/nebo-1"), "falls back");
+        assert_eq!(v("pack/strict/medium"), None, "set not to fall back");
+        assert_eq!(v("pack/nebo-ai/high").as_deref(), Some("janus/nebo-1"), "Nebo AI reads as it always has");
+        assert_eq!(v("anthropic/claude-eyes").as_deref(), Some("anthropic/claude-eyes"), "a model of the owner's own");
+        assert_eq!(v("anthropic/claude-text").as_deref(), Some("janus/nebo-1"));
+        let eyes = h.eyes("pack/set/medium").await;
+        assert!(eyes.is_none() || eyes.as_ref().is_some_and(|e| e.model == "claude-eyes" || e.model.is_empty()));
     }
 
     /// A pack pins background lanes to a level, and each level carries its

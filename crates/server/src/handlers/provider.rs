@@ -438,7 +438,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
     // The bot's routes
     let task_routing = cfg.task_routing.as_ref().map(|tr| {
         serde_json::json!({
-            "vision": tr.vision,
             "general": tr.general,
             "aux": tr.aux,
         })
@@ -639,9 +638,6 @@ pub async fn update_task_routing(
     let tr = cfg
         .task_routing
         .get_or_insert_with(Default::default);
-    if let Some(v) = body.get("vision").and_then(|v| v.as_str()) {
-        tr.vision = v.to_string();
-    }
     if let Some(v) = body.get("general").and_then(|v| v.as_str()) {
         tr.general = v.to_string();
     }

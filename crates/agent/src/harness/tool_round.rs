@@ -327,6 +327,8 @@ pub(crate) struct RoundContext<'a> {
     /// The owner's own chat turn: he is there to stop it, so a repeated
     /// failure only ever nudges the model ([`MAX_IDENTICAL_FAILURES`]).
     pub attended: bool,
+    /// Who reads the images the calls return (`Harness::eyes`).
+    pub eyes: Option<&'a crate::sidecar::Eyes>,
 }
 
 /// The run's state the round reads and updates: the called tools and the
@@ -379,11 +381,11 @@ pub(crate) async fn run_tool_round(
     let RoundContext {
         scope,
         tools,
-        providers,
         iteration,
         workflow_mode,
         side_trace,
         attended,
+        eyes,
         ..
     } = *cx;
     let RunToolScope {
@@ -470,8 +472,7 @@ pub(crate) async fn run_tool_round(
     // A `question` on the call (a second look at a detail) is the helper's
     // to answer.
     let mut had_image: Vec<usize> = Vec::new();
-    let helper = ai::default_provider(&providers.read().await);
-    if let Some(provider) = helper {
+    if let Some(eyes) = eyes {
         let mut looks = FuturesUnordered::new();
         for (idx, entry) in results.iter().enumerate() {
             let Some((tc, result)) = entry else { continue };
@@ -481,10 +482,10 @@ pub(crate) async fn run_tool_round(
             let reference = image_reference(tc, raw);
             let context = format!("Where it came from: {} returned it ({}).", tc.name, truncate_str(&result.content, 300));
             let question = tc.input.get("question").and_then(|q| q.as_str()).map(str::to_string);
-            let prov = provider.clone();
+            let eyes = eyes.clone();
             let trace = side_trace("image_read");
             looks.push(async move {
-                let reading = crate::sidecar::look(trace, prov.as_ref(), &picture, &context, question.as_deref()).await;
+                let reading = crate::sidecar::look(trace, &eyes, &picture, &context, question.as_deref()).await;
                 (idx, crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref()))
             });
         }
