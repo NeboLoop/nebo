@@ -478,6 +478,12 @@ impl PluginRunner {
         installed_plugin_slugs(&self.plugin_store, &self.db_store)
     }
 
+    /// The areas of a retired bundle that other plugins have taken over on
+    /// this bot (`superseded`); empty for every other plugin.
+    pub(crate) fn taken_over(&self, slug: &str) -> Vec<crate::superseded::TakenOver> {
+        crate::superseded::taken_over(&self.plugin_store, &self.db_store, slug)
+    }
+
     /// The gated interface operation a raw exec command corresponds to, if any.
     ///
     /// Matches the command's leading tokens against the plugin's declared
@@ -965,11 +971,13 @@ impl PluginRunner {
     }
 
     /// Each skill's name and `SKILL.md` in the plugin's `skills/` directory,
-    /// in name order.
+    /// in name order — less a retired bundle's skills for the areas another
+    /// plugin has taken over here (`superseded`).
     fn skill_files(&self, slug: &str) -> Vec<(String, PathBuf)> {
         let Some(entries) = self.skills_dir(slug).and_then(|d| std::fs::read_dir(d).ok()) else {
             return Vec::new();
         };
+        let taken = self.taken_over(slug);
         let mut files: Vec<(String, PathBuf)> = entries
             .flatten()
             .filter_map(|entry| {
@@ -978,6 +986,7 @@ impl PluginRunner {
                 let name = path.file_name()?.to_str()?.to_string();
                 (path.is_dir() && skill_md.exists()).then_some((name, skill_md))
             })
+            .filter(|(name, _)| crate::superseded::skill_area(slug, name, &taken).is_none())
             .collect();
         files.sort();
         files
@@ -1098,6 +1107,18 @@ impl PluginRunner {
     /// operation tool: raw exec must not be a side door around the owner's
     /// rules for that operation.
     pub(crate) async fn run_command(&self, ctx: &ToolContext, call: &PluginCall) -> ToolResult {
+        // A retired bundle's command for an area another plugin has taken
+        // over here goes to that plugin: refused before it runs, so the
+        // bundle's connect card never stands in front of it (cloud E2E
+        // 2026-10-11: a Google Docs request ran gws and parked on its card).
+        let taken = self.taken_over(&call.slug);
+        if let Some(t) = crate::superseded::command_area(&call.slug, &call.command, &taken) {
+            return ToolResult::error(crate::superseded::refusal(
+                &call.slug,
+                &format!("`{} {}`", call.slug, call.command.trim()),
+                t,
+            ));
+        }
         // The refusal carries the binding: a gate run (2026-09-23) showed the
         // model retrying the identical exec three times because it had no
         // field names to fill.

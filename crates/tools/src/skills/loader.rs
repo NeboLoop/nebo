@@ -623,13 +623,46 @@ impl Loader {
         list
     }
 
+    /// A retired bundle's skills for the areas another plugin has taken
+    /// over on this bot (`superseded`), each with the plugin that does that
+    /// work here. They stay loaded, so what names them by hand (a workflow,
+    /// an employee's job) still resolves, but the skill listing, search and
+    /// trigger matching leave them out and `use_skill` sends the model to
+    /// the replacement.
+    fn taken_over_skills(&self, skills: &HashMap<String, Skill>) -> HashMap<String, &'static str> {
+        let (Some(ps), Some(db)) = (self.plugin_store.as_deref(), self.db_store.as_deref()) else {
+            return HashMap::new();
+        };
+        let mut areas: HashMap<&str, Vec<crate::superseded::TakenOver>> = HashMap::new();
+        let mut out = HashMap::new();
+        for skill in skills.values() {
+            for dep in &skill.plugins {
+                let taken = areas
+                    .entry(dep.name.as_str())
+                    .or_insert_with(|| crate::superseded::taken_over(ps, db, &dep.name));
+                if let Some(t) = crate::superseded::skill_area(&dep.name, &skill.name, taken) {
+                    out.insert(skill.name.clone(), t.successor);
+                }
+            }
+        }
+        out
+    }
+
+    /// The plugin that has taken over the work of the skill `name` on this
+    /// bot, when it is a retired bundle's skill (see `taken_over_skills`).
+    pub async fn replaced_by(&self, name: &str) -> Option<&'static str> {
+        let skills = self.skills.read().await;
+        self.taken_over_skills(&skills).remove(name)
+    }
+
     /// Find skills whose triggers match the given message, scoped to `agent`.
     /// Returns up to `max` matches sorted by priority (highest first).
     pub async fn match_triggers(&self, message: &str, max: usize, agent: Option<&str>) -> Vec<Skill> {
         let skills = self.skills.read().await;
+        let taken = self.taken_over_skills(&skills);
         let mut matches: Vec<&Skill> = skills
             .values()
-            .filter(|s| s.enabled && s.visible_to(agent) && s.matches_trigger(message))
+            .filter(|s| s.enabled && s.visible_to(agent) && !taken.contains_key(&s.name) && s.matches_trigger(message))
             .collect();
         matches.sort_by(|a, b| b.priority.cmp(&a.priority));
         matches.truncate(max);
@@ -646,7 +679,11 @@ impl Loader {
     /// run) keep their whole lines.
     pub async fn listing(&self, agent: Option<&str>) -> std::collections::BTreeMap<String, String> {
         let skills = self.skills.read().await;
-        let mut visible: Vec<&Skill> = skills.values().filter(|s| s.enabled && s.visible_to(agent)).collect();
+        let taken = self.taken_over_skills(&skills);
+        let mut visible: Vec<&Skill> = skills
+            .values()
+            .filter(|s| s.enabled && s.visible_to(agent) && !taken.contains_key(&s.name))
+            .collect();
         // A seat's own skill shadows a shared one of the same name.
         visible.sort_by_key(|s| (s.owner_agent_id.is_some(), s.name.clone()));
         let own = |s: &Skill| agent.is_some() && s.owner_agent_id.as_deref() == agent;
@@ -740,10 +777,11 @@ impl Loader {
             .cloned()
             .collect();
         let tokens: &[String] = if meaningful.is_empty() { &raw } else { &meaningful };
+        let taken = self.taken_over_skills(&skills);
 
         let mut matches: Vec<(usize, Skill)> = skills
             .values()
-            .filter(|s| s.enabled && s.visible_to(agent))
+            .filter(|s| s.enabled && s.visible_to(agent) && !taken.contains_key(&s.name))
             .filter_map(|s| {
                 let name_lower = s.name.to_lowercase().replace('-', " ");
                 let desc_lower = s.description.to_lowercase();
