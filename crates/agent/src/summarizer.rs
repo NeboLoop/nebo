@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
-use ai::{ChatRequest, Message, Provider, StreamEventType};
-use config::ModelsConfig;
-use tokio::sync::RwLock;
+use ai::{ChatRequest, Message, StreamEventType};
 use tools::ToolResult;
+
+use crate::harness::model_call::Route;
 use tracing::{debug, warn};
 
 use tools::truncate_str;
@@ -20,12 +18,12 @@ Generate a single concise sentence (past tense, max 80 chars) describing what \
 these tool operations accomplished. Example: 'Read auth config and fixed token \
 validation'. Do not include technical details.";
 
-/// Generate a one-line summary of a tool batch for UI display.
-/// Uses a cheap model (Haiku/flash) with truncated inputs/outputs.
-/// Non-critical: errors are logged and swallowed.
+/// Generate a one-line summary of a tool batch for UI display, on the
+/// background route (`model_call::Housekeeper`) with truncated inputs and
+/// outputs. Non-critical: errors are logged and swallowed.
 pub async fn summarize_tool_batch(
     trace: ai::RequestTrace,
-    providers: &[Arc<dyn Provider>],
+    route: &Route,
     tool_calls: &[ai::ToolCall],
     tool_results: &[ToolResult],
     last_assistant_text: &str,
@@ -33,11 +31,6 @@ pub async fn summarize_tool_batch(
     if tool_calls.is_empty() {
         return None;
     }
-
-    let (provider, aux_model) = match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), providers) {
-        Some(routed) => routed,
-        None => (crate::harness::model_call::prefer_non_gateway(providers)?, String::new()),
-    };
 
     // Build user prompt content
     let mut prompt = String::with_capacity(PROMPT_CAP);
@@ -91,7 +84,7 @@ pub async fn summarize_tool_batch(
         max_tokens: 100,
         temperature: 0.0,
         system: SYSTEM_PROMPT.to_string(),
-        model: aux_model,
+        model: route.model.clone(),
         enable_thinking: false,
         effort: None,
         metadata: None,
@@ -100,7 +93,7 @@ pub async fn summarize_tool_batch(
         trace,
     };
 
-    match provider.stream(&req).await {
+    match route.provider.stream(&req).await {
         Ok(mut rx) => {
             let mut response = String::new();
             while let Some(event) = rx.recv().await {
@@ -131,18 +124,12 @@ pub async fn summarize_tool_batch(
 
 /// Generate a 3-7 word title for a conversation based on the user's prompt.
 ///
-/// Uses a cheap model with a minimal prompt. Non-critical: returns `None` on
+/// On the background route, with a minimal prompt. Non-critical: returns `None` on
 /// any failure so callers can silently skip.
-pub async fn generate_session_title(
-    trace: ai::RequestTrace,
-    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
-    user_prompt: &str,
-    model: &str,
-) -> Option<String> {
+pub async fn generate_session_title(trace: ai::RequestTrace, route: &Route, user_prompt: &str) -> Option<String> {
     let line = one_line(
         trace,
-        providers,
-        model,
+        route,
         "Generate a 3-7 word title for this conversation. \
          Output ONLY the title as plain text: no markdown, no quotes, \
          no punctuation at the end.",
@@ -183,25 +170,16 @@ fn plain_title(line: &str) -> Option<String> {
     (!title.is_empty()).then(|| title.to_string())
 }
 
-/// One short line written by the cheap model from `text` under
+/// One short line written on the background route from `text` under
 /// `instruction`: a chat title, a working objective. Non-critical: `None` on
 /// any failure, an empty answer, or one over 200 chars.
 pub async fn one_line(
     trace: ai::RequestTrace,
-    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
-    model: &str,
+    route: &Route,
     instruction: &str,
     text: &str,
     max_tokens: i32,
 ) -> Option<String> {
-    let (provider, model) = {
-        let lock = providers.read().await;
-        match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), &lock) {
-            Some(routed) => routed,
-            None => (crate::harness::model_call::prefer_non_gateway(&lock)?, model.to_string()),
-        }
-    };
-
     let request = ChatRequest {
         tool_credential: None,
         chat_id: String::new(),
@@ -209,7 +187,7 @@ pub async fn one_line(
         permission_mode: None,
         linked_context: None,
         tool_choice: Default::default(),
-        model,
+        model: route.model.clone(),
         system: instruction.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
@@ -227,7 +205,7 @@ pub async fn one_line(
         trace,
     };
 
-    let mut rx = match provider.stream(&request).await {
+    let mut rx = match route.provider.stream(&request).await {
         Ok(rx) => rx,
         Err(e) => {
             debug!(error = %e, "one-line generation failed");

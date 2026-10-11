@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use ai::{Provider, RequestTrace, StreamEvent, StreamEventType};
+use ai::{RequestTrace, StreamEvent, StreamEventType};
 use tools::{Origin, Registry, ToolContext, ToolResult};
 
 use crate::concurrency::ConcurrencyController;
@@ -311,7 +311,6 @@ impl RunToolScope<'_> {
 pub(crate) struct RoundContext<'a> {
     pub scope: &'a RunToolScope<'a>,
     pub tools: &'a Arc<Registry>,
-    pub providers: &'a Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     pub concurrency: &'a Arc<ConcurrencyController>,
     pub hooks: &'a napp::HookDispatcher,
     pub user_prompt: &'a str,
@@ -329,6 +328,10 @@ pub(crate) struct RoundContext<'a> {
     pub attended: bool,
     /// Who reads the images the calls return (`Harness::eyes`).
     pub eyes: Option<&'a crate::sidecar::Eyes>,
+    /// The run's background work (`model_call::Housekeeper`) and the turn's
+    /// model reference it resolves for.
+    pub housekeeper: &'a crate::harness::model_call::Housekeeper,
+    pub chosen: &'a str,
 }
 
 /// The run's state the round reads and updates: the called tools and the
@@ -1017,7 +1020,6 @@ async fn run_call(
     let RoundContext {
         scope,
         tools,
-        providers,
         concurrency,
         hooks,
         user_prompt,
@@ -1026,6 +1028,8 @@ async fn run_call(
         active_task,
         turn_mode,
         side_trace,
+        housekeeper,
+        chosen,
         ..
     } = *cx;
     let RunToolScope { sessions, tx, session_id, run_cwd, .. } = *scope;
@@ -1114,10 +1118,10 @@ async fn run_call(
                 Some(m) => (m.objective.as_str(), m.instruction.as_str()),
                 None => (active_task.as_str(), user_prompt),
             };
-            let providers = providers.read().await.clone();
+            let aux = housekeeper.route(chosen).await;
             let judge = crate::harness::permissions::judgement::JudgeCx {
                 decide: decide.map(|d| d.as_ref()),
-                providers: &providers,
+                aux: aux.as_ref(),
                 trace: side_trace,
                 objective,
                 last_message,

@@ -1090,7 +1090,7 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
     let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
     let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
-    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone());
     let declared = declared_needs(&agent.name, agent_id, &config, &installed, &reader).await;
     let (needs, source) = match before {
         None => {

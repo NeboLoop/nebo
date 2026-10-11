@@ -51,11 +51,6 @@ pub struct TaskRouting {
     /// The bot's default: a model, or an intelligence pack (`pack/<id>`).
     #[serde(default)]
     pub general: String,
-    /// Cheap-model route for internal side-tasks (titles, memory extraction,
-    /// tool summaries, auto-continue judge). "provider/model" format; empty = unset
-    /// (each side-task keeps its default provider selection).
-    #[serde(default)]
-    pub aux: String,
 }
 
 /// Default model selection.
@@ -298,14 +293,13 @@ mod tests {
     #[test]
     fn upgrade_names_the_nebo_ai_pack_where_a_speed_was_chosen() {
         let mut cfg: ModelsConfig = serde_yaml::from_str(
-            "defaults:\n  primary: janus/nebo-1\ntask_routing:\n  general: nebo-1-pro\n  aux: janus/nebo-1-flash\nproviders:\n  janus:\n    - id: janus\n      displayName: Janus\n    - id: neboai/nebo-embed-small\n",
+            "defaults:\n  primary: janus/nebo-1\ntask_routing:\n  general: nebo-1-pro\nproviders:\n  janus:\n    - id: janus\n      displayName: Janus\n    - id: neboai/nebo-embed-small\n",
         )
         .unwrap();
         assert!(cfg.upgrade());
         assert_eq!(cfg.defaults.as_ref().unwrap().primary, "pack/nebo-ai");
         let tr = cfg.task_routing.as_ref().unwrap();
         assert_eq!(tr.general, "pack/nebo-ai/high");
-        assert_eq!(tr.aux, "janus/nebo-1-flash", "background work is not a choice of the bot's default");
         let ids: Vec<(&str, &str)> =
             cfg.providers["janus"].iter().map(|m| (m.id.as_str(), m.display_name.as_str())).collect();
         assert_eq!(ids, [("nebo-1", "Nebo 1"), ("nebo-embed-small", "")]);

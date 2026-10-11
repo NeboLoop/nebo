@@ -636,12 +636,27 @@ async fn run(
     }
 }
 
+/// What resolving a model reference reads: the intelligence packs and the
+/// selector. Turns and background work resolve through the same functions
+/// with it ([`turn_model`], `model_call::Housekeeper`).
+#[derive(Clone, Copy)]
+pub(crate) struct Resolver<'a> {
+    pub store: &'a db::Store,
+    pub selector: &'a selector::ModelSelector,
+}
+
+impl Harness {
+    pub(crate) fn resolver(&self) -> Resolver<'_> {
+        Resolver { store: &self.store, selector: &self.selector }
+    }
+}
+
 /// The model a turn runs on, resolved once at its start, its provider effort,
 /// and the line the owner reads when an intelligence pack's AI couldn't take
 /// it.
 #[derive(Debug)]
-struct TurnModel {
-    model: String,
+pub(crate) struct TurnModel {
+    pub(crate) model: String,
     notice: Option<String>,
     effort: Option<types::packs::ProviderEffort>,
     /// What the turn ran on as the owner reads it: the pack at the level it
@@ -680,7 +695,7 @@ fn lane_of(seat: &super::SeatRequest) -> Option<types::packs::Lane> {
 /// runs on Nebo AI at the same level and says so, or — the pack set not to
 /// fall back — is refused with that line. Never a silent swap. Anything else
 /// resolves as it always has (`ModelSelector::resolve`).
-fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Result<TurnModel, String> {
+pub(crate) fn turn_model(h: Resolver<'_>, chosen: &str, lane: Option<types::packs::Lane>) -> Result<TurnModel, String> {
     use types::packs::{DEFAULT_EFFORT, NEBO_AI_ID, nebo_ai, pack_ref, parse_ref};
     let pick = pack_pick(h, chosen);
     let Some((id, named)) = parse_ref(&pick) else {
@@ -729,7 +744,7 @@ fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Re
 
 /// What a turn's model reference names: the chosen model, else the bot's
 /// default (which ships as the Nebo AI pack).
-fn pack_pick(h: &Harness, chosen: &str) -> String {
+fn pack_pick(h: Resolver<'_>, chosen: &str) -> String {
     if chosen.trim().is_empty() { h.selector.configured() } else { chosen.to_string() }
 }
 
@@ -739,7 +754,7 @@ fn pack_pick(h: &Harness, chosen: &str) -> String {
 /// model this bot can't send to gives way to Nebo AI's when the pack falls
 /// back, else nothing reads. A turn on a model of its own (not a pack) is
 /// read by that model when it sees images, else by Nebo AI's.
-fn vision_model(h: &Harness, chosen: &str) -> Option<String> {
+fn vision_model(h: Resolver<'_>, chosen: &str) -> Option<String> {
     use types::packs::{nebo_ai, parse_ref};
     // Nebo AI's, as a turn's Nebo AI model is sent whether or not Janus is
     // loaded (`Harness::eyes` gives it the provider a turn's call would go to).
@@ -773,7 +788,7 @@ impl Harness {
     /// isn't loaded is read by the first provider that takes calls, at its
     /// own default, as a turn's call goes there (`model_call`).
     pub(crate) async fn eyes(&self, chosen: &str) -> Option<crate::sidecar::Eyes> {
-        let model = vision_model(self, chosen)?;
+        let model = vision_model(self.resolver(), chosen)?;
         let (provider_id, name) = selector::parse_model_id(&model);
         let providers = self.providers.read().await;
         match providers.iter().find(|p| p.id() == provider_id) {
@@ -790,7 +805,7 @@ const BUILD_TOOLS: &[&str] = &["create_employee", "update_employee", "create_wor
 /// The model a turn's building steps run on: the build lane's, when the
 /// turn's intelligence pack pins it; else none, and the turn keeps its model.
 /// A linked employee runs its linked agent, never a lane's model.
-fn build_model(h: &Harness, chosen: &str, linked: bool) -> Option<TurnModel> {
+fn build_model(h: Resolver<'_>, chosen: &str, linked: bool) -> Option<TurnModel> {
     use types::packs::Lane;
     if linked {
         return None;
@@ -808,7 +823,7 @@ impl Harness {
     /// caller's default. The same lane a turn moves to when it builds
     /// (`build_model`).
     pub fn build_lane(&self) -> Option<(String, Option<types::packs::ProviderEffort>)> {
-        build_model(self, "", false).map(|m| (m.model, m.effort))
+        build_model(self.resolver(), "", false).map(|m| (m.model, m.effort))
     }
 }
 
@@ -1078,12 +1093,12 @@ pub(crate) async fn prepare(
     // so does a session held to build (a taught task's learning run and its
     // follow-ups, `Harness::build_session`); any other turn moves to the
     // build lane when it starts building.
-    let build = if matches!(req.mode, TurnMode::Workflow(_)) { None } else { build_model(h, &model, employee.linked) };
+    let build = if matches!(req.mode, TurnMode::Workflow(_)) { None } else { build_model(h.resolver(), &model, employee.linked) };
     let builder = build.is_some()
         && (types::keyparser::parse_session_key(&req.session_key).rest == types::keyparser::WORKFLOW_BUILDER
             || h.builds_session(&req.session_key));
     let lane = if builder { Some(types::packs::Lane::Build) } else { lane_of(&req.seat) };
-    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort, ran_on } = turn_model(h, &model, lane)?;
+    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort, ran_on } = turn_model(h.resolver(), &model, lane)?;
     // A workflow run records what it ran on, as its page shows it: once, at
     // its first step.
     if let (TurnMode::Workflow(m), Some(ran_on)) = (&req.mode, &ran_on) {
@@ -1826,10 +1841,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .flatten()
             .map(|g| g.condition)
             .unwrap_or_default();
+        let housekeeper = h.housekeeper();
         let round_cx = RoundContext {
             scope: &tool_scope,
             tools: &h.tools,
-            providers: &h.providers,
             concurrency: &h.concurrency,
             hooks: &h.hooks,
             user_prompt: &owner_words,
@@ -1841,6 +1856,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             side_trace: &side_trace,
             attended: attended(&cx.request),
             eyes: cx.eyes.as_ref(),
+            housekeeper: &housekeeper,
+            chosen: &cx.model,
         };
         // The streaming executor: safe calls start as their input completes
         // in the stream, while the reply is still arriving, so a read costs
@@ -2759,7 +2776,8 @@ async fn tool_round(
     }
     super::after_turn::hand_off_tool_summary(
         &cx.session_id,
-        &h.providers,
+        &h.housekeeper(),
+        &cx.model,
         &cx.tx,
         text,
         results.summary_tool_calls,
@@ -2832,7 +2850,7 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         (TurnMode::Chat, Some(observer)) => Some(goal::GoalCheck {
             sessions: h.sessions.clone(),
             session_id: cx.session_id.clone(),
-            judge: goal::DoneJudge::for_providers(&h.providers.read().await, &h.selector),
+            judge: h.housekeeper().route(&cx.model).await.map(goal::DoneJudge::from),
             trace: cx.trace("done_check"),
             observer,
             check_ins: h.goal_check_ins.clone(),
@@ -2922,11 +2940,11 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     // however the turn ended: one the owner stopped is named too.
     if matches!(cx.request.mode, TurnMode::Chat) {
         super::after_turn::spawn_chat_title_generation(
-            h.providers.clone(),
+            h.housekeeper(),
+            cx.model.clone(),
             h.store.clone(),
             h.sessions.active_chat_id(&cx.session_id),
             cx.session_id.clone(),
-            h.selector.background_model(),
             h.title_sink(),
         );
     }
@@ -2953,6 +2971,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     super::after_turn::MemoryExtraction {
         sessions: &h.sessions,
         session_id: &cx.session_id,
+        chosen: &cx.model,
         providers: &h.providers,
         store: &h.store,
         concurrency: &h.concurrency,
@@ -2969,7 +2988,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     }
     .schedule()
     .await;
-    super::after_turn::spawn_personality_synthesis(&h.store, &h.providers, &cx.seat.memory.user_id, &h.concurrency).await;
+    super::after_turn::spawn_personality_synthesis(&h.store, &h.housekeeper(), &cx.model, &cx.seat.memory.user_id, &h.concurrency).await;
     if !matches!(exit, TurnExit::ProviderFailed(_)) {
         super::after_turn::start_review(h, &cx.request, &cx.session_id);
     }
@@ -3457,7 +3476,7 @@ mod tests {
         save("gone-key", "openai/gpt-x", true);
         save("strict", "openai/gpt-x", false);
         let tm = |chosen: &str| {
-            let t = turn_model(&h, chosen, None).unwrap();
+            let t = turn_model(h.resolver(), chosen, None).unwrap();
             (t.model, t.notice)
         };
 
@@ -3470,7 +3489,7 @@ mod tests {
         let (model, notice) = tm("pack/gone-key");
         assert_eq!(model, "janus/nebo-1-medium", "no level: the default level");
         assert!(notice.is_some());
-        let refused = turn_model(&h, "pack/strict", None).unwrap_err();
+        let refused = turn_model(h.resolver(), "pack/strict", None).unwrap_err();
         assert!(refused.contains("set not to use Nebo AI"), "{refused}");
         let (model, notice) = tm("pack/deleted/low");
         assert_eq!(model, "janus/nebo-1-flash");
@@ -3482,7 +3501,7 @@ mod tests {
 
         // What a run records it ran on: the pack at its level, never a
         // Nebo AI model id.
-        let ran_on = |chosen: &str| turn_model(&h, chosen, None).unwrap().ran_on;
+        let ran_on = |chosen: &str| turn_model(h.resolver(), chosen, None).unwrap().ran_on;
         assert_eq!(ran_on("pack/mine").as_deref(), Some("pack/mine"));
         assert_eq!(ran_on("pack/mine/max").as_deref(), Some("pack/mine/max"));
         assert_eq!(ran_on("pack/gone-key/medium").as_deref(), Some("pack/nebo-ai/medium"), "the pack it fell back to");
@@ -3532,7 +3551,7 @@ mod tests {
         save("blind", "anthropic/claude-text", None, true);
         save("gone", "anthropic/claude-text", Some("openai/gpt-eyes"), true);
         save("strict", "anthropic/claude-text", Some("openai/gpt-eyes"), false);
-        let v = |chosen: &str| vision_model(&h, chosen);
+        let v = |chosen: &str| vision_model(h.resolver(), chosen);
         assert_eq!(v("pack/set/medium").as_deref(), Some("anthropic/claude-eyes"));
         assert_eq!(v("pack/sees/medium").as_deref(), Some("anthropic/claude-eyes"), "the level's model sees");
         assert_eq!(v("pack/blind/medium").as_deref(), Some("janus/nebo-1"), "Nebo AI's when it doesn't");
@@ -3569,19 +3588,19 @@ mod tests {
                 level_effort: LevelEffort { medium: Some(ProviderEffort::High), ..Default::default() },
             })
             .unwrap();
-        let chat = turn_model(&h, "pack/l", None).unwrap();
+        let chat = turn_model(h.resolver(), "pack/l", None).unwrap();
         assert_eq!((chat.model.as_str(), chat.effort), ("anthropic/claude-x", Some(ProviderEffort::High)));
-        let beat = turn_model(&h, "pack/l/high", Some(Lane::Heartbeat)).unwrap();
+        let beat = turn_model(h.resolver(), "pack/l/high", Some(Lane::Heartbeat)).unwrap();
         assert_eq!((beat.model.as_str(), beat.effort), ("janus/nebo-1-flash", None), "the pinned lane wins");
-        let sched = turn_model(&h, "pack/l", Some(Lane::Scheduled)).unwrap();
+        let sched = turn_model(h.resolver(), "pack/l", Some(Lane::Scheduled)).unwrap();
         assert_eq!(sched.model, "anthropic/claude-x", "an unpinned lane keeps the reference's level");
-        let empty = turn_model(&h, "pack/l/max", None).unwrap();
+        let empty = turn_model(h.resolver(), "pack/l/max", None).unwrap();
         assert_eq!(
             (empty.model.as_str(), empty.effort, empty.notice),
             ("janus/nebo-1-pro", Some(ProviderEffort::High), None),
             "an empty level runs on Nebo AI's Max at Nebo AI's effort for it"
         );
-        assert_eq!(turn_model(&h, "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
+        assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
     }
 
     /// Nebo AI's lanes: on its Auto, a workflow's step runs on Fast and a
@@ -3592,15 +3611,15 @@ mod tests {
         use types::packs::Lane;
         let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
         h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
-        let step = turn_model(&h, "pack/nebo-ai", Some(Lane::Workflow)).unwrap();
+        let step = turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Workflow)).unwrap();
         assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-flash", None), "a step on Fast");
-        let built = build_model(&h, "pack/nebo-ai", false).unwrap();
+        let built = build_model(h.resolver(), "pack/nebo-ai", false).unwrap();
         assert_eq!((built.model.as_str(), built.effort), ("janus/nebo-1-pro", None), "built on Deep");
-        assert_eq!(build_model(&h, "pack/nebo-ai/low", false).unwrap().model, "janus/nebo-1-pro", "whatever level chats");
-        assert!(build_model(&h, "anthropic/claude-x", false).is_none(), "a model the owner chose stays his");
-        assert!(build_model(&h, "pack/nebo-ai", true).is_none(), "a linked employee runs its agent");
-        assert!(build_model(&h, "janus/nebo-1", false).is_none(), "a raw model is not a pack");
-        assert_eq!(turn_model(&h, "pack/nebo-ai", None).unwrap().model, "janus/nebo-1", "a chat stays on Auto");
+        assert_eq!(build_model(h.resolver(), "pack/nebo-ai/low", false).unwrap().model, "janus/nebo-1-pro", "whatever level chats");
+        assert!(build_model(h.resolver(), "anthropic/claude-x", false).is_none(), "a model the owner chose stays his");
+        assert!(build_model(h.resolver(), "pack/nebo-ai", true).is_none(), "a linked employee runs its agent");
+        assert!(build_model(h.resolver(), "janus/nebo-1", false).is_none(), "a raw model is not a pack");
+        assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", None).unwrap().model, "janus/nebo-1", "a chat stays on Auto");
 
         let mut seat = owner("x").seat;
         seat.door = types::permissions::Door::Workflow;
@@ -3670,7 +3689,7 @@ mod tests {
         // On Auto, the build lane is Deep.
         let auto = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
         auto.selector.set_loaded_providers(vec!["janus".into()]);
-        assert_eq!(build_model(&auto, "pack/nebo-ai", false).unwrap().model, "janus/nebo-1-pro", "Auto learns on Deep");
+        assert_eq!(build_model(auto.resolver(), "pack/nebo-ai", false).unwrap().model, "janus/nebo-1-pro", "Auto learns on Deep");
 
         // The learning run, from its first step.
         let model = Scripted::new(vec![Step::Say("I learned how to file the orders.")]);

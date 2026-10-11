@@ -1555,7 +1555,7 @@ pub async fn work_out_agent_needs(
         .and_then(|tc| napp::agent::parse_agent_config(&tc.to_string()).ok())
         .map(|c| DeclaredNeeds::of(&c));
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
-    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone());
     let src = JobSource {
         name,
         agent_id,

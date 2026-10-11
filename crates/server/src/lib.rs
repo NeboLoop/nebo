@@ -2299,7 +2299,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
-        harness.providers(),
+        harness.housekeeper(),
         embedding_provider.clone(),
         Some(decide_client.clone()),
     );
@@ -2985,7 +2985,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and grants them on the owner's yes, through the ONE permission store.
     state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
         state.permission_asks.clone(),
-        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.providers())),
+        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone())),
     )));
 
     // Wire the coworker message rail (late, like the installer above — it needs

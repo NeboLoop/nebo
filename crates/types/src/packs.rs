@@ -116,6 +116,10 @@ pub enum Lane {
     Build,
     /// Running a workflow's steps.
     Workflow,
+    /// Background work for the owner's turns and employees: titles, memory,
+    /// tool summaries, permission and goal checks. Always the pack's
+    /// Instant level.
+    Housekeeping,
 }
 
 impl PackLanes {
@@ -128,6 +132,7 @@ impl PackLanes {
             Lane::Helpers => self.helpers,
             Lane::Build => self.build,
             Lane::Workflow => self.workflow,
+            Lane::Housekeeping => Some(Effort::Instant),
         }
     }
 }
