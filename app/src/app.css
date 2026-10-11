@@ -956,3 +956,19 @@
 .handoff-line-status {
   @apply mt-0.5 flex min-w-0 items-baseline gap-1.5 ps-1;
 }
+
+/* The bot's computer: copy and paste with the owner's computer
+   (DesktopView.svelte, $lib/chat/desktopClipboard). The sink is the
+   textarea the browser pastes into: focusable, never seen, never clicked. */
+.desktop-clipboard-sink {
+  @apply absolute top-0 left-0 w-px h-px p-0 border-0 opacity-0 resize-none overflow-hidden pointer-events-none;
+}
+.desktop-clipboard-bar-button {
+  @apply btn btn-sm btn-ghost normal-case gap-1.5 text-neutral-content hover:bg-white/10;
+}
+.desktop-clipboard-offer {
+  @apply btn btn-sm btn-primary normal-case gap-1.5;
+}
+.desktop-clipboard-notice {
+  @apply absolute bottom-3 left-1/2 -translate-x-1/2 max-w-[90%] px-3 py-1.5 rounded-lg bg-base-100 text-base-content text-xs shadow-lg pointer-events-none text-center;
+}

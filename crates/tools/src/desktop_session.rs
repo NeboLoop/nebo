@@ -22,6 +22,8 @@ use tracing::{info, warn};
 pub const DISPLAY: &str = ":99";
 /// x11vnc listens loopback-only; the WS bridge in nebo-server is the only way in.
 pub const VNC_PORT: u16 = 5900;
+/// Keeps each paste from the viewer fresh in the desktop's apps.
+const CLIPBOARD_KEEPER: &str = include_str!("desktop_clipboard_keeper.py");
 const IDLE_STOP: Duration = Duration::from_secs(15 * 60);
 const REAPER_TICK: Duration = Duration::from_secs(60);
 
@@ -220,6 +222,16 @@ pub async fn ensure_started() -> Result<u16, String> {
         .spawn()
         .map_err(|e| format!("desktop session failed to start: {e}"))?;
 
+    // Clipboard (copy and paste with the owner's computer, verified against
+    // x11vnc 0.9.16 + Chromium under Xvfb):
+    // - X11VNC_AVOID_WINDOWS=never: x11vnc otherwise waits 8-45 seconds
+    //   after a viewer connects (in case a login manager is still up) before
+    //   it creates the window that owns the selections, and drops every
+    //   paste until then.
+    // - -noprimary: only an explicit copy (CLIPBOARD, Ctrl+C) goes to the
+    //   viewer. A mere highlight (PRIMARY) would otherwise overwrite the
+    //   owner's own clipboard. A paste from the viewer still sets both, so
+    //   middle-click pastes it too.
     let x11vnc = nice("x11vnc")
         .args([
             "-display", DISPLAY,
@@ -228,13 +240,30 @@ pub async fn ensure_started() -> Result<u16, String> {
             "-shared",
             "-forever",
             "-nopw",
+            "-noprimary",
             "-quiet",
         ])
+        .env("X11VNC_AVOID_WINDOWS", "never")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("x11vnc failed to start: {e}"))?;
+
+    // A second paste from the viewer must reach Chromium too: see
+    // desktop_clipboard_keeper.py. It exits with the display, so it needs no
+    // handle; without python3 a paste still works, only later ones may
+    // repeat the first in Chromium.
+    if let Err(e) = nice("python3")
+        .args(["-c", CLIPBOARD_KEEPER])
+        .env("DISPLAY", DISPLAY)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        warn!(error = %e, "desktop clipboard keeper did not start");
+    }
 
     // Return only once the desktop is all the way up, so a viewer's first
     // frame is the finished desktop and never a half-drawn one: x11vnc
@@ -978,6 +1007,8 @@ What the owner said while recording, in order. Each line starts with the time in
 
 /// What a typed run that may be a secret reads as in the timeline.
 const TYPED_SECRET: &str = "Typed: [typed secret]";
+/// A paste: what was pasted never reaches the timeline.
+const PASTED: &str = "Pasted [pasted text]";
 
 /// How near in time an element record and an input event must be to be
 /// the same action.
@@ -1268,8 +1299,31 @@ Reconstructed from the input event log. Each line starts with the time into the 
                 pending = Pending::None;
             }
         } else if t.starts_with("modifiers:") && pending == Pending::Key {
-            let shift = t.contains("effective: 1") || t.contains("effective: 0x1");
-            if let Some(ch) = keychar(detail, shift) {
+            // The effective mask is hex ("0x5"), or "0": bit 0 Shift, bit 2
+            // Control. Locks (NumLock 0x10) set other bits.
+            let mask = t
+                .split("effective:")
+                .nth(1)
+                .map(str::trim)
+                .and_then(|m| match m.strip_prefix("0x") {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => m.parse().ok(),
+                })
+                .unwrap_or(0);
+            let shift = mask & 0x1 != 0;
+            let ctrl = mask & 0x4 != 0;
+            // A paste (Ctrl+V, Shift+Insert) never spells its text out: the
+            // owner's clipboard reaches the computer over RFB, not as keys,
+            // and the timeline says only that something was pasted.
+            if (ctrl && detail == 55) || (shift && detail == 118) {
+                flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
+                steps.push((now, PASTED.to_string()));
+            } else if let Some(ch) =
+                keychar(detail, shift).filter(|c| ctrl && c.chars().count() == 1)
+            {
+                flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
+                steps.push((now, format!("Pressed [Ctrl+{}]", ch.to_uppercase())));
+            } else if let Some(ch) = keychar(detail, shift) {
                 if ch.starts_with('[') {
                     flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
                     steps.push((now, format!("Pressed {ch}")));
@@ -1499,6 +1553,52 @@ EVENT type 2 (KeyPress)\n\
     /// What is typed into a password field never reaches the timeline in
     /// clear: by the field's role when the focus watcher saw it, and by the
     /// login shape when it did not.
+    // Proven against x11vnc 0.9.16 + Chromium under Xvfb: without the env
+    // the first pastes are dropped; without -noprimary every highlight
+    // overwrites the owner's clipboard; without the keeper Chromium keeps
+    // pasting the first text.
+    #[test]
+    fn the_desktop_shares_its_clipboard_with_the_viewer() {
+        let src = include_str!("desktop_session.rs");
+        let start = src.find("pub async fn ensure_started").unwrap();
+        let end = start + src[start..].find("\n}\n").unwrap();
+        let body = &src[start..end];
+        assert!(body.contains("\"-noprimary\""));
+        assert!(body.contains(".env(\"X11VNC_AVOID_WINDOWS\", \"never\")"));
+        assert!(body.contains("CLIPBOARD_KEEPER"));
+        assert!(CLIPBOARD_KEEPER.contains("xclip -o -selection clipboard | xclip -selection clipboard"));
+        assert!(!CLIPBOARD_KEEPER.contains("print("), "the keeper never prints clipboard text");
+    }
+
+    // A login: "ab", Ctrl+V of a password, Ctrl+C, Shift+Insert, then "t"
+    // with NumLock on. The pasted text is never in events.log (it arrives
+    // over RFB), and each paste reads as one step.
+    #[test]
+    fn timeline_redacts_a_paste_and_names_shortcuts() {
+        let key = |ms: u32, detail: u32, effective: &str| {
+            format!(
+                "TIME {ms}\nEVENT type 2 (KeyPress)\n    detail: {detail}\n    root: 1.00/1.00\n    modifiers: locked 0 latched 0 base {effective} effective: {effective}\n"
+            )
+        };
+        let log = [
+            key(0, 38, "0"),
+            key(100, 56, "0"),
+            key(1000, 37, "0"),
+            key(1100, 55, "0x4"),
+            key(2000, 54, "0x4"),
+            key(3000, 118, "0x1"),
+            key(4000, 28, "0x10"),
+        ]
+        .concat();
+        let t = summarize_x11_events(&log, &[], &[]);
+        assert!(t.contains("00:00  Typed: ab\n"), "typed text missing: {t}");
+        assert!(t.contains("00:01  Pasted [pasted text]\n"), "ctrl+v not redacted: {t}");
+        assert!(t.contains("00:02  Pressed [Ctrl+C]\n"), "ctrl+c not named: {t}");
+        assert!(t.contains("00:03  Pasted [pasted text]\n"), "shift+insert not redacted: {t}");
+        assert!(t.contains("00:04  Typed: t\n"), "numlock must not read as shift: {t}");
+        assert!(!t.contains("Typed: v") && !t.contains("Typed: c"), "shortcut keys leaked as text: {t}");
+    }
+
     #[test]
     fn typed_passwords_are_redacted() {
         let key = |ms: u32, code: u32| {
