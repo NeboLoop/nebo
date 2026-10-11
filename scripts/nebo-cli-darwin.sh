@@ -67,6 +67,9 @@ check)
   work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
   cp "$file" "$work/"
   bin="$work/$(basename "$file")"
+  # A downloaded release asset (gh release download, browsers) has no
+  # executable bit; the check is about the signature, not the file mode.
+  chmod +x "$bin"
   if file "$bin" | grep -q x86_64 && [ "$(uname -m)" = arm64 ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
     echo "SKIP: $file is x86_64 and this Mac has no Rosetta"
     exit 0
