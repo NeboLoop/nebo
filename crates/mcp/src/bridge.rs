@@ -13,6 +13,8 @@ struct Connection {
     server_slug: String,
     tool_names: Vec<String>,     // namespaced: mcp__server__tool
     original_names: Vec<String>, // original tool names from the server
+    /// The server's definitions, as it offered them at this connect.
+    defs: Vec<McpToolDef>,
 }
 
 /// Callback to register/unregister proxy tools in the agent's tool registry.
@@ -147,6 +149,7 @@ impl Bridge {
                 server_slug: server_type.to_string(),
                 tool_names,
                 original_names,
+                defs: tools.clone(),
             },
         );
 
@@ -193,6 +196,17 @@ impl Bridge {
                 .collect(),
             Err(_) => vec![],
         }
+    }
+
+    /// The tools a connected server offers, as it defined them (their own
+    /// names, titles and descriptions). Empty when it isn't connected.
+    pub async fn tool_defs(&self, integration_id: &str) -> Vec<McpToolDef> {
+        self.connections
+            .lock()
+            .await
+            .get(integration_id)
+            .map(|c| c.defs.clone())
+            .unwrap_or_default()
     }
 
     /// Find the integration ID for a server+tool combination.

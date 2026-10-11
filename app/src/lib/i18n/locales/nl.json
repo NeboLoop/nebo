@@ -4276,7 +4276,6 @@
 		"allowTitle": "Altijd toestaan",
 		"allowDesc": "Gebruikt deze tool zonder te vragen.",
 		"allToolsNote": "Geldt voor elke tool van {name}, ook voor tools die later worden toegevoegd.",
-		"managedNote": "Deze tools volgen je instellingen voor het bedrijfsgeheugen.",
 		"noTools": "Nog geen tools. Verbind om te zien wat deze connector biedt.",
 		"locked": "Deze instelling ligt vast door de regels van je bedrijf.",
 		"disconnectTitle": "{name} loskoppelen?",
@@ -4286,7 +4285,9 @@
 		"removeBody": "Nebo vergeet het adres en de aanmelding. Je kunt hem altijd opnieuw toevoegen.",
 		"connect": "Verbinden",
 		"disconnect": "Verbinding verbreken",
-		"connected": "Verbonden"
+		"connected": "Verbonden",
+		"refreshTools": "Tools vernieuwen",
+		"updated": "{count, plural, =1{Bijgewerkt · 1 tool} other{Bijgewerkt · {count} tools}}"
 	},
 	"chatMode": {
 		"title": "Toestemming",

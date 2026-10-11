@@ -4276,7 +4276,6 @@
 		"allowTitle": "Always allow",
 		"allowDesc": "Uses this tool without asking.",
 		"allToolsNote": "Applies to every tool {name} offers, including ones it adds later.",
-		"managedNote": "These tools follow your Company Memory settings.",
 		"noTools": "No tools yet. Connect to see what this connector offers.",
 		"locked": "This setting is fixed by your company's rules.",
 		"disconnectTitle": "Disconnect {name}?",
@@ -4286,7 +4285,9 @@
 		"removeBody": "Nebo forgets its address and sign-in. You can add it again any time.",
 		"connect": "Connect",
 		"disconnect": "Disconnect",
-		"connected": "Connected"
+		"connected": "Connected",
+		"refreshTools": "Refresh tools",
+		"updated": "{count, plural, =1{Updated · 1 tool} other{Updated · {count} tools}}"
 	},
 	"chatMode": {
 		"title": "Permission",

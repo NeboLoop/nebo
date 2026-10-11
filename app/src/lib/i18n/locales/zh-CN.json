@@ -4276,7 +4276,6 @@
 		"allowTitle": "始终允许",
 		"allowDesc": "无需询问即可使用此工具。",
 		"allToolsNote": "适用于 {name} 提供的所有工具,包括之后新增的工具。",
-		"managedNote": "这些工具遵循公司记忆的设置。",
 		"noTools": "还没有工具。连接后即可查看此连接器提供的内容。",
 		"locked": "此设置由公司规则固定。",
 		"disconnectTitle": "要断开 {name} 吗?",
@@ -4286,7 +4285,9 @@
 		"removeBody": "Nebo 将忘记它的地址和登录信息。你可以随时重新添加。",
 		"connect": "连接",
 		"disconnect": "断开连接",
-		"connected": "已连接"
+		"connected": "已连接",
+		"refreshTools": "刷新工具",
+		"updated": "{count, plural, other{已更新 · {count} 个工具}}"
 	},
 	"chatMode": {
 		"title": "权限",

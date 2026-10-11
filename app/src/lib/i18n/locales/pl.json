@@ -4276,7 +4276,6 @@
 		"allowTitle": "Zawsze zezwalaj",
 		"allowDesc": "Używa tego narzędzia bez pytania.",
 		"allToolsNote": "Dotyczy każdego narzędzia {name}, także dodanych później.",
-		"managedNote": "Te narzędzia stosują się do ustawień Pamięci firmy.",
 		"noTools": "Brak narzędzi. Połącz, aby zobaczyć, co oferuje ten konektor.",
 		"locked": "To ustawienie określają zasady Twojej firmy.",
 		"disconnectTitle": "Rozłączyć {name}?",
@@ -4286,7 +4285,9 @@
 		"removeBody": "Nebo zapomni jego adres i logowanie. Możesz dodać go ponownie w każdej chwili.",
 		"connect": "Połącz",
 		"disconnect": "Rozłącz",
-		"connected": "Połączono"
+		"connected": "Połączono",
+		"refreshTools": "Odśwież narzędzia",
+		"updated": "{count, plural, =1{Zaktualizowano · 1 narzędzie} few{Zaktualizowano · {count} narzędzia} many{Zaktualizowano · {count} narzędzi} other{Zaktualizowano · {count} narzędzia}}"
 	},
 	"chatMode": {
 		"title": "Uprawnienia",

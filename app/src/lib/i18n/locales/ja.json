@@ -4276,7 +4276,6 @@
 		"allowTitle": "常に許可",
 		"allowDesc": "確認せずにこのツールを使います。",
 		"allToolsNote": "{name} のすべてのツール(今後追加されるものを含む)に適用されます。",
-		"managedNote": "これらのツールは会社のメモリーの設定に従います。",
 		"noTools": "まだツールはありません。接続すると、このコネクタの機能が表示されます。",
 		"locked": "この設定は会社のルールで固定されています。",
 		"disconnectTitle": "{name} の接続を解除しますか?",
@@ -4286,7 +4285,9 @@
 		"removeBody": "Nebo はアドレスとサインイン情報を忘れます。いつでも再追加できます。",
 		"connect": "接続",
 		"disconnect": "切断",
-		"connected": "接続済み"
+		"connected": "接続済み",
+		"refreshTools": "ツールを更新",
+		"updated": "{count, plural, other{更新しました · {count} 個のツール}}"
 	},
 	"chatMode": {
 		"title": "権限",

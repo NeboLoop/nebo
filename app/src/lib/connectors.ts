@@ -29,13 +29,18 @@ export function connectorState(c: Connector, signIn?: 'waiting' | 'timedOut'): C
 	return 'off';
 }
 
-/** A connector's icon: its server's favicon, when it is served over https. */
-export function connectorIconUrl(serverUrl: string): string | null {
+/** Where a connector's icon may be, in order: its host's favicon, then
+ *  its site's (`mcp.example.com` → `example.com`). Only over https. */
+export function connectorIconUrls(serverUrl: string): string[] {
 	try {
 		const u = new URL(serverUrl);
-		return u.protocol === 'https:' ? `${u.origin}/favicon.ico` : null;
+		if (u.protocol !== 'https:') return [];
+		const labels = u.hostname.split('.');
+		const urls = [`${u.origin}/favicon.ico`];
+		if (labels.length > 2) urls.push(`https://${labels.slice(-2).join('.')}/favicon.ico`);
+		return urls;
 	} catch {
-		return null;
+		return [];
 	}
 }
 
@@ -77,4 +82,35 @@ export function allToolsEdits(switches: Map<string, PermissionSwitch>, family: s
 		if (s && !s.inherited && s.canInherit) edits.push({ id: s.id, value: 'inherit' });
 	}
 	return edits;
+}
+
+/** A row on a connector's view: one tool, or the tools that share a first
+ *  word in their name (`calendar_list`, `calendar_create` → "Calendar"),
+ *  set together. Grouped only when that makes more than one row. */
+export interface ToolGroup<T extends { key: string; title: string }> {
+	title: string;
+	tools: T[];
+}
+
+export function groupTools<T extends { key: string; title: string }>(tools: T[]): ToolGroup<T>[] {
+	const word = (t: T) => (t.key.includes('__') ? t.key.split('__').pop()! : t.key).split(/[_\-.]/)[0];
+	const byWord = new Map<string, T[]>();
+	for (const t of tools) byWord.set(word(t), [...(byWord.get(word(t)) ?? []), t]);
+	const grouping = byWord.size > 1 && [...byWord.values()].some((g) => g.length > 1);
+	if (!grouping) return tools.map((t) => ({ title: t.title, tools: [t] }));
+	return [...byWord.entries()]
+		.map(([w, g]) => ({ title: g.length === 1 ? g[0].title : w.charAt(0).toUpperCase() + w.slice(1), tools: g }))
+		.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+}
+
+/** Several tools' common setting, or `custom` when they differ. */
+export function groupValue(switches: Map<string, PermissionSwitch>, family: string, keys: string[]): string {
+	const values = new Set(keys.map((k) => toolValue(switches, family, k)));
+	return values.size === 1 ? [...values][0] : 'custom';
+}
+
+/** A tool's description as a footnote: its first paragraph. */
+export function toolSummary(description: string): string {
+	const first = description.trim().split(/\n\s*\n/)[0].trim();
+	return first.length > 400 ? `${first.slice(0, 400).trimEnd()}…` : first;
 }

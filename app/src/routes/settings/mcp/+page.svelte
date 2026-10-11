@@ -18,12 +18,21 @@
   import Link from 'lucide-svelte/icons/link';
   import Shield from 'lucide-svelte/icons/shield';
   import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
+  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import RotateCw from 'lucide-svelte/icons/rotate-cw';
+  import Activity from 'lucide-svelte/icons/activity';
+  import KeyRound from 'lucide-svelte/icons/key-round';
+  import Unlink from 'lucide-svelte/icons/unlink';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
   import type { McpIntegration, PermissionSwitch } from '$lib/api/neboComponents';
   import { openSignInLink } from '$lib/utils/pluginSignIn';
   import {
     allToolsEdits,
     allToolsValue,
-    connectorIconUrl,
+    groupTools,
+    groupValue,
+    toolSummary,
+    connectorIconUrls,
     connectorState,
     switchesById,
     toolValue,
@@ -46,13 +55,15 @@
   let setting = $state<{ title: string; value: string; note: string; locked: boolean; pick: (v: string) => Promise<void> } | null>(null);
   let tools = $state<Tool[]>([]);
   let family = $state('');
-  let settable = $state(true);
+  let refreshing = $state(false);
+  let refreshed = $state<{ ok: boolean; text: string } | null>(null);
   let switches = $state(new Map<string, PermissionSwitch>());
   let testing = $state(false);
   let notice = $state<{ ok: boolean; text: string } | null>(null);
   let copied = $state(false);
   let addMenu = $state(false);
-  let failedIcons = $state<Record<string, boolean>>({});
+  /** How many of each connector's icon addresses failed. */
+  let failedIcons = $state<Record<string, number>>({});
 
   const open = $derived(connectors.find((c) => c.id === openId) ?? null);
   const stateOf = (c: Connector): ConnectorState => connectorState(c, signIns[c.id]);
@@ -136,10 +147,11 @@
   }
 
   /** Connect, or sign in again when the sign-in is gone. */
-  async function reconnect(id: string) {
+  /** `again`: the Reconnect row, which starts a sign-in over in any state. */
+  async function reconnect(id: string, again = false) {
     const c = connectors.find((x) => x.id === id);
     if (!c) return;
-    if (c.authType === 'oauth' && (c.connectionStatus === 'needs_reauth' || signIns[id] === 'timedOut')) return signIn(id, true);
+    if (c.authType === 'oauth' && (again || c.connectionStatus === 'needs_reauth' || signIns[id] === 'timedOut')) return signIn(id, true);
     const api = await import('$lib/api/nebo');
     try {
       const r = (await api.connectIntegration(id)) as { success?: boolean; toolCount?: number; needsReauth?: boolean; message?: string };
@@ -154,6 +166,27 @@
       if (c.authType === 'oauth') return signIn(id, false);
       patch(id, { connectionStatus: 'error', lastError: err instanceof Error ? err.message : $t('settingsMcp.connectionFailed') });
     }
+  }
+
+  /** Refresh tools: connect again and read the server's tool list anew. */
+  async function refresh(id: string) {
+    refreshing = true;
+    refreshed = null;
+    const api = await import('$lib/api/nebo');
+    try {
+      const r = (await api.connectIntegration(id)) as { success?: boolean; toolCount?: number; message?: string; needsReauth?: boolean };
+      if (r?.success) {
+        patch(id, { isEnabled: true, connectionStatus: 'connected', toolCount: r.toolCount ?? 0, lastError: null });
+        refreshed = { ok: true, text: $t('connectors.updated', { values: { count: r.toolCount ?? 0 } }) };
+        await loadTools(id);
+      } else {
+        patch(id, { connectionStatus: r?.needsReauth ? 'needs_reauth' : 'error', lastError: r?.message || null });
+        refreshed = { ok: false, text: r?.message || $t('settingsMcp.connectionFailed') };
+      }
+    } catch (err) {
+      refreshed = { ok: false, text: err instanceof Error && err.message ? err.message : $t('settingsMcp.connectionFailed') };
+    }
+    refreshing = false;
   }
 
   async function test(id: string) {
@@ -199,6 +232,7 @@
     openId = id;
     setting = null;
     notice = null;
+    refreshed = null;
     tools = [];
     loadTools(id);
   }
@@ -210,7 +244,6 @@
       if (openId !== id) return;
       tools = r.tools;
       family = r.family;
-      settable = r.settable;
       switches = switchesById(page);
     } catch { /* the view says it has no tools */ }
   }
@@ -224,13 +257,27 @@
   const word = (v: string) =>
     v === 'custom' ? $t('connectors.custom') : v === 'deny' ? $t('connectors.blocked') : v === 'ask' ? $t('connectors.ask') : $t('connectors.always');
 
-  function openToolSetting(tool: Tool) {
+  function openToolSetting(tool: Tool, title = tool.title) {
     setting = {
-      title: tool.title,
+      title,
       value: toolValue(switches, family, tool.key),
-      note: tool.description,
+      note: toolSummary(tool.description),
       locked: switches.get(`tool:${tool.key}`)?.locked ?? false,
       pick: (v) => setSwitch(`tool:${tool.key}`, v),
+    };
+  }
+
+  /** One row's setting: a tool's own, or every tool of a group's. */
+  function openGroupSetting(g: { title: string; tools: Tool[] }) {
+    if (g.tools.length === 1) return openToolSetting(g.tools[0], g.title);
+    setting = {
+      title: g.title,
+      value: groupValue(switches, family, g.tools.map((x) => x.key)),
+      note: g.tools.map((x) => x.title).join(', '),
+      locked: g.tools.some((x) => switches.get(`tool:${x.key}`)?.locked),
+      pick: async (v) => {
+        for (const x of g.tools) await setSwitch(`tool:${x.key}`, v);
+      },
     };
   }
 
@@ -364,11 +411,11 @@
     a === 'oauth' ? $t('connectors.authOauth') : a === 'api_key' ? $t('connectors.authKey') : a === 'neboai' ? $t('connectors.authNebo') : $t('connectors.authNone');
 </script>
 
-{#snippet icon(c: Connector, size: 'sm' | 'md' | 'lg')}
-  {@const src = connectorIconUrl(c.serverUrl)}
+{#snippet icon(c: Connector, size: 'sm' | 'md')}
+  {@const src = connectorIconUrls(c.serverUrl)[failedIcons[c.id] ?? 0]}
   <span class="connector-icon connector-icon-{size}">
-    {#if src && !failedIcons[c.id]}
-      <img {src} alt="" onerror={() => (failedIcons = { ...failedIcons, [c.id]: true })} />
+    {#if src}
+      <img {src} alt="" onerror={() => (failedIcons = { ...failedIcons, [c.id]: (failedIcons[c.id] ?? 0) + 1 })} />
     {:else}
       {(c.name.trim()[0] ?? '?').toUpperCase()}
     {/if}
@@ -404,40 +451,28 @@
       <span class="connectors-head-spacer"></span>
     </header>
 
-    <section class="connector-card connector-status">
-      <div class="connector-status-top">
-        {@render icon(open, 'lg')}
-        <div class="min-w-0">
-          <div class="connector-headline"><span class="connector-dot connector-dot-{s}"></span>{headline(s)}</div>
-          <div class="connector-row-sub">{authWords(open.authType)}</div>
-          {#if s === 'connected' && open.toolCount > 0}<div class="connector-meta">{$t('connectors.toolCount', { values: { count: open.toolCount } })}</div>{/if}
+    {@const fix = s === 'expired' || s === 'error' || s === 'timedOut' || s === 'off'}
+    <section class="connector-card connector-header">
+      <div class="connector-header-top">
+        {@render icon(open, 'md')}
+        <div class="min-w-0 flex-1">
+          <div class="connector-row-name">{open.name}</div>
+          <div class="connector-header-status">
+            <span class="connector-dot connector-dot-{s}"></span>
+            <span><strong>{headline(s)}</strong> · {authWords(open.authType)}{#if s === 'connected' && open.toolCount > 0} · {$t('connectors.toolCount', { values: { count: open.toolCount } })}{/if}</span>
+          </div>
         </div>
       </div>
-      {#if s !== 'connected' && s !== 'waiting' && open.lastError}<p class="connector-error">{open.lastError}</p>{/if}
-      {#if notice}<p class={notice.ok ? 'connector-ok' : 'connector-error'}>{notice.text}</p>{/if}
-      <div class="connector-actions">
-        {#if s === 'waiting'}
-          <button class="btn btn-primary btn-sm" disabled><span class="loading loading-spinner loading-xs"></span>{$t('connectors.statusWaiting')}</button>
-        {:else if s !== 'connected' || open.authType === 'oauth'}
-          <button class="btn btn-sm {s === 'connected' ? 'btn-outline' : 'btn-primary'}" onclick={() => reconnect(open.id)}>
-            {s === 'off' ? $t('connectors.connect') : $t('connectors.reconnect')}
-          </button>
-        {/if}
-        {#if open.authType === 'api_key'}
-          <button class="btn btn-sm btn-outline" onclick={() => { keyFor = open.id; keyValue = ''; }}>
-            {s === 'connected' ? $t('settingsMcp.replaceApiKey') : $t('settingsMcp.enterApiKey')}
-          </button>
-        {/if}
-        {#if open.isEnabled}
-          <button class="btn btn-sm btn-outline" disabled={testing} onclick={() => test(open.id)}>
-            {#if testing}<span class="loading loading-spinner loading-xs"></span>{/if}{$t('settingsMcp.testConnection')}
-          </button>
-        {/if}
-      </div>
+      {#if fix && s !== 'off' && open.lastError}<p class="connector-error">{open.lastError}</p>{/if}
       {#if open.serverUrl}
         <button class="connector-url" onclick={() => copyUrl(open.serverUrl)} title={$t('settingsMcp.copyUrl')}>
           <span class="truncate">{open.serverUrl}</span>
           {#if copied}<Check class="w-3.5 h-3.5 text-success" />{:else}<Copy class="w-3.5 h-3.5" />{/if}
+        </button>
+      {/if}
+      {#if fix}
+        <button class="btn btn-primary w-full" onclick={() => reconnect(open.id)}>
+          {s === 'off' ? $t('connectors.connect') : $t('connectors.reconnect')}
         </button>
       {/if}
     </section>
@@ -445,11 +480,12 @@
     {#if tools.length === 0}
       <p class="connector-footnote">{$t('connectors.noTools')}</p>
     {:else}
-      {#if settable && switches.has(`tool:${family}`)}
+      {@const canSet = switches.has(`tool:${family}`)}
+      {#if canSet}
         <div class="connector-card">
           <button class="connector-row" onclick={() => openAllTools(open)}>
-            <span class="connector-icon connector-icon-sm"><SlidersHorizontal class="w-4 h-4" /></span>
-            <span class="connector-row-name flex-1">{$t('connectors.allTools')}</span>
+            <SlidersHorizontal class="connector-row-icon" />
+            <span class="connector-row-title">{$t('connectors.allTools')}</span>
             <span class="connector-value">{word(allToolsValue(switches, family, tools.map((x) => x.key)))}</span>
             <ChevronRight class="connector-chevron" />
           </button>
@@ -457,30 +493,58 @@
       {/if}
       <h3 class="connector-section">{$t('connectors.tools')}</h3>
       <div class="connector-card">
-        {#each tools as tool (tool.key)}
-          {#if settable && switches.has(`tool:${family}`)}
-            <button class="connector-row" onclick={() => openToolSetting(tool)} title={tool.description}>
+        {#each groupTools(tools) as g (g.tools[0].key)}
+          {#if canSet}
+            <button class="connector-row" onclick={() => openGroupSetting(g)} title={g.tools.length === 1 ? toolSummary(g.tools[0].description) : ''}>
               {@render icon(open, 'sm')}
-              <span class="connector-row-name flex-1">{tool.title}</span>
-              <span class="connector-value">{word(toolValue(switches, family, tool.key))}</span>
+              <span class="connector-row-title">{g.title}</span>
+              <span class="connector-value">{word(groupValue(switches, family, g.tools.map((x) => x.key)))}</span>
               <ChevronRight class="connector-chevron" />
             </button>
           {:else}
-            <div class="connector-row" title={tool.description}>
+            <div class="connector-row" title={toolSummary(g.tools[0].description)}>
               {@render icon(open, 'sm')}
-              <span class="connector-row-name flex-1">{tool.title}</span>
+              <span class="connector-row-title">{g.title}</span>
             </div>
           {/if}
         {/each}
       </div>
-      {#if !settable}<p class="connector-footnote">{$t('connectors.managedNote')}</p>{/if}
     {/if}
 
     <div class="connector-card">
-      {#if open.isEnabled}
-        <button class="connector-danger" onclick={() => disconnect(open.id)}>{$t('connectors.disconnect')}</button>
+      <button class="connector-row" onclick={() => refresh(open.id)} disabled={refreshing}>
+        <RefreshCw class="connector-row-icon" />
+        <span class="connector-row-title">{$t('connectors.refreshTools')}</span>
+        {#if refreshing}<span class="loading loading-spinner loading-xs"></span>{:else if refreshed}<span class={refreshed.ok ? 'connector-value' : 'connector-error'}>{refreshed.text}</span>{/if}
+      </button>
+      <button class="connector-row" onclick={() => reconnect(open.id, true)} disabled={s === 'waiting'}>
+        <RotateCw class="connector-row-icon" />
+        <span class="connector-row-title">{$t('connectors.reconnect')}</span>
+        {#if s === 'waiting'}<span class="loading loading-spinner loading-xs"></span>{/if}
+      </button>
+      <button class="connector-row" onclick={() => test(open.id)} disabled={testing}>
+        <Activity class="connector-row-icon" />
+        <span class="connector-row-title">{$t('settingsMcp.testConnection')}</span>
+        {#if testing}<span class="loading loading-spinner loading-xs"></span>{:else if notice}<span class={notice.ok ? 'connector-value' : 'connector-error'}>{notice.text}</span>{/if}
+      </button>
+      {#if open.authType === 'api_key'}
+        <button class="connector-row" onclick={() => { keyFor = open.id; keyValue = ''; }}>
+          <KeyRound class="connector-row-icon" />
+          <span class="connector-row-title">{s === 'connected' ? $t('settingsMcp.replaceApiKey') : $t('settingsMcp.enterApiKey')}</span>
+          <ChevronRight class="connector-chevron" />
+        </button>
       {/if}
-      <button class="connector-danger" onclick={() => remove(open.id)}>{$t('connectors.remove')}</button>
+    </div>
+
+    <div class="connector-card">
+      {#if open.isEnabled}
+        <button class="connector-row connector-row-danger" onclick={() => disconnect(open.id)}>
+          <Unlink class="connector-row-icon" /><span class="connector-row-title">{$t('connectors.disconnect')}</span>
+        </button>
+      {/if}
+      <button class="connector-row connector-row-danger" onclick={() => remove(open.id)}>
+        <Trash2 class="connector-row-icon" /><span class="connector-row-title">{$t('connectors.remove')}</span>
+      </button>
     </div>
   {:else}
     <header class="connectors-head">
@@ -511,7 +575,7 @@
         {#each connectors as c (c.id)}
           {@const s = stateOf(c)}
           {@const line = statusLine(s)}
-          <div class="connector-row">
+          <div class="connector-row connector-list-row">
             <button class="connector-row-open" onclick={() => openConnector(c.id)}>
               {@render icon(c, 'md')}
               <span class="connector-row-name truncate">{c.name}</span>

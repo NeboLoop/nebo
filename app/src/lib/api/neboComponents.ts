@@ -561,7 +561,6 @@ export interface ConnectorTool {
 
 export interface ConnectorToolsResponse {
 	family: string
-	settable: boolean
 	tools: ConnectorTool[]
 }
 

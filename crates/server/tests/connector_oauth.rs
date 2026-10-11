@@ -95,7 +95,7 @@ async fn fake_server(open: bool) -> (String, Shared) {
                     "jsonrpc": "2.0",
                     "id": req["id"],
                     "result": { "tools": [
-                        { "name": "edge_nodes", "description": "Edge nodes: status, membership, and draining a node out of rotation.",
+                        { "name": "edge_nodes", "title": "Edge Nodes", "description": "Edge nodes: status, membership, and draining a node out of rotation.",
                           "inputSchema": { "type": "object" } },
                         { "name": "access_logs", "description": "Read the access logs.",
                           "inputSchema": { "type": "object" }, "annotations": { "readOnlyHint": true } },
@@ -186,14 +186,14 @@ async fn a_connector_added_by_url_signs_in_from_the_phone_through_the_public_cal
     // Its tools, with the rule keys their settings are stored under.
     let tools = json(server.get(&format!("/integrations/{id}/tools")).await).await;
     assert_eq!(tools["family"], "mcp__edge_ops__*");
-    assert_eq!(tools["settable"], true);
     let listed: Vec<(&str, &str)> = tools["tools"]
         .as_array()
         .unwrap()
         .iter()
         .map(|t| (t["title"].as_str().unwrap(), t["key"].as_str().unwrap()))
         .collect();
-    assert_eq!(listed, [("Access logs", "mcp__edge_ops__access_logs"), ("Edge nodes", "mcp__edge_ops__edge_nodes")]);
+    // The server's own title when it gives one, else the name in words.
+    assert_eq!(listed, [("Access logs", "mcp__edge_ops__access_logs"), ("Edge Nodes", "mcp__edge_ops__edge_nodes")]);
     assert_eq!(
         tools["tools"][1]["description"],
         "Edge nodes: status, membership, and draining a node out of rotation."
