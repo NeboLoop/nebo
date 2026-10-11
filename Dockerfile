@@ -135,6 +135,17 @@ COPY --from=build /usr/local/bin/nebo-cli /usr/local/bin/nebo-cli
 COPY assets/cloud-desktop/xfce4-panel.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
 COPY assets/cloud-desktop/xfce4-panel.xml /etc/nebo/desktop-skel/xfce4-panel.xml
 COPY assets/cloud-desktop/zshrc /etc/nebo/zshrc
+# The Nebo Chrome extension in the bot's Chromium, connected to this bot's
+# engine with no pairing step. The managed policy force-installs it from the
+# Web Store, and Chromium keeps it on the store's latest version by itself
+# (no image rebuild per extension release). The native-messaging host is the
+# one the desktop app registers per user (crates/browser/src/native_host.rs),
+# placed system-wide because a relocated root (NEBO_DATA_DIR, as here) never
+# writes one: the extension starts `nebo-cli` as its relay, which inherits
+# the engine's environment through the desktop session and so reads this
+# bot's relay secret and reaches its /ws/extension.
+COPY assets/cloud-desktop/chromium-policy.json /etc/chromium/policies/managed/nebo.json
+COPY assets/cloud-desktop/native-messaging-host.json /etc/chromium/native-messaging-hosts/dev.neboai.nebo.json
 # $HOME lives under /data. What the employee installs for itself lands in
 # /data/toolchains (the ENV below points npm -g, pip --user, cargo, rustup
 # and go there), which is part of the bot's state whether /data is its own
