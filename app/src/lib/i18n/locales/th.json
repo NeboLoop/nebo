@@ -1786,6 +1786,7 @@
 			"fromPlan": "จากแพ็กเกจของคุณ",
 			"fromCredit": "จากการเติมเงิน",
 			"loadMore": "โหลดเพิ่ม",
+			"breakdownLink": "ดูว่ายอดคงเหลือของคุณใช้ไปกับอะไร",
 			"phoneNumber": "หมายเลขโทรศัพท์ {number}",
 			"phoneNumberPlain": "หมายเลขโทรศัพท์",
 			"calls": "การโทร · {minutes} นาที",

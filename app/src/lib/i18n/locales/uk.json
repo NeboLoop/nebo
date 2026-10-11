@@ -1786,6 +1786,7 @@
 			"fromPlan": "З вашого плану",
 			"fromCredit": "З поповнень",
 			"loadMore": "Завантажити ще",
+			"breakdownLink": "Переглянути, на що пішов баланс",
 			"phoneNumber": "Номер телефону {number}",
 			"phoneNumberPlain": "Номер телефону",
 			"calls": "Дзвінки · {minutes} хв",

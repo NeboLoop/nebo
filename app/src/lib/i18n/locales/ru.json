@@ -1786,6 +1786,7 @@
 			"fromPlan": "Из вашего плана",
 			"fromCredit": "Из пополнений",
 			"loadMore": "Загрузить ещё",
+			"breakdownLink": "Посмотреть, на что ушёл баланс",
 			"phoneNumber": "Номер телефона {number}",
 			"phoneNumberPlain": "Номер телефона",
 			"calls": "Звонки · {minutes} мин",

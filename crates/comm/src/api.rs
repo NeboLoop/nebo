@@ -1447,6 +1447,12 @@ impl NeboAIApi {
 
     /// This month's plan use: the percentage, and one page of the "Charged to
     /// your plan" lines (phone, texts, cloud computers, memory) in dollars.
+    /// The whole spendable balance (the Janus ledger): balanceCents, owedCents, lots.
+    pub async fn billing_credits(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/billing/credits", None::<&()>)
+            .await
+    }
+
     pub async fn billing_plan_usage(
         &self,
         limit: u32,

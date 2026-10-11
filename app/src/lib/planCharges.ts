@@ -1,5 +1,5 @@
-// "Charged to your plan": what the plan's pool (or purchased credit) paid for
-// this month, in dollars. Only AI work is a percentage of the plan; it is
+// "Charged to your plan": what the balance (the one ledger) paid for this
+// month, in dollars. Only AI work is a percentage of the plan; it is
 // never a line here, and the plan's internal rate is never shown.
 import type { PlanChargeLine } from '$lib/api/neboComponents';
 
@@ -31,7 +31,8 @@ export function chargeText(line: PlanChargeLine): ChargeText {
 			return { key: k + 'textingRegistration' };
 		case 'texting_monthly':
 			return { key: k + 'textingMonthly' };
-		case 'cloud_computer':
+		case 'cloud_bot':
+		case 'cloud_computer': // ponytail: pre-one-billing name, drop once no hub sends it
 			return detail ? { key: k + 'cloudComputerNamed', values: { name: detail } } : { key: k + 'cloudComputer' };
 		case 'memory':
 			return { key: k + 'memory' };
@@ -40,11 +41,6 @@ export function chargeText(line: PlanChargeLine): ChargeText {
 		default:
 			return { key: '', raw: line.label || line.kind };
 	}
-}
-
-/** Where the money came from: the plan's pool, or credit the customer bought. */
-export function sourceKey(line: PlanChargeLine): string {
-	return line.source === 'credit' ? 'settingsUsage.charges.fromCredit' : 'settingsUsage.charges.fromPlan';
 }
 
 /** Cents as dollars, in the reader's locale. */

@@ -1786,6 +1786,7 @@
 			"fromPlan": "Do seu plano",
 			"fromCredit": "De recargas",
 			"loadMore": "Carregar mais",
+			"breakdownLink": "Veja para onde foi seu saldo",
 			"phoneNumber": "Número de telefone {number}",
 			"phoneNumberPlain": "Número de telefone",
 			"calls": "Ligações · {minutes} min",

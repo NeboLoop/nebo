@@ -1786,6 +1786,7 @@
 			"fromPlan": "Planınızdan",
 			"fromCredit": "Yüklemelerden",
 			"loadMore": "Daha fazla yükle",
+			"breakdownLink": "Bakiyenin nereye gittiğini gör",
 			"phoneNumber": "Telefon numarası {number}",
 			"phoneNumberPlain": "Telefon numarası",
 			"calls": "Aramalar · {minutes} dk",

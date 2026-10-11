@@ -60,8 +60,11 @@ impl Profile {
         if let Some(ref model) = ctx.model_preference {
             out.push_str(&format!("Model: {model}\n"));
         }
+        // The balance lives on /billing/credits (the one ledger), never on
+        // the subscription; a failed lookup reads as not reported.
+        let credits = api.billing_credits().await.ok();
         match api.billing_subscription().await {
-            Ok(v) => out.push_str(&summarize_subscription(&v)),
+            Ok(v) => out.push_str(&summarize_subscription(&v, credits.as_ref())),
             Err(e) => out.push_str(&format!("Plan: unknown (billing lookup failed: {e})")),
         }
         ToolResult::ok(out)
@@ -197,7 +200,7 @@ impl Profile {
 /// status, renewal, balance. Fields the service did not send are reported as
 /// not reported, never invented, and the raw JSON stays out of the model's
 /// context.
-fn summarize_subscription(v: &Value) -> String {
+fn summarize_subscription(v: &Value, credits: Option<&Value>) -> String {
     fn pick<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a Value> {
         keys.iter().find_map(|k| v.get(*k)).filter(|x| !x.is_null())
     }
@@ -221,23 +224,16 @@ fn summarize_subscription(v: &Value) -> String {
             "renewal_date",
         ],
     );
-    let balance = pick(
-        v,
-        &[
-            "balance",
-            "balanceCents",
-            "balance_cents",
-            "credits",
-            "creditBalance",
-            "credit_balance",
-        ],
-    );
+    let balance = credits
+        .and_then(|c| c.get("balanceCents"))
+        .and_then(Value::as_i64)
+        .map(|c| Value::String(format!("${:.2}", c as f64 / 100.0)));
     format!(
         "Plan: {}\nSubscription status: {}\nRenewal: {}\nBalance: {}",
         show(plan),
         show(status),
         show(renewal),
-        show(balance)
+        show(balance.as_ref())
     )
 }
 
@@ -377,12 +373,19 @@ mod tests {
     #[test]
     fn a_subscription_reports_missing_fields_as_not_reported() {
         let v = json!({"plan": "solo", "status": "active", "secret_field": "x"});
-        let out = summarize_subscription(&v);
+        let out = summarize_subscription(&v, None);
         assert_eq!(
             out,
             "Plan: solo\nSubscription status: active\nRenewal: not reported\nBalance: not reported"
         );
         assert!(!out.contains("secret_field"));
+    }
+
+    #[test]
+    fn the_balance_comes_from_the_ledger_in_dollars() {
+        let v = json!({"plan": "solo", "status": "active", "balanceCents": 1});
+        let out = summarize_subscription(&v, Some(&json!({"balanceCents": 1234, "owedCents": 0})));
+        assert!(out.ends_with("Balance: $12.34"), "{out}");
     }
 
     /// An employee renaming itself in chat changes its own name and nothing

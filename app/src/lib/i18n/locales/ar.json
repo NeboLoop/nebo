@@ -1786,6 +1786,7 @@
 			"fromPlan": "من خطتك",
 			"fromCredit": "من عمليات الشحن",
 			"loadMore": "تحميل المزيد",
+			"breakdownLink": "اعرض أين ذهب رصيدك",
 			"phoneNumber": "رقم الهاتف {number}",
 			"phoneNumberPlain": "رقم الهاتف",
 			"calls": "المكالمات · {minutes} دقيقة",

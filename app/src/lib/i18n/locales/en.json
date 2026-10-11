@@ -1786,6 +1786,7 @@
 			"fromPlan": "From your plan",
 			"fromCredit": "From top-ups",
 			"loadMore": "Load more",
+			"breakdownLink": "See where your balance went",
 			"phoneNumber": "Phone number {number}",
 			"phoneNumberPlain": "Phone number",
 			"calls": "Calls · {minutes} min",

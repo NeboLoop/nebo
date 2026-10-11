@@ -1786,6 +1786,7 @@
 			"fromPlan": "プランから",
 			"fromCredit": "チャージから",
 			"loadMore": "さらに読み込む",
+			"breakdownLink": "残高の使い道を見る",
 			"phoneNumber": "電話番号 {number}",
 			"phoneNumberPlain": "電話番号",
 			"calls": "通話 · {minutes} 分",

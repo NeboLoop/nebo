@@ -1786,6 +1786,7 @@
 			"fromPlan": "Van je abonnement",
 			"fromCredit": "Uit opwaarderingen",
 			"loadMore": "Meer laden",
+			"breakdownLink": "Bekijk waar je saldo naartoe is gegaan",
 			"phoneNumber": "Telefoonnummer {number}",
 			"phoneNumberPlain": "Telefoonnummer",
 			"calls": "Gesprekken · {minutes} min",

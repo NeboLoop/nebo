@@ -1786,6 +1786,7 @@
 			"fromPlan": "Aus deinem Plan",
 			"fromCredit": "Aus Aufladungen",
 			"loadMore": "Mehr laden",
+			"breakdownLink": "Sehen, wofür dein Guthaben verwendet wurde",
 			"phoneNumber": "Telefonnummer {number}",
 			"phoneNumberPlain": "Telefonnummer",
 			"calls": "Anrufe · {minutes} Min.",

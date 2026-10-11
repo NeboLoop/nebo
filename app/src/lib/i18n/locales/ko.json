@@ -1786,6 +1786,7 @@
 			"fromPlan": "플랜에서",
 			"fromCredit": "충전액에서",
 			"loadMore": "더 불러오기",
+			"breakdownLink": "잔액 사용 내역 보기",
 			"phoneNumber": "전화번호 {number}",
 			"phoneNumberPlain": "전화번호",
 			"calls": "통화 · {minutes}분",
