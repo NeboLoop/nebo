@@ -43,6 +43,41 @@ impl Check {
     }
 }
 
+/// The connector (MCP) tools a rule turns off for `agent_id`: a deny on the
+/// tool's own key or its server's (`mcp__crm__*`), from the company defaults
+/// or the employee's own rules, decided as a call on it would be. A turned-off
+/// tool is never listed, so the model never sees it; a call that names it
+/// anyway is still refused by the check. Other tools keep today's behaviour
+/// (a deny refuses the call, the tool stays listed). A store that can't be
+/// read turns nothing off: the check still decides every call.
+pub fn blocked_connector_tools<'a>(
+    store: &db::Store,
+    agent_id: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashSet<String> {
+    let Ok(rules) = RuleSet::load(store, agent_id) else {
+        return std::collections::HashSet::new();
+    };
+    names
+        .into_iter()
+        .filter(|n| n.starts_with("mcp__"))
+        .filter(|n| {
+            let t = Target {
+                tool: n.to_string(),
+                key: n.to_string(),
+                operation: None,
+                capability: None,
+                field: None,
+                subject: None,
+                read_only: false,
+                effects: CallEffects::unknown(),
+            };
+            matches!(rules.decide(&t), Some((_, Effect::Deny)))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// What one decision reads: the call's context and input, the grant it runs
 /// under, and the store for money spent today.
 pub struct CheckCx<'a> {

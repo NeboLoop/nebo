@@ -965,6 +965,13 @@ pub(crate) async fn prepare(
     withheld.extend(tools::app_data::withheld(&h.store, &req.seat.agent_id));
     // A2UI surfaces: only an app's own page draws them.
     withheld.extend(tools::a2ui_tool::withheld(&h.store, &req.seat.agent_id));
+    // A connector tool the owner set to Blocked is hidden from the model.
+    let registered: Vec<String> = h.tools.list().await.into_iter().map(|t| t.name).collect();
+    withheld.extend(super::permissions::blocked_connector_tools(
+        &h.store,
+        &req.seat.agent_id,
+        registered.iter().map(String::as_str),
+    ));
     let withheld_tools = Arc::new(withheld);
     let memory = super::memory_context::load_employee_memory(
         &h.store,

@@ -54,6 +54,44 @@ fn oauth_redirect_uri(headers: &HeaderMap, port: u16) -> String {
     format!("{base}/api/v1/integrations/oauth/callback")
 }
 
+/// Where a discovered (DCR) MCP sign-in returns, and the `state` it carries.
+#[derive(Debug, PartialEq, Eq)]
+struct OAuthReturn {
+    redirect_uri: String,
+    state: String,
+}
+
+/// Where a discovered MCP sign-in returns, by who started it.
+///
+/// - A caller through the tunnel (the phone, a cloud bot in a browser):
+///   the hub's public callback (`plugin_oauth::PUBLIC_REDIRECT_URI`). The hub
+///   reads only `bot_id` from the state, relays the query into this bot's
+///   tunnel (`/plugins/oauth/relay`), and the bot finishes the exchange
+///   in-process ([`complete_relayed`]). The tunnel path itself
+///   (`/t/{bot}/…/oauth/callback`) can't be the return: it needs the
+///   owner's NeboAI session, which the sign-in browser doesn't carry, so the
+///   hub sent that browser to the website and the code never reached the
+///   bot.
+/// - A caller on this machine: this Nebo's own loopback callback, where its
+///   browser is. It needs no tunnel, so a desktop signs in while the hub is
+///   unreachable.
+///
+/// Dynamic Client Registration runs at every flow start with the return
+/// chosen here, so a client registered for one return is never used with
+/// another.
+fn oauth_return(through_tunnel: bool, bot_id: Option<&str>, port: u16) -> OAuthReturn {
+    match bot_id.filter(|b| through_tunnel && !b.is_empty()) {
+        Some(bot_id) => OAuthReturn {
+            redirect_uri: crate::plugin_oauth::PUBLIC_REDIRECT_URI.to_string(),
+            state: crate::plugin_oauth::in_process_state(bot_id),
+        },
+        None => OAuthReturn {
+            redirect_uri: format!("http://localhost:{port}/api/v1/integrations/oauth/callback"),
+            state: generate_state(),
+        },
+    }
+}
+
 /// True if an integration's `metadata` carries a stdio launch spec (a non-empty
 /// `command`). The one predicate for "is this a stdio server" — used by every
 /// connect path so stdio integrations (which have no `server_url`) aren't skipped.
@@ -597,7 +635,14 @@ pub async fn create_integration(
             "stdio"
         }
     });
-    let auth_type = body["authType"].as_str().unwrap_or("none");
+    let auth_type = match body["authType"].as_str().unwrap_or("none") {
+        // "Paste a URL, tap Continue": the server says how it signs in.
+        "auto" => match server_url {
+            Some(url) if server_type != "stdio" => detect_auth_type(&state, url).await,
+            _ => "none",
+        },
+        other => other,
+    };
     // Pre-registered OAuth client (BYO credentials — servers with no RFC 8414
     // metadata on the MCP origin and no Dynamic Client Registration, e.g.
     // Google's Gmail MCP). Non-secret settings land in metadata JSON; the
@@ -663,6 +708,27 @@ pub async fn create_integration(
     store_api_key(&state, &id, &body).map_err(to_error_response)?;
 
     Ok(Json(serde_json::json!({"integration": integration})))
+}
+
+/// How a remote MCP server signs in, read from the server itself: it lists
+/// its tools with no credentials (`none`), or it publishes OAuth metadata
+/// (`oauth`: discovery and Dynamic Client Registration do the rest), or it
+/// needs a key the owner pastes (`api_key`). The ONE detection behind
+/// "Add custom connector" on every client.
+async fn detect_auth_type(state: &AppState, server_url: &str) -> &'static str {
+    let probe = format!("probe-{}", uuid::Uuid::new_v4());
+    let open = state.bridge.client().list_tools(&probe, server_url, None).await;
+    state.bridge.client().close_session(&probe).await;
+    if open.is_ok() {
+        return "none";
+    }
+    match state.bridge.client().discover_oauth(server_url).await {
+        Ok(_) => "oauth",
+        Err(e) => {
+            info!(server_url = %server_url, error = %e, "no OAuth sign-in offered; asking for a key");
+            "api_key"
+        }
+    }
 }
 
 /// Encrypt and store an `apiKey` from a request body as the integration's
@@ -760,6 +826,69 @@ pub async fn delete_integration(
         }
     }
     Ok(Json(serde_json::json!({"success": true})))
+}
+
+/// One of a connector's tools, as its detail screen lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorTool {
+    /// The server's own name for the tool.
+    pub name: String,
+    /// The rule key its setting is stored under (`mcp__<server>__<tool>`):
+    /// its Permissions switch is `tool:<key>`.
+    pub key: String,
+    /// The tool's name in plain words, as the Permissions page shows it.
+    pub title: String,
+    /// What the server says the tool does; empty while it isn't connected.
+    pub description: String,
+}
+
+/// A connector's tools and where their settings live.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorToolsResponse {
+    /// The rule key of the connector's default ("All tools"): `mcp__<server>__*`.
+    pub family: String,
+    /// Whether the tools take Blocked / Needs approval / Always allow here.
+    /// A platform server (Company Memory) is governed on its own page.
+    pub settable: bool,
+    pub tools: Vec<ConnectorTool>,
+}
+
+/// GET /api/v1/integrations/:id/tools — the tools the server offered at its
+/// last sync, with the rule keys their settings are stored under (the same
+/// keys the company Permissions page sets) and, while connected, what each
+/// one does.
+pub async fn list_integration_tools(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<ConnectorToolsResponse> {
+    let integration = state
+        .store
+        .get_mcp_integration(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let prefix = mcp::bridge::tool_name_prefix(&integration.name);
+    let family = format!("mcp__{}__", mcp::bridge::server_slug(&prefix));
+    let mut tools = Vec::new();
+    for name in state.store.get_mcp_known_tools(&id).map_err(to_error_response)? {
+        let key = mcp::bridge::make_tool_name(&prefix, &name);
+        let tool = key.strip_prefix(&family).unwrap_or(&key);
+        let title = super::permissions::sentence_case(&super::permissions::words(tool));
+        let description = state
+            .tools
+            .definition(&key)
+            .await
+            .map(|d| d.description)
+            .unwrap_or_default();
+        tools.push(ConnectorTool { name, key, title, description });
+    }
+    tools.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(Json(ConnectorToolsResponse {
+        family: format!("{family}*"),
+        settable: integration.auth_type != "neboai",
+        tools,
+    }))
 }
 
 /// POST /api/v1/integrations/:id/test
@@ -1151,10 +1280,24 @@ async fn start_oauth_flow(
         .server_url
         .as_deref()
         .ok_or_else(|| types::NeboError::Validation("No server URL".into()))?;
-    let redirect_uri = oauth_redirect_uri(headers, state.config.port);
+    // A pre-registered client returns where its owner registered it (the
+    // address Settings showed him); a discovered one returns to the public
+    // relay, and Dynamic Client Registration below registers exactly that.
+    let pre = pre_registered_oauth(state, integration.metadata.as_deref());
+    let OAuthReturn { redirect_uri, state: oauth_state } = match pre {
+        Some(_) => OAuthReturn {
+            redirect_uri: oauth_redirect_uri(headers, state.config.port),
+            state: generate_state(),
+        },
+        None => oauth_return(
+            crate::middleware::came_through_tunnel(headers),
+            config::read_bot_id().as_deref(),
+            state.config.port,
+        ),
+    };
 
     let (authorization_endpoint, token_endpoint, client_id, client_secret, scope, pre_registered) =
-        match pre_registered_oauth(state, integration.metadata.as_deref()) {
+        match pre {
             Some(p) => {
                 info!(integration = %integration.id, "MCP OAuth: using pre-registered client");
                 (
@@ -1214,7 +1357,6 @@ async fn start_oauth_flow(
 
     let code_verifier = generate_code_verifier();
     let code_challenge = compute_code_challenge(&code_verifier);
-    let oauth_state = generate_state();
 
     let encrypted_verifier = state
         .bridge
@@ -1345,18 +1487,50 @@ pub async fn oauth_callback(
     Query(params): Query<OAuthCallbackQuery>,
     headers: HeaderMap,
 ) -> axum::response::Html<String> {
+    let (success, message) = finish_oauth(&state, &params, &headers).await;
+    oauth_result_page(success, &message)
+}
+
+/// A sign-in the hub relayed into this bot (`GET /plugins/oauth/relay`), when
+/// its `state` is an MCP server's flow: finish it here and answer the hub's
+/// status (2xx: the hub's page says the sign-in completed). `None` when the
+/// state is no MCP flow of this bot's, so the plugin relay takes it.
+pub(crate) async fn complete_relayed(state: &AppState, raw_query: &str) -> Option<(u16, String)> {
+    let param = |key: &str| {
+        url::form_urlencoded::parse(raw_query.as_bytes())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    let params = OAuthCallbackQuery {
+        code: param("code"),
+        state: param("state"),
+        error: param("error"),
+        error_description: param("error_description"),
+    };
+    let flow = params.state.as_deref().filter(|s| !s.is_empty())?;
+    state.store.get_mcp_integration_by_oauth_state(flow).ok().flatten()?;
+    // A relayed flow always stored its redirect_uri: no Host to derive from.
+    let (success, message) = finish_oauth(state, &params, &HeaderMap::new()).await;
+    Some((if success { 200 } else { 400 }, message))
+}
+
+/// Finish an MCP sign-in from its callback query: exchange the code, store
+/// the tokens, connect. The ONE completion for both returns (this Nebo's own
+/// callback, and the hub relay). Returns whether it succeeded and what to
+/// tell the owner.
+async fn finish_oauth(state: &AppState, params: &OAuthCallbackQuery, headers: &HeaderMap) -> (bool, String) {
     // Handle error from OAuth server
     if let Some(ref err) = params.error {
         let desc = params.error_description.as_deref().unwrap_or(err);
         warn!("MCP OAuth error: {desc}");
-        return oauth_result_page(false, &format!("OAuth error: {desc}"));
+        return (false, format!("OAuth error: {desc}"));
     }
 
     let code = params.code.as_deref().unwrap_or("");
     let oauth_state = params.state.as_deref().unwrap_or("");
 
     if code.is_empty() || oauth_state.is_empty() {
-        return oauth_result_page(false, "Missing authorization code or state parameter");
+        return (false, "Missing authorization code or state parameter".to_string());
     }
 
     // 1. Look up integration by state
@@ -1368,7 +1542,7 @@ pub async fn oauth_callback(
         Some(i) => i,
         None => {
             warn!("MCP OAuth callback: no integration found for state");
-            return oauth_result_page(false, "Invalid OAuth state — integration not found");
+            return (false, "Invalid OAuth state — integration not found".to_string());
         }
     };
 
@@ -1376,7 +1550,7 @@ pub async fn oauth_callback(
     let client_id = integration.oauth_client_id.as_deref().unwrap_or("");
 
     if token_endpoint.is_empty() || client_id.is_empty() {
-        return oauth_result_page(false, "Missing OAuth configuration");
+        return (false, "Missing OAuth configuration".to_string());
     }
 
     // 2. Decrypt PKCE verifier
@@ -1385,7 +1559,7 @@ pub async fn oauth_callback(
         Ok(v) => v,
         Err(e) => {
             warn!("MCP OAuth: failed to decrypt verifier: {e}");
-            return oauth_result_page(false, "Failed to decrypt PKCE verifier");
+            return (false, "Failed to decrypt PKCE verifier".to_string());
         }
     };
 
@@ -1405,7 +1579,7 @@ pub async fn oauth_callback(
         .oauth_redirect_uri
         .clone()
         .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| oauth_redirect_uri(&headers, state.config.port));
+        .unwrap_or_else(|| oauth_redirect_uri(headers, state.config.port));
 
     // 3. Exchange code for tokens
     let tokens = match exchange_mcp_code(
@@ -1421,7 +1595,7 @@ pub async fn oauth_callback(
         Ok(t) => t,
         Err(e) => {
             warn!("MCP OAuth token exchange failed: {e}");
-            return oauth_result_page(false, &format!("Token exchange failed: {e}"));
+            return (false, format!("Token exchange failed: {e}"));
         }
     };
 
@@ -1430,7 +1604,7 @@ pub async fn oauth_callback(
     // 4. Encrypt and store tokens
     let encrypted_access = match state.bridge.client().encrypt_token(&tokens.access_token) {
         Ok(v) => v,
-        Err(e) => return oauth_result_page(false, &format!("Encryption failed: {e}")),
+        Err(e) => return (false, format!("Encryption failed: {e}")),
     };
     let encrypted_refresh = tokens
         .refresh_token
@@ -1481,10 +1655,7 @@ pub async fn oauth_callback(
                     None,
                 );
                 info!(integration = %integration.id, tools = tools.len(), "MCP connected after OAuth");
-                return oauth_result_page(
-                    true,
-                    &format!("Connected — {} tools registered", tools.len()),
-                );
+                return (true, format!("Connected — {} tools registered", tools.len()));
             }
             Err(e) => {
                 warn!("MCP connect after OAuth failed: {e}");
@@ -1492,15 +1663,12 @@ pub async fn oauth_callback(
                 let _ = state
                     .store
                     .set_mcp_connection_status(&integration.id, "disconnected", 0, None);
-                return oauth_result_page(
-                    true,
-                    "Authorized — click Connect in Nebo to finish setup",
-                );
+                return (true, "Authorized — click Connect in Nebo to finish setup".to_string());
             }
         }
     }
 
-    oauth_result_page(true, "Authorized — click Connect in Nebo to finish setup")
+    (true, "Authorized — click Connect in Nebo to finish setup".to_string())
 }
 
 /// Render the post-OAuth page for an MCP integration connect attempt.
@@ -1596,6 +1764,25 @@ mod tests {
         assert!(!is_unlaunchable_stdio("http", None, Some(legacy)));
         // A stdio row healed to have a URL is handled by the http heal instead.
         assert!(!is_unlaunchable_stdio("stdio", Some("https://x"), Some(legacy)));
+    }
+
+    #[test]
+    fn a_sign_in_from_the_tunnel_returns_through_the_public_relay() {
+        let bot = "0b7f2c1a-1111-2222-3333-444455556666";
+        let r = super::oauth_return(true, Some(bot), 27895);
+        assert_eq!(r.redirect_uri, "https://neboai.com/oauth/plugin/callback");
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&r.state).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(v["bot_id"], bot, "the hub routes by the state's bot id");
+    }
+
+    #[test]
+    fn a_sign_in_from_this_machine_returns_to_its_own_callback() {
+        for (tunnel, bot) in [(false, Some("0b7f2c1a-1111-2222-3333-444455556666")), (true, None), (true, Some(""))] {
+            let r = super::oauth_return(tunnel, bot, 27895);
+            assert_eq!(r.redirect_uri, "http://localhost:27895/api/v1/integrations/oauth/callback");
+        }
     }
 
     #[test]

@@ -947,11 +947,22 @@ fn plain_login_error(stderr: &str, stdout: &str) -> String {
 /// redirect into this bot's tunnel; the single-use nonce inside `state` is the
 /// auth (the route is public — Google's redirect carries no session), and the
 /// loopback port is resolved from the pending registry, never from the request.
+///
+/// An MCP server's sign-in returns through the same public callback: when the
+/// state is one of this bot's MCP flows, the bot finishes it in-process
+/// (`integrations::complete_relayed`) instead of relaying to a plugin.
 pub async fn oauth_relay(
+    State(state): State<AppState>,
     axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
 ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
     let raw_query = raw_query.unwrap_or_default();
-    let (status, message) = crate::plugin_oauth::relay_request(&raw_query).await;
+    let (status, message) = match super::integrations::complete_relayed(&state, &raw_query).await {
+        Some((status, message)) => (status, message),
+        None => {
+            let (status, message) = crate::plugin_oauth::relay_request(&raw_query).await;
+            (status, message.to_string())
+        }
+    };
     (
         axum::http::StatusCode::from_u16(status)
             .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),

@@ -187,6 +187,22 @@
   // Follow the conversation: opening another thread re-reads its model.
   $effect(() => { void threadId; void agentId; loadModel(); });
 
+  // The + menu's Permission item: the employee's mode, opening its own
+  // Permissions page.
+  let permissionMode = $state('');
+  const permissionModeKey: Record<string, string> = {
+    automatic: 'permissions.modeAutomatic',
+    ask: 'permissions.modeAsk',
+    plan: 'permissions.modePlan',
+    full_access: 'permissions.modeFullAccess',
+  };
+  $effect(() => {
+    const id = agentId;
+    permissionMode = '';
+    if (!id) return;
+    api.getAgentPermissions(id).then((p) => { if (id === agentId) permissionMode = p.mode; }).catch(() => {});
+  });
+
   function saveDraft() {
     if (!editor || !draftKey) return;
     if (editor.isEmpty) {
@@ -850,6 +866,19 @@
                 <button class="text-sm" onclick={() => { onteach?.(); (document.activeElement as HTMLElement | null)?.blur(); }}>
                   {$t('chatInput.teachTask')}
                 </button>
+              </li>
+              {#if agentId && permissionModeKey[permissionMode]}
+                <li>
+                  <a class="composer-menu-value" href="/{agentId}/settings/permissions" onclick={() => (document.activeElement as HTMLElement | null)?.blur()}>
+                    <span>{$t('chatInput.permission')}</span>
+                    <span class="composer-menu-value-text">{$t(permissionModeKey[permissionMode])}</span>
+                  </a>
+                </li>
+              {/if}
+              <li>
+                <a class="text-sm" href="/settings/mcp" onclick={() => (document.activeElement as HTMLElement | null)?.blur()}>
+                  {$t('connectors.title')}
+                </a>
               </li>
             </ul>
           </div>
