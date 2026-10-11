@@ -664,11 +664,15 @@ fn lane_of(seat: &super::SeatRequest) -> Option<types::packs::Lane> {
 /// (`pack/<id>[/<level>]`, chosen or the bot's default) runs on the pack's
 /// model for its level — the level the turn's lane is pinned to when the pack
 /// pins one, else the level the reference names (`types::packs::Pack::
-/// model_for_ref`) — at that level's provider effort. When that model isn't
-/// one this bot can send to, the turn runs on Nebo AI at the same level and
-/// says so, or — the pack set not to fall back — is refused with that line.
-/// Never a silent swap. Anything else resolves as it always has
-/// (`ModelSelector::resolve`).
+/// model_for_ref`) — at that level's provider effort. A level the pack leaves
+/// empty runs on Nebo AI's model for that same level, at Nebo AI's effort for
+/// it: that is the pack as the owner set it, so it carries no line and holds
+/// whether or not the pack falls back (owner, 2026-10-11). An effort the pack
+/// stored for an empty level is not used: it was set for no model of the
+/// owner's. When the level's model isn't one this bot can send to, the turn
+/// runs on Nebo AI at the same level and says so, or — the pack set not to
+/// fall back — is refused with that line. Never a silent swap. Anything else
+/// resolves as it always has (`ModelSelector::resolve`).
 fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Result<TurnModel, String> {
     use types::packs::{DEFAULT_EFFORT, nebo_ai, parse_ref};
     let pick = pack_pick(h, chosen, lane);
@@ -688,6 +692,12 @@ fn turn_model(h: &Harness, chosen: &str, lane: Option<types::packs::Lane>) -> Re
     let want = pack.model_for_ref(level);
     // Auto (Nebo AI's, no level) carries no provider effort of ours.
     let at = level.or(pack.levels.auto.is_none().then_some(DEFAULT_EFFORT));
+    // An empty level is Nebo AI's own for that level, at its effort.
+    if want.is_none() && !pack.built_in {
+        let at = at.unwrap_or(DEFAULT_EFFORT);
+        let model = nebo.model_for(at).unwrap_or(crate::selector::DEFAULT_CHAT_MODEL);
+        return Ok(TurnModel { model: h.selector.resolve(model), notice: None, effort: nebo.effort_for(at) });
+    }
     let effort = at.and_then(|e| pack.effort_for(e));
     if let Some(model) = want.filter(|m| h.selector.sendable(m)) {
         return Ok(TurnModel { model: model.to_string(), notice: None, effort });
@@ -3379,9 +3389,10 @@ mod tests {
         };
 
         assert_eq!(tm("pack/mine"), ("anthropic/claude-x".to_string(), None));
-        assert_eq!(tm("pack/mine/max").0, "anthropic/claude-x", "nearest level");
-        let (model, notice) = tm("pack/gone-key/high");
-        assert_eq!(model, "janus/nebo-1-pro", "Nebo AI at the same level");
+        assert_eq!(tm("pack/mine/max"), ("janus/nebo-1-pro".to_string(), None), "an empty level: Nebo AI's Max, no line");
+        assert_eq!(tm("pack/mine/instant"), ("janus/nebo-1-flash".to_string(), None), "an empty level: Nebo AI's Instant");
+        let (model, notice) = tm("pack/gone-key/medium");
+        assert_eq!(model, "janus/nebo-1-medium", "Nebo AI at the same level");
         assert!(notice.unwrap().contains("couldn't use openai/gpt-x: it isn't connected, so this reply used Nebo AI"));
         let (model, notice) = tm("pack/gone-key");
         assert_eq!(model, "janus/nebo-1-medium", "no level: the default level");
@@ -3427,6 +3438,12 @@ mod tests {
         assert_eq!((beat.model.as_str(), beat.effort), ("janus/nebo-1-flash", None), "the pinned lane wins");
         let sched = turn_model(&h, "pack/l", Some(Lane::Scheduled)).unwrap();
         assert_eq!(sched.model, "anthropic/claude-x", "an unpinned lane keeps the reference's level");
+        let empty = turn_model(&h, "pack/l/max", None).unwrap();
+        assert_eq!(
+            (empty.model.as_str(), empty.effort, empty.notice),
+            ("janus/nebo-1-pro", Some(ProviderEffort::High), None),
+            "an empty level runs on Nebo AI's Max at Nebo AI's effort for it"
+        );
         assert_eq!(turn_model(&h, "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
     }
 
