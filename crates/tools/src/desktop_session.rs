@@ -1010,6 +1010,22 @@ fn merge_elements(steps: &mut Vec<(Duration, String)>, elements: &[serde_json::V
                     !(s.starts_with("Typed: ") && ms >= from && ms <= to)
                 });
             }
+            "press" => {
+                // The same key, pressed at the same moment, is one step.
+                let key = el["key"].as_str().unwrap_or("");
+                let token = match key {
+                    "Escape" => "Esc",
+                    "ArrowUp" => "Up",
+                    "ArrowDown" => "Down",
+                    "ArrowLeft" => "Left",
+                    "ArrowRight" => "Right",
+                    other => other,
+                };
+                let pressed = format!("Pressed [{token}]");
+                if let Some(i) = steps.iter().position(|(at, s)| *s == pressed && near(*at, t)) {
+                    steps.remove(i);
+                }
+            }
             "click" | "right_click" | "double_click" | "check" | "submit" | "select" => {
                 let clicks = if action == "double_click" { 2 } else { 1 };
                 let xy = el["x"].as_f64().zip(el["y"].as_f64()).map(|(x, y)| (x as i64, y as i64));
@@ -1597,5 +1613,19 @@ EVENT type 2 (KeyPress)\n\
         }
         assert_eq!(TEACH_VIDEO_KEEP, Duration::from_secs(7 * 24 * 3600));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A key the browser saw pressed replaces the same keystroke from the
+    /// input log; one pressed elsewhere stays.
+    #[test]
+    fn a_pressed_key_the_browser_saw_is_one_step() {
+        let key = |ms: u32, code: u32| {
+            format!("TIME {ms}\nEVENT type 2 (KeyPress)\n    detail: {code}\n    modifiers: locked 0 latched 0 base 0 effective: 0\n")
+        };
+        let log = format!("{}{}", key(1000, 23), key(5000, 9));
+        let elements = vec![serde_json::json!({"t_ms": 1100, "action": "press", "key": "Tab"})];
+        let t = summarize_x11_events(&log, &elements, &[]);
+        assert!(t.contains("00:01  Press Tab") && !t.contains("Pressed [Tab]"), "{t}");
+        assert!(t.contains("00:05  Pressed [Esc]"), "{t}");
     }
 }
