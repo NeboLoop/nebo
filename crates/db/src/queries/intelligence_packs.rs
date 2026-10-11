@@ -117,7 +117,8 @@ mod tests {
         assert!(listed[0].built_in);
         assert_eq!(listed[1], mine);
         let got = store.get_intelligence_pack("p1").unwrap().unwrap();
-        assert_eq!(got.model_for(Effort::Max), Some("anthropic/claude-sonnet"));
+        assert_eq!(got.model_for(Effort::Medium), Some("anthropic/claude-sonnet"));
+        assert_eq!(got.model_for(Effort::Max), None, "an empty level is Nebo AI's");
         assert!(store.delete_intelligence_pack("p1").unwrap());
         assert!(store.get_intelligence_pack("p1").unwrap().is_none());
     }

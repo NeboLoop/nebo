@@ -51,8 +51,9 @@ impl Effort {
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
 
 /// What each level and capability of a pack runs on: `provider/model`
-/// strings. An empty level runs on the nearest filled level above it, then
-/// below ([`Pack::model_for`]).
+/// strings. An empty level of an owner's pack runs on Nebo AI's model for
+/// that same level (owner, 2026-10-11: "if it's not set it defaults to the
+/// Nebo one for that level"); [`Pack::model_for`] says which levels are set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackLevels {
@@ -237,13 +238,11 @@ pub fn nebo_ai() -> Pack {
 }
 
 impl Pack {
-    /// The model `effort` runs on: its own level, else the nearest filled
-    /// level above it, else the nearest below. None for a pack with no level
-    /// filled.
+    /// The model this pack sets for `effort`: its own level only. None for
+    /// an empty level, which runs on Nebo AI's model for the same level
+    /// (the turn resolves that, `agent::harness::turn`).
     pub fn model_for(&self, effort: Effort) -> Option<&str> {
-        let above = Effort::ALL.into_iter().filter(|e| *e >= effort);
-        let below = Effort::ALL.into_iter().rev().filter(|e| *e < effort);
-        above.chain(below).find_map(|e| self.levels.level(e))
+        self.levels.level(effort)
     }
 
     /// The provider effort `effort` runs at, when the pack sets one.
@@ -324,22 +323,17 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_level_runs_on_the_nearest_above_then_below() {
+    fn an_empty_level_is_left_to_nebo_ai_never_borrowed_from_another_level() {
         let only_medium = byo(PackLevels { medium: Some("anthropic/sonnet".into()), ..Default::default() });
-        for e in Effort::ALL {
-            assert_eq!(only_medium.model_for(e), Some("anthropic/sonnet"), "{e:?}");
+        assert_eq!(only_medium.model_for(Effort::Medium), Some("anthropic/sonnet"));
+        for e in [Effort::Instant, Effort::Low, Effort::High, Effort::Max] {
+            assert_eq!(only_medium.model_for(e), None, "{e:?} is Nebo AI's, not Medium's");
         }
-        let ends = byo(PackLevels {
-            low: Some("a/low".into()),
-            high: Some("a/high".into()),
-            ..Default::default()
-        });
-        assert_eq!(ends.model_for(Effort::Instant), Some("a/low"), "above first");
-        assert_eq!(ends.model_for(Effort::Medium), Some("a/high"), "above first");
-        assert_eq!(ends.model_for(Effort::Max), Some("a/high"), "nothing above: below");
         assert_eq!(byo(PackLevels::default()).model_for(Effort::Medium), None);
         let blank = byo(PackLevels { medium: Some("  ".into()), high: Some("a/h".into()), ..Default::default() });
-        assert_eq!(blank.model_for(Effort::Medium), Some("a/h"), "a blank level is empty");
+        assert_eq!(blank.model_for(Effort::Medium), None, "a blank level is empty");
+        let only_high = byo(PackLevels { high: Some("a/h".into()), ..Default::default() });
+        assert_eq!(only_high.model_for_ref(None), None, "no Auto and no Medium: Nebo AI's Medium");
     }
 
     #[test]
