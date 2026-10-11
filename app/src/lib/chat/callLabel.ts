@@ -1,16 +1,13 @@
-// How a tool call reads in the thread: one line of a kind worded in the
+// How a tool call reads on every screen: one line of a kind worded in the
 // owner's language (`chat.call.*`) and the call's own value — a path, a
 // command, a query, a URL — shown verbatim; and under it, one line of what
 // came back. The server names each call `{kind, params}`
-// (`tools::humanize::call`); a call without one (from a server before it)
-// reads by the line it stored, as it always did.
+// (`tools::humanize::call`): the thread, the working line, a helper's line
+// and a team's row all read it here.
 
-import { stepMeta } from './stepMeta';
+import type { CallName } from '$lib/api/neboComponents';
 
-export interface CallName {
-  kind: string;
-  params?: Record<string, string>;
-}
+export type { CallName };
 
 /** Whether a value off the wire is a call's structured name. */
 export function isCallName(v: unknown): v is CallName {
@@ -22,10 +19,7 @@ export function isCallName(v: unknown): v is CallName {
 export interface CallTool {
   name: string;
   status: string;
-  request?: Record<string, unknown>;
   response?: string;
-  label?: string;
-  outcome?: string;
   statusText?: string;
   call?: CallName;
   payload?: { kind: string; [k: string]: unknown };
@@ -48,7 +42,9 @@ export interface CallLine {
 /** Kinds worded as `chat.call.<kind>` with the value in `path`. */
 const FILE_KINDS = new Set(['read', 'write', 'edit', 'plan', 'convert']);
 /** Kinds worded as `chat.call.<kind>`. */
-const WORDED = new Set([...FILE_KINDS, 'share', 'command', 'search', 'fetch', 'request', 'browser', 'research', 'helper', 'task']);
+const WORDED = new Set([...FILE_KINDS, 'share', 'command', 'search', 'fetch', 'request', 'browser', 'computer', 'research', 'helper', 'task']);
+/** What of the owner's a command touches, worded as `chat.call.reach.<reach>`. */
+const REACHES = new Set(['screen', 'microphone', 'camera', 'input', 'app']);
 /** STRAP verbs worded as `chat.callVerb.<verb>`. */
 const VERBS = new Set(['create', 'read', 'list', 'search', 'update', 'delete', 'send', 'run', 'write', 'download', 'upload', 'open', 'stop', 'check', 'notify']);
 
@@ -80,6 +76,12 @@ export function callLine(tool: CallTool, tr: Tr): CallLine {
         return { label, subject: tr('chat.call.fileCount', { values: { count: Number(p.count ?? 0) } }), title: '' };
       case 'command': {
         const command = oneLine(p.command ?? '');
+        // A command that watches the owner or drives his apps says so,
+        // whatever the model wrote for it.
+        if (p.reach && REACHES.has(p.reach)) {
+          const reach = tr(p.reach === 'app' && !p.app ? 'chat.call.reach.apps' : `chat.call.reach.${p.reach}`, { values: { app: p.app ?? '' } });
+          return { label: reach, subject: command, title: joined(reach, p.command) };
+        }
         return { label, subject: command, title: joined(p.desc, p.command) };
       }
       case 'search':
@@ -95,31 +97,42 @@ export function callLine(tool: CallTool, tr: Tr): CallLine {
         const subject = p.url ?? (p.step ?? '').replace(/_/g, ' ');
         return { label, subject, title: subject, href: http(p.url) };
       }
+      case 'computer': {
+        const subject = joined((p.step ?? '').replace(/_/g, ' '), p.target, p.app);
+        return { label, subject, title: subject };
+      }
       case 'helper':
         return { label, subject: p.desc ?? '', title: p.desc ?? '' };
       case 'task':
         return { label, subject: p.subject ?? '', title: p.subject ?? '' };
     }
   }
-  if (call && kind === 'mcp') {
-    const subject = joined(p.tool, p.target);
-    return { label: p.service ?? tool.name, subject, title: joined(p.service, subject) };
+  // The line the model wrote for the call (`desc`, a plugin's or an
+  // operation's own) says what it does; its values follow in the tooltip.
+  if (kind === 'mcp') {
+    const subject = p.desc ?? joined(p.tool, p.target);
+    return { label: p.service ?? tool.name, subject, title: joined(p.service, p.tool, p.target, p.desc) };
   }
-  if (call && kind === 'action') {
+  if (kind === 'action') {
     const label = p.verb && VERBS.has(p.verb) ? tr(`chat.callVerb.${p.verb}`) : (p.action ?? '');
-    const subject = joined(p.noun, p.target);
-    return { label: label || tool.name, subject, title: subject };
+    const subject = p.desc ?? joined(p.noun, p.target);
+    return { label: label || tool.name, subject, title: joined(p.noun, p.target, p.desc) };
   }
-  if (call && kind === 'tool') {
-    return { label: p.name ?? tool.name, subject: p.target ?? '', title: p.target ?? '' };
-  }
-  // A call stored without a structured name: the line the server stored for
-  // it, and what it searched for or opened.
-  const label = (tool.status === 'running' ? tool.label : tool.outcome ?? tool.label) || tool.name;
-  const command = typeof tool.request?.command === 'string' ? oneLine(tool.request.command) : '';
-  const meta = stepMeta(tool.request);
-  const subject = meta?.text ?? command;
-  return { label: oneLine(label), subject, title: subject, href: meta?.href };
+  // `tool`, and a call no kind above names: the tool by its name.
+  const subject = p.desc ?? p.target ?? '';
+  return { label: p.name ?? tool.name.replace(/_/g, ' '), subject, title: joined(p.target, p.desc) };
+}
+
+/** A call in one line of words: its kind and its value ("Run ls -la"). */
+export function callText(tool: CallTool, tr: Tr): string {
+  const line = callLine(tool, tr);
+  return spaced(line.label, line.subject);
+}
+
+/** A call's structured name in one line of words, wherever no row holds
+ *  it: a working line, a helper's line, a team's row. */
+export function callWords(call: CallName, tr: Tr): string {
+  return callText({ name: call.kind, status: 'running', call }, tr);
 }
 
 /** The first line of a text that says something, at most `max` characters. */
@@ -150,14 +163,8 @@ export function resultLine(tool: CallTool, tr: Tr): string {
  *  the cut never hides it. */
 export function groupSummary(tools: CallTool[], tr: Tr): string {
   const running = tools.filter((t) => t.status === 'running');
-  if (running.length) {
-    const line = callLine(running[running.length - 1], tr);
-    return `${spaced(line.label, line.subject)}…`;
-  }
-  if (tools.length === 1) {
-    const line = callLine(tools[0], tr);
-    return spaced(line.label, line.subject);
-  }
+  if (running.length) return `${callText(running[running.length - 1], tr)}…`;
+  if (tools.length === 1) return callText(tools[0], tr);
   const counts = new Map<string, number>();
   for (const t of tools) {
     const label = callLine(t, tr).label;

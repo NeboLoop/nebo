@@ -38,7 +38,7 @@ impl DynTool for Probe {
     fn capability(&self, _input: &Value) -> Option<&'static str> {
         self.capability
     }
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match input["to"].as_str() {
             Some(to) => format!("texting {to}"),
             None => format!("running {}", self.name),

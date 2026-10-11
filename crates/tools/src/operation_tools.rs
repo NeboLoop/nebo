@@ -358,14 +358,8 @@ impl DynTool for OperationTool {
         self.provider_for(input).map(|_| ())
     }
 
-    fn activity(&self, input: &Value) -> String {
-        let (gerund, _) = self.labels();
-        display(input).unwrap_or(gerund)
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        let (_, past) = self.labels();
-        display(input).unwrap_or(past)
+    fn describe(&self, input: &Value) -> String {
+        display(input).unwrap_or_else(|| self.sentence())
     }
 
     fn execute_dyn<'a>(
@@ -393,8 +387,8 @@ impl OperationTool {
         &self.interface
     }
 
-    /// "creating bill in QuickBooks" / "Created bill in QuickBooks".
-    fn labels(&self) -> (String, String) {
+    /// "creating bill in QuickBooks".
+    fn sentence(&self) -> String {
         let mut parts = self.operation.split('.').skip(1).collect::<Vec<_>>();
         let action = parts.pop().unwrap_or_default();
         let noun = parts.join(" ");
@@ -403,11 +397,8 @@ impl OperationTool {
             _ => String::new(),
         };
         match crate::humanize::strap_verb(action) {
-            Some((gerund, past)) => (format!("{gerund} {noun}{service}"), format!("{past} {noun}{service}")),
-            None => (
-                format!("running {action} on {noun}{service}"),
-                format!("Ran {action} on {noun}{service}"),
-            ),
+            Some((_, gerund)) => format!("{gerund} {noun}{service}"),
+            None => format!("running {action} on {noun}{service}"),
         }
     }
 }
@@ -728,7 +719,7 @@ mod tests {
         assert_eq!(r.content, "zeta-mail did mail.message.send");
         assert_eq!(b.seen.lock().unwrap()[0].1, serde_json::json!({"to": "a@example.com"}));
         assert!(a.seen.lock().unwrap().is_empty());
-        assert_eq!(send.activity(&serde_json::json!({"display": "Email Ann"})), "Email Ann");
+        assert_eq!(send.describe(&serde_json::json!({"display": "Email Ann"})), "Email Ann");
         assert_eq!(send.taint(&json()), None, "a send brings nothing in");
     }
 

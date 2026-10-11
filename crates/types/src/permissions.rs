@@ -84,7 +84,7 @@ pub enum OwnerReach {
 }
 
 impl OwnerReach {
-    /// What the call does, as its activity line: "capturing your screen".
+    /// What the call does, as a sentence: "capturing your screen".
     pub fn sentence(&self) -> String {
         match self {
             OwnerReach::Screen => "capturing your screen".into(),

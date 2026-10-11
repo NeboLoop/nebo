@@ -506,12 +506,21 @@
 			"fetch": "Tải trang",
 			"request": "Yêu cầu",
 			"browser": "Trình duyệt",
+			"computer": "Máy tính",
 			"research": "Nghiên cứu",
 			"helper": "Trợ lý",
 			"task": "Nhiệm vụ",
 			"fileCount": "{count, plural, other {# tệp}}",
 			"resultCount": "{count, plural, other {# kết quả}}",
-			"failedCount": "{count} lỗi"
+			"failedCount": "{count} lỗi",
+			"reach": {
+				"screen": "Đang chụp màn hình của bạn",
+				"microphone": "Đang ghi âm từ micrô của bạn",
+				"camera": "Đang chụp ảnh bằng camera của bạn",
+				"input": "Đang điều khiển chuột và bàn phím",
+				"app": "Đang điều khiển {app}",
+				"apps": "Đang điều khiển ứng dụng của bạn"
+			}
 		},
 		"callVerb": {
 			"create": "Tạo",

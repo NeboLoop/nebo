@@ -24,7 +24,7 @@ import { endsRun } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
-import { isCallName, type CallName } from '$lib/chat/callLabel';
+import { callText, callWords, isCallName, type CallName } from '$lib/chat/callLabel';
 import { formatTime } from '$lib/time';
 import { clientId } from '$lib/websocket/origin';
 import { userMessageRow } from '$lib/chat/userMessage';
@@ -74,10 +74,6 @@ export interface ToolUse {
   status: 'running' | 'success' | 'error';
   request: Record<string, unknown>;
   response: string;
-  /** Human activity label (gerund), from the start phase. */
-  label?: string;
-  /** Past-tense outcome, from the result phase. */
-  outcome?: string;
   /** The call's structured name, `{kind, params}`: the thread words its
    *  kind in the owner's language and shows its values verbatim. */
   call?: CallName;
@@ -617,10 +613,8 @@ export function createChatController(config: ChatControllerConfig) {
     if (m.type === 'assistant') {
       const tool: ToolUse = {
         toolId: data.tool_id,
-        // Raw tool name so the display formats the signature (MCP → "slug · tool",
-        // STRAP → "name · resource.action"); label + outcome come from the backend.
+        // The row is worded from the call's structured name.
         name: data.tool || 'tool',
-        label: data.label,
         ...(isCallName(data.call) ? { call: data.call } : {}),
         status: 'running',
         request,
@@ -629,9 +623,8 @@ export function createChatController(config: ChatControllerConfig) {
       };
       messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
-    // The backend's label (each tool's own words) is the live indicator, so
-    // it and the persisted timeline speak the same vocabulary.
-    activityStatus = data.label || data.tool || '';
+    // The live indicator words the call as its row does.
+    activityStatus = callText({ name: data.tool || 'tool', status: 'running', ...(isCallName(data.call) ? { call: data.call } : {}) }, get(t));
   }
 
   function handleToolResult(data: any) {
@@ -654,7 +647,6 @@ export function createChatController(config: ChatControllerConfig) {
         ...tools[ti],
         status,
         response,
-        outcome: data.outcome,
         ...(isCallName(data.call) ? { call: data.call } : {}),
         ...(data.payload && typeof data.payload === 'object' ? { payload: data.payload } : {}),
         ...(Array.isArray(data.files) && data.files.length ? { files: data.files.filter((f: unknown): f is string => typeof f === 'string') } : {}),
@@ -670,7 +662,7 @@ export function createChatController(config: ChatControllerConfig) {
       messages[idx] = {
         ...m,
         tools: [...(m.tools ?? []), {
-          toolId, name: data.tool_name || 'tool', status, outcome: data.outcome, request: {}, response,
+          toolId, name: data.tool_name || 'tool', status, request: {}, response,
           ...(isCallName(data.call) ? { call: data.call } : {}),
         }],
       };
@@ -790,7 +782,10 @@ export function createChatController(config: ChatControllerConfig) {
   function handleSubagentProgress(data: any) {
     if (!isMyEvent(data)) return;
     helpers = applyHelperEvent(helpers, 'subagent_progress', data);
-    const op = data.current_operation as string | undefined;
+    // A helper's step: its call, worded; background work: its own line.
+    const op = isCallName(data.call)
+      ? callWords(data.call, get(t))
+      : (data.current_operation as string | undefined);
     if (!op) return;
     // The delegate's current step IS this turn's live status: without it a
     // long delegated job reads as "Still working: agent" for minutes, and a

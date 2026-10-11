@@ -296,13 +296,12 @@ pub trait DynTool: Send + Sync {
     fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
         Some(DEFAULT_MAX_RESULT_CHARS)
     }
-    /// The owner-facing line while the call runs ("reading notes.md").
-    fn activity(&self, input: &serde_json::Value) -> String {
-        crate::humanize::call_labels(self.name(), input).0
-    }
-    /// The owner-facing line once it ran ("Read notes.md").
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        crate::humanize::call_labels(self.name(), input).1
+    /// What the call does, as a sentence ("reading notes.md"): the model
+    /// reads it when a call is refused or parked, and the owner's approval
+    /// card states it. The owner's screens name a call by
+    /// [`crate::humanize::call`], never by this.
+    fn describe(&self, input: &serde_json::Value) -> String {
+        crate::humanize::sentence(self.name(), input)
     }
     /// The untrusted-content class the call's result brings into the run.
     fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
@@ -986,13 +985,13 @@ impl Registry {
         Some(target_of(tool.as_ref(), input))
     }
 
-    /// The owner-facing (activity, outcome) lines for a call. A name no
-    /// tool is registered under (a CLI provider's own tools) gets the
-    /// generic wording.
-    pub async fn labels(&self, tool_name: &str, input: &serde_json::Value) -> (String, String) {
+    /// What a call does, as a sentence (see [`DynTool::describe`]). A name
+    /// no tool is registered under (a CLI provider's own tools) gets the
+    /// generic one.
+    pub async fn describe(&self, tool_name: &str, input: &serde_json::Value) -> String {
         match self.get(tool_name).await {
-            Some(tool) => (tool.activity(input), tool.outcome(input)),
-            None => crate::humanize::call_labels(tool_name, input),
+            Some(tool) => tool.describe(input),
+            None => crate::humanize::sentence(tool_name, input),
         }
     }
 
@@ -2886,7 +2885,6 @@ pub(crate) mod tests {
         }
     }
 
-
     /// Which results context pressure clears, and the taint a result brings
     /// in, are each tool's own answers: file reads and changes, commands,
     /// web searches and fetches are cleared (each can be run again); memory,
@@ -2927,7 +2925,5 @@ pub(crate) mod tests {
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
         assert_eq!(taint("read_file", json!({"path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
     }
-
-
 
 }

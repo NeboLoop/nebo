@@ -2619,7 +2619,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let helpers = agent::harness::delegation::Helpers::new(
         store.clone(),
         Arc::new(harness.sessions().clone()),
-        tool_registry.clone(),
         Arc::new(harness.clone()),
         Some(wake_tx),
         Some(helper_ui_tx),

@@ -835,8 +835,7 @@ async fn drain_voice_run(
             }
             ai::StreamEventType::ToolCall => {
                 if let Some(tc) = event.tool_call.as_ref() {
-                    let activity = state.tools.labels(&tc.name, &tc.input).await.0;
-                    run_handle.show_activity(&activity);
+                    run_handle.show_call(&tc.name, &tc.input);
                     // What the employee said before this step is its update
                     // ("The title slide is up; the problem slide next."): the
                     // call hears it while the work goes on, in the employee's
@@ -857,7 +856,7 @@ async fn drain_voice_run(
                             "tool_id": tc.id,
                             "tool": tc.name,
                             "input": tc.input,
-                            "label": activity,
+                            "call": tools::humanize::call(&tc.name, &tc.input),
                         }),
                     );
                 }
@@ -869,10 +868,7 @@ async fn drain_voice_run(
                     .as_ref()
                     .map(|tc| (tc.id.as_str(), tc.name.as_str()))
                     .unwrap_or(("", ""));
-                let outcome = match event.tool_call.as_ref() {
-                    Some(tc) => state.tools.labels(&tc.name, &tc.input).await.1,
-                    None => tools::humanize::raw_name(tool_name).1,
-                };
+                let call = event.tool_call.as_ref().map(|tc| tools::humanize::call(&tc.name, &tc.input));
                 let files = owner_artifact_urls(&state.tools, &event).await;
                 state.hub.broadcast(
                     "tool_result",
@@ -884,7 +880,7 @@ async fn drain_voice_run(
                         "tool_name": tool_name,
                         "result": event.text,
                         "is_error": event.error.is_some(),
-                        "outcome": outcome,
+                        "call": call,
                         "payload": event.payload,
                         "files": &files,
                     }),

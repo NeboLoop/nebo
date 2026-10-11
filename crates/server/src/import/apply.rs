@@ -547,18 +547,35 @@ fn insert_messages(
             continue;
         }
         let ts = msg.timestamp.unwrap_or(created + i as i64);
+        let metadata = block_order(&msg.content, msg.tool_calls.as_deref());
         t.store.create_chat_message_imported(
             &format!("{chat_id}-m{i}"),
             chat_id,
             &msg.role,
             &msg.content,
             msg.tool_calls.as_deref(),
-            None,
+            metadata.as_deref(),
             ts,
         )?;
         inserted += 1;
     }
     Ok(inserted)
+}
+
+/// The block order a reply with calls is stored with, as the runner stores
+/// its own (`metadata.contentBlocks`): its text first, a note before the
+/// calls (`shown`), then each call. None for a row without calls.
+fn block_order(content: &str, tool_calls: Option<&str>) -> Option<String> {
+    let calls = tool_calls
+        .and_then(|raw| serde_json::from_str::<Vec<serde_json::Value>>(raw).ok())
+        .map(|calls| calls.len())
+        .filter(|n| *n > 0)?;
+    let text = (!content.is_empty()).then(|| serde_json::json!({"type": "text", "fold": "shown"}));
+    let blocks: Vec<serde_json::Value> = text
+        .into_iter()
+        .chain((0..calls).map(|i| serde_json::json!({"type": "tool", "toolCallIndex": i})))
+        .collect();
+    Some(serde_json::json!({ "contentBlocks": blocks }).to_string())
 }
 
 /// Known LLM provider keys from dotenv-style text → `auth_profiles`, matching
@@ -830,6 +847,13 @@ mod tests {
         assert_eq!(msgs[0].created_at, 1700000000);
         let sess2 = f.store.get_chat_messages("hermes-sess-2").unwrap();
         assert!(sess2.iter().any(|m| m.tool_calls.is_some()));
+        // A reply with calls is stored with its block order, as the
+        // runner's own are: the thread reads it one way.
+        for m in sess2.iter().filter(|m| m.tool_calls.is_some()) {
+            let meta: serde_json::Value = serde_json::from_str(m.metadata.as_deref().unwrap()).unwrap();
+            let blocks = meta["contentBlocks"].as_array().unwrap();
+            assert_eq!(blocks.last().unwrap()["type"], "tool", "{meta}");
+        }
         assert!(out
             .skipped
             .iter()

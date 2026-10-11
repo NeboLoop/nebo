@@ -5,9 +5,8 @@ import { parseMessages } from './history';
 type Tool = { name: string; status?: string };
 // Every call is shown, failed ones too.
 const shown = (tools: Tool[] | undefined) => tools ?? [];
-const work = (tools: Tool[] | undefined) => (tools ?? []).length > 0;
 const shape = (segs: TurnSegment<Tool>[], ended = false) =>
-  turnBlocks(segs, 'k', shown, work, ended).map((b) =>
+  turnBlocks(segs, 'k', shown, ended).map((b) =>
     b.kind === 'group'
       ? `group:${b.steps.map((s) => (s.kind === 'note' ? `note(${s.lines.join('|')})` : `${s.tool.name}${s.tool.status === 'error' ? '!' : ''}`)).join(',')}`
       : `${b.kind}:${b.text}`,
@@ -41,8 +40,8 @@ describe('turnBlocks', () => {
     ).toEqual(['note:請求書を確認しました。3月分が2件足りません！', 'group:read_file', 'prose:不足分をまとめました。']);
   });
 
-  // A word-for-word repeat (and any row an older rule folded) sits in the
-  // group as a note row the reader can open.
+  // A word-for-word repeat sits in the group as a note row the reader can
+  // open.
   it('keeps a folded segment as a note row in the group', () => {
     expect(
       shape([
@@ -53,10 +52,10 @@ describe('turnBlocks', () => {
     ).toEqual(['note:Four clips in.', 'group:remember,note(Four clips in!),remember', 'prose:Here is the plan.']);
   });
 
-  it('reads a verdict-less segment with calls as a note, and streaming text as prose', () => {
+  it('reads text still streaming as prose', () => {
     expect(
       shape([
-        { content: 'Checking.', tools: [{ name: 'read' }] },
+        { content: 'Checking.', fold: 'shown', tools: [{ name: 'read' }] },
         { content: 'Still writing the ans' },
       ]),
     ).toEqual(['note:Checking.', 'group:read', 'prose:Still writing the ans']);
@@ -92,7 +91,6 @@ describe('turnBlocks', () => {
       ],
       'k',
       shown,
-      work,
     );
     expect(turnText(blocks)).toBe('First finding.\n\nFirst finding!\n\nThe answer.');
   });

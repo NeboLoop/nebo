@@ -397,7 +397,7 @@ impl Asks {
             session_key: cx.ctx.session_key.clone(),
             door: cx.ctx.door.clone(),
             case: case.clone(),
-            sentence: call.tool.activity(call.input),
+            sentence: call.tool.describe(call.input),
             target: call.target.clone(),
             call: StoredCall { name: call.name().to_string(), input: call.input.clone() },
             seat: SeatSnapshot {
@@ -1264,7 +1264,7 @@ mod tests {
         fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
             self.capability
         }
-        fn activity(&self, input: &serde_json::Value) -> String {
+        fn describe(&self, input: &serde_json::Value) -> String {
             format!("{} {}", self.name, input["to"].as_str().unwrap_or("the books"))
         }
         fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
@@ -2152,8 +2152,8 @@ mod tests {
         fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
             self.spec.effects(input)
         }
-        fn activity(&self, input: &serde_json::Value) -> String {
-            self.spec.activity(input)
+        fn describe(&self, input: &serde_json::Value) -> String {
+            self.spec.describe(input)
         }
         fn execute_dyn<'a>(
             &'a self,
@@ -2322,8 +2322,8 @@ mod tests {
         fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
             self.spec.effects(input)
         }
-        fn activity(&self, input: &serde_json::Value) -> String {
-            self.spec.activity(input)
+        fn describe(&self, input: &serde_json::Value) -> String {
+            self.spec.describe(input)
         }
         fn validates_input(&self) -> bool {
             self.spec.validates_input()

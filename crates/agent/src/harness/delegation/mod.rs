@@ -337,8 +337,11 @@ pub struct HelperStatus {
     pub running: bool,
     /// The helper's own session, where its steps are kept.
     pub session_key: String,
-    /// What it is doing now: its latest progress line (its current tool
-    /// step), empty before its first.
+    /// The call it is making now, by its structured name
+    /// (`tools::humanize::call`); none before its first step.
+    pub call: Option<tools::humanize::Call>,
+    /// Background work's own progress line ("Searching 4 angles"); empty
+    /// for a helper that works by calls.
     pub activity: String,
     /// The session that started it, where it reports.
     pub parent_key: String,
@@ -374,7 +377,10 @@ struct Helper {
     /// Reports of earlier turns of this run, when input reached it as a
     /// turn ended; they lead the run's final result.
     earlier_reports: Vec<String>,
-    /// Its latest progress line, as the owner's screen was sent it.
+    /// The call it is making now, as the owner's screen was sent it.
+    call: Option<tools::humanize::Call>,
+    /// Background work's latest progress line, as the owner's screen was
+    /// sent it.
     activity: String,
     /// When its current run started (unix seconds).
     started_at: i64,
@@ -475,7 +481,6 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
 pub struct Helpers {
     store: Arc<db::Store>,
     sessions: Arc<SessionManager>,
-    registry: Arc<tools::Registry>,
     starter: Arc<dyn TurnStarter>,
     /// The server's wake rail: an owner session with a new notification
     /// row on the wake table is sent here to be delivered.
@@ -490,7 +495,6 @@ impl Helpers {
     pub fn new(
         store: Arc<db::Store>,
         sessions: Arc<SessionManager>,
-        registry: Arc<tools::Registry>,
         starter: Arc<dyn TurnStarter>,
         wake: Option<mpsc::UnboundedSender<String>>,
         ui: Option<mpsc::UnboundedSender<HelperEvent>>,
@@ -498,7 +502,6 @@ impl Helpers {
         Arc::new(Self {
             store,
             sessions,
-            registry,
             starter,
             wake,
             ui,
@@ -687,6 +690,7 @@ impl Helpers {
                     waiter: (!spec.background).then_some(tx),
                     held: None,
                     earlier_reports: Vec::new(),
+                    call: None,
                     activity: String::new(),
                     started_at: chrono::Utc::now().timestamp(),
                 },
@@ -744,6 +748,7 @@ impl Helpers {
                     waiter: None,
                     held: None,
                     earlier_reports: Vec::new(),
+                    call: None,
                     activity: String::new(),
                     started_at: chrono::Utc::now().timestamp(),
                 },
@@ -990,6 +995,7 @@ impl Helpers {
                 waiter: None,
                 held: None,
                 earlier_reports: Vec::new(),
+                call: None,
                 activity: String::new(),
                 started_at: chrono::Utc::now().timestamp(),
             });
@@ -1101,6 +1107,7 @@ impl Helpers {
                 description: h.description.clone(),
                 running: h.running,
                 session_key: h.session_key.clone(),
+                call: h.call.clone(),
                 activity: h.activity.clone(),
                 parent_key: h.parent_key.clone(),
                 agent_id: h.parent_seat.agent_id.clone(),
@@ -1229,8 +1236,8 @@ impl Helpers {
         completion
     }
 
-    /// Progress lines for the owner's screen: each tool call the helper
-    /// makes becomes its activity line. `None` without a screen to show it.
+    /// Progress for the owner's screen: each tool call the helper makes is
+    /// named by its structured name. `None` without a screen to show it.
     fn progress_forwarder(self: &Arc<Self>, parent_key: &str, task_id: &str) -> Option<mpsc::UnboundedSender<ai::ToolCall>> {
         self.ui.as_ref()?;
         let (tx, mut rx) = mpsc::unbounded_channel::<ai::ToolCall>();
@@ -1241,13 +1248,17 @@ impl Helpers {
             let mut steps = 0usize;
             while let Some(tc) = rx.recv().await {
                 steps += 1;
-                let (activity, _) = this.registry.labels(&tc.name, &tc.input).await;
-                let mut ev = ai::StreamEvent::subagent_start(task_id.as_str(), activity.as_str());
+                let call = tools::humanize::call(&tc.name, &tc.input);
+                if let Some(helper) = this.state().helpers.get_mut(task_id.as_str()) {
+                    helper.call = Some(call.clone());
+                    helper.activity.clear();
+                }
+                let mut ev = ai::StreamEvent::subagent_start(task_id.as_str(), "");
                 ev.event_type = ai::StreamEventType::SubagentProgress;
                 ev.widgets = Some(serde_json::json!({
                     "task_id": task_id,
                     "tool_count": steps,
-                    "current_operation": activity,
+                    "call": call,
                 }));
                 this.emit(&parent_key, ev);
             }
@@ -1256,14 +1267,15 @@ impl Helpers {
     }
 
     fn emit(&self, parent_key: &str, event: ai::StreamEvent) {
-        // The helper's latest progress line is kept with it, so a screen
-        // that opens after the event still reads what it is doing.
+        // Background work's latest progress line is kept with it, so a
+        // screen that opens after the event still reads what it is doing.
         if event.event_type == ai::StreamEventType::SubagentProgress
             && let Some(widgets) = event.widgets.as_ref()
             && let (Some(task_id), Some(activity)) = (widgets["task_id"].as_str(), widgets["current_operation"].as_str())
             && let Some(helper) = self.state().helpers.get_mut(task_id)
         {
             helper.activity = activity.to_string();
+            helper.call = None;
         }
         if let Some(ui) = &self.ui {
             let _ = ui.send(HelperEvent { parent_session_key: parent_key.to_string(), event });
@@ -1627,7 +1639,6 @@ mod tests {
             let helpers = Arc::new(Helpers {
                 store: store.clone(),
                 sessions: sessions.clone(),
-                registry: Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone())))),
                 starter: starter.unwrap_or_else(|| Arc::new(Scripted { started: started_tx })),
                 wake: Some(wake_tx),
                 ui: Some(ui_tx),
@@ -2101,6 +2112,7 @@ mod tests {
                 description: "read the ledger".into(),
                 running: true,
                 session_key: helper_key("agent:bookkeeper:web", &id),
+                call: None,
                 activity: String::new(),
                 parent_key: "agent:bookkeeper:web".into(),
                 agent_id: list[0].agent_id.clone(),

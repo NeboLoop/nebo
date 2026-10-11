@@ -587,23 +587,13 @@ impl DynTool for AppDataTool {
         )
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let key = input.get("key").and_then(Value::as_str).unwrap_or("");
         match input.get("action").and_then(Value::as_str).unwrap_or("") {
             "set" | "append" | "replace" => format!("saving {key}"),
             "delete" => format!("deleting {key}"),
             "get" => format!("reading {key}"),
             _ => "looking through the app's data".to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        let key = input.get("key").and_then(Value::as_str).unwrap_or("");
-        match input.get("action").and_then(Value::as_str).unwrap_or("") {
-            "set" | "append" | "replace" => format!("Saved {key}"),
-            "delete" => format!("Deleted {key}"),
-            "get" => format!("Read {key}"),
-            _ => "Looked through the app's data".to_string(),
         }
     }
 

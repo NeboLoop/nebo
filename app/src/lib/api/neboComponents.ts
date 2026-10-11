@@ -3140,6 +3140,7 @@ export interface BackgroundTask {
 	employee: string
 	title: string
 	detail: string
+	call: CallName | null
 	status: BackgroundStatus
 	wait: string | null
 	trigger: string | null
@@ -3154,6 +3155,11 @@ export interface BackgroundTask {
 	turnsUsed: number | null
 	turnsCap: number | null
 	actions: BackgroundAction[]
+}
+
+export interface CallName {
+	kind: string
+	params?: Record<string, string>
 }
 
 export interface Capability {
@@ -3320,6 +3326,7 @@ export interface TeamWorkEntry {
 	member: string
 	title: string
 	taskId: string
+	call: CallName | null
 	activity: string
 	sessionKey: string
 	chatId: string

@@ -158,6 +158,7 @@ export interface BackgroundTask {
 	employee: string
 	title: string
 	detail: string
+	call: CallName | null
 	status: BackgroundStatus
 	wait: string | null
 	trigger: string | null
@@ -186,9 +187,17 @@ export interface BackgroundTask {
 	member: string
 	title: string
 	taskId: string
+	call: CallName | null
 	activity: string
 	sessionKey: string
 	chatId: string
+}`,
+	// A tool call's structured name (crates/tools/src/humanize.rs Call):
+	// a kind every client words in the owner's language, and the call's own
+	// values verbatim.
+	"CallName": `export interface CallName {
+	kind: string
+	params?: Record<string, string>
 }`,
 	"RunDisplay": `export interface RunDisplayFact {
 	key: string

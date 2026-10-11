@@ -506,12 +506,21 @@
 			"fetch": "擷取",
 			"request": "要求",
 			"browser": "瀏覽器",
+			"computer": "電腦",
 			"research": "研究",
 			"helper": "助手",
 			"task": "任務",
 			"fileCount": "{count, plural, other {# 個檔案}}",
 			"resultCount": "{count, plural, other {# 筆結果}}",
-			"failedCount": "{count} 個失敗"
+			"failedCount": "{count} 個失敗",
+			"reach": {
+				"screen": "正在擷取你的螢幕",
+				"microphone": "正在透過麥克風錄音",
+				"camera": "正在用相機拍照",
+				"input": "正在控制你的滑鼠和鍵盤",
+				"app": "正在控制 {app}",
+				"apps": "正在控制你的應用程式"
+			}
 		},
 		"callVerb": {
 			"create": "建立",

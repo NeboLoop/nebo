@@ -318,7 +318,7 @@ async fn the_point_person_sees_what_everyone_is_doing() {
         })
         .await;
     books_run.start_tool("read_file");
-    books_run.show_activity("Reading ledger.csv");
+    books_run.show_call("read_file", &serde_json::json!({"path": "ledger.csv"}));
     let desk_key = thread(&nebo, &desk, "Call back Dana");
     let _desk_run = nebo
         .state
@@ -367,7 +367,7 @@ async fn the_point_person_sees_what_everyone_is_doing() {
         now.contains("- Proof Point Coder (linked, on this computer): working\n    · the conversation \"Refactor billing\" (conversation: s-1): working on a request, a tool running"),
         "the linked employee, from its own computer: {now}"
     );
-    assert!(now.contains("- Proof Point Books: working\n    · the conversation \"Close September\": Reading ledger.csv, for "), "{now}");
+    assert!(now.contains("- Proof Point Books: working\n    · the conversation \"Close September\": reading ledger.csv, for "), "{now}");
     assert!(
         now.contains("- Proof Point Desk: waiting on you\n    · the conversation \"Call back Dana\": thinking, for ") && now.contains("asks you: \"Text Dana at the new number?\""),
         "{now}"

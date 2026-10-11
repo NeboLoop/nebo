@@ -506,12 +506,21 @@
 			"fetch": "Ambil",
 			"request": "Permintaan",
 			"browser": "Browser",
+			"computer": "Komputer",
 			"research": "Riset",
 			"helper": "Pembantu",
 			"task": "Tugas",
 			"fileCount": "{count, plural, other {# file}}",
 			"resultCount": "{count, plural, other {# hasil}}",
-			"failedCount": "{count} gagal"
+			"failedCount": "{count} gagal",
+			"reach": {
+				"screen": "Merekam layar Anda",
+				"microphone": "Merekam dari mikrofon Anda",
+				"camera": "Memotret dengan kamera Anda",
+				"input": "Mengendalikan mouse dan keyboard Anda",
+				"app": "Mengendalikan {app}",
+				"apps": "Mengendalikan aplikasi Anda"
+			}
 		},
 		"callVerb": {
 			"create": "Buat",

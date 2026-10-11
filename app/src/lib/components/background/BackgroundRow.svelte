@@ -12,6 +12,7 @@
   import type { BackgroundAction, BackgroundTask } from '$lib/api/neboComponents';
   import { actOn, outputOf, shortClock, isRunning } from '$lib/stores/background';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
+  import { callWords } from '$lib/chat/callLabel';
 
   let {
     task,
@@ -37,7 +38,9 @@
   let output = $state<{ output: string; truncated: boolean } | null>(null);
   let outputFailed = $state(false);
 
-  const title = $derived(task.title || (task.source === 'heartbeat' ? $t('background.heartbeat') : task.detail));
+  /** What it is doing now: the call it makes, worded, or its own line. */
+  const detail = $derived(task.call ? callWords(task.call, $t) : task.detail);
+  const title = $derived(task.title || (task.source === 'heartbeat' ? $t('background.heartbeat') : detail));
   const stopAction = $derived(task.actions.find((a) => a === 'stop' || a === 'cancel'));
   const otherActions = $derived(task.actions.filter((a) => a !== stopAction));
 
@@ -105,7 +108,7 @@
   </div>
   {#if open}
     <div class="bg-row-detail">
-      {#if task.detail && task.detail !== title}<div class="bg-row-detail-line">{task.detail}</div>{/if}
+      {#if detail && detail !== title}<div class="bg-row-detail-line">{detail}</div>{/if}
       <div class="bg-row-detail-line bg-row-muted">
         {$t(`background.createdBy.${task.createdBy}`)}{#if task.turnsUsed != null && task.turnsCap != null} · {$t('background.turns', { values: { used: task.turnsUsed, cap: task.turnsCap } })}{/if}
       </div>

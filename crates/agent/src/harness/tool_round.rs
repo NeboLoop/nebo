@@ -614,7 +614,6 @@ pub(crate) async fn run_tool_round(
 
         let row = ToolResultRow {
             tool_call_id: tc.id.clone(),
-            outcome: Some(tools.labels(&tc.name, &tc.input).await.1),
             duration_ms: durations.get(&tc.id).copied(),
             content: result.content,
             is_error: result.is_error,
@@ -640,7 +639,7 @@ pub(crate) async fn run_tool_round(
             .as_ref()
             .map(|t| t.operation.as_deref().map(tools::plugin_tool::port_suffix).unwrap_or_else(|| t.key.clone()))
             .unwrap_or_else(|| tc.name.clone());
-        let display = tools.labels(&tc.name, &tc.input).await.0;
+        let display = tools.describe(&tc.name, &tc.input).await;
         let reason = match park(WorkflowPark { messages: snapshot, call: &tc, ask_id: &ask_id, operation, display }) {
             Ok(()) => "awaiting_approval".to_string(),
             // Can't persist the suspension: fail loud, never run the call.
@@ -740,11 +739,8 @@ pub(crate) struct ToolResultRow {
     /// renders the same rich cards as the live stream.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
-    /// The past-tense outcome the live stream showed ("Ran shell"), persisted
-    /// so a reloaded thread reads the same as the live one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    /// Wall-clock milliseconds the call took, for the same reason.
+    /// Wall-clock milliseconds the call took, so a reloaded thread reads
+    /// the same as the live one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     /// The deferred tools this result loaded, as the model was shown them
@@ -1106,7 +1102,7 @@ async fn run_call(
             crate::harness::permissions::question_for(&check, t)
         };
         if let Some(mut q) = question {
-            q.activity = tools.labels(&tc.name, &tc.input).await.0;
+            q.activity = tools.describe(&tc.name, &tc.input).await;
             // A workflow turn has no session objective and an empty
             // prompt; its task is the step it was given.
             let (objective, last_message) = match workflow_mode {

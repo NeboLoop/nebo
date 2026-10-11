@@ -506,12 +506,21 @@
 			"fetch": "Загрузка",
 			"request": "Запрос",
 			"browser": "Браузер",
+			"computer": "Компьютер",
 			"research": "Исследование",
 			"helper": "Помощник",
 			"task": "Задача",
 			"fileCount": "{count, plural, one {# файл} few {# файла} many {# файлов} other {# файла}}",
 			"resultCount": "{count, plural, one {# результат} few {# результата} many {# результатов} other {# результата}}",
-			"failedCount": "Ошибок: {count}"
+			"failedCount": "Ошибок: {count}",
+			"reach": {
+				"screen": "Снимок экрана",
+				"microphone": "Запись с микрофона",
+				"camera": "Снимок камерой",
+				"input": "Управление мышью и клавиатурой",
+				"app": "Управление {app}",
+				"apps": "Управление приложениями"
+			}
 		},
 		"callVerb": {
 			"create": "Создать",

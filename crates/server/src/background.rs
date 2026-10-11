@@ -108,8 +108,12 @@ pub struct BackgroundTask {
     pub employee: String,
     /// What it is, one line.
     pub title: String,
-    /// What it is doing or waiting for now, when that is known.
+    /// What it is doing or waiting for now, when that is known and is not
+    /// a call.
     pub detail: String,
+    /// The call it is making now, by its structured name
+    /// (`tools::humanize::call`), for a helper or a turn at work.
+    pub call: Option<tools::humanize::Call>,
     pub status: Status,
     /// What a waiting run waits for: `approval`, `answer`, `expert`, `reply`.
     pub wait: Option<String>,
@@ -148,6 +152,7 @@ impl BackgroundTask {
             employee: String::new(),
             title: String::new(),
             detail: String::new(),
+            call: None,
             status,
             wait: None,
             trigger: None,
@@ -291,6 +296,7 @@ pub(crate) fn helpers(list: Vec<agent::harness::delegation::HelperStatus>) -> Ve
             t.agent_id = employee_id(&h.agent_id).to_string();
             t.title = h.description;
             t.detail = h.activity;
+            t.call = h.call;
             t.started_at = Some(h.started_at);
             t.created_by = "chat".into();
             t.session_key = Some(h.parent_key);
@@ -334,7 +340,7 @@ pub(crate) fn turns(runs: Vec<crate::run_registry::RunSnapshot>, parked: &HashSe
             );
             t.agent_id = employee_id(&r.entity_id).to_string();
             t.title = r.entity_name.clone();
-            t.detail = if r.activity.is_empty() { r.current_tool.clone() } else { r.activity.clone() };
+            t.call = r.call.clone();
             t.wait = waiting.then(|| "answer".to_string());
             t.started_at = Some(now - r.elapsed_secs as i64);
             t.last_activity_at = Some(now - r.idle_secs as i64);

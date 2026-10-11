@@ -863,21 +863,12 @@ impl DynTool for MemoryTool {
         }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let key = input["key"].as_str().unwrap_or("");
         match self.op {
             MemoryOp::Recall => "checking memory".to_string(),
             MemoryOp::Remember => format!("remembering {key}").trim_end().to_string(),
             MemoryOp::Forget => format!("forgetting {key}").trim_end().to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        let key = input["key"].as_str().unwrap_or("");
-        match self.op {
-            MemoryOp::Recall => "Checked memory".to_string(),
-            MemoryOp::Remember => format!("Remembered {key}").trim_end().to_string(),
-            MemoryOp::Forget => format!("Forgot {key}").trim_end().to_string(),
         }
     }
 

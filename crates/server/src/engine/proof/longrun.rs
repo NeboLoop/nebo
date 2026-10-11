@@ -48,7 +48,7 @@ impl DynTool for Text {
     fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
         Some("sms")
     }
-    fn activity(&self, input: &serde_json::Value) -> String {
+    fn describe(&self, input: &serde_json::Value) -> String {
         format!("texting {}", input["to"].as_str().unwrap_or(""))
     }
     fn execute_dyn<'a>(

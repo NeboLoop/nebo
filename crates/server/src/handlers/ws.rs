@@ -2884,7 +2884,6 @@ mod cancel_precedence_tests {
         Helpers::new(
             store,
             Arc::new(harness.sessions().clone()),
-            tools,
             Arc::new(harness.clone()),
             None,
             None,

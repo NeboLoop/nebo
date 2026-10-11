@@ -506,12 +506,21 @@
 			"fetch": "Ambil",
 			"request": "Permintaan",
 			"browser": "Pelayar",
+			"computer": "Komputer",
 			"research": "Penyelidikan",
 			"helper": "Pembantu",
 			"task": "Tugas",
 			"fileCount": "{count, plural, other {# fail}}",
 			"resultCount": "{count, plural, other {# hasil}}",
-			"failedCount": "{count} gagal"
+			"failedCount": "{count} gagal",
+			"reach": {
+				"screen": "Menangkap skrin anda",
+				"microphone": "Merakam daripada mikrofon anda",
+				"camera": "Mengambil gambar dengan kamera anda",
+				"input": "Mengawal tetikus dan papan kekunci anda",
+				"app": "Mengawal {app}",
+				"apps": "Mengawal apl anda"
+			}
 		},
 		"callVerb": {
 			"create": "Cipta",

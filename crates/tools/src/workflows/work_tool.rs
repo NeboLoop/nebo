@@ -200,20 +200,20 @@ impl Kind {
         matches!(self, Kind::List | Kind::Status | Kind::Runs)
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let named = |key: &str| str_field(input, key).to_string();
         let on = input["enabled"].as_bool().unwrap_or(true);
         match self {
-            Kind::List => ("checking workflows".into(), "Checked workflows".into()),
-            Kind::Install => ("installing a workflow".into(), "Installed a workflow".into()),
-            Kind::Uninstall => ("uninstalling a workflow".into(), "Uninstalled a workflow".into()),
-            Kind::Create => (format!("creating the {} workflow", named("name")), format!("Created the {} workflow", named("name"))),
-            Kind::Update => (format!("updating the {} workflow", named("name")), format!("Updated the {} workflow", named("name"))),
-            Kind::Delete => (format!("deleting the {} workflow", named("name")), format!("Deleted the {} workflow", named("name"))),
-            Kind::Run => (format!("starting {}", named("workflow")), format!("Started {}", named("workflow"))),
-            Kind::Status | Kind::Runs => (format!("checking {}", named("workflow")), format!("Checked {}", named("workflow"))),
-            Kind::SetEnabled if on => (format!("turning on {}", named("workflow")), format!("Turned on {}", named("workflow"))),
-            Kind::SetEnabled => (format!("turning off {}", named("workflow")), format!("Turned off {}", named("workflow"))),
+            Kind::List => "checking workflows".into(),
+            Kind::Install => "installing a workflow".into(),
+            Kind::Uninstall => "uninstalling a workflow".into(),
+            Kind::Create => format!("creating the {} workflow", named("name")),
+            Kind::Update => format!("updating the {} workflow", named("name")),
+            Kind::Delete => format!("deleting the {} workflow", named("name")),
+            Kind::Run => format!("starting {}", named("workflow")),
+            Kind::Status | Kind::Runs => format!("checking {}", named("workflow")),
+            Kind::SetEnabled if on => format!("turning on {}", named("workflow")),
+            Kind::SetEnabled => format!("turning off {}", named("workflow")),
         }
     }
 }
@@ -513,12 +513,8 @@ impl DynTool for WorkflowTool {
         false
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(

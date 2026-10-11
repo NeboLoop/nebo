@@ -358,7 +358,8 @@ pub async fn team_working(
                 "member": name,
                 "title": name,
                 "taskId": "",
-                "activity": run.activity,
+                "call": run.call,
+                "activity": "",
                 "sessionKey": seat,
                 "chatId": chat_of(&seat),
             }));
@@ -370,6 +371,7 @@ pub async fn team_working(
                 "member": name,
                 "title": helper.description,
                 "taskId": helper.task_id,
+                "call": helper.call,
                 "activity": helper.activity,
                 "sessionKey": helper.session_key,
                 "chatId": chat_of(&helper.session_key),

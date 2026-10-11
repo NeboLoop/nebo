@@ -135,20 +135,13 @@ impl DynTool for RunCommandTool {
     /// The model's description of the command, except for one that watches
     /// the owner or drives his apps: that says what it does in Nebo's words
     /// ("capturing your screen"), whatever the description says.
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         if let Some(reach) = str_arg(input, "command").and_then(crate::policy::owner_reach) {
             return reach.sentence();
         }
         match str_arg(input, "description") {
             Some(d) => crate::humanize::cap(d, crate::humanize::DESCRIPTION_CAP),
             None => format!("running `{}`", short(str_arg(input, "command").unwrap_or(""), 72)),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match str_arg(input, "description") {
-            Some(d) => crate::humanize::cap(d, crate::humanize::DESCRIPTION_CAP),
-            None => format!("Ran `{}`", short(str_arg(input, "command").unwrap_or(""), 72)),
         }
     }
 
@@ -340,12 +333,8 @@ impl DynTool for ReadOutputTool {
         Some(crate::MAX_SUBPROCESS_OUTPUT)
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("checking {}", task_id(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Checked {}", task_id(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -400,12 +389,8 @@ impl DynTool for StopTaskTool {
         is_command_id(task_id(input)).then_some("shell")
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("stopping {}", task_id(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Stopped {}", task_id(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -457,12 +442,8 @@ impl DynTool for ListProcessesTool {
         Some("shell")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "listing processes".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Listed processes".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -518,12 +499,8 @@ impl DynTool for SendInputTool {
         Some("shell")
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("sending input to {}", task_id(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Sent input to {}", task_id(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -656,15 +633,16 @@ mod tests {
         assert_eq!(run.execution_timeout(&json!({"command": "x", "background": true})), None);
     }
 
-    /// The owner reads `description`; a call without one shows the command.
+    /// A command reads as its `description`; a call without one as the
+    /// command, cut short.
     #[test]
-    fn the_label_is_the_description() {
+    fn the_sentence_is_the_description() {
         let run = RunCommandTool(machine());
         let input = json!({"command": "ls -la /tmp", "description": "List the temp folder"});
-        assert_eq!((run.activity(&input), run.outcome(&input)), ("List the temp folder".into(), "List the temp folder".into()));
+        assert_eq!(run.describe(&input), "List the temp folder");
         let bare = json!({"command": format!("echo {}", "x".repeat(100))});
-        assert!(run.activity(&bare).starts_with("running `echo x"));
-        assert!(run.outcome(&bare).ends_with("…`"), "long commands are cut: {}", run.outcome(&bare));
+        assert!(run.describe(&bare).starts_with("running `echo x"));
+        assert!(run.describe(&bare).ends_with("…`"), "long commands are cut: {}", run.describe(&bare));
         assert_eq!(run.rule_field(&input), Some(RuleField::CommandPrefix("ls -la /tmp".into())));
         assert_eq!(run.capability(&input), Some("shell"));
     }
