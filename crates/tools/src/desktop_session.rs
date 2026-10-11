@@ -679,7 +679,7 @@ pub async fn start_recording(where_: TeachWhere) -> Result<(String, std::path::P
     let mut focus = command::new::<Command>("python3", command::Console::Hidden)
         .args(["-c", FOCUS_WATCHER])
         .env("DISPLAY", DISPLAY)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -687,8 +687,9 @@ pub async fn start_recording(where_: TeachWhere) -> Result<(String, std::path::P
         .map_err(|e| warn!(error = %e, "teach: the focus watcher did not start; typed secrets are redacted by shape alone"))
         .ok();
     let focus_out = focus.as_mut().and_then(|f| f.stdout.take());
+    let focus_in = focus.as_mut().and_then(|f| f.stdin.take());
     let log = match events.stdout.take() {
-        Some(out) => tokio::spawn(stamp_events(out, focus_out, events_file, dir.join(DESKTOP_ELEMENTS), started)),
+        Some(out) => tokio::spawn(stamp_events(out, focus_out, focus_in, events_file, dir.join(DESKTOP_ELEMENTS), started)),
         None => tokio::spawn(async {}),
     };
 
@@ -715,12 +716,18 @@ pub const VIDEO: &str = "session.mp4";
 
 /// Watches the desktop through AT-SPI (which the cloud image ships for the
 /// desktop tool). Prints `focus password` or `focus other` each time a
-/// field takes the keyboard (never what is in the field), and may print
-/// `click <json>` for an element clicked outside the browser.
+/// field takes the keyboard (never what is in the field). For each
+/// `at X Y T` line on its stdin (a press the input log saw, T ms into the
+/// recording) it prints `click <json>`: the element under that screen point
+/// (role, name, application, window, frame), so a click in a desktop app is
+/// recorded as what was clicked, not only where. AT-SPI's own mouse events
+/// carry no position on Xvfb and miss short presses, hence the input log
+/// asks.
 const FOCUS_WATCHER: &str = r#"
-import sys, gi
+import json, os, sys, warnings, gi
+warnings.simplefilter("ignore", DeprecationWarning)
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi
+from gi.repository import Atspi, GLib
 def on(ev):
     if not ev.detail1:
         return
@@ -731,15 +738,86 @@ def on(ev):
     sys.stdout.write("focus password\n" if role == "password text" else "focus other\n")
     sys.stdout.flush()
 Atspi.EventListener.new(on).register("object:state-changed:focused")
+def name_of(node):
+    name = node.get_name() or ""
+    if name:
+        return name
+    try:
+        ph = (node.get_attributes() or {}).get("placeholder-text")
+        if ph:
+            return ph
+        for rel in node.get_relation_set() or []:
+            if rel.get_relation_type() == Atspi.RelationType.LABELLED_BY and rel.get_n_targets():
+                return rel.get_target(0).get_name() or ""
+    except Exception:
+        pass
+    return node.get_description() or ""
+def at_point(x, y):
+    desk = Atspi.get_desktop(0)
+    best = None
+    for i in range(desk.get_child_count()):
+        app = desk.get_child_at_index(i)
+        for j in range(app.get_child_count() if app else 0):
+            win = app.get_child_at_index(j)
+            try:
+                st = win.get_state_set()
+                comp = win.get_component_iface()
+                if not st.contains(Atspi.StateType.SHOWING) or not comp or not comp.contains(x, y, Atspi.CoordType.SCREEN):
+                    continue
+            except Exception:
+                continue
+            active = st.contains(Atspi.StateType.ACTIVE)
+            if best is None or (active and not best[0]):
+                best = (active, app, win)
+    if not best:
+        return None
+    _, app, win = best
+    node = win
+    for _ in range(40):
+        c = node.get_component_iface()
+        nxt = c.get_accessible_at_point(x, y, Atspi.CoordType.SCREEN) if c else None
+        if nxt is None or nxt == node:
+            break
+        node = nxt
+    c = node.get_component_iface()
+    e = c.get_extents(Atspi.CoordType.SCREEN) if c else None
+    return {"role": node.get_role_name() or "", "name": name_of(node)[:100], "app": app.get_name() or "",
+            "window": win.get_name() or "", "frame": [e.x, e.y, e.width, e.height] if e else None}
+pending = b""
+def asked(fd, cond):
+    global pending
+    chunk = os.read(fd, 4096)
+    if not chunk:
+        return False
+    pending += chunk
+    while b"\n" in pending:
+        line, pending = pending.split(b"\n", 1)
+        p = line.split()
+        if len(p) != 4 or p[0] != b"at":
+            continue
+        try:
+            x, y, t = int(float(p[1])), int(float(p[2])), int(p[3])
+            hit = at_point(x, y)
+        except Exception:
+            hit = None
+        if hit:
+            hit.update({"x": x, "y": y, "t_ms": t})
+            sys.stdout.write("click " + json.dumps(hit) + "\n")
+            sys.stdout.flush()
+    return True
+GLib.io_add_watch(sys.stdin.fileno(), GLib.IO_IN | GLib.IO_HUP, asked)
 Atspi.event_main()
 "#;
 
 /// Copies xinput's event dump into events.log, a [`EVENT_TIME`] line before
 /// each event, and the watcher's focus moves as [`FOCUS_LINE`]s at their
-/// time; its element records go to `elements` with their `t_ms`.
+/// time; its element records go to `elements` with their `t_ms`. Each
+/// left or right press is handed to the watcher (`ask`) to name what is
+/// under it.
 async fn stamp_events(
     out: tokio::process::ChildStdout,
     focus: Option<tokio::process::ChildStdout>,
+    mut ask: Option<tokio::process::ChildStdin>,
     file: tokio::fs::File,
     elements: std::path::PathBuf,
     started: std::time::Instant,
@@ -749,12 +827,19 @@ async fn stamp_events(
     let mut focus = focus.map(|f| tokio::io::BufReader::new(f).lines());
     let mut file = tokio::io::BufWriter::new(file);
     let time = |started: std::time::Instant| format!("{EVENT_TIME}{}\n", started.elapsed().as_millis());
+    let mut press = PressReader::default();
     loop {
         tokio::select! {
             line = lines.next_line() => {
                 let Ok(Some(line)) = line else { break };
                 if line.trim_start().starts_with("EVENT type ") {
                     let _ = file.write_all(time(started).as_bytes()).await;
+                }
+                if let Some((x, y)) = press.feed(&line, started.elapsed())
+                    && let Some(watcher) = ask.as_mut()
+                    && watcher.write_all(format!("at {x} {y} {}\n", press.at.as_millis()).as_bytes()).await.is_err()
+                {
+                    ask = None;
                 }
                 let _ = file.write_all(line.as_bytes()).await;
                 let _ = file.write_all(b"\n").await;
@@ -765,7 +850,10 @@ async fn stamp_events(
                         let said = said.trim();
                         if let Some(record) = said.strip_prefix("click ") {
                             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(record) {
-                                v["t_ms"] = (started.elapsed().as_millis() as u64).into();
+                                // The press's own time when the watcher echoes it.
+                                if v.get("t_ms").and_then(|t| t.as_u64()).is_none() {
+                                    v["t_ms"] = (started.elapsed().as_millis() as u64).into();
+                                }
                                 let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(&elements).await;
                                 if let Ok(f) = f.as_mut() {
                                     let _ = f.write_all(format!("{v}\n").as_bytes()).await;
@@ -782,6 +870,38 @@ async fn stamp_events(
         }
     }
     let _ = file.flush().await;
+}
+
+/// Picks the left and right presses out of xinput's event dump, as it
+/// streams: `feed` each line, and the press's root point comes back on its
+/// `root:` line. `at` is when its event began.
+#[derive(Default)]
+struct PressReader {
+    in_press: bool,
+    button: u32,
+    at: Duration,
+}
+
+impl PressReader {
+    fn feed(&mut self, line: &str, now: Duration) -> Option<(i64, i64)> {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("EVENT type ") {
+            self.in_press = rest.starts_with("4 ");
+            self.button = 0;
+            self.at = now;
+        } else if let Some(d) = t.strip_prefix("detail: ") {
+            self.button = d.trim().parse().unwrap_or(0);
+        } else if let Some(xy) = t.strip_prefix("root: ")
+            && self.in_press
+        {
+            self.in_press = false;
+            if matches!(self.button, 1 | 3) {
+                let (x, y) = xy.split_once('/')?;
+                return Some((x.trim().parse::<f64>().ok()? as i64, y.trim().parse::<f64>().ok()? as i64));
+            }
+        }
+        None
+    }
 }
 
 /// The recording under way: its session id and how long it has run.
@@ -1112,6 +1232,15 @@ fn element_line(el: &serde_json::Value) -> Option<String> {
             }
         }
     }
+    if let Some(app) = text("app") {
+        line.push_str(&format!(" in {app}"));
+        if let Some(window) = text("window") {
+            line.push_str(&format!(" \"{window}\""));
+        }
+    }
+    if let Some(form) = text("submits") {
+        line.push_str(&format!(", submitting \"{form}\""));
+    }
     if matches!(action, "type" | "select") {
         let value = match text("value") {
             Some("[hidden]") => "[typed secret]",
@@ -1146,6 +1275,9 @@ fn element_line(el: &serde_json::Value) -> Option<String> {
     }
     if let Some(a) = seen("appeared") {
         state.push(format!("text \"{a}\" visible"));
+    }
+    if let (Some(r), Some(n)) = (after["visible"]["role"].as_str(), after["visible"]["name"].as_str()) {
+        state.push(format!("{r} \"{n}\" visible"));
     }
     if !state.is_empty() {
         line.push_str(&format!("  after: {}", state.join("; ")));
@@ -1664,6 +1796,52 @@ EVENT type 2 (KeyPress)\n\
             ]
         );
         assert!(!t.contains("Typed: qw"), "{t}");
+    }
+
+    /// Left and right presses are picked out of the streaming dump with
+    /// their root point; key presses, releases and wheel clicks are not.
+    #[test]
+    fn presses_are_read_from_the_input_dump() {
+        let dump = "EVENT type 2 (KeyPress)\n    detail: 36\n    root: 10.00/10.00\n\
+                    EVENT type 4 (ButtonPress)\n    device: 4 (4)\n    detail: 1\n    root: 386.00/300.00\n\
+                    EVENT type 5 (ButtonRelease)\n    detail: 1\n    root: 386.00/300.00\n\
+                    EVENT type 4 (ButtonPress)\n    detail: 4\n    root: 50.00/60.00\n\
+                    EVENT type 4 (ButtonPress)\n    detail: 3\n    root: 12.50/700.25\n";
+        let mut r = PressReader::default();
+        let mut got = Vec::new();
+        for (i, line) in dump.lines().enumerate() {
+            if let Some(p) = r.feed(line, Duration::from_millis(i as u64 * 10)) {
+                got.push((p, r.at.as_millis()));
+            }
+        }
+        assert_eq!(got, [((386, 300), 30), ((12, 700), 130)], "each press at the time its event began");
+    }
+
+    /// The element recorder's own output (browser crate `teach::build_actions`)
+    /// renders with its after-state, the next step that must show, and a
+    /// desktop app click's application and window.
+    #[test]
+    fn element_lines_carry_the_next_step_and_the_desktop_app() {
+        let browser = serde_json::json!({
+            "t_ms": 14000, "action": "click", "source": "browser", "role": "link", "name": "Orders",
+            "locators": ["role=link[name=\"Orders\"]", "css=#nav > a:nth-of-type(2)", "coords=(100,69)@1280x800"],
+            "url": "https://shop.test/dashboard", "submits": "Search",
+            "after": {"url": "https://shop.test/orders", "heading": "Orders", "visible": {"role": "button", "name": "New order"}}
+        });
+        assert_eq!(
+            element_line(&browser).unwrap(),
+            "Click link \"Orders\", submitting \"Search\"  locators: role=link[name=\"Orders\"] | css=#nav > a:nth-of-type(2) | coords=(100,69)@1280x800  \
+             url: https://shop.test/dashboard  after: url=https://shop.test/orders; heading \"Orders\"; button \"New order\" visible"
+        );
+        let desktop = serde_json::json!({
+            "t_ms": 9000, "action": "click", "source": "desktop", "role": "push button", "name": "New Folder",
+            "app": "Thunar", "window": "Home", "x": 90, "y": 60,
+            "locators": ["app=\"Thunar\" window=\"Home\" role=push button[name=\"New Folder\"]", "coords=(90,60)"]
+        });
+        assert_eq!(
+            element_line(&desktop).unwrap(),
+            "Click push button \"New Folder\" in Thunar \"Home\" at (90, 60)  locators: app=\"Thunar\" window=\"Home\" role=push button[name=\"New Folder\"] | coords=(90,60)"
+        );
     }
 
     /// A recording of the owner's own screen with element records gets a
