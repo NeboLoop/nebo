@@ -572,7 +572,7 @@ fn rec_slot() -> &'static tokio::sync::Mutex<Option<RecInner>> {
 }
 
 /// Where teach sessions live: the bot's home, browsable in Thunar.
-fn teach_root() -> std::path::PathBuf {
+pub fn teach_root() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     std::path::Path::new(&home).join("teach-sessions")
 }

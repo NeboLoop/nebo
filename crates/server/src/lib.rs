@@ -3480,6 +3480,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     shared_files::spawn_sweep(state.store.clone());
     live_shares::spawn(state.clone());
 
+    // Teach replays a restart cut off mid-upload go up to NeboAI storage
+    // again (`handlers::desktop::resume_replay_uploads`).
+    handlers::desktop::resume_replay_uploads(&state);
+
     // Once per start: turn off what NeboAI withdrew while this bot could
     // not hear it (`revocation::spawn_sweep`).
     if cfg.is_neboai_enabled() {
