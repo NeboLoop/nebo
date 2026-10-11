@@ -50,6 +50,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The generated client (app/src/lib/api) is what `make gen` writes from
+      # the Rust routes and structs, never edited by hand: a change to either
+      # side regenerates it in the same PR.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: scripts/genapi/go.mod
+          cache: false
+
+      - name: Generated API client is current
+        working-directory: .
+        run: make gen && git diff --exit-code -- app/src/lib/api
+
       - name: Lint / typecheck
         run: pnpm lint
 

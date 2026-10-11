@@ -379,8 +379,8 @@ export function chatWithAgent(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "List agent chats"
  */
-export function listAgentChats(id: string) {
-	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`)
+export function listAgentChats(id: string, limit?: number, offset?: number) {
+	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`, { limit, offset })
 }
 
 /**
@@ -667,49 +667,49 @@ export function config() {
  * @description "Forgot password"
  */
 export function forgotPassword(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/forgot`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/forgot`, req)
 }
 
 /**
  * @description "Login"
  */
 export function login(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/login`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/login`, req)
 }
 
 /**
  * @description "Refresh"
  */
 export function refresh(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/refresh`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/refresh`, req)
 }
 
 /**
  * @description "Register"
  */
 export function register(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/register`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/register`, req)
 }
 
 /**
  * @description "Resend verification"
  */
 export function resendVerification(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/resend`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/resend`, req)
 }
 
 /**
  * @description "Reset password"
  */
 export function resetPassword(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/reset`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/reset`, req)
 }
 
 /**
  * @description "Verify email"
  */
 export function verifyEmail(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/verify`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/verify`, req)
 }
 
 /**
@@ -829,6 +829,13 @@ export function sendMessage(req: Record<string, unknown> = {}) {
  */
 export function editMessage(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.EditMessageResponse>(`/api/v1/chats/messages/${id}/edit`, req)
+}
+
+/**
+ * @description "Keep message file"
+ */
+export function keepMessageFile(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.KeepMessageFileResponse>(`/api/v1/chats/messages/${id}/keep`, req)
 }
 
 /**
@@ -979,6 +986,13 @@ export function teachStop(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Quit"
+ */
+export function quit(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/engine/quit`, req)
+}
+
+/**
  * @description "Get entity config"
  */
 export function getEntityConfig(entityType: string, entityId: string) {
@@ -1100,8 +1114,8 @@ export function createIntegration(req: Record<string, unknown> = {}) {
 /**
  * @description "Oauth callback"
  */
-export function oauthCallback() {
-	return webapi.get<unknown>(`/api/v1/integrations/oauth/callback`)
+export function oauthCallback(code?: string, state?: string, error?: string, error_description?: string) {
+	return webapi.get<unknown>(`/api/v1/integrations/oauth/callback`, { code, state, error, error_description })
 }
 
 /**
@@ -2481,6 +2495,27 @@ export function restoreFileHistory(req: Record<string, unknown> = {}) {
  */
 export function locateWorkFile(path: string) {
 	return webapi.get<components.LocatedFile>(`/api/v1/work/locate`, { path })
+}
+
+/**
+ * @description "Sheet view"
+ */
+export function sheetView(id: string, version?: number, rows?: string, sheet?: string, session?: string) {
+	return webapi.get<components.SheetResponse>(`/api/v1/work/${id}/sheet`, { version, rows, sheet, session })
+}
+
+/**
+ * @description "Sheet edit"
+ */
+export function sheetEdit(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.Edited>(`/api/v1/work/${id}/sheet/edit`, req)
+}
+
+/**
+ * @description "Sheet save"
+ */
+export function sheetSave(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.Saved>(`/api/v1/work/${id}/sheet/save`, req)
 }
 
 /**

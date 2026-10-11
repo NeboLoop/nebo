@@ -34,6 +34,9 @@ func main() {
 		filepath.Join(root, "crates/db/src/queries"),
 		filepath.Join(root, "crates/types/src"),
 		filepath.Join(root, "crates/server/src/handlers"),
+		// The sheet engine's view model (sheet::View), flattened into the
+		// sheet handler's response.
+		filepath.Join(root, "crates/sheet/src"),
 	}
 
 	// ── 1. Parse Rust structs ───────────────────────────────────────────
@@ -46,6 +49,13 @@ func main() {
 		}
 	}
 	fmt.Printf("  Found %d serializable structs\n", len(allStructs))
+	allEnums := make(map[string]*RustEnum)
+	for _, dir := range structDirs {
+		for _, e := range scanEnums(dir) {
+			allEnums[e.Name] = e
+		}
+	}
+	fmt.Printf("  Found %d string enums\n", len(allEnums))
 
 	// ── 2. Parse routes ─────────────────────────────────────────────────
 	fmt.Println("Scanning routes...")
@@ -76,7 +86,7 @@ func main() {
 	// ── 6. Generate neboComponents.ts ───────────────────────────────────
 	fmt.Println("Generating neboComponents.ts...")
 	componentsPath := filepath.Join(outDir, "neboComponents.ts")
-	generateComponents(componentsPath, allStructs, handlers, wsEvents)
+	generateComponents(componentsPath, allStructs, allEnums, handlers, wsEvents)
 
 	// ── 7. Generate nebo.ts ─────────────────────────────────────────────
 	fmt.Println("Generating nebo.ts...")
