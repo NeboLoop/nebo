@@ -335,7 +335,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
         CodeType::Plugin => "Installing plugin...",
         CodeType::App => "Installing app...",
         CodeType::Collection => "Installing collection...",
-        CodeType::Connection => "Adding MCP connection...",
+        CodeType::Connection => "Adding connector...",
     };
 
     state.hub.broadcast(
@@ -942,7 +942,7 @@ async fn handle_connection_code(
         .await
         .map_err(|e| hub_refusal(HubStep::Fetch, &format!("fetch connector {artifact_id}"), e))?;
     let raw = detail.manifest.ok_or_else(|| {
-        NeboError::Internal(format!("connector '{artifact_name}' has no MCP config"))
+        NeboError::Internal(format!("Connector '{artifact_name}' isn't set up correctly"))
     })?;
     let block = match raw {
         serde_json::Value::String(s) => serde_json::from_str(&s)
@@ -956,7 +956,7 @@ async fn handle_connection_code(
         Some(&artifact_id),
     )
     .await
-    .map_err(|e| NeboError::Internal(format!("create MCP integration(s): {e}")))?;
+    .map_err(|e| NeboError::Internal(format!("Couldn't add connector(s): {e}")))?;
 
     if created.is_empty() {
         // Managed connectors carry no command/url on purpose: NeboLoop drives
@@ -966,7 +966,7 @@ async fn handle_connection_code(
         let managed = crate::handlers::integrations::managed_server_count(&block);
         if managed == 0 {
             return Err(NeboError::Internal(format!(
-                "connector '{artifact_name}' has no valid MCP servers in its config"
+                "Connector '{artifact_name}' isn't set up correctly: it has nothing to connect to"
             )));
         }
         let _ = state
@@ -974,7 +974,7 @@ async fn handle_connection_code(
             .upsert_artifact_update_pref(&artifact_id, "connector", &detail.item.version);
         return Ok(CodeHandlerResult {
             message: format!(
-                "Added \"{artifact_name}\" — a managed connection. Its tools are available through your NeboAI connection; you'll be asked to link your {artifact_name} account the first time an employee uses it."
+                "Added \"{artifact_name}\" — a managed connector. Its tools are available through your NeboAI connection; you'll be asked to link your {artifact_name} account the first time an employee uses it."
             ),
             artifact_name: Some(artifact_name),
             artifact_id: Some(artifact_id),
@@ -991,9 +991,8 @@ async fn handle_connection_code(
 
     Ok(CodeHandlerResult {
         message: format!(
-            "Added MCP connection \"{}\": {} server(s)",
-            artifact_name,
-            created.len()
+            "Added connector \"{}\"",
+            artifact_name
         ),
         artifact_name: Some(artifact_name),
         artifact_id: Some(artifact_id),
@@ -3537,7 +3536,7 @@ mod tests {
         }
         // Nothing of what NeboAI said, and no Rust error taxonomy.
         let internal =
-            outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("create MCP integration(s): boom".into())), &EventOrigin::default());
+            outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("Couldn't add connector(s): boom".into())), &EventOrigin::default());
         assert_eq!(internal, "Couldn't install CONN-V1PR-K421. Try again.");
         // A success says what installed; a paid one where to pay.
         let paid = CodeHandlerResult {

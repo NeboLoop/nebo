@@ -240,7 +240,7 @@ pub(crate) async fn sync_integrations_from_block(
     let managed = managed_server_count(block);
     if servers.is_empty() && managed == 0 {
         return Err(types::NeboError::Validation(
-            "connector config has no valid MCP servers".into(),
+            "This connector isn't set up correctly: it has nothing to connect to".into(),
         ));
     }
     let existing = state.store.list_mcp_integrations_by_artifact(artifact_id)?;

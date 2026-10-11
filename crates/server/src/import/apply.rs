@@ -128,7 +128,7 @@ pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, Nebo
         Ok(None) => {}
         Err(e) => out
             .skipped
-            .push(format!("MCP servers: config.yaml unparseable ({e})")),
+            .push(format!("Connectors: couldn't read config.yaml ({e})")),
     }
 
     let mut skill_dirs = Vec::new();
@@ -220,7 +220,7 @@ fn import_mcp_block(
     for s in crate::handlers::integrations::parse_mcp_servers_block(block) {
         if existing.contains(&s.name) {
             out.skipped
-                .push(format!("MCP server {}: already configured", s.name));
+                .push(format!("Connector {}: already added", s.name));
             continue;
         }
         let id = uuid::Uuid::new_v4().to_string();

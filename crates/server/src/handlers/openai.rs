@@ -803,7 +803,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
     }
     for (server, entries) in mcp {
         tools.push(serde_json::json!({
-            "name": format!("{server} (MCP)"),
+            "name": format!("{server} (connector)"),
             "description": "",
             "entries": entries,
         }));
