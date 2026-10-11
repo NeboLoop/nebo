@@ -1,0 +1,90 @@
+// The Intelligence popover: one checkmark per card in every state, the five
+// levels and the packs by their names, and never an internal gateway name on
+// screen — even for a pack the owner named after it.
+import { describe, it, expect, beforeAll } from 'vitest';
+import { render } from 'svelte/server';
+import { addMessages, init } from 'svelte-i18n';
+import en from '$lib/i18n/locales/en.json';
+import IntelligencePicker from './IntelligencePicker.svelte';
+import { resolve, type PackRow } from '$lib/models/speeds';
+
+beforeAll(() => {
+	addMessages('en', en);
+	init({ fallbackLocale: 'en', initialLocale: 'en' });
+});
+
+const packs: PackRow[] = [
+	{ id: 'nebo-ai', name: 'Nebo AI', builtIn: true },
+	{ id: 'j', name: 'Janus', builtIn: false },
+	{ id: 'w', name: 'Work keys', builtIn: false }
+];
+
+const html = (value: string, view: 'level' | 'packs') =>
+	render(IntelligencePicker, {
+		props: { packs, choice: resolve(value, packs), view, onpick: () => {}, onclose: () => {} }
+	}).body;
+
+const checks = (out: string) => out.split('data-testid="intel-check"').length - 1;
+/** The text a reader sees: tags and attribute values gone. */
+const text = (out: string) => out.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+
+// Every state a conversation can be in: '' (Auto), each level, the legacy
+// speeds written both ways, a deleted pack, a raw model, the owner's packs.
+const STATES = [
+	'',
+	'pack/nebo-ai',
+	...['instant', 'low', 'medium', 'high', 'max'].map((l) => `pack/nebo-ai/${l}`),
+	'janus/nebo-1-pro',
+	'nebo-1-pro',
+	'janus/nebo-1',
+	'pack/gone/high',
+	'anthropic/claude-x',
+	'linked/a0b2/codex-3',
+	'pack/j/medium',
+	'pack/j',
+	'pack/w/max'
+];
+
+describe('IntelligencePicker', () => {
+	for (const value of STATES) {
+		it(`shows exactly one checkmark per card for "${value || 'Auto'}"`, () => {
+			expect(checks(html(value, 'level'))).toBe(1);
+			expect(checks(html(value, 'packs'))).toBe(1);
+		});
+	}
+
+	it('no level reads as Medium, a legacy speed as its level', () => {
+		expect(html('', 'level')).toMatch(/data-level="medium"[^>]*aria-pressed="true"/);
+		expect(html('janus/nebo-1-pro', 'level')).toMatch(/data-level="high"[^>]*aria-pressed="true"/);
+		expect(html('pack/j/medium', 'packs')).toMatch(/data-pack="j"[^>]*aria-pressed="true"/);
+	});
+
+	it('lists the five levels with Recommended on Medium and the cost on Max, and the footnote', () => {
+		const out = text(html('', 'level'));
+		for (const l of ['Instant', 'Low', 'Medium', 'High', 'Max']) expect(out).toContain(l);
+		expect(out).toContain(en.modelPick.recommended);
+		expect(out).toContain(en.modelPick.mostBalance);
+		expect(out).toContain(en.modelPick.levelHint);
+		expect(out).toContain(en.modelPick.pack);
+		for (const legacy of ['Fast', 'Balanced', 'Deep', 'Default']) expect(out).not.toMatch(new RegExp(`\\b${legacy}\\b`));
+	});
+
+	it('lists packs by name, the built-in as Nebo AI, with the link to build one', () => {
+		const out = text(html('pack/w/high', 'packs'));
+		expect(out).toContain('Nebo AI');
+		expect(out).toContain('Work keys');
+		expect(out).toContain(en.modelPick.customPack);
+		expect(out).toContain(en.modelPick.createPack);
+		expect(html('', 'packs')).toContain('href="/settings/intelligence-packs"');
+	});
+
+	it('never shows "Janus" or a model id, in any state', () => {
+		for (const value of STATES) {
+			for (const view of ['level', 'packs'] as const) {
+				const out = text(html(value, view));
+				expect(out).not.toMatch(/janus/i);
+				expect(out).not.toMatch(/nebo-1|claude-x|codex-3|a0b2/);
+			}
+		}
+	});
+});
