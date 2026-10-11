@@ -10,6 +10,12 @@ package main
 //  3. Add the mapping: "list_agent_chats.chats": "EnrichedChat[]"
 //  4. If the type isn't in neboComponents.ts, add it to extraInterfaces below.
 var typeOverrides = map[string]string{
+	// ── Teach a task ──
+	"teach_start.capSeconds": "number",
+	"teach_stop.keyframes":   "number",
+	"teach_stop.narrated":    "boolean",
+	"teach_stop.capped":      "boolean",
+
 	// ── Agent chats (enriched with preview, message count, relative time) ──
 	"list_agent_chats.chats":     "EnrichedChat[]",
 	"list_agent_chats.teammates": "EnrichedChat[]",

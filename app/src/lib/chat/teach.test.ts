@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { offersComputer, teachFailure, watchesComputer, SCREEN_RECORDING_SETTINGS } from './teach';
+import { offersComputer, teachFailure, watchesComputer, SCREEN_RECORDING_SETTINGS, TEACH_WARN_LEFT_S, teachEndingSoon, teachAtCap, teachStopForm } from './teach';
 import chatPane from '$lib/components/chat/ChatPane.svelte?raw';
 import desktopView from '$lib/components/chat/DesktopView.svelte?raw';
 
@@ -86,7 +86,54 @@ describe('a start that fails is never silent', () => {
 	});
 
 	it('shows a starting state while the bot gets ready', () => {
-		expect(chatPane).toContain('{#if teachActive || teachStarting || teachError}');
+		expect(chatPane).toContain('{#if teachActive || teachStarting || teachError || teachNotice}');
 		expect(chatPane).toContain("$t('chat.teachStarting')");
+	});
+});
+
+describe('a recording has a cap', () => {
+	it('warns in its last two minutes and stops at the cap', () => {
+		expect(TEACH_WARN_LEFT_S).toBe(120);
+		expect(teachEndingSoon(479, 600)).toBe(false);
+		expect(teachEndingSoon(480, 600)).toBe(true);
+		expect(teachAtCap(599, 600)).toBe(false);
+		expect(teachAtCap(600, 600)).toBe(true);
+		expect(teachEndingSoon(10_000, 0) || teachAtCap(10_000, 0)).toBe(false);
+	});
+
+	it('the app stops at the cap like a normal stop, and says the cap was reached', () => {
+		expect(chatPane).toContain('if (teachAtCap(teachSeconds, teachCap)) void stopTeach(true);');
+		expect(chatPane).toContain("$t('chat.teachEndingSoon'");
+		expect(chatPane).toContain("$t('chat.teachCapReached'");
+	});
+});
+
+describe('the owner narrates while teaching', () => {
+	it('the stop carries the narration after its fields', () => {
+		const narration = new File(['abc'], 'recording-20261010-101500.m4a', { type: 'audio/mp4' });
+		const form = teachStopForm({ agentId: 'a1', sessionKey: 'agent:a1:web', sessionId: 's1', narration, narrationOffsetMs: 812.4 });
+		expect([...form.keys()]).toEqual(['agentId', 'sessionKey', 'sessionId', 'narrationOffsetMs', 'narration']);
+		expect(form.get('narrationOffsetMs')).toBe('812');
+		expect((form.get('narration') as File).name).toBe('recording-20261010-101500.m4a');
+		const silent = teachStopForm({ agentId: 'a1', sessionKey: '', sessionId: 's1' });
+		expect(silent.has('narration')).toBe(false);
+	});
+
+	it('the microphone records only while the demonstration does, with its cap', () => {
+		const start = chatPane.slice(chatPane.indexOf('async function startTeach'), chatPane.indexOf('async function stopTeach'));
+		expect(start).toContain('startNarration(recordingStartedAt)');
+		expect(chatPane).toContain('capMs: teachCap > 0 ? teachCap * 1000 : undefined');
+		const stop = chatPane.slice(chatPane.indexOf('async function stopTeach'), chatPane.indexOf('function fmtTeach'));
+		expect(stop.indexOf('finishNarration()')).toBeLessThan(stop.indexOf('postTeachStop('));
+		expect(chatPane.match(/createClipRecorder\(/g)).toHaveLength(1);
+	});
+
+	it('the record bar shows the microphone, its level and a mute toggle', () => {
+		const bar = chatPane.slice(chatPane.indexOf('<!-- Teach-a-task record bar -->'), chatPane.indexOf('<!-- Composer'));
+		expect(bar).toContain('data-teach-mic');
+		expect(bar).toContain('narrator?.mute(');
+		expect(bar).toContain('narratorState.level');
+		expect(bar).toContain("$t('chat.teachMute')");
+		expect(bar).toContain("$t('chat.teachNoMic')");
 	});
 });

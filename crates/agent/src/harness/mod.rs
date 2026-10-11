@@ -31,7 +31,7 @@ pub mod turn_end;
 pub mod usage;
 pub mod workflow_turn;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use tokio::sync::{RwLock, mpsc};
@@ -102,6 +102,10 @@ pub struct Harness {
     /// history around every turn (`tools::workspace_history`), and the file
     /// store its blobs go in; `None` keeps none.
     pub(crate) workspace: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// Sessions whose turns build from their first step until the time
+    /// held (`Harness::build_session`): a taught task's learning run and
+    /// the turns that follow it.
+    pub(crate) build_sessions: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
 }
 
 impl Harness {
@@ -139,7 +143,27 @@ impl Harness {
             phone_locations: Default::default(),
             decide: None,
             workspace: None,
+            build_sessions: Default::default(),
         }
+    }
+
+    /// The turns of `session_key` build from their first step for the next
+    /// `window`: they run on the build lane of the employee's intelligence
+    /// pack (Nebo AI's: Deep, sent as the `build` purpose), the way the
+    /// workflow builder's do, without touching the model the owner chose.
+    /// For a taught task: its learning run and the turns that make a
+    /// workflow or a task from it.
+    pub fn build_session(&self, session_key: &str, window: std::time::Duration) {
+        let mut held = self.build_sessions.lock().unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+        held.retain(|_, until| *until > now);
+        held.insert(session_key.to_string(), now + window);
+    }
+
+    /// Whether `session_key`'s turns build from their first step now.
+    pub(crate) fn builds_session(&self, session_key: &str) -> bool {
+        let held = self.build_sessions.lock().unwrap_or_else(|p| p.into_inner());
+        held.get(session_key).is_some_and(|until| *until > std::time::Instant::now())
     }
 
     /// The owner's answers to a question (a tool's, or a linked runtime's

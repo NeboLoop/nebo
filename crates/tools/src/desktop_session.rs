@@ -83,7 +83,13 @@ impl Drop for ViewerGuard {
     }
 }
 
-/// Recording (teach-a-task) inhibits idle-stop for its whole duration.
+/// How many viewers are watching the desktop now.
+pub fn viewers() -> usize {
+    VIEWERS.load(Ordering::Relaxed)
+}
+
+/// Recording (teach-a-task) inhibits idle-stop for its whole duration,
+/// which [`TEACH_CAP`] bounds.
 pub fn set_recording(on: bool) {
     RECORDING.store(on, Ordering::Relaxed);
     touch();
@@ -328,12 +334,40 @@ async fn browser_window_shown() -> bool {
 //   full-screen still about once a second and keeps the ones that changed.
 //   No window, no virtual machine, no ffmpeg.
 // - Computer: the bot's on-demand virtual desktop. ffmpeg captures the SAME
-//   X display x11vnc serves (one canonical frame source) into a
-//   human-viewable mp4 plus a deduped ~1fps keyframe series, and xinput logs
-//   the raw input events.
+//   X display x11vnc serves (one canonical frame source) as a deduped ~1fps
+//   keyframe series and a small 5fps replay for the owner, and xinput logs
+//   the raw input events, each stamped with its time into the recording.
+//   The learner reads the keyframes and the timeline, never the replay.
+//
+// The owner's replay (session.mp4, the narration muxed in; for a recording
+// of their own screen, made from its keyframes) is kept at most
+// [`TEACH_VIDEO_KEEP`] on this disk.
+//
+// A recording runs for at most [`TEACH_CAP`]; the teach handler stops it
+// there even when no app is left to.
 //
 // Artifacts land in the bot's own home: ~/teach-sessions/<id>/{frames/, and
-// for the computer session.mp4, events.log, timeline.md}.
+// for the computer events.log; timeline.md where there are events or
+// element records (elements.jsonl, from the browser extension);
+// narration.md when the owner narrated a recording that has no timeline;
+// session.mp4}.
+
+/// The longest a demonstration records. At the cap it stops and is learned
+/// from like any other; the app warns the owner before it.
+pub const TEACH_CAP: Duration = Duration::from_secs(10 * 60);
+
+/// The longest the owner's replay of a demonstration stays on this disk.
+pub const TEACH_VIDEO_KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// When the recording under way started, in ms since the epoch; 0 when none
+/// is running. Element records stamped on this machine's clock are placed
+/// on the recording's timeline by it.
+static REC_STARTED_MS: AtomicU64 = AtomicU64::new(0);
+
+/// When the recording under way started, in ms since the epoch.
+pub fn recording_started_ms() -> Option<u64> {
+    Some(REC_STARTED_MS.load(Ordering::Relaxed)).filter(|ms| *ms > 0)
+}
 
 /// Where a teach-a-task demonstration is recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,14 +416,45 @@ pub fn own_screen() -> bool {
 // One recording at a time: the variants' size difference costs nothing.
 #[allow(clippy::large_enum_variant)]
 enum Recorder {
-    Computer { video: Child, frames: Child, events: Child },
-    Local { stop: tokio_util::sync::CancellationToken, sampler: tokio::task::JoinHandle<()> },
+    Computer { video: Child, frames: Child, events: Child, focus: Option<Child>, log: tokio::task::JoinHandle<()> },
+    Local { stop: tokio_util::sync::CancellationToken, sampler: tokio::task::JoinHandle<Vec<FrameAt>> },
 }
 
 struct RecInner {
     id: String,
     dir: std::path::PathBuf,
     recorder: Recorder,
+    started: std::time::Instant,
+}
+
+/// A keyframe and when it was taken: its number in frames/ and the time
+/// into the recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameAt {
+    pub frame: usize,
+    pub at: Duration,
+}
+
+/// A finished recording, as [`stop_recording`] leaves it.
+#[derive(Debug, Clone)]
+pub struct Finished {
+    pub id: String,
+    pub dir: std::path::PathBuf,
+    /// How many keyframes are in frames/.
+    pub keyframes: usize,
+    /// How long it recorded.
+    pub length: Duration,
+    /// When each keyframe was taken, where that is known (the owner's own
+    /// screen); empty for the computer, whose timeline carries the times.
+    pub frames: Vec<FrameAt>,
+}
+
+/// Something the owner said while recording: the time into the recording
+/// and the words.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Said {
+    pub at: Duration,
+    pub text: String,
 }
 
 /// How often the local recording looks at the screen.
@@ -437,8 +502,10 @@ async fn sample_local(
     scratch: std::path::PathBuf,
     first: Vec<u8>,
     stop: tokio_util::sync::CancellationToken,
-) {
+    started: std::time::Instant,
+) -> Vec<FrameAt> {
     let mut written = 1usize;
+    let mut taken = vec![FrameAt { frame: 1, at: Duration::ZERO }];
     let mut last = first;
     let mut tick = tokio::time::interval(LOCAL_FRAME_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -462,9 +529,11 @@ async fn sample_local(
         if let Err(e) = tokio::fs::write(frames_dir.join(format!("{written:04}.jpg")), &frame).await {
             warn!(error = %e, "teach: a local frame was not saved");
         }
+        taken.push(FrameAt { frame: written, at: started.elapsed() });
         last = frame;
     }
     let _ = tokio::fs::remove_file(&scratch).await;
+    taken
 }
 
 static REC: OnceLock<tokio::sync::Mutex<Option<RecInner>>> = OnceLock::new();
@@ -477,6 +546,12 @@ fn rec_slot() -> &'static tokio::sync::Mutex<Option<RecInner>> {
 fn teach_root() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     std::path::Path::new(&home).join("teach-sessions")
+}
+
+/// A teach session's folder, by its id; `None` for anything that is not a
+/// session id (it is a path segment).
+pub fn session_dir(id: &str) -> Option<std::path::PathBuf> {
+    uuid::Uuid::parse_str(id).ok().map(|u| teach_root().join(u.to_string()))
 }
 
 /// Start recording a demonstration `where_`. Returns (session_id,
@@ -514,21 +589,26 @@ pub async fn start_recording(where_: TeachWhere) -> Result<(String, std::path::P
             }
         };
         std::fs::write(frames_dir.join("0001.jpg"), &first).map_err(|e| format!("teach frame: {e}"))?;
+        let started = std::time::Instant::now();
+        REC_STARTED_MS.store(now_ms(), Ordering::Relaxed);
         let stop = tokio_util::sync::CancellationToken::new();
-        let sampler = tokio::spawn(sample_local(frames_dir, scratch, first, stop.clone()));
+        let sampler = tokio::spawn(sample_local(frames_dir, scratch, first, stop.clone(), started));
         info!(session = %id, "teach recording started on this computer's screen");
-        *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), recorder: Recorder::Local { stop, sampler } });
+        *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), recorder: Recorder::Local { stop, sampler }, started });
         return Ok((id, dir));
     }
 
-    // Human-viewable replay of the whole demonstration.
+    let started = std::time::Instant::now();
+    REC_STARTED_MS.store(now_ms(), Ordering::Relaxed);
+    // The owner's replay: 5fps is enough to follow a desktop, and a high CRF
+    // keeps ten minutes of it small.
     let video = command::new::<Command>("ffmpeg", command::Console::Hidden)
         .args([
             "-loglevel", "error",
-            "-f", "x11grab", "-framerate", "10", "-i", DISPLAY,
-            "-vcodec", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-f", "x11grab", "-framerate", "5", "-i", DISPLAY,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-pix_fmt", "yuv420p",
         ])
-        .arg(dir.join("session.mp4"))
+        .arg(dir.join(VIDEO))
         .stdin(std::process::Stdio::piped()) // 'q' for a clean mp4 finalize
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -550,38 +630,163 @@ pub async fn start_recording(where_: TeachWhere) -> Result<(String, std::path::P
         .map_err(|e| format!("keyframe sampler failed to start: {e}"))?;
 
     // Raw input event log (clicks, keys, focus) — parsed at distill time.
-    let events_file = std::fs::File::create(dir.join("events.log"))
+    // Each event is stamped with its time into the recording on the way to
+    // the file, so the timeline can say when, and narration can be put in
+    // order beside it.
+    let events_file = tokio::fs::File::create(dir.join("events.log"))
+        .await
         .map_err(|e| format!("events log: {e}"))?;
-    let events = command::new::<Command>("xinput", command::Console::Hidden)
+    let mut events = command::new::<Command>("xinput", command::Console::Hidden)
         .args(["test-xi2", "--root"])
         .env("DISPLAY", DISPLAY)
         .stdin(std::process::Stdio::null())
-        .stdout(events_file)
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("input logger failed to start: {e}"))?;
+    // Which kind of field has the keyboard (AT-SPI focus): what is typed
+    // into a password field never reaches the timeline in clear. Without
+    // it the recording goes on; the timeline then redacts by shape alone.
+    let mut focus = command::new::<Command>("python3", command::Console::Hidden)
+        .args(["-c", FOCUS_WATCHER])
+        .env("DISPLAY", DISPLAY)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| warn!(error = %e, "teach: the focus watcher did not start; typed secrets are redacted by shape alone"))
+        .ok();
+    let focus_out = focus.as_mut().and_then(|f| f.stdout.take());
+    let log = match events.stdout.take() {
+        Some(out) => tokio::spawn(stamp_events(out, focus_out, events_file, dir.join(DESKTOP_ELEMENTS), started)),
+        None => tokio::spawn(async {}),
+    };
 
     set_recording(true);
     info!(session = %id, "teach recording started");
-    *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), recorder: Recorder::Computer { video, frames, events } });
+    *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), recorder: Recorder::Computer { video, frames, events, focus, log }, started });
     Ok((id, dir))
 }
 
-/// Stop the recording and finalize artifacts. Returns (session_id, dir,
-/// keyframe_count). No recording in progress is an error.
-pub async fn stop_recording() -> Result<(String, std::path::PathBuf, usize), String> {
+/// The line before each event in events.log: its time into the recording,
+/// in milliseconds.
+const EVENT_TIME: &str = "TIME ";
+
+/// The line in events.log saying which kind of field the keyboard moved
+/// to: `FOCUS password` or `FOCUS other`.
+const FOCUS_LINE: &str = "FOCUS ";
+
+/// Where the watcher's desktop element records go (`click <json>` lines),
+/// each with its `t_ms` into the recording.
+const DESKTOP_ELEMENTS: &str = "desktop-elements.jsonl";
+
+/// The owner's replay of a demonstration.
+pub const VIDEO: &str = "session.mp4";
+
+/// Watches the desktop through AT-SPI (which the cloud image ships for the
+/// desktop tool). Prints `focus password` or `focus other` each time a
+/// field takes the keyboard (never what is in the field), and may print
+/// `click <json>` for an element clicked outside the browser.
+const FOCUS_WATCHER: &str = r#"
+import sys, gi
+gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi
+def on(ev):
+    if not ev.detail1:
+        return
+    try:
+        role = ev.source.get_role_name()
+    except Exception:
+        return
+    sys.stdout.write("focus password\n" if role == "password text" else "focus other\n")
+    sys.stdout.flush()
+Atspi.EventListener.new(on).register("object:state-changed:focused")
+Atspi.event_main()
+"#;
+
+/// Copies xinput's event dump into events.log, a [`EVENT_TIME`] line before
+/// each event, and the watcher's focus moves as [`FOCUS_LINE`]s at their
+/// time; its element records go to `elements` with their `t_ms`.
+async fn stamp_events(
+    out: tokio::process::ChildStdout,
+    focus: Option<tokio::process::ChildStdout>,
+    file: tokio::fs::File,
+    elements: std::path::PathBuf,
+    started: std::time::Instant,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut lines = tokio::io::BufReader::new(out).lines();
+    let mut focus = focus.map(|f| tokio::io::BufReader::new(f).lines());
+    let mut file = tokio::io::BufWriter::new(file);
+    let time = |started: std::time::Instant| format!("{EVENT_TIME}{}\n", started.elapsed().as_millis());
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let Ok(Some(line)) = line else { break };
+                if line.trim_start().starts_with("EVENT type ") {
+                    let _ = file.write_all(time(started).as_bytes()).await;
+                }
+                let _ = file.write_all(line.as_bytes()).await;
+                let _ = file.write_all(b"\n").await;
+            }
+            moved = async { focus.as_mut().unwrap().next_line().await }, if focus.is_some() => {
+                match moved {
+                    Ok(Some(said)) => {
+                        let said = said.trim();
+                        if let Some(record) = said.strip_prefix("click ") {
+                            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(record) {
+                                v["t_ms"] = (started.elapsed().as_millis() as u64).into();
+                                let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(&elements).await;
+                                if let Ok(f) = f.as_mut() {
+                                    let _ = f.write_all(format!("{v}\n").as_bytes()).await;
+                                }
+                            }
+                        } else if let Some(kind) = said.strip_prefix("focus ") {
+                            let kind = if kind == "password" { "password" } else { "other" };
+                            let _ = file.write_all(format!("{}{FOCUS_LINE}{kind}\n", time(started)).as_bytes()).await;
+                        }
+                    }
+                    _ => focus = None,
+                }
+            }
+        }
+    }
+    let _ = file.flush().await;
+}
+
+/// The recording under way: its session id and how long it has run.
+pub async fn recording() -> Option<(String, Duration)> {
+    rec_slot().lock().await.as_ref().map(|r| (r.id.clone(), r.started.elapsed()))
+}
+
+/// No recording to stop: none is running, or (with `only`) the one
+/// running is another.
+pub const NOT_RECORDING: &str = "no recording in progress";
+
+/// Stop the recording and finalize its artifacts. `only` stops it only when
+/// it is that session (a cap that comes due must never stop a newer one).
+/// No such recording in progress is [`NOT_RECORDING`].
+pub async fn stop_recording(only: Option<&str>) -> Result<Finished, String> {
     let mut rec = rec_slot().lock().await;
+    if only.is_some_and(|id| rec.as_ref().is_some_and(|r| r.id != id)) {
+        return Err(NOT_RECORDING.into());
+    }
     let Some(inner) = rec.take() else {
-        return Err("no recording in progress".into());
+        return Err(NOT_RECORDING.into());
     };
+    let mut frames_at = Vec::new();
     match inner.recorder {
         Recorder::Local { stop, sampler } => {
             stop.cancel();
-            let _ = tokio::time::timeout(Duration::from_secs(10), sampler).await;
+            if let Ok(Ok(taken)) = tokio::time::timeout(Duration::from_secs(10), sampler).await {
+                frames_at = taken;
+            }
         }
-        Recorder::Computer { mut video, mut frames, mut events } => {
+        Recorder::Computer { mut video, mut frames, mut events, focus, log } => {
             set_recording(false);
-            // Ask ffmpeg to finalize (write the moov atom) instead of killing it.
+            // Ask ffmpeg to finalize (the mp4's index, the last frame)
+            // instead of killing it.
             for child in [&mut video, &mut frames] {
                 if let Some(mut stdin) = child.stdin.take() {
                     use tokio::io::AsyncWriteExt;
@@ -593,6 +798,11 @@ pub async fn stop_recording() -> Result<(String, std::path::PathBuf, usize), Str
             let _ = video.kill().await;
             let _ = frames.kill().await;
             let _ = events.kill().await;
+            if let Some(mut f) = focus {
+                let _ = f.kill().await;
+            }
+            // The stamper ends with xinput's output; the log is whole after it.
+            let _ = tokio::time::timeout(Duration::from_secs(5), log).await;
         }
     }
 
@@ -605,19 +815,336 @@ pub async fn stop_recording() -> Result<(String, std::path::PathBuf, usize), Str
     // a blind study still recovered the task from keystrokes alone). Parse it
     // into a readable timeline so the study pass reads THIS first and uses
     // vision to confirm, instead of grepping 400KB of protocol noise.
-    if let Ok(log) = std::fs::read_to_string(inner.dir.join("events.log")) {
-        let timeline = summarize_x11_events(&log);
-        let _ = std::fs::write(inner.dir.join("timeline.md"), timeline);
-    }
+    REC_STARTED_MS.store(0, Ordering::Relaxed);
+    let _ = write_timeline(&inner.dir, &[]);
 
-    info!(session = %inner.id, keyframes = count, "teach recording stopped");
-    Ok((inner.id, inner.dir, count))
+    let length = inner.started.elapsed();
+    info!(session = %inner.id, keyframes = count, secs = length.as_secs(), "teach recording stopped");
+    Ok(Finished { id: inner.id, dir: inner.dir, keyframes: count, length, frames: frames_at })
+}
+
+/// timeline.md from what the recording has: the input events (the
+/// computer's events.log), the element records (elements.jsonl, the browser
+/// extension's), or both, with `said` folded in. `None` when it has
+/// neither.
+fn write_timeline(dir: &std::path::Path, said: &[Said]) -> Option<Result<(), String>> {
+    let log = std::fs::read_to_string(dir.join("events.log")).ok();
+    let elements: Option<Vec<serde_json::Value>> = std::fs::read_to_string(dir.join("elements.jsonl"))
+        .ok()
+        .map(|raw| raw.lines().filter_map(|l| serde_json::from_str(l.trim()).ok()).collect());
+    if log.is_none() && elements.is_none() {
+        return None;
+    }
+    let timeline = summarize_x11_events(log.as_deref().unwrap_or(""), elements.as_deref().unwrap_or(&[]), said);
+    Some(std::fs::write(dir.join("timeline.md"), timeline).map_err(|e| format!("timeline: {e}")))
+}
+
+/// Make the owner's replay, `session.mp4`, with the narration (`audio`,
+/// starting `offset` into the recording) muxed in: the computer's own
+/// capture, or, for a recording of the owner's screen, a video made from
+/// its keyframes at the times they were taken. Errors when this machine
+/// has no ffmpeg or nothing to make it from.
+pub async fn finish_video(rec: &Finished, audio: Option<(&std::path::Path, Duration)>) -> Result<std::path::PathBuf, String> {
+    let out = rec.dir.join(VIDEO);
+    let offset = |o: Duration| format!("{:.3}", o.as_secs_f64());
+    let mut cmd = command::new::<Command>("ffmpeg", command::Console::Hidden);
+    cmd.args(["-loglevel", "error", "-y"]).current_dir(&rec.dir);
+    let target = if out.exists() {
+        // The computer's capture: the narration joins it, the video is copied.
+        let Some((audio, at)) = audio else { return Ok(out) };
+        cmd.args(["-i", VIDEO, "-itsoffset", &offset(at), "-i"])
+            .arg(audio)
+            .args(["-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"]);
+        rec.dir.join("session.muxed.mp4")
+    } else {
+        if rec.frames.is_empty() {
+            return Err("there are no keyframes to make a video from".into());
+        }
+        std::fs::write(rec.dir.join("video.txt"), slideshow(&rec.frames, rec.length)).map_err(|e| format!("video: {e}"))?;
+        cmd.args(["-f", "concat", "-safe", "0", "-i", "video.txt"]);
+        if let Some((audio, at)) = audio {
+            cmd.args(["-itsoffset", &offset(at), "-i"]).arg(audio).args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "64k"]);
+        }
+        cmd.args([
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=5",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        ]);
+        out.clone()
+    };
+    cmd.arg(&target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    let made = tokio::time::timeout(Duration::from_secs(300), cmd.output()).await;
+    let _ = std::fs::remove_file(rec.dir.join("video.txt"));
+    let made = made.map_err(|_| "making the video took longer than 5 minutes".to_string())?.map_err(|e| format!("ffmpeg is not available: {e}"))?;
+    if !made.status.success() {
+        let _ = std::fs::remove_file(&target);
+        return Err(format!("ffmpeg could not make the video: {}", String::from_utf8_lossy(&made.stderr).trim()));
+    }
+    if target != out {
+        std::fs::rename(&target, &out).map_err(|e| format!("video: {e}"))?;
+    }
+    Ok(out)
+}
+
+/// An ffmpeg concat list showing each keyframe from when it was taken
+/// until the next, the last until the recording's end.
+fn slideshow(frames: &[FrameAt], length: Duration) -> String {
+    let mut out = String::new();
+    for (i, f) in frames.iter().enumerate() {
+        let until = frames.get(i + 1).map_or(length.max(f.at + Duration::from_secs(1)), |n| n.at);
+        out.push_str(&format!("file 'frames/{:04}.jpg'\nduration {:.3}\n", f.frame, until.saturating_sub(f.at).as_secs_f64().max(0.04)));
+    }
+    // The concat demuxer holds the last entry's duration only when it is
+    // listed again.
+    if let Some(last) = frames.last() {
+        out.push_str(&format!("file 'frames/{:04}.jpg'\n", last.frame));
+    }
+    out
+}
+
+/// Remove what a demonstration leaves that is the owner's own voice and
+/// face, once it is older than `keep`: the replay and any narration audio
+/// still on disk. The keyframes and timeline stay; they are what was
+/// learned from.
+pub fn sweep_teach_media(keep: Duration) {
+    sweep_media_in(&teach_root(), keep);
+}
+
+fn sweep_media_in(root: &std::path::Path, keep: Duration) {
+    let Ok(sessions) = std::fs::read_dir(root) else { return };
+    let cutoff = std::time::SystemTime::now().checked_sub(keep);
+    for session in sessions.flatten() {
+        let Ok(files) = std::fs::read_dir(session.path()) else { continue };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().into_owned();
+            if !(name == VIDEO || name.starts_with("narration.") && name != "narration.md") {
+                continue;
+            }
+            let old = f.metadata().and_then(|m| m.modified()).ok().zip(cutoff).is_some_and(|(at, cut)| at < cut);
+            if old {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+    }
+}
+
+/// Put what the owner said while recording beside what they did. A
+/// recording with a timeline (the computer's) gets the words folded into
+/// timeline.md in time order; one without (the owner's own screen) gets
+/// narration.md, each line naming the keyframe on screen as it was said.
+/// Returns the file written.
+pub fn write_narration(rec: &Finished, said: &[Said]) -> Result<&'static str, String> {
+    if let Some(written) = write_timeline(&rec.dir, said) {
+        return written.map(|()| "timeline.md");
+    }
+    std::fs::write(rec.dir.join("narration.md"), narration_md(said, &rec.frames)).map_err(|e| format!("narration: {e}"))?;
+    Ok("narration.md")
+}
+
+/// `mm:ss` into the recording.
+fn clock(at: Duration) -> String {
+    let s = at.as_secs();
+    format!("{:02}:{:02}", s / 60, s % 60)
+}
+
+/// One narration line: `owner said: "…"`.
+fn said_line(text: &str) -> String {
+    format!("owner said: \"{}\"", text.trim())
+}
+
+/// narration.md: what the owner said, in order, each with the keyframe on
+/// screen at that moment when the frames' times are known.
+fn narration_md(said: &[Said], frames: &[FrameAt]) -> String {
+    let mut out = String::from(
+        "# The owner's narration
+
+What the owner said while recording, in order. Each line starts with the time into the recording (mm:ss)",
+    );
+    out.push_str(if frames.is_empty() {
+        ".\n\n"
+    } else {
+        " and the keyframe on screen as it was said (frames/NNNN.jpg).\n\n"
+    });
+    let mut said: Vec<&Said> = said.iter().collect();
+    said.sort_by_key(|s| s.at);
+    for s in said {
+        let frame = frames.iter().rev().find(|f| f.at <= s.at).or(frames.first());
+        match frame {
+            Some(f) => out.push_str(&format!("{}  frame {:04}  {}\n", clock(s.at), f.frame, said_line(&s.text))),
+            None => out.push_str(&format!("{}  {}\n", clock(s.at), said_line(&s.text))),
+        }
+    }
+    out
+}
+
+/// What a typed run that may be a secret reads as in the timeline.
+const TYPED_SECRET: &str = "Typed: [typed secret]";
+
+/// How near in time an element record and an input event must be to be
+/// the same action.
+const ELEMENT_MATCH_MS: u64 = 400;
+/// And how near on screen, when both say where.
+const ELEMENT_MATCH_PX: i64 = 40;
+
+/// Put the browser extension's element records into the steps: each one
+/// replaces the input event that was the same action (a click at the same
+/// moment and place; every keystroke run typed while it was the field), so
+/// a field it saw as sensitive never comes through from keycodes. Records
+/// with no input event (a page loaded) are steps of their own.
+fn merge_elements(steps: &mut Vec<(Duration, String)>, elements: &[serde_json::Value]) {
+    let near = |a: Duration, b: u64| (a.as_millis() as i64 - b as i64).unsigned_abs() <= ELEMENT_MATCH_MS;
+    let at_of = |step: &str| -> Option<(i64, i64)> {
+        let inner = step.split_once(" at (")?.1.strip_suffix(')')?;
+        let (x, y) = inner.split_once(", ")?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    };
+    for el in elements {
+        let Some(t) = el["t_ms"].as_u64() else { continue };
+        let action = el["action"].as_str().unwrap_or("");
+        match action {
+            "type" => {
+                let end = el["t_end_ms"].as_u64().unwrap_or(t);
+                let from = t.saturating_sub(ELEMENT_MATCH_MS);
+                let to = end + ELEMENT_MATCH_MS;
+                steps.retain(|(at, s)| {
+                    let ms = at.as_millis() as u64;
+                    !(s.starts_with("Typed: ") && ms >= from && ms <= to)
+                });
+            }
+            "press" => {
+                // The same key, pressed at the same moment, is one step.
+                let key = el["key"].as_str().unwrap_or("");
+                let token = match key {
+                    "Escape" => "Esc",
+                    "ArrowUp" => "Up",
+                    "ArrowDown" => "Down",
+                    "ArrowLeft" => "Left",
+                    "ArrowRight" => "Right",
+                    other => other,
+                };
+                let pressed = format!("Pressed [{token}]");
+                if let Some(i) = steps.iter().position(|(at, s)| *s == pressed && near(*at, t)) {
+                    steps.remove(i);
+                }
+            }
+            "click" | "right_click" | "double_click" | "check" | "submit" | "select" => {
+                let clicks = if action == "double_click" { 2 } else { 1 };
+                let xy = el["x"].as_f64().zip(el["y"].as_f64()).map(|(x, y)| (x as i64, y as i64));
+                for _ in 0..clicks {
+                    let same = steps.iter().position(|(at, s)| {
+                        (s.starts_with("Click at (") || s.starts_with("Right-click at ("))
+                            && near(*at, t)
+                            && match (xy, at_of(s)) {
+                                (Some((ex, ey)), Some((sx, sy))) => (ex - sx).abs() <= ELEMENT_MATCH_PX && (ey - sy).abs() <= ELEMENT_MATCH_PX,
+                                _ => true,
+                            }
+                    });
+                    if let Some(i) = same {
+                        steps.remove(i);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(line) = element_line(el) {
+            steps.push((Duration::from_millis(t), line));
+        }
+    }
+}
+
+/// One element record as a timeline step: `Click button "Save order" at
+/// (386, 300)  locators: … | …  url: …  after: …  crop: …`.
+fn element_line(el: &serde_json::Value) -> Option<String> {
+    let text = |k: &str| el[k].as_str().map(str::trim).filter(|v| !v.is_empty());
+    let action = text("action")?;
+    let verb = match action {
+        "click" => "Click",
+        "right_click" => "Right-click",
+        "double_click" => "Double-click",
+        "type" => "Type into",
+        "select" => "Select in",
+        "check" => "Check",
+        "submit" => "Submit",
+        "press" => "Press",
+        "navigate" => "Go to",
+        other => other,
+    };
+    let mut line = verb.to_string();
+    match action {
+        "navigate" => line.push_str(&format!(" {}", text("url").unwrap_or(""))),
+        "press" => line.push_str(&format!(" {}", text("key").unwrap_or(""))),
+        _ => {
+            if let Some(role) = text("role") {
+                line.push_str(&format!(" {role}"));
+            }
+            if let Some(name) = text("name") {
+                line.push_str(&format!(" \"{name}\""));
+            }
+        }
+    }
+    if matches!(action, "type" | "select") {
+        let value = match text("value") {
+            Some("[hidden]") => "[typed secret]",
+            Some(v) => v,
+            None => "",
+        };
+        line.push_str(&format!(": {value}"));
+    }
+    if let (Some(x), Some(y)) = (el["x"].as_f64(), el["y"].as_f64()) {
+        line.push_str(&format!(" at ({}, {})", x as i64, y as i64));
+    }
+    let locators: Vec<&str> = el["locators"].as_array().map(|a| a.iter().filter_map(|l| l.as_str()).collect()).unwrap_or_default();
+    if !locators.is_empty() {
+        line.push_str(&format!("  locators: {}", locators.join(" | ")));
+    }
+    if action != "navigate"
+        && let Some(url) = text("url")
+    {
+        line.push_str(&format!("  url: {url}"));
+    }
+    let after = &el["after"];
+    let seen = |k: &str| after[k].as_str().map(str::trim).filter(|v| !v.is_empty());
+    let mut state: Vec<String> = Vec::new();
+    if let Some(u) = seen("url") {
+        state.push(format!("url={u}"));
+    }
+    if let Some(t) = seen("title") {
+        state.push(format!("title \"{t}\""));
+    }
+    if let Some(h) = seen("heading") {
+        state.push(format!("heading \"{h}\""));
+    }
+    if let Some(a) = seen("appeared") {
+        state.push(format!("text \"{a}\" visible"));
+    }
+    if !state.is_empty() {
+        line.push_str(&format!("  after: {}", state.join("; ")));
+    }
+    if let Some(crop) = text("crop") {
+        line.push_str(&format!("  crop: {crop}"));
+    }
+    Some(line)
+}
+
+/// The login shape (something typed, Tab, something typed, Enter): the
+/// second is a password whether or not the focus watcher saw the field.
+fn redact_logins(steps: &mut [(Duration, String)]) {
+    for i in 0..steps.len().saturating_sub(3) {
+        if steps[i].1.starts_with("Typed: ")
+            && steps[i + 1].1 == "Pressed [Tab]"
+            && steps[i + 2].1.starts_with("Typed: ")
+            && steps[i + 3].1 == "Pressed [Enter]"
+        {
+            steps[i + 2].1 = TYPED_SECRET.to_string();
+        }
+    }
 }
 
 /// Turn an `xinput test-xi2` dump into a human/model-readable action timeline:
 /// clicks with coordinates, typed text reassembled from keycodes (US layout),
-/// special keys as tokens. Best-effort — unknown keycodes render as [#n].
-fn summarize_x11_events(log: &str) -> String {
+/// special keys as tokens, each at its time into the recording. What the
+/// owner said (`said`) is folded in, in time order. Best-effort — unknown
+/// keycodes render as [#n].
+fn summarize_x11_events(log: &str, elements: &[serde_json::Value], said: &[Said]) -> String {
     #[derive(PartialEq)]
     enum Pending {
         None,
@@ -673,23 +1200,44 @@ fn summarize_x11_events(log: &str) -> String {
     let mut out = String::from(
         "# Recorded action timeline
 
-Reconstructed from the input event log. Typed text is reassembled from keycodes (US layout); clicks carry screen coordinates on the 1280x800 display.
+Reconstructed from the input event log. Each line starts with the time into the recording (mm:ss). Typed text is reassembled from keycodes (US layout); clicks carry screen coordinates on the 1280x800 display. `[typed secret]` is something typed into a password field: never write it down; use a saved credential.
 
 ",
     );
+    if !elements.is_empty() {
+        out.push_str(
+            "Where the page element is known, a step names it by role and name, then `locators:` (the ways to find it again, strongest first), the page's `url:`, and `after:` (what the screen showed once the step was done). Coordinates are the last resort.\n\n",
+        );
+    }
+    if !said.is_empty() {
+        out.push_str("Lines reading `owner said: \"…\"` are what the owner said aloud at that moment.\n\n");
+    }
     let mut pending = Pending::None;
     let mut detail: u32 = 0;
+    let mut now = Duration::ZERO;
+    // The typed run in progress, when its first key was pressed, and
+    // whether any of it went into a password field.
     let mut typed = String::new();
-    let mut steps: Vec<String> = Vec::new();
-    let flush_typed = |typed: &mut String, steps: &mut Vec<String>| {
+    let mut typed_at = Duration::ZERO;
+    let mut secret = false;
+    let mut in_password = false;
+    let mut steps: Vec<(Duration, String)> = Vec::new();
+    let flush_typed = |typed: &mut String, secret: &mut bool, at: Duration, steps: &mut Vec<(Duration, String)>| {
         if !typed.is_empty() {
-            steps.push(format!("Typed: {typed}"));
+            steps.push((at, if *secret { TYPED_SECRET.to_string() } else { format!("Typed: {typed}") }));
             typed.clear();
         }
+        *secret = false;
     };
     for line in log.lines() {
         let t = line.trim();
-        if let Some(rest) = t.strip_prefix("EVENT type ") {
+        if let Some(ms) = t.strip_prefix(EVENT_TIME) {
+            now = Duration::from_millis(ms.trim().parse().unwrap_or(0));
+        } else if let Some(kind) = t.strip_prefix(FOCUS_LINE) {
+            // A new field: what was typed in the last one is a run of its own.
+            flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
+            in_password = kind.trim() == "password";
+        } else if let Some(rest) = t.strip_prefix("EVENT type ") {
             pending = if rest.starts_with("4 ") {
                 Pending::Click
             } else if rest.starts_with("2 ") {
@@ -704,7 +1252,7 @@ Reconstructed from the input event log. Typed text is reassembled from keycodes 
             if pending == Pending::Click {
                 let xy: Vec<&str> = coords.split('/').collect();
                 if xy.len() == 2 {
-                    flush_typed(&mut typed, &mut steps);
+                    flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
                     let btn = match detail {
                         1 => "Click",
                         3 => "Right-click",
@@ -714,7 +1262,7 @@ Reconstructed from the input event log. Typed text is reassembled from keycodes 
                     if btn != "Scroll" {
                         let px = xy[0].trim().parse::<f64>().unwrap_or(0.0) as i64;
                         let py = xy[1].trim().parse::<f64>().unwrap_or(0.0) as i64;
-                        steps.push(format!("{btn} at ({px}, {py})"));
+                        steps.push((now, format!("{btn} at ({px}, {py})")));
                     }
                 }
                 pending = Pending::None;
@@ -723,19 +1271,27 @@ Reconstructed from the input event log. Typed text is reassembled from keycodes 
             let shift = t.contains("effective: 1") || t.contains("effective: 0x1");
             if let Some(ch) = keychar(detail, shift) {
                 if ch.starts_with('[') {
-                    flush_typed(&mut typed, &mut steps);
-                    steps.push(format!("Pressed {ch}"));
+                    flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
+                    steps.push((now, format!("Pressed {ch}")));
                 } else {
+                    if typed.is_empty() {
+                        typed_at = now;
+                    }
+                    secret |= in_password;
                     typed.push_str(&ch);
                 }
             }
             pending = Pending::None;
         }
     }
-    flush_typed(&mut typed, &mut steps);
-    for (i, s) in steps.iter().enumerate() {
-        out.push_str(&format!("{}. {s}
-", i + 1));
+    flush_typed(&mut typed, &mut secret, typed_at, &mut steps);
+    redact_logins(&mut steps);
+    merge_elements(&mut steps, elements);
+    steps.extend(said.iter().map(|s| (s.at, said_line(&s.text))));
+    // Stable: at the same moment, what was done comes before what was said.
+    steps.sort_by_key(|(at, _)| *at);
+    for (at, s) in &steps {
+        out.push_str(&format!("{}  {s}\n", clock(*at)));
     }
     out
 }
@@ -848,9 +1404,228 @@ EVENT type 2 (KeyPress)\n\
     detail: 36\n\
     root: 390.00/328.00\n\
     modifiers: locked 0 latched 0 base 0 effective: 0\n";
-        let t = summarize_x11_events(log);
+        let t = summarize_x11_events(log, &[], &[]);
         assert!(t.contains("Click at (386, 300)"), "click missing: {t}");
         assert!(t.contains("Typed: re"), "typed text missing: {t}");
         assert!(t.contains("Pressed [Enter]"), "enter missing: {t}");
+    }
+
+    /// Each step carries its time into the recording, and what the owner
+    /// said is folded in beside it, in time order.
+    #[test]
+    fn narration_is_folded_into_the_timeline_in_time_order() {
+        let log = "\
+TIME 3000\n\
+EVENT type 4 (ButtonPress)\n\
+    detail: 1\n\
+    root: 386.00/300.00\n\
+TIME 14500\n\
+EVENT type 2 (KeyPress)\n\
+    detail: 27\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n\
+TIME 14700\n\
+EVENT type 2 (KeyPress)\n\
+    detail: 26\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n\
+TIME 75000\n\
+EVENT type 2 (KeyPress)\n\
+    detail: 36\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n";
+        let said = [
+            Said { at: Duration::from_millis(12_400), text: " filter last week ".into() },
+            Said { at: Duration::from_millis(1_000), text: "go to the orders page".into() },
+        ];
+        let t = summarize_x11_events(log, &[], &said);
+        let body: Vec<&str> = t.lines().filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_digit)).collect();
+        assert_eq!(
+            body,
+            [
+                "00:01  owner said: \"go to the orders page\"",
+                "00:03  Click at (386, 300)",
+                "00:12  owner said: \"filter last week\"",
+                "00:14  Typed: re",
+                "01:15  Pressed [Enter]",
+            ]
+        );
+        assert!(t.contains("owner said"), "the header explains the narration lines: {t}");
+        assert!(!summarize_x11_events(log, &[], &[]).contains("owner said"));
+    }
+
+    /// A recording of the owner's own screen has no timeline: its narration
+    /// is written on its own, each line naming the keyframe on screen.
+    #[test]
+    fn narration_without_a_timeline_names_the_keyframe_on_screen() {
+        let frames = [
+            FrameAt { frame: 1, at: Duration::ZERO },
+            FrameAt { frame: 2, at: Duration::from_secs(4) },
+            FrameAt { frame: 3, at: Duration::from_secs(9) },
+        ];
+        let said = [
+            Said { at: Duration::from_secs(5), text: "open the first one".into() },
+            Said { at: Duration::from_millis(500), text: "this is the orders page".into() },
+            Said { at: Duration::from_secs(61), text: "copy the PO number".into() },
+        ];
+        let md = narration_md(&said, &frames);
+        let lines: Vec<&str> = md.lines().filter(|l| l.starts_with('0')).collect();
+        assert_eq!(
+            lines,
+            [
+                "00:00  frame 0001  owner said: \"this is the orders page\"",
+                "00:05  frame 0002  owner said: \"open the first one\"",
+                "01:01  frame 0003  owner said: \"copy the PO number\"",
+            ]
+        );
+        assert!(narration_md(&said, &[]).lines().any(|l| l == "00:05  owner said: \"open the first one\""));
+    }
+
+    /// The learner reads keyframes and events; the owner gets a small
+    /// replay.
+    #[test]
+    fn a_demonstration_records_keyframes_events_and_a_small_replay() {
+        let src = include_str!("desktop_session.rs");
+        let start = src.find("pub async fn start_recording").unwrap();
+        let end = start + src[start..].find("\n}\n").unwrap();
+        let body = &src[start..end];
+        assert!(body.contains("\"-framerate\", \"5\"") && body.contains("\"-crf\", \"32\""), "a small 5fps replay is recorded");
+        assert!(body.contains("mpdecimate"), "keyframes are");
+        assert!(body.contains("test-xi2"), "input events are");
+    }
+
+    #[test]
+    fn a_recording_is_capped_at_ten_minutes() {
+        assert_eq!(TEACH_CAP, Duration::from_secs(600));
+    }
+
+    /// What is typed into a password field never reaches the timeline in
+    /// clear: by the field's role when the focus watcher saw it, and by the
+    /// login shape when it did not.
+    #[test]
+    fn typed_passwords_are_redacted() {
+        let key = |ms: u32, code: u32| {
+            format!("TIME {ms}\nEVENT type 2 (KeyPress)\n    detail: {code}\n    modifiers: locked 0 latched 0 base 0 effective: 0\n")
+        };
+        // "re" in a text field, then "qwe" in a password field, then a click.
+        let watched = format!(
+            "TIME 0\nFOCUS other\n{}{}TIME 900\nFOCUS password\n{}{}{}TIME 2000\nFOCUS other\nTIME 2100\nEVENT type 4 (ButtonPress)\n    detail: 1\n    root: 10.00/20.00\n",
+            key(100, 27),
+            key(200, 26),
+            key(1000, 24),
+            key(1100, 25),
+            key(1200, 26)
+        );
+        let t = summarize_x11_events(&watched, &[], &[]);
+        assert!(t.contains("00:00  Typed: re"), "{t}");
+        assert!(t.contains("00:01  Typed: [typed secret]"), "{t}");
+        assert!(!t.contains("qwe"), "the password is never in the timeline: {t}");
+
+        // No focus seen: user, Tab, password, Enter.
+        let shaped = format!("{}{}{}{}", key(0, 27), key(100, 23), key(200, 24), key(300, 36));
+        let t = summarize_x11_events(&shaped, &[], &[]);
+        assert!(t.contains("Typed: r") && t.contains("Typed: [typed secret]"), "{t}");
+        assert!(!t.contains("Typed: q"), "{t}");
+        // A search typed and entered stays as typed.
+        let search = format!("{}{}", key(0, 27), key(100, 36));
+        assert!(summarize_x11_events(&search, &[], &[]).contains("Typed: r"));
+    }
+
+    /// An element the browser saw replaces the input event that was the
+    /// same action: its role, name, locator chain, page and after-state,
+    /// coordinates last. What it saw typed into a sensitive field never
+    /// comes through from keycodes.
+    #[test]
+    fn element_records_replace_the_clicks_and_keystrokes_they_were() {
+        let key = |ms: u32, code: u32| {
+            format!("TIME {ms}\nEVENT type 2 (KeyPress)\n    detail: {code}\n    modifiers: locked 0 latched 0 base 0 effective: 0\n")
+        };
+        let log = format!(
+            "TIME 3000\nEVENT type 4 (ButtonPress)\n    detail: 1\n    root: 386.00/300.00\n{}{}TIME 9000\nEVENT type 4 (ButtonPress)\n    detail: 1\n    root: 900.00/90.00\n",
+            key(5000, 24),
+            key(5100, 25)
+        );
+        let elements: Vec<serde_json::Value> = vec![
+            serde_json::json!({"t_ms": 3050, "action": "click", "role": "button", "name": "Save order", "x": 388, "y": 302,
+                "locators": ["role=button[name=\"Save order\"]", "css=#save-order", "coords=(386,300)"],
+                "url": "https://app.example.com/orders/4471",
+                "after": {"url": "/orders/4471/saved", "heading": "Order 4471", "appeared": "Order saved"},
+                "crop": "elements/0001.jpg"}),
+            serde_json::json!({"t_ms": 4980, "t_end_ms": 5150, "action": "type", "role": "textbox", "name": "Password", "value": "[hidden]",
+                "locators": ["label=\"Password\""]}),
+            serde_json::json!({"t_ms": 7000, "action": "navigate", "url": "https://app.example.com/reports"}),
+        ];
+        let t = summarize_x11_events(&log, &elements, &[]);
+        let body: Vec<&str> = t.lines().filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_digit)).collect();
+        assert_eq!(
+            body,
+            [
+                "00:03  Click button \"Save order\" at (388, 302)  locators: role=button[name=\"Save order\"] | css=#save-order | coords=(386,300)  url: https://app.example.com/orders/4471  after: url=/orders/4471/saved; heading \"Order 4471\"; text \"Order saved\" visible  crop: elements/0001.jpg",
+                "00:04  Type into textbox \"Password\": [typed secret]  locators: label=\"Password\"",
+                "00:07  Go to https://app.example.com/reports",
+                "00:09  Click at (900, 90)",
+            ]
+        );
+        assert!(!t.contains("Typed: qw"), "{t}");
+    }
+
+    /// A recording of the owner's own screen with element records gets a
+    /// timeline from them alone, and its narration goes there.
+    #[test]
+    fn element_records_alone_make_a_timeline() {
+        let dir = std::env::temp_dir().join(format!("teach-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("elements.jsonl"), "{\"t_ms\": 2000, \"action\": \"click\", \"role\": \"link\", \"name\": \"Orders\"}\n").unwrap();
+        let rec = Finished { id: "s".into(), dir: dir.clone(), keyframes: 1, length: Duration::from_secs(5), frames: vec![] };
+        let said = [Said { at: Duration::from_secs(1), text: "open the orders".into() }];
+        assert_eq!(write_narration(&rec, &said), Ok("timeline.md"));
+        let t = std::fs::read_to_string(dir.join("timeline.md")).unwrap();
+        assert!(t.contains("00:01  owner said: \"open the orders\"\n00:02  Click link \"Orders\""), "{t}");
+        assert!(!dir.join("narration.md").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The replay of the owner's own screen shows each keyframe from when it
+    /// was taken until the next, the last until the end.
+    #[test]
+    fn the_keyframe_replay_holds_each_frame_until_the_next() {
+        let frames = [FrameAt { frame: 1, at: Duration::ZERO }, FrameAt { frame: 3, at: Duration::from_millis(2500) }];
+        assert_eq!(
+            slideshow(&frames, Duration::from_secs(10)),
+            "file 'frames/0001.jpg'\nduration 2.500\nfile 'frames/0003.jpg'\nduration 7.500\nfile 'frames/0003.jpg'\n"
+        );
+    }
+
+    /// The replay and any narration audio leave the disk after their week;
+    /// the keyframes and timeline stay.
+    #[test]
+    fn replays_and_narration_audio_are_swept_after_their_week() {
+        let home = std::env::temp_dir().join(format!("teach-home-{}", uuid::Uuid::new_v4()));
+        let session = home.join("teach-sessions").join("s1");
+        std::fs::create_dir_all(session.join("frames")).unwrap();
+        for f in [VIDEO, "narration.m4a", "narration.md", "timeline.md", "frames/0001.jpg"] {
+            std::fs::write(session.join(f), b"x").unwrap();
+        }
+        let root = home.join("teach-sessions");
+        sweep_media_in(&root, TEACH_VIDEO_KEEP);
+        assert!(session.join(VIDEO).exists(), "a fresh replay stays");
+        sweep_media_in(&root, Duration::ZERO);
+        assert!(!session.join(VIDEO).exists() && !session.join("narration.m4a").exists());
+        for kept in ["narration.md", "timeline.md", "frames/0001.jpg"] {
+            assert!(session.join(kept).exists(), "{kept} stays");
+        }
+        assert_eq!(TEACH_VIDEO_KEEP, Duration::from_secs(7 * 24 * 3600));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A key the browser saw pressed replaces the same keystroke from the
+    /// input log; one pressed elsewhere stays.
+    #[test]
+    fn a_pressed_key_the_browser_saw_is_one_step() {
+        let key = |ms: u32, code: u32| {
+            format!("TIME {ms}\nEVENT type 2 (KeyPress)\n    detail: {code}\n    modifiers: locked 0 latched 0 base 0 effective: 0\n")
+        };
+        let log = format!("{}{}", key(1000, 23), key(5000, 9));
+        let elements = vec![serde_json::json!({"t_ms": 1100, "action": "press", "key": "Tab"})];
+        let t = summarize_x11_events(&log, &elements, &[]);
+        assert!(t.contains("00:01  Press Tab") && !t.contains("Pressed [Tab]"), "{t}");
+        assert!(t.contains("00:05  Pressed [Esc]"), "{t}");
     }
 }

@@ -74,7 +74,7 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(import::routes())
         .merge(integrations::routes())
         .merge(browser::routes())
-        .merge(desktop::routes())
+        .merge(desktop::routes(max_upload_bytes))
         .merge(update::routes())
         .merge(files::routes(max_upload_bytes))
         .merge(neboai::routes())

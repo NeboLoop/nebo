@@ -986,6 +986,13 @@ export function teachStop(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Teach video"
+ */
+export function teachVideo(id: string) {
+	return webapi.get<unknown>(`/api/v1/desktop/teach/${id}/video`)
+}
+
+/**
  * @description "Quit"
  */
 export function quit(req: Record<string, unknown> = {}) {

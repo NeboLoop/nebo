@@ -6,11 +6,14 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop, getToolOutput, locateWorkFile, fileHistory, restoreFileHistory } from '$lib/api/nebo';
+  import { teachStart, getToolOutput, locateWorkFile, fileHistory, restoreFileHistory } from '$lib/api/nebo';
   import { historyItems, workspacePathOf, type FileHistoryItem } from '$lib/chat/fileHistory';
   import { kindForExt, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import { locateFileMention } from '$lib/chat/fileMentions';
-  import { watchesComputer, offersComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
+  import { watchesComputer, offersComputer, teachFailure, SCREEN_RECORDING_SETTINGS, teachEndingSoon, teachAtCap, postTeachStop } from '$lib/chat/teach';
+  import { createClipRecorder, type ClipRecorder, type ClipState } from '$lib/chat/clipRecorder';
+  import Mic from 'lucide-svelte/icons/mic';
+  import MicOff from 'lucide-svelte/icons/mic-off';
   import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
@@ -231,6 +234,68 @@
   const teachChoice = $derived(offersComputer($ownScreen, $devMode));
   /** The recording under way is of this computer's own screen. */
   let teachLocal = $state(false);
+  /** The recording's cap in seconds (teach/start's `capSeconds`). */
+  let teachCap = $state(0);
+  /** The recording under way, by its session id. */
+  let teachSessionId = '';
+  /** A line about the last recording: it reached its cap. */
+  let teachNotice = $state('');
+  // The owner's narration: his microphone records only while the
+  // demonstration does, with the same cap, through the clip recorder.
+  let narrator: ClipRecorder | null = null;
+  let narratorState = $state<ClipState | null>(null);
+  let narratorUnsub: (() => void) | null = null;
+  let narrationFile: File | null = null;
+  let narrationWaiter: ((f: File | null) => void) | null = null;
+  let narrationOffsetMs = 0;
+
+  function startNarration(recordingStartedAt: number) {
+    narrationFile = null;
+    narrator = createClipRecorder({
+      capMs: teachCap > 0 ? teachCap * 1000 : undefined,
+      onClip: (f) => {
+        narrationFile = f;
+        narrationWaiter?.(f);
+      }
+    });
+    narratorUnsub = narrator.subscribe((st) => (narratorState = st));
+    void narrator.start().then(() => {
+      narrationOffsetMs = Date.now() - recordingStartedAt;
+    });
+  }
+
+  /** Stop the microphone and hand over what it recorded (null: none). */
+  function finishNarration(): Promise<File | null> {
+    const n = narrator;
+    if (!n) return Promise.resolve(null);
+    return new Promise<File | null>((resolve) => {
+      const done = (f: File | null) => {
+        clearTimeout(timer);
+        narrationWaiter = null;
+        resolve(f);
+      };
+      const timer = setTimeout(() => done(narrationFile), 3000);
+      if (narrationFile) return done(narrationFile);
+      narrationWaiter = done;
+      if (narratorState?.stage === 'recording') n.stop();
+      else {
+        n.cancel();
+        done(narrationFile);
+      }
+    }).finally(() => {
+      narratorUnsub?.();
+      narratorUnsub = null;
+      narrator = null;
+      narratorState = null;
+      narrationFile = null;
+    });
+  }
+
+  // Leaving the chat never leaves the microphone open.
+  $effect(() => () => {
+    narrator?.cancel();
+    narratorUnsub?.();
+  });
 
   /** Start, or stop the recording under way. */
   function teach() {
@@ -243,11 +308,16 @@
   async function startTeach(where?: 'local' | 'computer') {
     if (teachStarting || teachActive) return;
     teachError = '';
+    teachNotice = '';
     teachNeedsPermission = false;
     teachStarting = true;
     let res;
     try {
-      res = await teachStart(where ? { where } : {});
+      res = await teachStart({
+        ...(where ? { where } : {}),
+        agentId,
+        sessionKey: sessionId || (threadId ? threadKey(agentId, threadId) : '')
+      });
     } catch (e) {
       const failure = teachFailure(e);
       teachError = failure.needsScreenPermission ? $t('chat.teachNeedsScreenPermission') : failure.message;
@@ -258,24 +328,41 @@
     }
     teachLocal = !watchesComputer(res?.where);
     if (!teachLocal) computerFull = true;
+    teachSessionId = String(res?.sessionId ?? '');
+    teachCap = Number(res?.capSeconds) || 0;
     teachActive = true;
     teachSeconds = 0;
-    teachTimer = setInterval(() => (teachSeconds += 1), 1000);
+    const recordingStartedAt = Date.now();
+    teachTimer = setInterval(() => {
+      teachSeconds += 1;
+      // At the cap it stops and is learned from like any other recording.
+      if (teachAtCap(teachSeconds, teachCap)) void stopTeach(true);
+    }, 1000);
+    startNarration(recordingStartedAt);
   }
 
-  async function stopTeach() {
+  async function stopTeach(capped = false) {
+    if (!teachActive) return;
     if (teachTimer) { clearInterval(teachTimer); teachTimer = null; }
     teachActive = false;
+    const narration = await finishNarration();
     try {
-      // The display layer only reports the event (who + where). The backend
-      // owns the visible message AND the steering briefing (mention_context
-      // system-reminder) and dispatches the learning run itself; it returns
-      // the persisted message text so we can echo it without a second copy.
-      const res = await teachStop({
+      // The display layer only reports the event (who + where) and carries
+      // the owner's narration. The backend owns the visible message AND the
+      // steering briefing (mention_context system-reminder) and dispatches
+      // the learning run itself; it returns the persisted message text so we
+      // can echo it without a second copy.
+      const res = await postTeachStop({
         agentId,
         sessionKey: sessionId || (threadId ? threadKey(agentId, threadId) : ''),
+        sessionId: teachSessionId,
+        narration,
+        narrationOffsetMs
       });
       onteachsent?.(res.message ?? '', res.sessionKey ?? '');
+      if (capped || res.capped) {
+        teachNotice = $t('chat.teachCapReached', { values: { cap: fmtTeach(teachCap) } });
+      }
     } catch (e) {
       teachError = e instanceof Error ? e.message : String(e);
     }
@@ -2368,22 +2455,45 @@
   {/if}
 
   <!-- Teach-a-task record bar -->
-  {#if teachActive || teachStarting || teachError}
+  {#if teachActive || teachStarting || teachError || teachNotice}
     <div class="max-w-3xl mx-auto w-full shrink-0 mb-2">
-      <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : 'bg-error/10'}">
+      <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : teachActive || teachStarting ? 'bg-error/10' : 'bg-base-200'}">
         {#if teachStarting}
           <span class="loading loading-spinner loading-xs"></span>
           <span class="text-sm">{$t('chat.teachStarting')}</span>
         {:else if teachActive}
           <span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
+          <!-- The owner's narration: on only while this records. -->
+          {#if narratorState?.stage === 'recording'}
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs btn-square"
+              title={narratorState.muted ? $t('chat.teachUnmute') : $t('chat.teachMute')}
+              aria-label={narratorState.muted ? $t('chat.teachUnmute') : $t('chat.teachMute')}
+              aria-pressed={narratorState.muted}
+              onclick={() => narrator?.mute(!narratorState?.muted)}
+              data-teach-mic
+            >
+              {#if narratorState.muted}<MicOff class="w-3.5 h-3.5 text-base-content/50" />{:else}<Mic class="w-3.5 h-3.5 text-error" />{/if}
+            </button>
+            <progress class="progress progress-error w-10" value={Math.round(narratorState.level * 100)} max="100" aria-label={$t('chatInput.clipLevel')}></progress>
+          {:else if narratorState?.notice}
+            <span class="inline-flex items-center gap-1 text-xs text-base-content/60 shrink-0" title={$t('chat.teachNoMic')}><MicOff class="w-3.5 h-3.5" /><span class="max-md:hidden">{$t('chat.teachNoMic')}</span></span>
+          {/if}
           <span class="text-sm">{$t('chat.watchingAndLearning', { values: { name: agentName } })}</span>
-          <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}</span>
+          <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}{#if teachCap} / {fmtTeach(teachCap)}{/if}</span>
+          {#if teachEndingSoon(teachSeconds, teachCap)}
+            <span class="text-xs text-warning truncate" role="status" data-teach-ending>{$t('chat.teachEndingSoon', { values: { left: fmtTeach(Math.max(0, teachCap - teachSeconds)) } })}</span>
+          {/if}
           {#if teachLocal}
             <span class="text-xs text-base-content/60 truncate max-md:hidden">{$t('chat.teachLocalHint')}</span>
           {/if}
-          <button type="button" class="btn btn-error btn-xs ms-auto normal-case" onclick={stopTeach}>
+          <button type="button" class="btn btn-error btn-xs ms-auto normal-case" onclick={() => stopTeach()}>
             {$t('chat.stopRecording')}
           </button>
+        {:else if teachNotice && !teachError}
+          <span class="text-sm">{teachNotice}</span>
+          <button type="button" class="btn btn-ghost btn-xs ms-auto" onclick={() => (teachNotice = '')}>✕</button>
         {:else}
           <span class="text-sm">{teachError}</span>
           {#if teachNeedsPermission}
