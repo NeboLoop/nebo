@@ -63,7 +63,7 @@ describe('IntelligencePicker', () => {
 		const out = text(html('', 'level'));
 		for (const l of ['Instant', 'Low', 'Medium', 'High', 'Max']) expect(out).toContain(l);
 		expect(out).toContain(en.modelPick.recommended);
-		expect(out).toContain(en.modelPick.mostCredits);
+		expect(out).toContain(en.modelPick.mostBalance);
 		expect(out).toContain(en.modelPick.levelHint);
 		expect(out).toContain(en.modelPick.pack);
 		for (const legacy of ['Fast', 'Balanced', 'Deep', 'Default']) expect(out).not.toMatch(new RegExp(`\\b${legacy}\\b`));

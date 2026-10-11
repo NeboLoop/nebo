@@ -123,7 +123,7 @@
             <span class="intel-name">
               {$t(`settingsPacks.level.${level}`)}
               {#if level === 'medium'}<span class="badge badge-sm badge-primary badge-soft">{$t('modelPick.recommended')}</span>{/if}
-              {#if level === 'max'}<span class="badge badge-sm badge-warning badge-soft">{$t('modelPick.mostCredits')}</span>{/if}
+              {#if level === 'max'}<span class="badge badge-sm badge-warning badge-soft">{$t('modelPick.mostBalance')}</span>{/if}
             </span>
             <span class="intel-desc">{$t(`modelPick.levelDesc.${level}`)}</span>
           </span>
