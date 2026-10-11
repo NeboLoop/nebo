@@ -27,6 +27,12 @@ describe('Charged to your plan', () => {
 		}
 	});
 
+	it('falls back to the hub’s label when a number or bot comes without detail', () => {
+		expect(chargeText(line({ kind: 'cloud_bot', label: 'Cloud computer · Ada' }))).toEqual({ key: '', raw: 'Cloud computer · Ada' });
+		expect(chargeText(line({ kind: 'phone_number', label: 'Phone number +15551234567' })).raw).toBe('Phone number +15551234567');
+		expect(chargeText(line({ kind: 'cloud_bot', label: '' }))).toEqual({ key: 'settingsUsage.charges.cloudComputer' });
+	});
+
 	it('shows the hub’s own words for a kind it does not know', () => {
 		expect(chargeText(line({ kind: 'storage', label: 'Storage · 10 GB' }))).toEqual({ key: '', raw: 'Storage · 10 GB' });
 	});

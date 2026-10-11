@@ -17,12 +17,18 @@ export function displayNumber(e164: string): string {
 	return m ? `(${m[1]}) ${m[2]}-${m[3]}` : e164.trim();
 }
 
+/** No detail (the hub sent "" for a while after one billing): the hub's label still names the number or bot. */
+function named(line: PlanChargeLine, plainKey: string): ChargeText {
+	const label = (line.label ?? '').trim();
+	return label ? { key: '', raw: label } : { key: plainKey };
+}
+
 export function chargeText(line: PlanChargeLine): ChargeText {
 	const k = 'settingsUsage.charges.';
 	const detail = (line.detail ?? '').trim();
 	switch (line.kind) {
 		case 'phone_number':
-			return detail ? { key: k + 'phoneNumber', values: { number: displayNumber(detail) } } : { key: k + 'phoneNumberPlain' };
+			return detail ? { key: k + 'phoneNumber', values: { number: displayNumber(detail) } } : named(line, k + 'phoneNumberPlain');
 		case 'calls':
 			return { key: k + 'calls', values: { minutes: line.quantity } };
 		case 'texts':
@@ -33,7 +39,7 @@ export function chargeText(line: PlanChargeLine): ChargeText {
 			return { key: k + 'textingMonthly' };
 		case 'cloud_bot':
 		case 'cloud_computer': // ponytail: pre-one-billing name, drop once no hub sends it
-			return detail ? { key: k + 'cloudComputerNamed', values: { name: detail } } : { key: k + 'cloudComputer' };
+			return detail ? { key: k + 'cloudComputerNamed', values: { name: detail } } : named(line, k + 'cloudComputer');
 		case 'memory':
 			return { key: k + 'memory' };
 		case 'media':
