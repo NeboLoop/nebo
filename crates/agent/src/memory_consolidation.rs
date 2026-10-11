@@ -138,16 +138,6 @@ pub fn spawn_sweep(
     let _ = DECIDE.set(decide);
 
     tokio::spawn(async move {
-        // Retire the legacy daily/ layer (docs/design/MEMORY_QUALITY.md):
-        // date-scoped memories are gone — ongoing work lives in topical
-        // layers. Cheap SQL, idempotent; runs at startup so old installs
-        // converge without any TTL machinery.
-        match store.delete_memories_by_namespace_prefix("daily/") {
-            Ok(0) => {}
-            Ok(n) => info!(deleted = n, "retired legacy daily/ memory layer"),
-            Err(e) => warn!(error = %e, "daily layer retirement sweep failed"),
-        }
-
         // Let server boot before expensive background LLM work.
         // tokio::time::interval first tick fires immediately — this delay
         // prevents ~30s of LLM calls during the startup window.

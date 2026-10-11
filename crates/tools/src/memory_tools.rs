@@ -375,9 +375,9 @@ impl Memory {
         let key = input["key"].as_str().unwrap_or("");
         let value = input["value"].as_str().unwrap_or("");
         // `layer` maps to the namespace for that layer; an explicit
-        // `namespace` overrides. The `daily` layer is retired
-        // (docs/design/MEMORY_QUALITY.md) — ongoing work lives in the topical
-        // `project` layer, plus any topics the employee declared.
+        // `namespace` overrides. Ongoing work lives in the topical `project`
+        // layer, plus any topics the employee declared
+        // (docs/design/MEMORY_QUALITY.md).
         let layer_ns = match input["layer"].as_str().unwrap_or("") {
             "entity" => "entity/default".to_string(),
             "project" => "project".to_string(),
