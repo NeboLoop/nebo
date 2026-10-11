@@ -19,6 +19,7 @@ mod default_artifacts;
 pub mod entity_config;
 pub mod handlers;
 pub mod handoff;
+mod hub_sync;
 mod engine;
 mod heartbeat;
 mod workforce_reporter;
@@ -42,6 +43,7 @@ pub mod run_display;
 pub mod run_registry;
 mod scheduler;
 mod shared_files;
+mod upload_sessions;
 pub mod wake;
 mod reply_route;
 pub mod layers_update;
@@ -3290,6 +3292,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // the packages its employees installed, in the background, so the boot
     // never waits on the package mirrors (`tools::system_packages`).
     tokio::spawn(tools::system_packages::reinstall());
+
+    // Hub copies of uploaded files still owed, and every one owed from now
+    // on, made in the background (`hub_sync`); idle upload sessions swept.
+    hub_sync::spawn(state.clone());
 
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
@@ -7204,6 +7210,9 @@ async fn process_comm_attachments(
         // when the bytes genuinely live somewhere else.
         let local = agent::uploads::by_id(&att.file_id);
         let bytes = match &local {
+            // A video here is read from its path below, never into memory:
+            // it can be gigabytes.
+            Some(_) if agent::video::is_video(&att.filename, &att.mime_type) => Vec::new(),
             Some(path) => match std::fs::read(path) {
                 Ok(b) => b,
                 Err(e) => {

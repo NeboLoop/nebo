@@ -13,6 +13,7 @@ pub mod commander;
 pub mod entity_config;
 pub mod feedback;
 pub mod files;
+pub mod uploads;
 pub mod goal;
 pub mod handoffs;
 pub mod import;
