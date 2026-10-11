@@ -3,16 +3,19 @@
 	 * The bot's computer, live in the work panel. noVNC speaks RFB over
 	 * /ws/desktop (a byte pipe to the pod's loopback x11vnc); the desktop
 	 * starts on demand server-side when the first viewer connects. Watch or
-	 * take the keyboard — input fidelity (modifiers, drag, clipboard) is
-	 * RFB's, not ours.
+	 * take the keyboard — input fidelity (modifiers, drag) is RFB's, not
+	 * ours. Copy and paste with the owner's computer: $lib/chat/desktopClipboard.
 	 */
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import Monitor from 'lucide-svelte/icons/monitor';
+	import ClipboardPaste from 'lucide-svelte/icons/clipboard-paste';
+	import ClipboardCopy from 'lucide-svelte/icons/clipboard-copy';
 	import RFB from '@novnc/novnc';
 	import { backendWsBase } from '$lib/api/base';
 	import { ownScreen } from '$lib/stores/ownScreen';
 	import { desktopSession, lastFrameOf, type DesktopStatus } from '$lib/chat/desktopBoot';
+	import { createDesktopClipboard, isMacPlatform, type ClipNotice } from '$lib/chat/desktopClipboard';
 
 	let {
 		onclose,
@@ -30,6 +33,35 @@
 	// last frame ($lib/chat/desktopBoot).
 	let status = $state<DesktopStatus>('starting');
 
+	// Clipboard text is often a password: it lives only in this component,
+	// only until it is handed over, and is never logged or stored.
+	let sink: HTMLTextAreaElement | undefined = $state();
+	let notice = $state<ClipNotice | null>(null);
+	let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+	/** The computer's copy, when the browser wanted a click to take it. */
+	let offered = $state<string | null>(null);
+	let offerTimer: ReturnType<typeof setTimeout> | null = null;
+	const OFFER_FOR_MS = 60_000;
+
+	function showNotice(kind: ClipNotice) {
+		notice = kind;
+		if (noticeTimer) clearTimeout(noticeTimer);
+		noticeTimer = setTimeout(() => (notice = null), kind === 'copied' ? 2500 : 6000);
+	}
+
+	function offerCopy(text: string | null) {
+		offered = text;
+		if (offerTimer) clearTimeout(offerTimer);
+		offerTimer = text === null ? null : setTimeout(() => (offered = null), OFFER_FOR_MS);
+	}
+
+	const noticeText: Record<ClipNotice, string> = {
+		copied: 'chat.computerCopied',
+		pasteBlocked: 'chat.computerPasteBlocked',
+		clipboardEmpty: 'chat.computerClipboardEmpty',
+		pasteLossy: 'chat.computerPasteLossy'
+	};
+
 	const session = desktopSession<RFB>({
 		dial: () => {
 			if (!container) return null;
@@ -37,6 +69,11 @@
 			const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
 			r.scaleViewport = true;
 			r.resizeSession = false;
+			// The computer copied (Ctrl+C there): noVNC's `clipboard` event.
+			r.addEventListener('clipboard', (e) => {
+				const text = (e as CustomEvent<{ text: string }>).detail?.text ?? '';
+				if (session.current() === r) void clipboard.fromComputer(text);
+			});
 			return r;
 		},
 		ownScreen: () => $ownScreen,
@@ -46,6 +83,14 @@
 			if (frame) lastFrame?.replaceChildren(frame);
 		},
 		dropFrame: () => lastFrame?.replaceChildren()
+	});
+
+	const clipboard = createDesktopClipboard({
+		rfb: () => (status === 'ready' ? session.current() : null),
+		sink: () => sink,
+		notice: showNotice,
+		offerCopy,
+		mac: isMacPlatform()
 	});
 
 	function retry() {
@@ -72,6 +117,10 @@
 		return () => {
 			session.close();
 			ro.disconnect();
+			clipboard.dispose();
+			if (noticeTimer) clearTimeout(noticeTimer);
+			if (offerTimer) clearTimeout(offerTimer);
+			offered = null;
 		};
 	});
 
@@ -94,6 +143,24 @@
 					: 'bg-error'}"
 		></span>
 		<div class="flex-1"></div>
+		{#if status === 'ready'}
+			{#if offered !== null}
+				<button type="button" class="desktop-clipboard-offer" onclick={() => offered !== null && clipboard.copyOffered(offered)}>
+					<ClipboardCopy class="w-4 h-4" />
+					{$t('chat.computerCopyOffer')}
+				</button>
+			{/if}
+			<button
+				type="button"
+				class="desktop-clipboard-bar-button"
+				onclick={() => clipboard.pasteButton()}
+				title={$t('chat.computerPaste')}
+				aria-label={$t('chat.computerPaste')}
+			>
+				<ClipboardPaste class="w-4 h-4" />
+				<span class="hidden md:inline">{$t('chat.computerPaste')}</span>
+			</button>
+		{/if}
 		{#if onrecord}
 			<button
 				type="button"
@@ -116,8 +183,18 @@
 			</button>
 		{/if}
 	</div>
-	<div class="flex-1 min-h-0 bg-neutral relative">
+	<div
+		class="flex-1 min-h-0 bg-neutral relative"
+		onkeydowncapture={(e) => clipboard.onkeydown(e)}
+		onpaste={(e) => clipboard.onpaste(e)}
+		onpointerdowncapture={() => clipboard.onpointerdown()}
+		role="presentation"
+	>
 		<div bind:this={container} class="absolute inset-0 [&_canvas]:outline-none"></div>
+		<textarea bind:this={sink} class="desktop-clipboard-sink" tabindex="-1" aria-hidden="true" autocomplete="off" spellcheck="false"></textarea>
+		{#if notice}
+			<div class="desktop-clipboard-notice" role="status">{$t(noticeText[notice])}</div>
+		{/if}
 		<div bind:this={lastFrame} class="absolute inset-0 pointer-events-none empty:hidden" data-desktop-last-frame></div>
 		{#if status === 'unavailable'}
 			<div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-neutral-content/80 px-6 text-center">
