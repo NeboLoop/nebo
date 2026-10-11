@@ -506,12 +506,21 @@
 			"fetch": "আনুন",
 			"request": "অনুরোধ",
 			"browser": "ব্রাউজার",
+			"computer": "কম্পিউটার",
 			"research": "গবেষণা",
 			"helper": "সহকারী",
 			"task": "কাজ",
 			"fileCount": "{count, plural, one {# ফাইল} other {# ফাইল}}",
 			"resultCount": "{count, plural, one {# ফলাফল} other {# ফলাফল}}",
-			"failedCount": "{count}টি ব্যর্থ"
+			"failedCount": "{count}টি ব্যর্থ",
+			"reach": {
+				"screen": "আপনার স্ক্রিন ক্যাপচার করছে",
+				"microphone": "আপনার মাইক্রোফোন থেকে রেকর্ড করছে",
+				"camera": "আপনার ক্যামেরা দিয়ে ছবি তুলছে",
+				"input": "আপনার মাউস ও কীবোর্ড নিয়ন্ত্রণ করছে",
+				"app": "{app} নিয়ন্ত্রণ করছে",
+				"apps": "আপনার অ্যাপগুলো নিয়ন্ত্রণ করছে"
+			}
 		},
 		"callVerb": {
 			"create": "তৈরি",

@@ -6,8 +6,12 @@ describe('applyHelperEvent', () => {
 		let list: HelperLine[] = [];
 		list = applyHelperEvent(list, 'subagent_start', { task_id: 'h-1', description: 'read the ledger' });
 		expect(list).toEqual([{ taskId: 'h-1', description: 'read the ledger', activity: '' }]);
-		list = applyHelperEvent(list, 'subagent_progress', { task_id: 'h-1', current_operation: 'reading march.csv' });
-		expect(list[0].activity).toBe('reading march.csv');
+		const call = { kind: 'read', params: { path: 'march.csv' } };
+		list = applyHelperEvent(list, 'subagent_progress', { task_id: 'h-1', call });
+		expect(list[0]).toEqual({ taskId: 'h-1', description: 'read the ledger', activity: '', call });
+		// Background work says its own line, and it replaces the call.
+		list = applyHelperEvent(list, 'subagent_progress', { task_id: 'h-1', current_operation: 'Searching 4 angles' });
+		expect(list[0]).toEqual({ taskId: 'h-1', description: 'read the ledger', activity: 'Searching 4 angles' });
 		list = applyHelperEvent(list, 'subagent_complete', { task_id: 'h-1' });
 		expect(list).toEqual([]);
 	});

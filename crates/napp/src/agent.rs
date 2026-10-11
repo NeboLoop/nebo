@@ -210,7 +210,7 @@ pub struct MemoryTopic {
 
 /// Topic slugs that collide with built-in memory layers.
 const RESERVED_TOPIC_SLUGS: &[&str] = &[
-    "tacit", "entity", "daily", "project", "memory", "style", "artifact",
+    "tacit", "entity", "project", "memory", "style", "artifact",
 ];
 
 /// Max declared topics — bounds extraction-prompt growth (~150 tokens for 8).

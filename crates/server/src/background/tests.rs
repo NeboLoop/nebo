@@ -121,7 +121,8 @@ fn snapshot(run_id: &str, session_key: &str, entity_id: &str, origin: &str) -> c
         iteration_count: 3,
         tool_call_count: 2,
         current_tool: "read_file".into(),
-        activity: "Reading notes.md".into(),
+        call: Some(tools::humanize::call("read_file", &serde_json::json!({"path": "notes.md"}))),
+        call_input: Some(("read_file".into(), serde_json::json!({"path": "notes.md"}))),
         elapsed_secs: 90,
         idle_secs: 5,
         parent_run_id: None,
@@ -144,7 +145,7 @@ fn turns_list_what_runs_unwatched() {
     assert_eq!(tasks.len(), 2);
     let cron = &tasks[0];
     assert_eq!((cron.id.as_str(), cron.created_by.as_str(), cron.status), ("turn:t-cron", "schedule", Status::Running));
-    assert_eq!(cron.detail, "Reading notes.md");
+    assert_eq!(cron.call, Some(tools::humanize::call("read_file", &serde_json::json!({"path": "notes.md"}))));
     assert_eq!((cron.started_at, cron.last_activity_at), (Some(910), Some(995)));
     let msg = &tasks[1];
     assert_eq!(msg.agent_id, "", "the main bot is the empty employee");
@@ -157,7 +158,8 @@ fn helper(task_id: &str, running: bool, parent: &str, agent: &str) -> agent::har
         description: "price the Rivera order".into(),
         running,
         session_key: format!("subagent:{parent}:{task_id}"),
-        activity: "Reading orders.csv".into(),
+        call: Some(tools::humanize::call("read_file", &serde_json::json!({"path": "orders.csv"}))),
+        activity: String::new(),
         parent_key: parent.into(),
         agent_id: agent.into(),
         started_at: 500,
@@ -172,7 +174,8 @@ fn helpers_list_the_running_ones_where_they_report() {
     assert_eq!(tasks.len(), 1);
     let t = &tasks[0];
     assert_eq!((t.id.as_str(), t.kind, t.agent_id.as_str()), ("helper:h-1", Kind::Agent, "ava"));
-    assert_eq!((t.title.as_str(), t.detail.as_str()), ("price the Rivera order", "Reading orders.csv"));
+    assert_eq!(t.title, "price the Rivera order");
+    assert_eq!(t.call, Some(tools::humanize::call("read_file", &serde_json::json!({"path": "orders.csv"}))));
     assert_eq!(t.session_key.as_deref(), Some("agent:ava:web"));
     assert_eq!(t.started_at, Some(500));
     assert_eq!(t.actions, vec![Action::Stop]);

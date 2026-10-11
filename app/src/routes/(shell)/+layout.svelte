@@ -34,6 +34,7 @@
     agentUnread, conversationRead, endWork, openNeedsRead, replyArrived, rowMark, seedAgentUnread,
     seedTeamUnread, snapshotWork, startWork, teamWorking, type Open, type Working,
   } from '$lib/chat/rowState';
+  import { callWords, isCallName } from '$lib/chat/callLabel';
   import RowMark from '$lib/components/ui/RowMark.svelte';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
@@ -260,6 +261,10 @@
   function markWorking(agentId: unknown, sessionId: unknown, label = '') {
     working = startWork(working, agentId, sessionId, label);
   }
+  /** A run's current call in the owner's words ("Read notes.md"). */
+  function wordCall(call: unknown): string {
+    return isCallName(call) ? callWords(call, $t) : '';
+  }
   function clearWorking(agentId: unknown, sessionId: unknown) {
     // "all": the owner stopped everything.
     working = sessionId === 'all' ? {} : endWork(working, agentId, sessionId);
@@ -269,8 +274,8 @@
   async function loadWorking() {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = (await api.activeRunsHandler()) as { runs?: { entityId?: string; sessionKey?: string; activity?: string }[] } | null;
-      working = snapshotWork({}, resp?.runs ?? []);
+      const resp = (await api.activeRunsHandler()) as { runs?: { entityId?: string; sessionKey?: string; call?: unknown }[] } | null;
+      working = snapshotWork({}, resp?.runs ?? [], wordCall);
     } catch {
       /* the next agent_progress snapshot fills it in */
     }
@@ -664,7 +669,7 @@
     });
     onWsEvent('nebo:chat_created', (data) => markWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:thinking', (data) => markWorking(data?.agentId, data?.session_id));
-    onWsEvent('nebo:tool_start', (data) => markWorking(data?.agentId, data?.session_id, data?.label ?? ''));
+    onWsEvent('nebo:tool_start', (data) => markWorking(data?.agentId, data?.session_id, wordCall(data?.call)));
     // A queued message's own chat_complete: the run it joined is still going.
     onWsEvent('nebo:chat_complete', (data) => {
       if (!endsRun(data)) return;
@@ -678,7 +683,7 @@
     onWsEvent('nebo:chat_error', (data) => clearWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:chat_cancelled', (data) => clearWorking(data?.agentId, data?.session_id));
     onWsEvent('nebo:agent_progress', (data) => {
-      working = snapshotWork(working, data?.runs ?? []);
+      working = snapshotWork(working, data?.runs ?? [], wordCall);
     });
     onWsEvent('nebo:agent_uninstalled', () => loadAgentRoster());
     onWsEvent('nebo:agent_updated', (data) => {

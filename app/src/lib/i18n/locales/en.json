@@ -506,12 +506,21 @@
 			"fetch": "Fetch",
 			"request": "Request",
 			"browser": "Browser",
+			"computer": "Computer",
 			"research": "Research",
 			"helper": "Helper",
 			"task": "Task",
 			"fileCount": "{count, plural, one {# file} other {# files}}",
 			"resultCount": "{count, plural, one {# result} other {# results}}",
-			"failedCount": "{count} failed"
+			"failedCount": "{count} failed",
+			"reach": {
+				"screen": "Capturing your screen",
+				"microphone": "Recording from your microphone",
+				"camera": "Taking a picture with your camera",
+				"input": "Controlling your mouse and keyboard",
+				"app": "Controlling {app}",
+				"apps": "Controlling your apps"
+			}
 		},
 		"callVerb": {
 			"create": "Create",

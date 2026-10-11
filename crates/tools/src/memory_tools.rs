@@ -375,9 +375,9 @@ impl Memory {
         let key = input["key"].as_str().unwrap_or("");
         let value = input["value"].as_str().unwrap_or("");
         // `layer` maps to the namespace for that layer; an explicit
-        // `namespace` overrides. The `daily` layer is retired
-        // (docs/design/MEMORY_QUALITY.md) — ongoing work lives in the topical
-        // `project` layer, plus any topics the employee declared.
+        // `namespace` overrides. Ongoing work lives in the topical `project`
+        // layer, plus any topics the employee declared
+        // (docs/design/MEMORY_QUALITY.md).
         let layer_ns = match input["layer"].as_str().unwrap_or("") {
             "entity" => "entity/default".to_string(),
             "project" => "project".to_string(),
@@ -863,21 +863,12 @@ impl DynTool for MemoryTool {
         }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let key = input["key"].as_str().unwrap_or("");
         match self.op {
             MemoryOp::Recall => "checking memory".to_string(),
             MemoryOp::Remember => format!("remembering {key}").trim_end().to_string(),
             MemoryOp::Forget => format!("forgetting {key}").trim_end().to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        let key = input["key"].as_str().unwrap_or("");
-        match self.op {
-            MemoryOp::Recall => "Checked memory".to_string(),
-            MemoryOp::Remember => format!("Remembered {key}").trim_end().to_string(),
-            MemoryOp::Forget => format!("Forgot {key}").trim_end().to_string(),
         }
     }
 

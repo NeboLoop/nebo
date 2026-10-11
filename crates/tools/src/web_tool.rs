@@ -2349,54 +2349,53 @@ impl Kind {
 
     /// The owner-facing lines: reads and opens name the site, so a run
     /// that read four pages doesn't read as four searches.
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let site = str_field(input, "url")
             .and_then(|u| url::Url::parse(u).ok())
             .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
             .unwrap_or_else(|| "a page".to_string());
-        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
         match self {
-            Kind::SearchWeb => pair("searching the web", "Searched the web"),
-            Kind::FetchUrl => (format!("reading {site}"), format!("Read {site}")),
+            Kind::SearchWeb => String::from("searching the web"),
+            Kind::FetchUrl => format!("reading {site}"),
             Kind::HttpRequest => match str_field(input, "method") {
-                Some("GET" | "HEAD") | None => (format!("reading {site}"), format!("Read {site}")),
-                Some(m) => (format!("sending {m} to {site}"), format!("Sent {m} to {site}")),
+                Some("GET" | "HEAD") | None => format!("reading {site}"),
+                Some(m) => format!("sending {m} to {site}"),
             },
-            Kind::BrowserOpen => (format!("opening {site}"), format!("Opened {site}")),
-            Kind::BrowserRead => pair("reading the page", "Read the page"),
-            Kind::BrowserFind => pair("finding on the page", "Found on the page"),
+            Kind::BrowserOpen => format!("opening {site}"),
+            Kind::BrowserRead => String::from("reading the page"),
+            Kind::BrowserFind => String::from("finding on the page"),
             Kind::BrowserAct => match str_field(input, "action").unwrap_or_default() {
-                "click" => pair("clicking on the page", "Clicked on the page"),
-                "hover" => pair("pointing at the page", "Pointed at the page"),
-                "type" => pair("typing on the page", "Typed on the page"),
-                "press" => pair("pressing keys", "Pressed keys"),
-                "scroll" => pair("scrolling the page", "Scrolled the page"),
-                "drag" => pair("dragging on the page", "Dragged on the page"),
-                "select" => pair("choosing an option", "Chose an option"),
-                "wait" => pair("waiting for the page", "Waited for the page"),
-                _ => pair("taking a screenshot", "Took a screenshot"),
+                "click" => String::from("clicking on the page"),
+                "hover" => String::from("pointing at the page"),
+                "type" => String::from("typing on the page"),
+                "press" => String::from("pressing keys"),
+                "scroll" => String::from("scrolling the page"),
+                "drag" => String::from("dragging on the page"),
+                "select" => String::from("choosing an option"),
+                "wait" => String::from("waiting for the page"),
+                _ => String::from("taking a screenshot"),
             },
-            Kind::BrowserFillForm => pair("filling in a form", "Filled in a form"),
-            Kind::BrowserRunJs => pair("running a script on the page", "Ran a script on the page"),
-            Kind::BrowserListTabs => pair("listing browser tabs", "Listed browser tabs"),
-            Kind::BrowserNewTab => (format!("opening {site} in a new tab"), format!("Opened {site} in a new tab")),
-            Kind::BrowserCloseTab => pair("closing a tab", "Closed a tab"),
-            Kind::BrowserConsole => pair("reading the page's console", "Read the page's console"),
-            Kind::BrowserNetwork => pair("reading the page's requests", "Read the page's requests"),
-            Kind::BrowserUpload => pair("uploading files", "Uploaded files"),
-            Kind::BrowserResize => pair("resizing the browser", "Resized the browser"),
+            Kind::BrowserFillForm => String::from("filling in a form"),
+            Kind::BrowserRunJs => String::from("running a script on the page"),
+            Kind::BrowserListTabs => String::from("listing browser tabs"),
+            Kind::BrowserNewTab => format!("opening {site} in a new tab"),
+            Kind::BrowserCloseTab => String::from("closing a tab"),
+            Kind::BrowserConsole => String::from("reading the page's console"),
+            Kind::BrowserNetwork => String::from("reading the page's requests"),
+            Kind::BrowserUpload => String::from("uploading files"),
+            Kind::BrowserResize => String::from("resizing the browser"),
             Kind::BrowserHistory => match str_field(input, "direction") {
-                Some("forward") => pair("going forward", "Went forward"),
-                _ => pair("going back", "Went back"),
+                Some("forward") => String::from("going forward"),
+                _ => String::from("going back"),
             },
-            Kind::BrowserStatus => pair("checking the browser", "Checked the browser"),
-            Kind::BrowserBatch => pair("working in the browser", "Worked in the browser"),
-            Kind::BrowserPageTools => pair("listing the page's tools", "Listed the page's tools"),
+            Kind::BrowserStatus => String::from("checking the browser"),
+            Kind::BrowserBatch => String::from("working in the browser"),
+            Kind::BrowserPageTools => String::from("listing the page's tools"),
             Kind::BrowserCallPageTool => {
                 let tool = str_field(input, "name").unwrap_or("a").replace('_', " ");
-                (format!("using the page's {tool} tool"), format!("Used the page's {tool} tool"))
+                format!("using the page's {tool} tool")
             }
-            Kind::BrowserExpect => pair("checking the step's result", "Checked the step's result"),
+            Kind::BrowserExpect => String::from("checking the step's result"),
         }
     }
 }
@@ -2531,12 +2530,8 @@ impl DynTool for WebTool {
         }
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(
@@ -3990,7 +3985,6 @@ link "Create account" [ref_5]"#;
         assert!(guard.contains_key("group-b"));
     }
 
-
     // ── Search-result extraction: snippets must be populated (the empty-snippet
     //    regression sent agents into a re-search treadmill — never again). ──
 
@@ -4330,19 +4324,13 @@ mod interface_tests {
     /// Reads and opens name the site (www. stripped), so a run that read
     /// four pages doesn't read as four searches.
     #[test]
-    fn labels_name_the_site() {
-        let labels = |name: &str, input: serde_json::Value| {
-            let t = tool(name);
-            (t.activity(&input), t.outcome(&input))
-        };
-        assert_eq!(
-            labels("fetch_url", json!({"url": "https://www.example.com/page"})),
-            ("reading example.com".to_string(), "Read example.com".to_string())
-        );
-        assert_eq!(labels("browser_open", json!({"url": "https://docs.rs/x"})).0, "opening docs.rs");
-        assert_eq!(labels("search_web", json!({"queries": ["x"]})).1, "Searched the web");
-        assert_eq!(labels("http_request", json!({"method": "POST", "url": "https://api.example.com/v1"})).1, "Sent POST to api.example.com");
-        assert_eq!(labels("browser_act", json!({"action": "screenshot"})).1, "Took a screenshot");
+    fn sentences_name_the_site() {
+        let said = |name: &str, input: serde_json::Value| tool(name).describe(&input);
+        assert_eq!(said("fetch_url", json!({"url": "https://www.example.com/page"})), "reading example.com");
+        assert_eq!(said("browser_open", json!({"url": "https://docs.rs/x"})), "opening docs.rs");
+        assert_eq!(said("search_web", json!({"queries": ["x"]})), "searching the web");
+        assert_eq!(said("http_request", json!({"method": "POST", "url": "https://api.example.com/v1"})), "sending POST to api.example.com");
+        assert_eq!(said("browser_act", json!({"action": "screenshot"})), "taking a screenshot");
     }
 
     /// Only a screenshot the model asked for is media for the owner.

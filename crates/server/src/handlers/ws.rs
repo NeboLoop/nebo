@@ -722,9 +722,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     {
                                         client_id = named.to_string();
                                     }
-                                    let auth_ok = serde_json::json!({"type": "auth_ok"});
                                     match socket
-                                        .send(Message::Text(serde_json::to_string(&auth_ok).unwrap().into()))
+                                        .send(Message::Text(auth_ok().to_string().into()))
                                         .await
                                     {
                                         Ok(()) => info!("ws auth_ok sent successfully"),
@@ -1541,6 +1540,18 @@ impl ChatPayload {
 
 /// How many chat `message_id`s the bot remembers for [`first_delivery`].
 const DELIVERIES_KEPT: usize = 4096;
+
+/// The oldest phone app this bot serves. A path an older phone needed is
+/// removed only by raising this: a phone older than it shows "Update Nebo
+/// to continue" instead of meeting a bot that no longer answers the way it
+/// expects.
+pub const MIN_MOBILE_VERSION: &str = "0.1.128";
+
+/// The answer to a client's `auth`: it may send now. It names the oldest
+/// phone app this bot serves (`min_mobile_version`), which the phone checks.
+fn auth_ok() -> serde_json::Value {
+    serde_json::json!({"type": "auth_ok", "data": {"min_mobile_version": MIN_MOBILE_VERSION}})
+}
 
 /// True the first time the bot sees this chat `message_id`, on any socket.
 ///
@@ -2884,7 +2895,6 @@ mod cancel_precedence_tests {
         Helpers::new(
             store,
             Arc::new(harness.sessions().clone()),
-            tools,
             Arc::new(harness.clone()),
             None,
             None,
@@ -3175,5 +3185,18 @@ mod delivery_tests {
             first_delivery(&format!("fill-{}", uuid::Uuid::new_v4()));
         }
         assert!(first_delivery(&id));
+    }
+}
+
+#[cfg(test)]
+mod auth_ok_tests {
+    /// A client that may send is told the oldest phone app this bot serves,
+    /// the version the phone checks itself against.
+    #[test]
+    fn auth_ok_names_the_oldest_phone_app_served() {
+        let frame = super::auth_ok();
+        assert_eq!(frame["type"], "auth_ok");
+        assert_eq!(frame["data"]["min_mobile_version"], super::MIN_MOBILE_VERSION);
+        assert_eq!(super::MIN_MOBILE_VERSION, "0.1.128");
     }
 }

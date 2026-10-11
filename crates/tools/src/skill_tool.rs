@@ -1167,19 +1167,19 @@ impl Kind {
     }
 
     /// (activity, outcome) for the owner.
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let name = str_field(input, "name");
         let skill = if name.is_empty() { "a skill".to_string() } else { format!("the {name} skill") };
         match self {
-            Kind::UseSkill => (format!("loading {skill}"), format!("Loaded {skill}")),
-            Kind::FindSkills => ("searching skills".into(), "Searched skills".into()),
-            Kind::ReadSkillFile => (format!("reading {skill}'s files"), format!("Read {skill}'s files")),
-            Kind::SaveSkill => (format!("saving {skill}"), format!("Saved {skill}")),
-            Kind::DeleteSkill => (format!("deleting {skill}"), format!("Deleted {skill}")),
-            Kind::InstallSkill => ("installing a skill".into(), "Installed a skill".into()),
-            Kind::ConfigureSkill => (format!("setting up {skill}"), format!("Set up {skill}")),
-            Kind::RateSkill => (format!("reviewing {skill}"), format!("Reviewed {skill}")),
-            Kind::ReadSkillReviews => (format!("reading reviews of {skill}"), format!("Read reviews of {skill}")),
+            Kind::UseSkill => format!("loading {skill}"),
+            Kind::FindSkills => "searching skills".into(),
+            Kind::ReadSkillFile => format!("reading {skill}'s files"),
+            Kind::SaveSkill => format!("saving {skill}"),
+            Kind::DeleteSkill => format!("deleting {skill}"),
+            Kind::InstallSkill => "installing a skill".into(),
+            Kind::ConfigureSkill => format!("setting up {skill}"),
+            Kind::RateSkill => format!("reviewing {skill}"),
+            Kind::ReadSkillReviews => format!("reading reviews of {skill}"),
         }
     }
 }
@@ -1235,12 +1235,8 @@ impl DynTool for SkillTool {
         }
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(

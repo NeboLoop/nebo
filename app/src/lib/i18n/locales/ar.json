@@ -506,12 +506,21 @@
 			"fetch": "جلب",
 			"request": "طلب",
 			"browser": "المتصفح",
+			"computer": "الكمبيوتر",
 			"research": "بحث معمّق",
 			"helper": "مساعد",
 			"task": "مهمة",
 			"fileCount": "{count, plural, zero {لا ملفات} one {ملف واحد} two {ملفان} few {# ملفات} many {# ملفًا} other {# ملف}}",
 			"resultCount": "{count, plural, zero {لا نتائج} one {نتيجة واحدة} two {نتيجتان} few {# نتائج} many {# نتيجة} other {# نتيجة}}",
-			"failedCount": "فشل: {count}"
+			"failedCount": "فشل: {count}",
+			"reach": {
+				"screen": "التقاط شاشتك",
+				"microphone": "التسجيل من الميكروفون",
+				"camera": "التقاط صورة بالكاميرا",
+				"input": "التحكم في الماوس ولوحة المفاتيح",
+				"app": "التحكم في {app}",
+				"apps": "التحكم في تطبيقاتك"
+			}
 		},
 		"callVerb": {
 			"create": "إنشاء",

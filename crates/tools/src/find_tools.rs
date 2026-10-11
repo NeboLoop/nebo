@@ -100,12 +100,8 @@ impl DynTool for FindToolsTool {
         true
     }
 
-    fn activity(&self, _input: &serde_json::Value) -> String {
+    fn describe(&self, _input: &serde_json::Value) -> String {
         "loading tools".to_string()
-    }
-
-    fn outcome(&self, _input: &serde_json::Value) -> String {
-        "Loaded tools".to_string()
     }
 
     fn execute_dyn<'a>(

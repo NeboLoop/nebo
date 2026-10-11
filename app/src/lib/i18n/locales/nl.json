@@ -506,12 +506,21 @@
 			"fetch": "Ophalen",
 			"request": "Verzoek",
 			"browser": "Browser",
+			"computer": "Computer",
 			"research": "Onderzoek",
 			"helper": "Helper",
 			"task": "Taak",
 			"fileCount": "{count, plural, one {# bestand} other {# bestanden}}",
 			"resultCount": "{count, plural, one {# resultaat} other {# resultaten}}",
-			"failedCount": "{count} mislukt"
+			"failedCount": "{count} mislukt",
+			"reach": {
+				"screen": "Je scherm wordt vastgelegd",
+				"microphone": "Opname via je microfoon",
+				"camera": "Foto met je camera",
+				"input": "Bestuurt je muis en toetsenbord",
+				"app": "Bestuurt {app}",
+				"apps": "Bestuurt je apps"
+			}
 		},
 		"callVerb": {
 			"create": "Maken",

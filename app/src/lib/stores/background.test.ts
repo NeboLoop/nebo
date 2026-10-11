@@ -22,6 +22,7 @@ function task(over: Partial<BackgroundTask>): BackgroundTask {
     employee: 'Ava',
     title: 'price the order',
     detail: '',
+    call: null,
     status: 'running',
     wait: null,
     trigger: null,

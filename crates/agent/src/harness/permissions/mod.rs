@@ -123,7 +123,7 @@ impl PermissionGate for Check {
             && let Some(ask_id) = self.asks.declined_before(&ctx.session_key, t, call.input)
         {
             decision = Decision::Deny {
-                reason: ask::declined_text(&call.tool.activity(call.input)),
+                reason: ask::declined_text(&call.tool.describe(call.input)),
                 why: Why::Declined { ask_id },
             };
         }
@@ -137,7 +137,7 @@ impl PermissionGate for Check {
             && let Some(ask_id) = self.asks.waiting_already(&grant.agent_id, t, case)
         {
             decision = Decision::Deny {
-                reason: ask::already_waiting_text(&call.tool.activity(call.input)),
+                reason: ask::already_waiting_text(&call.tool.describe(call.input)),
                 why: Why::AlreadyAsked { ask_id },
             };
         }
@@ -146,7 +146,7 @@ impl PermissionGate for Check {
             && ctx.cannot_wait
         {
             decision = Decision::Deny {
-                reason: ask::cannot_wait_text(&call.tool.activity(call.input), case, &ctx.door),
+                reason: ask::cannot_wait_text(&call.tool.describe(call.input), case, &ctx.door),
                 why: Why::CannotWait { case: case.clone() },
             };
         }
@@ -155,7 +155,7 @@ impl PermissionGate for Check {
             _ => None,
         };
         let entry = activity::Entry {
-            activity: call.tool.activity(call.input),
+            activity: call.tool.describe(call.input),
             decision: &decision,
             ask_id: ask_id.as_deref(),
             judged: judged.as_ref(),
@@ -170,7 +170,7 @@ impl PermissionGate for Check {
             }
             Decision::Deny { reason, .. } => GateVerdict::Refuse(ToolResult::error(reason)),
             Decision::Ask { case } => {
-                let sentence = call.tool.activity(call.input);
+                let sentence = call.tool.describe(call.input);
                 let mut parked = ToolResult::error(ask::parked_text(&sentence, &case, &ctx.door, ctx.origin));
                 parked.parked_ask = ask_id;
                 GateVerdict::Parked(parked)

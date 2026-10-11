@@ -1890,7 +1890,9 @@ async fn a_colleagues_thread_is_never_the_employees_own_chat() {
     assert_eq!(session_names(&first["chats"]), vec![own.clone()], "{first}");
     assert_eq!(session_names(&first["teammates"]), vec![colleague.clone()], "{first}");
     assert_eq!(first["total"], 1, "{first}");
-    let next = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1&offset=1")).await;
+    assert!(first["nextCursor"].is_null(), "one conversation is one page: {first}");
+    let cursor = format!("{}:{}", first["chats"][0]["updatedAtEpoch"], first["chats"][0]["id"].as_str().unwrap());
+    let next = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1&cursor={}", urlencoding::encode(&cursor))).await;
     assert!(session_names(&next["chats"]).is_empty(), "{next}");
     assert!(session_names(&next["teammates"]).is_empty(), "{next}");
     assert_eq!(next["total"], 1, "{next}");
@@ -3742,7 +3744,7 @@ async fn the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_
     let bo_seat = format!("agent:{bo}:coworker:team:{TEAM}");
     let working = until_working(&nebo, TEAM, "Bo at work, and Ann's helper on its tool step", |w| {
         let bo_working = w.iter().any(|e| e["kind"] == "member" && e["agentId"] == bo.as_str());
-        let helper = w.iter().any(|e| e["kind"] == "helper" && e["activity"].as_str().is_some_and(|a| !a.is_empty()));
+        let helper = w.iter().any(|e| e["kind"] == "helper" && e["call"]["kind"].is_string());
         let ann_done = !w.iter().any(|e| e["kind"] == "member" && e["agentId"] == ann.as_str());
         bo_working && helper && ann_done
     })
@@ -4149,11 +4151,7 @@ async fn pinned_conversations_head_a_paged_list() {
     let mut walked = ids(&first["chats"]);
     let mut cursor = first["nextCursor"].as_str().expect("more to come").to_string();
     loop {
-        // An app sends the offset too, for a bot from before the cursor;
-        // the cursor wins.
-        let page = nebo
-            .get_ok(&format!("/agents/{clerk}/chats?limit=2&offset={}&cursor={}", walked.len(), urlencoding::encode(&cursor)))
-            .await;
+        let page = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2&cursor={}", urlencoding::encode(&cursor))).await;
         assert!(ids(&page["pinned"]).is_empty(), "{page}");
         walked.extend(ids(&page["chats"]));
         match page["nextCursor"].as_str() {

@@ -2125,7 +2125,7 @@ impl DynTool for GenerateMediaTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match str_of(input, "kind") {
             Some("video") if str_of(input, "mode") == Some("replace") => "swapping the person in a video".to_string(),
             Some("video") => "making a video".to_string(),
@@ -2136,20 +2136,6 @@ impl DynTool for GenerateMediaTool {
             Some("transcript") => "transcribing".to_string(),
             Some("voices") => "listing voices".to_string(),
             _ => "making an image".to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match str_of(input, "kind") {
-            Some("video") if str_of(input, "mode") == Some("replace") => "Swapped the person in a video".to_string(),
-            Some("video") => "Made a video".to_string(),
-            Some("cast") => "Worked on the cast".to_string(),
-            Some("speech") => "Made speech".to_string(),
-            Some("music") => "Made music".to_string(),
-            Some("sound") => "Made a sound effect".to_string(),
-            Some("transcript") => "Transcribed".to_string(),
-            Some("voices") => "Listed voices".to_string(),
-            _ => "Made an image".to_string(),
         }
     }
 

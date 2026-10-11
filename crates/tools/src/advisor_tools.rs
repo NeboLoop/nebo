@@ -183,17 +183,10 @@ impl DynTool for AdvisorTool {
         Ok(())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         match self.op {
             AdvisorOp::Consult => "consulting the advisors".to_string(),
             AdvisorOp::List => "checking the advisors".to_string(),
-        }
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        match self.op {
-            AdvisorOp::Consult => "Consulted the advisors".to_string(),
-            AdvisorOp::List => "Checked the advisors".to_string(),
         }
     }
 

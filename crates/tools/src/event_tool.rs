@@ -101,17 +101,17 @@ impl Kind {
         matches!(self, Kind::List | Kind::History)
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let name = input["name"].as_str().unwrap_or("").trim();
         let paused = input["paused"].as_bool().unwrap_or(true);
         match self {
-            Kind::Create => (format!("scheduling {name}"), format!("Scheduled {name}")),
-            Kind::List => ("checking the schedule".into(), "Checked the schedule".into()),
-            Kind::Delete => (format!("removing the {name} schedule"), format!("Removed the {name} schedule")),
-            Kind::SetPaused if paused => (format!("pausing {name}"), format!("Paused {name}")),
-            Kind::SetPaused => (format!("resuming {name}"), format!("Resumed {name}")),
-            Kind::RunNow => (format!("running {name} now"), format!("Ran {name}")),
-            Kind::History => (format!("checking the runs of {name}"), format!("Checked the runs of {name}")),
+            Kind::Create => format!("scheduling {name}"),
+            Kind::List => "checking the schedule".into(),
+            Kind::Delete => format!("removing the {name} schedule"),
+            Kind::SetPaused if paused => format!("pausing {name}"),
+            Kind::SetPaused => format!("resuming {name}"),
+            Kind::RunNow => format!("running {name} now"),
+            Kind::History => format!("checking the runs of {name}"),
         }
     }
 }
@@ -223,12 +223,8 @@ impl DynTool for ScheduleTool {
         Ok(())
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(

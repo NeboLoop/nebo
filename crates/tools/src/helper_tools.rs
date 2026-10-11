@@ -438,19 +438,11 @@ impl DynTool for HelperTool {
         }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let desc = crate::humanize::cap(input["description"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP);
         match self.op {
             HelperOp::Delegate => format!("starting a helper: {desc}"),
             HelperOp::SendMessage => format!("messaging {}", self.helpers.recipient_label(input)),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        let desc = crate::humanize::cap(input["description"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP);
-        match self.op {
-            HelperOp::Delegate => format!("Started a helper: {desc}"),
-            HelperOp::SendMessage => format!("Messaged {}", self.helpers.recipient_label(input)),
         }
     }
 
@@ -869,7 +861,7 @@ mod tests {
         let send = rig.tools.iter().find(|t| t.name() == "send_message").unwrap();
         assert_eq!(send.rule_field(&json!({"to": "Bookkeeper"})), Some(types::permissions::RuleField::Recipient("Bookkeeper".into())));
         assert_eq!(send.rule_field(&json!({"to": "h1"})), None);
-        assert_eq!(send.activity(&json!({"to": "Back Office"})), "messaging the Back Office team");
+        assert_eq!(send.describe(&json!({"to": "Back Office"})), "messaging the Back Office team");
     }
 
     /// `conversation` reaches the rail as which of a linked employee's

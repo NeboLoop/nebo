@@ -455,28 +455,27 @@ impl Kind {
         }
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let who = str_field(input, "name").unwrap_or("an employee");
-        let pair = |a: String, b: String| (a, b);
         match self {
-            Kind::ListEmployees => pair("listing employees".into(), "Listed employees".into()),
-            Kind::GetEmployee => pair(format!("reading about {who}"), format!("Read about {who}")),
-            Kind::FindEmployees => pair("searching the marketplace".into(), "Searched the marketplace".into()),
-            Kind::HireEmployee => pair("hiring from the marketplace".into(), "Hired from the marketplace".into()),
-            Kind::CreateEmployee => pair(format!("making {who}"), format!("Made {who}")),
-            Kind::UpdateEmployee => pair(format!("updating {who}"), format!("Updated {who}")),
-            Kind::DeleteEmployee => pair(format!("deleting {who}"), format!("Deleted {who}")),
+            Kind::ListEmployees => "listing employees".into(),
+            Kind::GetEmployee => format!("reading about {who}"),
+            Kind::FindEmployees => "searching the marketplace".into(),
+            Kind::HireEmployee => "hiring from the marketplace".into(),
+            Kind::CreateEmployee => format!("making {who}"),
+            Kind::UpdateEmployee => format!("updating {who}"),
+            Kind::DeleteEmployee => format!("deleting {who}"),
             Kind::SetEmployeeActive => match input.get("active").and_then(|v| v.as_bool()) {
-                Some(false) => pair(format!("turning off {who}"), format!("Turned off {who}")),
-                _ => pair(format!("turning on {who}"), format!("Turned on {who}")),
+                Some(false) => format!("turning off {who}"),
+                _ => format!("turning on {who}"),
             },
-            Kind::SetupEmployee => pair(format!("opening {who}'s setup"), format!("Opened {who}'s setup")),
+            Kind::SetupEmployee => format!("opening {who}'s setup"),
             Kind::RepairEmployee => match str_field(input, "name") {
-                Some(n) => pair(format!("repairing {n}'s schedules"), format!("Repaired {n}'s schedules")),
-                None => pair("repairing schedules".into(), "Repaired schedules".into()),
+                Some(n) => format!("repairing {n}'s schedules"),
+                None => "repairing schedules".into(),
             },
-            Kind::ReloadEmployee => pair(format!("reloading {who}"), format!("Reloaded {who}")),
-            Kind::EmployeeStats => pair(format!("reading {who}'s runs"), format!("Read {who}'s runs")),
+            Kind::ReloadEmployee => format!("reloading {who}"),
+            Kind::EmployeeStats => format!("reading {who}'s runs"),
         }
     }
 }
@@ -570,12 +569,8 @@ impl DynTool for EmployeeTool {
         Ok(())
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(
@@ -691,8 +686,8 @@ mod tests {
             assert!(!text.contains("agent("), "{}: {text}", t.name());
             assert!(!text.contains("resource"), "{}: {text}", t.name());
             assert!(!text.to_lowercase().contains(" agent "), "{}: {text}", t.name());
-            let (doing, done) = (t.activity(&json!({"name": "Front Desk"})), t.outcome(&json!({"name": "Front Desk"})));
-            assert!(!doing.contains("agent") && !done.contains("agent"), "{doing} / {done}");
+            let doing = t.describe(&json!({"name": "Front Desk"}));
+            assert!(!doing.contains("agent"), "{doing}");
         }
     }
 

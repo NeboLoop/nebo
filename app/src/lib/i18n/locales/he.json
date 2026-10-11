@@ -506,12 +506,21 @@
 			"fetch": "אחזור",
 			"request": "בקשה",
 			"browser": "דפדפן",
+			"computer": "מחשב",
 			"research": "מחקר",
 			"helper": "עוזר",
 			"task": "משימה",
 			"fileCount": "{count, plural, one {קובץ אחד} other {# קבצים}}",
 			"resultCount": "{count, plural, one {תוצאה אחת} other {# תוצאות}}",
-			"failedCount": "{count} נכשלו"
+			"failedCount": "{count} נכשלו",
+			"reach": {
+				"screen": "צילום המסך שלך",
+				"microphone": "הקלטה מהמיקרופון שלך",
+				"camera": "צילום תמונה במצלמה שלך",
+				"input": "שליטה בעכבר ובמקלדת שלך",
+				"app": "שליטה ב-{app}",
+				"apps": "שליטה באפליקציות שלך"
+			}
 		},
 		"callVerb": {
 			"create": "יצירה",

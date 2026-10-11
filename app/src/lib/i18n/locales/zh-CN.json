@@ -506,12 +506,21 @@
 			"fetch": "获取",
 			"request": "请求",
 			"browser": "浏览器",
+			"computer": "电脑",
 			"research": "研究",
 			"helper": "助手",
 			"task": "任务",
 			"fileCount": "{count, plural, other {# 个文件}}",
 			"resultCount": "{count, plural, other {# 条结果}}",
-			"failedCount": "{count} 个失败"
+			"failedCount": "{count} 个失败",
+			"reach": {
+				"screen": "正在截取你的屏幕",
+				"microphone": "正在通过麦克风录音",
+				"camera": "正在用摄像头拍照",
+				"input": "正在控制你的鼠标和键盘",
+				"app": "正在控制 {app}",
+				"apps": "正在控制你的应用"
+			}
 		},
 		"callVerb": {
 			"create": "创建",

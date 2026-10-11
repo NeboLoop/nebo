@@ -506,12 +506,21 @@
 			"fetch": "取得",
 			"request": "リクエスト",
 			"browser": "ブラウザ",
+			"computer": "コンピューター",
 			"research": "調査",
 			"helper": "ヘルパー",
 			"task": "タスク",
 			"fileCount": "{count, plural, other {# 件のファイル}}",
 			"resultCount": "{count, plural, other {# 件の結果}}",
-			"failedCount": "{count} 件失敗"
+			"failedCount": "{count} 件失敗",
+			"reach": {
+				"screen": "画面をキャプチャ中",
+				"microphone": "マイクから録音中",
+				"camera": "カメラで撮影中",
+				"input": "マウスとキーボードを操作中",
+				"app": "{app} を操作中",
+				"apps": "アプリを操作中"
+			}
 		},
 		"callVerb": {
 			"create": "作成",
