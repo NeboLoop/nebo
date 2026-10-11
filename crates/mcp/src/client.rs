@@ -279,7 +279,7 @@ impl McpClient {
                 "MCP server returned JSON-RPC error"
             );
             return Ok(McpToolResult {
-                content: format!("MCP error ({}): {}", code, message),
+                content: format!("Connector error ({}): {}", code, message),
                 is_error: true,
             });
         }

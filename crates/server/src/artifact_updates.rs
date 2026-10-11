@@ -826,7 +826,7 @@ pub(crate) async fn apply_connector_update_pub(
         .map_err(|e| format!("fetch connector {connector_id}: {e}"))?;
     let raw = detail
         .manifest
-        .ok_or_else(|| format!("connector {connector_id} has no MCP config"))?;
+        .ok_or_else(|| format!("Connector {connector_id} isn't set up correctly"))?;
     // The block may arrive as a JSON object or a JSON-encoded string (same as
     // the CONN- install path).
     let block = match raw {

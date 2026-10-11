@@ -490,7 +490,7 @@ pub async fn call_mcp_tool_scoped(
                             }
                         }
                         Err(retry_err) => ToolResult::error(format!(
-                            "MCP {}/{} failed after token refresh: {}",
+                            "Connector {}/{} failed after token refresh: {}",
                             integration_id, tool_name, retry_err
                         )),
                     },
@@ -498,13 +498,13 @@ pub async fn call_mcp_tool_scoped(
                         let _ =
                             store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
                         ToolResult::error(format!(
-                            "MCP {}/{}: authentication expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
+                            "Connector {}/{}: sign-in expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
                             integration_id, tool_name, refresh_err
                         ))
                     }
                 }
             } else {
-                ToolResult::error(format!("MCP {}/{} failed: {}", integration_id, tool_name, e))
+                ToolResult::error(format!("Connector {}/{} failed: {}", integration_id, tool_name, e))
             }
         }
     }

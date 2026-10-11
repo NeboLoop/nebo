@@ -50,7 +50,7 @@ impl StdioSession {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| McpError::Other(format!("spawn MCP stdio server '{command}': {e}")))?;
+            .map_err(|e| McpError::Other(format!("Couldn't start connector '{command}': {e}")))?;
 
         let stdin = child
             .stdin
@@ -161,12 +161,12 @@ impl StdioSession {
             Ok(Ok(msg)) => msg,
             Ok(Err(_)) => {
                 return Err(McpError::Other(format!(
-                    "MCP stdio '{method}': server closed the connection"
+                    "Connector '{method}': the connector closed the connection"
                 )));
             }
             Err(_) => {
                 self.pending.lock().await.remove(&id);
-                return Err(McpError::Other(format!("MCP stdio '{method}': timed out")));
+                return Err(McpError::Other(format!("Connector '{method}': timed out")));
             }
         };
 
@@ -175,7 +175,7 @@ impl StdioSession {
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error");
-            return Err(McpError::Other(format!("MCP stdio '{method}' error: {m}")));
+            return Err(McpError::Other(format!("Connector '{method}' error: {m}")));
         }
         Ok(msg.get("result").cloned().unwrap_or(Value::Null))
     }
