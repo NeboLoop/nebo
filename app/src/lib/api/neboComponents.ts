@@ -1901,7 +1901,7 @@ export interface CreateStoreCollectionResponse {
 
 export interface CreateTeamResponse {
 	team: CommanderTeam
-	memberIds: string
+	memberIds: string[]
 }
 
 export interface CreateWorkflowResponse {
@@ -2229,6 +2229,11 @@ export interface InstallStoreProductResponse {
 export interface JanusCompleteResponse {
 	text: unknown
 	usage: unknown
+}
+
+export interface KeepMessageFileResponse {
+	success: boolean
+	keep: boolean
 }
 
 export interface ListActiveAgentsResponse {

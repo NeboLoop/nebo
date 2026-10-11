@@ -453,6 +453,13 @@ var reAnyFuncSig = regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)
 // the struct path-qualified or not (`sheet::Edited`).
 var reHandlerReturn = regexp.MustCompile(`->\s*(?:HandlerResult<|Result<\s*(?:axum::)?(?:response::)?Json<)\s*((?:\w+::)*[A-Za-z_][A-Za-z0-9_]*)\s*>`)
 
+// reExtractorBinding is a handler argument's typed binding:
+// `Json(body): Json<KeepFileBody>`, `Query(q): Query<ListQuery>`.
+var reExtractorBinding = regexp.MustCompile(`(?:Json|Query)\(\s*(\w+)\s*\)\s*:\s*(?:axum::)?(?:extract::)?(?:Json|Query)<\s*(?:\w+::)*(\w+)\s*>`)
+
+// reFieldAccess is `var.field`.
+var reFieldAccess = regexp.MustCompile(`^(\w+)\.(\w+)$`)
+
 // reReturnedVar is the handler's final `Ok(Json(body))`.
 var reReturnedVar = regexp.MustCompile(`Ok\(\s*(?:axum::)?(?:response::)?Json\(\s*(\w+)\s*\)\s*\)`)
 
@@ -496,6 +503,28 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 			}
 		}
 		if keys != nil {
+			// `"keep": body.keep` where `Json(body): Json<KeepFileBody>`: the
+			// field's own type.
+			for _, m := range reExtractorBinding.FindAllStringSubmatch(body, -1) {
+				s := queryStructs[sourceFile+"::"+m[2]]
+				if s == nil {
+					s = structs[m[2]]
+				}
+				if s == nil {
+					continue
+				}
+				for _, k := range keys {
+					fm := reFieldAccess.FindStringSubmatch(strings.TrimSpace(k.ValueExpr))
+					if fm == nil || fm[1] != m[1] {
+						continue
+					}
+					for _, f := range s.Fields {
+						if f.Name == fm[2] {
+							varTypes[fm[0]] = f.RustType
+						}
+					}
+				}
+			}
 			// Refine inferred types using variable type info and key-name heuristics.
 			for i := range keys {
 				keys[i].InferredTS = refineType(keys[i], varTypes, structs, handlerToFuncName(h.QualifiedName), h.FuncName)

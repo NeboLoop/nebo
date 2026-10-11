@@ -832,6 +832,13 @@ export function editMessage(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Keep message file"
+ */
+export function keepMessageFile(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.KeepMessageFileResponse>(`/api/v1/chats/messages/${id}/keep`, req)
+}
+
+/**
  * @description "Search messages"
  */
 export function searchMessages(q?: string, limit?: number, offset?: number, chat_id?: string) {
