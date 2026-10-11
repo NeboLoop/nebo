@@ -902,7 +902,7 @@
                   packs={intel.packs}
                   {choice}
                   bind:view={pickerView}
-                  onpick={(pack, level) => { pickModel(pack, level); if (pickerView === 'level') pickerOpen = false; }}
+                  onpick={pickModel}
                   onclose={() => (pickerOpen = false)}
                 />
               </div>

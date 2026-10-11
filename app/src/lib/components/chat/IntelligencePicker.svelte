@@ -5,7 +5,8 @@
   level reads as Medium), the footnote, then one "Intelligence pack ›" row
   that opens the pack list (one checkmark) with a link to build a pack.
   A raw model no pack names shows as one checked "Custom model" row in both
-  cards. Presentational only: the caller turns a pick into a model string
+  cards. Choosing a level or a pack closes the picker once its checkmark
+  shows; the row already in use just closes. The caller turns a pick into a model string
   (`valueFor`) and writes it.
 -->
 <script lang="ts">
@@ -21,7 +22,7 @@
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import Settings2 from 'lucide-svelte/icons/settings-2';
   import { withBase } from '$lib/nav';
-  import { EFFORTS, NEBO_AI_ID, isCustom, packName, shownLevel, type Choice, type Effort, type PackRow } from '$lib/models/speeds';
+  import { EFFORTS, NEBO_AI_ID, isCustom, packName, selectThenClose, shownLevel, type Choice, type Effort, type PackRow } from '$lib/models/speeds';
 
   let {
     packs,
@@ -44,14 +45,14 @@
   const currentPack = $derived(isCustom(choice) ? null : choice.pack);
   const currentPackRow = $derived(packs.find((p) => p.id === currentPack));
 
+  // Choosing closes the picker: the checkmark moves, then it goes.
   function pickLevel(level: Effort) {
-    onpick(isCustom(choice) ? NEBO_AI_ID : choice.pack, level);
+    selectThenClose(choice, isCustom(choice) ? NEBO_AI_ID : choice.pack, level, onpick, onclose);
   }
 
   // A pack keeps the level in use; none stays none.
   function pickPack(id: string) {
-    onpick(id, isCustom(choice) ? null : choice.level);
-    view = 'level';
+    selectThenClose(choice, id, isCustom(choice) ? null : choice.level, onpick, onclose);
   }
 </script>
 

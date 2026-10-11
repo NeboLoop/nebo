@@ -11,7 +11,7 @@ vi.mock('$lib/api/nebo', () => ({
 	})
 }));
 
-const { choiceLabel, isInternalName, loadIntelligence, modelName, packName, resolve, shownLevel, valueFor } = await import('./speeds');
+const { CLOSE_AFTER_MS, selectThenClose, choiceLabel, isInternalName, loadIntelligence, modelName, packName, resolve, shownLevel, valueFor } = await import('./speeds');
 type PackRow = import('./speeds').PackRow;
 
 const packs: PackRow[] = [
@@ -92,5 +92,45 @@ describe('loadIntelligence', () => {
 		const i = await loadIntelligence();
 		expect(i?.botDefault).toBe('pack/j/medium');
 		expect(i?.packs.map((p) => p.id)).toEqual(['nebo-ai', 'j', 'w']);
+	});
+});
+
+describe('selectThenClose', () => {
+	const run = (current: string, pack: string, level: import('./speeds').Effort | null) => {
+		vi.useFakeTimers();
+		const onpick = vi.fn();
+		const onclose = vi.fn();
+		selectThenClose(resolve(current, packs), pack, level, onpick, onclose);
+		const pickedAt = { picked: onpick.mock.calls.length, closedAtOnce: onclose.mock.calls.length };
+		vi.advanceTimersByTime(CLOSE_AFTER_MS);
+		vi.useRealTimers();
+		return { onpick, onclose, ...pickedAt };
+	};
+
+	it('a level: picked at once, its checkmark shows, then the picker closes', () => {
+		const r = run('pack/nebo-ai/low', 'nebo-ai', 'high');
+		expect(r.onpick).toHaveBeenCalledWith('nebo-ai', 'high');
+		expect(r.picked).toBe(1);
+		expect(r.closedAtOnce).toBe(0);
+		expect(r.onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('a pack: picked keeping the level, then the whole picker closes', () => {
+		const r = run('pack/nebo-ai/high', 'w', 'high');
+		expect(r.onpick).toHaveBeenCalledWith('w', 'high');
+		expect(r.onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('the choice already in use closes without a write', () => {
+		for (const [current, pack, level] of [
+			['', 'nebo-ai', 'medium'],
+			['pack/j/medium', 'j', 'medium'],
+			['pack/w', 'w', null],
+			['nebo-1-pro', 'nebo-ai', 'high']
+		] as const) {
+			const r = run(current, pack, level);
+			expect(r.onpick).not.toHaveBeenCalled();
+			expect(r.closedAtOnce).toBe(1);
+		}
 	});
 });

@@ -140,3 +140,26 @@ export function modelName(value: string, packs: PackRow[], t: Translate): string
 	if (!isCustom(c)) return choiceLabel(c, packs, t);
 	return value.split('/').pop() || value;
 }
+
+/** How long a pick's checkmark shows before the picker closes. */
+export const CLOSE_AFTER_MS = 150;
+
+/**
+ * A pick in a picker that closes on selection: the row already in use (the
+ * checked one) closes without a write; any other is picked at once, so its
+ * checkmark shows, and the picker closes a moment later.
+ */
+export function selectThenClose(
+	current: Choice,
+	pack: string,
+	level: Effort | null,
+	onpick: (pack: string, level: Effort | null) => void,
+	onclose: () => void,
+	delay = CLOSE_AFTER_MS
+): void {
+	const inUse =
+		!isCustom(current) && current.pack === pack && (level === current.level || (level !== null && shownLevel(current) === level));
+	if (inUse) return onclose();
+	onpick(pack, level);
+	setTimeout(onclose, delay);
+}
