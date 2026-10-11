@@ -848,21 +848,27 @@ pub struct ConnectorTool {
     pub title: String,
     /// What the server says the tool does; empty while it isn't connected.
     pub description: String,
+    /// Its switch on the company Permissions page (`tool:<key>`): what
+    /// applies now, and whether it follows the connector's default.
+    pub setting: super::permissions::PermissionSwitch,
 }
 
-/// A connector's tools and where their settings live.
+/// A connector's tools and their settings: the one place a connector's view
+/// reads them from. A setting changes through the company Permissions page
+/// (PUT /api/v1/permissions/company), by the switch's `id`.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorToolsResponse {
     /// The rule key of the connector's default ("All tools"): `mcp__<server>__*`.
     pub family: String,
+    /// The connector's default ("All tools"), the switch `tool:<family>`.
+    pub default: super::permissions::PermissionSwitch,
     pub tools: Vec<ConnectorTool>,
 }
 
 /// GET /api/v1/integrations/:id/tools — the tools the server offered at its
-/// last sync, with the rule keys their settings are stored under (the same
-/// keys the company Permissions page sets) and, while connected, what each
-/// one does.
+/// last sync, each with its setting (the same switches the company
+/// Permissions page shows) and, while connected, what it does.
 pub async fn list_integration_tools(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -873,21 +879,33 @@ pub async fn list_integration_tools(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let prefix = mcp::bridge::tool_name_prefix(&integration.name);
-    let family = format!("mcp__{}__", mcp::bridge::server_slug(&prefix));
+    let slug = mcp::bridge::server_slug(&prefix);
+    let family = format!("mcp__{slug}__");
     let live = state.bridge.tool_defs(&id).await;
+    let known: Vec<(String, String)> = state
+        .store
+        .get_mcp_known_tools(&id)
+        .map_err(to_error_response)?
+        .into_iter()
+        .map(|name| (mcp::bridge::make_tool_name(&prefix, &name), name))
+        .collect();
+    let keys = known.iter().map(|(key, _)| key.clone()).collect();
+    let group = super::permissions::company_mcp_group(&state.store, &slug, &integration.name, &keys)
+        .map_err(to_error_response)?;
     let mut tools = Vec::new();
-    for name in state.store.get_mcp_known_tools(&id).map_err(to_error_response)? {
-        let key = mcp::bridge::make_tool_name(&prefix, &name);
+    for (key, name) in known {
         let def = live.iter().find(|d| d.name == name);
         let title = def.and_then(|d| d.display_title()).unwrap_or_else(|| {
             let tool = key.strip_prefix(&family).unwrap_or(&key);
             super::permissions::sentence_case(&super::permissions::words(tool))
         });
         let description = def.map(|d| d.description.clone()).unwrap_or_default();
-        tools.push(ConnectorTool { name, key, title, description });
+        let switch = format!("tool:{key}");
+        let setting = group.rows.iter().find(|s| s.id == switch).cloned().unwrap_or_else(|| group.default.clone());
+        tools.push(ConnectorTool { name, key, title, description, setting });
     }
     tools.sort_by(|a, b| a.title.cmp(&b.title));
-    Ok(Json(ConnectorToolsResponse { family: format!("{family}*"), tools }))
+    Ok(Json(ConnectorToolsResponse { family: format!("{family}*"), default: group.default, tools }))
 }
 
 /// POST /api/v1/integrations/:id/test

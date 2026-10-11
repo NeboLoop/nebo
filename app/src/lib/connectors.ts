@@ -1,7 +1,7 @@
 // Connectors: the MCP servers on this Nebo, as the Connectors page shows
 // them. Pure helpers the page and its tests share.
 
-import type { PermissionsPage, PermissionSwitch } from '$lib/api/neboComponents';
+import type { ConnectorToolsResponse, PermissionSwitch } from '$lib/api/neboComponents';
 
 export interface Connector {
 	id: string;
@@ -55,10 +55,11 @@ export function validConnectorUrl(raw: string): boolean {
 	}
 }
 
-/** The company Permissions page's switches, by id (`tool:<key>`). */
-export function switchesById(page: PermissionsPage): Map<string, PermissionSwitch> {
+/** A connector's settings, by switch id (`tool:<key>`), as its tools list
+ *  carries them: the connector's default and each tool's own. */
+export function switchesById(r: ConnectorToolsResponse): Map<string, PermissionSwitch> {
 	const m = new Map<string, PermissionSwitch>();
-	for (const g of page.groups) for (const s of [g.default, ...g.rows]) m.set(s.id, s);
+	for (const s of [r.default, ...r.tools.map((t) => t.setting)]) m.set(s.id, s);
 	return m;
 }
 

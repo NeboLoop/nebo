@@ -557,10 +557,12 @@ export interface ConnectorTool {
 	key: string
 	title: string
 	description: string
+	setting: PermissionSwitch
 }
 
 export interface ConnectorToolsResponse {
 	family: string
+	default: PermissionSwitch
 	tools: ConnectorTool[]
 }
 

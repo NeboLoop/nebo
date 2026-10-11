@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PermissionsPage, PermissionSwitch } from '$lib/api/neboComponents';
+import type { ConnectorToolsResponse, PermissionSwitch } from '$lib/api/neboComponents';
 import {
 	groupTools,
 	toolSummary,
@@ -34,17 +34,13 @@ const sw = (id: string, value: string, own = false): PermissionSwitch => ({
 	locked: false
 });
 
-const page = (rows: PermissionSwitch[], def = 'allow'): PermissionsPage => ({
-	mode: 'automatic',
-	modeFromCompany: false,
-	companyMode: 'automatic',
-	capabilities: [],
-	groups: [{ id: 'group:mcp:edge', title: 'Edge', subtitle: '', default: sw('tool:mcp__edge__*', def), rows }],
-	specific: [],
-	money: [],
-	folders: [],
-	alwaysAsks: [],
-	fixed: []
+const page = (rows: PermissionSwitch[], def = 'allow'): ConnectorToolsResponse => ({
+	family: 'mcp__edge__*',
+	default: sw('tool:mcp__edge__*', def),
+	tools: rows.map((setting) => {
+		const key = setting.id.slice('tool:'.length);
+		return { name: key.split('__').pop()!, key, title: key, description: '', setting };
+	})
 });
 
 describe('connectorState', () => {
