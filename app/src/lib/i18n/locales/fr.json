@@ -51,7 +51,7 @@
 		"pending": "En attente",
 		"unknown": "Inconnu",
 		"live": "En direct",
-		"reconnecting": "Reconnexion",
+		"couldNotConnect": "Impossible de se connecter à {name}. Réessayez.",
 		"redirecting": "Redirection...",
 		"noResultsFound": "Aucun résultat trouvé",
 		"noDataAvailable": "Aucune donnée disponible",
@@ -87,7 +87,6 @@
 		"stopped": "Arrêté",
 		"errorOccurred": "Une erreur s’est produite.",
 		"systemError": "Erreur système",
-		"stillReconnecting": "Toujours en train de joindre votre Nebo…",
 		"updatesAvailable": "{count, plural, one {# mise à jour disponible} other {# mises à jour disponibles}}",
 		"artifactUpdated": "Mis à jour {type} : {version}",
 		"artifactUpdateFailed": "Échec de la mise à jour : {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Conversation vocale",
-		"reconnecting": "Retour dans l’appel…",
 		"consentTitle": "La voix utilise un service cloud",
 		"consentBody": "La conversation vocale transmet l'audio de votre micro à un service vocal cloud pour traitement pendant l'appel. L'audio quitte cet ordinateur. Écrire dans le chat reste local comme toujours.",
 		"consentAccept": "Activer la voix",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Réflexion…",
 			"stillThinking": "Réflexion en cours…",
-			"thinkingMore": "Réflexion approfondie…",
-			"connecting": "Connexion…"
+			"thinkingMore": "Réflexion approfondie…"
 		},
 		"notice": {
 			"done": "{what} est terminé",

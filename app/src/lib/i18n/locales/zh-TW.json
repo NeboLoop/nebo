@@ -51,7 +51,7 @@
 		"pending": "等待中",
 		"unknown": "未知",
 		"live": "即時",
-		"reconnecting": "重新連線中",
+		"couldNotConnect": "無法連線到 {name}。請再試一次。",
 		"redirecting": "重新導向中...",
 		"noResultsFound": "找不到結果",
 		"noDataAvailable": "沒有可用資料",
@@ -87,7 +87,6 @@
 		"stopped": "已停止",
 		"errorOccurred": "發生錯誤。",
 		"systemError": "系統錯誤",
-		"stillReconnecting": "仍在嘗試連上你的 Nebo…",
 		"updatesAvailable": "{count, plural, other {有 # 個可用更新}}",
 		"artifactUpdated": "已更新{type}：{version}",
 		"artifactUpdateFailed": "更新失敗：{error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "語音對話",
-		"reconnecting": "正在重新加入通話…",
 		"consentTitle": "語音使用雲端服務",
 		"consentBody": "語音對話進行時，您的麥克風音訊會傳輸至雲端語音服務進行處理。音訊會離開這台電腦。聊天輸入一如既往保留在本機。",
 		"consentAccept": "啟用語音",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "思考中…",
 			"stillThinking": "仍在思考…",
-			"thinkingMore": "再想一想…",
-			"connecting": "連線中…"
+			"thinkingMore": "再想一想…"
 		},
 		"notice": {
 			"done": "{what} 已完成",

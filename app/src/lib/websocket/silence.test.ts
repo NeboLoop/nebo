@@ -97,6 +97,34 @@ describe('the silence watchdog', () => {
 		expect(FakeSocket.all.length).toBe(1);
 	});
 
+	it('a dial now (Try again) replaces the waiting redial, never adds a second', async () => {
+		vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: () => {} });
+		const { ws, sock, SILENCE_MS } = await connected();
+		// The line goes dead; the redial waits its 2 s.
+		sock.frame({ type: 'ping' });
+		vi.advanceTimersByTime(SILENCE_MS + 1000);
+		expect(ws.getStatus()).toBe('disconnected');
+		expect(FakeSocket.all.length).toBe(1);
+
+		// Try again before the redial is due: one new socket, now.
+		ws.connect();
+		expect(FakeSocket.all.length).toBe(2);
+
+		// Every dial fails at once. One chain of redials follows, backing off
+		// 2 s, 4 s, 8 s, 16 s — never a second chain beside it.
+		const dialTimes: number[] = [];
+		for (let ms = 0; ms <= 40_000; ms += 100) {
+			for (const s of FakeSocket.all.slice(1)) {
+				if (s.closed) continue;
+				s.closed = true;
+				dialTimes.push(ms);
+				s.onclose?.({ code: 1006, reason: '', wasClean: false });
+			}
+			vi.advanceTimersByTime(100);
+		}
+		expect(dialTimes).toEqual([0, 2000, 6000, 14000, 30000]);
+	});
+
 	it('stops watching when the owner closes the socket', async () => {
 		const { ws, sock, SILENCE_MS } = await connected();
 		sock.frame({ type: 'ping' });

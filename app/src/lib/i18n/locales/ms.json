@@ -51,7 +51,7 @@
 		"pending": "Menunggu",
 		"unknown": "Tidak diketahui",
 		"live": "Langsung",
-		"reconnecting": "Menyambung semula",
+		"couldNotConnect": "Tidak dapat menyambung ke {name}. Cuba lagi.",
 		"redirecting": "Mengalih hala...",
 		"noResultsFound": "Tiada hasil ditemui",
 		"noDataAvailable": "Tiada data tersedia",
@@ -87,7 +87,6 @@
 		"stopped": "Dihentikan",
 		"errorOccurred": "Ada sesuatu yang tidak kena.",
 		"systemError": "Ralat sistem",
-		"stillReconnecting": "Masih cuba menghubungi Nebo anda…",
 		"updatesAvailable": "{count, plural, other {# kemas kini tersedia}}",
 		"artifactUpdated": "{type} dikemas kini: {version}",
 		"artifactUpdateFailed": "Kemas kini gagal: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Perbualan suara",
-		"reconnecting": "Menyertai semula panggilan…",
 		"consentTitle": "Suara menggunakan perkhidmatan awan",
 		"consentBody": "Perbualan suara menstrim audio mikrofon anda ke perkhidmatan suara awan untuk diproses semasa panggilan aktif. Audio meninggalkan komputer ini. Menaip dalam sembang kekal setempat seperti biasa.",
 		"consentAccept": "Aktifkan suara",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Sedang berfikir…",
 			"stillThinking": "Masih berfikir…",
-			"thinkingMore": "Berfikir lebih lama…",
-			"connecting": "Menyambung…"
+			"thinkingMore": "Berfikir lebih lama…"
 		},
 		"notice": {
 			"done": "{what} selesai",

@@ -51,7 +51,7 @@
 		"pending": "Ausstehend",
 		"unknown": "Unbekannt",
 		"live": "Live",
-		"reconnecting": "Verbindung wird wiederhergestellt",
+		"couldNotConnect": "Keine Verbindung zu {name} möglich. Versuche es erneut.",
 		"redirecting": "Weiterleitung...",
 		"noResultsFound": "Keine Ergebnisse gefunden",
 		"noDataAvailable": "Keine Daten verfügbar",
@@ -87,7 +87,6 @@
 		"stopped": "Gestoppt",
 		"errorOccurred": "Etwas ist schiefgelaufen.",
 		"systemError": "Systemfehler",
-		"stillReconnecting": "Nebo wird weiterhin erreicht…",
 		"updatesAvailable": "{count, plural, one {# Update verfügbar} other {# Updates verfügbar}}",
 		"artifactUpdated": "{type} aktualisiert: {version}",
 		"artifactUpdateFailed": "Update fehlgeschlagen: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Sprachgespräch",
-		"reconnecting": "Anruf wird fortgesetzt…",
 		"consentTitle": "Sprache nutzt einen Cloud-Dienst",
 		"consentBody": "Sprachgespräche streamen dein Mikrofon-Audio zur Verarbeitung an einen Cloud-Sprachdienst, solange ein Anruf aktiv ist. Audio verlässt diesen Computer. Tippen im Chat bleibt wie immer lokal.",
 		"consentAccept": "Sprache aktivieren",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Denkt nach…",
 			"stillThinking": "Denkt noch nach…",
-			"thinkingMore": "Denkt weiter nach…",
-			"connecting": "Verbinde…"
+			"thinkingMore": "Denkt weiter nach…"
 		},
 		"notice": {
 			"done": "{what} beendet",

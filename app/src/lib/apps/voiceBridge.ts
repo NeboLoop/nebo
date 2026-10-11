@@ -92,6 +92,11 @@ export async function startAppVoiceBridge(): Promise<() => void> {
 				report(true);
 				break;
 			case 'start':
+				// Try again on this employee's call whose line is down: dial now.
+				if (mine && s.status === 'reconnecting') {
+					voiceSession.retry();
+					break;
+				}
 				// One call at a time; an ended call is put down before the next.
 				if (s.status === 'error') voiceSession.stop();
 				if (get(voiceSession).status !== 'idle' || !hasVoiceCloudConsent()) {

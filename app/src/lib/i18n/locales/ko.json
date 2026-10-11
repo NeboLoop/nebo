@@ -51,7 +51,7 @@
 		"pending": "대기 중",
 		"unknown": "알 수 없음",
 		"live": "라이브",
-		"reconnecting": "재연결 중",
+		"couldNotConnect": "{name}에 연결할 수 없습니다. 다시 시도하세요.",
 		"redirecting": "리디렉션 중...",
 		"noResultsFound": "결과를 찾을 수 없습니다",
 		"noDataAvailable": "데이터가 없습니다",
@@ -87,7 +87,6 @@
 		"stopped": "중지됨",
 		"errorOccurred": "문제가 발생했습니다.",
 		"systemError": "시스템 오류",
-		"stillReconnecting": "아직 Nebo에 연결하는 중…",
 		"updatesAvailable": "{count, plural, other {업데이트 #개 사용 가능}}",
 		"artifactUpdated": "{type} 업데이트됨: {version}",
 		"artifactUpdateFailed": "업데이트 실패: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "음성 대화",
-		"reconnecting": "통화에 다시 참여하는 중…",
 		"consentTitle": "음성은 클라우드 서비스를 사용합니다",
 		"consentBody": "음성 대화 중에는 마이크 오디오가 처리를 위해 클라우드 음성 서비스로 전송됩니다. 오디오가 이 컴퓨터를 벗어납니다. 채팅 입력은 언제나처럼 로컬에 유지됩니다.",
 		"consentAccept": "음성 사용",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "생각 중…",
 			"stillThinking": "아직 생각 중…",
-			"thinkingMore": "조금 더 생각 중…",
-			"connecting": "연결 중…"
+			"thinkingMore": "조금 더 생각 중…"
 		},
 		"notice": {
 			"done": "{what} 완료",

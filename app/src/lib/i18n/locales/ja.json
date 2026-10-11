@@ -51,7 +51,7 @@
 		"pending": "保留中",
 		"unknown": "不明",
 		"live": "ライブ",
-		"reconnecting": "再接続中",
+		"couldNotConnect": "{name} に接続できませんでした。もう一度お試しください。",
 		"redirecting": "リダイレクト中...",
 		"noResultsFound": "結果が見つかりません",
 		"noDataAvailable": "データがありません",
@@ -87,7 +87,6 @@
 		"stopped": "停止",
 		"errorOccurred": "問題が発生しました。",
 		"systemError": "システムエラー",
-		"stillReconnecting": "Neboへの接続を試みています…",
 		"updatesAvailable": "{count, plural, other {#件のアップデートがあります}}",
 		"artifactUpdated": "{type}を更新しました: {version}",
 		"artifactUpdateFailed": "更新に失敗しました: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "音声会話",
-		"reconnecting": "通話に再参加しています…",
 		"consentTitle": "音声はクラウドサービスを使用します",
 		"consentBody": "音声会話では、通話中にマイクの音声が処理のためクラウド音声サービスへ送信されます。音声はこのコンピュータの外に出ます。チャットの入力はこれまで通りローカルのままです。",
 		"consentAccept": "音声を有効にする",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "考え中…",
 			"stillThinking": "まだ考え中…",
-			"thinkingMore": "もう少し考え中…",
-			"connecting": "接続中…"
+			"thinkingMore": "もう少し考え中…"
 		},
 		"notice": {
 			"done": "{what}が完了しました",

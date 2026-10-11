@@ -51,7 +51,7 @@
 		"pending": "Oczekuje",
 		"unknown": "Nieznany",
 		"live": "Na żywo",
-		"reconnecting": "Ponowne łączenie",
+		"couldNotConnect": "Nie udało się połączyć z {name}. Spróbuj ponownie.",
 		"redirecting": "Przekierowywanie...",
 		"noResultsFound": "Nie znaleziono wyników",
 		"noDataAvailable": "Brak dostępnych danych",
@@ -87,7 +87,6 @@
 		"stopped": "Zatrzymano",
 		"errorOccurred": "Coś poszło nie tak.",
 		"systemError": "Błąd systemu",
-		"stillReconnecting": "Wciąż próbujemy połączyć się z Twoim Nebo…",
 		"updatesAvailable": "{count, plural, one {Dostępna # aktualizacja} few {Dostępne # aktualizacje} many {Dostępnych # aktualizacji} other {Dostępne # aktualizacji}}",
 		"artifactUpdated": "Zaktualizowano {type}: {version}",
 		"artifactUpdateFailed": "Aktualizacja nie powiodła się: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Rozmowa głosowa",
-		"reconnecting": "Ponowne dołączanie do rozmowy…",
 		"consentTitle": "Głos korzysta z usługi w chmurze",
 		"consentBody": "Rozmowa głosowa przesyła dźwięk z mikrofonu do chmurowej usługi głosowej w celu przetworzenia podczas aktywnego połączenia. Dźwięk opuszcza ten komputer. Pisanie na czacie pozostaje lokalne jak zawsze.",
 		"consentAccept": "Włącz głos",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Myślę…",
 			"stillThinking": "Nadal myślę…",
-			"thinkingMore": "Myślę jeszcze chwilę…",
-			"connecting": "Łączenie…"
+			"thinkingMore": "Myślę jeszcze chwilę…"
 		},
 		"notice": {
 			"done": "Zakończono: {what}",

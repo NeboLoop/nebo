@@ -36,6 +36,9 @@ vi.mock('$lib/stores/voiceSession', () => ({
 			calls.push('stop');
 			state.update((s) => ({ ...s, status: 'idle' }));
 		},
+		retry: () => {
+			calls.push('retry');
+		},
 		toggleMute: () => {
 			calls.push('mute');
 			state.update((s) => ({ ...s, isMuted: !s.isMuted }));
@@ -84,6 +87,17 @@ describe('app voice bridge (main window)', () => {
 		expect(calls).toEqual([]);
 		command('hello');
 		expect(states().at(-1)).toEqual({ status: 'listening', agentId: 'nanna', muted: false });
+	});
+
+	it('Try again on the pill redials this employee\'s dropped call, never another\'s', async () => {
+		await startAppVoiceBridge();
+		state.set({ status: 'reconnecting', agentId: 'kart', isMuted: false, audioLevel: 0 });
+		command('start');
+		expect(calls).toEqual(['retry']);
+
+		state.set({ status: 'reconnecting', agentId: 'nanna', isMuted: false, audioLevel: 0 });
+		command('start');
+		expect(calls).toEqual(['retry']);
 	});
 
 	it('starts nothing without the cloud consent', async () => {

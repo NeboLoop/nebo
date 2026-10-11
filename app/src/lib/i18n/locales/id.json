@@ -51,7 +51,7 @@
 		"pending": "Tertunda",
 		"unknown": "Tidak diketahui",
 		"live": "Langsung",
-		"reconnecting": "Menghubungkan ulang",
+		"couldNotConnect": "Tidak dapat terhubung ke {name}. Coba lagi.",
 		"redirecting": "Mengalihkan...",
 		"noResultsFound": "Tidak ada hasil ditemukan",
 		"noDataAvailable": "Tidak ada data tersedia",
@@ -87,7 +87,6 @@
 		"stopped": "Dihentikan",
 		"errorOccurred": "Terjadi kesalahan.",
 		"systemError": "Kesalahan sistem",
-		"stillReconnecting": "Masih mencoba menjangkau Nebo Anda…",
 		"updatesAvailable": "{count, plural, one {# pembaruan tersedia} other {# pembaruan tersedia}}",
 		"artifactUpdated": "{type} diperbarui: {version}",
 		"artifactUpdateFailed": "Pembaruan gagal: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Percakapan suara",
-		"reconnecting": "Bergabung kembali ke panggilan…",
 		"consentTitle": "Suara menggunakan layanan cloud",
 		"consentBody": "Percakapan suara mengalirkan audio mikrofon Anda ke layanan suara cloud untuk diproses selama panggilan aktif. Audio meninggalkan komputer ini. Mengetik di chat tetap lokal seperti biasa.",
 		"consentAccept": "Aktifkan suara",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Berpikir…",
 			"stillThinking": "Masih berpikir…",
-			"thinkingMore": "Berpikir lebih lama…",
-			"connecting": "Menghubungkan…"
+			"thinkingMore": "Berpikir lebih lama…"
 		},
 		"notice": {
 			"done": "{what} selesai",
