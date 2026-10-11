@@ -133,6 +133,12 @@ class WebSocketClient {
 			return;
 		}
 
+		// A dial now (Try again, the page coming back into view) replaces the
+		// redial that was waiting; it never adds a second one beside it.
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
 		this.closedByUser = false;
 		this.setStatus('connecting');
 

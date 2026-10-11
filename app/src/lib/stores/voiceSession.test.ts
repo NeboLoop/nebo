@@ -7,7 +7,8 @@
  *
  * None of which the owner is told about. A redial that lands inside the quiet
  * window (RECONNECT_QUIET_MS, 4s) never reaches the screen: the call keeps the
- * status it had. Only an outage that outlasts it says one line.
+ * status it had. Only an outage that outlasts it is shown, once, as the plain
+ * failure with Try again (`retry`), while the redial keeps running behind it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
@@ -193,7 +194,7 @@ describe('voiceSession reconnect', () => {
 		expect(get(voiceSession).status).toBe('listening');
 	});
 
-	it('says one line, once, when an outage outlasts the quiet window', async () => {
+	it('shows the failure once an outage outlasts the quiet window', async () => {
 		const { voiceSession } = await liveCall();
 
 		FakeSocket.instances[0].drop(1006);
@@ -202,6 +203,41 @@ describe('voiceSession reconnect', () => {
 
 		await vi.advanceTimersByTimeAsync(1);
 		expect(get(voiceSession).status).toBe('reconnecting');
+	});
+
+	it('Try again dials the same thread at once, and the waiting redial never fires beside it', async () => {
+		const { voiceSession } = await liveCall();
+
+		FakeSocket.instances[0].drop(1006);
+		// The first redial (0.5 s) times out at 5.5 s; the next waits 1 s more.
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(get(voiceSession).status).toBe('reconnecting');
+		expect(FakeSocket.instances).toHaveLength(2);
+
+		voiceSession.retry();
+		expect(FakeSocket.instances).toHaveLength(3);
+		const now = FakeSocket.instances[2];
+		expect(now.url).toContain('chat_id=thread-9');
+
+		now.open();
+		now.emit({ type: 'session_initialized' });
+		expect(get(voiceSession).status).toBe('listening');
+		expect(get(voiceSession).transcripts).toEqual([{ speaker: 'agent', text: 'Good morning.' }]);
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(FakeSocket.instances).toHaveLength(3);
+		expect(get(voiceSession).status).toBe('listening');
+	});
+
+	it('Try again does nothing to a call whose line is up, or inside the quiet window', async () => {
+		const { voiceSession } = await liveCall();
+		voiceSession.retry();
+		expect(FakeSocket.instances).toHaveLength(1);
+
+		FakeSocket.instances[0].drop(1006);
+		voiceSession.retry();
+		expect(FakeSocket.instances).toHaveLength(1);
+		expect(get(voiceSession).status).toBe('listening');
 	});
 
 	it('redials the bound thread after an unexpected close, keeping the transcript and the wake lock', async () => {

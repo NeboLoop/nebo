@@ -51,7 +51,7 @@
 		"pending": "Väntande",
 		"unknown": "Okänd",
 		"live": "Live",
-		"reconnecting": "Återansluter",
+		"couldNotConnect": "Kunde inte ansluta till {name}. Försök igen.",
 		"redirecting": "Omdirigerar...",
 		"noResultsFound": "Inga resultat hittades",
 		"noDataAvailable": "Ingen data tillgänglig",
@@ -87,7 +87,6 @@
 		"stopped": "Stoppad",
 		"errorOccurred": "Något gick fel.",
 		"systemError": "Systemfel",
-		"stillReconnecting": "Försöker fortfarande nå din Nebo…",
 		"updatesAvailable": "{count, plural, one {# uppdatering tillgänglig} other {# uppdateringar tillgängliga}}",
 		"artifactUpdated": "Uppdaterade {type}: {version}",
 		"artifactUpdateFailed": "Uppdateringen misslyckades: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Röstsamtal",
-		"reconnecting": "Ansluter till samtalet igen…",
 		"consentTitle": "Röst använder en molntjänst",
 		"consentBody": "Röstsamtal strömmar din mikrofonljud till en molnbaserad rösttjänst för bearbetning medan ett samtal pågår. Ljudet lämnar den här datorn. Att skriva i chatten förblir lokalt som alltid.",
 		"consentAccept": "Aktivera röst",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Tänker…",
 			"stillThinking": "Tänker fortfarande…",
-			"thinkingMore": "Tänker lite till…",
-			"connecting": "Ansluter…"
+			"thinkingMore": "Tänker lite till…"
 		},
 		"notice": {
 			"done": "{what} är klar",

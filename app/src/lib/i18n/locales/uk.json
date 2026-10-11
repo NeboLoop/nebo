@@ -51,7 +51,7 @@
 		"pending": "Очікує",
 		"unknown": "Невідомо",
 		"live": "Наживо",
-		"reconnecting": "Перепідключення",
+		"couldNotConnect": "Не вдалося підключитися до {name}. Спробуйте ще раз.",
 		"redirecting": "Перенаправлення...",
 		"noResultsFound": "Результатів не знайдено",
 		"noDataAvailable": "Дані відсутні",
@@ -87,7 +87,6 @@
 		"stopped": "Зупинено",
 		"errorOccurred": "Щось пішло не так.",
 		"systemError": "Системна помилка",
-		"stillReconnecting": "Досі намагаємося зв’язатися з вашим Nebo…",
 		"updatesAvailable": "{count, plural, one {Доступне # оновлення} few {Доступні # оновлення} many {Доступно # оновлень} other {Доступно # оновлення}}",
 		"artifactUpdated": "Оновлено {type}: {version}",
 		"artifactUpdateFailed": "Не вдалося оновити: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "Голосова розмова",
-		"reconnecting": "Повертаємося до дзвінка…",
 		"consentTitle": "Голос використовує хмарний сервіс",
 		"consentBody": "Під час дзвінка голосова розмова передає звук вашого мікрофона до хмарного голосового сервісу для обробки. Аудіо залишає цей комп'ютер. Введення тексту в чаті залишається локальним, як і завжди.",
 		"consentAccept": "Увімкнути голос",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "Думаю…",
 			"stillThinking": "Досі думаю…",
-			"thinkingMore": "Думаю ще…",
-			"connecting": "Підключення…"
+			"thinkingMore": "Думаю ще…"
 		},
 		"notice": {
 			"done": "{what}: завершено",

@@ -8,7 +8,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
   import { backgroundTasks, backgroundFinished, belongsTo, inStrip, clock } from '$lib/stores/background';
   import BackgroundPanel from '$lib/components/background/BackgroundPanel.svelte';
   import { widthFade } from '$lib/components/background/widthFade';
@@ -33,11 +32,8 @@
 
   let nowMs = $state(Date.now());
   const tick = setInterval(() => (nowMs = Date.now()), 1000);
-  let status = $state<ConnectionStatus>(getWebSocketClient().getStatus());
-  const offStatus = getWebSocketClient().onStatus((s) => (status = s));
   onDestroy(() => {
     clearInterval(tick);
-    offStatus();
     if (flashTimer) clearTimeout(flashTimer);
   });
 
@@ -64,10 +60,11 @@
   });
 
   const elapsed = $derived(isLoading && turnStartedAt > 0 ? Math.floor((nowMs - turnStartedAt) / 1000) : 0);
-  const thinking = $derived(isLoading && !activityStatus && status === 'connected');
+  // A dropped socket changes nothing here: a short drop is redialed silently,
+  // and one that lasts is reported once, app-wide ($lib/websocket/connectionNotice).
+  const thinking = $derived(isLoading && !activityStatus);
   const phrase = $derived.by(() => {
     if (!isLoading) return '';
-    if (status !== 'connected') return $t('background.status.connecting');
     if (activityStatus) return activityStatus;
     if (elapsed >= 30) return $t('background.status.thinkingMore');
     if (elapsed >= 15) return $t('background.status.stillThinking');

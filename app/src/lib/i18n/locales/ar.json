@@ -51,7 +51,7 @@
 		"pending": "قيد الانتظار",
 		"unknown": "غير معروف",
 		"live": "مباشر",
-		"reconnecting": "إعادة الاتصال",
+		"couldNotConnect": "تعذّر الاتصال بـ {name}. حاول مرة أخرى.",
 		"redirecting": "جارٍ إعادة التوجيه...",
 		"noResultsFound": "لم يتم العثور على نتائج",
 		"noDataAvailable": "لا توجد بيانات متاحة",
@@ -87,7 +87,6 @@
 		"stopped": "متوقف",
 		"errorOccurred": "حدث خطأ ما.",
 		"systemError": "خطأ في النظام",
-		"stillReconnecting": "ما زلنا نحاول الوصول إلى Nebo الخاص بك…",
 		"updatesAvailable": "{count, plural, zero {لا توجد تحديثات} one {تحديث واحد متاح} two {تحديثان متاحان} few {# تحديثات متاحة} many {# تحديثًا متاحًا} other {# تحديث متاح}}",
 		"artifactUpdated": "تم تحديث {type}: {version}",
 		"artifactUpdateFailed": "فشل التحديث: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "محادثة صوتية",
-		"reconnecting": "جارٍ العودة إلى المكالمة…",
 		"consentTitle": "الصوت يستخدم خدمة سحابية",
 		"consentBody": "تبث المحادثة الصوتية صوت الميكروفون إلى خدمة صوت سحابية للمعالجة أثناء المكالمة. يغادر الصوت هذا الجهاز. تبقى الكتابة في الدردشة محلية كالمعتاد.",
 		"consentAccept": "تفعيل الصوت",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "يفكر…",
 			"stillThinking": "ما زال يفكر…",
-			"thinkingMore": "يفكر أكثر…",
-			"connecting": "جارٍ الاتصال…"
+			"thinkingMore": "يفكر أكثر…"
 		},
 		"notice": {
 			"done": "انتهى {what}",

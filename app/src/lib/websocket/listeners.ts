@@ -15,6 +15,8 @@ import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
 import { opensHere } from './origin';
+import { watchConnection } from './connectionNotice';
+import { botName, loadBotName } from '$lib/stores/botName';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { loadWaitingAsks, setWaitingAsks, waitingAsks } from '$lib/stores/waitingAsks';
@@ -293,41 +295,31 @@ export function attachWebSocketListeners(): void {
   );
 
   // --- Connection status toast ---
-  // A dropped socket is routine on a phone (backgrounding, wifi↔cell) and
-  // heals in a second or two. Say nothing for the first few seconds; then a
-  // quiet "Reconnecting…" that goes away on its own the moment we are back;
-  // only after half a minute does it become worth the owner's attention.
-  let reconnectToast: number | null = null;
-  let reconnectSoon: ReturnType<typeof setTimeout> | null = null;
-  let reconnectLong: ReturnType<typeof setTimeout> | null = null;
-  const clearReconnect = () => {
-    if (reconnectSoon) { clearTimeout(reconnectSoon); reconnectSoon = null; }
-    if (reconnectLong) { clearTimeout(reconnectLong); reconnectLong = null; }
-    if (reconnectToast !== null) { removeToast(reconnectToast); reconnectToast = null; }
-  };
+  // A short drop is never mentioned (./connectionNotice.ts); one that
+  // outlasts the redials is the plain failure, with Try again.
+  void loadBotName();
+  let connectionToast: number | null = null;
   unsubs.push(
-    ws.onStatus((status) => {
-      if (status === 'connected') {
-        clearReconnect();
-        // What changed while the socket was down was never told.
-        void loadBackground().catch(() => log.debug('Background API unavailable'));
-        return;
-      }
-      if ((status === 'error' || status === 'disconnected') && !reconnectSoon && reconnectToast === null) {
-        reconnectSoon = setTimeout(() => {
-          reconnectSoon = null;
-          if (ws.getStatus() === 'connected') return;
-          reconnectToast = addToast(get(t)('common.reconnecting'), 'info', 0);
-          reconnectLong = setTimeout(() => {
-            if (ws.getStatus() === 'connected') return;
-            if (reconnectToast !== null) removeToast(reconnectToast);
-            reconnectToast = addToast(get(t)('common.stillReconnecting'), 'warning', 0);
-          }, 30_000);
-        }, 4_000);
-      }
+    watchConnection(ws, {
+      show(tryAgain) {
+        const name = get(botName) || 'Nebo';
+        connectionToast = addToast(get(t)('common.couldNotConnect', { values: { name } }), 'error', 0, {
+          label: get(t)('chat.tryAgain'),
+          onClick: tryAgain,
+        });
+      },
+      hide() {
+        if (connectionToast !== null) removeToast(connectionToast);
+        connectionToast = null;
+      },
     })
   );
-  unsubs.push(clearReconnect);
+  unsubs.push(
+    ws.onStatus((status) => {
+      // What changed while the socket was down was never told.
+      if (status === 'connected') void loadBackground().catch(() => log.debug('Background API unavailable'));
+    })
+  );
 
   // --- Artifact update toasts ---
   unsubs.push(

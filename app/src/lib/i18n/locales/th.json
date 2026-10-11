@@ -51,7 +51,7 @@
 		"pending": "รอดำเนินการ",
 		"unknown": "ไม่ทราบ",
 		"live": "สด",
-		"reconnecting": "กำลังเชื่อมต่อใหม่",
+		"couldNotConnect": "เชื่อมต่อกับ {name} ไม่ได้ ลองอีกครั้ง",
 		"redirecting": "กำลังเปลี่ยนเส้นทาง...",
 		"noResultsFound": "ไม่พบผลลัพธ์",
 		"noDataAvailable": "ไม่มีข้อมูล",
@@ -87,7 +87,6 @@
 		"stopped": "หยุดแล้ว",
 		"errorOccurred": "เกิดข้อผิดพลาด",
 		"systemError": "ข้อผิดพลาดของระบบ",
-		"stillReconnecting": "ยังพยายามเชื่อมต่อกับ Nebo ของคุณอยู่…",
 		"updatesAvailable": "{count, plural, other {มีอัปเดต # รายการ}}",
 		"artifactUpdated": "อัปเดต{type}แล้ว: {version}",
 		"artifactUpdateFailed": "อัปเดตล้มเหลว: {error}",
@@ -3187,7 +3186,6 @@
 	},
 	"voice": {
 		"startConversation": "การสนทนาด้วยเสียง",
-		"reconnecting": "กำลังกลับเข้าสาย…",
 		"consentTitle": "เสียงใช้บริการคลาวด์",
 		"consentBody": "การสนทนาด้วยเสียงจะสตรีมเสียงจากไมโครโฟนของคุณไปยังบริการเสียงบนคลาวด์ เพื่อประมวลผลระหว่างการโทร เสียงจะออกจากคอมพิวเตอร์เครื่องนี้ การพิมพ์ในแชทยังคงอยู่ในเครื่องเช่นเดิม",
 		"consentAccept": "เปิดใช้เสียง",
@@ -4207,8 +4205,7 @@
 		"status": {
 			"thinking": "กำลังคิด…",
 			"stillThinking": "ยังคิดอยู่…",
-			"thinkingMore": "คิดเพิ่มอีกหน่อย…",
-			"connecting": "กำลังเชื่อมต่อ…"
+			"thinkingMore": "คิดเพิ่มอีกหน่อย…"
 		},
 		"notice": {
 			"done": "{what} เสร็จแล้ว",
