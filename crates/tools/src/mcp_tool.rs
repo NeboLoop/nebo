@@ -55,6 +55,27 @@ impl McpProxyTool {
     }
 }
 
+impl McpProxyTool {
+    /// This tool is shared memory's (see [`is_shared_memory`]).
+    fn is_shared_memory(&self) -> bool {
+        self.store
+            .get_mcp_integration(&self.integration_id)
+            .ok()
+            .flatten()
+            .is_some_and(|i| is_shared_memory(&i))
+    }
+}
+
+/// The integration is the account's shared memory, the Nebo KB: the server
+/// at the platform memory URL, matched exactly (a customer's own KB at
+/// another host is an ordinary connector). It is wired automatically and
+/// managed on the website, so it is never listed as a connector. The ONE
+/// predicate for "is this shared memory".
+pub fn is_shared_memory(integration: &db::models::McpIntegration) -> bool {
+    let memory_url = config::memory_url();
+    !memory_url.is_empty() && integration.server_url.as_deref() == Some(memory_url.as_str())
+}
+
 /// An MCP description as the model gets it: at most
 /// [`MAX_DESCRIPTION_CHARS`], and marked when cut.
 fn cut_description(description: &str) -> String {
@@ -123,8 +144,9 @@ impl DynTool for McpProxyTool {
         // The run's confidentiality scope rides along as a header, so a sealed
         // employee reaches only its own matter on the server side.
         let matter = ctx.memory_matter.clone();
+        let domain = input["domain"].as_str().map(str::to_string);
         Box::pin(async move {
-            call_mcp_tool_scoped(
+            let mut result = call_mcp_tool_scoped(
                 &self.store,
                 &self.bridge,
                 &self.integration_id,
@@ -132,7 +154,17 @@ impl DynTool for McpProxyTool {
                 input,
                 matter.as_deref(),
             )
-            .await
+            .await;
+            // Shared memory's answers say where they came from, so the model
+            // never mistakes them for this Nebo's own memory.
+            if !result.is_error && self.is_shared_memory() {
+                result.content = format!(
+                    "[{}] {}",
+                    crate::memory_tools::shared_source(matter.as_deref(), domain.as_deref()),
+                    result.content
+                );
+            }
+            result
         })
     }
 }
@@ -497,6 +529,18 @@ pub async fn call_mcp_tool_scoped(
                     Err(refresh_err) => {
                         let _ =
                             store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
+                        // Shared memory has no Connectors entry to send the
+                        // owner to: the website manages it.
+                        let shared = store
+                            .get_mcp_integration(integration_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|i| is_shared_memory(&i));
+                        if shared {
+                            return ToolResult::error(
+                                "Shared memory isn't available to this Nebo right now. Carry on without it.",
+                            );
+                        }
                         ToolResult::error(format!(
                             "Connector {}/{}: sign-in expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
                             integration_id, tool_name, refresh_err

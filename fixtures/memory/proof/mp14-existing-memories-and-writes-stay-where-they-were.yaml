@@ -1,0 +1,9 @@
+id: mp14-existing-memories-and-writes-stay-where-they-were
+name: "MP14 — Existing memories and writes stay where they were"
+description: |
+  local:/shared: are routing words, not a migration: stored rows keep their namespaces and are
+  found with or without local:, a local: on a write is never stored, the memory tools never write
+  shared memory (a shared: namespace is refused), and shared memory's own tool still writes it.
+target_component: memory
+proof: staffed_proof::memory::existing_memories_and_writes_stay_where_they_were
+conversation: []

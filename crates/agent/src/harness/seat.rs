@@ -297,15 +297,11 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
 /// customer's own KB at some other host is their business and is never
 /// walled off. What a sealed seat walls off.
 pub async fn company_memory_tools(store: &Store, tools: &tools::Registry, agent_id: &str) -> HashSet<String> {
-    let memory_url = config::memory_url();
-    if memory_url.is_empty() {
-        return HashSet::new();
-    }
     let memory_integration_ids: HashSet<String> = store
         .list_mcp_integrations()
         .unwrap_or_default()
         .into_iter()
-        .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
+        .filter(tools::mcp_tool::is_shared_memory)
         .map(|i| i.id)
         .collect();
     if memory_integration_ids.is_empty() {
