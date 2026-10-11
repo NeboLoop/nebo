@@ -306,6 +306,7 @@ impl Teams {
             mention: asked,
             handoff_depth: ctx.handoff_depth,
             provenance: ctx.run_taint.clone(),
+            narrow: ctx.narrow(),
             reply_to: Some(ctx.session_key.clone()),
         };
         match rail.post_team(post).await {

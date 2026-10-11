@@ -4287,5 +4287,19 @@
 		"connect": "Bağlan",
 		"disconnect": "Bağlantıyı kes",
 		"connected": "Bağlı"
+	},
+	"chatMode": {
+		"title": "İzin",
+		"automatic": "Otomatik",
+		"automaticDesc": "İşini yapar ve yalnızca sana gerçekten ihtiyaç duyduğunda sorar",
+		"recommended": "Önerilen",
+		"ask": "Önce sor",
+		"askDesc": "Bir şeyi değiştiren her işlemden önce sorar",
+		"plan": "Yalnızca plan",
+		"planDesc": "Okur ve plan yapar, hiçbir şeyi değiştirmez",
+		"fullAccess": "Tam erişim",
+		"fullAccessDesc": "Yalnızca sormasını ayarladığın şeyleri sorar. Engellenen araçlar ve kesin sınırlar yine geçerlidir",
+		"useWithCare": "Dikkatli kullan",
+		"footnote": "Bu konuşma için geçerlidir. Çalışanın olağan ayarı aynı kalır."
 	}
 }

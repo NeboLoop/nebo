@@ -510,7 +510,13 @@ pub struct SeatRequest {
     /// Which entry started this run.
     pub door: types::permissions::Door,
     /// A run override of the employee's mode (e.g. Plan); `None` = its own.
+    /// An owner's conversation runs in the mode picked for it.
     pub mode: Option<types::permissions::Mode>,
+    /// The mode what started this run holds it to (`Grant::narrow`): a
+    /// workflow run or a hand-off started from a conversation the owner put
+    /// in a stricter mode. The run's mode is never looser, and it carries
+    /// it on. `None` = nothing carried.
+    pub narrow: Option<types::permissions::Mode>,
     /// The parent's grant (a helper) or the creator's (a created employee):
     /// the run can only narrow it.
     pub ceiling: Option<types::permissions::Ceiling>,

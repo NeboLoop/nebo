@@ -1,0 +1,10 @@
+id: sc113-a-conversation-runs-in-the-mode-picked-for-it
+name: "SC113 — A conversation runs in the mode picked for it"
+description: |
+  The owner picks a permission mode for one conversation: its turns run in it, Plan and Full
+  Access alike, and in the employee's own mode again once he picks none. The pick is kept on
+  the bot, told to every open app, and never changes the employee's own setting. A heartbeat
+  in the same session runs in the employee's own mode, whatever the conversation picked.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_conversation_runs_in_the_mode_picked_for_it
+conversation: []

@@ -473,6 +473,7 @@ export interface Chat {
 	model?: string
 	folder?: string
 	pinnedAt?: number
+	permissionMode?: Mode
 }
 
 export interface ChatMessage {
@@ -495,6 +496,14 @@ export interface ChatMessagesResponse {
 	hasMore: boolean
 	activeRun?: ActiveTurnStatus
 	pendingAsk?: PendingAsk
+}
+
+export interface ChatPermissionMode {
+	chatId: string
+	sessionKey?: string
+	agentId?: string
+	mode?: Mode
+	employeeMode: Mode
 }
 
 export interface ChatStreamResponse {
@@ -1749,6 +1758,8 @@ export interface WorkflowToolBinding {
 // ── Rust Enums ─────────────────────────────────────────────────────
 
 export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
+
+export type Mode = 'automatic' | 'ask' | 'plan' | 'full_access'
 
 export type ProviderEffort = 'low' | 'medium' | 'high'
 

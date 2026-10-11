@@ -261,6 +261,7 @@ impl WorkflowManagerImpl {
                     run.trigger_detail.clone(),
                     &agent_id,
                     Vec::new(),
+                    None,
                 )
                 .await
             {
@@ -439,12 +440,14 @@ impl WorkflowManagerImpl {
     /// (`scheduler::execute_agent_workflow_task`) and the manual-run HTTP
     /// endpoint (`handlers::agents::run_agent_workflow`) perform — then fires
     /// it through `run_inline`, the one firing body every binding trigger uses.
+    /// `narrow`: the mode the run is held to (`WorkflowManager::run`).
     async fn run_binding(
         &self,
         agent_id: &str,
         binding_name: &str,
         inputs: serde_json::Value,
         trigger_type: &str,
+        narrow: Option<types::permissions::Mode>,
     ) -> Result<String, String> {
         let agent_rec = self
             .store
@@ -532,6 +535,7 @@ impl WorkflowManagerImpl {
             Some(binding_name.to_string()),
             agent_id,
             emit_sources,
+            narrow,
         )
         .await
     }
@@ -759,6 +763,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         id: &'a str,
         inputs: serde_json::Value,
         trigger_type: &'a str,
+        narrow: Option<types::permissions::Mode>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -767,7 +772,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // standalone path below.
             if let Some((agent_id, binding_name)) = split_binding_id(id) {
                 return self
-                    .run_binding(agent_id, binding_name, inputs, trigger_type)
+                    .run_binding(agent_id, binding_name, inputs, trigger_type, narrow)
                     .await;
             }
 
@@ -802,6 +807,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                 )
                 .map_err(|e| format!("create_workflow_run: {}", e))?;
+            // Held to the mode it carries, before its first turn.
+            if let Some(mode) = narrow {
+                self.store
+                    .set_workflow_run_narrow(&run_id, mode)
+                    .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
+            }
 
             // Create cancellation token
             let cancel_token = CancellationToken::new();
@@ -1258,6 +1269,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         trigger_detail: Option<String>,
         agent_id: &'a str,
         emit_sources: Vec<String>,
+        narrow: Option<types::permissions::Mode>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -1458,6 +1470,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                         }
                         format!("create_workflow_run: {}", e)
                     })?;
+                // Held to the mode it carries, before its first turn. A
+                // resumed or relaunched run keeps what its row says.
+                if let Some(mode) = narrow {
+                    self.store
+                        .set_workflow_run_narrow(&run_id, mode)
+                        .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
+                }
             }
 
             // Create cancellation token
@@ -2843,7 +2862,7 @@ async fn save_binding(
             // Temporary work with no trigger is for now: it starts as it is
             // made. One with a trigger starts on its first fire.
             let run_id = if temporary && trigger_type == "manual" && !must_exist {
-                Some(mgr.run_binding(agent_id, &binding_name, serde_json::json!({}), "manual").await.map_err(|e| {
+                Some(mgr.run_binding(agent_id, &binding_name, serde_json::json!({}), "manual", options.narrow).await.map_err(|e| {
                     format!(
                         "the temporary workflow '{binding_name}' was made but did not start: {e}. Start it with \
                          run_workflow once that is fixed, or delete it."

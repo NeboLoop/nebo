@@ -50,6 +50,11 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(handlers::chat::pin_chat),
         )
         .route(
+            "/chats/{id}/permission-mode",
+            axum::routing::get(handlers::chat::get_chat_permission_mode)
+                .put(handlers::chat::set_chat_permission_mode),
+        )
+        .route(
             "/chats/{id}/messages",
             axum::routing::get(handlers::chat::get_chat_messages),
         )

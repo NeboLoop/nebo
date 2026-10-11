@@ -364,6 +364,7 @@ async fn start_employee_run(
             channel: CHANNEL.to_string(),
             origin: tools::Origin::Visitor,
             door: types::permissions::Door::LocalApi,
+            narrow: None,
             agent_id: agent_id.to_string(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -424,7 +425,7 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     let mut events = state.hub.subscribe();
     let run_id = state
         .workflow_manager
-        .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_sources)
+        .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_sources, None)
         .await
         .map_err(types::NeboError::Internal)?;
     let deadline = tokio::time::Instant::now() + WORKFLOW_WAIT;

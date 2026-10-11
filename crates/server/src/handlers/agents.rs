@@ -693,6 +693,7 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         channel: "web".to_string(),
         origin: tools::Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -3315,6 +3316,7 @@ pub async fn run_agent_workflow(
             Some(binding_name),
             &id,
             emit_sources,
+            None,
         )
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
@@ -3933,6 +3935,7 @@ pub async fn chat_with_agent(
         channel: "web".to_string(),
         origin: tools::Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -4296,7 +4299,7 @@ pub async fn create_agent_workflow(
         Some(
             state
                 .workflow_manager
-                .run(&binding_id, serde_json::json!({}), "manual")
+                .run(&binding_id, serde_json::json!({}), "manual", None)
                 .await
                 .map_err(|e| to_error_response(types::NeboError::Validation(format!("made, but it did not start: {e}"))))?,
         )

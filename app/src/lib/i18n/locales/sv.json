@@ -4287,5 +4287,19 @@
 		"connect": "Anslut",
 		"disconnect": "Koppla bort",
 		"connected": "Ansluten"
+	},
+	"chatMode": {
+		"title": "Behörighet",
+		"automatic": "Automatiskt",
+		"automaticDesc": "Gör sitt jobb och frågar bara när den verkligen behöver dig",
+		"recommended": "Rekommenderas",
+		"ask": "Fråga först",
+		"askDesc": "Frågar före allt som ändrar något",
+		"plan": "Bara planera",
+		"planDesc": "Läser och planerar, ändrar ingenting",
+		"fullAccess": "Full åtkomst",
+		"fullAccessDesc": "Frågar bara om det du har valt att den ska fråga om. Blockerade verktyg och fasta gränser gäller fortfarande",
+		"useWithCare": "Använd med försiktighet",
+		"footnote": "Gäller den här konversationen. Medarbetarens vanliga inställning är oförändrad."
 	}
 }

@@ -188,6 +188,8 @@ pub(crate) fn post(
                 // The delivery carries the post's authority, decided above.
                 owners_turn: None,
                 sender_run_id: None,
+                // Every member asked runs no looser than the post's run.
+                narrow: post.narrow,
             };
             match crate::coworker::send_coworker_message(state.clone(), msg).await {
                 Ok(_) => asked.push(member_name.clone()),
@@ -452,6 +454,7 @@ mod hub_sender_tests {
             mention: vec![],
             handoff_depth: 1,
             provenance: vec![],
+            narrow: None,
             reply_to: None,
         }
     }

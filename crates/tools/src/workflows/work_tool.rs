@@ -380,6 +380,7 @@ impl WorkflowTool {
                         }
                     },
                     from_run: (!from_run.is_empty()).then(|| from_run.to_string()),
+                    narrow: ctx.narrow(),
                 };
                 let definition = if definition.is_empty() { "{}" } else { definition };
                 match self.kind {
@@ -397,13 +398,13 @@ impl WorkflowTool {
                     },
                 }
             }
-            _ => self.on_workflow(employee, &input).await,
+            _ => self.on_workflow(ctx, employee, &input).await,
         }
     }
 
     /// The calls on one workflow, resolved by name or id — the employee's
     /// own workflows first, so anything list_workflows shows is reachable.
-    async fn on_workflow(&self, employee: &str, input: &serde_json::Value) -> ToolResult {
+    async fn on_workflow(&self, ctx: &ToolContext, employee: &str, input: &serde_json::Value) -> ToolResult {
         let info = match self.manager.resolve(employee, str_field(input, "workflow")).await {
             Ok(i) => i,
             Err(e) => return ToolResult::error(format!("workflow not found: {e}")),
@@ -411,7 +412,9 @@ impl WorkflowTool {
         match self.kind {
             Kind::Run => {
                 let inputs = input.get("inputs").filter(|v| !v.is_null()).cloned().unwrap_or_else(|| serde_json::json!({}));
-                match self.manager.run(&info.id, inputs, "agent").await {
+                // Held to the mode this run carries (a conversation's
+                // stricter pick); otherwise the employee's own.
+                match self.manager.run(&info.id, inputs, "agent", ctx.narrow()).await {
                     Ok(run_id) => json_result(serde_json::json!({
                         "started": true,
                         "runId": run_id,
@@ -591,6 +594,9 @@ pub(crate) mod tests {
         if let Some(run) = &o.from_run {
             note.push_str(&format!(" from {run}"));
         }
+        if let Some(mode) = o.narrow {
+            note.push_str(&format!(" narrow={}", mode.as_str()));
+        }
         note
     }
 
@@ -622,8 +628,17 @@ pub(crate) mod tests {
             let found = agent_ref == "Content Creator";
             Box::pin(async move { if found { Ok("cc".to_string()) } else { Err("no employee named that".to_string()) } })
         }
-        fn run<'a>(&'a self, id: &'a str, inputs: serde_json::Value, _trigger: &'a str) -> Fut<'a, Result<String, String>> {
-            self.log(format!("run {id} {inputs}"));
+        fn run<'a>(
+            &'a self,
+            id: &'a str,
+            inputs: serde_json::Value,
+            _trigger: &'a str,
+            narrow: Option<types::permissions::Mode>,
+        ) -> Fut<'a, Result<String, String>> {
+            match narrow {
+                Some(mode) => self.log(format!("run {id} {inputs} narrow={}", mode.as_str())),
+                None => self.log(format!("run {id} {inputs}")),
+            }
             Box::pin(async { Ok("run-1".to_string()) })
         }
         fn run_status<'a>(&'a self, _run_id: &'a str) -> Fut<'a, Result<WorkflowRunInfo, String>> {
@@ -671,6 +686,7 @@ pub(crate) mod tests {
             _trigger_detail: Option<String>,
             _agent_id: &'a str,
             _emit_sources: Vec<String>,
+            _narrow: Option<types::permissions::Mode>,
         ) -> Fut<'a, Result<String, String>> {
             Box::pin(async { Err("unused".to_string()) })
         }
@@ -692,7 +708,10 @@ pub(crate) mod tests {
         }
         async fn call(&self, name: &str, input: serde_json::Value) -> ToolResult {
             let ctx = ToolContext { session_key: "agent:ops:web".into(), ..ToolContext::default() };
-            self.tools.iter().find(|t| t.name() == name).unwrap().execute_dyn(&ctx, input).await
+            self.call_in(&ctx, name, input).await
+        }
+        async fn call_in(&self, ctx: &ToolContext, name: &str, input: serde_json::Value) -> ToolResult {
+            self.tools.iter().find(|t| t.name() == name).unwrap().execute_dyn(ctx, input).await
         }
         fn calls(&self) -> Vec<String> {
             std::mem::take(&mut *self.manager.calls.lock().unwrap())
@@ -765,6 +784,30 @@ pub(crate) mod tests {
         assert!(bad.is_error && rig.calls().is_empty(), "{}", bad.content);
         let empty = rig.call("create_workflow", json!({"name": "Nothing"})).await;
         assert!(empty.is_error && empty.content.contains("from_run") && rig.calls().is_empty(), "{}", empty.content);
+    }
+
+    /// A workflow run started from a conversation carries the mode the
+    /// conversation holds what it starts to (`ToolContext::narrow`), and so
+    /// does temporary work that starts as it is made. A run with nothing
+    /// carried, a conversation in the employee's own mode, passes nothing.
+    #[tokio::test]
+    async fn a_run_started_from_a_conversation_carries_its_mode() {
+        let rig = Rig::new();
+        let mut grant = types::permissions::Grant::new("ops", types::permissions::Mode::Plan);
+        grant.narrow = Some(types::permissions::Mode::Plan);
+        let ctx = ToolContext { session_key: "agent:ops:web".into(), grant: Some(Arc::new(grant)), ..ToolContext::default() };
+        rig.call_in(&ctx, "run_workflow", json!({"workflow": "Weekly Report"})).await;
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {} narrow=plan"]);
+        let def = r#"{"name":"Budget check","activities":[{"id":"a","intent":"x"}]}"#;
+        rig.call_in(&ctx, "create_workflow", json!({"definition": def, "lifetime": "temporary"})).await;
+        assert_eq!(rig.calls(), ["create ops Budget check temporary→agent:ops:web narrow=plan"]);
+        let own = ToolContext {
+            session_key: "agent:ops:web".into(),
+            grant: Some(Arc::new(types::permissions::Grant::new("ops", types::permissions::Mode::FullAccess))),
+            ..ToolContext::default()
+        };
+        rig.call_in(&own, "run_workflow", json!({"workflow": "Weekly Report"})).await;
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {}"]);
     }
 
     /// The guidance for long-running work sits where the model decides: in

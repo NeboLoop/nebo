@@ -4287,5 +4287,19 @@
 		"connect": "接続",
 		"disconnect": "切断",
 		"connected": "接続済み"
+	},
+	"chatMode": {
+		"title": "権限",
+		"automatic": "自動",
+		"automaticDesc": "仕事をこなし、本当に必要なときだけ確認します",
+		"recommended": "おすすめ",
+		"ask": "先に確認",
+		"askDesc": "何かを変更する前に必ず確認します",
+		"plan": "計画のみ",
+		"planDesc": "読んで計画するだけで、何も変更しません",
+		"fullAccess": "フルアクセス",
+		"fullAccessDesc": "確認するよう設定したことだけを確認します。ブロックしたツールと固定の上限は引き続き適用されます",
+		"useWithCare": "注意して使用",
+		"footnote": "この会話にだけ適用されます。従業員の通常の設定は変わりません。"
 	}
 }

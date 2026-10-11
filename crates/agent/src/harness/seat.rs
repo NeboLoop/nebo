@@ -440,9 +440,14 @@ pub(crate) fn restrict_outside_origin(
 /// if it names one), the ceiling it can only narrow (an isolated helper's
 /// fence rides on it), and the project folder it works in. A stranger's run never holds Full Access:
 /// that is an owner-surface concept.
+///
+/// What a run starts is held to the mode it carries (`Grant::narrow`): the
+/// mode carried to it (`req.narrow`, which its own mode is never looser
+/// than), or a run override stricter than the employee's own (the mode the
+/// owner picked for a conversation). A looser override stays in its run.
 pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissions::Grant {
-    // A helper holds its parent's grant (mode, rules, money limits), under
-    // that grant as its ceiling: it can only narrow.
+    // A helper holds its parent's grant (mode, rules, money limits, what it
+    // carries), under that grant as its ceiling: it can only narrow.
     let mut grant = match req.ceiling {
         Some(types::permissions::Ceiling::Parent { grant: parent }) => {
             let mut own = (**parent).clone();
@@ -451,7 +456,21 @@ pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissi
             }
             own
         }
-        _ => crate::harness::permissions::resolve_grant(store, req.agent_id, req.mode),
+        _ => {
+            let mut grant = crate::harness::permissions::resolve_grant(store, req.agent_id, req.mode);
+            grant.narrow = match req.narrow {
+                Some(narrow) => {
+                    grant.mode = grant.mode.stricter(narrow);
+                    Some(narrow)
+                }
+                None => req.mode.filter(|picked| {
+                    picked.is_stricter_than(
+                        crate::harness::permissions::rules::mode_of(store, req.agent_id).unwrap_or_default(),
+                    )
+                }),
+            };
+            grant
+        }
     };
     if req.origin.is_outside() && grant.mode == types::permissions::Mode::FullAccess {
         grant.mode = types::permissions::Mode::Automatic;
@@ -468,6 +487,8 @@ pub(crate) struct GrantRequest<'a> {
     pub origin: tools::Origin,
     /// A run override of the employee's mode.
     pub mode: Option<types::permissions::Mode>,
+    /// The mode what started the run holds it to (`SeatRequest::narrow`).
+    pub narrow: Option<types::permissions::Mode>,
     pub ceiling: Option<&'a types::permissions::Ceiling>,
     pub cwd: Option<&'a str>,
 }
@@ -489,7 +510,7 @@ mod tests {
         store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
 
         let grant = |origin: Origin| {
-            run_grant(&store, GrantRequest { agent_id: "", origin, mode: None, ceiling: None, cwd: None }).mode
+            run_grant(&store, GrantRequest { agent_id: "", origin, mode: None, narrow: None, ceiling: None, cwd: None }).mode
         };
 
         let (mut allowlist, mut hint) = (None, None);
@@ -509,6 +530,147 @@ mod tests {
         restrict_outside_origin(Origin::User, &mut allowlist, &mut hint);
         assert_eq!(grant(Origin::User), Mode::FullAccess);
         assert!(allowlist.is_none());
+    }
+
+    fn grant_for(
+        store: &db::Store,
+        agent: &str,
+        origin: tools::Origin,
+        mode: Option<types::permissions::Mode>,
+        narrow: Option<types::permissions::Mode>,
+    ) -> types::permissions::Grant {
+        run_grant(store, GrantRequest { agent_id: agent, origin, mode, narrow, ceiling: None, cwd: None })
+    }
+
+    /// A conversation's mode: its turns run in the mode the owner picked
+    /// for it, the employee's own when he picked none. A pick stricter than
+    /// the employee's own is carried to what the conversation starts; a
+    /// looser one stays in the conversation. The employee's own setting is
+    /// never touched.
+    #[test]
+    fn a_conversation_runs_in_its_mode_and_carries_only_a_stricter_one() {
+        use types::permissions::{Mode, Scope};
+        use tools::Origin;
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let all = [Mode::Plan, Mode::Ask, Mode::Automatic, Mode::FullAccess];
+        for own in all {
+            store.set_permission_mode(&Scope::Employee("emp".into()), own).unwrap();
+            // No mode picked: exactly as before, nothing carried.
+            let g = grant_for(&store, "emp", Origin::User, None, None);
+            assert_eq!((g.mode, g.narrow), (own, None), "no pick in {own:?}");
+            for picked in all {
+                let g = grant_for(&store, "emp", Origin::User, Some(picked), None);
+                assert_eq!(g.mode, picked, "the conversation runs in its pick ({picked:?} over {own:?})");
+                let carried = picked.is_stricter_than(own).then_some(picked);
+                assert_eq!(g.narrow, carried, "only a stricter pick is carried ({picked:?} over {own:?})");
+            }
+            assert_eq!(store.permission_mode(&Scope::Employee("emp".into())).unwrap(), Some(own));
+        }
+        // With no mode of its own, the employee's is the company default.
+        store.set_permission_mode(&Scope::Company, Mode::Ask).unwrap();
+        assert_eq!(grant_for(&store, "new", Origin::User, Some(Mode::Plan), None).narrow, Some(Mode::Plan));
+        assert_eq!(grant_for(&store, "new", Origin::User, Some(Mode::Automatic), None).narrow, None);
+    }
+
+    /// What a conversation carries holds what it starts: the run (a workflow
+    /// run, a colleague's hand-off, a team member's turn) runs in its own
+    /// employee's mode narrowed to the carried one when that is stricter,
+    /// never loosened by it, and carries it on unchanged.
+    #[test]
+    fn a_carried_mode_narrows_and_never_loosens() {
+        use types::permissions::{Mode, Scope};
+        use tools::Origin;
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let all = [Mode::Plan, Mode::Ask, Mode::Automatic, Mode::FullAccess];
+        for own in all {
+            store.set_permission_mode(&Scope::Employee("receiver".into()), own).unwrap();
+            for carried in all {
+                let g = grant_for(&store, "receiver", Origin::Comm, None, Some(carried));
+                assert_eq!(g.mode, own.stricter(carried), "{carried:?} carried to an employee in {own:?}");
+                assert!(!own.is_stricter_than(g.mode), "never looser than its own ({own:?}, {carried:?})");
+                assert_eq!(g.narrow, Some(carried), "it carries the conversation's mode on");
+            }
+        }
+        // Concretely: a Plan conversation holds a Full Access receiver to Plan;
+        // a Full Access conversation leaves a Plan receiver in Plan.
+        store.set_permission_mode(&Scope::Employee("receiver".into()), Mode::FullAccess).unwrap();
+        assert_eq!(grant_for(&store, "receiver", Origin::User, None, Some(Mode::Plan)).mode, Mode::Plan);
+        store.set_permission_mode(&Scope::Employee("receiver".into()), Mode::Plan).unwrap();
+        assert_eq!(grant_for(&store, "receiver", Origin::User, None, Some(Mode::FullAccess)).mode, Mode::Plan);
+    }
+
+    /// An outside origin never holds Full Access, whatever a conversation
+    /// picked or carried: a visitor's or a caller's conversation set to Full
+    /// Access runs in Automatic, and a stricter pick still holds.
+    #[test]
+    fn an_outside_origin_never_gets_full_access_from_a_conversation() {
+        use types::permissions::{Mode, Scope};
+        use tools::Origin;
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        store.set_permission_mode(&Scope::Employee("desk".into()), Mode::Automatic).unwrap();
+        for origin in [Origin::Visitor, Origin::Caller] {
+            assert_eq!(grant_for(&store, "desk", origin, Some(Mode::FullAccess), None).mode, Mode::Automatic);
+            assert_eq!(grant_for(&store, "desk", origin, None, Some(Mode::FullAccess)).mode, Mode::Automatic);
+            assert_eq!(grant_for(&store, "desk", origin, Some(Mode::Plan), None).mode, Mode::Plan);
+        }
+        assert_eq!(grant_for(&store, "desk", Origin::User, Some(Mode::FullAccess), None).mode, Mode::FullAccess);
+    }
+
+    /// A connector tool's own setting (Always, Ask, Blocked) holds under
+    /// every mode a conversation can pick: Blocked refuses in Full Access,
+    /// Ask asks in Full Access, and nothing a mode does loosens a rule.
+    #[test]
+    fn connector_tool_rules_hold_under_every_conversation_mode() {
+        use crate::harness::permissions::{decide, CheckCx};
+        use types::permissions::{CallEffects, Decision, Effect, Mode, Rule, RuleKey, RuleSource, Scope, Target, Writer};
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        for (tool, effect) in [("mcp__crm__lookup", Effect::Allow), ("mcp__crm__send", Effect::Ask), ("mcp__crm__purge", Effect::Deny)] {
+            let rule = Rule {
+                id: tool.into(),
+                scope: Scope::Company,
+                key: RuleKey::Tool(tool.into()),
+                field: None,
+                effect,
+                money: None,
+                source: RuleSource::Owner,
+                locked: false,
+                created_at: 0,
+            };
+            store.write_permission_rule(&rule, &Writer::Owner).unwrap();
+        }
+        let call = |mode: Mode, tool: &str| {
+            let grant = grant_for(&store, "dev", tools::Origin::User, Some(mode), None);
+            let ctx = tools::ToolContext {
+                origin: tools::Origin::User,
+                session_key: "agent:dev:web".into(),
+                grant: Some(std::sync::Arc::new(grant.clone())),
+                ..Default::default()
+            };
+            let t = Target {
+                tool: tool.into(),
+                key: tool.into(),
+                operation: None,
+                capability: None,
+                field: None,
+                subject: None,
+                read_only: false,
+                effects: CallEffects::unknown(),
+            };
+            let input = serde_json::json!({});
+            decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t)
+        };
+        for mode in [Mode::Automatic, Mode::Ask, Mode::FullAccess] {
+            assert!(matches!(call(mode, "mcp__crm__purge"), Decision::Deny { .. }), "Blocked in {mode:?}");
+            assert!(matches!(call(mode, "mcp__crm__send"), Decision::Ask { .. }), "Ask in {mode:?}");
+            assert!(matches!(call(mode, "mcp__crm__lookup"), Decision::Allow { .. }), "Always in {mode:?}");
+        }
+        // Plan: nothing that changes something runs, an Always tool included.
+        assert!(matches!(call(Mode::Plan, "mcp__crm__purge"), Decision::Deny { .. }));
+        assert!(!matches!(call(Mode::Plan, "mcp__crm__send"), Decision::Allow { .. }));
     }
 
     /// The scrub is the guarantee: tool syntax and machine paths never reach

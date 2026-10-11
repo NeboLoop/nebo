@@ -4287,5 +4287,19 @@
 		"connect": "Connecter",
 		"disconnect": "Déconnecter",
 		"connected": "Connecté"
+	},
+	"chatMode": {
+		"title": "Autorisation",
+		"automatic": "Automatique",
+		"automaticDesc": "Fait son travail et ne vous demande que lorsqu'il a vraiment besoin de vous",
+		"recommended": "Recommandé",
+		"ask": "Demander d'abord",
+		"askDesc": "Demande avant tout ce qui modifie quelque chose",
+		"plan": "Planifier seulement",
+		"planDesc": "Lit et planifie, ne modifie rien",
+		"fullAccess": "Accès complet",
+		"fullAccessDesc": "Ne demande que ce que vous avez choisi de demander. Les outils bloqués et les limites strictes s'appliquent toujours",
+		"useWithCare": "À utiliser avec prudence",
+		"footnote": "S'applique à cette conversation. Le réglage habituel de l'employé reste le même."
 	}
 }

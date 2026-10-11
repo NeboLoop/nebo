@@ -102,3 +102,5 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc110-a-handoff-chain-traces-as-one-tree.yaml
   - ../fixtures/staffed-company/conversation/sc111-a-stopped-handoff-stays-on-record-as-stopped.yaml
   - ../fixtures/staffed-company/conversation/sc112-pinned-conversations-head-a-paged-list.yaml
+  - ../fixtures/staffed-company/conversation/sc113-a-conversation-runs-in-the-mode-picked-for-it.yaml
+  - ../fixtures/staffed-company/conversation/sc114-what-a-conversation-starts-holds-to-its-stricter-mode.yaml

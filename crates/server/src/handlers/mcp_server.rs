@@ -350,6 +350,7 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
             origin: Origin::Mcp,
             door: types::permissions::Door::Mcp,
             mode: None,
+            narrow: None,
             ceiling: None,
             cwd: None,
             seed_taint: Vec::new(),
