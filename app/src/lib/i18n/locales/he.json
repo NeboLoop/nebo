@@ -261,6 +261,9 @@
 		"working": "עובד",
 		"newReply": "תשובה חדשה",
 		"chatActions": "פעולות צ'אט",
+		"pinToTop": "הצמד למעלה",
+		"unpin": "בטל הצמדה",
+		"pinned": "מוצמדות",
 		"deleteChatTitle": "למחוק את \"{name}\"?",
 		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו.",
 		"offline": "לא מחובר"

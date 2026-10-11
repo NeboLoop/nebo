@@ -261,6 +261,9 @@
 		"working": "Pracuje",
 		"newReply": "Nowa odpowiedź",
 		"chatActions": "Działania czatu",
+		"pinToTop": "Przypnij na górze",
+		"unpin": "Odepnij",
+		"pinned": "Przypięte",
 		"deleteChatTitle": "Usunąć „{name}”?",
 		"deleteChatBody": "Ten czat i wszystkie jego wiadomości zostaną usunięte. Tej operacji nie można cofnąć.",
 		"offline": "Offline"

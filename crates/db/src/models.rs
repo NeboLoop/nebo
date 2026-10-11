@@ -233,6 +233,10 @@ pub struct Chat {
     /// When that session last had a turn (unix seconds). Internal.
     #[serde(default, skip_serializing)]
     pub linked_turn_at: Option<i64>,
+    /// When the owner pinned this conversation (unix seconds): it stays at
+    /// the top of the employee's list until he unpins it. None = not pinned.
+    #[serde(default)]
+    pub pinned_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

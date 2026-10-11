@@ -261,6 +261,9 @@
 		"working": "Bekerja",
 		"newReply": "Balasan baru",
 		"chatActions": "Tindakan obrolan",
+		"pinToTop": "Sematkan di atas",
+		"unpin": "Lepas sematan",
+		"pinned": "Disematkan",
 		"deleteChatTitle": "Hapus \"{name}\"?",
 		"deleteChatBody": "Obrolan ini dan semua pesannya akan dihapus. Tindakan ini tidak dapat dibatalkan.",
 		"offline": "Luring"

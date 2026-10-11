@@ -26,6 +26,7 @@
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import TimezoneTravelPrompt from '$lib/components/TimezoneTravelPrompt.svelte';
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
+  import { pinnedFirst, withPin } from '$lib/chat/pins';
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
   import { conversationTitle, teamKey, threadKey } from '$lib/chat/sessionKey';
   import { endsRun } from '$lib/chat/runEnd';
@@ -720,6 +721,17 @@
       }
     });
 
+    // A conversation pinned or unpinned here, on the web console or on the
+    // phone: its row moves on every surface.
+    onWsEvent('nebo:chat_pinned', (data) => {
+      if (!data?.chatId) return;
+      for (const [aid, threads] of Object.entries(apiThreads)) {
+        if (threads.some((c) => c.id === data.chatId)) {
+          apiThreads[aid] = withPin(threads, data.chatId, !!data.pinned, data.pinnedAt ?? null);
+        }
+      }
+    });
+
     // Teams are created by employees (or the model); the sidebar learns
     // about a new one live.
     onWsEvent('nebo:team_created', (data) => {
@@ -1220,6 +1232,22 @@
     }
   }
 
+  /** Pin the menu's conversation to the top of the list, or unpin it. */
+  async function togglePinChat() {
+    if (!chatCtxMenu) return;
+    const { agentId: aid, chatId } = chatCtxMenu;
+    closeChatCtxMenu();
+    const chat = apiThreads[aid]?.find((c) => c.id === chatId);
+    if (!chat) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      const r = await api.pinChat(chatId, { pinned: !chat.pinned });
+      apiThreads[aid] = withPin(apiThreads[aid] ?? [], chatId, r.pinned, r.pinnedAt);
+    } catch (e) {
+      console.error('[nebo] Failed to pin chat:', e);
+    }
+  }
+
   function askDeleteChat() {
     if (!chatCtxMenu) return;
     const { agentId: aid, chatId } = chatCtxMenu;
@@ -1372,18 +1400,23 @@
   </div>
 {/if}
 
-<!-- Chat row context menu — Rename / Delete one conversation. -->
+<!-- Chat row context menu — Pin / Rename / Delete one conversation. -->
 {#if chatCtxMenu}
+  {@const menuChatPinned = !!apiThreads[chatCtxMenu.agentId]?.find((c) => c.id === chatCtxMenu?.chatId)?.pinned}
   <div class="fixed inset-0 z-50" onclick={() => closeChatCtxMenu()} oncontextmenu={(e) => { e.preventDefault(); closeChatCtxMenu(); }} role="presentation"></div>
   <div
     bind:this={chatMenuEl}
-    class="fixed z-50 w-[160px] py-1 rounded-lg border border-base-300 bg-base-100 shadow-xl"
+    class="fixed z-50 min-w-[160px] py-1 rounded-lg border border-base-300 bg-base-100 shadow-xl"
     style="left: {chatCtxMenu.x}px; top: {chatCtxMenu.y}px;"
     role="menu"
     tabindex="-1"
     aria-label={$t('sidebar.chatActions')}
     onkeydown={handleChatMenuKeydown}
   >
+    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 focus:bg-base-200 focus:outline-none transition-colors" onclick={togglePinChat}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50" aria-hidden="true"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+      {menuChatPinned ? $t('sidebar.unpin') : $t('sidebar.pinToTop')}
+    </button>
     <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-start cursor-pointer bg-transparent border-none hover:bg-base-200 focus:bg-base-200 focus:outline-none transition-colors" onclick={startChatRename}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50" aria-hidden="true"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       {$t('sidebar.rename')}
@@ -1753,7 +1786,8 @@
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
             <span class="text-sm font-medium">{$t('agent.newChat')}</span>
           </a>
-          {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
+          <!-- The ones the owner pinned stay at the top, then newest first. -->
+          {#each pinnedFirst(apiThreads[drilledAgent.id] ?? []) as c (c.id)}
             {#if chatRenaming?.chatId === c.id}
               <!-- Renaming: the row becomes the title field (not a link, so
                    typing and clicking in it never navigate). -->
@@ -1778,6 +1812,9 @@
                 aria-haspopup="menu"
               >
                 <div class="flex items-baseline gap-2">
+                  {#if c.pinned}
+                    <svg class="chat-pin-mark" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label={$t('sidebar.pinned')}><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+                  {/if}
                   <span class="text-sm truncate flex-1 min-w-0">{chatName(c, drilledAgent.id)}</span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
                   <RowMark mark={rowMark(c.sessionName in (working[drilledAgent.id] ?? {}), unread.has(c.sessionName))} />

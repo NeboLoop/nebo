@@ -261,6 +261,9 @@
 		"working": "Çalışıyor",
 		"newReply": "Yeni yanıt",
 		"chatActions": "Sohbet işlemleri",
+		"pinToTop": "En üste sabitle",
+		"unpin": "Sabitlemeyi kaldır",
+		"pinned": "Sabitlenenler",
 		"deleteChatTitle": "\"{name}\" silinsin mi?",
 		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz.",
 		"offline": "Çevrimdışı"

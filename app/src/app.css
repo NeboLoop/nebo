@@ -617,6 +617,14 @@
   .agent-working-dot { animation: none; }
 }
 
+/* A pinned conversation in an employee's list: a small pin before its
+   name, quiet beside the title. */
+.chat-pin-mark {
+  flex-shrink: 0;
+  align-self: center;
+  color: color-mix(in srgb, var(--color-base-content) 45%, transparent);
+}
+
 /* ===== Permission ask card: one step waits on the owner =====
    The same family as the install and question cards in the chat. It
    arrives at the bottom of the conversation and rises in; answered, it

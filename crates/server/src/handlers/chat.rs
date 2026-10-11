@@ -176,6 +176,41 @@ pub async fn mark_chat_read(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// PUT /api/v1/chats/:id/pin `{pinned}` — pin a conversation to the top of
+/// its employee's list (`true`), or unpin it (`false`). Kept on the bot and
+/// told to every open app (`chat_pinned`), so the desktop, the web console
+/// and the phone list the same pins.
+pub async fn pin_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PinChatRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let chat = state
+        .store
+        .set_chat_pinned(&id, body.pinned)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let pinned = chat.pinned_at.is_some();
+    state.hub.broadcast(
+        "chat_pinned",
+        serde_json::json!({
+            "chatId": chat.id,
+            "sessionKey": chat.session_name,
+            // Whose list it moves in.
+            "agentId": chat.session_name.as_deref().map(types::keyparser::extract_agent_id).filter(|id| !id.is_empty()),
+            "pinned": pinned,
+            "pinnedAt": chat.pinned_at,
+        }),
+    );
+    Ok(Json(serde_json::json!({"success": true, "pinned": pinned, "pinnedAt": chat.pinned_at})))
+}
+
+/// PUT /api/v1/chats/:id/pin body.
+#[derive(Debug, Deserialize)]
+pub struct PinChatRequest {
+    pub pinned: bool,
+}
+
 /// The ONE way a conversation becomes read: record it, and tell every open
 /// app (`chat_read`), so a dot cleared on the desktop clears on the web
 /// console and the phone too.

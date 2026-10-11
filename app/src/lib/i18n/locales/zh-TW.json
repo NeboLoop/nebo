@@ -261,6 +261,9 @@
 		"working": "工作中",
 		"newReply": "新回覆",
 		"chatActions": "聊天操作",
+		"pinToTop": "釘選到頂端",
+		"unpin": "取消釘選",
+		"pinned": "已釘選",
 		"deleteChatTitle": "刪除「{name}」？",
 		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。",
 		"offline": "離線"

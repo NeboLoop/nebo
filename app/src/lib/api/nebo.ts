@@ -379,8 +379,8 @@ export function chatWithAgent(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "List agent chats"
  */
-export function listAgentChats(id: string, limit?: number, offset?: number) {
-	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`, { limit, offset })
+export function listAgentChats(id: string, limit?: number, offset?: number, cursor?: string, q?: string) {
+	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`, { limit, offset, cursor, q })
 }
 
 /**
@@ -878,6 +878,13 @@ export function deleteChat(id: string) {
  */
 export function getChatMessages(id: string, max_chars?: number, before?: string) {
 	return webapi.get<components.ChatMessagesResponse>(`/api/v1/chats/${id}/messages`, { max_chars, before })
+}
+
+/**
+ * @description "Pin chat"
+ */
+export function pinChat(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.PinChatResponse>(`/api/v1/chats/${id}/pin`, req)
 }
 
 /**

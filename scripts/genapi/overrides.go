@@ -19,6 +19,10 @@ var typeOverrides = map[string]string{
 	// ── Agent chats (enriched with preview, message count, relative time) ──
 	"list_agent_chats.chats":     "EnrichedChat[]",
 	"list_agent_chats.teammates": "EnrichedChat[]",
+	"list_agent_chats.pinned":    "EnrichedChat[]",
+	"list_agent_chats.nextCursor": "string | null",
+	"pin_chat.pinned":            "boolean",
+	"pin_chat.pinnedAt":          "number | null",
 	"edit_team.team":        "Team",
 
 	// ── Active agents ──
@@ -329,6 +333,10 @@ export interface RunDisplay {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
+	/** Whether the owner pinned it to the top of the employee's list. */
+	pinned: boolean
+	/** When he pinned it (unix seconds); null when not pinned. */
+	pinnedAt: number | null
 }`,
 
 	"ActiveAgent": `export interface ActiveAgent {
