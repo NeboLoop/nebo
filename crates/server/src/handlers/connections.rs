@@ -325,7 +325,7 @@ fn cached() -> &'static Mutex<HashMap<String, (Instant, Vec<CatalogModel>)>> {
 
 /// The provider's own list, or None when it has none worth browsing
 /// (Anthropic, OpenAI and Google list ids only: their models are added by id).
-async fn fetch_catalog(p: &db::models::AuthProfile) -> Option<Vec<CatalogModel>> {
+pub(crate) async fn fetch_catalog(p: &db::models::AuthProfile) -> Option<Vec<CatalogModel>> {
     if let Some((at, list)) = cached().lock().ok()?.get(&p.id).cloned()
         && at.elapsed() < CATALOG_TTL
     {

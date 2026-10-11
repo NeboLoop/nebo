@@ -238,7 +238,7 @@ pub async fn test_provider(
 
     // Basic validation first
     let api_key = auth::credential::profile_key(&profile);
-    if api_key.is_empty() && profile.auth_type.as_deref() != Some("local") {
+    if api_key.is_empty() && profile.auth_type.as_deref() != Some("local") && profile.provider != "openai_compatible" {
         return Ok(Json(serde_json::json!({
             "success": false,
             "provider": profile.provider,
@@ -246,8 +246,17 @@ pub async fn test_provider(
         })));
     }
 
-    // Build a temporary provider and try a minimal API call
-    let model = profile.model.clone().unwrap_or_default();
+    // Build a temporary provider and try a minimal API call.
+    let model = test_model(&state.store, &config::ModelsConfig::load(), &profile);
+    // A compatible server with no model yet: its own model list, read with
+    // the key, is the check.
+    if model.is_empty() && profile.provider == "openai_compatible" {
+        let (success, message) = match super::connections::fetch_catalog(&profile).await {
+            Some(list) => (true, format!("Connection successful — the server lists {} models", list.len())),
+            None => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
+        };
+        return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
+    }
     let test_result: Result<String, String> = match profile.provider.as_str() {
         "anthropic" => {
             let provider = ai::AnthropicProvider::new(api_key.clone(), model);
@@ -269,6 +278,22 @@ pub async fn test_provider(
         "google" => {
             let provider = ai::GeminiProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
+        }
+        // The OpenAI format at OpenRouter's fixed URL, or at the owner's.
+        "openrouter" | "openai_compatible" => {
+            let base_url = if profile.provider == "openrouter" {
+                Some("https://openrouter.ai/api/v1".to_string())
+            } else {
+                profile.base_url.clone().filter(|u| !u.trim().is_empty())
+            };
+            match base_url {
+                Some(url) => {
+                    let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
+                    provider.set_provider_id(&profile.provider);
+                    test_provider_connection(&provider).await
+                }
+                None => Err("This provider needs its base URL.".to_string()),
+            }
         }
         "ollama" => {
             let base_url = profile
@@ -307,6 +332,18 @@ pub async fn test_provider(
             "message": msg,
         }))),
     }
+}
+
+/// The model a provider test asks: the one the connection pins, else the
+/// first chat model it has on. Empty when it has none.
+fn test_model(store: &db::Store, catalog: &config::ModelsConfig, profile: &db::models::AuthProfile) -> String {
+    profile.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| {
+        super::connections::connection_models(store, catalog, profile)
+            .into_iter()
+            .find(|m| m.is_active && m.kind == "chat")
+            .map(|m| m.model_id)
+            .unwrap_or_default()
+    })
 }
 
 /// Test a provider by sending a minimal chat request.
@@ -1138,6 +1175,28 @@ pub async fn delete_pack(
         return Err(to_error_response(types::NeboError::NotFound));
     }
     Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[cfg(test)]
+mod test_model_tests {
+    /// A connection added with no model pinned is tested on a chat model it
+    /// has on, never on an empty model id.
+    #[test]
+    fn a_test_asks_the_pinned_model_else_a_chat_model_the_connection_has_on() {
+        let store = db::Store::new(":memory:").unwrap();
+        let catalog = config::ModelsConfig::load();
+        store.create_auth_profile("x", "xAI", "openai_compatible", "", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
+        let p = store.get_auth_profile("x").unwrap().unwrap();
+        assert_eq!(super::test_model(&store, &catalog, &p), "", "nothing to ask yet");
+        let key = super::super::connections::connection_key(&p);
+        store.put_connection_model(&key, "jev", "Jev", "decision", None, "[]", "added", true).unwrap();
+        store.put_connection_model(&key, "grok-off", "Grok off", "chat", None, "[]", "added", false).unwrap();
+        store.put_connection_model(&key, "grok-5", "Grok 5", "chat", None, "[]", "added", true).unwrap();
+        assert_eq!(super::test_model(&store, &catalog, &p), "grok-5");
+        store.create_auth_profile("y", "Pinned", "openai_compatible", "", Some("pinned-1"), Some("https://x/v1"), 0, 1, None, None).unwrap();
+        let pinned = store.get_auth_profile("y").unwrap().unwrap();
+        assert_eq!(super::test_model(&store, &catalog, &pinned), "pinned-1");
+    }
 }
 
 #[cfg(test)]
