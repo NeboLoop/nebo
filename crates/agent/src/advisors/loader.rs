@@ -30,23 +30,7 @@ impl Loader {
     /// Load all advisors from filesystem and database.
     /// DB advisors override file-based advisors with the same name.
     pub async fn load_all(&self) -> usize {
-        let mut loaded = HashMap::new();
-
-        // Load file-based advisors first
-        if self.advisors_dir.exists() {
-            for advisor in load_advisors_from_dir(&self.advisors_dir) {
-                loaded.insert(advisor.name.clone(), advisor);
-            }
-        }
-
-        // DB advisors override file-based
-        if let Ok(db_advisors) = self.store.list_advisors() {
-            for db_advisor in &db_advisors {
-                let advisor = from_db(db_advisor);
-                loaded.insert(advisor.name.clone(), advisor);
-            }
-        }
-
+        let loaded = scan(&self.advisors_dir, &self.store);
         let count = loaded.len();
         *self.advisors.write().await = loaded;
         info!(count, dir = %self.advisors_dir.display(), "loaded advisors");
@@ -109,60 +93,81 @@ impl Loader {
                 }
             }
 
-            let mut last_reload = std::time::Instant::now();
+            let relevant = |event: &Event| {
+                matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_))
+                    && event.paths.iter().any(|p| {
+                        p.file_name().and_then(|n| n.to_str()).unwrap_or("").eq_ignore_ascii_case("advisor.md")
+                    })
+            };
             let debounce = std::time::Duration::from_secs(1);
 
-            while let Some(result) = rx.recv().await {
-                match result {
-                    Ok(event) => {
-                        let dominated = matches!(
-                            event.kind,
-                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                        );
-                        if !dominated {
+            // Setting up the watch is not instant (seconds, on a loaded
+            // machine), and nothing written to the folder before it is in
+            // place is ever reported: an advisor written then was never
+            // loaded. The boot's load ran before the watch began, so the
+            // first pass looks once without waiting for an event, the way an
+            // event would, and finds whatever landed meanwhile.
+            let mut look_now = true;
+            loop {
+                if !std::mem::take(&mut look_now) {
+                    match rx.recv().await {
+                        None => return,
+                        Some(Ok(event)) if relevant(&event) => {}
+                        Some(Ok(_)) => continue,
+                        Some(Err(e)) => {
+                            warn!(error = %e, "filesystem watch error");
                             continue;
                         }
-
-                        let relevant = event.paths.iter().any(|p| {
-                            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            name.eq_ignore_ascii_case("advisor.md")
-                        });
-                        if !relevant {
-                            continue;
-                        }
-
-                        if last_reload.elapsed() < debounce {
-                            continue;
-                        }
-                        last_reload = std::time::Instant::now();
-
-                        debug!("advisors directory changed, reloading");
-                        let mut loaded = HashMap::new();
-
-                        if advisors_dir.exists() {
-                            for advisor in load_advisors_from_dir(&advisors_dir) {
-                                loaded.insert(advisor.name.clone(), advisor);
-                            }
-                        }
-
-                        if let Ok(db_advisors) = store.list_advisors() {
-                            for db_advisor in &db_advisors {
-                                let advisor = from_db(db_advisor);
-                                loaded.insert(advisor.name.clone(), advisor);
-                            }
-                        }
-
-                        let count = loaded.len();
-                        *advisors.write().await = loaded;
-                        info!(count, "reloaded advisors after filesystem change");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "filesystem watch error");
                     }
                 }
+
+                // Coalesce a burst into one reload once it settles, and never
+                // drop a change: the old debounce discarded every event within
+                // a second of the last reload, so an edit made then stayed on
+                // disk and out of memory until some later write. A write
+                // during the wait starts the wait again (for at most 30 s of
+                // steady writes); the reload reads the folder as the last
+                // write left it.
+                for _ in 0..30 {
+                    tokio::time::sleep(debounce).await;
+                    let mut more = false;
+                    while let Ok(next) = rx.try_recv() {
+                        if next.as_ref().is_ok_and(|e| relevant(e)) {
+                            more = true;
+                        }
+                    }
+                    if !more {
+                        break;
+                    }
+                }
+
+                debug!("advisors directory changed, reloading");
+                let loaded = scan(&advisors_dir, &store);
+                let count = loaded.len();
+                *advisors.write().await = loaded;
+                info!(count, "reloaded advisors after filesystem change");
             }
         })
     }
+}
+
+/// Every advisor: the ADVISOR.md files in `advisors_dir`, then the
+/// database's, which override a file of the same name. What the boot's
+/// load and every watcher reload read.
+fn scan(advisors_dir: &Path, store: &db::Store) -> HashMap<String, Advisor> {
+    let mut loaded = HashMap::new();
+    if advisors_dir.exists() {
+        for advisor in load_advisors_from_dir(advisors_dir) {
+            loaded.insert(advisor.name.clone(), advisor);
+        }
+    }
+    if let Ok(db_advisors) = store.list_advisors() {
+        for db_advisor in &db_advisors {
+            let advisor = from_db(db_advisor);
+            loaded.insert(advisor.name.clone(), advisor);
+        }
+    }
+    loaded
 }
 
 /// Load ADVISOR.md files from a directory.
@@ -280,5 +285,71 @@ You provide historical context and precedents.
         assert!(enabled.iter().any(|a| a.name == "skeptic"));
         // The file-based historian should NOT be in enabled list (it's disabled)
         assert!(!enabled.iter().any(|a| a.name == "historian" && !a.enabled));
+    }
+
+    fn named(name: &str, description: &str) -> String {
+        format!("---\nname: {name}\nrole: critic\ndescription: {description}\npriority: 1\nenabled: true\n---\n\nBody.\n")
+    }
+
+    /// Poll until the loader's `name` advisor reads `description`.
+    async fn until_described(loader: &Loader, name: &str, description: &str, secs: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while tokio::time::Instant::now() < deadline {
+            if loader.get(name).await.is_some_and(|a| a.description == description) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// An advisor written after the boot's load and before the folder watch
+    /// is in place is loaded anyway: the watch looks once when it starts.
+    /// Nothing is written after `watch()`, so no event ever names it.
+    #[tokio::test]
+    async fn an_advisor_written_before_the_watch_is_in_place_is_found() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(db::Store::new(":memory:").unwrap());
+        let loader = Loader::new(tmp.path().to_path_buf(), store);
+        loader.load_all().await;
+        assert!(loader.get("watchman").await.is_none());
+
+        create_advisor_md(tmp.path(), "watchman", &named("watchman", "Written meanwhile"));
+        let handle = loader.watch();
+        let found = until_described(&loader, "watchman", "Written meanwhile", 20).await;
+        handle.abort();
+        assert!(found, "the watch never found the advisor written before it was in place");
+    }
+
+    /// An edit made right after a reload is applied, not dropped: the last
+    /// change always lands. Before, every event within a second of the last
+    /// reload was discarded and the edit stayed out until some later write.
+    #[tokio::test]
+    async fn an_edit_right_after_a_reload_is_applied() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(db::Store::new(":memory:").unwrap());
+        create_advisor_md(tmp.path(), "watchman", &named("watchman", "First"));
+        let loader = Loader::new(tmp.path().to_path_buf(), store);
+        loader.load_all().await;
+        let handle = loader.watch();
+
+        // A reload the watch makes: re-write until it is seen (the watch
+        // gives no "armed" signal).
+        let path = tmp.path().join("watchman").join("ADVISOR.md");
+        let mut reloaded = false;
+        for _ in 0..80 {
+            std::fs::write(&path, named("watchman", "Second")).unwrap();
+            if until_described(&loader, "watchman", "Second", 1).await {
+                reloaded = true;
+                break;
+            }
+        }
+        assert!(reloaded, "the watch reloads an edit");
+
+        // At once, inside the old one-second window, and never again.
+        std::fs::write(&path, named("watchman", "Third")).unwrap();
+        let applied = until_described(&loader, "watchman", "Third", 15).await;
+        handle.abort();
+        assert!(applied, "the edit made right after a reload was dropped");
     }
 }

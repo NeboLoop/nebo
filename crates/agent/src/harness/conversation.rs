@@ -118,7 +118,6 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str, why:
             is_error: true,
             image_url: None,
             payload: None,
-            outcome: Some("Interrupted".to_string()),
             duration_ms: None,
             loaded_tools: Vec::new(),
         };

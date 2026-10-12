@@ -10,7 +10,7 @@
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { isSignInFor } from '$lib/utils/pluginSignIn';
+  import { isSignInFor, openSignInLink } from '$lib/utils/pluginSignIn';
   import { createChatController } from '$lib/chat/controller.svelte';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
@@ -1212,7 +1212,7 @@
     addAccountConnectingSlug = slug;
     try {
       const api = await import('$lib/api/nebo');
-      await api.authLoginAccount(slug, { agentId, accountLabel: label, accountNumber: '' });
+      openSignInLink(await api.authLoginAccount(slug, { agentId, accountLabel: label, accountNumber: '' }));
     } catch (e) {
       addAccountConnectingSlug = null;
       addToast((e as Error)?.message || $t('agentSettings.startSignInFailed'), 'error');
@@ -1250,7 +1250,7 @@
     addAccountError = null;
     try {
       const api = await import('$lib/api/nebo');
-      await api.authLoginAccount(p.slug, { agentId, accountLabel: label, accountNumber: addAccountNumber, credentials: addAccountCreds });
+      openSignInLink(await api.authLoginAccount(p.slug, { agentId, accountLabel: label, accountNumber: addAccountNumber, credentials: addAccountCreds }));
       // Login runs in the background; completion arrives via WS.
     } catch (e) {
       addAccountConnectingSlug = null;
@@ -2474,6 +2474,7 @@
               onsend={(text) => helpChat?.send(text)}
               onstop={() => helpChat?.stop()}
               isLoading={helpChat.isLoading}
+              turnStartedAt={helpChat.turnStartedAt}
             />
           </div>
         </div>

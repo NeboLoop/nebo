@@ -267,99 +267,110 @@ impl AgentLoader {
             let mut last_reload = std::time::Instant::now();
             let debounce = std::time::Duration::from_secs(1);
 
-            while let Some(result) = rx.recv().await {
-                match result {
-                    Ok(event) => {
-                        let dominated = matches!(
-                            event.kind,
-                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                        );
-                        if !dominated {
+            // Setting up the watch is not instant (seconds, on a loaded
+            // machine), and nothing written to the trees before it is in
+            // place is ever reported: an employee copied in then was never
+            // loaded. The roster this diffs against was read before the watch
+            // began, so the first pass looks once without waiting for an
+            // event, the way an event would, and finds whatever landed
+            // meanwhile.
+            let mut look_now = true;
+            loop {
+                if !std::mem::take(&mut look_now) {
+                    let event = match rx.recv().await {
+                        None => break,
+                        Some(Ok(event)) => event,
+                        Some(Err(e)) => {
+                            warn!(error = %e, "filesystem watch error (agents)");
                             continue;
                         }
-
-                        let relevant = event.paths.iter().any(|p| {
-                            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            name.eq_ignore_ascii_case("agent.md")
-                                || name == "agent.json"
-                                || name == "manifest.json"
-                                || name == "theme.css"
-                                || name.ends_with(".napp")
-                                // New symlink/directory added directly under watched dir
-                                || (matches!(event.kind, EventKind::Create(_))
-                                    && (p.parent() == Some(user_dir.as_path())
-                                        || p.parent() == Some(installed_dir.as_path()))
-                                    && p.is_dir())
-                        });
-                        if !relevant {
-                            continue;
-                        }
-
-                        // Coalesce a burst into ONE rescan after it settles. The
-                        // old debounce discarded events inside the window, so the
-                        // last directories of a bulk copy stayed uninstalled until
-                        // an unrelated change fired the watcher again.
-                        let since = last_reload.elapsed();
-                        if since < debounce {
-                            tokio::time::sleep(debounce - since).await;
-                        }
-                        while rx.try_recv().is_ok() {}
-                        last_reload = std::time::Instant::now();
-
-                        debug!("agents directory changed, reloading");
-                        let mut loaded = HashMap::new();
-
-                        // Preserve bundled agents (lowest priority)
-                        for (name, agent_md, agent_json, manifest_json) in bundled {
-                            match load_from_embedded(name, agent_md, agent_json, manifest_json) {
-                                Ok(agent) => {
-                                    loaded.insert(agent.agent_def.name.to_lowercase(), agent);
-                                }
-                                Err(_) => {}
-                            }
-                        }
-
-                        for agent in scan_installed_agents(&installed_dir) {
-                            loaded.insert(agent.agent_def.name.to_lowercase(), agent);
-                        }
-                        for agent in scan_user_agents(&user_dir) {
-                            loaded.insert(agent.agent_def.name.to_lowercase(), agent);
-                        }
-
-                        // Sealed (paid) agents — decrypted in memory using license keys.
-                        {
-                            let keys = license_keys.read().await;
-                            for agent in scan_sealed_agents(&installed_dir, &keys) {
-                                loaded.insert(agent.agent_def.name.to_lowercase(), agent);
-                            }
-                            for agent in scan_sealed_agents(&user_dir, &keys) {
-                                loaded.insert(agent.agent_def.name.to_lowercase(), agent);
-                            }
-                        }
-
-                        // Decide every event under the read guard, then RELEASE it
-                        // before sending: the receiver finalizes each Added agent,
-                        // and finalize reloads this loader — which needs the write
-                        // lock. Sending on the bounded channel while still holding
-                        // the read guard deadlocks the moment a burst fills it (a
-                        // collection install, a .napp bundle): sender awaits a
-                        // drain, receiver awaits the write, neither yields.
-                        let events = {
-                            let old = agents.read().await;
-                            diff_scans(&old, &loaded)
-                        };
-                        for event in events {
-                            let _ = event_tx.send(event).await;
-                        }
-
-                        let count = loaded.len();
-                        *agents.write().await = loaded;
-                        info!(count, "reloaded agents after filesystem change");
+                    };
+                    let dominated = matches!(
+                        event.kind,
+                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                    );
+                    if !dominated {
+                        continue;
                     }
-                    Err(e) => {
-                        warn!(error = %e, "filesystem watch error (agents)");
+
+                    let relevant = event.paths.iter().any(|p| {
+                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        name.eq_ignore_ascii_case("agent.md")
+                            || name == "agent.json"
+                            || name == "manifest.json"
+                            || name == "theme.css"
+                            || name.ends_with(".napp")
+                            // New symlink/directory added directly under watched dir
+                            || (matches!(event.kind, EventKind::Create(_))
+                                && (p.parent() == Some(user_dir.as_path())
+                                    || p.parent() == Some(installed_dir.as_path()))
+                                && p.is_dir())
+                    });
+                    if !relevant {
+                        continue;
                     }
                 }
+
+                // Coalesce a burst into ONE rescan after it settles. The
+                // old debounce discarded events inside the window, so the
+                // last directories of a bulk copy stayed uninstalled until
+                // an unrelated change fired the watcher again.
+                let since = last_reload.elapsed();
+                if since < debounce {
+                    tokio::time::sleep(debounce - since).await;
+                }
+                while rx.try_recv().is_ok() {}
+                last_reload = std::time::Instant::now();
+
+                debug!("agents directory changed, reloading");
+                let mut loaded = HashMap::new();
+
+                // Preserve bundled agents (lowest priority)
+                for (name, agent_md, agent_json, manifest_json) in bundled {
+                    match load_from_embedded(name, agent_md, agent_json, manifest_json) {
+                        Ok(agent) => {
+                            loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                        }
+                        Err(_) => {}
+                    }
+                }
+
+                for agent in scan_installed_agents(&installed_dir) {
+                    loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                }
+                for agent in scan_user_agents(&user_dir) {
+                    loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                }
+
+                // Sealed (paid) agents — decrypted in memory using license keys.
+                {
+                    let keys = license_keys.read().await;
+                    for agent in scan_sealed_agents(&installed_dir, &keys) {
+                        loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                    }
+                    for agent in scan_sealed_agents(&user_dir, &keys) {
+                        loaded.insert(agent.agent_def.name.to_lowercase(), agent);
+                    }
+                }
+
+                // Decide every event under the read guard, then RELEASE it
+                // before sending: the receiver finalizes each Added agent,
+                // and finalize reloads this loader — which needs the write
+                // lock. Sending on the bounded channel while still holding
+                // the read guard deadlocks the moment a burst fills it (a
+                // collection install, a .napp bundle): sender awaits a
+                // drain, receiver awaits the write, neither yields.
+                let events = {
+                    let old = agents.read().await;
+                    diff_scans(&old, &loaded)
+                };
+                for event in events {
+                    let _ = event_tx.send(event).await;
+                }
+
+                let count = loaded.len();
+                *agents.write().await = loaded;
+                info!(count, "reloaded agents after filesystem change");
             }
         });
 
@@ -1012,5 +1023,31 @@ mod tests {
         assert!(!loaded.is_app);
         assert!(loaded.app_ui_path.is_none());
         assert!(loaded.app_binary_path.is_none());
+    }
+
+    /// An employee that lands after the boot's load and before the folder
+    /// watch is in place is reported anyway: the watch looks once when it
+    /// starts. Nothing is written after `watch()`, so no filesystem event
+    /// ever names it; before, it was never loaded.
+    #[tokio::test]
+    async fn an_employee_written_before_the_watch_is_in_place_is_found() {
+        let installed = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let loader = AgentLoader::new(installed.path().to_path_buf(), user.path().to_path_buf());
+        loader.load_all().await;
+        assert!(loader.list().await.is_empty());
+
+        let dir = user.path().join("jim");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENT.md"), "---\nname: Jim\n---\n# Jim").unwrap();
+        let (handle, mut rx) = loader.watch();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("the watch found the employee with no event naming it")
+            .unwrap();
+        handle.abort();
+        assert!(matches!(&event, AgentFsEvent::Added(a) if a.agent_def.name == "Jim"), "{event:?}");
+        assert_eq!(loader.list().await.len(), 1, "and it is on the roster");
     }
 }

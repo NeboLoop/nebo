@@ -244,6 +244,7 @@ pub(crate) async fn answer_thread(
         channel,
         origin: seat.origin,
         door: seat.door,
+        narrow: None,
         agent_id,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),

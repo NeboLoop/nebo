@@ -6,8 +6,7 @@ triggers:
   - swap the person
   - replace the person
   - replace the actor
-  - cast member
-  - add to the cast
+  - swap cast
   - ai influencer
   - ai creator
 ---
@@ -20,8 +19,9 @@ video until the owner has confirmed them once.
 
 A swap is only for replacing the person in a video that already exists.
 The same character across new shots is not a swap: make each shot's start
-frame of them as an image, get the owner's yes, and make each clip from its
-approved frame.
+frame of them as an image with their portrait in `references`, get the
+owner's yes, and make each clip from its approved frame. A film's
+characters (a project's `cast/`) are not this cast either.
 
 ## The cast
 

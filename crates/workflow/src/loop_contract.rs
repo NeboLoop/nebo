@@ -32,8 +32,9 @@ pub struct LoopTurn<'a> {
     pub workflow_name: &'a str,
     /// The activity's tools, including `exit`, and `emit` when granted: the
     /// deferred ones are what its listing names. The tools it declares are
-    /// every turn's; dispatch falls back to the full roster — this is
-    /// context scoping, not a security boundary.
+    /// every turn's. For a declared activity this is also the hard limit at
+    /// dispatch (`engine::enforced_tools`); for an undeclared one it is
+    /// context scoping only.
     pub advertised_tools: Vec<String>,
     pub agent_id: &'a str,
     /// Caller-resolved memory scope user id (rides ToolContext.user_id).
@@ -81,6 +82,9 @@ pub struct LoopOutcome {
     /// not empty. Its text is then raw tool output, which the step evaluator
     /// is never asked to judge.
     pub tainted: bool,
+    /// Model turns this turn-loop took: what it spends of the run's budget
+    /// (`engine::RUN_MAX_ITERATIONS`).
+    pub steps: u32,
 }
 
 #[async_trait::async_trait]

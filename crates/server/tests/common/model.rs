@@ -25,7 +25,7 @@ pub type Calls = Arc<Mutex<Vec<(String, Value)>>>;
 
 /// Whether this is a turn's own call (not a title, recap or memory call).
 pub fn main_call(purpose: &str) -> bool {
-    purpose == "agent_turn" || purpose.starts_with("workflow")
+    purpose == "agent_turn" || purpose == "build" || purpose.starts_with("workflow")
 }
 
 /// Whether the conversation already holds a tool result.
@@ -119,10 +119,6 @@ pub async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, V
 /// A server on a scratch home with the scripted model as its only
 /// provider. No hub is reachable: nothing here can act as anyone's bot.
 pub async fn server_with(script: Script) -> (TestServer, Calls) {
-    for var in ["NEBOAI_API_URL", "NEBOAI_JANUS_URL", "NEBOAI_COMMS_URL", "NEBOAI_TUNNEL_URL"] {
-        // SAFETY: set before the server starts, like NEBO_HOME in `boot`.
-        unsafe { std::env::set_var(var, "http://127.0.0.1:9") };
-    }
     let (model_port, calls) = fake_model(script).await;
     let server = TestServer::boot().await;
     let created = server

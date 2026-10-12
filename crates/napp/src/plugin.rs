@@ -746,6 +746,19 @@ impl PluginManifest {
             .unwrap_or(false)
     }
 
+    /// The settings the plugin declares secret: the credentials it reads
+    /// from `auth.env`, and the `configSchema` fields marked `secret`.
+    /// Secret settings are stored encrypted and never returned by the API.
+    pub fn secret_setting_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.auth.iter().flat_map(|a| a.env.keys().cloned()).collect();
+        for f in self.capabilities.iter().flat_map(|c| c.config_schema.iter()) {
+            if f.secret && !keys.contains(&f.key) {
+                keys.push(f.key.clone());
+            }
+        }
+        keys
+    }
+
     /// Number of declared tool capabilities.
     pub fn tool_count(&self) -> usize {
         self.capabilities
@@ -2722,13 +2735,23 @@ impl PluginStore {
                     })
             };
 
-            while let Some(result) = rx.recv().await {
-                match result {
-                    Ok(event) if relevant(&event) => {}
-                    Ok(_) => continue,
-                    Err(e) => {
-                        warn!(error = %e, "filesystem watch error (plugins)");
-                        continue;
+            // Setting up the watch is not instant (seconds, on a loaded
+            // machine), and nothing written to the trees before it is in
+            // place is ever reported: a plugin copied in then was never
+            // loaded. `prev` was taken before the watch began, so the first
+            // pass looks once without waiting for an event, the way an
+            // event would, and finds whatever landed meanwhile.
+            let mut look_now = true;
+            loop {
+                if !std::mem::take(&mut look_now) {
+                    match rx.recv().await {
+                        None => return,
+                        Some(Ok(event)) if relevant(&event) => {}
+                        Some(Ok(_)) => continue,
+                        Some(Err(e)) => {
+                            warn!(error = %e, "filesystem watch error (plugins)");
+                            continue;
+                        }
                     }
                 }
 
@@ -2821,9 +2844,18 @@ pub fn plugin_base_env() -> Vec<(String, String)> {
     )]
 }
 
+/// The port this process's Nebo bound and serves its local API on, set once
+/// by the server the moment it holds the port. With port 0 the system picks
+/// it, and only this says which.
+pub static SERVING_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
 /// The port this Nebo's local API listens on, by the one rule every local
-/// caller uses: `NEBO_PORT`, else the default.
+/// caller uses: the port this process serves on ([`SERVING_PORT`]), else
+/// `NEBO_PORT`, else the default.
 pub fn local_port() -> u16 {
+    if let Some(port) = SERVING_PORT.get() {
+        return *port;
+    }
     std::env::var("NEBO_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())

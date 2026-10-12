@@ -18,10 +18,10 @@ use tools::registry::DynTool;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_screenshot_shows_the_app_as_the_bot_serves_it() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
-    // The port the tool addresses the bot on (`napp::plugin::local_port`).
-    // SAFETY: the one test in this binary; nothing else reads it yet.
-    unsafe { std::env::set_var("NEBO_PORT", server.port.to_string()) };
 
     let manager = Arc::new(browser::Manager::new(
         browser::BrowserConfig::default(),

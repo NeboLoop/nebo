@@ -20,3 +20,7 @@ fixtures:
   - ../fixtures/memory/proof/mp08-a-confidential-employees-conversations-never-see-each-other.yaml
   - ../fixtures/memory/proof/mp09-separate-conversations-still-share-one-memory.yaml
   - ../fixtures/memory/proof/mp10-the-owners-call-saves-to-local-memory-when-he-asks.yaml
+  - ../fixtures/memory/proof/mp11-shared-memory-is-not-a-connector.yaml
+  - ../fixtures/memory/proof/mp12-shared-memory-that-is-not-connected-is-nowhere.yaml
+  - ../fixtures/memory/proof/mp13-connected-both-memories-say-where-each-answer-came-from.yaml
+  - ../fixtures/memory/proof/mp14-existing-memories-and-writes-stay-where-they-were.yaml

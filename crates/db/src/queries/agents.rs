@@ -849,6 +849,27 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Every active binding a trigger keeps watching for (an event, a
+    /// plugin watch, a folder, a heartbeat) of every enabled agent, with why
+    /// it is degraded when it is. A schedule binding is a timer, not here.
+    pub fn list_active_watch_bindings(&self) -> Result<Vec<(AgentWorkflow, Option<String>)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT aw.id, aw.agent_id, aw.binding_name,
+                        aw.trigger_type, aw.trigger_config, aw.description, aw.inputs, aw.is_active, aw.emit, aw.activities, aw.last_fired, aw.connections,
+                        aw.degraded_reason
+                 FROM agent_workflows aw JOIN agents a ON aw.agent_id = a.id
+                 WHERE aw.trigger_type IN ('event', 'watch', 'folder', 'heartbeat') AND aw.is_active = 1 AND a.is_enabled = 1
+                 ORDER BY aw.agent_id, aw.binding_name",
+            )
+            .db_err("list_active_watch_bindings")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row_to_agent_workflow(row)?, row.get::<_, Option<String>>(12)?)))
+            .db_err("list_active_watch_bindings")?;
+        rows.collect::<Result<Vec<_>, _>>().db_err("list_active_watch_bindings")
+    }
+
     pub fn list_agent_workflows(&self, agent_id: &str) -> Result<Vec<AgentWorkflow>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -1419,7 +1440,7 @@ mod structure_tests {
         seat(&s, "a", "Social");
         seat(&s, "ab", "Other");
         let job = |name: &str, task_type: &str, agent: Option<&str>| {
-            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None, None)
+            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None, None, &crate::models::ScheduleProvenance::new(crate::models::ScheduleCreator::Owner, ""))
                 .unwrap();
         };
         job("agent-a-plan-week", "agent_workflow", Some("a"));

@@ -119,6 +119,31 @@ pub fn is_customer_send(operation: &str) -> bool {
     matches!(op.as_slice(), ["send", "message", "mail" | "sms"])
 }
 
+/// A flag that asks a command for its help text, not for its work.
+pub fn is_help_flag(word: &str) -> bool {
+    matches!(word, "help" | "h" | "-h" | "--help")
+}
+
+/// Whether a call's input asks only for help (`{"help": true}`): no send
+/// was asked for, so none is recorded and nobody is asked whether it went
+/// out (live 2026-10-12: `mail_message_send {help: true}` printed the
+/// plugin's help and the owner got "Did Nebo's message go out?").
+pub fn is_help_request(input: &serde_json::Value) -> bool {
+    let Some(fields) = input.as_object() else {
+        return false;
+    };
+    let mut fields = fields.iter().filter(|(_, v)| !v.is_null()).peekable();
+    fields.peek().is_some()
+        && fields.all(|(k, v)| {
+            is_help_flag(k)
+                && match v {
+                    serde_json::Value::Bool(b) => *b,
+                    serde_json::Value::String(s) => s.trim().is_empty() || s.trim() == "true",
+                    _ => false,
+                }
+        })
+}
+
 /// The run this send belongs to: the workflow run when the session is a
 /// workflow session, otherwise the session itself.
 pub fn run_ref(ctx: &ToolContext) -> String {
@@ -240,6 +265,13 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = SendOutcome>,
 {
+    // A help request is not a send: nothing is attempted, nothing recorded.
+    // A tool with help to give answers it before it gets here.
+    if is_help_request(input) {
+        return ToolResult::error(format!(
+            "{operation}: a help request is not a send; nothing was sent or recorded. Its parameters are in the tool's schema."
+        ));
+    }
     // Lease gate, before anything is recorded: a paused send was never
     // attempted, so it leaves no ledger row and asks the owner nothing.
     if comm::lease::process().frozen() {
@@ -465,6 +497,33 @@ mod tests {
         assert_eq!((e.state.as_str(), e.attempts), ("pending", 1));
         assert_eq!(e.result.as_deref(), Some("no answer"), "why it is held is on the row");
         assert!(s.get_notification(&format!("attention:effect:{id}"), &user).unwrap().is_none(), "the owner's card is the ask, not a notice");
+    }
+
+    /// Live 2026-10-12: a help-only call to a send tool was recorded as an
+    /// unknown send and the owner was asked whether it went out. A help
+    /// request is never recorded and never attempted, on every send tool;
+    /// a real send still is.
+    #[tokio::test]
+    async fn a_help_request_is_not_a_send() {
+        let s = store();
+        let c = ctx();
+        for (provider, operation) in [("gmail", "mail.message.send"), ("sms", "sms.message.send"), ("mail-app", "mail.message.send")] {
+            for help in [serde_json::json!({"help": true}), serde_json::json!({"--help": "true"}), serde_json::json!({"h": ""})] {
+                let r = guarded_send(&s, &c, "messaging", provider, operation, &help, None, || async { panic!("a help request is never sent") }).await;
+                assert!(r.is_error && r.content.contains("not a send"), "{}", r.content);
+            }
+        }
+        assert!(s.engine_effects_for_run("run-9").unwrap().is_empty(), "no ledger row, so no card");
+        assert!(!is_help_request(&serde_json::json!({"help": true, "to": "a@x.com"})), "a send that also asks for help is a send");
+        assert!(!is_help_request(&serde_json::json!({"help": false})));
+        assert!(!is_help_request(&serde_json::json!({})));
+
+        let input = serde_json::json!({"to": "a@x.com", "subject": "Hi", "text": "hello"});
+        let r = guarded_send(&s, &c, "messaging", "gmail", "mail.message.send", &input, None, || async { SendOutcome::Unknown("no answer".into()) }).await;
+        assert!(r.is_error && r.content.contains("NOT retried"), "{}", r.content);
+        let rows = s.engine_effects_for_run("run-9").unwrap();
+        assert_eq!(rows.len(), 1, "a real send is recorded: {rows:?}");
+        assert_eq!((rows[0].state.as_str(), rows[0].attempts), ("pending", 1), "and held for the owner");
     }
 
     /// Seen live: a turn killed mid-send was relaunched and composed a new

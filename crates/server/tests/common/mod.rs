@@ -1,6 +1,7 @@
 //! The one test server: booted for real, on a free port, over a temp
-//! `NEBO_HOME`. Shared by every integration test in this crate so a second
-//! suite never grows a second way to start Nebo.
+//! `NEBO_HOME`, in its test's own process (`in_own_process`). Shared by every
+//! integration test in this crate so a second suite never grows a second way
+//! to start Nebo.
 //!
 //! Each test binary compiles this module separately, so a helper only one
 //! suite needs reads as dead code in the other.
@@ -23,14 +24,75 @@ pub struct TestServer {
     pub key: String,
     pub client: Client,
     pub data_dir: PathBuf,
-    _temp_dir: tempfile::TempDir,
     _handle: tokio::task::JoinHandle<()>,
 }
 
+/// Set in the environment of a test's own process ([`in_own_process`]).
+const OWN_PROCESS: &str = "NEBO_TEST_OWN_PROCESS";
+
+/// Run the calling test in a process of its own: a Nebo of its own, on a
+/// home of its own, as the product runs one Nebo per process.
+///
+/// A Nebo's root (`config::data_dir`, read from `NEBO_HOME` all through the
+/// product) and its install key are one per process. The tests of one
+/// binary run in parallel, so servers booted side by side in the test
+/// process shared them: each test's `NEBO_HOME` moved every other server,
+/// and a test that ended deleted the home another server was still booting
+/// on ("io error: No such file or directory").
+///
+/// Called first in every test that boots a [`TestServer`]. In the test
+/// binary's own run it starts this binary again with only the calling test
+/// selected, its home, install key and no reachable hub given in that
+/// process's environment, waits for it, fails with its output if it failed,
+/// and answers `false`: the caller returns. In that process it answers
+/// `true` and the test runs, server and all. No process's environment is
+/// ever written.
+pub async fn in_own_process() -> bool {
+    if std::env::var_os(OWN_PROCESS).is_some() {
+        return true;
+    }
+    let test = std::thread::current().name().expect("a test thread is named after its test").to_string();
+    let home = tempfile::tempdir().expect("create temp dir");
+    let key = uuid::Uuid::new_v4().simple().to_string();
+    let out = tokio::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args([test.as_str(), "--exact", "--include-ignored", "--test-threads=1"])
+        .env(OWN_PROCESS, "1")
+        .env("NEBO_HOME", home.path())
+        // The install key every caller of the local API proves itself with
+        // (`config::read_install_key`).
+        .env("NEBO_MCP_API_KEY", &key)
+        // No hub is reachable: nothing here can act as anyone's bot.
+        .envs([
+            ("NEBOAI_API_URL", "http://127.0.0.1:9"),
+            ("NEBOAI_JANUS_URL", "http://127.0.0.1:9"),
+            ("NEBOAI_COMMS_URL", "http://127.0.0.1:9"),
+            ("NEBOAI_TUNNEL_URL", "http://127.0.0.1:9"),
+        ])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .expect("run the test in its own process");
+    assert!(
+        out.status.success(),
+        "{test}, in its own process: {}\n{}{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    false
+}
+
 impl TestServer {
+    /// Boot this process's Nebo, on the home and install key
+    /// [`in_own_process`] gave it and a port the system assigns as the
+    /// server binds it (no port is picked first and left free for another
+    /// process to take).
     pub async fn boot() -> Self {
-        let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let data_dir = temp_dir.path().to_path_buf();
+        assert!(
+            std::env::var_os(OWN_PROCESS).is_some(),
+            "a TestServer boots only in a test's own process: begin the test with `if !common::in_own_process().await {{ return; }}`"
+        );
+        let data_dir = config::data_dir().expect("NEBO_HOME");
 
         // Create required subdirectories
         std::fs::create_dir_all(data_dir.join("data")).unwrap();
@@ -42,18 +104,12 @@ impl TestServer {
         std::fs::create_dir_all(data_dir.join("user").join("tools")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("workflows")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("agents")).unwrap();
-        // Set NEBO_HOME so config::data_dir() resolves to our temp dir
-        // SAFETY: single-threaded at this point (before server spawn)
-        unsafe {
-            std::env::set_var("NEBO_HOME", &data_dir);
-        }
 
-        let key = install_key();
-        let port = find_free_port();
+        let key = config::read_install_key().expect("NEBO_MCP_API_KEY");
         let db_path = data_dir.join("data").join("nebo.db");
 
         let mut cfg = config::Config::default();
-        cfg.port = port;
+        cfg.port = 0;
         cfg.host = "127.0.0.1".to_string();
         cfg.database.sqlite_path = db_path.to_string_lossy().to_string();
         // Use a random JWT secret for test isolation
@@ -67,9 +123,20 @@ impl TestServer {
 
         let client = Client::new();
 
-        // Poll /health until ready (max 30s)
-        let health_url = format!("http://127.0.0.1:{}/health", port);
+        // The port the server took (`napp::plugin::local_port`), then
+        // /health until ready (max 30s for both).
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let port = loop {
+            if let Some(port) = napp::plugin::SERVING_PORT.get() {
+                break *port;
+            }
+            assert!(!handle.is_finished(), "the server stopped before it took a port");
+            if tokio::time::Instant::now() > deadline {
+                panic!("server failed to start within 30s");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let health_url = format!("http://127.0.0.1:{}/health", port);
         loop {
             if tokio::time::Instant::now() > deadline {
                 panic!("server failed to start within 30s");
@@ -84,8 +151,7 @@ impl TestServer {
             port,
             key,
             client,
-            data_dir: temp_dir.path().to_path_buf(),
-            _temp_dir: temp_dir,
+            data_dir,
             _handle: handle,
         }
     }
@@ -138,24 +204,4 @@ impl TestServer {
         let db_path = self.data_dir.join("data").join("nebo.db");
         db::Store::new(&db_path.to_string_lossy()).expect("open test DB")
     }
-}
-
-/// This process's install key. Every server a test binary boots reads it
-/// from `NEBO_MCP_API_KEY` (`config::read_install_key`), not from a file in
-/// its `NEBO_HOME`: the tests in one binary boot their servers in parallel,
-/// and `NEBO_HOME` is one variable for the whole process.
-fn install_key() -> String {
-    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| {
-        let key = uuid::Uuid::new_v4().simple().to_string();
-        // SAFETY: set before any server of this process starts, like NEBO_HOME.
-        unsafe { std::env::set_var("NEBO_MCP_API_KEY", &key) };
-        key
-    })
-    .clone()
-}
-
-pub fn find_free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
 }

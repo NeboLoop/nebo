@@ -6,8 +6,9 @@
 //! for a sign-in ticket. A ticket is made in this process, used once, and
 //! lapses after two minutes:
 //!
-//! - the desktop app mints one in-process and opens its window through it
-//!   (`sign_in_path`), on every launch;
+//! - the desktop app asks this server for one with the install key
+//!   (`POST /api/v1/local-session/ticket`) and opens its window through it,
+//!   each time it attaches to the engine;
 //! - a browser the owner opens himself (the Vite dev server's included: the
 //!   cookie belongs to `localhost`, whatever the port) signs in through the
 //!   link `nebo open` prints, which asks this server for a ticket with the

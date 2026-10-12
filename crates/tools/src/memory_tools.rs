@@ -55,6 +55,50 @@ const KEPT_CONFIDENTIAL: &str = "Local memory was not touched: this employee kee
      confidential, and local memory changes only when the owner asks for something to be kept for \
      everyone. This conversation's confidential memory was used instead.";
 
+/// What a workflow run's write to local memory is told: it went to the
+/// employee's own memory, which is where the employee's later runs read
+/// their state.
+const KEPT_FOR_LATER_RUNS: &str = "Local memory was not touched: it changes only at the owner's own request. \
+     This was kept in this employee's own memory instead, where its later runs recall it.";
+
+/// Where a memory the model reads comes from, as a prefix on its namespace:
+/// this Nebo's own store (`local:tacit/preferences`) or the account's shared
+/// memory, the Nebo KB (`shared:general`). Routing words for the model only:
+/// stored namespaces never carry them, and people never see them.
+pub const LOCAL_SOURCE: &str = "local:";
+/// See [`LOCAL_SOURCE`].
+pub const SHARED_SOURCE: &str = "shared:";
+
+/// A local namespace as the model reads it: `local:<namespace>`.
+pub fn local_source(namespace: &str) -> String {
+    format!("{LOCAL_SOURCE}{namespace}")
+}
+
+/// Where a call to shared memory (the Nebo KB) reached, as the model reads
+/// it: the run's matter when it is sealed to one (the header confines every
+/// call to it), else the call's own `domain`, else the KB's shared
+/// `general` domain.
+pub fn shared_source(matter: Option<&str>, domain: Option<&str>) -> String {
+    let area = matter.or(domain.filter(|d| !d.is_empty())).unwrap_or("general");
+    format!("{SHARED_SOURCE}{area}")
+}
+
+/// The stored namespace a model-supplied one names: the `local:` it was
+/// shown is dropped, so echoing a recalled memory's namespace finds it.
+fn stored_namespace(namespace: &str) -> &str {
+    namespace.strip_prefix(LOCAL_SOURCE).unwrap_or(namespace)
+}
+
+/// What a memory call that names a `shared:` namespace is told: shared
+/// memory is reached through its own tools, never through this store.
+const SHARED_NOT_HERE: &str = "Nothing was done: a shared: namespace is shared memory, which recall, remember and \
+     forget don't reach. Use the shared memory tools (memory_recall, memory_remember) for it.";
+
+/// The model named a `shared:` namespace.
+fn names_shared(input: &Value) -> bool {
+    input["namespace"].as_str().is_some_and(|n| n.starts_with(SHARED_SOURCE))
+}
+
 /// A scope bound to one conversation, read back from its `user_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConversationScope<'a> {
@@ -243,7 +287,8 @@ impl Memory {
     /// read by every employee on this Nebo, so only the owner's own request
     /// (his message in his own chat or his team thread, or his own call)
     /// puts something there — an unattended run, a caller or a coworker
-    /// cannot publish to everyone.
+    /// cannot publish to everyone. A workflow run's write is kept in the
+    /// employee's own memory instead: that is its state between runs.
     /// The refusal says to tell the owner, never to save it elsewhere: told
     /// to save it privately, the owner's assistant did so on his call and
     /// told him Nebo blocks shared memory (live 2026-09-28).
@@ -264,6 +309,13 @@ impl Memory {
             && !(ctx.owner_request && ctx.owner_shares)
         {
             return Ok((&ctx.user_id, Some(KEPT_CONFIDENTIAL)));
+        }
+        // A workflow run keeps its state for the employee's next run: it
+        // writes the employee's own memory, and says so (bake-off
+        // 2026-10-10: refused here, steps hunted for state in made-up files
+        // and Nebo's own database).
+        if !ctx.owner_request && ctx.origin == crate::origin::Origin::Workflow {
+            return Ok((&ctx.user_id, Some(KEPT_FOR_LATER_RUNS)));
         }
         if !ctx.owner_request {
             return Err(ToolResult::error(
@@ -313,6 +365,9 @@ impl Memory {
             ));
         }
 
+        if names_shared(input) {
+            return ToolResult::error(SHARED_NOT_HERE);
+        }
         let (scope, kept_here) = match Self::write_scope(input, ctx) {
             Ok(written) => written,
             Err(refused) => return refused,
@@ -320,9 +375,9 @@ impl Memory {
         let key = input["key"].as_str().unwrap_or("");
         let value = input["value"].as_str().unwrap_or("");
         // `layer` maps to the namespace for that layer; an explicit
-        // `namespace` overrides. The `daily` layer is retired
-        // (docs/design/MEMORY_QUALITY.md) — ongoing work lives in the topical
-        // `project` layer, plus any topics the employee declared.
+        // `namespace` overrides. Ongoing work lives in the topical `project`
+        // layer, plus any topics the employee declared
+        // (docs/design/MEMORY_QUALITY.md).
         let layer_ns = match input["layer"].as_str().unwrap_or("") {
             "entity" => "entity/default".to_string(),
             "project" => "project".to_string(),
@@ -331,6 +386,7 @@ impl Memory {
         };
         let namespace = input["namespace"]
             .as_str()
+            .map(stored_namespace)
             .filter(|n| !n.is_empty())
             .unwrap_or(&layer_ns);
 
@@ -434,15 +490,17 @@ impl Memory {
         }
         let saved = match keychain_kind {
             Some(kind) => format!(
-                "Saved a pointer for {key} in [{namespace}] of {}; the value was credential-shaped \
+                "Saved a pointer for {key} in [{}] of {}; the value was credential-shaped \
                  ({kind}), and the secret itself is in the OS keychain (service \
                  {MEMORY_KEYCHAIN_SERVICE}, account {}/{key}). Tell the owner where it lives.",
+                local_source(namespace),
                 MemoryScopeKind::of(scope).saved_to(),
                 scope
             ),
             None => format!(
-                "Saved to {}: [{namespace}] {key} = {stored_value}",
-                MemoryScopeKind::of(scope).saved_to()
+                "Saved to {}: [{}] {key} = {stored_value}",
+                MemoryScopeKind::of(scope).saved_to(),
+                local_source(namespace)
             ),
         };
         ToolResult::ok(with_why(saved, kept_here))
@@ -454,8 +512,11 @@ impl Memory {
         if let Some(refused) = Self::reads_refused(ctx) {
             return refused;
         }
+        if names_shared(input) {
+            return ToolResult::error(SHARED_NOT_HERE);
+        }
         let query = input["query"].as_str().map(str::trim).unwrap_or("");
-        let namespace = input["namespace"].as_str().filter(|n| !n.is_empty());
+        let namespace = input["namespace"].as_str().map(stored_namespace).filter(|n| !n.is_empty());
         if query.is_empty() {
             let limit = input["limit"].as_i64().unwrap_or(50);
             return self.list(namespace.unwrap_or(LIST_PREFIX), limit, ctx);
@@ -488,7 +549,7 @@ impl Memory {
                         .increment_memory_access_by_key(namespace, key, scope);
                     return Ok(Some(format!(
                         "[{}] {}: {} ({})",
-                        mem.namespace,
+                        local_source(&mem.namespace),
                         mem.key,
                         mem.value,
                         MemoryScopeKind::of(scope).label()
@@ -511,10 +572,10 @@ impl Memory {
                     .increment_memory_access_by_key(&m.namespace, key, scope);
                 return Ok(Some(format!(
                     "[{}] {}: {} (found in namespace {}; {})",
-                    m.namespace,
+                    local_source(&m.namespace),
                     m.key,
                     m.value,
-                    m.namespace,
+                    local_source(&m.namespace),
                     MemoryScopeKind::of(scope).label()
                 )));
             }
@@ -533,7 +594,7 @@ impl Memory {
                     .map(|r| {
                         format!(
                             "- [{}] {}: {} ({}, relevance {:.2}/1)",
-                            r.namespace,
+                            local_source(&r.namespace),
                             r.key,
                             r.value,
                             MemoryScopeKind::of(&r.scope).label(),
@@ -557,7 +618,7 @@ impl Memory {
                 Ok(memories) => lines.extend(memories.iter().map(|m| {
                     format!(
                         "- [{}] {}: {} ({})",
-                        m.namespace,
+                        local_source(&m.namespace),
                         m.key,
                         m.value,
                         MemoryScopeKind::of(&scope).label()
@@ -600,7 +661,7 @@ impl Memory {
                 Ok(mems) => lines.extend(mems.iter().map(|m| {
                     format!(
                         "- [{}] {}: {} ({})",
-                        m.namespace,
+                        local_source(&m.namespace),
                         m.key,
                         m.value,
                         MemoryScopeKind::of(&scope).label()
@@ -611,8 +672,9 @@ impl Memory {
         }
         if lines.is_empty() {
             return ToolResult::ok(format!(
-                "No memories in namespace prefix '{prefix}' ({}). (With no namespace this lists \
+                "No memories in namespace prefix '{}' ({}). (With no namespace this lists \
                  tacit/; pass namespace: \"project\" or \"entity/\" to see others.)",
+                local_source(prefix),
                 searched(&ctx.user_id)
             ));
         }
@@ -622,8 +684,9 @@ impl Memory {
             String::new()
         };
         ToolResult::ok(format!(
-            "{} memories in {prefix}{page_note}:\n{}",
+            "{} memories in {}{page_note}:\n{}",
             lines.len(),
+            local_source(prefix),
             lines.join("\n")
         ))
     }
@@ -632,6 +695,9 @@ impl Memory {
         if let Some(refused) = Self::writes_refused(ctx) {
             return refused;
         }
+        if names_shared(input) {
+            return ToolResult::error(SHARED_NOT_HERE);
+        }
         let (scope, kept_here) = match Self::write_scope(input, ctx) {
             Ok(written) => written,
             Err(refused) => return refused,
@@ -639,6 +705,7 @@ impl Memory {
         let key = input["key"].as_str().unwrap_or("");
         let namespace = input["namespace"]
             .as_str()
+            .map(stored_namespace)
             .filter(|n| !n.is_empty())
             .unwrap_or(DEFAULT_NAMESPACE);
         let place = MemoryScopeKind::of(scope).label();
@@ -647,13 +714,14 @@ impl Memory {
             .delete_memory_by_key_and_user(namespace, key, scope)
         {
             Ok(n) if n > 0 => ToolResult::ok(with_why(
-                format!("Forgot {n} entries for key '{key}' in {namespace} of {place}."),
+                format!("Forgot {n} entries for key '{key}' in {} of {place}.", local_source(namespace)),
                 kept_here,
             )),
             Ok(_) => ToolResult::ok(with_why(
                 format!(
-                    "Nothing forgotten: no memory with key '{key}' in {namespace} of {place}. \
-                     recall with the key shows the namespace and the memory it is in."
+                    "Nothing forgotten: no memory with key '{key}' in {} of {place}. \
+                     recall with the key shows the namespace and the memory it is in.",
+                    local_source(namespace)
                 ),
                 kept_here,
             )),
@@ -795,21 +863,12 @@ impl DynTool for MemoryTool {
         }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let key = input["key"].as_str().unwrap_or("");
         match self.op {
             MemoryOp::Recall => "checking memory".to_string(),
             MemoryOp::Remember => format!("remembering {key}").trim_end().to_string(),
             MemoryOp::Forget => format!("forgetting {key}").trim_end().to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        let key = input["key"].as_str().unwrap_or("");
-        match self.op {
-            MemoryOp::Recall => "Checked memory".to_string(),
-            MemoryOp::Remember => format!("Remembered {key}").trim_end().to_string(),
-            MemoryOp::Forget => format!("Forgot {key}").trim_end().to_string(),
         }
     }
 
@@ -832,6 +891,21 @@ impl DynTool for MemoryTool {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// The prefixes the model reads: `local:<namespace>` for this Nebo's
+    /// memory; `shared:<area>` for shared memory, the run's matter first,
+    /// then the call's domain, else `general`. A `local:` the model echoes
+    /// names the stored namespace.
+    #[test]
+    fn sources_name_where_a_memory_lives() {
+        assert_eq!(local_source("tacit/preferences"), "local:tacit/preferences");
+        assert_eq!(stored_namespace("local:tacit/preferences"), "tacit/preferences");
+        assert_eq!(stored_namespace("project"), "project");
+        assert_eq!(shared_source(None, None), "shared:general");
+        assert_eq!(shared_source(None, Some("")), "shared:general");
+        assert_eq!(shared_source(None, Some("finance.ap")), "shared:finance.ap");
+        assert_eq!(shared_source(Some("matter/c-1"), Some("finance.ap")), "shared:matter/c-1");
+    }
 
     /// Records every (namespace, key, user_id) it was asked to embed.
     struct RecordingEmbedder {
@@ -1347,6 +1421,29 @@ mod tests {
         assert!(kept.is_error, "{}", kept.content);
         let gone = rig.forget.execute_dyn(&employee("o", "a", true), json!({"key": "team/standup", "scope": "local"})).await;
         assert!(gone.content.starts_with("Forgot 1") && gone.content.contains("local memory"), "{}", gone.content);
+    }
+
+    /// Bake-off 2026-10-10 (B7): a workflow step that saved its state with
+    /// `scope: "local"` was refused, and later runs hunted for the state in
+    /// made-up files and Nebo's database. A workflow run's write is kept in
+    /// the employee's own memory, says so, and its next run recalls it;
+    /// local memory is untouched.
+    #[tokio::test]
+    async fn a_workflow_run_keeps_its_state_in_the_employees_memory() {
+        let rig = Rig::new(false);
+        let run = ToolContext { origin: crate::origin::Origin::Workflow, ..employee("o", "a", false) };
+        let saved = rig
+            .remember
+            .execute_dyn(&run, json!({"key": "watchlist/flagged", "value": "Flagged Hilton and Loews as stalled on 2026-10-09.", "scope": "local"}))
+            .await;
+        assert!(!saved.is_error, "{}", saved.content);
+        assert!(saved.content.contains("kept in this employee's own memory"), "{}", saved.content);
+        assert!(rig.store.get_memory_by_key_and_user(DEFAULT_NAMESPACE, "watchlist/flagged", "o:agent:a").unwrap().is_some());
+        assert!(rig.store.get_memory_by_key_and_user(DEFAULT_NAMESPACE, "watchlist/flagged", "o").unwrap().is_none(), "local memory untouched");
+
+        let next_run = ToolContext { origin: crate::origin::Origin::Workflow, ..employee("o", "a", false) };
+        let recalled = rig.recall.execute_dyn(&next_run, json!({"query": "watchlist/flagged"})).await;
+        assert!(recalled.content.contains("Hilton and Loews"), "{}", recalled.content);
     }
 
     /// Nothing the memory tools say names a global memory: this Nebo's

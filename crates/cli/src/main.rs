@@ -180,7 +180,7 @@ enum TestCommands {
         #[arg(long)]
         traces: String,
         /// Judge model for the claude CLI: an alias (sonnet, opus) or a full name
-        #[arg(long, default_value = "claude-opus-5")]
+        #[arg(long)]
         grader: String,
         /// The checkout the run was dispatched from, holding its suites/ and fixtures/
         #[arg(long, default_value = ".")]
@@ -550,7 +550,7 @@ async fn run() -> anyhow::Result<()> {
             println!("Core:");
             println!("  - AI Providers: Anthropic, OpenAI, Ollama");
             println!("  - Tool System: STRAP (Single Tool Resource Action Pattern)");
-            println!("  - Memory: 3-tier (tacit/daily/entity)");
+            println!("  - Memory: layered (tacit/project/entity)");
             println!("  - Sessions: multi-turn with context compaction");
             println!("  - Skills: YAML-based, hot-reloadable");
             println!("  - Advisors: multi-voice deliberation");
@@ -783,11 +783,6 @@ async fn run_chat(
                         print!("{c}");
                         use std::io::Write;
                         let _ = std::io::stdout().flush();
-                    }
-                }
-                "activity" => {
-                    if let Some(label) = data["label"].as_str() {
-                        eprintln!("[tool] {label}");
                     }
                 }
                 "chat_error" => {

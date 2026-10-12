@@ -239,13 +239,26 @@ pub fn is_loopback_bind(host: &str) -> bool {
 }
 
 /// The bearer token on a request, if it carries one.
-fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     let (scheme, token) = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
         .ok()?
         .split_once(' ')?;
     scheme.eq_ignore_ascii_case("bearer").then_some(token.trim())
+}
+
+/// Whether the request carries the signed-in browser's session cookie
+/// (`local_access`), `session` being the one the install key signs in.
+pub(crate) fn carries_session(headers: &axum::http::HeaderMap, session: &str) -> bool {
+    !session.is_empty()
+        && headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .filter_map(|c| c.trim().split_once('='))
+            .any(|(name, value)| name == crate::local_access::COOKIE && crate::handlers::ws::constant_time_eq(value, session))
 }
 
 /// A request the bot's own tunnel forwarded: the hub checked the owner
@@ -423,14 +436,7 @@ impl Boundary {
     /// `Sec-Fetch-Site`; one that doesn't send it is judged by its Origin.
     fn signed_in_browser(&self, headers: &axum::http::HeaderMap) -> bool {
         let Some(session) = self.session.as_deref() else { return false };
-        let holds = headers
-            .get_all(axum::http::header::COOKIE)
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(';'))
-            .filter_map(|c| c.trim().split_once('='))
-            .any(|(name, value)| name == crate::local_access::COOKIE && crate::handlers::ws::constant_time_eq(value, session));
-        if !holds {
+        if !carries_session(headers, session) {
             return false;
         }
         match headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {

@@ -172,6 +172,7 @@
     {placeholder}
     allAgents={chat.allAgents}
     activityStatus={chat.activityStatus}
+    turnStartedAt={chat.turnStartedAt}
     askQueueLength={chat.askQueueLength}
     hasMore={chat.hasMore}
     isLoadingMore={chat.isLoadingMore}

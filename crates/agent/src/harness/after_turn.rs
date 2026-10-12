@@ -25,7 +25,7 @@ use tracing::{debug, info};
 use types::provenance::ProvenanceClass;
 
 use crate::concurrency::ConcurrencyController;
-use crate::harness::model_call::{prefer_non_gateway, resolve_aux};
+use crate::harness::model_call::Housekeeper;
 use crate::memory;
 use crate::session::SessionManager;
 
@@ -45,12 +45,14 @@ pub trait ChatTitleSink: Send + Sync {
 /// the user set. Entered after each chat turn and from
 /// `Harness::spawn_title_generation` for chats whose turns are stored outside
 /// a turn (voice).
+/// The title is written on the background route of the chat's model
+/// (`chosen`; `model_call::Housekeeper`).
 pub(crate) fn spawn_chat_title_generation(
-    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    housekeeper: Housekeeper,
+    chosen: String,
     store: Arc<Store>,
     chat_id: String,
     session_id: String,
-    cheap_model: String,
     title_sink: Option<Arc<dyn ChatTitleSink>>,
 ) {
     tokio::spawn(async move {
@@ -108,14 +110,10 @@ pub(crate) fn spawn_chat_title_generation(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        if let Some(title) = crate::summarizer::generate_session_title(
-            RequestTrace::new("title"),
-            &providers,
-            &transcript,
-            &cheap_model,
-        )
-        .await
-        {
+        let Some(route) = housekeeper.route(&chosen).await else {
+            return;
+        };
+        if let Some(title) = crate::summarizer::generate_session_title(RequestTrace::new("title"), &route, &transcript).await {
             let _ = store.update_chat_title(&chat_id, &title, false);
             info!(chat_id = %chat_id, title = %title, "auto-generated chat title");
             if let Some(sink) = title_sink {
@@ -154,14 +152,15 @@ fn tool_summary_due(session_id: &str, now: std::time::Instant) -> bool {
     }
 }
 
-/// Background tool summary generation via cheap model (Pattern 13).
-/// Spawns a fire-and-forget task that calls the cheapest provider to
-/// generate a one-line label for the UX showing what the agent did.
+/// Background tool summary generation (Pattern 13), on the turn's background
+/// route (`chosen`; `model_call::Housekeeper`): a fire-and-forget task that
+/// writes a one-line label for the UX showing what the agent did.
 /// Rate-limited per session (see TOOL_SUMMARY_MIN_GAP) — ungated this
 /// was a third of all LLM requests.
 pub(crate) async fn hand_off_tool_summary(
     session_id: &str,
-    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    housekeeper: &Housekeeper,
+    chosen: &str,
     tx: &mpsc::Sender<StreamEvent>,
     assistant_content: &str,
     tool_calls: Vec<ai::ToolCall>,
@@ -169,15 +168,16 @@ pub(crate) async fn hand_off_tool_summary(
     trace: RequestTrace,
 ) {
     if tool_summary_due(session_id, std::time::Instant::now()) {
-        let prov_lock = providers.read().await;
-        let prov_snapshot: Vec<Arc<dyn Provider>> = prov_lock.clone();
-        drop(prov_lock);
+        let (housekeeper, chosen) = (housekeeper.clone(), chosen.to_string());
         let summary_tx = tx.clone();
         let summary_assistant = assistant_content.to_string();
         tokio::spawn(async move {
+            let Some(route) = housekeeper.route(&chosen).await else {
+                return;
+            };
             if let Some(summary) = crate::summarizer::summarize_tool_batch(
                 trace,
-                &prov_snapshot,
+                &route,
                 &tool_calls,
                 &tool_results,
                 &summary_assistant,
@@ -194,6 +194,8 @@ pub(crate) async fn hand_off_tool_summary(
 pub(crate) struct MemoryExtraction<'a> {
     pub sessions: &'a SessionManager,
     pub session_id: &'a str,
+    /// The turn's model reference: extraction runs on its background route.
+    pub chosen: &'a str,
     pub providers: &'a Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     pub store: &'a Arc<Store>,
     pub concurrency: &'a Arc<ConcurrencyController>,
@@ -217,6 +219,7 @@ pub(crate) struct MemoryExtraction<'a> {
 /// One extraction pass, owned so it can run in the background and wait as
 /// a session's trailing pass.
 struct ExtractionJob {
+    chosen: String,
     sessions: SessionManager,
     session_id: String,
     /// The last reply of the turn this pass is for, as the turn ended:
@@ -279,6 +282,7 @@ impl MemoryExtraction<'_> {
             .ok()
             .and_then(|all| all.iter().rev().find(|m| m.role == "assistant").map(|m| m.id.clone()));
         let job = ExtractionJob {
+            chosen: self.chosen.to_string(),
             sessions: self.sessions.clone(),
             session_id: session_id.to_string(),
             through,
@@ -350,16 +354,10 @@ async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<Strin
         debug!(session_id = %job.session_id, "memory extraction skipped: the employee wrote memory itself");
         return Some(last);
     }
-    let resolved = {
-        let prov_lock = job.providers.read().await;
-        resolve_aux(&config::ModelsConfig::load(), &prov_lock)
-            .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
-            .map(|(p, m)| {
-                let window = job.selector.context_window(&format!("{}/{}", p.id(), m));
-                (job.concurrency.background(p), m, window)
-            })
-    };
-    let (provider, aux_model, window_tokens) = resolved?;
+    let route = Housekeeper::new(job.store.clone(), job.selector.clone(), job.providers.clone())
+        .route(&job.chosen)
+        .await?;
+    let (provider, aux_model, window_tokens) = (job.concurrency.background(route.provider), route.model, route.window_tokens);
     let facts = memory::extract_facts(
         job.trace.clone(),
         provider.as_ref(),
@@ -425,18 +423,19 @@ async fn wrote_memory(tools: &tools::Registry, messages: &[ChatMessage]) -> bool
 /// as a background task so it doesn't block the response).
 pub(crate) async fn spawn_personality_synthesis(
     store: &Arc<Store>,
-    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    housekeeper: &Housekeeper,
+    chosen: &str,
     memory_user_id: &str,
     concurrency: &Arc<ConcurrencyController>,
 ) {
     let store_clone = store.clone();
-    let providers_clone = providers.clone();
+    let (housekeeper, chosen) = (housekeeper.clone(), chosen.to_string());
     let uid = memory_user_id.to_string();
     let conc = concurrency.clone();
     let handle = tokio::spawn(async move {
-        let prov = prefer_non_gateway(&providers_clone.read().await).map(|p| conc.background(p));
-        if let Some(prov) = prov {
-            crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
+        if let Some(route) = housekeeper.route(&chosen).await {
+            let prov = conc.background(route.provider);
+            crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &route.model, &uid).await;
         }
     });
     crate::memory_flush::track_extraction(handle).await;
@@ -642,6 +641,7 @@ mod tests {
             MemoryExtraction {
                 sessions: &self.sessions,
                 session_id: &self.session_id,
+                chosen: "",
                 providers: &self.providers,
                 store: &self.store,
                 concurrency: &self.concurrency,
@@ -904,7 +904,8 @@ mod title_tests {
             let before = self.namer.seen.lock().unwrap().len();
             let providers: Arc<RwLock<Vec<Arc<dyn Provider>>>> =
                 Arc::new(RwLock::new(vec![self.namer.clone() as Arc<dyn Provider>]));
-            spawn_chat_title_generation(providers, self.store.clone(), self.chat_id.clone(), self.session_id.clone(), "cheap".into(), None);
+            let housekeeper = Housekeeper::new(self.store.clone(), Arc::new(crate::selector::ModelSelector::new(Default::default())), providers);
+            spawn_chat_title_generation(housekeeper, String::new(), self.store.clone(), self.chat_id.clone(), self.session_id.clone(), None);
             for _ in 0..100 {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 if self.namer.seen.lock().unwrap().len() > before {

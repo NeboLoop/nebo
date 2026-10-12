@@ -361,6 +361,27 @@ pub async fn list_agents(
     // roster's "Waiting for you" marker (desktop and phone).
     let waiting_for_you = crate::handlers::asks::blocking_by_employee(&state).await;
 
+    // Each row reads its employee's latest thread and parses its stored
+    // config: blocking work, kept off the runtime workers — the apps poll
+    // this, and on a long-used desktop it held them for seconds (2026-10-09).
+    let store = state.store.clone();
+    let body = tokio::task::spawn_blocking(move || roster(&store, fs_agents, db_rows, db_map, offline, waiting_for_you))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    Ok(Json(body))
+}
+
+/// The body of `GET /agents`: a row per employee (the loaded ones, then the
+/// database-only ones), the first-contact gate and the unread conversations.
+/// Blocks on the store.
+fn roster(
+    store: &db::Store,
+    fs_agents: Vec<napp::LoadedAgent>,
+    db_rows: Vec<db::models::Agent>,
+    db_map: std::collections::HashMap<String, db::models::Agent>,
+    offline: std::collections::HashMap<String, bool>,
+    waiting_for_you: std::collections::HashMap<String, usize>,
+) -> serde_json::Value {
     let mut agents = Vec::with_capacity(fs_agents.len());
     let mut matched_db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loaded in &fs_agents {
@@ -418,7 +439,7 @@ pub async fn list_agents(
             })
             .unwrap_or_else(|| name.clone());
 
-        let latest_thread = latest_thread_status(&state.store, &agent_id);
+        let latest_thread = latest_thread_status(store, &agent_id);
         let memory_mode = match db_row {
             Some(r) => crate::workflow_manager::memory_mode_of(&r.frontmatter),
             None => loaded.config.as_ref().map(|c| c.memory.mode).unwrap_or_default(),
@@ -434,6 +455,8 @@ pub async fn list_agents(
             "source": source,
             "version": loaded.version,
             "isApp": loaded.is_app,
+            // AGENT.md's `starters:`: the asks an empty chat offers.
+            "starters": loaded.agent_def.starters,
             "isEnabled": db_row.map(|r| r.is_enabled != 0).unwrap_or(true),
             "inputValues": db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
             "installedAt": db_row.map(|r| r.installed_at),
@@ -520,9 +543,10 @@ pub async fn list_agents(
         if matched_db_ids.contains(&r.id) {
             continue;
         }
-        let latest_thread = latest_thread_status(&state.store, &r.id);
+        let latest_thread = latest_thread_status(store, &r.id);
         let files_expected = r.napp_path.as_deref().is_some_and(|p| !p.is_empty());
         let app_window = (r.is_app.unwrap_or(0) != 0).then(|| stored_app_window(r.app_window_config.as_deref()));
+        let memory_mode = crate::workflow_manager::memory_mode_of(&r.frontmatter);
         agents.push(serde_json::json!({
             "id": r.id,
             "name": r.name,
@@ -534,6 +558,7 @@ pub async fn list_agents(
             "version": serde_json::Value::Null,
             "isApp": r.is_app.unwrap_or(0) != 0,
             "appWindow": app_window,
+            "starters": napp::agent::parse_agent(&r.agent_md).map(|d| d.starters).unwrap_or_default(),
             "isEnabled": r.is_enabled != 0,
             "inputValues": r.input_values,
             "installedAt": r.installed_at,
@@ -546,8 +571,8 @@ pub async fn list_agents(
             // hid every sealed employee whose files failed to load (a name
             // with "/" nests its folder and the loader misses it) — the rail
             // then showed no drill affordance until a click resolved it.
-            "memoryMode": crate::workflow_manager::memory_mode_of(&r.frontmatter),
-            "isolated": crate::workflow_manager::memory_mode_of(&r.frontmatter).separates_conversations(),
+            "memoryMode": memory_mode,
+            "isolated": memory_mode.separates_conversations(),
             "needsSetup": false,
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
@@ -567,14 +592,12 @@ pub async fn list_agents(
     // workspace is usable (owner decision — not skippable). Christened = the
     // ceremony ran, or the primary already carries a non-default name (an
     // existing install that renamed long ago must never see the modal).
-    let primary_christened = state
-        .store
+    let primary_christened = store
         .get_plugin_setting("core", "primary_christened")
         .ok()
         .flatten()
         .is_some()
-        || state
-            .store
+        || store
             .get_agent("assistant")
             .ok()
             .flatten()
@@ -583,8 +606,7 @@ pub async fn list_agents(
     // The owner's conversations with a reply he has not read, by session key
     // (`agent:<id>:…`): the roster's "New reply" dots, an employee's row lit
     // when any of its conversations is. Cleared by `PUT /chats/{id}/read`.
-    let unread_sessions: Vec<String> = state
-        .store
+    let unread_sessions: Vec<String> = store
         .unread_conversations()
         .unwrap_or_else(|e| {
             warn!(error = %e, "roster: could not read the unread conversations");
@@ -593,12 +615,12 @@ pub async fn list_agents(
         .into_iter()
         .filter(|key| !key.starts_with(db::TEAM_THREAD_PREFIX))
         .collect();
-    Ok(Json(serde_json::json!({
+    serde_json::json!({
         "agents": agents,
         "total": total,
         "primaryChristened": primary_christened,
         "unreadSessions": unread_sessions,
-    })))
+    })
 }
 
 /// The directory a NEW user-owned employee's package goes in: `user/agents/
@@ -671,6 +693,7 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         channel: "web".to_string(),
         origin: tools::Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -1548,7 +1571,7 @@ pub async fn work_out_agent_needs(
         .and_then(|tc| napp::agent::parse_agent_config(&tc.to_string()).ok())
         .map(|c| DeclaredNeeds::of(&c));
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
-    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone());
     let src = JobSource {
         name,
         agent_id,
@@ -3309,6 +3332,7 @@ pub async fn run_agent_workflow(
             Some(binding_name),
             &id,
             emit_sources,
+            None,
         )
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
@@ -3927,6 +3951,7 @@ pub async fn chat_with_agent(
         channel: "web".to_string(),
         origin: tools::Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -4290,7 +4315,7 @@ pub async fn create_agent_workflow(
         Some(
             state
                 .workflow_manager
-                .run(&binding_id, serde_json::json!({}), "manual")
+                .run(&binding_id, serde_json::json!({}), "manual", None)
                 .await
                 .map_err(|e| to_error_response(types::NeboError::Validation(format!("made, but it did not start: {e}"))))?,
         )
@@ -4496,6 +4521,29 @@ pub async fn update_agent_workflow(
     })))
 }
 
+/// Switch workflow binding `binding_name` of employee `id` off, as the
+/// toggle does: its schedule goes and its triggers stop.
+pub(crate) async fn switch_binding_off(state: &AppState, id: &str, binding_name: &str) -> Result<(), types::NeboError> {
+    state.store.set_agent_workflow_active(id, binding_name, false)?;
+    binding_switched(state, id, binding_name, false).await;
+    Ok(())
+}
+
+/// A binding was switched on or off: make it so now.
+async fn binding_switched(state: &AppState, id: &str, binding_name: &str, is_active: bool) {
+    if !is_active {
+        // Remove the cron row — the worker won't prune rows for disabled
+        // bindings, and a lingering row is misleading even though the
+        // scheduler gates on is_active.
+        workflow::triggers::unregister_single_agent_trigger(id, binding_name, &state.store);
+    }
+
+    // The worker owns live trigger registration — restart it so the toggle
+    // takes effect immediately: ON starts heartbeat/watch/folder loops and
+    // event subs; OFF tears them down (worker start skips inactive bindings).
+    restart_agent_worker_if_active(state, id).await;
+}
+
 /// POST /agents/{id}/workflows/{binding_name}/toggle — toggle a workflow binding on/off.
 pub async fn toggle_agent_workflow(
     State(state): State<AppState>,
@@ -4512,18 +4560,7 @@ pub async fn toggle_agent_workflow(
         .store
         .toggle_agent_workflow(&id, &binding_name)
         .map_err(to_error_response)?;
-
-    if !is_active {
-        // Remove the cron row — the worker won't prune rows for disabled
-        // bindings, and a lingering row is misleading even though the
-        // scheduler gates on is_active.
-        workflow::triggers::unregister_single_agent_trigger(&id, &binding_name, &state.store);
-    }
-
-    // The worker owns live trigger registration — restart it so the toggle
-    // takes effect immediately: ON starts heartbeat/watch/folder loops and
-    // event subs; OFF tears them down (worker start skips inactive bindings).
-    restart_agent_worker_if_active(&state, &id).await;
+    binding_switched(&state, &id, &binding_name, is_active).await;
 
     Ok(Json(serde_json::json!({
         "bindingName": binding_name,
@@ -4725,67 +4762,88 @@ fn per_employee_needs(
 /// colleagues and its teams — work the owner can read but did not have —
 /// each naming who is on the other side (`with`). Every row says which it is
 /// (`kind`: `owner`, `colleague` or `team`), from the ONE key classifier
-/// (`types::keyparser::conversation_of`).
+/// (`types::keyparser::conversation_of`), and whether the owner pinned it
+/// (`pinned`, `pinnedAt`).
+///
+/// `chats` comes a page at a time: `limit` rows, and `nextCursor` to pass as
+/// `cursor` for the ones after them (null when there are no more). `total`
+/// counts all the owner's conversations. With no `limit` the whole list
+/// comes back in one (the desktop's own list). `q` narrows every list to
+/// the conversations whose title, or anything said in them, matches.
+///
+/// The first page (no `cursor`) also carries `pinned`: the
+/// owner's pinned conversations, most recently pinned first, whatever page
+/// of `chats` they fall on — so the app shows them above the recent ones
+/// without reading the whole list — and `teammates`, whole. The pages after
+/// it carry neither. A pinned conversation is listed in `chats` too, in its
+/// place by time.
 pub async fn list_agent_chats(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(page): Query<AgentChatsQuery>,
 ) -> HandlerResult<serde_json::Value> {
+    use db::{ConversationQuery, Conversations};
     let session_prefix = types::keyparser::agent_session_prefix(&id);
+    let before = match page.cursor.as_deref() {
+        Some(cursor) => Some(
+            parse_chats_cursor(cursor)
+                .ok_or_else(|| to_error_response(types::NeboError::Validation("invalid cursor".into())))?,
+        ),
+        None => None,
+    };
+    let first_page = before.is_none();
 
-    // Resolve active chat_id from the legacy web session (if it exists).
-    let legacy_session_key = types::keyparser::build_agent_session_key(&id, "web");
+    // The conversation the app console's web session (`agent:<id>:web`)
+    // has open, if it has one.
+    let web_session_key = types::keyparser::build_agent_session_key(&id, "web");
     let active_chat_id = state
         .harness
         .sessions()
-        .resolve_session_id_by_key(&legacy_session_key)
+        .resolve_session_id_by_key(&web_session_key)
         .ok()
         .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
-    // Prefix query: catches both legacy `agent:<id>:web` and new `agent:<id>:thread:<uuid>`.
-    let mut enriched_chats = state
+    let owners = ConversationQuery { whose: Conversations::Owners, ..Default::default() };
+    let search = page.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let owners = ConversationQuery { search, ..owners };
+    let total = state.store.count_conversations(&session_prefix, &owners).unwrap_or(0);
+    // One more than the page, to know whether another follows it.
+    let mut owned = state
         .store
-        .list_chats_by_session_enriched(&session_prefix)
+        .list_chats_by_session_enriched(
+            &session_prefix,
+            &ConversationQuery {
+                before,
+                limit: page.limit.map(|l| l as i64 + 1),
+                ..owners
+            },
+        )
         .unwrap_or_default();
-
-    // Backfill: legacy agent chats store messages under the session key as chat_id
-    // but have no `chats` row. If the owner has no conversation listed but
-    // messages exist, create the row.
-    let owners = |chat: &db::models::Chat| {
-        chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
-            == Some(types::keyparser::Conversation::Owner)
-    };
-    if !enriched_chats.iter().any(|(chat, _, _)| owners(chat)) {
-        let legacy_chat_id = if active_chat_id.is_empty() {
-            &legacy_session_key
-        } else {
-            &active_chat_id
-        };
-        let msg_count = state.store.count_chat_messages(legacy_chat_id).unwrap_or(0);
-        if msg_count > 0 {
-            if let Ok(chat) = state.store.create_chat_for_session(
-                legacy_chat_id,
-                &legacy_session_key,
-                "Chat 1",
-                None,
-            ) {
-                enriched_chats.push((chat, msg_count, String::new()));
-            }
+    let next_cursor = match page.limit {
+        Some(limit) if owned.len() > limit => {
+            owned.truncate(limit);
+            owned.last().map(|(chat, _, _)| format!("{}:{}", chat.updated_at, chat.id))
         }
-    }
+        _ => None,
+    };
+    let (pinned, teammates) = if first_page {
+        let pinned = ConversationQuery { pinned: true, ..owners };
+        let teammates = ConversationQuery { whose: Conversations::Teammates, search, ..Default::default() };
+        (
+            state.store.list_chats_by_session_enriched(&session_prefix, &pinned).unwrap_or_default(),
+            state.store.list_chats_by_session_enriched(&session_prefix, &teammates).unwrap_or_default(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     // Format response
     let now = chrono::Utc::now().timestamp();
     let zone = tools::owner_clock::OwnerZone::of(&state.store);
     let employee = state.store.get_agent(&id).ok().flatten().map(|a| a.name).unwrap_or_default();
-    let mut chats = Vec::new();
-    let mut teammates = Vec::new();
-    for (chat, msg_count, last_content) in &enriched_chats {
-        let Some(conversation) =
-            chat.session_name.as_deref().and_then(types::keyparser::conversation_of)
-        else {
-            continue;
-        };
+    let row = |(chat, msg_count, last_content): &(db::models::Chat, i64, String)| {
+        let conversation = chat.session_name.as_deref().and_then(types::keyparser::conversation_of)?;
         // The enriched row's last content is the fallback for a thread
         // whose newest rows could not be read.
         let status = thread_status(&state.store, &chat.id);
@@ -4796,7 +4854,7 @@ pub async fn list_agent_chats(
             _ => Some(teammate_name(&state, &conversation, chat)),
         };
         let title = shown_title(&chat.title, &employee);
-        let row = serde_json::json!({
+        Some(serde_json::json!({
             "id": chat.id,
             "name": title,
             "title": title,
@@ -4811,24 +4869,43 @@ pub async fn list_agent_chats(
             "createdAt": chat.created_at,
             "updatedAtEpoch": chat.updated_at,
             "sessionName": chat.session_name,
-        });
-        match conversation {
-            types::keyparser::Conversation::Owner => chats.push(row),
-            _ => teammates.push(row),
-        }
-    }
+            "pinned": chat.pinned_at.is_some(),
+            "pinnedAt": chat.pinned_at,
+        }))
+    };
+    let rows = |list: &[(db::models::Chat, i64, String)]| list.iter().filter_map(row).collect::<Vec<_>>();
 
-    let total = chats.len();
     Ok(Json(serde_json::json!({
-        "chats": chats,
-        "teammates": teammates,
+        "chats": rows(&owned),
+        "pinned": rows(&pinned),
+        "teammates": rows(&teammates),
         "activeChatId": active_chat_id,
         "total": total,
+        "nextCursor": next_cursor,
     })))
 }
 
+/// A `nextCursor` of GET /api/v1/agents/{id}/chats: the last activity and
+/// id of the conversation a page ended at (`<updated_at>:<id>`; an id may
+/// itself hold colons).
+fn parse_chats_cursor(cursor: &str) -> Option<(i64, &str)> {
+    let (at, id) = cursor.split_once(':')?;
+    let at = at.parse().ok()?;
+    (!id.is_empty()).then_some((at, id))
+}
+
+/// GET /api/v1/agents/{id}/chats paging: no `limit` is the whole list.
+#[derive(Debug, Default, Deserialize)]
+pub struct AgentChatsQuery {
+    pub limit: Option<usize>,
+    /// Where the page before ended (its `nextCursor`).
+    pub cursor: Option<String>,
+    /// Only the conversations whose title, or anything said in them, matches.
+    pub q: Option<String>,
+}
+
 /// A conversation's title as the owner sees it. A chat the runner made for
-/// a session that had no row yet (the legacy `agent:<id>:web` one the app
+/// a session that had no row yet (the `agent:<id>:web` one the app
 /// console's Send to writes in) is titled with its own session key; the
 /// employee's name stands in for it, so a raw key never reaches a screen.
 fn shown_title(title: &str, employee: &str) -> String {
@@ -5240,7 +5317,7 @@ pub async fn start_workflow_chat(
          until they press Save). The block is stripped from your message before display, so ALSO \
          describe what you changed in one short sentence. Never emit ops for questions — answer in prose.\n\n\
          ## Ops\n\
-         - {{\"op\":\"add_activity\",\"workflow\":NAME,\"activity\":{{id,type,intent,skills?,steps?,params?}},\"after\":ID|\"__trigger__\"|null,\"branchLabel\"?:LABEL}}\n\
+         - {{\"op\":\"add_activity\",\"workflow\":NAME,\"activity\":{{id,type,intent,skills?,steps?,params?,tools?}},\"after\":ID|\"__trigger__\"|null,\"branchLabel\"?:LABEL}}\n\
          - {{\"op\":\"update_activity\",\"workflow\":NAME,\"id\":ID,\"set\":{{...partial activity}}}}\n\
          - {{\"op\":\"remove_activity\",\"workflow\":NAME,\"id\":ID}}\n\
          - {{\"op\":\"connect\",\"workflow\":NAME,\"from\":ID|\"__trigger__\",\"to\":ID|\"__emit__\",\"label\"?:LABEL}}\n\
@@ -5250,9 +5327,17 @@ pub async fn start_workflow_chat(
          - {{\"op\":\"create_workflow\",\"name\":NAME,\"workflow\"?:{{...}}}} / {{\"op\":\"delete_workflow\",\"workflow\":NAME}} / {{\"op\":\"rename_workflow\",\"from\":A,\"to\":B}}\n\n\
          ## Activity types (the only valid `type` values)\n\
          custom, research (params: depth, sources), email (params: to, subject), notify, \
-         code (params: language, code), http (params: method, url, headers, body — runs deterministically, no AI), \
+         code (params: language, code), command (params: command — a shell command run deterministically, no AI; \
+         stdout is its output), http (params: method, url, headers, body — runs deterministically, no AI), \
          transform, condition, loop, wait (params: duration e.g. \"5m\"), \
-         agent (params: agentId — delegation), connector (params: serverId, tool, input — MCP)\n\n\
+         agent (params: agentId — delegation), connector (params: serverId, tool, input — MCP), \
+         expert (params: expert — a coworker from the Experts list, task, input — an object of explicit \
+         references like {{\"leads\":\"{{{{nodes.fetch}}}}\"}}, output — the JSON shape or a short description \
+         of what comes back, timeout e.g. \"2h\" or \"1d\" REQUIRED. Another employee does the work; the run \
+         waits for the reply, which becomes the node output with a short `summary`. An expert that refuses \
+         or times out yields {{failed:true, reason}} and the run goes on; on_error.fallback \"abort\" fails the \
+         run instead. Works as parallel branches into one join, and as a loop body with \
+         expert \"{{{{item.expert}}}}\")\n\n\
          ## Execution semantics (the engine owns ALL control flow — deterministic, repeatable)\n\
          - Activities run sequentially along connections (__trigger__ → ... → __emit__); a node with \
            multiple outgoing edges runs its branches IN PARALLEL; a join waits for all active branches.\n\
@@ -5261,10 +5346,11 @@ pub async fn start_workflow_chat(
            An expression joins comparisons with && || ! and parentheses over inputs.<field>, \
            nodes.<step>.<field> or a bare field of the one step feeding it; text is quoted ('won').\n\
          - loop REQUIRES params.source (data path, e.g. \"inputs.items\") and uses edges labeled \
-           \"Each item\" (body) and \"Done\". Items run in parallel. After Done, the loop's output is \
+           \"Each item\" (body) and \"Done\". Items run in parallel up to params.concurrency (rule 6). After Done, the loop's output is \
            {{summary, results:[{{item, outputs:{{<body-id>: ...}}}}]}} — EVERY item's result in item order. \
            params.batchSize N hands the body N items at a time; loop over another loop's results with a \
-           batchSize to summarise in groups before one final report. The AI lives INSIDE activities (intent + steps), never in routing.\n\n\
+           batchSize to summarise in groups before one final report. The AI lives INSIDE activities (intent + steps), never in routing.\n\
+         {rules}\n\n\
          ## Example\n\
          User: \"notify me when an urgent email arrives\"\n\
          ```workflow-ops\n\
@@ -5297,12 +5383,21 @@ pub async fn start_workflow_chat(
          - Reference ONLY workflow names and activity ids that exist in the draft below (or ones you create in the same batch).\n\
          - New activity ids: short kebab-case, unique within the workflow.\n\
          - Be concise. One sentence on what you changed; no restating the JSON.\n\
-         - If the user asks something outside workflow building, redirect them to the main chat."
+         - If the user asks something outside workflow building, redirect them to the main chat.",
+        rules = tools::workflows::authoring::AUTHORING_RULES,
     )];
 
     system_parts.push(format!(
         "## Current Workflows for \"{agent_name}\"\n\n```json\n{workflows_pretty}\n```"
     ));
+
+    // The experts an `expert` activity may name: the coworkers on this bot.
+    let experts = workflow::expert::catalog(&state.store, &id);
+    system_parts.push(if experts.is_empty() {
+        "## Experts\nNo coworker on this bot can take an expert step yet.".to_string()
+    } else {
+        format!("## Experts (for `expert` activities)\n{}", workflow::expert::catalog_lines(&experts))
+    });
 
     if !selected_workflow.is_empty() {
         system_parts.push(format!(
@@ -5317,7 +5412,7 @@ pub async fn start_workflow_chat(
 
     // Create a dedicated help session scoped to this agent + workflow builder
     let session_key =
-        types::keyparser::build_agent_session_key(&id, "help:workflow");
+        types::keyparser::build_agent_session_key(&id, types::keyparser::WORKFLOW_BUILDER);
 
     let session = state
         .harness
@@ -5954,6 +6049,61 @@ mod shown_title_tests {
         assert_eq!(shown_title("agent:x:thread:y", ""), "");
         assert_eq!(shown_title("Ten levels for the game", "Flip-Flap"), "Ten levels for the game");
         assert_eq!(shown_title("agent: who owns billing", "Flip-Flap"), "agent: who owns billing");
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use std::collections::HashMap;
+
+    /// The roster's rows are built by a plain function on the store — what
+    /// `GET /agents` runs off the runtime workers — with each employee's
+    /// stored memory mode, its latest thread's line and its unread dot.
+    #[test]
+    fn roster_rows_come_from_the_store_without_a_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        store
+            .create_agent("e1", None, "Ada", "", "", r#"{"memory":{"mode":"separate"}}"#, None, None)
+            .unwrap();
+        store.create_chat_for_session("c1", "agent:e1:web", "t", None).unwrap();
+        store.create_chat_message("m1", "c1", "assistant", "The report is ready.", None).unwrap();
+
+        let rows = store.list_agents(1000, 0).unwrap();
+        let body = super::roster(&store, Vec::new(), rows, HashMap::new(), HashMap::new(), HashMap::new());
+        let ada = body["agents"].as_array().unwrap().iter().find(|a| a["id"] == "e1").unwrap();
+        assert_eq!(ada["memoryMode"], "separate");
+        assert_eq!(ada["isolated"], true);
+        assert_eq!(ada["latestPreview"], "The report is ready.");
+        assert_eq!(body["unreadSessions"], serde_json::json!(["agent:e1:web"]));
+    }
+
+    /// Each row carries its employee's `starters:` from AGENT.md, for a
+    /// loaded employee and a database-only one alike; none declared is an
+    /// empty list.
+    #[test]
+    fn roster_rows_carry_the_employees_starters() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let pkg = dir.path().join("Studio");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("AGENT.md"),
+            "---\nname: Studio\nstarters:\n  - Landing page for my business\n  - Instagram post\n---\n# Studio\n",
+        )
+        .unwrap();
+        let loaded = napp::agent_loader::load_from_dir(&pkg, napp::AgentSource::User).unwrap();
+        store
+            .create_agent("e2", None, "Clerk", "", "---\nname: Clerk\nstarters:\n  - File my receipts\n---\nBody", "{}", None, None)
+            .unwrap();
+        store.create_agent("e3", None, "Plain", "", "Just prose.", "{}", None, None).unwrap();
+
+        let rows = store.list_agents(1000, 0).unwrap();
+        let body = super::roster(&store, vec![loaded], rows, HashMap::new(), HashMap::new(), HashMap::new());
+        let row = |name: &str| body["agents"].as_array().unwrap().iter().find(|a| a["name"] == name).cloned().unwrap();
+        assert_eq!(row("Studio")["starters"], serde_json::json!(["Landing page for my business", "Instagram post"]));
+        assert_eq!(row("Clerk")["starters"], serde_json::json!(["File my receipts"]));
+        assert_eq!(row("Plain")["starters"], serde_json::json!([]));
     }
 }
 
@@ -6708,6 +6858,12 @@ mod app_window_tests {
             serde_json::to_value(stored_app_window(Some(menu))).unwrap()["shareMenu"],
             serde_json::json!([{"label": "Make it an app", "say": "Make this design a Nebo app."}])
         );
+        // A link entry reaches every client as `share: true`.
+        let link = r#"{"title":"Studio","share_menu":[{"label":"Share a link","say":"Share this design as a link.","share":true}]}"#;
+        assert_eq!(
+            serde_json::to_value(stored_app_window(Some(link))).unwrap()["shareMenu"],
+            serde_json::json!([{"label": "Share a link", "say": "Share this design as a link.", "share": true}])
+        );
         let today = serde_json::json!({"fullscreen": false, "orientation": "portrait", "motion": false, "pullToRefresh": false, "voice": false, "openOnWork": false, "isolated": false, "shareMenu": []});
         assert_eq!(serde_json::to_value(stored_app_window(None)).unwrap(), today);
         assert_eq!(serde_json::to_value(stored_app_window(Some("not json"))).unwrap(), today);
@@ -6789,5 +6945,21 @@ mod needs_connecting_tests {
             needs("bk").is_empty(),
             "a connected Bookkeeper no longer waits on it"
         );
+    }
+}
+
+#[cfg(test)]
+mod chats_cursor_tests {
+    use super::parse_chats_cursor;
+
+    /// A page's cursor is its last conversation's time and id; the web
+    /// conversation's id is a session key, colons and all.
+    #[test]
+    fn a_cursor_names_the_time_and_the_whole_id() {
+        assert_eq!(parse_chats_cursor("1700:abc"), Some((1700, "abc")));
+        assert_eq!(parse_chats_cursor("1700:agent:nm:web"), Some((1700, "agent:nm:web")));
+        assert_eq!(parse_chats_cursor("nonsense"), None);
+        assert_eq!(parse_chats_cursor("x:abc"), None);
+        assert_eq!(parse_chats_cursor("1700:"), None);
     }
 }

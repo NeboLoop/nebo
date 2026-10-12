@@ -1,0 +1,9 @@
+id: mp11-shared-memory-is-not-a-connector
+name: "MP11 — Shared memory is not a connector"
+description: |
+  Shared memory (the Nebo KB) is wired automatically and managed on the website, so it is not a
+  connector: GET /integrations never lists it and the Permissions page gives its tools no switches.
+  An ordinary connector beside it is listed as before.
+target_component: memory
+proof: staffed_proof::memory::shared_memory_is_not_a_connector
+conversation: []

@@ -15,6 +15,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import { teamWorking } from '$lib/api/nebo';
   import type { WorkEntry } from '$lib/teams/teamWork';
+  import { callWords } from '$lib/chat/callLabel';
 
   let {
     teamId,
@@ -59,12 +60,14 @@
       chat.destroy();
     };
   });
+  /** What the entry is doing now: its call, worded, or its work's own line. */
+  const doing = $derived(entry.call ? callWords(entry.call, $t) : entry.activity);
 </script>
 
 <ShelfModal
   open={true}
   title={entry.title}
-  subtitle={entry.kind === 'helper' ? $t('teams.helperOf', { values: { name: entry.member } }) : entry.activity || $t('sidebar.working')}
+  subtitle={entry.kind === 'helper' ? $t('teams.helperOf', { values: { name: entry.member } }) : doing || $t('sidebar.working')}
   {onclose}
 >
   <div class="flex-1 min-w-0 min-h-0 flex flex-col">
@@ -74,7 +77,7 @@
       agentId={entry.agentId}
       sessionId={entry.sessionKey}
       isLoading={live}
-      activityStatus={entry.activity || chat.activityStatus}
+      activityStatus={doing || chat.activityStatus}
       historyLoading={chat.historyLoading}
       readOnly={true}
     />

@@ -273,6 +273,8 @@ pub async fn send_team_message(
             mention,
             handoff_depth: 0,
             provenance: Vec::new(),
+            // His own post from the team view: no conversation's mode.
+            narrow: None,
             // The owner reads the team thread.
             reply_to: None,
         },
@@ -356,18 +358,20 @@ pub async fn team_working(
                 "member": name,
                 "title": name,
                 "taskId": "",
-                "activity": run.activity,
+                "call": run.call,
+                "activity": "",
                 "sessionKey": seat,
                 "chatId": chat_of(&seat),
             }));
         }
-        for helper in state.helpers.list(&seat).into_iter().filter(|h| h.running) {
+        for helper in state.helpers.list(Some(&seat)).into_iter().filter(|h| h.running) {
             working.push(serde_json::json!({
                 "kind": "helper",
                 "agentId": member_id,
                 "member": name,
                 "title": helper.description,
                 "taskId": helper.task_id,
+                "call": helper.call,
                 "activity": helper.activity,
                 "sessionKey": helper.session_key,
                 "chatId": chat_of(&helper.session_key),
@@ -466,7 +470,7 @@ pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, targ
     let roster = tools::team::member_roster(&state.store, team);
     if let Target::Helper { member, task_id } = target {
         let (seat, _) = crate::coworker::team_seat(member, team);
-        let Some(helper) = state.helpers.list(&seat).into_iter().find(|h| h.task_id == task_id && h.running) else {
+        let Some(helper) = state.helpers.list(Some(&seat)).into_iter().find(|h| h.task_id == task_id && h.running) else {
             return Ok(Vec::new());
         };
         state.helpers.stop(&seat, task_id)?;

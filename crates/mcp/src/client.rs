@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::crypto::Encryptor;
@@ -22,6 +22,11 @@ pub struct McpClient {
     encryptor: Arc<Encryptor>,
     sessions: RwLock<HashMap<String, Session>>,
     stdio_sessions: RwLock<HashMap<String, Arc<StdioSession>>>,
+    /// Where a server's `notifications/tools/list_changed` goes: the id of
+    /// the integration whose tools changed. The bridge takes the receiver
+    /// (`Bridge::watch_tool_changes`) and lists the server's tools again.
+    tools_changed: mpsc::UnboundedSender<String>,
+    tools_changed_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
 }
 
 struct Session {
@@ -32,6 +37,7 @@ struct Session {
 
 impl McpClient {
     pub fn new(encryptor: Arc<Encryptor>) -> Self {
+        let (tools_changed, tools_changed_rx) = mpsc::unbounded_channel();
         Self {
             http: tls::http_client()
                 .timeout(Duration::from_secs(30))
@@ -41,7 +47,31 @@ impl McpClient {
             encryptor,
             sessions: RwLock::new(HashMap::new()),
             stdio_sessions: RwLock::new(HashMap::new()),
+            tools_changed,
+            tools_changed_rx: std::sync::Mutex::new(Some(tools_changed_rx)),
         }
+    }
+
+    /// The integrations whose servers said their tools changed
+    /// (`notifications/tools/list_changed`), one id per notice. Taken once.
+    pub fn take_tools_changed(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        self.tools_changed_rx.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// List a connected server's tools again over the session it already
+    /// has: the live stdio process, or the remote server's URL and token.
+    pub async fn relist_tools(&self, integration_id: &str) -> Result<Vec<McpToolDef>, McpError> {
+        if let Some(session) = self.stdio_sessions.read().await.get(integration_id).cloned() {
+            return session.list_tools().await;
+        }
+        let (url, token) = {
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(integration_id)
+                .ok_or_else(|| McpError::NotFound(format!("session {}", integration_id)))?;
+            (session.server_url.clone(), session.tokens.as_ref().map(|t| t.access_token.clone()))
+        };
+        self.list_tools(integration_id, &url, token.as_deref()).await
     }
 
     /// Connect to a local stdio MCP server: spawn the process, handshake, and
@@ -54,7 +84,14 @@ impl McpClient {
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Vec<McpToolDef>, McpError> {
-        let session = StdioSession::spawn(command, args, env).await?;
+        let session = StdioSession::spawn(
+            command,
+            args,
+            env,
+            integration_id,
+            self.tools_changed.clone(),
+        )
+        .await?;
         let tools = session.list_tools().await?;
         self.stdio_sessions
             .write()
@@ -262,6 +299,11 @@ impl McpClient {
             serde_json::from_str(&resp_text)
                 .map_err(|e| McpError::Other(format!("invalid JSON: {e}")))?
         } else {
+            // A server streams its notifications ahead of the answer; one
+            // that says its tools changed gets them listed again.
+            if sse_says_tools_changed(&resp_text) {
+                let _ = self.tools_changed.send(integration_id.to_string());
+            }
             parse_sse_json(&resp_text)?
         };
 
@@ -279,7 +321,7 @@ impl McpClient {
                 "MCP server returned JSON-RPC error"
             );
             return Ok(McpToolResult {
-                content: format!("MCP error ({}): {}", code, message),
+                content: format!("Connector error ({}): {}", code, message),
                 is_error: true,
             });
         }
@@ -431,6 +473,46 @@ pub(crate) fn parse_call_result(tool_name: &str, result: &serde_json::Value) -> 
     McpToolResult { content, is_error }
 }
 
+/// The JSON-RPC method a server sends when its tool list changed.
+pub(crate) const TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
+
+/// Whether an SSE response body carries `notifications/tools/list_changed`
+/// among its messages.
+fn sse_says_tools_changed(text: &str) -> bool {
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix("data:"))
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d.trim()).ok())
+        .any(|m| m.get("method").and_then(|v| v.as_str()) == Some(TOOLS_LIST_CHANGED))
+}
+
+/// Whether a connector's error says the call's arguments don't fit the
+/// tool: JSON-RPC's invalid params (-32602), or a server's own words for an
+/// unknown or wrong field. The tool's definition may be stale, so it is
+/// listed again before the call is tried once more.
+pub fn is_schema_error(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("(-32602)")
+        || [
+            "invalid params",
+            "invalid arguments",
+            "invalid argument",
+            "unknown field",
+            "unknown parameter",
+            "unknown argument",
+            "unexpected field",
+            "unexpected property",
+            "unexpected argument",
+            "unrecognized key",
+            "unrecognized field",
+            "additional propert",
+            "input validation error",
+            "does not match schema",
+            "schema validation",
+        ]
+        .iter()
+        .any(|p| t.contains(p))
+}
+
 /// Parse a JSON-RPC response from an SSE (Server-Sent Events) body.
 /// SSE format: `event: message\ndata: {"jsonrpc":"2.0",...}\n\n`
 /// Extracts and returns the JSON from the last `data:` line.
@@ -478,8 +560,25 @@ fn parse_sse_json(text: &str) -> Result<serde_json::Value, McpError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_call_result;
+    use super::{is_schema_error, parse_call_result, sse_says_tools_changed};
     use serde_json::json;
+
+    #[test]
+    fn a_streamed_list_changed_notice_is_seen() {
+        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n";
+        assert!(sse_says_tools_changed(body));
+        assert!(!sse_says_tools_changed("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n"));
+    }
+
+    #[test]
+    fn schema_errors_are_told_from_other_errors() {
+        assert!(is_schema_error("Connector error (-32602): bad"));
+        assert!(is_schema_error("Connector 'tools/call' error (-32602): bad"));
+        assert!(is_schema_error("prices: unknown field `display_names`"));
+        assert!(is_schema_error("Input validation error: additional properties not allowed"));
+        assert!(!is_schema_error("Connector error (-32603): internal"));
+        assert!(!is_schema_error("rate limited, try later"));
+    }
 
     #[test]
     fn text_only_joins_blocks() {

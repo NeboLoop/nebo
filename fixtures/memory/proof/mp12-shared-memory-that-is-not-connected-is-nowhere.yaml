@@ -1,0 +1,9 @@
+id: mp12-shared-memory-that-is-not-connected-is-nowhere
+name: "MP12 — Shared memory that is not connected is nowhere"
+description: |
+  Shared memory appears only when connected. Its row without a connection (not enrolled, or
+  unreachable) gives the model nothing that says shared: (no tool, no prompt text, no result);
+  local memory still works and says local:.
+target_component: memory
+proof: staffed_proof::memory::shared_memory_that_is_not_connected_is_nowhere
+conversation: []

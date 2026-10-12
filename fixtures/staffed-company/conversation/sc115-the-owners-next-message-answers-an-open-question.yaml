@@ -1,0 +1,12 @@
+id: sc115-the-owners-next-message-answers-an-open-question
+name: "SC115 — The owner's next message answers an open question"
+description: |
+  Live 2026-10-11 on his phone: an open question ("Are you flying from Salt Lake City, and on
+  what dates?") came as a card with only "Other…" and Skip while the composer below it sat unused,
+  and the line above it read "working with ask_owner…". An open question is a question in the
+  conversation: the apps show it as the employee's message, and the owner's next message there
+  answers it with no decision to read it; the turn goes on with his words, and the message starts
+  no turn of its own.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_owners_next_message_answers_an_open_question
+conversation: []

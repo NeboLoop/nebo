@@ -137,8 +137,8 @@ fn trace(purpose: &'static str) -> RequestTrace {
 }
 
 async fn judge(decide: Option<&DecideClient>, aux: &Arc<Aux>, questions: &[Question]) -> Vec<Verdict> {
-    let providers: Vec<Arc<dyn Provider>> = vec![aux.clone()];
-    let cx = JudgeCx { decide, providers: &providers, trace: &trace, objective: "file the report", last_message: "send it" };
+    let route = crate::harness::model_call::Route { provider: aux.clone(), model: String::new(), window_tokens: 200_000 };
+    let cx = JudgeCx { decide, aux: Some(&route), trace: &trace, objective: "file the report", last_message: "send it" };
     judge_round(&cx, questions).await
 }
 

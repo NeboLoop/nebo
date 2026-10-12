@@ -7,12 +7,15 @@ import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
 import type { UploadedAttachment } from '$lib/types/attachment';
 import type { Fold } from '$lib/chat/turnBlocks';
+import { isCallName } from '$lib/chat/callLabel';
 
 // --- Metadata shapes embedded in API ChatMessage.metadata ---
 interface ToolCallMeta {
   name: string;
   input?: string | Record<string, unknown>;
   status?: string;
+  /** The call's structured name, `{kind, params}`. */
+  call?: unknown;
 }
 
 interface ContentBlockMeta {
@@ -86,9 +89,8 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
   // the reader opens it, instead of a transcript page carrying every byte.
   const truncatedIds = new Set<string>();
   const payloadsById = new Map<string, { kind: string; [k: string]: unknown }>();
-  // The live stream's past-tense outcome ("Ran shell") and duration, persisted
-  // with the result so a reloaded thread reads exactly like the live one.
-  const outcomesById = new Map<string, string>();
+  // The call's duration, persisted with the result so a reloaded thread
+  // reads exactly like the live one.
   const durationsById = new Map<string, number>();
   for (const m of rawMessages) {
     if (!m.toolResults) continue;
@@ -105,7 +107,6 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
               payloadsById.set(r.tool_call_id, r.payload);
             }
             if (r.truncated) truncatedIds.add(r.tool_call_id);
-            if (typeof r.outcome === 'string' && r.outcome) outcomesById.set(r.tool_call_id, r.outcome);
             if (typeof r.duration_ms === 'number') durationsById.set(r.tool_call_id, r.duration_ms);
           }
         }
@@ -151,6 +152,12 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       });
       continue;
     }
+    // The error a run ended on stays where it happened in the thread.
+    if (m.role === 'system' && meta?.runError === true) {
+      open = null;
+      result.push({ type: 'runError' as const, id: m.id, content: m.content, time: formatTime(m.createdAt) });
+      continue;
+    }
     if (m.role !== 'assistant') continue;
 
     const toolCalls: ToolCallMeta[] = meta?.toolCalls || [];
@@ -182,12 +189,9 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       const request = parseToolInput(tc.input);
       const callId = callIds[callIdx] ?? '';
       (target.tools ??= []).push({
-        // The persisted outcome is the same past-tense line the live stream
-        // showed (the tool's own words); older rows without one show the
-        // tool's name.
+        // Worded from the call's structured name, as the live row is.
         name: tc.name || 'tool',
-        label: tc.name || 'tool',
-        ...(outcomesById.has(callId) ? { outcome: outcomesById.get(callId) } : {}),
+        ...(isCallName(tc.call) ? { call: tc.call } : {}),
         ...(durationsById.has(callId) ? { durationMs: durationsById.get(callId) } : {}),
         status: tc.status === 'error' ? 'error' : 'success',
         request,
@@ -211,9 +215,6 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
           if (tc) { if (!cur) cur = newBubble(''); pushTool(cur, tc, block.toolCallIndex); }
         }
       }
-    } else if (toolCalls.length) {
-      if (!cur || m.content) cur = newBubble(m.content || '');
-      toolCalls.forEach((tc, i) => { pushTool(cur!, tc, i); });
     } else if (m.content) {
       cur = newBubble(m.content);
     }

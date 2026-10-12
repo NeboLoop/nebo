@@ -296,6 +296,8 @@ pub struct BackgroundSession {
     pub command: String,
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// When it started (unix seconds).
+    pub started_at: i64,
     /// It runs in a terminal (`pty: true`): its output is one stream, kept
     /// as plain text in `output` and `pending_stdout` and as the program
     /// wrote it in `pending_raw`.
@@ -419,6 +421,7 @@ impl ProcessRegistry {
             command: command.to_string(),
             exited: false,
             exit_code: None,
+            started_at: chrono::Utc::now().timestamp(),
             terminal: false,
             output: Arc::default(),
             pending_stdout: Arc::default(),
@@ -460,6 +463,7 @@ impl ProcessRegistry {
             command: command.to_string(),
             exited: false,
             exit_code: None,
+            started_at: chrono::Utc::now().timestamp(),
             terminal: true,
             output: Arc::default(),
             pending_stdout: Arc::default(),
@@ -641,6 +645,7 @@ impl ProcessRegistry {
                 command: sess.command.clone(),
                 exited: true,
                 exit_code,
+                started_at: sess.started_at,
                 terminal: sess.terminal,
                 output: sess.output.clone(),
                 pending_stdout: sess.pending_stdout.clone(),
@@ -681,8 +686,9 @@ impl ProcessRegistry {
     }
 
     /// The background commands session `session_key` started that are
-    /// still running: (the command's session, what it does), oldest id first.
-    pub async fn running_for(&self, session_key: &str) -> Vec<(Arc<BackgroundSession>, Caller)> {
+    /// still running, or every session's with `None`: (the command's
+    /// session, who started it and what it does), oldest id first.
+    pub async fn running_for(&self, session_key: Option<&str>) -> Vec<(Arc<BackgroundSession>, Caller)> {
         let mut out: Vec<(Arc<BackgroundSession>, Caller)> = self
             .running
             .lock()
@@ -690,7 +696,10 @@ impl ProcessRegistry {
             .values()
             .filter_map(|s| {
                 let life = s.lifecycle();
-                let caller = life.notify.clone().filter(|c| !life.foreground && !life.ended && c.session_key == session_key)?;
+                let caller = life
+                    .notify
+                    .clone()
+                    .filter(|c| !life.foreground && !life.ended && session_key.is_none_or(|k| c.session_key == k))?;
                 Some((s.clone(), caller))
             })
             .collect();

@@ -37,7 +37,10 @@
   import AudioLines from 'lucide-svelte/icons/audio-lines';
   import CircleDot from 'lucide-svelte/icons/circle-dot';
   import { createClipRecorder, clipClock, CLIP_CAP_MS, type ClipNotice } from '$lib/chat/clipRecorder';
-  import { loadModelOptions, modelLabel, type ModelOption } from '$lib/models/speeds';
+  import { choiceLabel, loadIntelligence, resolve, valueFor, type Effort, type Intelligence } from '$lib/models/speeds';
+  import IntelligencePicker from './IntelligencePicker.svelte';
+  import ChatModeSheet from './ChatModeSheet.svelte';
+  import { chatModeName, differs, effective, fromBot, pendingFor, picked, setPending, type ConversationMode } from '$lib/chat/chatMode';
   import * as api from '$lib/api/nebo';
   import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
 
@@ -130,48 +133,104 @@
   let hasHydrated = $state(false);
   const draftKey = $derived(agentId ? `nebo:draft:${agentId}:${threadId || 'new'}` : '');
 
-  // ── Which model this conversation runs at ────────────────────────────
-  // The chip names the model the NEXT turn will use. Precedence: this chat's
-  // own choice, then the employee's Settings → General → MODEL, then the
-  // default speed. Picking one writes the chat row (PUT /chats/:id) and takes
-  // effect on the next turn — it never rewrites what is already said.
-  // Empty label (catalog not synced, or no employee) renders nothing.
-  let modelOptions = $state<ModelOption[]>([]);
+  // ── What this conversation runs on: a level and a pack ──────────────
+  // The chip names what the NEXT turn will use. Precedence: this chat's own
+  // choice, then the employee's (Settings → General), then the bot's default.
+  // Picking writes the chat row (PUT /chats/:id) and takes effect on the next
+  // turn — it never rewrites what is already said. No packs read (the API
+  // failed) renders no chip rather than a guess.
+  let intel = $state<Intelligence | null>(null);
   let chatModel = $state('');
   let agentModel = $state('');
-  const activeModel = $derived(chatModel || agentModel);
-  const modelName = $derived(modelLabel(activeModel, modelOptions));
+  let pickerOpen = $state(false);
+  let pickerView = $state<'level' | 'packs'>('level');
+  const activeModel = $derived(chatModel || agentModel || intel?.botDefault || '');
+  const choice = $derived(resolve(activeModel, intel?.packs ?? []));
+  const modelName = $derived(intel ? choiceLabel(choice, intel.packs, $t) : '');
 
   async function loadModel() {
     if (!agentId) return;
-    const [opts, cfg] = await Promise.all([
-      loadModelOptions(),
+    const [cfg, chat, packs] = await Promise.all([
       (api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>).catch(() => null),
+      threadId ? (api.getChat(threadId) as Promise<{ model?: string | null }>).catch(() => null) : null,
+      loadIntelligence(),
     ]);
-    modelOptions = opts;
     agentModel = cfg?.config?.modelPreference ?? '';
-    if (!threadId) { chatModel = ''; return; }
-    const chat = await (api.getChat(threadId) as Promise<{ model?: string | null }>).catch(() => null);
     chatModel = chat?.model ?? '';
+    intel = packs;
   }
 
-  async function pickModel(value: string) {
-    if (value === activeModel) return;
-    const previous = chatModel;
-    chatModel = value;
+  async function pickModel(pack: string, level: Effort | null) {
+    if (!intel) return;
+    // What '' means where the pick is written: a pick equal to it clears the
+    // override instead of pinning a copy.
+    const inherited = threadId ? agentModel || intel.botDefault : intel.botDefault;
+    const value = valueFor(pack, level, inherited, intel.packs);
+    if (value === (threadId ? chatModel : agentModel)) return;
+    const previous = { chatModel, agentModel };
     // No chat row yet (nothing sent): the choice has nowhere to live, so it
     // becomes this employee's preference — which is what a first turn would
     // have used anyway.
+    if (threadId) chatModel = value;
+    else { agentModel = value; chatModel = ''; }
     try {
       if (threadId) await api.updateChat(threadId, { model: value });
-      else { await api.updateEntityConfig('agent', agentId, { modelPreference: value }); agentModel = value; chatModel = ''; }
+      else await api.updateEntityConfig('agent', agentId, { modelPreference: value });
     } catch {
-      chatModel = previous;
+      ({ chatModel, agentModel } = previous);
     }
+  }
+
+  function openPicker() {
+    pickerView = 'level';
+    pickerOpen = !pickerOpen;
   }
 
   // Follow the conversation: opening another thread re-reads its model.
   $effect(() => { void threadId; void agentId; loadModel(); });
+
+  // ── Which permission mode this conversation runs in ──────────────────
+  // The + menu's Permission item opens the Permission sheet: the four modes
+  // for this one conversation (PUT /chats/:id/permission-mode). The
+  // employee's own setting never changes. Before the first send there is no
+  // conversation yet: the pick waits (`setPending`) and the New chat page
+  // saves it on the conversation it makes before the first message. The
+  // employee's own mode is '' until read (the item stays hidden).
+  let chatMode = $state<ConversationMode>({ mode: '', employeeMode: '' });
+  let modeSheetOpen = $state(false);
+  $effect(() => {
+    const id = agentId, chat = threadId;
+    chatMode = { mode: '', employeeMode: '' };
+    if (!id) return;
+    if (chat) {
+      api.getChatPermissionMode(chat).then((m) => { if (chat === threadId) chatMode = fromBot(m); }).catch(() => {});
+    } else {
+      api.getAgentPermissions(id).then((p) => { if (id === agentId && !threadId) chatMode = { mode: pendingFor(id), employeeMode: p.mode }; }).catch(() => {});
+    }
+  });
+  // A mode picked here or on another device: every open composer of this
+  // conversation follows it.
+  $effect(() => {
+    const chat = threadId;
+    if (!chat) return;
+    return getWebSocketClient().on('chat_mode', (data: { chatId?: string; mode?: string | null; employeeMode?: string }) => {
+      if (data?.chatId === chat) chatMode = fromBot(data);
+    });
+  });
+
+  async function pickChatMode(choice: string) {
+    modeSheetOpen = false;
+    const next = picked(chatMode, choice);
+    if (next.mode === chatMode.mode) return;
+    const previous = chatMode;
+    chatMode = next;
+    if (!threadId) { setPending(agentId, next.mode); return; }
+    try {
+      chatMode = fromBot(await api.setChatPermissionMode(threadId, { mode: next.mode || null }));
+    } catch {
+      chatMode = previous;
+    }
+  }
 
   function saveDraft() {
     if (!editor || !draftKey) return;
@@ -837,6 +896,19 @@
                   {$t('chatInput.teachTask')}
                 </button>
               </li>
+              {#if agentId && chatMode.employeeMode}
+                <li>
+                  <button class="composer-menu-value" onclick={() => { modeSheetOpen = true; (document.activeElement as HTMLElement | null)?.blur(); }}>
+                    <span>{$t('chatInput.permission')}</span>
+                    <span class="composer-menu-value-text">{$t(chatModeName(effective(chatMode)))}</span>
+                  </button>
+                </li>
+              {/if}
+              <li>
+                <a class="text-sm" href="/settings/mcp" onclick={() => (document.activeElement as HTMLElement | null)?.blur()}>
+                  {$t('connectors.title')}
+                </a>
+              </li>
             </ul>
           </div>
         {:else if allowAttachments}
@@ -869,36 +941,36 @@
         {/if}
 
         {#if modelName}
-          <!-- The model this conversation runs at. Text only, no icon: it
-               names a thing, it is not a control glyph. -->
-          <div class="dropdown dropdown-top">
+          <!-- What this conversation runs on. Text only, no icon: it names a
+               thing, it is not a control glyph. Opens the Intelligence
+               popover: the level card and the pack row. -->
+          <div class="relative">
             <button
               class="px-1.5 h-8 rounded-lg text-xs text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent whitespace-nowrap"
-              title={$t('modelPick.hint')}
+              title={$t('modelPick.intelligence')}
+              aria-haspopup="dialog"
+              aria-expanded={pickerOpen}
               tabindex={-1}
+              onclick={openPicker}
             >{modelName}</button>
-            <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-64 p-1 shadow-md border border-base-300 flex-nowrap max-h-80 overflow-y-auto">
-              {#each modelOptions as opt (opt.value)}
-                <li>
-                  <!-- A menu item is a grid that flows its children into
-                       columns; `flex` takes it back so the name sits above
-                       its description and the check keeps to the right. -->
-                  <button
-                    class="flex flex-col items-start gap-0.5 text-start text-sm"
-                    onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
-                  >
-                    <span class="flex w-full items-center justify-between gap-1.5">
-                      <span>{opt.label}</span>
-                      {#if modelLabel(activeModel, modelOptions) === opt.label}<span class="text-primary">&check;</span>{/if}
-                    </span>
-                    {#if opt.description}
-                      <span class="text-xs text-base-content/60 whitespace-normal">{opt.description}</span>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
+            {#if pickerOpen && intel}
+              <button type="button" class="intel-popover-backdrop" aria-label={$t('common.close')} tabindex={-1} onclick={() => (pickerOpen = false)}></button>
+              <div class="intel-popover">
+                <IntelligencePicker
+                  packs={intel.packs}
+                  choices={intel.choices}
+                  {choice}
+                  bind:view={pickerView}
+                  onpick={pickModel}
+                  onclose={() => (pickerOpen = false)}
+                />
+              </div>
+            {/if}
           </div>
+        {/if}
+        {#if differs(chatMode)}
+          <!-- This conversation runs in a mode other than the employee's own. -->
+          <span class="composer-mode-tag" title={$t('chatMode.footnote')}>{$t(chatModeName(chatMode.mode))}</span>
         {/if}
       </div>
 
@@ -959,3 +1031,10 @@
     onclose={handleCloseConversation}
   />
 {/if}
+
+<ChatModeSheet
+  open={modeSheetOpen}
+  selected={effective(chatMode)}
+  onpick={pickChatMode}
+  onclose={() => (modeSheetOpen = false)}
+/>

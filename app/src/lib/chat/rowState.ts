@@ -42,14 +42,16 @@ export function endWork(w: Working, agentId: unknown, sessionId: unknown): Worki
 }
 
 /** The server's periodic snapshot of every live run (`agent_progress`): an
- *  employee no run names any more has stopped, whatever event was missed. */
+ *  employee no run names any more has stopped, whatever event was missed.
+ *  `word` says a run's current call in the owner's words. */
 export function snapshotWork(
 	w: Working,
-	runs: { entityId?: string; sessionKey?: string; activity?: string }[]
+	runs: { entityId?: string; sessionKey?: string; call?: unknown }[],
+	word: (call: unknown) => string
 ): Working {
 	const live = new Set(runs.map((r) => workerId(r.entityId)));
 	let next: Working = Object.fromEntries(Object.entries(w).filter(([id]) => live.has(id)));
-	for (const r of runs) next = startWork(next, r.entityId, r.sessionKey, r.activity ?? '');
+	for (const r of runs) next = startWork(next, r.entityId, r.sessionKey, word(r.call));
 	return next;
 }
 

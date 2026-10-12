@@ -57,6 +57,14 @@ pub struct CoworkerMessage {
     /// one a notification woke, a schedule, a helper, a colleague's request —
     /// whatever its words say.
     pub owners_turn: Option<String>,
+    /// The sending turn's run id (`ToolContext.run_id`), kept on the
+    /// hand-off record so the trace names the turn that handed the work on.
+    /// `None` when no run sent it (a team post's fan-out).
+    pub sender_run_id: Option<String>,
+    /// The mode the sending run carries (`ToolContext::narrow`): the
+    /// receiver runs in its own mode, never looser than this, and carries
+    /// it on. `None` = the receiver's own mode.
+    pub narrow: Option<types::permissions::Mode>,
 }
 
 /// A linked employee's conversation a message goes into (see
@@ -141,6 +149,10 @@ pub struct CoworkerDelivery {
     pub to_name: String,
     /// The target-side thread (session key) the message was delivered into.
     pub thread_key: String,
+    /// The hand-off record the delivery is traced by (`server::handoff`);
+    /// `None` when it could not be recorded or is not a hand-off between
+    /// employees (the owner's own team post).
+    pub handoff_id: Option<String>,
 }
 
 /// One post into a team (`crate::team`). The rail appends it to the team's
@@ -175,6 +187,9 @@ pub struct TeamPost {
     pub handoff_depth: u8,
     /// Engine-stamped provenance of the posting run.
     pub provenance: Vec<types::provenance::ProvenanceClass>,
+    /// The mode the posting run carries (`ToolContext::narrow`): every
+    /// member it asks runs no looser. `None` for the owner's own post.
+    pub narrow: Option<types::permissions::Mode>,
     /// The session that posted (`None` for the owner in the app, who reads
     /// the team thread). Whether the post is said deliberately or in the
     /// course of answering what addressed its author is read from it
@@ -277,6 +292,8 @@ pub async fn deliver(
         provenance: ctx.run_taint.clone(),
         team: None,
         owners_turn: owners_turn(ctx),
+        sender_run_id: ctx.run_id.clone(),
+        narrow: ctx.narrow(),
     })
     .await
 }

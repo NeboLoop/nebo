@@ -51,8 +51,9 @@ impl Effort {
 pub const DEFAULT_EFFORT: Effort = Effort::Medium;
 
 /// What each level and capability of a pack runs on: `provider/model`
-/// strings. An empty level runs on the nearest filled level above it, then
-/// below ([`Pack::model_for`]).
+/// strings. An empty level of an owner's pack runs on Nebo AI's model for
+/// that same level (owner, 2026-10-11: "if it's not set it defaults to the
+/// Nebo one for that level"); [`Pack::model_for`] says which levels are set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackLevels {
@@ -69,7 +70,8 @@ pub struct PackLevels {
     pub high: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<String>,
-    /// Describes images when the level's model can't see them.
+    /// Reads the turn's images and video (the vision helper). Empty: the
+    /// level's model when it sees images, else Nebo AI's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vision: Option<String>,
     /// Calls and spoken replies.
@@ -82,7 +84,7 @@ pub struct PackLevels {
     pub decisions: Option<String>,
 }
 
-/// Background work pinned to an Effort level. Absent: the work chooses.
+/// Kinds of work pinned to an Effort level. Absent: the work chooses.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackLanes {
@@ -94,15 +96,30 @@ pub struct PackLanes {
     pub communication: Option<Effort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Effort>,
+    /// Designing employees and workflows: the steps that write them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<Effort>,
+    /// A workflow's steps as they run, unless the step names its own model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Effort>,
 }
 
-/// Background work a pack can pin to a level.
+/// Work a pack can pin to a level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
     Heartbeat,
     Scheduled,
     Communication,
     Helpers,
+    /// Writing an employee or a workflow (`create_employee`,
+    /// `create_workflow`, the workflow builder).
+    Build,
+    /// Running a workflow's steps.
+    Workflow,
+    /// Background work for the owner's turns and employees: titles, memory,
+    /// tool summaries, permission and goal checks. Always the pack's
+    /// Instant level.
+    Housekeeping,
 }
 
 impl PackLanes {
@@ -113,6 +130,9 @@ impl PackLanes {
             Lane::Scheduled => self.scheduled,
             Lane::Communication => self.communication,
             Lane::Helpers => self.helpers,
+            Lane::Build => self.build,
+            Lane::Workflow => self.workflow,
+            Lane::Housekeeping => Some(Effort::Instant),
         }
     }
 }
@@ -186,6 +206,13 @@ pub const NEBO_AI_ID: &str = "nebo-ai";
 /// `nebo-1-flash` Fast, `nebo-1-medium` Balanced, `nebo-1-pro` Deep) and its
 /// Auto alias `nebo-1`, today's default model. Max runs on `nebo-1-pro`
 /// until Janus has a real Max.
+///
+/// Its lanes are the model bake-off's split (2026-10-09): employees and
+/// workflows are written on Deep, and their workflows run on Fast. A build's
+/// steps reach Janus as the `build` purpose, which Janus serves on its
+/// strongest model when it can, else on Deep, at Deep's rate. Deep at its
+/// own effort, not Max's: Max's thinking budget is more than Nebo's output
+/// cap, which Deep's qwen models refuse (live 2026-10-10).
 pub fn nebo_ai() -> Pack {
     let janus = |m: &str| Some(format!("janus/{m}"));
     Pack {
@@ -198,26 +225,32 @@ pub fn nebo_ai() -> Pack {
             medium: janus("nebo-1-medium"),
             high: janus("nebo-1-pro"),
             max: janus("nebo-1-pro"),
-            vision: None,
-            voice: janus("nebo-1-voice"),
+            // Janus reads images and video on its image_read and
+            // video_read pools.
+            vision: janus("nebo-1"),
+            voice: Some(NEBO_AI_VOICE.to_string()),
             decisions: janus("jev-latest"),
         },
         fallback: false,
         built_in: true,
         route_through_janus: false,
-        lanes: PackLanes::default(),
-        level_effort: LevelEffort::default(),
+        lanes: PackLanes { build: Some(Effort::High), workflow: Some(Effort::Instant), ..PackLanes::default() },
+        // Low is Fast with a little thinking; Max is Deep at its highest
+        // effort until Janus has a speed above Deep.
+        level_effort: LevelEffort {
+            low: Some(ProviderEffort::Low),
+            max: Some(ProviderEffort::High),
+            ..LevelEffort::default()
+        },
     }
 }
 
 impl Pack {
-    /// The model `effort` runs on: its own level, else the nearest filled
-    /// level above it, else the nearest below. None for a pack with no level
-    /// filled.
+    /// The model this pack sets for `effort`: its own level only. None for
+    /// an empty level, which runs on Nebo AI's model for the same level
+    /// (the turn resolves that, `agent::harness::turn`).
     pub fn model_for(&self, effort: Effort) -> Option<&str> {
-        let above = Effort::ALL.into_iter().filter(|e| *e >= effort);
-        let below = Effort::ALL.into_iter().rev().filter(|e| *e < effort);
-        above.chain(below).find_map(|e| self.levels.level(e))
+        self.levels.level(effort)
     }
 
     /// The provider effort `effort` runs at, when the pack sets one.
@@ -245,6 +278,28 @@ impl Pack {
                 .or_else(|| self.model_for(DEFAULT_EFFORT)),
         }
     }
+}
+
+/// Nebo AI's Voice: Janus's realtime relay, asked for its voice speed. The
+/// speed serves only the realtime protocol calls speak today (xAI's); a
+/// second protocol joins it only once calls can speak it.
+pub const NEBO_AI_VOICE: &str = "janus/nebo-1-voice";
+
+/// The realtime model an xAI connection is asked for when it lists none of
+/// its own.
+pub const XAI_VOICE_MODEL: &str = "grok-voice-latest";
+
+/// Whether a connection (its provider kind and base URL) is xAI's: the only
+/// realtime protocol calls speak today.
+pub fn is_xai_connection(kind: &str, base_url: Option<&str>) -> bool {
+    kind.split('@').next() == Some("xai") || base_url.is_some_and(|u| u.contains("api.x.ai"))
+}
+
+/// Whether `model` (a model name, no provider) is one of xAI's realtime
+/// voice models (`grok-voice-latest`).
+pub fn is_xai_voice_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    m.starts_with("grok") && m.contains("voice")
 }
 
 /// The prefix a model string names a pack with.
@@ -282,7 +337,7 @@ mod tests {
     use super::*;
 
     fn byo(levels: PackLevels) -> Pack {
-        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, ..nebo_ai() }
+        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), lanes: PackLanes::default(), ..nebo_ai() }
     }
 
     #[test]
@@ -298,22 +353,17 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_level_runs_on_the_nearest_above_then_below() {
+    fn an_empty_level_is_left_to_nebo_ai_never_borrowed_from_another_level() {
         let only_medium = byo(PackLevels { medium: Some("anthropic/sonnet".into()), ..Default::default() });
-        for e in Effort::ALL {
-            assert_eq!(only_medium.model_for(e), Some("anthropic/sonnet"), "{e:?}");
+        assert_eq!(only_medium.model_for(Effort::Medium), Some("anthropic/sonnet"));
+        for e in [Effort::Instant, Effort::Low, Effort::High, Effort::Max] {
+            assert_eq!(only_medium.model_for(e), None, "{e:?} is Nebo AI's, not Medium's");
         }
-        let ends = byo(PackLevels {
-            low: Some("a/low".into()),
-            high: Some("a/high".into()),
-            ..Default::default()
-        });
-        assert_eq!(ends.model_for(Effort::Instant), Some("a/low"), "above first");
-        assert_eq!(ends.model_for(Effort::Medium), Some("a/high"), "above first");
-        assert_eq!(ends.model_for(Effort::Max), Some("a/high"), "nothing above: below");
         assert_eq!(byo(PackLevels::default()).model_for(Effort::Medium), None);
         let blank = byo(PackLevels { medium: Some("  ".into()), high: Some("a/h".into()), ..Default::default() });
-        assert_eq!(blank.model_for(Effort::Medium), Some("a/h"), "a blank level is empty");
+        assert_eq!(blank.model_for(Effort::Medium), None, "a blank level is empty");
+        let only_high = byo(PackLevels { high: Some("a/h".into()), ..Default::default() });
+        assert_eq!(only_high.model_for_ref(None), None, "no Auto and no Medium: Nebo AI's Medium");
     }
 
     #[test]
@@ -323,12 +373,29 @@ mod tests {
         assert_eq!(nebo.model_for_ref(Some(Effort::Instant)), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Medium)), Some("janus/nebo-1-medium"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-pro"));
+        assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Fast, thinking a little");
+        assert_eq!(nebo.effort_for(Effort::High), None, "Deep at its default");
+        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "Deep at its highest");
+        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::High), "built on Deep");
+        assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run on Fast");
+        assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
+        assert_eq!(nebo.lanes.level(Lane::Heartbeat), None, "the rest: the work chooses");
         let mine = byo(PackLevels {
             low: Some("a/low".into()),
             medium: Some("a/mid".into()),
             ..Default::default()
         });
         assert_eq!(mine.model_for_ref(None), Some("a/mid"), "no Auto: the default level");
+    }
+
+    #[test]
+    fn nebo_ai_speaks_through_the_janus_voice_relay_and_only_xai_voice_models_are_realtime() {
+        assert_eq!(nebo_ai().levels.voice.as_deref(), Some("janus/nebo-1-voice"));
+        assert!(is_xai_voice_model("grok-voice-latest") && is_xai_voice_model(XAI_VOICE_MODEL));
+        assert!(!is_xai_voice_model("grok-4") && !is_xai_voice_model("gpt-realtime-2") && !is_xai_voice_model("nebo-1-voice"));
+        assert!(is_xai_connection("xai", None) && is_xai_connection("xai@k1", None));
+        assert!(is_xai_connection("openai_compatible@k1", Some("https://api.x.ai/v1")));
+        assert!(!is_xai_connection("openai@k1", Some("https://api.openai.com/v1")) && !is_xai_connection("janus", None));
     }
 
     #[test]
@@ -369,5 +436,7 @@ mod tests {
         // A pack saved before these fields reads with their defaults.
         let old: Pack = serde_json::from_value(serde_json::json!({"id": "o", "name": "Old", "levels": {}, "fallback": true, "builtIn": false})).unwrap();
         assert!(!old.route_through_janus && old.lanes == PackLanes::default());
+        let lanes: PackLanes = serde_json::from_value(serde_json::json!({"build": "max", "workflow": "instant"})).unwrap();
+        assert_eq!((lanes.level(Lane::Build), lanes.level(Lane::Workflow)), (Some(Effort::Max), Some(Effort::Instant)));
     }
 }

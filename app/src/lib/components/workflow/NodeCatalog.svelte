@@ -25,7 +25,7 @@
 		Activities: 'workflow.catalog.categories.activities',
 		'Call Tree': 'workflow.catalog.categories.callTree',
 		'Flow Control': 'workflow.catalog.categories.flowControl',
-		'Connectors (MCP)': 'workflow.catalog.categories.connectors',
+		'Connectors': 'workflow.catalog.categories.connectors',
 		Agents: 'workflow.catalog.categories.agents',
 		Output: 'workflow.catalog.categories.output',
 	};
@@ -46,7 +46,7 @@
 			]);
 			// Rebuild catalog with dynamic connectors and agents
 			const staticCats = NODE_CATALOG_ITEMS.filter(
-				c => c.category !== 'Connectors (MCP)' && c.category !== 'Agents'
+				c => c.category !== 'Connectors' && c.category !== 'Agents'
 			);
 			const connectorItems = (mcpRes?.integrations || [])
 				.filter((s) => s.isEnabled && s.connectionStatus === 'connected')
@@ -71,7 +71,7 @@
 				}));
 			dynamicCatalog = [
 				...staticCats.slice(0, -1), // Everything before Output
-				{ category: 'Connectors (MCP)', items: connectorItems },
+				{ category: 'Connectors', items: connectorItems },
 				{ category: 'Agents', items: agentItems },
 				...staticCats.slice(-1), // Output category
 			];

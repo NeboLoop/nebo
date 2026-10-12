@@ -4157,7 +4157,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -5790,21 +5790,27 @@ dependencies = [
 
 [[package]]
 name = "nebo"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "anyhow",
  "dirs",
  "dotenvy",
  "futures",
  "http",
+ "libc",
  "mimalloc",
  "nebo-browser",
  "nebo-command",
  "nebo-config",
  "nebo-server",
+ "nebo-updater",
  "notify-rust",
+ "objc2",
+ "objc2-foundation",
+ "objc2-service-management",
  "objc2-web-kit",
  "open",
+ "rfd",
  "serde",
  "serde_json",
  "tauri",
@@ -5822,7 +5828,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-agent"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "a2ui-validation",
  "async-trait",
@@ -5872,7 +5878,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-ai"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -5910,7 +5916,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-auth"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -5931,7 +5937,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-browser"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5953,7 +5959,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-cli"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5987,7 +5993,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-comm"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "async-trait",
  "futures",
@@ -6011,14 +6017,14 @@ dependencies = [
 
 [[package]]
 name = "nebo-command"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "nebo-config"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "dirs",
  "hex",
@@ -6037,7 +6043,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-db"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "chrono",
  "nebo-types",
@@ -6055,7 +6061,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-mcp"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6076,7 +6082,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-napp"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6112,7 +6118,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-notify"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "nebo-command",
  "tracing",
@@ -6120,7 +6126,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-proto"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "prost",
  "tonic",
@@ -6129,7 +6135,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-render"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "docx-rs",
  "pulldown-cmark",
@@ -6167,7 +6173,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-server"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "a2ui-core",
  "a2ui-types",
@@ -6207,6 +6213,8 @@ dependencies = [
  "nebo-updater",
  "nebo-voice",
  "nebo-workflow",
+ "notify",
+ "objc2-foundation",
  "open",
  "pulldown-cmark",
  "rand 0.8.5",
@@ -6236,12 +6244,13 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "windows-sys 0.61.2",
  "zip 8.6.0",
 ]
 
 [[package]]
 name = "nebo-sheet"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "ironcalc",
  "roxmltree",
@@ -6253,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-syntax"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "streaming-iterator",
  "thiserror 2.0.18",
@@ -6290,7 +6299,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-tools"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6345,6 +6354,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
  "url",
  "urlencoding",
  "uuid",
@@ -6357,19 +6367,21 @@ dependencies = [
 
 [[package]]
 name = "nebo-types"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
+ "libc",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nebo-updater"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -6392,7 +6404,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-vm"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "hex",
  "nebo-command",
@@ -6427,7 +6439,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-voice"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6443,7 +6455,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-workflow"
-version = "0.16.13"
+version = "0.16.16"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6971,6 +6983,18 @@ dependencies = [
  "bitflags 2.11.0",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-service-management"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b213642d6959cc6023ceb1217aa595eaaf09b8094ce95127c103cab611fe65e8"
+dependencies = [
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-security",
 ]
 
 [[package]]
@@ -7979,7 +8003,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",

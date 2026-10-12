@@ -50,7 +50,9 @@ export function grantVoiceCloudConsent(): void {
 export type VoiceSessionStatus =
 	| 'idle'
 	| 'connecting'
-	/** The line dropped mid-call and the client is redialing the same thread. */
+	/** The line dropped mid-call and has stayed down past the quiet window.
+	 *  The screen says the call could not connect, with Try again (`retry`);
+	 *  the redial of the same thread keeps running behind it. */
 	| 'reconnecting'
 	| 'listening'
 	| 'processing'
@@ -118,7 +120,7 @@ const SERVER_RESTART_DELAY_MS = 250;
  * Nearly every drop is rejoined inside a second, and a line that appears and
  * disappears in that time reads as a product that flaps. So the call keeps the
  * status it had while the redial runs behind it, and only an outage that
- * outlasts this window says anything — one line, once.
+ * outlasts this window says anything: once, the plain failure with Try again.
  */
 const RECONNECT_QUIET_MS = 4_000;
 
@@ -132,6 +134,18 @@ const callLostMessage = () => get(t)('voice.callLost');
 
 /** A failure that arrived with nothing to say: the one thing still true. */
 const callEndedMessage = () => get(t)('voice.callEndedStartAgain');
+
+/**
+ * A call the server refused before it started, by the code it sent: the
+ * pack's voice model can't take calls. Worded in the owner's language; the
+ * server's English line is for clients without these words.
+ */
+const REFUSALS: Record<string, string> = {
+	voice_model_unsupported: 'voice.voiceModelUnsupported',
+	voice_model_unreachable: 'voice.voiceModelUnreachable'
+};
+const refusalMessage = (code: unknown) =>
+	typeof code === 'string' && REFUSALS[code] ? get(t)(REFUSALS[code]) : null;
 
 /**
  * The longest a call's audio is kept open, once the call is over, for its
@@ -720,7 +734,9 @@ function createVoiceSessionStore() {
 					// far end would not take the call back is a wire detail: the
 					// owner gets the one sentence he can act on, and the reason
 					// goes to the log.
-					if (redialing) {
+					if (refusalMessage(msg.code)) {
+						transitionToError(refusalMessage(msg.code)!);
+					} else if (redialing) {
 						if (msg.message) log.warn('Voice session resume refused: ' + msg.message);
 						transitionToError(callLostMessage());
 					} else {
@@ -868,6 +884,22 @@ function createVoiceSessionStore() {
 			// call — the closer reads it to land in the thread voice just created.
 			// `start()` clears it for the next session.
 			set({ ...initialState, boundChatId: current.boundChatId });
+		},
+
+		/**
+		 * Try again, on a call whose line has been down past the quiet window:
+		 * dial the same thread now instead of waiting out the backoff, which
+		 * starts over from its first step. A dial already in flight is left to
+		 * finish. Nothing for a call in any other state.
+		 */
+		retry() {
+			if (!redialing || readState().status !== 'reconnecting') return;
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer);
+				reconnectTimer = null;
+			}
+			reconnectAttempt = 0;
+			void attemptReconnect();
 		},
 
 		/**

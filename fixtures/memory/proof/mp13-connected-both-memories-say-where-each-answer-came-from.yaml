@@ -1,0 +1,9 @@
+id: mp13-connected-both-memories-say-where-each-answer-came-from
+name: "MP13 — Connected, both memories say where each answer came from"
+description: |
+  Connected, each answer says where it came from: recall results read [local:<namespace>], and
+  shared memory's tool results read [shared:<area>], the matter a sealed run is confined to,
+  else the KB's general domain.
+target_component: memory
+proof: staffed_proof::memory::connected_both_memories_say_where_each_answer_came_from
+conversation: []

@@ -478,6 +478,12 @@ impl PluginRunner {
         installed_plugin_slugs(&self.plugin_store, &self.db_store)
     }
 
+    /// The areas of a retired bundle that other plugins have taken over on
+    /// this bot (`superseded`); empty for every other plugin.
+    pub(crate) fn taken_over(&self, slug: &str) -> Vec<crate::superseded::TakenOver> {
+        crate::superseded::taken_over(&self.plugin_store, &self.db_store, slug)
+    }
+
     /// The gated interface operation a raw exec command corresponds to, if any.
     ///
     /// Matches the command's leading tokens against the plugin's declared
@@ -965,11 +971,13 @@ impl PluginRunner {
     }
 
     /// Each skill's name and `SKILL.md` in the plugin's `skills/` directory,
-    /// in name order.
+    /// in name order — less a retired bundle's skills for the areas another
+    /// plugin has taken over here (`superseded`).
     fn skill_files(&self, slug: &str) -> Vec<(String, PathBuf)> {
         let Some(entries) = self.skills_dir(slug).and_then(|d| std::fs::read_dir(d).ok()) else {
             return Vec::new();
         };
+        let taken = self.taken_over(slug);
         let mut files: Vec<(String, PathBuf)> = entries
             .flatten()
             .filter_map(|entry| {
@@ -978,6 +986,7 @@ impl PluginRunner {
                 let name = path.file_name()?.to_str()?.to_string();
                 (path.is_dir() && skill_md.exists()).then_some((name, skill_md))
             })
+            .filter(|(name, _)| crate::superseded::skill_area(slug, name, &taken).is_none())
             .collect();
         files.sort();
         files
@@ -1069,6 +1078,11 @@ impl PluginRunner {
         input: &serde_json::Value,
         client_key: Option<&str>,
     ) -> ToolResult {
+        // A help request sends nothing: the plugin prints its help, and no
+        // ledger row (so no "did it go out?" card) is made for it.
+        if crate::effects::is_help_request(input) {
+            return self.handle_exec(call, ctx).await.into_result();
+        }
         if crate::effects::is_customer_send(operation) {
             return crate::effects::guarded_send(
                 &self.db_store,
@@ -1098,10 +1112,24 @@ impl PluginRunner {
     /// operation tool: raw exec must not be a side door around the owner's
     /// rules for that operation.
     pub(crate) async fn run_command(&self, ctx: &ToolContext, call: &PluginCall) -> ToolResult {
+        // A retired bundle's command for an area another plugin has taken
+        // over here goes to that plugin: refused before it runs, so the
+        // bundle's connect card never stands in front of it (cloud E2E
+        // 2026-10-11: a Google Docs request ran gws and parked on its card).
+        let taken = self.taken_over(&call.slug);
+        if let Some(t) = crate::superseded::command_area(&call.slug, &call.command, &taken) {
+            return ToolResult::error(crate::superseded::refusal(
+                &call.slug,
+                &format!("`{} {}`", call.slug, call.command.trim()),
+                t,
+            ));
+        }
         // The refusal carries the binding: a gate run (2026-09-23) showed the
         // model retrying the identical exec three times because it had no
-        // field names to fill.
-        if let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
+        // field names to fill. A help request runs: it reads the flags and
+        // performs nothing.
+        if !asks_only_for_help(call)
+            && let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
             return ToolResult::error(format!(
                 "'{}' on {} is the operation {op}, which the owner's approval rules cover. \
                  Call {} instead (load it with find_tools) — do not retry it here. The \
@@ -1136,7 +1164,8 @@ impl PluginRunner {
                 result.push_str(&format!(
                     "\nAn employee can run on these through a watch trigger in its agent.json \
                      (create_employee with agent_json):\n  \
-                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}",
+                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}\n\
+                     Its activities follow create_workflow's design rules: a code check first, AI only when there is work.",
                     slug
                 ));
                 ToolResult::ok(result)
@@ -2328,9 +2357,13 @@ pub(crate) fn reported_result_files(stdout: &str, started: std::time::SystemTime
     for line in stdout.lines() {
         let Some(rest) = line.trim().strip_prefix("Result: ") else { continue };
         let rest = rest.trim();
-        // Paths may hold spaces and parentheses: try the bare path first.
+        // Paths may hold spaces and parentheses, and so may the detail
+        // (`… LUFS (target -14); …`): try the bare path, then the text
+        // before each ` (`, longest first. Splitting only at the last one
+        // lost every rendered reel whose detail named its loudness target
+        // (2026-10-09).
         let path = std::iter::once(rest)
-            .chain(rest.rsplit_once(" (").map(|(p, _)| p))
+            .chain(rest.rmatch_indices(" (").map(|(at, _)| &rest[..at]))
             .find(|p| std::path::Path::new(p).is_absolute() && made(p));
         if let Some(p) = path {
             if !out.iter().any(|o| o == p) {
@@ -2536,6 +2569,26 @@ fn take_client_key(input: &mut serde_json::Value) -> Option<String> {
 /// A template binding ("bill create --vendor-ref {vendorId}") is matched on its
 /// leading plain words ("bill create"): the flags are the call's shape, not
 /// part of what names the operation.
+/// Whether a raw command asks only for help: a help flag (`--help`, `-h`,
+/// or a `help` arg) and no other flag, so it performs nothing.
+fn asks_only_for_help(call: &PluginCall) -> bool {
+    let mut help = false;
+    for word in call.command.split_whitespace() {
+        if word == "--help" || word == "-h" {
+            help = true;
+        } else if word.starts_with('-') {
+            return false;
+        }
+    }
+    for (k, v) in &call.args {
+        if !crate::effects::is_help_flag(k) || !(v.trim().is_empty() || v.trim() == "true") {
+            return false;
+        }
+        help = true;
+    }
+    help
+}
+
 fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
     let bound_cmd = if bound_cmd.contains('{') {
         let words: Vec<&str> = bound_cmd
@@ -3014,6 +3067,38 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A detail that holds its own ` (` still names the file: live
+    /// 2026-10-09 every rendered reel (`… LUFS (target -14); …`) was
+    /// dropped, so a turn that rendered a reel and then its cover ended
+    /// with only the cover, and a turn that rendered only the reel ended
+    /// with no card at all. Each call's file is reported, in order.
+    #[test]
+    fn test_reported_result_files_detail_with_parentheses() {
+        let dir = std::env::temp_dir().join(format!("nebo-result-paren-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("deliver")).unwrap();
+        let started = std::time::SystemTime::now();
+        let reel = dir.join("deliver/jos-jon-v2-reel.mp4");
+        let cover = dir.join("deliver/jos-jon-v2-cover.jpg");
+        let named = dir.join("deliver/cut (final).mp4");
+        for f in [&reel, &cover, &named] {
+            std::fs::write(f, "made").unwrap();
+        }
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let render = format!(
+            "Checked: opens · 1080×1920\nResult: {} (1080×1920, 30.00 s, 27.9 MB; 7 layers; sound soundtrack -14.0 LUFS (target -14); fades out over 1.2 s)\n",
+            s(&reel)
+        );
+        let thumbnail = format!("Checked: opens · 1080×1920 · JPEG · 109.6 KB\nResult: {} (1080×1920, 109.6 KB)\n", s(&cover));
+        let calls: Vec<String> = [render, thumbnail]
+            .iter()
+            .flat_map(|out| reported_result_files(out, started))
+            .collect();
+        assert_eq!(calls, vec![s(&reel), s(&cover)]);
+        let both = format!("Result: {} (2.00 s (trimmed), 1 MB)\n", s(&named));
+        assert_eq!(reported_result_files(&both, started), vec![s(&named)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A plugin's in-between files never reach the owner as cards: look
     /// frames, previews and anything in a `work/` folder; the cut does.
     #[test]
@@ -3251,6 +3336,46 @@ mod budget_and_install_tests {
         let r = tool.execute_dyn(&ctx, bare).await;
         assert!(!r.is_error && !r.content.contains("Already performed"), "{}", r.content);
         assert_eq!(invocations(), 4, "no key: every call runs, as before");
+    }
+
+    /// Live 2026-10-12: gmail refused `send --help` as a bound operation,
+    /// the model called `mail_message_send {help: true}`, the plugin printed
+    /// its help, and the send ledger held it as an unknown send, so the
+    /// owner was asked whether an email that never existed went out. A help
+    /// request reads the plugin's help on either path and leaves no ledger
+    /// row; a real send is still recorded.
+    #[tokio::test]
+    async fn a_help_request_reads_the_help_and_records_no_send() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_port_plugin(
+            tmp.path(),
+            "gmail",
+            serde_json::json!({"mail.message.send": "send"}),
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --help ] && { echo 'usage: gmail send --to --subject --text'; exit 0; }; done\necho '{\"outcome\":\"unknown_outcome\",\"message\":\"no answer\"}'\n",
+        );
+        let runner = Arc::new(PluginRunner::new(plugin_store.clone(), db_store.clone()));
+        let cli = crate::plugin_tools::PluginCliTool::new(runner, "gmail");
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send --help"})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "help runs through the plugin tool: {}", r.content);
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send", "args": {"help": true}})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "{}", r.content);
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send --to a@x.com --help"})).await;
+        assert!(r.is_error && r.content.contains("Call mail_message_send"), "a send with flags is still refused: {}", r.content);
+
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"help": true})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "{}", r.content);
+        assert!(db_store.engine_effects_for_run("run-1").unwrap().is_empty(), "no ledger row, so no card");
+        assert!(db_store.engine_pending_effects().unwrap().is_empty());
+
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"to": "lead@example.com", "subject": "Hi", "text": "hello"})).await;
+        assert!(r.is_error && r.content.contains("outcome is unknown"), "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "a real send is recorded: {rows:?}");
+        assert_eq!((rows[0].state.as_str(), rows[0].attempts), ("pending", 1), "and held for the owner");
     }
 
     /// Seen live: an employee with gmail connected called google-workspace

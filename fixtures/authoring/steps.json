@@ -1,0 +1,321 @@
+[
+  {
+    "id": "judge-categorize",
+    "kind": "judge",
+    "system": "## Execution Rules\nYou are an autonomous agent executing one workflow activity in a single reply. You have no tools beyond the workflow controls below. Work only from the task, inputs and prior results here; there is no human to answer questions. Reply with the result itself \u2014 the next step sees only your reply, so if it is long, end it with a one-line summary.",
+    "task": "## Task\nPick the bookkeeping category for each bank transaction: one of software, travel, meals, rent, fees.\n## Prior results\n[match]: {\"summary\":\"5 leftovers\",\"leftovers\":[{\"id\":\"t1\",\"desc\":\"ATLASSIAN JIRA SUBSCRIPTION\",\"amount\":-84.00},{\"id\":\"t2\",\"desc\":\"DELTA AIR 0062\",\"amount\":-412.30},{\"id\":\"t3\",\"desc\":\"STARBUCKS #1182\",\"amount\":-6.45},{\"id\":\"t4\",\"desc\":\"ACH OAKWOOD PROPERTIES LEASE OCT\",\"amount\":-3200.00},{\"id\":\"t5\",\"desc\":\"STRIPE PROCESSING FEE\",\"amount\":-31.12}]}\n## Output\nAnswer only JSON: {\"summary\": \"...\", \"decisions\": [{\"id\": \"...\", \"choice\": \"...\"}]}",
+    "expect": {
+      "decisions": {
+        "t1": "software",
+        "t2": "travel",
+        "t3": "meals",
+        "t4": "rent",
+        "t5": "fees"
+      }
+    }
+  },
+  {
+    "id": "judge-payout-match",
+    "kind": "judge",
+    "system": "## Execution Rules\nYou are an autonomous agent executing one workflow activity in a single reply. You have no tools beyond the workflow controls below. Work only from the task, inputs and prior results here; there is no human to answer questions. Reply with the result itself \u2014 the next step sees only your reply, so if it is long, end it with a one-line summary.",
+    "task": "## Task\nDecide each unmatched payout: record (it pays the named invoice), hold (amounts differ by more than 1%), or flag (no plausible invoice).\n## Prior results\n[match]: {\"summary\":\"3 leftovers\",\"leftovers\":[{\"id\":\"p1\",\"amount\":1200.00,\"memo\":\"INV-1042\",\"closest_invoice\":{\"number\":\"INV-1042\",\"open\":1200.00}},{\"id\":\"p2\",\"amount\":950.00,\"memo\":\"INV-1077\",\"closest_invoice\":{\"number\":\"INV-1077\",\"open\":1500.00}},{\"id\":\"p3\",\"amount\":77.10,\"memo\":\"\",\"closest_invoice\":null}]}\n## Output\nAnswer only JSON: {\"summary\": \"...\", \"decisions\": [{\"id\": \"...\", \"choice\": \"record|hold|flag\"}]}",
+    "expect": {
+      "decisions": {
+        "p1": "record",
+        "p2": "hold",
+        "p3": "flag"
+      }
+    }
+  },
+  {
+    "id": "judge-triage",
+    "kind": "judge",
+    "system": "## Execution Rules\nYou are an autonomous agent executing one workflow activity in a single reply. You have no tools beyond the workflow controls below. Work only from the task, inputs and prior results here; there is no human to answer questions. Reply with the result itself \u2014 the next step sees only your reply, so if it is long, end it with a one-line summary.",
+    "task": "## Task\nMark each email urgent or routine. Urgent: a customer who cannot work or is losing money now, or a deadline today.\n## Prior results\n[fetch]: {\"summary\":\"4 new\",\"items\":[{\"id\":\"m1\",\"from\":\"ops@client.com\",\"subject\":\"Site down since 9am - customers can't check out\"},{\"id\":\"m2\",\"from\":\"news@vendor.com\",\"subject\":\"October newsletter\"},{\"id\":\"m3\",\"from\":\"cfo@client2.com\",\"subject\":\"Need the signed contract back by 5pm today\"},{\"id\":\"m4\",\"from\":\"jo@client3.com\",\"subject\":\"Question about next quarter's pricing\"}]}\n## Output\nAnswer only JSON: {\"summary\": \"...\", \"decisions\": [{\"id\": \"...\", \"choice\": \"urgent|routine\"}]}",
+    "expect": {
+      "decisions": {
+        "m1": "urgent",
+        "m2": "routine",
+        "m3": "urgent",
+        "m4": "routine"
+      }
+    }
+  },
+  {
+    "id": "tools-lookup-and-write",
+    "kind": "tools",
+    "system": "## Execution Rules\nYou are an autonomous agent executing a workflow activity. Bias toward action:\n- ZERO text when making tool calls. If you are calling a tool, output ONLY the tool call \u2014 no text.\n- After a tool returns results, take the NEXT action immediately. Do not re-read data you already have.\n- Do not call the same tool with identical parameters twice. If you got a result, act on it.\n- When processing a collection (emails, files, records), use batch operations if available. Do NOT process items one at a time when a batch call exists.\n- If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n- Complete the ENTIRE task. Report the final result only.\n- After completing all tool calls, always end with a brief text summary of what you found or did.",
+    "max_rounds": 8,
+    "task": "## Task\nFind the open invoices for customer Acme, get the details of the one that is overdue, and record a reminder note on it saying 'Reminder sent'. Then report what you did.",
+    "tools": [
+      {
+        "name": "invoices_search",
+        "description": "Search invoices. Returns id, number, status, due_date.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "customer": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "paid",
+                "all"
+              ]
+            }
+          },
+          "required": [
+            "customer"
+          ]
+        }
+      },
+      {
+        "name": "invoice_get",
+        "description": "Get one invoice's details.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      },
+      {
+        "name": "invoice_add_note",
+        "description": "Add a note to an invoice.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "note"
+          ]
+        }
+      },
+      {
+        "name": "create_schedule",
+        "description": "Schedule a task to run later.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "when": {
+              "type": "string"
+            },
+            "task": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "when",
+            "task"
+          ]
+        }
+      }
+    ],
+    "mocks": {
+      "invoices_search": {
+        "invoices": [
+          {
+            "id": "i-7",
+            "number": "INV-0007",
+            "status": "open",
+            "due_date": "2026-09-01"
+          },
+          {
+            "id": "i-9",
+            "number": "INV-0009",
+            "status": "open",
+            "due_date": "2026-11-30"
+          }
+        ]
+      },
+      "invoice_get": {
+        "by": "id",
+        "answers": {
+          "i-7": {
+            "id": "i-7",
+            "number": "INV-0007",
+            "amount": 4200,
+            "days_overdue": 38
+          },
+          "i-9": {
+            "id": "i-9",
+            "number": "INV-0009",
+            "amount": 900,
+            "days_overdue": 0
+          }
+        }
+      },
+      "invoice_add_note": {
+        "ok": true
+      },
+      "create_schedule": {
+        "ok": true
+      }
+    },
+    "expect": {
+      "calls": [
+        {
+          "tool": "invoices_search",
+          "args": {
+            "customer": "Acme"
+          }
+        },
+        {
+          "tool": "invoice_add_note",
+          "args": {
+            "id": "i-7"
+          }
+        }
+      ],
+      "never": [
+        "create_schedule"
+      ],
+      "max_calls": 6,
+      "reply_has": [
+        "INV-0007"
+      ]
+    }
+  },
+  {
+    "id": "tools-rate-limited",
+    "kind": "tools",
+    "system": "## Execution Rules\nYou are an autonomous agent executing a workflow activity. Bias toward action:\n- ZERO text when making tool calls. If you are calling a tool, output ONLY the tool call \u2014 no text.\n- After a tool returns results, take the NEXT action immediately. Do not re-read data you already have.\n- Do not call the same tool with identical parameters twice. If you got a result, act on it.\n- When processing a collection (emails, files, records), use batch operations if available. Do NOT process items one at a time when a batch call exists.\n- If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n- Complete the ENTIRE task. Report the final result only.\n- After completing all tool calls, always end with a brief text summary of what you found or did.",
+    "max_rounds": 8,
+    "task": "## Task\nList the contacts changed today in the CRM and report how many there are.",
+    "tools": [
+      {
+        "name": "contacts_list",
+        "description": "List CRM contacts.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "changed_since": {
+              "type": "string"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "create_schedule",
+        "description": "Schedule a task to run later.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "when": {
+              "type": "string"
+            },
+            "task": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "when",
+            "task"
+          ]
+        }
+      }
+    ],
+    "mocks": {
+      "contacts_list": {
+        "error": "429 Too Many Requests: rate limit exceeded, retry after 30 seconds"
+      },
+      "create_schedule": {
+        "ok": true
+      }
+    },
+    "expect": {
+      "never": [
+        "create_schedule"
+      ],
+      "max_calls": 3,
+      "reply_has": []
+    }
+  },
+  {
+    "id": "tools-batch",
+    "kind": "tools",
+    "system": "## Execution Rules\nYou are an autonomous agent executing a workflow activity. Bias toward action:\n- ZERO text when making tool calls. If you are calling a tool, output ONLY the tool call \u2014 no text.\n- After a tool returns results, take the NEXT action immediately. Do not re-read data you already have.\n- Do not call the same tool with identical parameters twice. If you got a result, act on it.\n- When processing a collection (emails, files, records), use batch operations if available. Do NOT process items one at a time when a batch call exists.\n- If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n- Complete the ENTIRE task. Report the final result only.\n- After completing all tool calls, always end with a brief text summary of what you found or did.",
+    "max_rounds": 8,
+    "task": "## Task\nLabel the messages m1, m2, m3, m4 and m5 as Customers, then say how many you labeled.",
+    "tools": [
+      {
+        "name": "label_message",
+        "description": "Label one message.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ]
+        }
+      },
+      {
+        "name": "label_messages",
+        "description": "Label many messages in one call.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ids",
+            "label"
+          ]
+        }
+      }
+    ],
+    "mocks": {
+      "label_messages": {
+        "labeled": 5
+      },
+      "label_message": {
+        "ok": true
+      }
+    },
+    "expect": {
+      "calls": [
+        {
+          "tool": "label_messages"
+        }
+      ],
+      "never": [
+        "label_message"
+      ],
+      "max_calls": 2,
+      "reply_has": [
+        "5"
+      ]
+    }
+  }
+]

@@ -43,6 +43,41 @@ impl Check {
     }
 }
 
+/// The connector (MCP) tools a rule turns off for `agent_id`: a deny on the
+/// tool's own key or its server's (`mcp__crm__*`), from the company defaults
+/// or the employee's own rules, decided as a call on it would be. A turned-off
+/// tool is never listed, so the model never sees it; a call that names it
+/// anyway is still refused by the check. Other tools keep today's behaviour
+/// (a deny refuses the call, the tool stays listed). A store that can't be
+/// read turns nothing off: the check still decides every call.
+pub fn blocked_connector_tools<'a>(
+    store: &db::Store,
+    agent_id: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashSet<String> {
+    let Ok(rules) = RuleSet::load(store, agent_id) else {
+        return std::collections::HashSet::new();
+    };
+    names
+        .into_iter()
+        .filter(|n| n.starts_with("mcp__"))
+        .filter(|n| {
+            let t = Target {
+                tool: n.to_string(),
+                key: n.to_string(),
+                operation: None,
+                capability: None,
+                field: None,
+                subject: None,
+                read_only: false,
+                effects: CallEffects::unknown(),
+            };
+            matches!(rules.decide(&t), Some((_, Effect::Deny)))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// What one decision reads: the call's context and input, the grant it runs
 /// under, and the store for money spent today.
 pub struct CheckCx<'a> {
@@ -88,7 +123,7 @@ impl PermissionGate for Check {
             && let Some(ask_id) = self.asks.declined_before(&ctx.session_key, t, call.input)
         {
             decision = Decision::Deny {
-                reason: ask::declined_text(&call.tool.activity(call.input)),
+                reason: ask::declined_text(&call.tool.describe(call.input)),
                 why: Why::Declined { ask_id },
             };
         }
@@ -102,7 +137,7 @@ impl PermissionGate for Check {
             && let Some(ask_id) = self.asks.waiting_already(&grant.agent_id, t, case)
         {
             decision = Decision::Deny {
-                reason: ask::already_waiting_text(&call.tool.activity(call.input)),
+                reason: ask::already_waiting_text(&call.tool.describe(call.input)),
                 why: Why::AlreadyAsked { ask_id },
             };
         }
@@ -111,7 +146,7 @@ impl PermissionGate for Check {
             && ctx.cannot_wait
         {
             decision = Decision::Deny {
-                reason: ask::cannot_wait_text(&call.tool.activity(call.input), case, &ctx.door),
+                reason: ask::cannot_wait_text(&call.tool.describe(call.input), case, &ctx.door),
                 why: Why::CannotWait { case: case.clone() },
             };
         }
@@ -120,7 +155,7 @@ impl PermissionGate for Check {
             _ => None,
         };
         let entry = activity::Entry {
-            activity: call.tool.activity(call.input),
+            activity: call.tool.describe(call.input),
             decision: &decision,
             ask_id: ask_id.as_deref(),
             judged: judged.as_ref(),
@@ -135,7 +170,7 @@ impl PermissionGate for Check {
             }
             Decision::Deny { reason, .. } => GateVerdict::Refuse(ToolResult::error(reason)),
             Decision::Ask { case } => {
-                let sentence = call.tool.activity(call.input);
+                let sentence = call.tool.describe(call.input);
                 let mut parked = ToolResult::error(ask::parked_text(&sentence, &case, &ctx.door, ctx.origin));
                 parked.parked_ask = ask_id;
                 GateVerdict::Parked(parked)

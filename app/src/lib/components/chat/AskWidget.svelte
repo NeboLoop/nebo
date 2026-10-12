@@ -15,6 +15,9 @@
 		label?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
+		/** 'select': one pick from a long list, shown as a dropdown. Absent or
+		 *  'buttons': a button per option. */
+		style?: 'buttons' | 'select';
 		default?: string;
 		/** connect_account: plugin slug + agent whose account list the OAuth targets.
 		 *  install_plugin: same `plugin` slug, plus the marketplace install code. */
@@ -71,7 +74,7 @@
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import AskReceipt from './AskReceipt.svelte';
 	import { authLoginAccount, listPlugins, submitCode } from '$lib/api/nebo';
-	import { isSignInFor } from '$lib/utils/pluginSignIn';
+	import { isSignInFor, openSignInLink } from '$lib/utils/pluginSignIn';
 	import CredentialFields, { credentialsComplete, type AuthField } from '$lib/components/CredentialFields.svelte';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
@@ -127,12 +130,13 @@
 		connecting = true;
 		connectError = null;
 		try {
-			await authLoginAccount(w.plugin, {
+			const resp = await authLoginAccount(w.plugin, {
 				agentId: w.agentId,
 				accountLabel: accountLabel.trim() || 'Primary',
 				accountNumber: '',
 				...(credFields.length ? { credentials: creds } : {})
 			});
+			openSignInLink(resp);
 		} catch (e) {
 			// The card stays open with what went wrong: the owner corrects it
 			// and signs in again, or skips.
@@ -190,8 +194,6 @@
 	const isMulti = $derived(widget?.multiSelect === true || widget?.type === 'checkbox');
 
 	let selected = $state(new Set<string>());
-	let showOther = $state(false);
-	let otherText = $state('');
 
 	const answered = $derived(response != null);
 	/** The question on one line, for the receipt: its first line, markdown marks dropped. */
@@ -201,7 +203,7 @@
 			.map((l) => l.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`#>]/g, '').trim())
 			.find(Boolean) ?? ''
 	);
-	/** What the owner chose, as the receipt marks it: the options picked, and any typed "Other" answer. */
+	/** What the owner chose, as the receipt marks it: the options picked, and any answer typed in his own words. */
 	const chosen = $derived(answered && response !== SKIP_VALUE && !response?.startsWith(FAILED_PREFIX) ? (response ?? '').split(', ') : []);
 	const typedAnswers = $derived(options.length > 0 ? chosen.filter((c) => !options.some((o) => o.label === c)) : []);
 	const wasSkipped = $derived(response === SKIP_VALUE);
@@ -223,11 +225,6 @@
 		if (next.has(label)) next.delete(label);
 		else next.add(label);
 		selected = next;
-	}
-
-	function submitOther() {
-		const v = otherText.trim();
-		if (v) submit(v);
 	}
 
 	function onKeydown(e: KeyboardEvent) {
@@ -361,6 +358,13 @@
 					</label>
 				{/each}
 			</div>
+		{:else if widget?.style === 'select'}
+			<select class="select select-bordered select-sm ask-select" onchange={(e) => e.currentTarget.value && submit(e.currentTarget.value)}>
+				<option value="" selected disabled>{$t('chat.chooseOne')}</option>
+				{#each options as option}
+					<option value={option.label}>{option.label}{option.recommended ? ` · ${$t('chat.recommended')}` : ''}</option>
+				{/each}
+			</select>
 		{:else}
 			<div class="flex flex-col gap-1.5">
 				{#each options as option}
@@ -381,21 +385,9 @@
 			</div>
 		{/if}
 
-		<!-- Free-text escape + dismiss -->
+		<!-- An answer in his own words is typed in the composer, the one place
+		     he writes: the conversation reads it against this card. -->
 		<div class="mt-2 flex flex-col gap-2">
-			{#if showOther}
-				<div class="flex gap-2 items-center">
-					<input
-						type="text"
-						class="input input-bordered input-sm flex-1"
-						placeholder={$t('chat.typeYourAnswer')}
-						bind:value={otherText}
-						onkeydown={(e) => e.key === 'Enter' && submitOther()}
-					/>
-					<button type="button" class="btn btn-sm btn-primary" disabled={!otherText.trim()} onclick={submitOther}>{$t('common.ok')}</button>
-				</div>
-			{/if}
-
 			<div class="flex items-center gap-3">
 				{#if isMulti}
 					<button
@@ -406,9 +398,6 @@
 					>
 						{$t('chat.submit')}{selected.size > 0 ? ` (${selected.size})` : ''}
 					</button>
-				{/if}
-				{#if !showOther}
-					<button type="button" class="text-xs text-base-content/80 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>{$t('chat.other')}</button>
 				{/if}
 				<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			</div>

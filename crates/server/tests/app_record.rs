@@ -115,9 +115,6 @@ struct Rig {
 
 async fn rig() -> Option<Rig> {
     let server = TestServer::boot().await;
-    // The port the tools address the bot on (`napp::plugin::local_port`).
-    // SAFETY: one test runs in this binary at a time; nothing else reads it yet.
-    unsafe { std::env::set_var("NEBO_PORT", server.port.to_string()) };
     if browser::chrome::find_chrome().is_none() {
         eprintln!("no Chrome or Chromium on this machine — skipping");
         return None;
@@ -185,6 +182,9 @@ fn frames(dir: &Path) -> Vec<Vec<u8>> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recording_steps_the_pages_clock_and_a_failed_page_is_an_error() {
+    if !common::in_own_process().await {
+        return;
+    }
     let Some(rig) = rig().await else { return };
 
     // fps × seconds frames, every one its own moment.
@@ -347,6 +347,9 @@ async fn the_console_hears_a_page_that_rewrote_itself(rig: &Rig) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "by hand: APP_RECORD_OUT=<folder> cargo test -p nebo-server --test app_record -- --ignored"]
 async fn a_ten_second_post_for_video_encode() {
+    if !common::in_own_process().await {
+        return;
+    }
     let out = PathBuf::from(std::env::var("APP_RECORD_OUT").expect("APP_RECORD_OUT"));
     let Some(rig) = rig().await else { return };
     let started = std::time::Instant::now();
