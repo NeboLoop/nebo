@@ -162,7 +162,6 @@ async fn run_bulk(nebo: &Nebo, agent: &str) -> (String, std::collections::HashMa
         None,
         None,
         None,
-        None,
         Vec::new(),
         None,
         None,

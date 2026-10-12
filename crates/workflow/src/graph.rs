@@ -66,9 +66,6 @@ struct GraphCtx<'a> {
     /// The ONE injected agentic loop (see workflow::loop_contract).
     loop_impl: &'a dyn crate::ActivityLoop,
     resolved_tools: &'a [Box<dyn DynTool>],
-    /// Deferred tool names — excluded from the scoping fail-soft roster
-    /// (see `scoped_activity_tools`).
-    deferred_tools: Option<&'a HashSet<String>>,
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
@@ -168,8 +165,6 @@ pub(crate) async fn execute_graph(
     decide: Option<&ai::DecideClient>,
     loop_impl: &dyn crate::ActivityLoop,
     resolved_tools: &[Box<dyn DynTool>],
-    // See scoped_activity_tools — deferred schemas ship only when declared/referenced.
-    deferred_tools: Option<&HashSet<String>>,
     run_id: &str,
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
@@ -189,7 +184,6 @@ pub(crate) async fn execute_graph(
         decide,
         loop_impl,
         resolved_tools,
-        deferred_tools,
         cancel_token,
         skill_content,
         event_bus,
@@ -303,7 +297,6 @@ fn build_ctx<'a>(
     // The ONE injected agentic loop (see workflow::loop_contract).
     loop_impl: &'a dyn crate::ActivityLoop,
     resolved_tools: &'a [Box<dyn DynTool>],
-    deferred_tools: Option<&'a HashSet<String>>,
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
@@ -384,7 +377,6 @@ fn build_ctx<'a>(
         decide,
         loop_impl,
         resolved_tools,
-        deferred_tools,
         cancel_token,
         skill_content,
         event_bus,
@@ -1898,12 +1890,7 @@ async fn run_llm_activity<'a>(
     // scoped_activity_tools); the emit tool is injected only on terminal
     // nodes (edge to __emit__).
     let mut activity_tools: Vec<&Box<dyn DynTool>> =
-        crate::engine::scoped_activity_tools(
-            activity,
-            ctx.resolved_tools,
-            ctx.skill_content,
-            ctx.deferred_tools,
-        );
+        crate::engine::scoped_activity_tools(activity, ctx.resolved_tools);
     // The producing seat rides every emitted payload and every address it
     // raises (R6) — the graph path stamps it exactly as the sequential path does.
     let emit_tool_box: Option<Box<dyn DynTool>> = ctx.event_bus.map(|bus| {
@@ -2723,7 +2710,6 @@ mod walk_tests {
             decide,
             &looper,
             &[],
-            None,
             &run_id,
             None,
             None,
@@ -3400,7 +3386,6 @@ mod walk_tests {
                 None,
                 &ScriptedLoop::new(&provider),
                 &[],
-                None,
                 &run_id,
                 None,
                 None,
@@ -3494,7 +3479,6 @@ mod walk_tests {
             None,
             &looper,
             &tools,
-            None,
             &run_id,
             None,
             None,
@@ -3575,7 +3559,6 @@ mod walk_tests {
             None,
             &ScriptedLoop::new(&provider),
             &tools,
-            None,
             &run_id,
             None,
             None,
@@ -4073,7 +4056,7 @@ mod walk_tests {
             .expect("run row");
         let looper = ScriptedLoop::new(provider);
         let result = execute_graph(
-            &def, "", "test-owner", false, &serde_json::json!({}), &store, decide, &looper, &[], None,
+            &def, "", "test-owner", false, &serde_json::json!({}), &store, decide, &looper, &[],
             &run_id, None, None, None, Vec::new(), None, None, None,
         )
         .await;
@@ -4257,7 +4240,6 @@ mod walk_tests {
                 None,
                 &ScriptedLoop::new(&provider),
                 &[],
-                None,
                 &run_id,
                 None,
                 None,
@@ -4404,7 +4386,7 @@ mod walk_tests {
         let looper = ScriptedLoop::new(&provider);
         crate::engine::execute_workflow(
             &def, "", "test-owner", false, serde_json::json!({}), "manual", None, &store, None, &looper, &[],
-            None, None, None, None, None, Vec::new(), None, None, None,
+            None, None, None, None, Vec::new(), None, None, None,
         )
         .await
         .expect("run ok");
@@ -4475,7 +4457,7 @@ mod walk_tests {
         let def = parse_workflow(def_json).expect("valid def");
         let looper = ScriptedLoop::new(provider);
         execute_graph(
-            &def, "owner", "test-owner", false, &inputs, store, None, &looper, &[], None, run_id, None, None,
+            &def, "owner", "test-owner", false, &inputs, store, None, &looper, &[], run_id, None, None,
             None, Vec::new(), None, None, None,
         )
         .await
@@ -4849,7 +4831,6 @@ mod walk_tests {
             None,
             &ScriptedLoop::new(&provider),
             tools,
-            None,
             &run_id,
             None,
             None,

@@ -524,7 +524,6 @@ async fn workflow_step(nebo: &Nebo, agent: &str, kind: &str, params: serde_json:
         None,
         None,
         None,
-        None,
         Vec::new(),
         None,
         None,
