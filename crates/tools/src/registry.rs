@@ -2794,8 +2794,11 @@ pub(crate) mod tests {
     /// ask_owner's `style: "select"` (ask_owner 980, +115): 17,321. The
     /// owner, 2026-10-10: every schedule says who made it and why, so a run
     /// can't leave timers nobody can account for; create_schedule takes a
-    /// required `reason` (create_schedule 1,526, +93): 17,414.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_414;
+    /// required `reason` (create_schedule 1,526, +93): 17,414. The owner,
+    /// 2026-10-11, after an employee told "use chrome" wrote a Playwright
+    /// script and ran it with node: run_command says it is never the
+    /// browser (run_command 1,151, +95): 17,509.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_509;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

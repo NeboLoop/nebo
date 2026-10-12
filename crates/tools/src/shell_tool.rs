@@ -212,6 +212,20 @@ impl ShellTool {
             ));
         }
 
+        // Browsing is the browser tools' work. On 2026-10-11 an employee
+        // told "use chrome" and "you can drive it with playwright" searched
+        // for npx and Playwright's caches, wrote a scraping script and ran
+        // it with node: slow, brittle, installing things on the owner's
+        // computer and pouring shell output into his chat. A workflow's
+        // command step and a hook run what their author wrote; a project
+        // that declares the library keeps its own test suite.
+        if !ctx.trusted_plugin_env && ctx.stdin.is_none() {
+            let run_cwd = if input.cwd.is_empty() { ctx.cwd.as_deref().unwrap_or("") } else { input.cwd.as_str() };
+            if browser_automation(&input.command, std::path::Path::new(run_cwd)).is_some() {
+                return ToolResult::error(BROWSER_AUTOMATION_REDIRECT);
+            }
+        }
+
         // A cloud bot's package installer, as a command of its own, is the
         // one command that runs through sudo (`system_packages`): it runs
         // outside the confinement (whose no-new-privileges would stop sudo),
@@ -1167,6 +1181,87 @@ fn detect_unbounded_follow(command: &str) -> Option<&'static str> {
     None
 }
 
+/// What a command that drives a browser by script hears instead of running.
+pub const BROWSER_AUTOMATION_REDIRECT: &str = "Browsing, scraping and web automation go through your browser tools, not \
+     scripts: Playwright, Puppeteer and Selenium aren't run here, and no browser drivers are installed. Open the \
+     page with browser_open (chrome: true when the owner asked for their Chrome), work it with browser_act, \
+     browser_fill_form and browser_read, and script it with browser_run_js. When the owner mentions Playwright, \
+     these tools are what they mean: they do the same work.";
+
+/// The browser-automation libraries and drivers a command must not reach
+/// for in an employee's run.
+const BROWSER_AUTOMATION: &[&str] = &["playwright", "puppeteer", "selenium", "webdriver", "chromedriver", "geckodriver"];
+
+/// Programs that run a script file named after them (`node scrape.js`,
+/// `bun run scrape.ts`): the file is read for the libraries above.
+const SCRIPT_RUNNERS: &[&str] = &["node", "python", "python3", "deno", "bun", "tsx", "ts-node"];
+
+/// The files a project names the libraries it uses in.
+const PROJECT_MANIFESTS: &[&str] = &[
+    "package.json",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    "Pipfile",
+    "playwright.config.ts",
+    "playwright.config.js",
+    "playwright.config.mjs",
+];
+
+/// The browser-automation library a command drives a browser with, if it
+/// does: named in the command (`npx playwright install`, `pip install
+/// selenium`, `node -e "require('puppeteer')"`) or in a script it runs
+/// (`cd ~/scrape && node airbnb.js`). `None` for a command that only reads
+/// (`ls ~/Library/Caches/ms-playwright`), and for one in a project that
+/// declares the library itself: its own tests (`npx playwright test`) are
+/// the project's work.
+fn browser_automation(command: &str, cwd: &std::path::Path) -> Option<&'static str> {
+    if crate::policy::is_read_only(command) {
+        return None;
+    }
+    let lower = command.to_lowercase();
+    let mut named = BROWSER_AUTOMATION.iter().copied().find(|lib| lower.contains(lib));
+    // The folders the command works in: the call's, and each one it cds to.
+    let mut dirs = vec![cwd.to_path_buf()];
+    for sub in crate::policy::subcommands(command) {
+        let words: Vec<&str> = sub.words().iter().map(|w| w.as_deref().unwrap_or("")).collect();
+        let here = dirs.last().cloned().unwrap_or_default();
+        match words.as_slice() {
+            ["cd", dir, ..] => dirs.push(here.join(crate::file_tool::expand_path(dir))),
+            [program, rest @ ..] => {
+                let program = std::path::Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !SCRIPT_RUNNERS.contains(&program) {
+                    continue;
+                }
+                let Some(file) = rest.iter().find(|w| !w.is_empty() && !w.starts_with('-') && **w != "run") else {
+                    continue;
+                };
+                let path = here.join(crate::file_tool::expand_path(file));
+                if named.is_none()
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                {
+                    let text = text.to_lowercase();
+                    named = BROWSER_AUTOMATION.iter().copied().find(|lib| text.contains(lib));
+                }
+                if let Some(parent) = path.parent() {
+                    dirs.push(parent.to_path_buf());
+                }
+            }
+            _ => {}
+        }
+    }
+    let lib = named?;
+    let declares = |dir: &std::path::Path| {
+        dir.ancestors().any(|d| {
+            PROJECT_MANIFESTS.iter().any(|m| {
+                std::fs::read_to_string(d.join(m))
+                    .is_ok_and(|t| if m.starts_with("playwright.config") { lib == "playwright" } else { t.to_lowercase().contains(lib) })
+            })
+        })
+    };
+    (!dirs.iter().any(|d| !d.as_os_str().is_empty() && declares(d))).then_some(lib)
+}
+
 /// Programs whose empty output means "nothing matched" only when they had
 /// files to look at.
 const SEARCH_PROGRAMS: &[&str] = &["grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd"];
@@ -1515,6 +1610,57 @@ mod tests {
 
     // Privilege escalation never executes — foreground or background — and the
     // refusal steers toward reporting to the user, not retrying.
+    /// 2026-10-11: an employee asked to use Chrome wrote a Playwright
+    /// script and ran it with node. Every way of driving a browser by
+    /// script is steered to the browser tools; a project's own tests and a
+    /// look around are not.
+    #[test]
+    fn browser_automation_is_steered_to_the_browser_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let scrape = dir.path().join("trip-scrape");
+        std::fs::create_dir(&scrape).unwrap();
+        std::fs::write(scrape.join("airbnb.js"), "const { chromium } = require('playwright');\n").unwrap();
+        std::fs::write(scrape.join("sum.js"), "console.log(1 + 1);\n").unwrap();
+        let home = dir.path();
+        for command in [
+            "npx playwright install chromium",
+            "npm install puppeteer",
+            "pip install selenium",
+            "brew install chromedriver",
+            "node -e \"require('playwright')\"",
+            "python3 -m playwright install",
+        ] {
+            assert!(browser_automation(command, home).is_some(), "{command}");
+        }
+        assert_eq!(browser_automation("cd trip-scrape && node airbnb.js", home), Some("playwright"));
+        assert_eq!(browser_automation("node trip-scrape/airbnb.js", home), Some("playwright"));
+        assert_eq!(browser_automation(&format!("node {}", scrape.join("airbnb.js").display()), home), Some("playwright"));
+        // Ordinary scripts and reads run.
+        assert_eq!(browser_automation("node trip-scrape/sum.js", home), None);
+        assert_eq!(browser_automation("which npx", home), None);
+        assert_eq!(browser_automation("ls ~/Library/Caches/ms-playwright", home), None);
+        // A project that declares the library runs its own tests.
+        let app = dir.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        std::fs::write(app.join("package.json"), r#"{"devDependencies": {"@playwright/test": "1.48.0"}}"#).unwrap();
+        assert_eq!(browser_automation("npx playwright test", &app), None);
+        assert_eq!(browser_automation("cd app && npx playwright test", home), None);
+    }
+
+    /// The steer refuses before anything runs, and names the tools to use.
+    #[tokio::test]
+    async fn a_playwright_command_is_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = tool()
+            .execute(&ctx(), json!({"action": "exec", "command": "npx playwright install chromium", "cwd": dir.path()}))
+            .await;
+        assert!(r.is_error);
+        assert_eq!(r.content, BROWSER_AUTOMATION_REDIRECT);
+        for tool in ["browser_open", "browser_act", "browser_run_js", "chrome: true"] {
+            assert!(BROWSER_AUTOMATION_REDIRECT.contains(tool), "{tool}");
+        }
+    }
+
     #[test]
     fn unbounded_follows_are_detected() {
         // The exact shape that parked a live run for 300s.
