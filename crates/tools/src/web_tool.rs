@@ -35,6 +35,41 @@ const NO_BROWSER_NEXT: &str = "fetch_url reads a page's text as the server sends
      type or run the page's scripts. When a task needs those and nothing here can do them, tell the \
      owner so; never report what a page would show from what you know of it.";
 
+/// What the owner hears when they asked for their Chrome and it isn't
+/// connected (2026-10-11: asked to "use chrome", an employee wrote a
+/// Playwright script instead). Said as written; nothing else is tried in
+/// its place.
+pub const CHROME_NOT_CONNECTED: &str =
+    "Chrome isn't connected to Nebo. Open Chrome and turn on the NeboAI extension, or I can use my own browser.";
+
+/// A browser call in a conversation that asked for the owner's Chrome:
+/// refused, in the owner's words, when the extension isn't connected. The
+/// executor's own order (extension first) serves it when it is.
+fn chrome_refusal(wants_chrome: bool, extension_connected: bool) -> Option<String> {
+    (wants_chrome && !extension_connected).then(|| {
+        format!(
+            "The owner asked for their Chrome, and the NeboAI extension isn't connected. Tell them exactly: \"{CHROME_NOT_CONNECTED}\" \
+             Then wait for their answer. Don't use another browser, a script or any other way in its place; if they \
+             say to use yours, open the page again with browser_open and chrome: false."
+        )
+    })
+}
+
+/// Whether this call picks the owner's Chrome (`Some(true)`), lets go of it
+/// (`Some(false)`), or leaves the conversation's choice as it is: the
+/// `chrome` field of browser_open, browser_new_tab, or a browser_batch
+/// step that is one of them.
+fn chrome_choice(kind: Kind, input: &serde_json::Value) -> Option<bool> {
+    match kind {
+        Kind::BrowserOpen | Kind::BrowserNewTab => input.get("chrome").and_then(|v| v.as_bool()),
+        Kind::BrowserBatch => input["steps"].as_array()?.iter().find_map(|step| {
+            let kind = KINDS.iter().copied().find(|k| Some(k.name()) == str_field(step, "name"))?;
+            matches!(kind, Kind::BrowserOpen | Kind::BrowserNewTab).then(|| chrome_choice(kind, &step["input"]))?
+        }),
+        _ => None,
+    }
+}
+
 fn epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -93,6 +128,10 @@ pub struct WebCore {
     /// Set to now + `JANUS_EXTRACT_COOLDOWN_SECS` on an extract failure;
     /// `extract_via_janus` skips the tier while the deadline is in the future.
     extract_cooldown_until: std::sync::atomic::AtomicU64,
+    /// The conversations (group keys, so their helpers too) whose owner
+    /// asked for their own Chrome: those conversations' browser calls run only on the
+    /// extension, never on the built-in browser in its place.
+    chrome_groups: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Connection details for the Janus `/v1/search` endpoint. Auth mirrors the
@@ -134,7 +173,24 @@ impl WebCore {
             search_in_flight: Mutex::new(HashMap::new()),
             janus_search: None,
             extract_cooldown_until: std::sync::atomic::AtomicU64::new(0),
+            chrome_groups: Mutex::new(std::collections::HashSet::new()),
         }
+    }
+
+    /// Record the conversation's browser choice from a call that makes one.
+    fn choose_chrome(&self, group_key: &str, chrome: bool) {
+        if let Ok(mut groups) = self.chrome_groups.lock() {
+            if chrome {
+                groups.insert(group_key.to_string());
+            } else {
+                groups.remove(group_key);
+            }
+        }
+    }
+
+    /// Whether the conversation asked for the owner's own Chrome.
+    fn wants_chrome(&self, group_key: &str) -> bool {
+        self.chrome_groups.lock().map(|g| g.contains(group_key)).unwrap_or(false)
     }
 
     /// Configure the Janus search tier (platform-owned, provider-agnostic).
@@ -1184,11 +1240,15 @@ impl WebCore {
             let onoff = |b: bool| if b { "connected" } else { "not connected" };
             let status = if ext_connected {
                 format!(
-                    "Browser extension: connected (will be used). Built-in browser: {}. Use browser_read to see the current page.",
+                    "The owner's Chrome (NeboAI extension): connected (will be used). Built-in browser: {}. Use browser_read to see the current page.",
                     if cdp { "available" } else { "not available" }
                 )
+            } else if self.wants_chrome(group_key) {
+                format!(
+                    "The owner's Chrome (NeboAI extension): not connected. They asked for their Chrome, so tell them exactly: \"{CHROME_NOT_CONNECTED}\""
+                )
             } else if cdp {
-                "Browser extension: not connected. Built-in browser: available (will be used). Use browser_read to see the current page.".to_string()
+                "The owner's Chrome (NeboAI extension): not connected. Built-in browser: available (will be used). Use browser_read to see the current page.".to_string()
             } else {
                 format!(
                     "Browser extension: {}. Built-in browser: not available. No browser backend; connect the Nebo Chrome/Brave extension. {NO_BROWSER_NEXT}",
@@ -1218,6 +1278,12 @@ impl WebCore {
         // CDP browser is handling this action. The extension is the intended path.
         if !executor.extension_connected() {
             self.broadcast_extension_disconnected("not_connected", session_id);
+        }
+
+        // The owner asked for their own Chrome: the built-in browser never
+        // stands in for it.
+        if let Some(refusal) = chrome_refusal(self.wants_chrome(group_key), executor.extension_connected()) {
+            return ToolResult::error(refusal);
         }
 
         if !executor.is_connected() {
@@ -1909,7 +1975,8 @@ impl Kind {
                 - Use the browser for pages that need JavaScript, a sign-in or interaction; to just read a page, fetch_url is faster.\n\
                 - A URL loaded in the last few minutes returns that load; pass fresh: true to reload it.\n\
                 - Don't put a search in the URL: open the site and use its search box.\n\
-                - If the page is a sign-in form, tell the owner; never enter credentials."
+                - If the page is a sign-in form, tell the owner; never enter credentials.\n\
+                - When the owner asks for Chrome, their Chrome or their browser, set chrome: true: their own Chrome through the NeboAI extension, for the rest of this conversation."
                 .to_string(),
             Kind::BrowserRead => "Reads the current page as an accessibility tree, with a ref (ref_1, ref_2, …) on each element for browser_act and browser_fill_form.\n\
                 - filter: \"interactive\" lists only the controls.\n\
@@ -1932,7 +1999,8 @@ impl Kind {
                 - It doesn't submit the form: click its button with browser_act."
                 .to_string(),
             Kind::BrowserRunJs => "Runs JavaScript in the current page and returns the value of the last expression.\n\
-                - For data the page holds that browser_read doesn't show, or a page action the controls can't reach."
+                - For data the page holds that browser_read doesn't show, or a page action the controls can't reach.\n\
+                - This is how a page is scripted: never a Playwright, Puppeteer or Selenium script through run_command."
                 .to_string(),
             Kind::BrowserListTabs => "Lists this conversation's browser tabs with their ids, titles and URLs.".to_string(),
             Kind::BrowserNewTab => "Opens a URL in a new browser tab.\n\
@@ -1976,6 +2044,7 @@ impl Kind {
     fn schema(self) -> serde_json::Value {
         use serde_json::json;
         let url = json!({"type": "string", "description": "The full URL, starting with http:// or https://."});
+        let chrome = json!({"type": "boolean", "description": "true: the owner's own Chrome (the NeboAI extension), when they ask for Chrome or their browser; it stays their Chrome for this conversation. false: whichever browser is connected again."});
         match self {
             Kind::SearchWeb => json!({
                 "type": "object",
@@ -2013,7 +2082,8 @@ impl Kind {
                 "properties": {
                     "url": url,
                     "fresh": {"type": "boolean", "description": "Load the page again even if it was loaded in the last few minutes."},
-                    "force": {"type": "boolean", "description": "Leave the current page even if it asks to stay (unsaved changes)."}
+                    "force": {"type": "boolean", "description": "Leave the current page even if it asks to stay (unsaved changes)."},
+                    "chrome": chrome
                 },
                 "required": ["url"]
             }),
@@ -2083,7 +2153,7 @@ impl Kind {
             }
             Kind::BrowserNewTab => json!({
                 "type": "object",
-                "properties": {"url": url},
+                "properties": {"url": url, "chrome": chrome},
                 "required": ["url"]
             }),
             Kind::BrowserCloseTab => json!({
@@ -2553,6 +2623,9 @@ impl DynTool for WebTool {
 
             if let Some(refusal) = unnamed_site(self.kind, ctx, &input) {
                 return ToolResult::error(refusal);
+            }
+            if let Some(chrome) = chrome_choice(self.kind, &input) {
+                self.core.choose_chrome(&group_key, chrome);
             }
             match self.kind {
                 Kind::SearchWeb => self.core.handle_search(&input, session_id, &group_key).await,
@@ -3953,6 +4026,64 @@ link "Create account" [ref_5]"#;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.ends_with(NO_BROWSER_NEXT), "{}", r.content);
         assert!(!r.content.contains("Use fetch_url"), "{}", r.content);
+    }
+
+    /// "Use Chrome" is the owner's own Chrome: with the extension connected
+    /// the executor's order serves it; without it, the owner hears plainly
+    /// that Chrome isn't connected, and nothing stands in for it
+    /// (2026-10-11: an employee wrote a Playwright script instead).
+    #[test]
+    fn chrome_runs_on_the_extension_or_says_it_is_not_connected() {
+        assert_eq!(chrome_refusal(true, true), None, "connected: the extension serves it");
+        assert_eq!(chrome_refusal(false, false), None, "no Chrome asked for: any connected browser");
+        assert_eq!(chrome_refusal(false, true), None);
+        let refusal = chrome_refusal(true, false).expect("Chrome asked for and not connected");
+        assert!(refusal.contains(CHROME_NOT_CONNECTED), "{refusal}");
+        assert!(refusal.contains("Don't use another browser, a script or any other way"), "{refusal}");
+        assert_eq!(
+            CHROME_NOT_CONNECTED,
+            "Chrome isn't connected to Nebo. Open Chrome and turn on the NeboAI extension, or I can use my own browser."
+        );
+    }
+
+    /// browser_open, browser_new_tab and a browser_batch step pick the
+    /// owner's Chrome with `chrome`; the choice holds for the conversation
+    /// and its helpers until a call lets go of it.
+    #[test]
+    fn the_chrome_choice_holds_for_the_conversation() {
+        use serde_json::json;
+        let open = json!({"url": "https://www.airbnb.com", "chrome": true});
+        assert_eq!(chrome_choice(Kind::BrowserOpen, &open), Some(true));
+        assert_eq!(chrome_choice(Kind::BrowserNewTab, &json!({"url": "https://a.test", "chrome": false})), Some(false));
+        assert_eq!(chrome_choice(Kind::BrowserOpen, &json!({"url": "https://a.test"})), None);
+        assert_eq!(chrome_choice(Kind::BrowserAct, &json!({"action": "click", "chrome": true})), None);
+        let batch = json!({"steps": [
+            {"name": "browser_open", "input": {"url": "https://a.test", "chrome": true}},
+            {"name": "browser_act", "input": {"action": "click", "ref": "ref_1"}}
+        ]});
+        assert_eq!(chrome_choice(Kind::BrowserBatch, &batch), Some(true));
+
+        let core = WebCore::new();
+        let group = WebCore::session_group_key("agent:main:web:chat-1");
+        let helper = WebCore::session_group_key("subagent:agent:main:web:chat-1:sa-1234");
+        assert!(!core.wants_chrome(&group));
+        core.choose_chrome(&group, true);
+        assert!(core.wants_chrome(&group) && core.wants_chrome(&helper), "the helper browses in the same Chrome");
+        assert!(!core.wants_chrome("agent:main:web:chat-2"), "another conversation is untouched");
+        core.choose_chrome(&group, false);
+        assert!(!core.wants_chrome(&group));
+    }
+
+    /// The browser tools say how a page is scripted and how the owner's
+    /// Chrome is chosen.
+    #[test]
+    fn the_browser_tools_own_browsing() {
+        assert!(Kind::BrowserRunJs.description().contains("never a Playwright, Puppeteer or Selenium script through run_command"));
+        let open = Kind::BrowserOpen.description();
+        assert!(open.contains("When the owner asks for Chrome, their Chrome or their browser, set chrome: true"), "{open}");
+        for kind in [Kind::BrowserOpen, Kind::BrowserNewTab] {
+            assert_eq!(kind.schema()["properties"]["chrome"]["type"], "boolean", "{}", kind.name());
+        }
     }
 
     #[test]

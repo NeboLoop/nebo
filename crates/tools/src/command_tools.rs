@@ -75,7 +75,8 @@ impl DynTool for RunCommandTool {
          - Prefer absolute paths; shell state doesn't carry between calls.\n\
          - Use read_file, edit_file and write_file, not cat, sed, awk or echo.\n\
          {SEARCH_NOTE}\n\
-         - Long jobs: set `background: true` and continue; you're notified when they end."
+         - Long jobs: set `background: true` and continue; you're notified when they end.\n\
+         - Never for browsing or scraping: no Playwright, Puppeteer or Selenium. Use the browser tools."
         )
     }
 
@@ -537,6 +538,17 @@ mod tests {
 
     fn helpers() -> Helpers {
         Helpers { orchestrator: crate::orchestrator::new_handle(), store: None, runs: None, workflows: Default::default() }
+    }
+
+    /// run_command is never the browser (2026-10-11: a Playwright script
+    /// run with node in place of the browser tools).
+    #[test]
+    fn run_command_is_never_the_browser() {
+        let d = RunCommandTool(machine()).description();
+        assert!(
+            d.contains("- Never for browsing or scraping: no Playwright, Puppeteer or Selenium. Use the browser tools."),
+            "{d}"
+        );
     }
 
     /// D2: a command that only reads is a read-only call (Plan mode and the
