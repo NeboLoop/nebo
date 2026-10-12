@@ -342,15 +342,20 @@ impl ModelSelector {
     /// loaded CLI provider.
     pub fn sendable(&self, model_id: &str) -> bool {
         let (provider_id, model_name) = parse_model_id(model_id);
-        if provider_id.is_empty() || model_name.is_empty() {
+        if provider_id.is_empty() {
             return false;
         }
         let loaded = self.loaded_providers.read().unwrap();
         if !loaded.is_empty() && !loaded.iter().any(|p| p == provider_id) {
             return false;
         }
+        // A coding tool on this computer: its own default model when the
+        // choice names none (`claude-code/`), else the one named.
         if CLI_PROVIDERS.contains(&provider_id.split('@').next().unwrap_or(provider_id)) {
             return !loaded.is_empty();
+        }
+        if model_name.is_empty() {
+            return false;
         }
         self.get_model_info(model_id).is_some_and(|m| m.chats())
     }
@@ -646,5 +651,18 @@ mod tests {
         let selector = ModelSelector::new(config);
         selector.set_loaded_providers(vec!["claude-code".into(), "janus".into()]);
         assert_eq!(selector.resolve(""), DEFAULT_CHAT_MODEL);
+    }
+
+    /// A coding tool on this computer runs its own default model when the
+    /// choice names none, and the one named when it does; any other
+    /// provider needs a model.
+    #[test]
+    fn a_coding_tool_runs_its_own_default_when_no_model_is_named() {
+        let selector = ModelSelector::new(ModelRoutingConfig::default());
+        selector.set_loaded_providers(vec!["claude-code".into(), "anthropic".into()]);
+        assert!(selector.sendable("claude-code/"));
+        assert!(selector.sendable("claude-code/model-x"));
+        assert!(!selector.sendable("anthropic/"));
+        assert!(!selector.sendable("codex-cli/"), "not loaded here");
     }
 }

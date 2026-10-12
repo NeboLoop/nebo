@@ -486,8 +486,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
                 "displayName": cp.display_name,
                 "command": cp.command,
                 "installHint": cp.install_hint,
-                "models": cp.models,
-                "defaultModel": cp.default_model,
                 "active": cp.is_active(),
             })
         })
@@ -976,10 +974,9 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
             "gemini" => clis.gemini.installed,
             _ => false,
         };
+        // The tool runs its own default model: Nebo names none.
         if installed {
-            for model in &cp.models {
-                chat.push(choice(format!("{}/{model}", cp.id), &cp.display_name, "", model, &[], true));
-            }
+            chat.push(choice(format!("{}/", cp.id), &cp.display_name, "", "", &[], true));
         }
     }
     Ok(Json(serde_json::json!({ "chat": chat, "decision": decision })))

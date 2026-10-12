@@ -80,10 +80,6 @@ pub struct CliProviderDef {
     #[serde(default, rename = "installHint")]
     pub install_hint: String,
     #[serde(default)]
-    pub models: Vec<String>,
-    #[serde(default, rename = "defaultModel")]
-    pub default_model: String,
-    #[serde(default)]
     pub active: Option<bool>,
 }
 

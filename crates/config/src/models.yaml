@@ -65,26 +65,21 @@ providers:
 # These use locally installed CLI tools.
 # Auto-detected: if the command exists in PATH, it's available.
 # Auth: Uses your existing account (Claude subscription, ChatGPT, Google)
+# Model: each tool runs its own default; Nebo names none.
 
 cli_providers:
   - id: claude-code
     displayName: Claude Agent
     command: claude
     installHint: brew install claude-code
-    models: [opus, sonnet, haiku]
-    defaultModel: opus
     active: false
   - id: codex-cli
     displayName: OpenAI Codex CLI
     command: codex
     installHint: npm i -g @openai/codex
-    models: [gpt-5.4, gpt-5.4-mini, codex-mini-latest]
-    defaultModel: gpt-5.4
     active: false
   - id: gemini-cli
     displayName: Gemini CLI
     command: gemini
     installHint: npm i -g @google/gemini-cli
-    models: [gemini-3-flash-preview, gemini-3.1-pro-preview]
-    defaultModel: gemini-3.1-pro-preview
     active: false
