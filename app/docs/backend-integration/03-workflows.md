@@ -533,7 +533,7 @@ Validation errors are displayed as a warning count in the toolbar and block the 
       "intent": "Check if urgent findings exist",
       "skills": [],
       "steps": [],
-      "params": { "expression": "data.findings.some(f => f.urgency === \"high\")", "mode": "expression" }
+      "params": { "expression": "high_urgency_count > 0", "mode": "expression" }
     },
     {
       "id": "urgent-alert",
