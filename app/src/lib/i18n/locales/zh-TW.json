@@ -3131,7 +3131,9 @@
 		"callLost": "通話中斷且無法重新加入。請重新開始通話。",
 		"callEndedStartAgain": "通話已結束。請重新開始。",
 		"needsConsent": "語音對話會將你的麥克風音訊傳送到雲端語音服務處理。請在語音面板中啟用以表示同意。",
-		"startFailed": "無法開始通話。請再試一次。"
+		"startFailed": "無法開始通話。請再試一次。",
+		"voiceModelUnsupported": "此智慧包的語音模型尚不支援通話。請在智慧包中選擇其他語音模型。",
+		"voiceModelUnreachable": "此智慧包的語音模型未連線。請重新連線，或在智慧包中選擇其他語音模型。"
 	},
 	"flows": {
 		"none": "還沒有流程",
@@ -4058,7 +4060,6 @@
 		"decisions": "決策",
 		"visionDefault": "該等級的模型，在它看到圖像時",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "無法使用",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebo 內建的安全預設設定（無決策模型）",
 		"decisionsDefaultOption": "Nebo AI · Jev（預設）",

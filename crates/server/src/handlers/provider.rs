@@ -939,13 +939,18 @@ fn kind_label(kind: &str) -> &str {
 /// GET /api/v1/intelligence-packs/choices — every active model a pack slot
 /// may name, grouped by kind: Nebo AI's speeds, each connection's models,
 /// Ollama and the agents on this computer (`local`). Decisions always offers
-/// Nebo AI's Jev first.
+/// Nebo AI's Jev first. Voice offers only what calls speak through today,
+/// xAI's realtime protocol (`Harness::call_voice`): Nebo AI's Voice first,
+/// then each xAI connection's realtime models.
 pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    use types::packs::{NEBO_AI_VOICE, XAI_VOICE_MODEL, is_xai_connection, is_xai_voice_model};
     let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
         serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
     };
     let mut chat = Vec::new();
     let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
+    let nebo_voice = NEBO_AI_VOICE.split_once('/').map_or(NEBO_AI_VOICE, |(_, m)| m);
+    let mut voice = vec![choice(NEBO_AI_VOICE.into(), "Nebo AI", "", nebo_voice, &[], false)];
     for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
         let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
         if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
@@ -958,7 +963,19 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
             continue;
         }
         let key = super::connections::connection_key(&p);
-        for m in super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active) {
+        let models: Vec<_> = super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active).collect();
+        if is_xai_connection(&p.provider, p.base_url.as_deref()) {
+            let mut names = vec![XAI_VOICE_MODEL];
+            for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
+                if !names.contains(&m) {
+                    names.push(m);
+                }
+            }
+            for m in names {
+                voice.push(choice(format!("{key}/{m}"), kind_label(&p.provider), &p.name, m, &[], false));
+            }
+        }
+        for m in models {
             let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
             if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
         }
@@ -979,7 +996,7 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
             chat.push(choice(format!("{}/", cp.id), &cp.display_name, "", "", &[], true));
         }
     }
-    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision })))
+    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision, "voice": voice })))
 }
 
 /// POST /api/v1/intelligence-packs — make a pack.

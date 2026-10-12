@@ -3131,7 +3131,9 @@
 		"callLost": "Cuộc gọi bị ngắt và không thể vào lại. Hãy bắt đầu lại.",
 		"callEndedStartAgain": "Cuộc gọi đã kết thúc. Hãy bắt đầu lại.",
 		"needsConsent": "Trò chuyện bằng giọng nói gửi âm thanh từ micro của bạn tới một dịch vụ giọng nói trên đám mây để xử lý. Bật trong bảng giọng nói để đồng ý.",
-		"startFailed": "Không thể bắt đầu cuộc gọi. Hãy thử lại."
+		"startFailed": "Không thể bắt đầu cuộc gọi. Hãy thử lại.",
+		"voiceModelUnsupported": "Mô hình giọng nói của gói này chưa được hỗ trợ cho cuộc gọi. Hãy chọn một mô hình giọng nói khác trong gói.",
+		"voiceModelUnreachable": "Mô hình giọng nói của gói này chưa được kết nối. Hãy kết nối lại, hoặc chọn một mô hình giọng nói khác trong gói."
 	},
 	"flows": {
 		"none": "Chưa có luồng nào",
@@ -4058,7 +4060,6 @@
 		"decisions": "Quyết định",
 		"visionDefault": "Mô hình của mức đó, khi nó nhìn thấy hình ảnh",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Không khả dụng",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Mặc định an toàn tích hợp sẵn của Nebo (không có mô hình quyết định)",
 		"decisionsDefaultOption": "Nebo AI · Jev (mặc định)",

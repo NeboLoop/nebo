@@ -798,6 +798,86 @@ impl Harness {
     }
 }
 
+/// What a call speaks through: its intelligence pack's Voice model.
+#[derive(Debug, Clone)]
+pub enum CallVoice {
+    /// Janus's realtime relay, asked for this model (Nebo AI's Voice, the
+    /// relay alias `nebo-1-voice`).
+    Janus(String),
+    /// One of the owner's own xAI connections, asked for this realtime model
+    /// with its key.
+    Own { profile: db::models::AuthProfile, model: String },
+}
+
+/// Why a call can't start on its pack's Voice model. Never answered with
+/// another model in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceRefusal {
+    /// The Voice model speaks a realtime protocol calls don't speak yet.
+    Unsupported,
+    /// The Voice model's connection is gone or off, and the pack is set not
+    /// to use Nebo AI instead.
+    Unreachable,
+}
+
+/// The Voice model a call on `chosen` (its model reference) speaks
+/// through, read from its intelligence pack the way a turn reads its level
+/// ([`pack_pick`], `types::packs::parse_ref`): the bot's default when the
+/// reference names nothing. An empty Voice slot, a reference that is a
+/// model and not a pack, and a pack that is gone speak with Nebo AI's Voice
+/// (`types::packs::NEBO_AI_VOICE`). A slot naming one of xAI's realtime
+/// models on an xAI connection speaks through that connection; when the
+/// connection is gone or off, Nebo AI's Voice takes the call only when the
+/// pack falls back. Any other Voice model is refused: calls speak xAI's
+/// realtime protocol alone today.
+fn voice_model(h: Resolver<'_>, chosen: &str) -> Result<CallVoice, VoiceRefusal> {
+    use types::packs::{NEBO_AI_VOICE, is_xai_connection, is_xai_voice_model, parse_ref};
+    let nebo = || Ok(CallVoice::Janus(selector::parse_model_id(NEBO_AI_VOICE).1.to_string()));
+    let pick = pack_pick(h, chosen);
+    let Some((id, _)) = parse_ref(&pick) else {
+        return nebo();
+    };
+    let Some(pack) = h.store.get_intelligence_pack(id).ok().flatten() else {
+        return nebo();
+    };
+    let Some(slot) = pack.levels.voice.as_deref().map(str::trim).filter(|m| !m.is_empty()) else {
+        return nebo();
+    };
+    if slot == NEBO_AI_VOICE {
+        return nebo();
+    }
+    let (connection, model) = selector::parse_model_id(slot);
+    if connection.is_empty() || !is_xai_voice_model(model) {
+        return Err(VoiceRefusal::Unsupported);
+    }
+    let profile = match connection.split_once('@') {
+        Some((_, profile_id)) => h.store.get_auth_profile(profile_id).ok().flatten(),
+        None => h.store.get_best_auth_profile(connection).ok().flatten(),
+    };
+    match profile {
+        Some(p) if !is_xai_connection(&p.provider, p.base_url.as_deref()) => Err(VoiceRefusal::Unsupported),
+        Some(p) if p.is_active.unwrap_or(0) != 0 => Ok(CallVoice::Own { profile: p, model: model.to_string() }),
+        _ if pack.fallback => {
+            warn!(pack = %pack.name, slot, "the pack's Voice connection is gone or off: the call speaks with Nebo AI's Voice");
+            nebo()
+        }
+        _ => Err(VoiceRefusal::Unreachable),
+    }
+}
+
+impl Harness {
+    /// What a call with `agent_id` speaks through: the Voice model of the
+    /// employee's intelligence pack (its own model preference), else of the
+    /// bot's default ([`voice_model`]). A linked employee's preference names
+    /// its linked agent, not a pack: its calls speak on the bot's default.
+    /// An empty `agent_id` reads the bot's default.
+    pub fn call_voice(&self, agent_id: &str) -> Result<CallVoice, VoiceRefusal> {
+        let employee = employee_model(&self.store, agent_id);
+        let chosen = if employee.linked { String::new() } else { employee.preference.unwrap_or_default() };
+        voice_model(self.resolver(), &chosen)
+    }
+}
+
 /// The tools that write an employee or a workflow: a turn that loads or
 /// calls one is building, and its steps from then on run in the build lane.
 const BUILD_TOOLS: &[&str] = &["create_employee", "update_employee", "create_workflow", "update_workflow"];
@@ -3562,6 +3642,60 @@ mod tests {
         assert_eq!(v("anthropic/claude-text").as_deref(), Some("janus/nebo-1"));
         let eyes = h.eyes("pack/set/medium").await;
         assert!(eyes.is_none() || eyes.as_ref().is_some_and(|e| e.model == "claude-eyes" || e.model.is_empty()));
+    }
+
+    /// A call speaks through its pack's Voice model: Nebo AI's is Janus's
+    /// relay alias; an xAI realtime model on the owner's xAI connection is
+    /// used with that connection; anything else is refused, never swapped.
+    #[tokio::test]
+    async fn a_call_speaks_through_the_packs_voice_model() {
+        use types::packs::{Pack, PackLevels};
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        h.store.create_auth_profile("xk", "Grok", "openai_compatible", "key", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
+        h.store.create_auth_profile("xoff", "Grok off", "xai", "key", None, None, 0, 0, None, None).unwrap();
+        h.store.create_auth_profile("oa", "OpenAI", "openai", "key", None, None, 0, 1, None, None).unwrap();
+        let save = |id: &str, voice: Option<&str>, fallback: bool| {
+            h.store
+                .save_intelligence_pack(&Pack {
+                    id: id.into(),
+                    name: id.into(),
+                    levels: PackLevels { medium: Some("anthropic/claude-x".into()), voice: voice.map(Into::into), ..Default::default() },
+                    fallback,
+                    built_in: false,
+                    ..types::packs::nebo_ai()
+                })
+                .unwrap()
+        };
+        save("own", Some("openai_compatible@xk/grok-voice-latest"), false);
+        save("empty", None, false);
+        save("chat", Some("anthropic/claude-x"), true);
+        save("other", Some("openai@oa/gpt-realtime-2"), true);
+        save("notxai", Some("openai@oa/grok-voice-latest"), true);
+        save("off", Some("xai@xoff/grok-voice-latest"), false);
+        save("offfalls", Some("xai@xoff/grok-voice-latest"), true);
+        let v = |chosen: &str| voice_model(h.resolver(), chosen);
+        let janus = |r: Result<CallVoice, VoiceRefusal>| match r {
+            Ok(CallVoice::Janus(m)) => Some(m),
+            _ => None,
+        };
+        assert_eq!(janus(v("pack/nebo-ai")).as_deref(), Some("nebo-1-voice"), "Nebo AI: the relay alias");
+        assert_eq!(janus(v("")).as_deref(), Some("nebo-1-voice"), "the bot's default ships as Nebo AI");
+        assert_eq!(janus(v("pack/empty/high")).as_deref(), Some("nebo-1-voice"), "an empty slot is Nebo AI's");
+        assert_eq!(janus(v("pack/gone")).as_deref(), Some("nebo-1-voice"), "a pack that is gone");
+        assert_eq!(janus(v("anthropic/claude-x")).as_deref(), Some("nebo-1-voice"), "a model, not a pack");
+        match v("pack/own/medium") {
+            Ok(CallVoice::Own { profile, model }) => assert_eq!((profile.id.as_str(), model.as_str()), ("xk", "grok-voice-latest")),
+            other => panic!("the pack's own xAI voice model: {other:?}"),
+        }
+        assert_eq!(v("pack/chat").unwrap_err(), VoiceRefusal::Unsupported, "a chat model doesn't speak realtime");
+        assert_eq!(v("pack/other").unwrap_err(), VoiceRefusal::Unsupported, "another realtime protocol: refused, not swapped");
+        assert_eq!(v("pack/notxai").unwrap_err(), VoiceRefusal::Unsupported, "an xAI model name on another provider");
+        assert_eq!(v("pack/off").unwrap_err(), VoiceRefusal::Unreachable, "connection off, set not to fall back");
+        assert_eq!(janus(v("pack/offfalls")).as_deref(), Some("nebo-1-voice"), "connection off, the pack falls back");
+        // An employee's own pack wins over the bot's default.
+        h.store.upsert_entity_config("agent", "ann", &serde_json::json!({ "modelPreference": "pack/chat" })).unwrap();
+        assert_eq!(h.call_voice("ann").unwrap_err(), VoiceRefusal::Unsupported);
+        assert!(matches!(h.call_voice(""), Ok(CallVoice::Janus(_))));
     }
 
     /// A pack pins background lanes to a level, and each level carries its

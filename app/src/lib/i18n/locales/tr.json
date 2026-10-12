@@ -3131,7 +3131,9 @@
 		"callLost": "Arama koptu ve yeniden katılınamadı. Aramayı yeniden başlatın.",
 		"callEndedStartAgain": "Arama sona erdi. Yeniden başlatın.",
 		"needsConsent": "Sesli görüşme, mikrofon sesinizi işlenmek üzere bir bulut ses hizmetine gönderir. Onay vermek için ses panelinden etkinleştirin.",
-		"startFailed": "Arama başlatılamadı. Tekrar deneyin."
+		"startFailed": "Arama başlatılamadı. Tekrar deneyin.",
+		"voiceModelUnsupported": "Bu paketin ses modeli henüz aramalarda desteklenmiyor. Pakette başka bir ses modeli seç.",
+		"voiceModelUnreachable": "Bu paketin ses modeli bağlı değil. Yeniden bağla veya pakette başka bir ses modeli seç."
 	},
 	"flows": {
 		"none": "Henüz akış yok",
@@ -4058,7 +4060,6 @@
 		"decisions": "Kararlar",
 		"visionDefault": "Görsel gördüğünde, düzeyin modeli",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Kullanılamıyor",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebo'nun yerleşik güvenli varsayılanları (karar modeli yok)",
 		"decisionsDefaultOption": "Nebo AI · Jev (varsayılan)",

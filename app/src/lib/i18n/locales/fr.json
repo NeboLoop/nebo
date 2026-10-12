@@ -3131,7 +3131,9 @@
 		"callLost": "L’appel a été coupé et n’a pas pu reprendre. Relancez-le.",
 		"callEndedStartAgain": "L’appel est terminé. Relancez-le.",
 		"needsConsent": "La conversation vocale envoie l’audio de votre microphone à un service vocal dans le cloud pour traitement. Activez-la dans le panneau vocal pour donner votre accord.",
-		"startFailed": "Impossible de lancer l’appel. Réessayez."
+		"startFailed": "Impossible de lancer l’appel. Réessayez.",
+		"voiceModelUnsupported": "Le modèle vocal de ce pack n'est pas encore pris en charge pour les appels. Choisissez un autre modèle vocal dans le pack.",
+		"voiceModelUnreachable": "Le modèle vocal de ce pack n'est pas connecté. Reconnectez-le ou choisissez un autre modèle vocal dans le pack."
 	},
 	"flows": {
 		"none": "Aucun flux pour l'instant",
@@ -4058,7 +4060,6 @@
 		"decisions": "Décisions",
 		"visionDefault": "Le modèle du niveau, quand il voit des images",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Non disponible",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Les valeurs par défaut sûres intégrées de Nebo (aucun modèle de décision)",
 		"decisionsDefaultOption": "Nebo AI · Jev (par défaut)",

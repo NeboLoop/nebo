@@ -3131,7 +3131,9 @@
 		"callLost": "Samtalet bröts och kunde inte återupptas. Starta det igen.",
 		"callEndedStartAgain": "Samtalet avslutades. Starta det igen.",
 		"needsConsent": "Röstsamtal skickar ditt mikrofonljud till en molnbaserad rösttjänst för bearbetning. Aktivera det i röstpanelen för att ge ditt samtycke.",
-		"startFailed": "Kunde inte starta samtalet. Försök igen."
+		"startFailed": "Kunde inte starta samtalet. Försök igen.",
+		"voiceModelUnsupported": "Det här paketets röstmodell stöds inte för samtal än. Välj en annan röstmodell i paketet.",
+		"voiceModelUnreachable": "Det här paketets röstmodell är inte ansluten. Anslut den igen eller välj en annan röstmodell i paketet."
 	},
 	"flows": {
 		"none": "Inga flöden än",
@@ -4058,7 +4060,6 @@
 		"decisions": "Beslut",
 		"visionDefault": "Nivåns modell, när den ser bilder",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Inte tillgängligt",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebos inbyggda säkra standardval (ingen beslutsmodell)",
 		"decisionsDefaultOption": "Nebo AI · Jev (standard)",

@@ -103,8 +103,8 @@ pub async fn conversation_ws_handler(
     })
 }
 
-/// Resolve the realtime upstream leg for `path` (`/v1/realtime` for a voice
-/// call, `/v1/stt` for dictation) — the same direct-vs-Janus split as text
+/// Resolve the dictation leg for `path` (`/v1/stt`; a voice call's leg is
+/// its pack's Voice, [`realtime_leg`]) — the same direct-vs-Janus split as text
 /// providers: a user-owned xAI key dials api.x.ai directly (no Janus, no
 /// metering — their key); otherwise the NeboAI account rides Janus's metered
 /// relay with the user's Janus JWT.
@@ -230,6 +230,72 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
     info!("dictation ended");
 }
 
+/// xAI's realtime endpoint, which an owner's own xAI connection dials.
+const XAI_REALTIME_URL: &str = "wss://api.x.ai/v1/realtime";
+
+/// A call's realtime upstream leg: where it dials, the model it asks for
+/// and its bearer.
+struct RealtimeLeg {
+    endpoint: String,
+    model: String,
+    bearer: String,
+}
+
+/// Why a call has no realtime leg.
+#[derive(Debug, PartialEq, Eq)]
+enum LegRefusal {
+    /// The pack's Voice model can't take the call (`Harness::call_voice`).
+    Voice(agent::harness::turn::VoiceRefusal),
+    /// Nebo AI's Voice, and this bot has no NeboAI account to ride Janus on.
+    NoAccount,
+}
+
+/// The realtime leg of a call with `agent_id` (empty: the bot's default),
+/// from its intelligence pack's Voice model (`Harness::call_voice`), the
+/// one place a call's model is chosen. Nebo AI's Voice rides Janus's
+/// metered relay with the owner's NeboAI token, asking it for the relay
+/// alias; an xAI realtime model on the owner's own xAI connection dials xAI
+/// direct with that connection's key (no Janus, no metering).
+fn realtime_leg(state: &AppState, agent_id: &str) -> Result<RealtimeLeg, LegRefusal> {
+    use agent::harness::turn::CallVoice;
+    match state.harness.call_voice(agent_id).map_err(LegRefusal::Voice)? {
+        CallVoice::Janus(model) => {
+            let bearer = crate::codes::neboai_token(state).ok_or(LegRefusal::NoAccount)?;
+            Ok(RealtimeLeg { endpoint: janus_realtime_url(&state.config.neboai.janus_url), model, bearer })
+        }
+        CallVoice::Own { profile, model } => Ok(RealtimeLeg {
+            endpoint: XAI_REALTIME_URL.into(),
+            model,
+            bearer: auth::credential::profile_key(&profile),
+        }),
+    }
+}
+
+/// Janus's realtime relay under its gateway root.
+fn janus_realtime_url(janus_url: &str) -> String {
+    let url = janus_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
+    format!("{}/v1/realtime", url.trim_end_matches('/'))
+}
+
+/// What a call that has no realtime leg tells its client: a `code` the
+/// desktop words in the owner's language (`voice.voiceModelUnsupported`,
+/// `voice.voiceModelUnreachable`), and the same sentence in English for
+/// every other client. Never a provider's name.
+fn leg_refusal_words(refusal: &LegRefusal) -> (Option<&'static str>, &'static str) {
+    use agent::harness::turn::VoiceRefusal;
+    match refusal {
+        LegRefusal::Voice(VoiceRefusal::Unsupported) => (
+            Some("voice_model_unsupported"),
+            "This pack's voice model isn't supported for calls yet. Pick another voice model in the pack.",
+        ),
+        LegRefusal::Voice(VoiceRefusal::Unreachable) => (
+            Some("voice_model_unreachable"),
+            "This pack's voice model isn't connected. Connect it again, or pick another voice model in the pack.",
+        ),
+        LegRefusal::NoAccount => (None, "Voice needs a NeboAI account, or a pack whose voice model uses your own key."),
+    }
+}
+
 /// The xAI voices offered in the Identity tab (brand display names live in
 /// the frontend; the raw id is what's stored and sent upstream).
 const SAMPLE_VOICES: [&str; 5] = ["eve", "ara", "rex", "sal", "leo"];
@@ -258,15 +324,13 @@ pub async fn voice_sample(
         return Ok(wav_response(bytes));
     }
 
-    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/realtime") else {
-        return Err(to_error_response(types::NeboError::Validation(
-            "Voice needs a NeboAI account or an xAI API key (Settings → Providers).".into(),
-        )));
-    };
+    let leg = realtime_leg(&state, "")
+        .map_err(|r| to_error_response(types::NeboError::Validation(leg_refusal_words(&r).1.into())))?;
 
     let cfg = voice::realtime::RealtimeConfig {
-        endpoint,
-        bearer,
+        endpoint: leg.endpoint,
+        model: leg.model,
+        bearer: leg.bearer,
         voice: voice_id.clone(),
         tools: vec![],
         instructions: "You are demonstrating this voice for a short preview. \
@@ -2013,13 +2077,21 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         q.chat_id = Some(resolve_voice_chat(&state, agent_id, q.telephony.is_some()).await);
     }
 
-    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/realtime") else {
-        let msg = serde_json::json!({
-            "type": "Error",
-            "message": "Voice conversation needs a NeboAI account or an xAI API key (Settings → Providers).",
-        });
-        let _ = socket.send(Message::Text(msg.to_string().into())).await;
-        return;
+    // The call's model, before anything else is built: a Voice model the
+    // call can't speak through fails it now, in plain words, never on
+    // another model in its place.
+    let leg = match realtime_leg(&state, q.agent_id.as_deref().unwrap_or_default()) {
+        Ok(leg) => leg,
+        Err(refusal) => {
+            warn!(?refusal, "the call has no realtime leg");
+            let (code, words) = leg_refusal_words(&refusal);
+            let mut msg = serde_json::json!({ "type": "Error", "message": words });
+            if let Some(code) = code {
+                msg["code"] = code.into();
+            }
+            let _ = socket.send(Message::Text(msg.to_string().into())).await;
+            return;
+        }
     };
 
     // Identity first, delivery rules second. The agent's soul is WHO is
@@ -2323,8 +2395,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         && q.transfer.is_some()
         && call_tree.as_ref().is_none_or(|t| t.has_transfer);
     let mut cfg = voice::realtime::RealtimeConfig {
-        endpoint,
-        bearer,
+        endpoint: leg.endpoint,
+        model: leg.model,
+        bearer: leg.bearer,
         bot_id: q.agent_id.clone(),
         tools: voice_tools(declare_transfer, telephony, &tree_intents),
         instructions,
@@ -3360,6 +3433,34 @@ fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+#[cfg(test)]
+mod realtime_leg_tests {
+    use super::{LegRefusal, janus_realtime_url, leg_refusal_words};
+    use agent::harness::turn::VoiceRefusal;
+
+    /// Nebo AI's Voice dials Janus's relay under the gateway root.
+    #[test]
+    fn janus_realtime_url_is_the_relay_under_the_gateway_root() {
+        assert_eq!(janus_realtime_url("https://janus.neboai.com/"), "wss://janus.neboai.com/v1/realtime");
+        assert_eq!(janus_realtime_url("http://127.0.0.1:9000"), "ws://127.0.0.1:9000/v1/realtime");
+    }
+
+    /// A Voice model a call can't speak through fails the call with a code
+    /// the desktop words in the owner's language and a plain English line,
+    /// never a provider's name.
+    #[test]
+    fn a_refused_voice_model_reads_as_one_plain_line_with_a_code() {
+        let (code, words) = leg_refusal_words(&LegRefusal::Voice(VoiceRefusal::Unsupported));
+        assert_eq!(code, Some("voice_model_unsupported"));
+        assert_eq!(words, "This pack's voice model isn't supported for calls yet. Pick another voice model in the pack.");
+        assert_eq!(leg_refusal_words(&LegRefusal::Voice(VoiceRefusal::Unreachable)).0, Some("voice_model_unreachable"));
+        for r in [LegRefusal::Voice(VoiceRefusal::Unsupported), LegRefusal::Voice(VoiceRefusal::Unreachable), LegRefusal::NoAccount] {
+            let words = leg_refusal_words(&r).1.to_ascii_lowercase();
+            assert!(!["xai", "grok", "openai", "x.ai"].iter().any(|v| words.contains(v)), "{words}");
+        }
+    }
 }
 
 #[cfg(test)]

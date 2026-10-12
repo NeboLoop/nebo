@@ -136,6 +136,18 @@ const callLostMessage = () => get(t)('voice.callLost');
 const callEndedMessage = () => get(t)('voice.callEndedStartAgain');
 
 /**
+ * A call the server refused before it started, by the code it sent: the
+ * pack's voice model can't take calls. Worded in the owner's language; the
+ * server's English line is for clients without these words.
+ */
+const REFUSALS: Record<string, string> = {
+	voice_model_unsupported: 'voice.voiceModelUnsupported',
+	voice_model_unreachable: 'voice.voiceModelUnreachable'
+};
+const refusalMessage = (code: unknown) =>
+	typeof code === 'string' && REFUSALS[code] ? get(t)(REFUSALS[code]) : null;
+
+/**
  * The longest a call's audio is kept open, once the call is over, for its
  * closing sound to finish.
  */
@@ -722,7 +734,9 @@ function createVoiceSessionStore() {
 					// far end would not take the call back is a wire detail: the
 					// owner gets the one sentence he can act on, and the reason
 					// goes to the log.
-					if (redialing) {
+					if (refusalMessage(msg.code)) {
+						transitionToError(refusalMessage(msg.code)!);
+					} else if (redialing) {
 						if (msg.message) log.warn('Voice session resume refused: ' + msg.message);
 						transitionToError(callLostMessage());
 					} else {

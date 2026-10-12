@@ -3131,7 +3131,9 @@
 		"callLost": "通话中断，且无法重新加入。请重新开始通话。",
 		"callEndedStartAgain": "通话已结束。请重新开始通话。",
 		"needsConsent": "语音对话会把你的麦克风音频发送到云端语音服务进行处理。请在语音面板中启用以表示同意。",
-		"startFailed": "无法开始通话。请重试。"
+		"startFailed": "无法开始通话。请重试。",
+		"voiceModelUnsupported": "此智能包的语音模型暂不支持通话。请在智能包中选择其他语音模型。",
+		"voiceModelUnreachable": "此智能包的语音模型未连接。请重新连接，或在智能包中选择其他语音模型。"
 	},
 	"flows": {
 		"none": "还没有流程",
@@ -4058,7 +4060,6 @@
 		"decisions": "决策",
 		"visionDefault": "该级别的模型，在它看到图像时",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "不可用",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebo 内置的安全默认设置（无决策模型）",
 		"decisionsDefaultOption": "Nebo AI · Jev（默认）",

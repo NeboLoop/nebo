@@ -3131,7 +3131,9 @@
 		"callLost": "The call dropped and could not be rejoined. Start it again.",
 		"callEndedStartAgain": "The call ended. Start it again.",
 		"needsConsent": "Voice conversation sends your microphone audio to a cloud voice service for processing. Enable it in the voice panel to consent.",
-		"startFailed": "Could not start the call. Try again."
+		"startFailed": "Could not start the call. Try again.",
+		"voiceModelUnsupported": "This pack's voice model isn't supported for calls yet. Pick another voice model in the pack.",
+		"voiceModelUnreachable": "This pack's voice model isn't connected. Connect it again, or pick another voice model in the pack."
 	},
 	"flows": {
 		"none": "No flows yet",
@@ -4058,7 +4060,6 @@
 		"decisions": "Decisions",
 		"visionDefault": "The level's model, when it sees images",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Not available",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebo's built-in safe defaults (no decision model)",
 		"decisionsDefaultOption": "Nebo AI · Jev (default)",

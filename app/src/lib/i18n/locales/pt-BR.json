@@ -3131,7 +3131,9 @@
 		"callLost": "A chamada caiu e não foi possível voltar. Comece de novo.",
 		"callEndedStartAgain": "A chamada terminou. Comece de novo.",
 		"needsConsent": "A conversa por voz envia o áudio do seu microfone para um serviço de voz na nuvem para processamento. Ative no painel de voz para consentir.",
-		"startFailed": "Não foi possível iniciar a chamada. Tente de novo."
+		"startFailed": "Não foi possível iniciar a chamada. Tente de novo.",
+		"voiceModelUnsupported": "O modelo de voz deste pacote ainda não é compatível com chamadas. Escolha outro modelo de voz no pacote.",
+		"voiceModelUnreachable": "O modelo de voz deste pacote não está conectado. Conecte-o novamente ou escolha outro modelo de voz no pacote."
 	},
 	"flows": {
 		"none": "Ainda sem fluxos",
@@ -4058,7 +4060,6 @@
 		"decisions": "Decisões",
 		"visionDefault": "O modelo do nível, quando vê imagens",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Não disponível",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Padrões seguros integrados da Nebo (sem modelo de decisão)",
 		"decisionsDefaultOption": "Nebo AI · Jev (padrão)",

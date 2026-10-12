@@ -3131,7 +3131,9 @@
 		"callLost": "Der Anruf wurde unterbrochen und konnte nicht fortgesetzt werden. Starte ihn neu.",
 		"callEndedStartAgain": "Der Anruf wurde beendet. Starte ihn neu.",
 		"needsConsent": "Sprachunterhaltungen senden dein Mikrofon-Audio zur Verarbeitung an einen Cloud-Sprachdienst. Aktiviere sie im Sprachbereich, um zuzustimmen.",
-		"startFailed": "Der Anruf konnte nicht gestartet werden. Versuche es erneut."
+		"startFailed": "Der Anruf konnte nicht gestartet werden. Versuche es erneut.",
+		"voiceModelUnsupported": "Das Sprachmodell dieses Pakets wird für Anrufe noch nicht unterstützt. Wähle im Paket ein anderes Sprachmodell.",
+		"voiceModelUnreachable": "Das Sprachmodell dieses Pakets ist nicht verbunden. Verbinde es erneut oder wähle im Paket ein anderes Sprachmodell."
 	},
 	"flows": {
 		"none": "Noch keine Abläufe",
@@ -4058,7 +4060,6 @@
 		"decisions": "Entscheidungen",
 		"visionDefault": "Das Modell der Stufe, wenn es Bilder sieht",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Nicht verfügbar",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebos integrierte sichere Standardwerte (kein Entscheidungsmodell)",
 		"decisionsDefaultOption": "Nebo AI · Jev (Standard)",

@@ -3131,7 +3131,9 @@
 		"callLost": "通話が切れ、再参加できませんでした。もう一度開始してください。",
 		"callEndedStartAgain": "通話が終了しました。もう一度開始してください。",
 		"needsConsent": "音声会話では、マイクの音声が処理のためクラウド音声サービスへ送信されます。同意するには音声パネルで有効にしてください。",
-		"startFailed": "通話を開始できませんでした。もう一度お試しください。"
+		"startFailed": "通話を開始できませんでした。もう一度お試しください。",
+		"voiceModelUnsupported": "このパックの音声モデルは、まだ通話に対応していません。パックで別の音声モデルを選んでください。",
+		"voiceModelUnreachable": "このパックの音声モデルが接続されていません。もう一度接続するか、パックで別の音声モデルを選んでください。"
 	},
 	"flows": {
 		"none": "フローはまだありません",
@@ -4058,7 +4060,6 @@
 		"decisions": "判断",
 		"visionDefault": "画像を見るときのそのレベルのモデル",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "利用不可",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Neboの組み込みの安全なデフォルト（判断モデルなし）",
 		"decisionsDefaultOption": "Nebo AI · Jev（デフォルト）",
