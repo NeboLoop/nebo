@@ -22,6 +22,7 @@
 
 mod audio;
 mod cast;
+mod parts;
 mod tag;
 
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 
 use crate::origin::ToolContext;
@@ -44,6 +46,19 @@ const MAX_SECONDS: u64 = 30;
 const SPEECH_MODEL: &str = "nebo-speech";
 /// The speed transcripts are made and billed as.
 const TRANSCRIBE_MODEL: &str = "nebo-transcribe";
+/// The plugin whose engine pulls a video's sound out as small speech and
+/// cuts a long recording in pauses, for a transcript.
+const MEDIA_PLUGIN: &str = "nebo-media";
+/// The longest part of a recording sent in one transcription request, in
+/// seconds; a longer one is cut into parts in its pauses.
+const TRANSCRIPT_PART: u32 = 1200;
+/// Seconds each part after the first also holds before its cut, heard
+/// again to match its voices with the part before's.
+const TRANSCRIPT_OVERLAP: u32 = 30;
+/// Parts transcribed at once.
+const TRANSCRIPT_PARALLEL: usize = 4;
+/// How long the plugin may take to pull the sound out and cut it.
+const SPEECH_PREP: Duration = Duration::from_secs(30 * 60);
 /// The model a character swap is made with when no `model` is named.
 const SWAP_MODEL: &str = "nebo-video-swap";
 /// The resolution a character swap is made at when none is named.
@@ -1232,6 +1247,10 @@ pub struct GenerateMediaTool {
     /// `<data_dir>/files/cast` and this bot's NeboAI connection.
     cast_root: Option<PathBuf>,
     hub: Option<Arc<comm::api::NeboAIApi>>,
+    /// The installed plugins: a transcript of a video, or of a recording
+    /// too long for one request, is prepared by the Nebo Media plugin's
+    /// engine (`MEDIA_PLUGIN`).
+    plugins: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 impl GenerateMediaTool {
@@ -1242,7 +1261,13 @@ impl GenerateMediaTool {
             triggers: TRIGGERS.iter().map(|t| t.to_string()).collect(),
             cast_root: None,
             hub: None,
+            plugins: None,
         }
+    }
+
+    pub fn with_plugin_store(mut self, plugins: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugins = Some(plugins);
+        self
     }
 
     #[cfg(test)]
@@ -1524,27 +1549,22 @@ impl GenerateMediaTool {
     /// word timings and speakers, saved as transcript JSON (`into`, else
     /// `<file>.transcript.json` beside it when that may be written, else
     /// in the default folder).
+    ///
+    /// An audio file the endpoint takes, under its size limit, goes as it
+    /// is, in one request. Anything else (a video, another format, a file
+    /// over the limit, however long) goes through the Nebo Media plugin's
+    /// engine: its sound as small mono speech, in parts of at most
+    /// `TRANSCRIPT_PART` seconds cut in pauses, transcribed
+    /// `TRANSCRIPT_PARALLEL` at a time and stitched into one transcript
+    /// (`parts`). Each part is an ordinary transcription request, billed as
+    /// one.
     async fn transcript(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
         let given = str_of(input, "file").ok_or("Give `file`: the audio or video file to transcribe.")?;
         let source = readable(ctx, &target.base, given)?;
         let filename = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let ext = source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-        if !ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(format!(
-                "{filename} cannot be transcribed as it is: send {}. Extract its audio to MP3 or M4A with the Nebo Media \
-                 plugin first, then transcribe that file.",
-                ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
-            ));
-        }
         let size = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
-        if size as usize > ai::transcribe::MAX_AUDIO_BYTES {
-            return Err(format!(
-                "{filename} is {} MB; a transcript takes up to {} MB. Extract its audio as a compressed MP3 or M4A with the \
-                 Nebo Media plugin (or split it), then transcribe that.",
-                size.div_ceil(1024 * 1024),
-                ai::transcribe::MAX_AUDIO_BYTES / (1024 * 1024)
-            ));
-        }
+        let as_is = ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) && size as usize <= ai::transcribe::MAX_AUDIO_BYTES;
         let path = match str_of(input, "into") {
             Some(into) => destination(&target.base, into)?,
             None => {
@@ -1560,9 +1580,14 @@ impl GenerateMediaTool {
                 }
             }
         };
-        let bytes = std::fs::read(&source).map_err(|e| format!("Could not read {}: {e}", source.display()))?;
-        let raw = self.media.transcribe(&filename, bytes, str_of(input, "language")).await?;
-        let t = audio::transcript(&raw);
+        let language = str_of(input, "language");
+        let (t, how) = if as_is {
+            let bytes = std::fs::read(&source).map_err(|e| format!("Could not read {}: {e}", source.display()))?;
+            (audio::transcript(&self.media.transcribe(&filename, bytes, language).await?), None)
+        } else {
+            let (t, how) = self.transcript_in_parts(ctx, &source, &filename, size, language).await?;
+            (t, Some(how))
+        };
         let json = serde_json::to_string_pretty(&t).map_err(|e| format!("The transcript could not be written: {e}"))?;
         std::fs::write(&path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
         let speakers: std::collections::BTreeSet<&str> =
@@ -1583,6 +1608,7 @@ impl GenerateMediaTool {
             path.display(),
             about.join(", ")
         )];
+        lines.extend(how);
         if t.words.is_empty() && !t.segments.is_empty() {
             lines.push("No word timings came back for this file; the segments carry the timing.".to_string());
         }
@@ -1602,6 +1628,138 @@ impl GenerateMediaTool {
                 .to_string(),
         );
         Ok((lines.join("\n"), vec![path]))
+    }
+
+    /// A recording the endpoint cannot take as it is, transcribed in parts:
+    /// the Nebo Media plugin writes its sound as mono speech in parts cut
+    /// in pauses, each part is sent (a failed one once more), and the
+    /// parts are stitched (`parts::stitch`). Any part that still fails
+    /// fails the whole: nothing partial is saved. With the line that says
+    /// how it was done.
+    async fn transcript_in_parts(
+        &self,
+        ctx: &ToolContext,
+        source: &Path,
+        filename: &str,
+        size: u64,
+        language: Option<&str>,
+    ) -> Result<(audio::Transcript, String), String> {
+        let _waiting = ctx.waiting.enter();
+        let why = if ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS
+            .contains(&source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default().as_str())
+        {
+            format!("{filename} is {} MB, over the {} MB a transcription request takes", size.div_ceil(1024 * 1024), ai::transcribe::MAX_AUDIO_BYTES / (1024 * 1024))
+        } else {
+            format!("{filename} is not an audio file a transcription request takes")
+        };
+        let binary = self.plugins.as_ref().and_then(|p| p.resolve(MEDIA_PLUGIN, "*").map(|b| (p.clone(), b)));
+        let Some((plugins, binary)) = binary else {
+            return Err(format!(
+                "{why}: its sound is pulled out (and a long recording cut into parts) by the Nebo Media plugin, which is \
+                 not installed. Install Nebo Media, then transcribe {filename} again."
+            ));
+        };
+        let work = tempfile::Builder::new()
+            .prefix("nebo-transcript-")
+            .tempdir()
+            .map_err(|e| format!("Could not make a folder for the parts: {e}"))?;
+        let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "audio".into());
+        let speech = work.path().join(format!("{stem}.m4a"));
+        let args: Vec<String> = vec![
+            "audio".into(),
+            "convert".into(),
+            source.to_string_lossy().into_owned(),
+            "--output".into(),
+            speech.to_string_lossy().into_owned(),
+            "--preset".into(),
+            "speech".into(),
+            "--split".into(),
+            TRANSCRIPT_PART.to_string(),
+            "--overlap".into(),
+            TRANSCRIPT_OVERLAP.to_string(),
+        ];
+        let ran = napp::PluginRuntime::new(MEDIA_PLUGIN, binary, plugins)
+            .with_deps()
+            .with_permissions()
+            .run_capture_args(&args, SPEECH_PREP)
+            .await
+            .map_err(|e| format!("{why}, and Nebo Media could not pull its sound out: {e}"))?;
+        let stdout = String::from_utf8_lossy(&ran.stdout);
+        if !ran.status.success() {
+            let said = String::from_utf8_lossy(&ran.stderr);
+            let said = said.trim();
+            if said.contains("--preset") || said.contains("--split") {
+                return Err(format!("{why}, and the installed Nebo Media is too old to cut it into parts: update Nebo Media, then transcribe {filename} again."));
+            }
+            return Err(format!("{why}, and Nebo Media could not pull its sound out: {}", said.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect::<String>()));
+        }
+        let (duration, parts) = parts::parse(&stdout)?;
+        let total = parts.len();
+        let each: Vec<audio::Transcript> = futures::stream::iter(parts.clone().into_iter().enumerate())
+            .map(|(k, part)| self.transcript_part(k, total, part, filename, language))
+            .buffered(TRANSCRIPT_PARALLEL)
+            .try_collect()
+            .await?;
+        let s = parts::stitch(&parts, each, duration);
+        let mut how = if total == 1 {
+            format!("{why}, so Nebo Media pulled its sound out as mono speech first.")
+        } else {
+            format!(
+                "{why}, so Nebo Media pulled its sound out as mono speech and cut it in pauses into {total} parts of up to {} \
+                 minutes, transcribed separately and stitched on one clock.",
+                TRANSCRIPT_PART / 60
+            )
+        };
+        if total > 1 && s.matched + s.unmatched > 0 {
+            how.push_str(&format!(
+                " Speaker labels follow the voices across parts by the {TRANSCRIPT_OVERLAP} s each part shares with the one before"
+            ));
+            how.push_str(&if s.unmatched == 0 {
+                ".".to_string()
+            } else {
+                format!(
+                    "; {} voice{} could not be matched to an earlier part and {} a label of {} own, so one person may appear \
+                     under two labels.",
+                    s.unmatched,
+                    if s.unmatched == 1 { "" } else { "s" },
+                    if s.unmatched == 1 { "has" } else { "have" },
+                    if s.unmatched == 1 { "its" } else { "their" }
+                )
+            });
+        }
+        Ok((s.transcript, how))
+    }
+
+    /// Part `k` (from 0) of `total`, transcribed with its voices' own
+    /// labels; a failed request is sent once more, and a second failure
+    /// fails the part.
+    async fn transcript_part(
+        &self,
+        k: usize,
+        total: usize,
+        part: parts::Part,
+        filename: &str,
+        language: Option<&str>,
+    ) -> Result<audio::Transcript, String> {
+        let clock = |s: f64| format!("{}:{:02}", (s / 60.0).floor() as u64, (s % 60.0).floor() as u64);
+        let bytes = std::fs::read(&part.file).map_err(|e| format!("Could not read part {} of {total}: {e}", k + 1))?;
+        let name = part.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("part-{}.m4a", k + 1));
+        let raw = match self.media.transcribe(&name, bytes.clone(), language).await {
+            Ok(raw) => raw,
+            Err(first) => {
+                tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
+                self.media.transcribe(&name, bytes, language).await.map_err(|e| {
+                    format!(
+                        "Part {} of {total} of {filename} ({}–{}) could not be transcribed, twice: {e}. Nothing was saved; \
+                         transcribe {filename} again.",
+                        k + 1,
+                        clock(part.keep),
+                        clock(part.end)
+                    )
+                })?
+            }
+        };
+        Ok(audio::labelled(&raw))
     }
 
     /// Makes the video and answers the result text and its file, which the
@@ -1996,7 +2154,7 @@ impl DynTool for GenerateMediaTool {
                 "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate. It shapes how the chosen voice speaks, not whose voice it is: pick the voice for the character first, and give each character their own direction." },
                 "lyrics": { "type": "string", "description": "Music: the words to sing, lines separated by newlines; [Verse], [Chorus], [Bridge] tags allowed. Left out: instrumental." },
                 "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
-                "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe (an absolute, `~/` or relative path)." },
+                "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe, as it is, of any length or size (an absolute, `~/` or relative path); never extract or split it first." },
                 "language": { "type": "string", "description": "Transcript: the spoken language code (e.g. en, es) when known. Left out: detected." },
                 "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Project work always goes inside its project, `~/NeboAI/Media/Projects/<project>/`, in sources/, voice/, music/, frames/, clips/, work/, versions/ or deliver/ (finals), e.g. `~/NeboAI/Media/Projects/lighthouse/frames/s1-start.png`. Left out: a name from the prompt, loose in the workspace." },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
@@ -2194,8 +2352,14 @@ mod tests {
     }
 
     type Reply = Box<dyn Fn(&str, usize) -> (u16, &'static str, Vec<u8>) + Send + Sync>;
+    /// A reply that also reads the request's body.
+    type BodyReply = Box<dyn Fn(&str, usize, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync>;
 
     async fn mock(reply: Reply) -> MockJanus {
+        mock_reading(Box::new(move |path, count, _| reply(path, count))).await
+    }
+
+    async fn mock_reading(reply: BodyReply) -> MockJanus {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<(String, String, Vec<(String, String)>)>>> = Arc::default();
@@ -2244,12 +2408,12 @@ mod tests {
                     let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
                     let count = {
                         let mut s = seen.lock().unwrap();
-                        s.push((line.clone(), body, headers));
+                        s.push((line.clone(), body.clone(), headers));
                         s.iter()
                             .filter(|(l, _, _)| l.split_whitespace().nth(1) == Some(path.as_str()))
                             .count()
                     };
-                    let (status, ctype, out) = reply(&path, count);
+                    let (status, ctype, out) = reply(&path, count, &body);
                     let head = format!(
                         "HTTP/1.1 {status} X\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                         out.len()
@@ -3098,14 +3262,233 @@ mod tests {
             assert!(body.contains(part), "{part} missing from the form");
         }
 
-        // A file the endpoint does not take is refused before it is sent.
+        // A file the endpoint does not take needs Nebo Media to pull its
+        // sound out; without it, nothing is sent.
         let mov = tmp.path().join("in/clip.mov");
         std::fs::write(&mov, b"x").unwrap();
         drop(seen);
         let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": mov.to_string_lossy()})).await;
-        assert!(result.is_error && result.content.contains("Extract its audio"), "{}", result.content);
+        assert!(result.is_error && result.content.contains("Nebo Media plugin, which is not installed"), "{}", result.content);
         assert_eq!(janus.seen.lock().unwrap().len(), 1);
         assert!(tool.validate_input(&json!({"kind": "transcript"})).unwrap_err().contains("`file`"));
+    }
+
+    /// A Nebo Media install whose binary is `script` (a shell script
+    /// standing in for the plugin, or the real binary copied in).
+    fn plugins_with_media(tmp: &Path, binary: &[u8]) -> Arc<napp::plugin::PluginStore> {
+        let installed = tmp.join("plugins");
+        let dir = installed.join(MEDIA_PLUGIN).join("0.5.8");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.json"),
+            json!({"id": MEDIA_PLUGIN, "slug": MEDIA_PLUGIN, "name": "Nebo Media", "version": "0.5.8", "platforms": {}}).to_string(),
+        )
+        .unwrap();
+        let bin = dir.join(MEDIA_PLUGIN);
+        std::fs::write(&bin, binary).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir_all(tmp.join("user_plugins")).unwrap();
+        Arc::new(napp::plugin::PluginStore::new(installed, tmp.join("user_plugins"), None))
+    }
+
+    /// Stands in for Nebo Media's `audio convert --preset speech --split`:
+    /// records its arguments, writes three parts and lists them.
+    fn three_part_plugin(args_log: &Path) -> Vec<u8> {
+        format!(
+            r#"#!/bin/sh
+echo "$@" > '{log}'
+out=""
+while [ $# -gt 0 ]; do [ "$1" = "--output" ] && out="$2"; shift; done
+d=$(dirname "$out"); s=$(basename "$out" .m4a)
+printf 'part one' > "$d/$s-1.m4a"; printf 'part two' > "$d/$s-2.m4a"; printf 'part three' > "$d/$s-3.m4a"
+echo "Result: $d/$s-1.m4a (speech)"
+echo "Parts: {{\"duration\": 3000.0, \"cut_in_pauses\": 2, \"cut_without_pause\": 0, \"parts\": [{{\"file\": \"$d/$s-1.m4a\", \"start\": 0, \"keep\": 0, \"end\": 1190.5}}, {{\"file\": \"$d/$s-2.m4a\", \"start\": 1160.5, \"keep\": 1190.5, \"end\": 2380.25}}, {{\"file\": \"$d/$s-3.m4a\", \"start\": 2350.25, \"keep\": 2380.25, \"end\": 3000.0}}]}}"
+"#,
+            log = args_log.display()
+        )
+        .into_bytes()
+    }
+
+    /// What Janus hears in each part, on the part's own clock: each part
+    /// labels its two voices its own way (the second part names them the
+    /// other way round), and the overlap repeats the end of the part before.
+    fn part_answer(body: &str) -> Option<&'static str> {
+        if body.contains("part one") {
+            Some(r#"{"language":"en","duration":1190.5,"words":[
+                {"text":"Welcome","start":0.5,"end":0.9,"speaker":0},{"text":"back.","start":1.0,"end":1.4,"speaker":0},
+                {"text":"Thanks","start":1170.0,"end":1170.4,"speaker":1},{"text":"for","start":1170.5,"end":1170.7,"speaker":1},{"text":"having","start":1170.8,"end":1171.2,"speaker":1},{"text":"me.","start":1171.3,"end":1171.6,"speaker":1},
+                {"text":"Sure.","start":1185.0,"end":1185.5,"speaker":0},{"text":"Okay.","start":1188.0,"end":1188.4,"speaker":0}]}"#)
+        } else if body.contains("part two") {
+            Some(r#"{"language":"en","duration":1219.75,"words":[
+                {"text":"Thanks","start":9.52,"end":9.9,"speaker":"A"},{"text":"for","start":10.0,"end":10.2,"speaker":"A"},{"text":"having","start":10.3,"end":10.7,"speaker":"A"},{"text":"me.","start":10.8,"end":11.1,"speaker":"A"},
+                {"text":"Sure.","start":24.48,"end":25.0,"speaker":"B"},{"text":"Okay.","start":27.55,"end":27.9,"speaker":"B"},
+                {"text":"So","start":31.0,"end":31.2,"speaker":"B"},{"text":"why?","start":31.3,"end":31.7,"speaker":"B"},
+                {"text":"Because.","start":33.0,"end":33.5,"speaker":"A"}]}"#)
+        } else if body.contains("part three") {
+            Some(r#"{"language":"en","duration":649.75,"words":[{"text":"Bye.","start":40.0,"end":40.4,"speaker":0},{"text":"Bye!","start":41.0,"end":41.3,"speaker":1}]}"#)
+        } else {
+            None
+        }
+    }
+
+    /// A long video: Nebo Media writes its sound in three parts, each is
+    /// transcribed (the second fails once and is sent again), and one
+    /// transcript comes back on the video's clock, in the same JSON as
+    /// one request makes, with each voice labelled the same in every part.
+    #[tokio::test]
+    async fn a_long_video_is_transcribed_in_parts_and_stitched() {
+        let failed_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let failed = failed_once.clone();
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(_)) if body.contains("part two") && !failed.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                (502, "text/plain", b"upstream hiccup".to_vec())
+            }
+            ("/v1/audio/transcriptions", Some(a)) => (200, "application/json", a.as_bytes().to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("args.txt");
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&log)));
+        let video = tmp.path().join("in/podcast.mp4");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        // Over the request limit, so it cannot go as it is.
+        std::fs::File::create(&video).unwrap().set_len(ai::transcribe::MAX_AUDIO_BYTES as u64 + 1).unwrap();
+
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        let args = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            args.starts_with(&format!("audio convert {} --output ", video.display())) && args.contains("--preset speech --split 1200 --overlap 30"),
+            "{args}"
+        );
+        assert_eq!(janus.seen.lock().unwrap().len(), 4, "three parts, the second sent twice");
+        assert!(result.content.contains("into 3 parts of up to 20 minutes"), "{}", result.content);
+        assert!(result.content.contains("Speaker labels follow the voices across parts"), "{}", result.content);
+        // Part three repeats no words of part two: its two voices cannot be placed.
+        assert!(result.content.contains("2 voices could not be matched to an earlier part"), "{}", result.content);
+
+        let out = tmp.path().join("in/podcast.transcript.json");
+        let t: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        // The same shape as one request's transcript.
+        assert_eq!(t.as_object().unwrap().keys().collect::<Vec<_>>(), ["duration", "language", "segments", "words"]);
+        assert_eq!(t["duration"], 3000.0);
+        let words: Vec<(String, f64, String)> = t["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| (w["text"].as_str().unwrap().to_string(), w["start"].as_f64().unwrap(), w["speaker"].as_str().unwrap().to_string()))
+            .collect();
+        let want = [
+            ("Welcome", 0.5, "S1"),
+            ("back.", 1.0, "S1"),
+            ("Thanks", 1170.0, "S2"),
+            ("for", 1170.5, "S2"),
+            ("having", 1170.8, "S2"),
+            ("me.", 1171.3, "S2"),
+            ("Sure.", 1185.0, "S1"),
+            ("Okay.", 1188.0, "S1"),
+            // Part two's own words, moved by its start (1160.5 s); "A" is S2, "B" is S1.
+            ("So", 1191.5, "S1"),
+            ("why?", 1191.8, "S1"),
+            ("Because.", 1193.5, "S2"),
+            // Part three heard no overlap words: its voices are new labels.
+            ("Bye.", 2390.25, "S3"),
+            ("Bye!", 2391.25, "S4"),
+        ];
+        assert_eq!(words.iter().map(|(a, b, c)| (a.as_str(), *b, c.as_str())).collect::<Vec<_>>(), want);
+        assert!(words.windows(2).all(|p| p[0].1 <= p[1].1), "times only move forward");
+        for seg in t["segments"].as_array().unwrap() {
+            assert!(seg.as_object().unwrap().keys().all(|k| ["text", "start", "end", "speaker"].contains(&k.as_str())), "{seg}");
+        }
+    }
+
+    /// A part that fails twice fails the whole transcript: nothing is saved.
+    #[tokio::test]
+    async fn a_part_that_fails_twice_fails_the_transcript() {
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(_)) if body.contains("part three") => (500, "text/plain", b"down".to_vec()),
+            ("/v1/audio/transcriptions", Some(a)) => (200, "application/json", a.as_bytes().to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&tmp.path().join("args.txt"))));
+        let video = tmp.path().join("in/podcast.mov");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"a small video").unwrap();
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("Part 3 of 3 of podcast.mov (39:40–50:00) could not be transcribed, twice"), "{}", result.content);
+        assert!(result.content.contains("Nothing was saved"), "{}", result.content);
+        assert!(!tmp.path().join("in/podcast.transcript.json").exists());
+        let tries = janus.seen.lock().unwrap().iter().filter(|(_, b, _)| b.contains("part three")).count();
+        assert_eq!(tries, 2, "the failed part is sent once more, no more");
+    }
+
+    /// With the real Nebo Media (`NEBO_MEDIA_BIN`, 0.5.8 or later) and
+    /// ffmpeg here: 45 minutes of talk made with ffmpeg, and a video, go
+    /// through the real engine; the cuts land in pauses and every time is
+    /// on the recording's clock. Skipped when either is missing.
+    #[tokio::test]
+    async fn the_real_engine_cuts_long_talk_in_pauses() {
+        let (Some(bin), Ok(ffmpeg)) = (std::env::var_os("NEBO_MEDIA_BIN"), which::which("ffmpeg")) else {
+            eprintln!("skipped: set NEBO_MEDIA_BIN to a Nebo Media binary (and have ffmpeg) to run this");
+            return;
+        };
+        // Each part's answer: one word 35 s into it, past the 30 s overlap.
+        let janus = mock(Box::new(|path, _| match path {
+            "/v1/audio/transcriptions" => (200, "application/json", br#"{"language":"en","words":[{"text":"word","start":35.0,"end":35.3}]}"#.to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &std::fs::read(bin).unwrap()));
+        let make = |args: &[&str]| {
+            let out = command::new::<std::process::Command>(&ffmpeg, command::Console::Hidden)
+                .args(["-hide_banner", "-loglevel", "error", "-y"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        // 45 minutes: 0.3 s words a tenth of a second apart, a 0.6 s pause after each 6 s sentence.
+        let talk = tmp.path().join("talk.wav");
+        make(&[
+            "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=2700:sample_rate=16000,volume='if(lt(mod(t\\,6.6)\\,6)*lt(mod(t\\,0.4)\\,0.3)\\,0.3\\,0)':eval=frame",
+            "-c:a", "pcm_s16le", &talk.to_string_lossy(),
+        ]);
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": talk.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("into 3 parts"), "{}", result.content);
+        let t: Value = serde_json::from_slice(&std::fs::read(tmp.path().join("talk.transcript.json")).unwrap()).unwrap();
+        let starts: Vec<f64> = t["words"].as_array().unwrap().iter().map(|w| w["start"].as_f64().unwrap()).collect();
+        assert_eq!(starts.len(), 3, "one word a part: {starts:?}");
+        assert_eq!(starts[0], 35.0);
+        for (k, s) in starts.iter().enumerate().skip(1) {
+            // Part k starts 30 s before its cut, so its word is 5 s after the cut: the cut is
+            // in a sentence's pause (6.0–6.6 s into each 6.6 s), never in a word, and no
+            // later than 20 minutes after the cut before.
+            let cut = s - 5.0;
+            let into = cut.rem_euclid(6.6);
+            assert!((5.99..6.61).contains(&into), "cut {k} at {cut} s is {into:.3} s into a sentence");
+            let before = if k == 1 { 0.0 } else { starts[k - 1] - 5.0 };
+            assert!(cut - before <= 1200.0 && cut > before + 600.0, "{starts:?}");
+        }
+        // A video in a format the endpoint does not take: its sound goes the same way.
+        let video = tmp.path().join("clip.mov");
+        make(&["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5", "-f", "lavfi", "-i", "sine=frequency=330:duration=5", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", &video.to_string_lossy()]);
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("pulled its sound out as mono speech first"), "{}", result.content);
     }
 
     #[test]
