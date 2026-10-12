@@ -35,6 +35,23 @@ use crate::reconnect::Disconnect;
 /// The hub's yamux keepalive writes every 30s, so three missed keepalives.
 const HUB_SILENCE: Duration = Duration::from_secs(90);
 
+/// The header the dial sets ("1") to take the hub's drain notice (the hub's
+/// `tunnel.DrainNoticeHeader`). A pod going away for a deploy then tells the
+/// bot first — [`DRAIN_NOTICE`] in a text frame — and keeps the session open
+/// until the requests already in it (a phone's upload) have been answered;
+/// the bot opens its next session at once, on another pod, and keeps
+/// serving this one meanwhile. Without it the pod's 1012 would end the
+/// session, and every request in it, a moment after the drain began.
+const DRAIN_NOTICE_HEADER: &str = "X-Nebo-Drain-Notice";
+
+/// The drain notice's text frame.
+const DRAIN_NOTICE: &str = "drain";
+
+/// The longest a drained session is kept serving the requests already in
+/// it. The hub closes it within its own grace (90 s) once they are done;
+/// this only bounds a hub that never does.
+const DRAINED_SESSION_LIMIT: Duration = Duration::from_secs(150);
+
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
     #[error("tunnel dial failed: {0}")]
@@ -133,6 +150,10 @@ async fn session(
         .map_err(|_| TunnelError::Dial("bot token is not a valid header value".into()))?;
     request.headers_mut().insert("Authorization", auth);
     claim_lease(request.headers_mut(), crate::lease::process());
+    request.headers_mut().insert(
+        DRAIN_NOTICE_HEADER,
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static("1"),
+    );
 
     // Each address the hostname resolves to is tried in a random order,
     // within its own connect and handshake limits (`tls::connect_ws`).
@@ -147,20 +168,26 @@ async fn session(
     online.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let closed = HubClose::default();
+    let drain = DrainNotice::default();
     let mut conn = yamux::Connection::new(
-        WsIo::new(ws, HUB_SILENCE, closed.clone()),
+        WsIo::new(ws, HUB_SILENCE, closed.clone(), drain.clone()),
         yamux::Config::default(),
         yamux::Mode::Server,
     );
     loop {
-        let ended = futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await;
+        let ended = tokio::select! {
+            ended = futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)) => ended,
+            () = drain.0.notified() => {
+                // The pod holding this session is going away. The caller
+                // dials the next one now; this one keeps serving what is
+                // already in it until the hub closes it.
+                info!("tunnel: hub is draining this connection; finishing its requests while the next one opens");
+                finish_drained(conn, local_addr.to_string());
+                return Ok(Ended::Closed(Disconnect::Drain));
+            }
+        };
         if let Some(Ok(stream)) = ended {
-            let addr = local_addr.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = proxy_stream(stream, &addr).await {
-                    debug!(error = %e, "tunnel: stream closed with error");
-                }
-            });
+            serve_stream(stream, local_addr);
             continue;
         }
         let close = closed.get();
@@ -187,6 +214,41 @@ async fn session(
         return Ok(Ended::Closed(how));
     }
 }
+
+/// Pipe one hub-opened stream to the local server on its own task.
+fn serve_stream(stream: yamux::Stream, local_addr: &str) {
+    let addr = local_addr.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = proxy_stream(stream, &addr).await {
+            debug!(error = %e, "tunnel: stream closed with error");
+        }
+    });
+}
+
+/// Keep serving a session the hub is draining (it sent [`DRAIN_NOTICE`]):
+/// the requests already in it — an upload from the phone — finish here while
+/// the bot's next session takes the new ones. The hub closes it once they
+/// are done; [`DRAINED_SESSION_LIMIT`] bounds a hub that never does.
+fn finish_drained(mut conn: yamux::Connection<WsIo>, local_addr: String) {
+    tokio::spawn(async move {
+        let serve = async {
+            while let Some(Ok(stream)) =
+                futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await
+            {
+                serve_stream(stream, &local_addr);
+            }
+        };
+        match tokio::time::timeout(DRAINED_SESSION_LIMIT, serve).await {
+            Ok(()) => debug!("tunnel: the drained connection finished its requests"),
+            Err(_) => info!("tunnel: the drained connection outlived its limit; closed it"),
+        }
+    });
+}
+
+/// The hub's drain notice ([`DRAIN_NOTICE`]), raised by the carrier that
+/// reads it and awaited by `session`.
+#[derive(Clone, Default)]
+struct DrainNotice(std::sync::Arc<tokio::sync::Notify>);
 
 /// The close frame the hub ended the tunnel with (code, reason), shared
 /// between the carrier that reads it and `run`, which tells a revoke and a
@@ -814,6 +876,140 @@ mod tests {
         assert!(gap < Duration::from_secs(5) + Duration::from_millis(250), "{gap:?}");
     }
 
+    /// The hub's end of a carrier in these tests: yamux over binary frames,
+    /// with the drain notice sent ahead of its first write when `notice`.
+    struct HubSide {
+        ws: WebSocketStream<TcpStream>,
+        buf: tokio_tungstenite::tungstenite::Bytes,
+        notice: bool,
+    }
+
+    impl AsyncRead for HubSide {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, out: &mut [u8]) -> Poll<io::Result<usize>> {
+            loop {
+                if !self.buf.is_empty() {
+                    let n = out.len().min(self.buf.len());
+                    let chunk = self.buf.split_to(n);
+                    out[..n].copy_from_slice(&chunk);
+                    return Poll::Ready(Ok(n));
+                }
+                match futures::ready!(Pin::new(&mut self.ws).poll_next(cx)) {
+                    Some(Ok(WsMessage::Binary(data))) => self.buf = data,
+                    Some(Ok(WsMessage::Close(_))) | None => return Poll::Ready(Ok(0)),
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
+                }
+            }
+        }
+    }
+
+    impl AsyncWrite for HubSide {
+        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, data: &[u8]) -> Poll<io::Result<usize>> {
+            futures::ready!(Pin::new(&mut self.ws).poll_ready(cx)).map_err(io::Error::other)?;
+            if self.notice {
+                self.notice = false;
+                Pin::new(&mut self.ws)
+                    .start_send(WsMessage::Text(DRAIN_NOTICE.into()))
+                    .map_err(io::Error::other)?;
+                futures::ready!(Pin::new(&mut self.ws).poll_ready(cx)).map_err(io::Error::other)?;
+            }
+            Pin::new(&mut self.ws)
+                .start_send(WsMessage::Binary(tokio_tungstenite::tungstenite::Bytes::copy_from_slice(data)))
+                .map_err(io::Error::other)?;
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.ws).poll_flush(cx).map_err(io::Error::other)
+        }
+
+        fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.ws).poll_close(cx).map_err(io::Error::other)
+        }
+    }
+
+    /// The upload a hub rollout cut on 2026-10-11: the phone's request was
+    /// inside the tunnel when the pod holding it drained. With the drain
+    /// notice the bot hands back to its caller at once — which dials the
+    /// next pod — while the old session keeps serving, and the request in
+    /// it is answered whole after `run` has returned. The dial asks for the
+    /// notice.
+    #[tokio::test]
+    async fn a_drain_notice_redials_and_finishes_the_request_in_flight() {
+        use futures::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // The bot's local server: answers once the body is in and the test
+        // releases it.
+        let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = local.local_addr().unwrap().to_string();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (mut sock, _) = local.accept().await.unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !got.ends_with(b"video") {
+                let n = sock.read(&mut buf).await.unwrap();
+                assert!(n > 0, "the request ended before its body");
+                got.extend_from_slice(&buf[..n]);
+            }
+            released.await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\ndone:video")
+                .await
+                .unwrap();
+            sock.shutdown().await.unwrap();
+        });
+
+        // The hub: takes the dial, sends the notice ahead of its first
+        // frame, and carries one upload into the tunnel.
+        let (listener, url) = bind_cell().await;
+        let (asked_tx, asked) = tokio::sync::oneshot::channel::<Option<String>>();
+        let (answer_tx, answer) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+            let (sock, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_hdr_async(sock, |req: &Request, resp: Response| {
+                let header = req.headers().get(DRAIN_NOTICE_HEADER).and_then(|v| v.to_str().ok()).map(str::to_owned);
+                let _ = asked_tx.send(header);
+                Ok(resp)
+            })
+            .await
+            .unwrap();
+            let hub_side = HubSide { ws, buf: Default::default(), notice: true };
+            let mut conn = yamux::Connection::new(hub_side, yamux::Config::default(), yamux::Mode::Client);
+            let mut stream = futures::future::poll_fn(|cx| conn.poll_new_outbound(cx)).await.unwrap();
+            tokio::spawn(async move {
+                while futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await.is_some() {}
+            });
+            stream
+                .write_all(b"POST /api/v1/files/upload HTTP/1.1\r\nHost: bot\r\nContent-Length: 5\r\n\r\nvideo")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            let mut got = Vec::new();
+            let _ = stream.read_to_end(&mut got).await;
+            let _ = answer_tx.send(got);
+        });
+
+        let online = std::sync::atomic::AtomicBool::new(false);
+        let how = tokio::time::timeout(Duration::from_secs(5), run(&url, "t", &local_addr, &online))
+            .await
+            .expect("run returned on the notice")
+            .expect("the session came up");
+        assert_eq!(how, Disconnect::Drain);
+        assert_eq!(asked.await.unwrap().as_deref(), Some("1"), "the dial asks for the drain notice");
+
+        // `run` has returned and the caller is free to redial; the request
+        // already in the old session is still answered, whole.
+        release.send(()).unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), answer).await.expect("answered").unwrap();
+        assert!(
+            String::from_utf8_lossy(&got).ends_with("done:video"),
+            "answer = {:?}",
+            String::from_utf8_lossy(&got)
+        );
+    }
+
     /// A hub that goes silent must fail the read rather than hang forever —
     /// that failure is what makes the watcher redial.
     #[tokio::test]
@@ -834,7 +1030,7 @@ mod tests {
         let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
             .await
             .unwrap();
-        let mut io = WsIo::new(ws, Duration::from_millis(200), Default::default());
+        let mut io = WsIo::new(ws, Duration::from_millis(200), Default::default(), Default::default());
 
         let mut buf = [0u8; 4];
         assert_eq!(io.read(&mut buf).await.unwrap(), 4);
@@ -856,13 +1052,16 @@ mod tests {
 /// the session and the watcher redials.
 ///
 /// The hub's close frame is kept in `closed`, so `run` can tell a revoke
-/// (1008 [`REVOKED_CLOSE_REASON`]) and a drain (1012) from a routine close.
+/// (1008 [`REVOKED_CLOSE_REASON`]) and a drain (1012) from a routine close,
+/// and its drain notice ([`DRAIN_NOTICE`], a text frame) is raised on
+/// `drain`.
 struct WsIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     buf: tokio_tungstenite::tungstenite::Bytes,
     hub_silence: Duration,
     deadline: Pin<Box<tokio::time::Sleep>>,
     closed: HubClose,
+    drain: DrainNotice,
 }
 
 impl WsIo {
@@ -870,6 +1069,7 @@ impl WsIo {
         ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
         hub_silence: Duration,
         closed: HubClose,
+        drain: DrainNotice,
     ) -> Self {
         Self {
             ws,
@@ -877,6 +1077,7 @@ impl WsIo {
             hub_silence,
             deadline: Box::pin(tokio::time::sleep(hub_silence)),
             closed,
+            drain,
         }
     }
 }
@@ -913,7 +1114,13 @@ impl AsyncRead for WsIo {
                     return Poll::Ready(Ok(0));
                 }
                 Poll::Ready(None) => return Poll::Ready(Ok(0)),
-                Poll::Ready(Some(Ok(_))) => self.reset_deadline(), // ping/pong/text — liveness, not bytes
+                Poll::Ready(Some(Ok(WsMessage::Text(text)))) => {
+                    self.reset_deadline();
+                    if text.as_str() == DRAIN_NOTICE {
+                        self.drain.0.notify_one();
+                    }
+                }
+                Poll::Ready(Some(Ok(_))) => self.reset_deadline(), // ping/pong — liveness, not bytes
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
                 Poll::Pending => {
                     return match self.deadline.as_mut().poll(cx) {
