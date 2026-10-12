@@ -276,7 +276,6 @@
 		"goalLastCheck": "pemeriksaan terakhir: {reason}",
 		"goalPaused": "Dijeda. Pesan Anda berikutnya melanjutkannya.",
 		"goalStopped": "Tujuan dijeda. Bilang saja jika ingin melanjutkannya.",
-		"resumedActivity": "Masih bekerja: {tool}",
 		"waitingForYou": "Menunggu Anda",
 		"waitingOnYou": "{name} menunggu Anda",
 		"seeConversation": "Lihat percakapan",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Masuk dan saya akan melanjutkan dari tempat saya berhenti.",
 		"connectAccountFor": "{label} untuk {employee}",
 		"submit": "Kirim",
-		"other": "Lainnya…",
 		"askedReceipt": "Ditanyakan",
 		"copyCode": "Salin kode",
 		"copied": "Tersalin!",
@@ -495,6 +493,7 @@
 		"fileGone": "File ini sudah tidak tersedia.",
 		"notDelivered": "Pesan tidak terkirim. Koneksi terputus, jadi kirim lagi.",
 		"call": {
+			"ask": "Menunggu jawaban Anda",
 			"read": "Baca",
 			"write": "Tulis",
 			"edit": "Edit",

@@ -276,7 +276,6 @@
 		"goalLastCheck": "lần kiểm tra gần nhất: {reason}",
 		"goalPaused": "Đã tạm dừng. Tin nhắn tiếp theo của bạn sẽ tiếp tục.",
 		"goalStopped": "Đã tạm dừng mục tiêu. Hãy nói khi bạn muốn tiếp tục.",
-		"resumedActivity": "Vẫn đang làm: {tool}",
 		"waitingForYou": "Đang chờ bạn",
 		"waitingOnYou": "{name} đang chờ bạn",
 		"seeConversation": "Xem cuộc trò chuyện",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Đăng nhập đi rồi tôi làm tiếp từ chỗ đang dở.",
 		"connectAccountFor": "{label} cho {employee}",
 		"submit": "Gửi",
-		"other": "Khác…",
 		"askedReceipt": "Đã hỏi",
 		"copyCode": "Sao chép mã",
 		"copied": "Đã sao chép!",
@@ -495,6 +493,7 @@
 		"fileGone": "Tệp này không còn khả dụng nữa.",
 		"notDelivered": "Tin nhắn chưa được gửi đến. Kết nối bị ngắt, hãy gửi lại.",
 		"call": {
+			"ask": "Đang chờ câu trả lời của bạn",
 			"read": "Đọc",
 			"write": "Ghi",
 			"edit": "Sửa",

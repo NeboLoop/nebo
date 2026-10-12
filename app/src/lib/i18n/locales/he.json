@@ -276,7 +276,6 @@
 		"goalLastCheck": "בדיקה אחרונה: {reason}",
 		"goalPaused": "מושהה. ההודעה הבאה שלך תחדש אותו.",
 		"goalStopped": "היעד הושהה. תגיד לי כשתרצה להמשיך.",
-		"resumedActivity": "עדיין עובד: {tool}",
 		"waitingForYou": "ממתין לך",
 		"waitingOnYou": "{name} ממתין לך",
 		"seeConversation": "הצג את השיחה",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "התחבר ואמשיך מהנקודה שבה עצרתי.",
 		"connectAccountFor": "{label} עבור {employee}",
 		"submit": "שלח",
-		"other": "אחר…",
 		"askedReceipt": "נשאל",
 		"copyCode": "העתק קוד",
 		"copied": "הועתק!",
@@ -495,6 +493,7 @@
 		"fileGone": "הקובץ הזה כבר לא זמין.",
 		"notDelivered": "ההודעה לא נמסרה. החיבור נותק, אז שלח אותה שוב.",
 		"call": {
+			"ask": "ממתין לתשובה שלך",
 			"read": "קריאה",
 			"write": "כתיבה",
 			"edit": "עריכה",

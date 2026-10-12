@@ -21,7 +21,8 @@
   import AppListingCard from './AppListingCard.svelte';
   import type { AppListingPayload } from './AppListingCard.svelte';
   import type { EmployeeConsentPayload } from './ConsentChip.svelte';
-  import type { AskWidgetDef } from './AskWidget.svelte';
+  import { SKIP_VALUE, type AskWidgetDef } from './AskWidget.svelte';
+  import { isOpenQuestion, takesWords } from '$lib/chat/ask';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
   import { flushPendingSave, hasPendingSave, viewerKey } from '$lib/sheet/pending';
@@ -1502,6 +1503,9 @@
     }
     return null;
   });
+  // A question waits on the owner's words: the composer is where he
+  // answers it.
+  const answering = $derived(isLoading && messages.some((m) => m.type === 'ask' && m.response == null && !m.cancelled && takesWords(m.widgets)));
   /** The working line's words: the running call's, else the turn's status. */
   const workingLine = $derived(runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working'));
 
@@ -2174,6 +2178,21 @@
           <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-s-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
         </details>
 
+      {:else if msg.type === 'ask' && isOpenQuestion(msg.widgets)}
+        <!-- An open question is the employee's message: the owner answers
+             it in the composer, like any reply. Skip lets the work go on
+             without an answer. -->
+        <div class="max-w-[640px] mt-3">
+          <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none">
+            {@html renderMarkdown(msg.prompt)}
+          </div>
+          {#if msg.response === SKIP_VALUE}
+            <p class="mt-1 text-xs text-base-content/50">{$t('common.skipped')}</p>
+          {:else if msg.response == null && !msg.cancelled && isLoading}
+            <button type="button" class="mt-1 text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => onasksubmit?.(msg.requestId, SKIP_VALUE)}>{$t('common.skip')}</button>
+          {/if}
+        </div>
+
       {:else if msg.type === 'ask'}
         <div class="max-w-[640px] mt-3">
           <AskWidget
@@ -2511,7 +2530,7 @@
       {agentId}
       {threadId}
       {sessionId}
-      {placeholder}
+      placeholder={answering ? $t('chat.typeYourAnswer') : placeholder}
       {allAgents}
       onsend={handleSend}
       {onstop}

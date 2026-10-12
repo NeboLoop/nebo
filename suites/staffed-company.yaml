@@ -104,3 +104,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc112-pinned-conversations-head-a-paged-list.yaml
   - ../fixtures/staffed-company/conversation/sc113-a-conversation-runs-in-the-mode-picked-for-it.yaml
   - ../fixtures/staffed-company/conversation/sc114-what-a-conversation-starts-holds-to-its-stricter-mode.yaml
+  - ../fixtures/staffed-company/conversation/sc115-the-owners-next-message-answers-an-open-question.yaml

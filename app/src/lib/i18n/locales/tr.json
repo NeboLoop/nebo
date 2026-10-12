@@ -276,7 +276,6 @@
 		"goalLastCheck": "son kontrol: {reason}",
 		"goalPaused": "Duraklatıldı. Bir sonraki mesajınız devam ettirir.",
 		"goalStopped": "Hedef duraklatıldı. Devam etmek istediğinde söylemen yeterli.",
-		"resumedActivity": "Hâlâ çalışıyor: {tool}",
 		"waitingForYou": "Sizi bekliyor",
 		"waitingOnYou": "{name} sizi bekliyor",
 		"seeConversation": "Konuşmayı gör",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Bağlanın, kaldığım yerden devam edeyim.",
 		"connectAccountFor": "{employee} için {label}",
 		"submit": "Gönder",
-		"other": "Diğer…",
 		"askedReceipt": "Soruldu",
 		"copyCode": "Kodu kopyala",
 		"copied": "Kopyalandı!",
@@ -495,6 +493,7 @@
 		"fileGone": "Bu dosya artık kullanılamıyor.",
 		"notDelivered": "Mesaj iletilmedi. Bağlantı koptu, tekrar gönderin.",
 		"call": {
+			"ask": "Yanıtınızı bekliyor",
 			"read": "Oku",
 			"write": "Yaz",
 			"edit": "Düzenle",

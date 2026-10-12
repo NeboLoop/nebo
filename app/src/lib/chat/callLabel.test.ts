@@ -109,3 +109,28 @@ describe('helpers', () => {
     expect(isCallName('read')).toBe(false);
   });
 });
+
+// Live 2026-10-11: the owner read "working with ask_owner…" over the
+// question his employee was asking him. A question reads as one: waiting
+// on his answer while it runs, then what was asked and what he answered.
+describe('a question to the owner', () => {
+  const q = 'Are you flying from Salt Lake City, and on what dates?';
+  const ask = (t: Partial<CallTool>) => tool({ name: 'ask_owner', call: { kind: 'ask', params: { question: q } }, ...t });
+
+  it('waits on his answer while it runs, never naming the tool', () => {
+    const running = ask({ status: 'running' });
+    expect(callLine(running, EN)).toMatchObject({ label: 'Waiting for your answer', subject: '' });
+    expect(groupSummary([running], EN)).toBe('Waiting for your answer…');
+    expect(callLine(running, JA).label).not.toBe(callLine(running, EN).label);
+    for (const t of [EN, JA]) expect(groupSummary([running], t)).not.toMatch(/ask[_ ]owner/);
+  });
+
+  it('once answered, reads as what was asked and what he said', () => {
+    expect(callLine(ask({ response: JSON.stringify({ response: 'Yes, Oct 20 to 25', note: 'x' }) }), EN)).toMatchObject({ label: 'Asked', subject: q });
+    expect(resultLine(ask({ response: JSON.stringify({ response: 'Yes, Oct 20 to 25', note: 'x' }) }), EN)).toBe('Yes, Oct 20 to 25');
+    expect(resultLine(ask({ response: JSON.stringify({ picked: 'Marketing' }) }), EN)).toBe('Marketing');
+    expect(resultLine(ask({ response: JSON.stringify({ picked: ['Mon', 'Wed'] }) }), EN)).toBe('Mon, Wed');
+    expect(resultLine(ask({ response: JSON.stringify({ own_words: 'k', note: 'x' }) }), EN)).toBe('k');
+    expect(resultLine(ask({ response: 'The owner skipped this question. Make a reasonable assumption.' }), EN)).toBe('Skipped');
+  });
+});

@@ -276,7 +276,6 @@
 		"goalLastCheck": "laatste controle: {reason}",
 		"goalPaused": "Gepauzeerd. Je volgende bericht hervat het.",
 		"goalStopped": "Doel gepauzeerd. Zeg het als je verder wilt.",
-		"resumedActivity": "Nog bezig: {tool}",
 		"waitingForYou": "Wacht op jou",
 		"waitingOnYou": "{name} wacht op je",
 		"seeConversation": "Gesprek bekijken",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Log in, dan pak ik het weer op waar ik gebleven was.",
 		"connectAccountFor": "{label} voor {employee}",
 		"submit": "Verzenden",
-		"other": "Anders…",
 		"askedReceipt": "Gevraagd",
 		"copyCode": "Code kopiëren",
 		"copied": "Gekopieerd!",
@@ -495,6 +493,7 @@
 		"fileGone": "Dit bestand is niet meer beschikbaar.",
 		"notDelivered": "Bericht niet afgeleverd. De verbinding viel weg, dus verstuur het opnieuw.",
 		"call": {
+			"ask": "Wacht op je antwoord",
 			"read": "Lezen",
 			"write": "Schrijven",
 			"edit": "Bewerken",

@@ -96,7 +96,8 @@ pub fn cap(text: &str, max: usize) -> String {
 /// `microphone`, `camera`, `input`, `app`); `search`
 /// {query}; `fetch` {url}; `request` {url, method?}; `browser` {step,
 /// url?}; `computer` {step, app?, target?} for a click or a look at the
-/// screen; `research` {query}; `helper` {desc}; `task` {subject}; `mcp`
+/// screen; `research` {query}; `helper` {desc}; `task` {subject}; `ask`
+/// {question} for a question to the owner; `mcp`
 /// {service, tool}; `action` {verb, noun} where `verb` is one of
 /// [`strap_verb`]'s keys, or {action, noun} for any other action; `tool`
 /// {name}. `action`, `mcp` and `tool` also carry `target` when the call
@@ -189,6 +190,10 @@ pub fn call(tool_name: &str, input: &serde_json::Value) -> Call {
         "deep_research" | "quick_research" => return Call::new("research", &[("query", s("query"))]),
         "delegate" => return Call::new("helper", &[("desc", cap(&s("description"), DESCRIPTION_CAP))]),
         "create_task" => return Call::new("task", &[("subject", cap(&s("subject"), DESCRIPTION_CAP))]),
+        // A question to the owner reads as one ("Waiting for your answer",
+        // then "Asked · the question"), never as the tool's name (live
+        // 2026-10-11: "working with ask_owner…" over his own question).
+        "ask_owner" => return Call::new("ask", &[("question", cap(&s("question"), 200))]),
         _ => {}
     }
     if tool_name == "os" {
@@ -325,6 +330,19 @@ mod tests {
         assert_eq!((c.kind, params(&c)), ("action", vec![("action", "frobnicate"), ("noun", "app")]));
         let c = call("send_invoice", &json!({"name": "ACME"}));
         assert_eq!((c.kind, params(&c)), ("tool", vec![("name", "send invoice"), ("target", "ACME")]));
+    }
+
+    /// Live 2026-10-11: the owner's phone read "working with ask_owner…"
+    /// over the question it was asking him. A question to the owner is the
+    /// `ask` kind with the question as its value; the tool's name is never
+    /// a word on his screen.
+    #[test]
+    fn a_question_to_the_owner_is_an_ask_never_the_tools_name() {
+        let c = call("ask_owner", &json!({"question": "Are you flying from Salt Lake City?"}));
+        assert_eq!((c.kind, params(&c)), ("ask", vec![("question", "Are you flying from Salt Lake City?")]));
+        let c = call("ask_owner", &json!({"question": "Which one?", "options": ["A", "B"]}));
+        assert_eq!((c.kind, params(&c)), ("ask", vec![("question", "Which one?")]));
+        assert!(!serde_json::to_string(&c).unwrap().contains("ask_owner"));
     }
 
     /// A description the model wrote is cut at 60 graphemes, on one line;

@@ -276,7 +276,6 @@
 		"goalLastCheck": "آخر تحقق: {reason}",
 		"goalPaused": "متوقف مؤقتًا. رسالتك التالية تستأنفه.",
 		"goalStopped": "تم إيقاف الهدف مؤقتًا. أخبرني عندما تريد استئنافه.",
-		"resumedActivity": "ما زال يعمل: {tool}",
 		"waitingForYou": "بانتظارك",
 		"waitingOnYou": "{name} بانتظارك",
 		"seeConversation": "عرض المحادثة",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "سجّل الدخول وسأكمل من حيث توقفت.",
 		"connectAccountFor": "{label} لـ {employee}",
 		"submit": "إرسال",
-		"other": "أخرى...",
 		"askedReceipt": "تم السؤال",
 		"copyCode": "نسخ الكود",
 		"copied": "تم النسخ!",
@@ -495,6 +493,7 @@
 		"fileGone": "هذا الملف لم يعد متاحًا.",
 		"notDelivered": "لم تُسلَّم الرسالة. انقطع الاتصال، فأرسلها مرة أخرى.",
 		"call": {
+			"ask": "في انتظار إجابتك",
 			"read": "قراءة",
 			"write": "كتابة",
 			"edit": "تعديل",

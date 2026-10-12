@@ -1137,9 +1137,9 @@ export function createChatController(config: ChatControllerConfig) {
       const run = resp.activeRun;
       if (run) {
         isLoading = true;
-        activityStatus = run.currentTool
-          ? get(t)('chat.resumedActivity', { values: { tool: run.currentTool } })
-          : get(t)('chat.working');
+        // The running call's raw tool name is never a word on his screen
+        // (live 2026-10-11: "ask_owner"); its own row names it, worded.
+        activityStatus = get(t)('chat.working');
       }
       // ...and if that work is parked on a question, the card the live event
       // carried is rendered here too, answerable the same way.
