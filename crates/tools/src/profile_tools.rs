@@ -318,19 +318,11 @@ impl DynTool for ProfileTool {
         Ok(())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         match self.op {
             ProfileOp::Get => "checking the account".to_string(),
             ProfileOp::Update => "updating my profile".to_string(),
             ProfileOp::OpenBilling => "opening billing".to_string(),
-        }
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        match self.op {
-            ProfileOp::Get => "Checked the account".to_string(),
-            ProfileOp::Update => "Updated my profile".to_string(),
-            ProfileOp::OpenBilling => "Opened billing".to_string(),
         }
     }
 

@@ -5,19 +5,24 @@
 //! next tool call. The verdict goes out on the stream (`TextVerdict`) and is
 //! stored on the segment's content block, so a reloaded thread renders the
 //! same. The segment still streaming at the end of the turn has none: it is
-//! the answer and stays in view. When the turn ends with every segment folded
-//! and no answer after them, the longest folded segment is shown instead, so
-//! a turn always leaves something to read.
+//! the answer.
+//!
+//! Text between calls is the employee telling the owner what it found and
+//! what it is doing, in whatever language it writes: it is always shown. The
+//! one thing that folds is a segment that says word for word what an earlier
+//! one in the turn said (`normalized`), and an earlier segment the answer
+//! repeats word for word. No opener words, no length or sentence rules, no
+//! count of calls: those read English only and folded findings.
 
 use serde::{Deserialize, Serialize};
 
-/// A segment's verdict.
+/// A segment's verdict. The stored format stays `shown` / `folded`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fold {
-    /// Prose in the reply.
+    /// Text the owner reads.
     Shown,
-    /// A note row inside the turn's work.
+    /// A word-for-word repeat of text the turn already shows.
     Folded,
 }
 
@@ -30,99 +35,16 @@ impl Fold {
     }
 }
 
-/// A segment this many words long, or this many sentences, says something.
-const SUBSTANTIAL_WORDS: usize = 30;
-const SUBSTANTIAL_SENTENCES: usize = 3;
-/// After this many tool calls a short segment is a step in the work.
-const DEEP_IN_TURN: usize = 3;
-
-/// Words a segment opens with when it only announces the next step.
-const CONTINUATION_OPENERS: &[&str] = &[
-    "now",
-    "next",
-    "let me",
-    "let's",
-    "i'll",
-    "i will",
-    "first",
-    "then",
-    "ok",
-    "okay",
-    "alright",
-    "all right",
-    "checking",
-    "looking",
-    "running",
-    "trying",
-    "good",
-    "great",
-    "perfect",
-    "time to",
-    "going to",
-    "also",
-    "so",
-];
-
-/// The verdict for a segment the next tool call has closed. `first_in_turn`:
-/// no text came before it in the turn; `tools_before`: the tool calls the
-/// turn made before it.
-///
-/// A question to the owner and a segment that says something (long, or
-/// several sentences) stay. One that only announces the next step folds.
-/// Otherwise the first text of the turn stays, and a short one deep in the
-/// turn is a step in the work.
-pub fn verdict(text: &str, first_in_turn: bool, tools_before: usize) -> Fold {
-    let text = text.trim();
-    if asks(text) || substantial(text) {
-        return Fold::Shown;
-    }
-    if announces_next_step(text) {
-        return Fold::Folded;
-    }
-    if !first_in_turn && tools_before >= DEEP_IN_TURN {
-        return Fold::Folded;
-    }
-    Fold::Shown
-}
-
-/// Ends on a question to the reader.
-fn asks(text: &str) -> bool {
-    text.trim_end_matches(|c: char| {
-        matches!(c, '*' | '_' | '`' | '"' | '\'' | ')' | '”' | '’') || c.is_whitespace()
-    })
-    .ends_with('?')
-}
-
-fn substantial(text: &str) -> bool {
-    let words = text
-        .split_whitespace()
-        .filter(|w| w.chars().any(char::is_alphanumeric))
-        .count();
-    let sentences = text
-        .split(['.', '!', '?', '\n'])
-        .filter(|s| {
-            s.split_whitespace()
-                .filter(|w| w.chars().any(char::is_alphanumeric))
-                .count()
-                >= 3
-        })
-        .count();
-    words >= SUBSTANTIAL_WORDS || sentences >= SUBSTANTIAL_SENTENCES
-}
-
-/// Opens with a continuation word ("Let me…", "Now…", "Great,…").
-fn announces_next_step(text: &str) -> bool {
-    let lead: String = text
-        .trim_start_matches(|c: char| !c.is_alphanumeric())
-        .chars()
-        .take(24)
-        .collect::<String>()
-        .to_lowercase()
-        .replace('’', "'");
-    CONTINUATION_OPENERS.iter().any(|opener| {
-        lead.strip_prefix(opener)
-            .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
-    })
+/// A segment's text as compared for a repeat: its runs of letters and
+/// digits (any script: `char::is_alphanumeric` is Unicode-aware), lowercased
+/// and joined by one space. Whitespace, punctuation (`.`, `。`, `！`, `—`)
+/// and markdown marks make no difference; a word does.
+fn normalized(text: &str) -> String {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One text segment of the turn.
@@ -131,8 +53,10 @@ struct Segment {
     /// Its length, in characters other than whitespace.
     chars: usize,
     text: String,
+    /// Its normalized text, once it is closed.
+    said: String,
     fold: Option<Fold>,
-    /// Where it is stored (the safety net rewrites its verdict there).
+    /// Where it is stored (the end of the turn rewrites its verdict there).
     row: Option<StoredRow>,
 }
 
@@ -151,7 +75,6 @@ pub struct StoredRow {
 pub struct TurnFolds {
     segments: Vec<Segment>,
     open: bool,
-    tools: usize,
 }
 
 impl TurnFolds {
@@ -169,25 +92,25 @@ impl TurnFolds {
 
     /// A tool call streamed: the open segment, if any, gets its verdict,
     /// returned with the segment's index. Whitespace alone is no segment.
+    /// It folds only when an earlier segment said exactly the same.
     pub fn tool_call(&mut self) -> Option<(usize, Fold)> {
         if self.open && self.segments.last().is_some_and(|s| s.chars == 0) {
             self.segments.pop();
             self.open = false;
         }
-        let closed = if self.open {
-            self.open = false;
-            let index = self.segments.len() - 1;
-            let first = index == 0;
-            let seg = &mut self.segments[index];
-            let fold = verdict(&seg.text, first, self.tools);
-            seg.fold = Some(fold);
-            seg.text.clear();
-            Some((index, fold))
-        } else {
-            None
-        };
-        self.tools += 1;
-        closed
+        if !self.open {
+            return None;
+        }
+        self.open = false;
+        let index = self.segments.len() - 1;
+        let said = normalized(&self.segments[index].text);
+        let again = !said.is_empty() && self.segments[..index].iter().any(|s| s.said == said);
+        let fold = if again { Fold::Folded } else { Fold::Shown };
+        let seg = &mut self.segments[index];
+        seg.fold = Some(fold);
+        seg.said = said;
+        seg.text.clear();
+        Some((index, fold))
     }
 
     /// The verdict of the segment now closed, if the reply just stored
@@ -203,25 +126,27 @@ impl TurnFolds {
         }
     }
 
-    /// At the end of the turn: when every segment folded and nothing
-    /// followed them, the longest is shown instead. Returns its index and the
-    /// row to rewrite.
-    pub fn safety_net(&mut self) -> Option<(usize, Option<StoredRow>)> {
-        let visible = self
-            .segments
-            .iter()
-            .any(|s| s.fold != Some(Fold::Folded) && s.chars > 0);
-        if visible {
-            return None;
+    /// At the end of the turn: the earlier shown segments the answer (the
+    /// segment still open) says again word for word fold, so the turn shows
+    /// it once. Returns each one's index and the row to rewrite.
+    pub fn fold_repeats_of_the_answer(&mut self) -> Vec<(usize, Option<StoredRow>)> {
+        let Some(answer) = self.segments.last().filter(|s| self.open && s.fold.is_none()) else {
+            return Vec::new();
+        };
+        let said = normalized(&answer.text);
+        if said.is_empty() {
+            return Vec::new();
         }
-        let (index, seg) = self
-            .segments
+        let last = self.segments.len() - 1;
+        self.segments[..last]
             .iter_mut()
             .enumerate()
-            .filter(|(_, s)| s.chars > 0)
-            .max_by_key(|(i, s)| (s.chars, std::cmp::Reverse(*i)))?;
-        seg.fold = Some(Fold::Shown);
-        Some((index, seg.row.clone()))
+            .filter(|(_, s)| s.fold == Some(Fold::Shown) && s.said == said)
+            .map(|(i, s)| {
+                s.fold = Some(Fold::Folded);
+                (i, s.row.clone())
+            })
+            .collect()
     }
 }
 
@@ -229,96 +154,120 @@ impl TurnFolds {
 mod tests {
     use super::*;
 
+    /// Close one segment of `text` with a call.
+    fn close(t: &mut TurnFolds, text: &str) -> Option<(usize, Fold)> {
+        t.text(text);
+        t.tool_call()
+    }
+
     const OWNERS_EXAMPLE: &str = "That worked — the workflow was created with 2 activities and proper steps. \
         The problem is that update_employee with automations stored them as metadata… I need to recreate all \
         10 workflows properly through create_workflow. Let me delete the bad ones first, then rebuild";
 
+    /// Text between calls is shown however short, whatever it opens with
+    /// and however deep in the turn: findings never fold.
     #[test]
-    fn a_result_report_deep_in_the_turn_stays_shown() {
-        assert_eq!(verdict(OWNERS_EXAMPLE, false, 12), Fold::Shown);
+    fn text_between_calls_is_always_shown() {
+        let mut t = TurnFolds::default();
+        for _ in 0..5 {
+            t.tool_call();
+        }
+        assert_eq!(close(&mut t, "The export has 212 rows."), Some((0, Fold::Shown)));
+        assert_eq!(close(&mut t, "So the March invoices are missing."), Some((1, Fold::Shown)));
+        assert_eq!(close(&mut t, "Also: two are duplicates."), Some((2, Fold::Shown)));
+        assert_eq!(close(&mut t, "Let me check the workflows."), Some((3, Fold::Shown)));
+        assert_eq!(close(&mut t, OWNERS_EXAMPLE), Some((4, Fold::Shown)));
+    }
+
+    /// Japanese, Chinese, Spanish and German are read the same way: no
+    /// sentence or word rules that assume spaces and full stops.
+    #[test]
+    fn every_language_is_shown() {
+        let mut t = TurnFolds::default();
+        for _ in 0..4 {
+            t.tool_call();
+        }
+        for (i, text) in [
+            "請求書を確認しました。3月分が2件足りません！",
+            "导出文件有212行。",
+            "Ahora reviso las facturas de marzo.",
+            "Also gut, die Datei hat zwei Blätter.",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(close(&mut t, text), Some((i, Fold::Shown)), "{text}");
+        }
+    }
+
+    /// Only a word-for-word repeat folds: whitespace, punctuation and case
+    /// make no difference, in any script; one word more or less does.
+    #[test]
+    fn only_an_exact_repeat_folds() {
+        let mut t = TurnFolds::default();
+        assert_eq!(close(&mut t, "Four clips in, still holding."), Some((0, Fold::Shown)));
+        assert_eq!(close(&mut t, "four clips in — still   holding!"), Some((1, Fold::Folded)));
+        assert_eq!(close(&mut t, "Got it, four clips in, still holding."), Some((2, Fold::Shown)));
+        assert_eq!(close(&mut t, "請求書を確認しました。"), Some((3, Fold::Shown)));
+        assert_eq!(close(&mut t, "請求書を確認しました！"), Some((4, Fold::Folded)));
+        assert_eq!(close(&mut t, "請求書を確認しています。"), Some((5, Fold::Shown)));
+        assert_eq!(close(&mut t, "Überprüfe die Rechnungen."), Some((6, Fold::Shown)));
+        assert_eq!(close(&mut t, "ÜBERPRÜFE die Rechnungen"), Some((7, Fold::Folded)));
     }
 
     #[test]
-    fn a_short_next_step_after_many_calls_folds() {
-        assert_eq!(
-            verdict("Let me check the workflows.", false, 5),
-            Fold::Folded
-        );
-    }
-
-    #[test]
-    fn a_question_stays_shown() {
-        assert_eq!(
-            verdict("Which calendar should I use?", false, 7),
-            Fold::Shown
-        );
-        assert_eq!(
-            verdict("Want me to send it to **Dana**?", false, 7),
-            Fold::Shown
-        );
-    }
-
-    #[test]
-    fn the_first_text_of_the_turn_stays_shown() {
-        // After four calls, the same short report stays as the turn's first
-        // words and folds as a later step.
-        assert_eq!(verdict("The export has 212 rows.", true, 4), Fold::Shown);
-        assert_eq!(verdict("The export has 212 rows.", false, 4), Fold::Folded);
-    }
-
-    #[test]
-    fn an_opener_folds_early_and_a_short_report_early_stays() {
-        assert_eq!(
-            verdict("Now I'll open the invoice.", false, 1),
-            Fold::Folded
-        );
-        assert_eq!(verdict("Great, that worked.", false, 1), Fold::Folded);
-        assert_eq!(verdict("The file has two sheets.", false, 1), Fold::Shown);
-        assert_eq!(verdict("The file has two sheets.", false, 4), Fold::Folded);
-        // "so" is a word, not a prefix: "Some" is not an opener.
-        assert_eq!(verdict("Some rows are empty.", false, 1), Fold::Shown);
+    fn normalizing_keeps_words_and_drops_marks() {
+        assert_eq!(normalized("**Done.**  Next: `rows`"), "done next rows");
+        assert_eq!(normalized("完了。次へ！"), "完了 次へ");
+        assert_eq!(normalized("¿Listo?"), "listo");
+        assert_eq!(normalized("..."), "");
     }
 
     #[test]
     fn a_tool_call_closes_the_open_segment_once() {
         let mut t = TurnFolds::default();
-        t.text("Your calendar has two conflicts.");
-        assert_eq!(t.tool_call(), Some((0, Fold::Shown)));
+        assert_eq!(close(&mut t, "Your calendar has two conflicts."), Some((0, Fold::Shown)));
         // A second call in the same round closes nothing.
         assert_eq!(t.tool_call(), None);
         t.text("Let me ");
         t.text("check the workflows.");
-        assert_eq!(t.tool_call(), Some((1, Fold::Folded)));
+        assert_eq!(t.tool_call(), Some((1, Fold::Shown)));
+        // Whitespace alone is no segment.
+        t.text("  \n");
+        assert_eq!(t.tool_call(), None);
+    }
+
+    /// An answer that repeats an earlier segment word for word folds that
+    /// one, where it is stored too; the answer stays.
+    #[test]
+    fn an_answer_that_repeats_an_earlier_segment_folds_that_one() {
+        let mut t = TurnFolds::default();
+        close(&mut t, "Five clips in, still holding.");
+        let row = StoredRow { message_id: "m1".into(), block: 0 };
+        t.stored(row.clone());
+        t.text("Five clips in — still holding!");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![(0, Some(row))]);
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
     }
 
     #[test]
-    fn the_safety_net_shows_the_longest_when_all_folded() {
-        let mut t = TurnFolds {
-            tools: 4,
-            ..TurnFolds::default()
-        };
-        // Two folded segments, then the turn ends on a tool call.
-        for text in [
-            "Now the next file.",
-            "Checking the rest of the invoices now.",
-        ] {
-            t.text(text);
-            assert_eq!(t.tool_call().map(|v| v.1), Some(Fold::Folded));
-        }
-        assert_eq!(t.safety_net().map(|v| v.0), Some(1));
-        // Once shown, the net has nothing left to do.
-        assert_eq!(t.safety_net(), None);
+    fn an_answer_that_says_more_folds_nothing() {
+        let mut t = TurnFolds::default();
+        close(&mut t, "Five clips in, still holding.");
+        t.text("Five clips in, still holding. Here is the plan.");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
+        // A turn that ended on a call has no answer to compare.
+        let mut t = TurnFolds::default();
+        close(&mut t, "Five clips in, still holding.");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
     }
 
+    /// "212 rows" is a finding: a later short answer never folds it.
     #[test]
-    fn the_safety_net_leaves_a_turn_with_an_answer_alone() {
-        let mut t = TurnFolds {
-            tools: 4,
-            ..TurnFolds::default()
-        };
-        t.text("Now the next file.");
-        t.tool_call();
-        t.text("Done: all ten are rebuilt.");
-        assert_eq!(t.safety_net(), None);
+    fn a_short_answer_never_folds_the_report_before_it() {
+        let mut t = TurnFolds::default();
+        close(&mut t, "The export has 212 rows.");
+        t.text("Done, the export is ready.");
+        assert_eq!(t.fold_repeats_of_the_answer(), vec![]);
     }
 }

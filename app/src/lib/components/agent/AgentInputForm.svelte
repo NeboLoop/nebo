@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AgentInputField } from '$lib/types/agentPage';
-	import { pickFolder, pickFiles } from '$lib/api/nebo';
+	import { pickFolder, pickFiles } from '$lib/api/pick';
 	import { FolderOpen, FileText, Minus, Plus } from 'lucide-svelte';
 	import { t } from 'svelte-i18n';
 	import {

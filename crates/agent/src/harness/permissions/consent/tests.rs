@@ -657,7 +657,9 @@ impl ai::Provider for JobReaderProbe {
 async fn reading_a_job_names_the_employee_it_is_for() {
     let probe = Arc::new(JobReaderProbe(Default::default()));
     let providers = Arc::new(tokio::sync::RwLock::new(vec![probe.clone() as Arc<dyn ai::Provider>]));
-    let reader = AuxReader::new(providers);
+    let (_dir, store) = store();
+    let selector = Arc::new(crate::selector::ModelSelector::new(Default::default()));
+    let reader = AuxReader::new(crate::harness::model_call::Housekeeper::new(store.clone(), selector, providers), store);
     let src = JobSource {
         name: "Clerk",
         agent_id: "clerk-7",

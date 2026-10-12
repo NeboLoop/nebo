@@ -236,7 +236,7 @@ pub async fn run_workflow(
 
     let run_id = state
         .workflow_manager
-        .run(&id, inputs, "manual")
+        .run(&id, inputs, "manual", None)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
@@ -314,6 +314,16 @@ pub async fn get_run(
     })))
 }
 
+/// Cancel workflow run `run_id`, running or parked. A run parked on an ask
+/// has its card cleared now, not at the next look.
+pub(crate) async fn cancel_workflow_run(state: &AppState, run_id: &str) -> Result<(), String> {
+    tools::workflows::WorkflowManager::cancel(&*state.workflow_manager, run_id).await?;
+    if let Err(e) = state.permission_asks.withdraw_for_run(run_id) {
+        tracing::warn!(run_id = %run_id, error = %e, "cancelled run's ask not withdrawn");
+    }
+    Ok(())
+}
+
 /// POST /workflows/{id}/runs/{runId}/cancel
 pub async fn cancel_run(
     State(state): State<AppState>,
@@ -329,9 +339,7 @@ pub async fn cancel_run(
         return Err(to_error_response(types::NeboError::NotFound));
     }
 
-    state
-        .workflow_manager
-        .cancel(&run_id)
+    cancel_workflow_run(&state, &run_id)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
+  import LoginItemsBanner from '$lib/components/LoginItemsBanner.svelte';
   import FeedbackModal from '$lib/components/FeedbackModal.svelte';
 
   let displayName = $state('');
@@ -31,6 +33,12 @@
     }
   });
 
+  // A plan bought (or ended) while the app is open: the hub's tokenRefresh
+  // reaches the server, which announces it here.
+  onWsEvent<{ plan?: string }>('plan_changed', (d) => {
+    if (d?.plan) planName = d.plan;
+  });
+
   const menuItems = [
     { href: '/settings/account', label: 'nav.botSettings', icon: '🏢' },
     { href: '/settings/account', label: 'settings.navItems.account', icon: '👤' },
@@ -42,6 +50,7 @@
 </script>
 
 <UpdateBanner {collapsed} />
+<LoginItemsBanner {collapsed} />
 <div class="relative border-t border-base-300 shrink-0">
   {#if open}
     <div class="fixed inset-0 z-40" onclick={() => open = false} role="presentation"></div>

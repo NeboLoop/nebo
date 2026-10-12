@@ -217,17 +217,28 @@ async fn the_words_the_model_reads_name_the_scope_the_row_is_in() {
         assert!(!said.contains(other), "{marker} never names the other scope: {said}");
     }
 
-    // Not the owner's own turn: a coworker's message, a workflow step.
-    for origin in [Origin::Comm, Origin::Workflow] {
-        let mut ctx = Nebo::ctx(&clerk, origin);
-        ctx.user_id = private.clone();
-        let key = format!("team/mem4-unattended-{origin:?}").to_lowercase();
-        let refused = nebo
-            .tool(&ctx, "remember", json!({ "key": key, "value": "Vendor list moved to the shared drive.", "scope": "local" }))
-            .await;
-        assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{origin:?}: {}", refused.content);
-        assert!(rows(&nebo, &key).is_empty(), "{origin:?}: nothing landed anywhere");
-    }
+    // Not the owner's own turn: a coworker's message is refused.
+    let mut ctx = Nebo::ctx(&clerk, Origin::Comm);
+    ctx.user_id = private.clone();
+    let key = "team/mem4-unattended-comm";
+    let refused = nebo
+        .tool(&ctx, "remember", json!({ "key": key, "value": "Vendor list moved to the shared drive.", "scope": "local" }))
+        .await;
+    assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{}", refused.content);
+    assert!(rows(&nebo, key).is_empty(), "nothing landed anywhere");
+
+    // A workflow step keeps its state for the employee's later runs: local
+    // memory is untouched, the employee's own memory has it, and the words
+    // say which.
+    let mut ctx = Nebo::ctx(&clerk, Origin::Workflow);
+    ctx.user_id = private.clone();
+    let key = "team/mem4-unattended-workflow";
+    let kept = nebo
+        .tool(&ctx, "remember", json!({ "key": key, "value": "Vendor list moved to the shared drive.", "scope": "local" }))
+        .await;
+    assert!(!kept.is_error && kept.content.contains("kept in this employee's own memory"), "{}", kept.content);
+    let stored: Vec<String> = rows(&nebo, key).into_iter().map(|(u, _)| u).collect();
+    assert_eq!(stored, vec![private.clone()], "the employee's own memory, never local");
 }
 
 /// With no global store (this Nebo is not enrolled in one), nothing the model
@@ -707,4 +718,212 @@ async fn the_owners_call_saves_to_local_memory_when_he_asks() {
     assert_eq!(scopes("case/mem10-hearing"), vec![matter], "a Confidential save stays in its conversation");
     let kept = heard.of("MARK-MEM10-CONF");
     assert!(kept.contains("Saved to this conversation's confidential memory") && !kept.contains("Saved to local memory"), "{kept}");
+}
+
+/// The namespace every row stored under `key` is filed in.
+fn namespaces(nebo: &Nebo, key: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(nebo.home.join("data").join("nebo.db")).expect("db");
+    let mut stmt = conn.prepare("SELECT namespace FROM memories WHERE key = ?1").expect("prepare");
+    stmt.query_map([key], |r| r.get(0)).expect("query").collect::<Result<_, _>>().expect("rows")
+}
+
+/// Shared memory (the Nebo KB) wired to a stand-in, as the server wires it:
+/// the integration named "Nebo KB" at the platform memory address. Returns
+/// the integration id and the stand-in's URL; [`unwire_shared_memory`] takes
+/// it down.
+async fn wire_shared_memory(nebo: &Nebo, id: &str) -> String {
+    let store_url = global_store_stand_in().await;
+    let memory_url = config::memory_url();
+    nebo.store()
+        .create_mcp_integration(id, "Nebo KB", "http", Some(&memory_url), "neboai", None, None)
+        .unwrap();
+    nebo.state.bridge.connect(id, "nebo_kb", &store_url, None, None).await.expect("connect");
+    store_url
+}
+
+async fn unwire_shared_memory(nebo: &Nebo, id: &str) {
+    nebo.state.bridge.disconnect(id).await;
+    nebo.store().delete_mcp_integration(id).unwrap();
+}
+
+/// What the stand-in holds for one entity, read by another client of it.
+async fn shared_facts(store_url: &str, src_id: i64) -> String {
+    let read: Value = tls::http_client()
+        .build()
+        .expect("client")
+        .post(store_url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": "memory_recall", "arguments": { "src_id": src_id } } }))
+        .send()
+        .await
+        .expect("read")
+        .json()
+        .await
+        .expect("json");
+    read["result"]["content"][0]["text"].as_str().unwrap_or("").to_string()
+}
+
+/// Shared memory is not a connector: the website manages it, so the
+/// Connectors list never shows it and the Permissions page gives its tools
+/// no switches. An ordinary connector beside it is listed as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_memory_is_not_a_connector() {
+    let nebo = session().await;
+    let memory_url = config::memory_url();
+    nebo.store()
+        .create_mcp_integration("proof-kb-hidden", "Nebo KB", "http", Some(&memory_url), "neboai", None, None)
+        .unwrap();
+    nebo.store()
+        .create_mcp_integration("proof-crm-listed", "Proof CRM", "http", Some("https://crm.example.test/mcp"), "none", None, None)
+        .unwrap();
+    let listed = nebo.get_ok("/integrations").await;
+    let page = nebo.get_ok("/permissions/company").await;
+    nebo.store().delete_mcp_integration("proof-kb-hidden").unwrap();
+    nebo.store().delete_mcp_integration("proof-crm-listed").unwrap();
+
+    let ids: Vec<&str> = listed["integrations"].as_array().expect("list").iter().filter_map(|i| i["id"].as_str()).collect();
+    assert!(ids.contains(&"proof-crm-listed"), "an ordinary connector is listed: {ids:?}");
+    assert!(!ids.contains(&"proof-kb-hidden"), "shared memory is never a connector: {ids:?}");
+    let groups: Vec<&str> = page["groups"].as_array().expect("groups").iter().filter_map(|g| g["id"].as_str()).collect();
+    assert!(groups.contains(&"group:mcp:proof_crm"), "an ordinary connector keeps its switches: {groups:?}");
+    assert!(!groups.contains(&"group:mcp:nebo_kb"), "shared memory has no permission switches: {groups:?}");
+}
+
+/// Shared memory is there only when it is connected. Its row without a
+/// connection (not enrolled, or unreachable) gives the model nothing that
+/// says `shared:`: not a tool, not the prompt, not a memory result. Local
+/// memory says `local:` as always.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_memory_that_is_not_connected_is_nowhere() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof Mem12 Clerk", json!({ "workflows": {} })).await;
+    let memory_url = config::memory_url();
+    nebo.store()
+        .create_mcp_integration("proof-kb-offline", "Nebo KB", "http", Some(&memory_url), "neboai", None, None)
+        .unwrap();
+    nebo.store().set_mcp_connection_status("proof-kb-offline", "error", 0, None).unwrap();
+
+    let heard = Arc::new(Heard::default());
+    let sent = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = sent.clone();
+    let saw: Rule = Box::new(move |t| {
+        if t.opener().contains("MARK-MEM12") {
+            let tools: Vec<String> = t.req.tools.iter().map(|d| format!("{} {}", d.name, d.description)).collect();
+            seen.lock().unwrap().push(format!(
+                "{}\n{}\n{}",
+                t.req.system,
+                t.req.messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n"),
+                tools.join("\n")
+            ));
+        }
+        None
+    });
+    let rules = vec![
+        saw,
+        one_call("MARK-MEM12-SAVE", ("remember", json!({ "key": "team/mem12", "value": "Invoices go out on the 1st, MEM12-L.", "scope": "local" })), heard.clone()),
+        one_call("MARK-MEM12-ASK", ("recall", json!({ "query": "invoices" })), heard.clone()),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    owner_in_chat(&rig, &clerk, "mem12-a", "MARK-MEM12-SAVE", "MARK-MEM12-SAVE save this for everyone").await;
+    owner_in_chat(&rig, &clerk, "mem12-b", "MARK-MEM12-ASK", "MARK-MEM12-ASK when do invoices go out?").await;
+    drop(rig);
+    nebo.store().delete_mcp_integration("proof-kb-offline").unwrap();
+
+    let results = format!("{}\n{}", heard.of("MARK-MEM12-SAVE"), heard.of("MARK-MEM12-ASK"));
+    assert!(results.contains("MEM12-L") && results.contains("[local:"), "local memory works and says local: {results}");
+    assert!(!results.contains("shared:"), "no result says shared: {results}");
+    let prompts = sent.lock().unwrap();
+    assert!(!prompts.is_empty(), "the turns were seen");
+    for prompt in prompts.iter() {
+        assert!(!prompt.contains("shared:"), "nothing the model is sent says shared:");
+        assert!(!prompt.contains("mcp__nebo_kb__"), "no shared memory tool is offered");
+    }
+}
+
+/// Connected, both memories say where each answer came from: this Nebo's
+/// memory as `local:<namespace>` (the prompt's memories say it too:
+/// `db_context` and `events` tests), and shared memory's answers as `shared:<area>` (the
+/// matter a sealed run is confined to, else the KB's `general` domain).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connected_both_memories_say_where_each_answer_came_from() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof Mem13 Clerk", json!({ "workflows": {} })).await;
+    let owner = owner(&nebo);
+    nebo.store()
+        .upsert_memory("project", "office/mem13-hours", "Front office hours are 8 to 4, MEM13-L.", None, None, &owner)
+        .unwrap();
+    let id = "proof-kb-mem13";
+    let _store_url = wire_shared_memory(&nebo, id).await;
+
+    let mut ctx = Nebo::ctx(&clerk, Origin::User);
+    ctx.owner_request = true;
+    ctx.user_id = format!("{owner}:agent:{clerk}");
+    let saved = nebo
+        .tool(&ctx, "mcp__nebo_kb__memory_remember", json!({ "src_id": 13, "predicate": "note", "text": "Front office hours moved, MEM13-S.", "evidence": "the owner said so", "source_ref": "chat" }))
+        .await;
+    let shared = nebo.tool(&ctx, "mcp__nebo_kb__memory_recall", json!({ "src_id": 13 })).await;
+    let mut sealed = ctx.clone();
+    sealed.memory_matter = Some("matter/c-13".into());
+    let in_matter = nebo.tool(&sealed, "mcp__nebo_kb__memory_recall", json!({ "src_id": 13 })).await;
+    let local = nebo.tool(&ctx, "recall", json!({ "query": "front office hours" })).await;
+
+    unwire_shared_memory(&nebo, id).await;
+
+    assert!(!saved.is_error && saved.content.starts_with("[shared:general] "), "{}", saved.content);
+    assert!(shared.content.starts_with("[shared:general] ") && shared.content.contains("MEM13-S"), "{}", shared.content);
+    assert!(in_matter.content.starts_with("[shared:matter/c-13] "), "{}", in_matter.content);
+    assert!(local.content.contains("[local:project] office/mem13-hours"), "{}", local.content);
+    assert!(!local.content.contains("shared:"), "local recall never answers for shared memory: {}", local.content);
+}
+
+/// The prefix is routing words, not a migration: stored rows keep their
+/// namespaces and are found with or without `local:`, a `local:` on a write
+/// is dropped before it is stored, and writes go where they went before.
+/// The memory tools never write shared memory (a `shared:` namespace is
+/// refused, nothing stored), and shared memory's own tool still writes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn existing_memories_and_writes_stay_where_they_were() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof Mem14 Clerk", json!({ "workflows": {} })).await;
+    let owner = owner(&nebo);
+    nebo.store()
+        .upsert_memory("tacit/preferences", "owner/mem14-coffee", "Oat latte, MEM14-E.", None, None, &owner)
+        .unwrap();
+    let id = "proof-kb-mem14";
+    let store_url = wire_shared_memory(&nebo, id).await;
+
+    let mut ctx = Nebo::ctx(&clerk, Origin::User);
+    ctx.owner_request = true;
+    ctx.user_id = format!("{owner}:agent:{clerk}");
+    let bare = nebo.tool(&ctx, "recall", json!({ "query": "owner/mem14-coffee", "namespace": "tacit/preferences" })).await;
+    let prefixed = nebo.tool(&ctx, "recall", json!({ "query": "owner/mem14-coffee", "namespace": "local:tacit/preferences" })).await;
+    let listed = nebo.tool(&ctx, "recall", json!({ "namespace": "local:tacit/preferences" })).await;
+    let saved = nebo
+        .tool(&ctx, "remember", json!({ "key": "team/mem14", "value": "Deliveries come to the side door, MEM14-W.", "namespace": "local:project", "scope": "local" }))
+        .await;
+    let refused = nebo
+        .tool(&ctx, "remember", json!({ "key": "team/mem14-shared", "value": "Deliveries come to the side door, MEM14-X.", "namespace": "shared:general", "scope": "local" }))
+        .await;
+    let local_left_kb_alone = shared_facts(&store_url, 14).await;
+    let kb_saved = nebo
+        .tool(&ctx, "mcp__nebo_kb__memory_remember", json!({ "src_id": 14, "predicate": "note", "text": "Side door deliveries, MEM14-K.", "evidence": "the owner said so", "source_ref": "chat" }))
+        .await;
+    let kb_after = shared_facts(&store_url, 14).await;
+    unwire_shared_memory(&nebo, id).await;
+
+    assert_eq!(namespaces(&nebo, "owner/mem14-coffee"), vec!["tacit/preferences".to_string()], "the stored row is untouched");
+    for found in [&bare, &prefixed] {
+        assert!(found.content.contains("[local:tacit/preferences] owner/mem14-coffee: Oat latte, MEM14-E."), "{}", found.content);
+    }
+    assert!(listed.content.contains("MEM14-E") && listed.content.contains("in local:tacit/preferences"), "{}", listed.content);
+
+    assert!(!saved.is_error && saved.content.contains("[local:project] team/mem14"), "{}", saved.content);
+    assert_eq!(namespaces(&nebo, "team/mem14"), vec!["project".to_string()], "local: is never stored");
+    assert_eq!(rows(&nebo, "team/mem14"), vec![(owner.clone(), "Deliveries come to the side door, MEM14-W.".to_string())], "local memory, as before");
+
+    assert!(refused.is_error && refused.content.contains("shared memory"), "{}", refused.content);
+    assert!(rows(&nebo, "team/mem14-shared").is_empty(), "nothing stored anywhere");
+    assert!(local_left_kb_alone.is_empty(), "the memory tools never write shared memory: {local_left_kb_alone}");
+
+    assert!(!kb_saved.is_error, "{}", kb_saved.content);
+    assert!(kb_after.contains("MEM14-K"), "shared memory's own tool writes it, as before: {kb_after}");
 }

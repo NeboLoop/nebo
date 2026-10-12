@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agents;
 pub mod asks;
+pub mod background;
 pub mod cases;
 pub mod apps;
 pub mod artifact_updates;
@@ -12,7 +13,9 @@ pub mod commander;
 pub mod entity_config;
 pub mod feedback;
 pub mod files;
+pub mod uploads;
 pub mod goal;
+pub mod handoffs;
 pub mod import;
 pub mod integrations;
 pub mod mcp_server;

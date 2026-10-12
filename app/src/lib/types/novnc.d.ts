@@ -10,5 +10,9 @@ declare module '@novnc/novnc' {
 		scaleViewport: boolean;
 		resizeSession: boolean;
 		disconnect(): void;
+		/** Set the remote clipboard (RFB ClientCutText). */
+		clipboardPasteFrom(text: string): void;
+		sendKey(keysym: number, code: string | null, down?: boolean): void;
+		focus(options?: FocusOptions): void;
 	}
 }

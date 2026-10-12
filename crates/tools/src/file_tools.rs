@@ -422,12 +422,8 @@ impl DynTool for ReadFileTool {
         None
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("reading {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Read {}", file_name(input))
     }
 
     /// A file the run pulled in (the attachment root), not one the owner placed.
@@ -531,12 +527,8 @@ impl DynTool for EditFileTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("editing {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Edited {}", file_name(input))
     }
 
     fn clearable(&self, _input: &Value) -> bool {
@@ -632,12 +624,8 @@ impl DynTool for WriteFileTool {
         }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("writing {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Wrote {}", file_name(input))
     }
 
     fn clearable(&self, _input: &Value) -> bool {
@@ -793,12 +781,8 @@ impl DynTool for ShareFileTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("sharing {}", shared_names(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Shared {}", shared_names(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -879,12 +863,8 @@ impl DynTool for ConvertFileTool {
         Some("file")
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("converting {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Converted {}", file_name(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -940,12 +920,8 @@ impl DynTool for CheckpointFilesTool {
         Some("file")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "saving a restore point".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Saved a restore point".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -992,12 +968,8 @@ impl DynTool for ListCheckpointsTool {
         Some("file")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "listing restore points".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Listed restore points".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -1044,12 +1016,8 @@ impl DynTool for RestoreCheckpointTool {
         Some("file")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "restoring files".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Restored files".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -1120,12 +1088,8 @@ impl DynTool for WritePlanTool {
         overwrites(input)
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("writing plan {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Wrote plan {}", file_name(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -1200,14 +1164,10 @@ impl DynTool for ExitPlanModeTool {
         input
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let plan = str_arg(input, "plan").unwrap_or("").trim();
         let plan = types::strutil::safe_prefix(plan, Self::CARD_PLAN_CHARS);
         format!("leave plan mode and carry out the plan in {}:\n{plan}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("The owner approved the plan in {}", file_name(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -1296,12 +1256,8 @@ impl DynTool for CheckPlanTool {
         Some("file")
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("checking plan {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Checked plan {}", file_name(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -1373,7 +1329,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.files().collect::<Vec<_>>(), vec![a.as_str(), b.as_str()]);
         assert!(r.content.contains("cover.png") && r.content.contains("thumb.txt"), "{}", r.content);
-        assert_eq!(share.activity(&json!({"paths": [a, b]})), "sharing 2 files");
+        assert_eq!(share.describe(&json!({"paths": [a, b]})), "sharing 2 files");
 
         // The old shapes: `path` as a list and as one string.
         assert_eq!(share.normalize_input(json!({"path": [a, b]})), json!({"paths": [a, b]}));
@@ -1388,7 +1344,6 @@ mod tests {
         let one = share.execute_dyn(&ctx(), json!({"path": a})).await;
         assert!(!one.is_error, "{}", one.content);
         assert_eq!(one.files().collect::<Vec<_>>(), vec![a.as_str()]);
-        assert_eq!(share.outcome(&json!({"path": a})), "Shared cover.png");
         assert!(share.validate_input(&json!({"paths": []})).unwrap_err().contains("`paths`"));
     }
 

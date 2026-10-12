@@ -176,6 +176,130 @@ pub async fn mark_chat_read(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// PUT /api/v1/chats/:id/pin `{pinned}` — pin a conversation to the top of
+/// its employee's list (`true`), or unpin it (`false`). Kept on the bot and
+/// told to every open app (`chat_pinned`), so the desktop, the web console
+/// and the phone list the same pins.
+pub async fn pin_chat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PinChatRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let chat = state
+        .store
+        .set_chat_pinned(&id, body.pinned)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let pinned = chat.pinned_at.is_some();
+    state.hub.broadcast(
+        "chat_pinned",
+        serde_json::json!({
+            "chatId": chat.id,
+            "sessionKey": chat.session_name,
+            // Whose list it moves in.
+            "agentId": chat.session_name.as_deref().map(types::keyparser::extract_agent_id).filter(|id| !id.is_empty()),
+            "pinned": pinned,
+            "pinnedAt": chat.pinned_at,
+        }),
+    );
+    Ok(Json(serde_json::json!({"success": true, "pinned": pinned, "pinnedAt": chat.pinned_at})))
+}
+
+/// PUT /api/v1/chats/:id/pin body.
+#[derive(Debug, Deserialize)]
+pub struct PinChatRequest {
+    pub pinned: bool,
+}
+
+/// GET /api/v1/chats/:id/permission-mode — the mode this conversation runs
+/// in: the one the owner picked for it (`mode`, null when he picked none)
+/// and the employee's own (`employeeMode`), which it runs in otherwise.
+pub async fn get_chat_permission_mode(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<ChatPermissionMode> {
+    let chat = state
+        .store
+        .get_chat(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let view = ChatPermissionMode::of(&state, &chat).map_err(to_error_response)?;
+    Ok(Json(view))
+}
+
+/// PUT /api/v1/chats/:id/permission-mode `{mode}` — pick the mode this one
+/// conversation runs in (`automatic`, `ask`, `plan`, `full_access`), or
+/// null for the employee's own. The employee's own setting is unchanged. A
+/// stricter pick also holds what the conversation starts; a looser one
+/// stays in it. Kept on the bot and told to every open app (`chat_mode`),
+/// so the desktop, the web console and the phone show the same one.
+pub async fn set_chat_permission_mode(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ChatPermissionModeRequest>,
+) -> HandlerResult<ChatPermissionMode> {
+    let mode = match body.mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        None => None,
+        Some(m) => Some(types::permissions::Mode::parse(m).ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(format!(
+                "mode is automatic, ask, plan or full_access, not {m:?}"
+            )))
+        })?),
+    };
+    let chat = state
+        .store
+        .set_chat_permission_mode(&id, mode)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let view = ChatPermissionMode::of(&state, &chat).map_err(to_error_response)?;
+    match serde_json::to_value(&view) {
+        Ok(payload) => state.hub.broadcast("chat_mode", payload),
+        Err(e) => tracing::warn!(error = %e, "chat_mode: event not serialized"),
+    }
+    Ok(Json(view))
+}
+
+/// PUT /api/v1/chats/:id/permission-mode body. `mode`: null (or "") for the
+/// employee's own.
+#[derive(Debug, Deserialize)]
+pub struct ChatPermissionModeRequest {
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// One conversation's permission mode as every app reads it: the GET, the
+/// PUT and the `chat_mode` event alike.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPermissionMode {
+    pub chat_id: String,
+    pub session_key: Option<String>,
+    /// Whose conversation it is.
+    pub agent_id: Option<String>,
+    /// The mode the owner picked for it; null = the employee's own.
+    pub mode: Option<types::permissions::Mode>,
+    /// The employee's own mode (its own, else the company default): what
+    /// the conversation runs in when no mode is picked.
+    pub employee_mode: types::permissions::Mode,
+}
+
+impl ChatPermissionMode {
+    fn of(state: &AppState, chat: &db::models::Chat) -> Result<Self, types::NeboError> {
+        let agent_id = chat
+            .session_name
+            .as_deref()
+            .map(types::keyparser::extract_agent_id)
+            .unwrap_or_default();
+        Ok(Self {
+            chat_id: chat.id.clone(),
+            session_key: chat.session_name.clone(),
+            employee_mode: agent::harness::permissions::rules::mode_of(&state.store, &agent_id)?,
+            agent_id: (!agent_id.is_empty()).then_some(agent_id),
+            mode: chat.permission_mode,
+        })
+    }
+}
+
 /// The ONE way a conversation becomes read: record it, and tell every open
 /// app (`chat_read`), so a dot cleared on the desktop clears on the web
 /// console and the phone too.
@@ -204,7 +328,7 @@ pub async fn delete_chat(
 fn build_ui_tool_calls(
     tc_json: &str,
     tool_statuses: &HashMap<String, bool>,
-) -> Option<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+) -> Option<Vec<serde_json::Value>> {
     let calls: Vec<serde_json::Value> = serde_json::from_str(tc_json).ok()?;
     if calls.is_empty() {
         return None;
@@ -228,23 +352,12 @@ fn build_ui_tool_calls(
                 "id": id,
                 "name": name,
                 "input": input_str,
-                "status": status
+                "status": status,
+                "call": tools::humanize::call(name, &input),
             })
         })
         .collect();
-    Some((ui_calls, calls))
-}
-
-/// Build default contentBlocks: text first, then tools (fallback for old messages).
-fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::Value> {
-    let mut blocks = Vec::new();
-    if !content.is_empty() {
-        blocks.push(serde_json::json!({"type": "text", "text": content}));
-    }
-    for i in 0..call_count {
-        blocks.push(serde_json::json!({"type": "tool", "toolCallIndex": i}));
-    }
-    blocks
+    Some(ui_calls)
 }
 
 /// Whether the owner's thread shows a stored message: every row but the
@@ -324,10 +437,9 @@ pub(crate) fn for_owner(msg: &mut ChatMessage) {
 /// the employee. The model keeps them in its history; the owner never sees the
 /// house talking to itself in their conversation.
 ///
-/// Then metadata JSON is reconstructed from tool_calls + tool_results columns:
-/// 1. Old metadata with toolCalls already built — strip outputs, done
-/// 2. New metadata with only contentBlocks (persisted block order) — build toolCalls, use persisted order
-/// 3. No metadata — build everything, fall back to text→tools order
+/// Then each assistant row with calls gets its `toolCalls` (each call with
+/// its structured name and status) beside the block order it was stored
+/// with (`metadata.contentBlocks`, each text block with its verdict).
 pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
     messages.retain(is_owner_visible);
     // Phase 1: Collect tool result statuses from role="tool" messages — and
@@ -403,43 +515,27 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok());
 
-        // Case 1: Old metadata already has toolCalls — strip outputs, done
-        if let Some(ref meta) = existing_meta {
-            if meta.get("toolCalls").is_some() {
-                let mut m = meta.clone();
-                if let Some(tcs) = m.get_mut("toolCalls").and_then(|v| v.as_array_mut()) {
-                    for tc in tcs.iter_mut() {
-                        if let Some(obj) = tc.as_object_mut() {
-                            obj.remove("output");
-                        }
-                    }
-                }
-                msg.metadata = Some(m.to_string());
-                continue;
-            }
-        }
-
         // Need tool_calls column to build toolCalls array
         let tc_json = match &msg.tool_calls {
             Some(tc) if !tc.is_empty() => tc.clone(),
             _ => continue,
         };
-        let (ui_calls, raw_calls) = match build_ui_tool_calls(&tc_json, &tool_statuses) {
+        let ui_calls = match build_ui_tool_calls(&tc_json, &tool_statuses) {
             Some(v) => v,
             None => continue,
         };
 
-        // Case 2: Metadata has persisted contentBlocks (block order from streaming) — use it
-        // Case 3: No metadata — fall back to text→tools order
-        let blocks = if let Some(ref meta) = existing_meta {
-            if let Some(persisted) = meta.get("contentBlocks").and_then(|v| v.as_array()) {
-                // Hydrate persisted blocks: add text content to "text" entries
+        // The block order the row was stored with, each text block with
+        // the verdict the stream gave it (`text_fold`).
+        let blocks: Vec<serde_json::Value> = existing_meta
+            .as_ref()
+            .and_then(|meta| meta.get("contentBlocks"))
+            .and_then(|v| v.as_array())
+            .map(|persisted| {
                 persisted
                     .iter()
                     .map(|b| {
                         if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                            // The verdict the stream gave the segment
-                            // (`text_fold`) replays with it.
                             let mut text = serde_json::json!({"type": "text", "text": msg.content});
                             if let Some(fold) = b.get("fold") {
                                 text["fold"] = fold.clone();
@@ -450,12 +546,8 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
                         }
                     })
                     .collect()
-            } else {
-                default_content_blocks(&msg.content, raw_calls.len())
-            }
-        } else {
-            default_content_blocks(&msg.content, raw_calls.len())
-        };
+            })
+            .unwrap_or_default();
 
         // The steps are built here; everything else the row keeps (the files
         // the turn shared, `artifacts`) stays. Rebuilding the object whole
@@ -475,7 +567,7 @@ pub async fn get_tool_output(
     State(state): State<AppState>,
     Path((chat_id, tool_call_id)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
-    // First check role='tool' messages for the tool_call_id
+    // The call's result is on the `tool` row after it.
     if let Some(output) = state
         .store
         .find_tool_output(&chat_id, &tool_call_id)
@@ -486,47 +578,7 @@ pub async fn get_tool_output(
         ));
     }
 
-    // Fallback: check persisted metadata on assistant messages
-    if let Some(output) = find_tool_output_in_metadata(&state, &chat_id, &tool_call_id) {
-        return Ok(Json(
-            serde_json::json!({ "output": output.0, "isError": output.1 }),
-        ));
-    }
-
     Ok(Json(serde_json::json!({ "output": "", "isError": false })))
-}
-
-/// Search persisted assistant metadata for a tool call's output.
-fn find_tool_output_in_metadata(
-    state: &AppState,
-    chat_id: &str,
-    tool_call_id: &str,
-) -> Option<(String, bool)> {
-    let messages = state
-        .store
-        .get_recent_chat_messages_with_tools(chat_id, 100)
-        .ok()?;
-    for msg in &messages {
-        if msg.role != "assistant" {
-            continue;
-        }
-        let meta_str = msg.metadata.as_deref()?;
-        let meta: serde_json::Value = serde_json::from_str(meta_str).ok()?;
-        if let Some(tool_calls) = meta.get("toolCalls").and_then(|v| v.as_array()) {
-            for tc in tool_calls {
-                if tc.get("id").and_then(|v| v.as_str()) == Some(tool_call_id) {
-                    let output = tc
-                        .get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let is_error = tc.get("status").and_then(|v| v.as_str()) == Some("error");
-                    return Some((output, is_error));
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Stable user_id for the companion chat (matches Go's companionUserIDFallback).
@@ -794,6 +846,32 @@ pub struct EditMessageBody {
     pub content: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepFileBody {
+    pub file_id: String,
+    pub keep: bool,
+}
+
+/// PUT /api/v1/chats/messages/:id/keep — the owner keeps a file on one of
+/// his messages (a voice note's star), or lets it go. Kept files are exempt
+/// from any chat-retention purge. `id` is the message's id or the id its
+/// client sent it under.
+pub async fn keep_message_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<KeepFileBody>,
+) -> HandlerResult<serde_json::Value> {
+    let found = state
+        .store
+        .set_chat_attachment_keep(&id, &body.file_id, body.keep)
+        .map_err(to_error_response)?;
+    if !found {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    Ok(Json(serde_json::json!({ "success": true, "keep": body.keep })))
+}
+
 /// POST /api/v1/chats/messages/:id/edit
 pub async fn edit_message(
     State(state): State<AppState>,
@@ -943,7 +1021,7 @@ mod pending_ask_tests {
 
 #[cfg(test)]
 mod transcript_metadata_tests {
-    use super::{build_message_metadata, build_ui_tool_calls, default_content_blocks};
+    use super::{build_message_metadata, build_ui_tool_calls};
     use std::collections::HashMap;
 
     fn msg(role: &str, content: &str) -> db::models::ChatMessage {
@@ -1116,6 +1194,9 @@ mod transcript_metadata_tests {
                 {"id":"t2","name":"web","input":{}}]"#
                 .to_string(),
         );
+        assistant.metadata = Some(
+            r#"{"contentBlocks":[{"type":"text","fold":"shown"},{"type":"tool","toolCallIndex":0},{"type":"tool","toolCallIndex":1}]}"#.to_string(),
+        );
         let mut tool = msg("tool", "");
         tool.tool_results = Some(
             r#"[{"tool_call_id":"t1","is_error":true},{"tool_call_id":"t2","is_error":false}]"#
@@ -1131,6 +1212,9 @@ mod transcript_metadata_tests {
         assert_eq!(calls[0]["id"], "t1");
         assert_eq!(calls[0]["status"], "error");
         assert_eq!(calls[1]["status"], "complete");
+        // Each call carries its structured name for the clients to word.
+        assert_eq!(calls[0]["call"], serde_json::json!({"kind": "action", "params": {"verb": "read", "noun": "file"}}));
+        assert_eq!(calls[1]["call"], serde_json::json!({"kind": "tool", "params": {"name": "web"}}));
         let blocks = meta["contentBlocks"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], "Done.");
@@ -1138,28 +1222,8 @@ mod transcript_metadata_tests {
         assert_eq!(blocks[1]["toolCallIndex"], 0);
     }
 
-    /// Old metadata that already carries toolCalls keeps its shape but the
-    /// stored outputs are STRIPPED — outputs are fetched lazily, never
-    /// shipped with the transcript.
-    #[test]
-    fn preexisting_tool_call_metadata_has_outputs_stripped() {
-        let mut assistant = msg("assistant", "Done.");
-        assistant.metadata = Some(
-            r#"{"toolCalls":[{"id":"t1","status":"complete","output":"HUGE BLOB"}]}"#.to_string(),
-        );
-        let mut messages = vec![assistant];
-        build_message_metadata(&mut messages);
-        let meta: serde_json::Value =
-            serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
-        let call = &meta["toolCalls"][0];
-        assert_eq!(call["id"], "t1");
-        assert_eq!(call["status"], "complete");
-        assert!(call.get("output").is_none());
-    }
-
-    /// Persisted contentBlocks (the streamed block order) win over the
-    /// text→tools fallback, and text blocks are hydrated with the message
-    /// content.
+    /// The stored block order (the streamed one) is kept, and text blocks
+    /// are hydrated with the message content.
     #[test]
     fn persisted_block_order_is_preserved_and_hydrated() {
         let mut assistant = msg("assistant", "Here's the file.");
@@ -1201,7 +1265,7 @@ mod transcript_metadata_tests {
     #[test]
     fn ui_tool_calls_normalize_inputs_and_refuse_empty() {
         let statuses: HashMap<String, bool> = HashMap::new();
-        let (ui, _) = build_ui_tool_calls(
+        let ui = build_ui_tool_calls(
             r#"[{"id":"t1","name":"bash","input":"ls -la"},
                 {"id":"t2","name":"os","input":{"a":1}}]"#,
             &statuses,
@@ -1211,17 +1275,5 @@ mod transcript_metadata_tests {
         assert_eq!(ui[1]["input"], r#"{"a":1}"#);
         assert!(build_ui_tool_calls("[]", &statuses).is_none());
         assert!(build_ui_tool_calls("not json", &statuses).is_none());
-    }
-
-    /// default_content_blocks: empty content yields tool blocks only — no
-    /// empty text block padding the transcript.
-    #[test]
-    fn default_blocks_skip_empty_text() {
-        let blocks = default_content_blocks("", 2);
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks.iter().all(|b| b["type"] == "tool"));
-        let blocks = default_content_blocks("hi", 1);
-        assert_eq!(blocks[0]["type"], "text");
-        assert_eq!(blocks[1]["toolCallIndex"], 0);
     }
 }

@@ -3,14 +3,19 @@
 	 * The bot's computer, live in the work panel. noVNC speaks RFB over
 	 * /ws/desktop (a byte pipe to the pod's loopback x11vnc); the desktop
 	 * starts on demand server-side when the first viewer connects. Watch or
-	 * take the keyboard — input fidelity (modifiers, drag, clipboard) is
-	 * RFB's, not ours.
+	 * take the keyboard — input fidelity (modifiers, drag) is RFB's, not
+	 * ours. Copy and paste with the owner's computer: $lib/chat/desktopClipboard.
 	 */
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import Monitor from 'lucide-svelte/icons/monitor';
+	import ClipboardPaste from 'lucide-svelte/icons/clipboard-paste';
+	import ClipboardCopy from 'lucide-svelte/icons/clipboard-copy';
 	import RFB from '@novnc/novnc';
 	import { backendWsBase } from '$lib/api/base';
+	import { ownScreen } from '$lib/stores/ownScreen';
+	import { desktopSession, lastFrameOf, type DesktopStatus } from '$lib/chat/desktopBoot';
+	import { createDesktopClipboard, isMacPlatform, type ClipNotice } from '$lib/chat/desktopClipboard';
 
 	let {
 		onclose,
@@ -19,52 +24,77 @@
 	}: { onclose?: () => void; onrecord?: () => void; recording?: boolean } = $props();
 
 	let container: HTMLDivElement | undefined = $state();
-	let status = $state<'connecting' | 'connected' | 'error' | 'unavailable'>('connecting');
-	let rfb: RFB | null = null;
-	let closed = false;
+	/** Holds the last frame of a dropped connection while the view redials. */
+	let lastFrame: HTMLDivElement | undefined = $state();
+	// Opening the computer is plain view mode: recording is only ever the
+	// owner's own choice (the Record task button). Until the desktop is all
+	// the way up and its first frame is drawn, the view stays covered by ONE
+	// loading state; once up, a dropped connection redials quietly behind the
+	// last frame ($lib/chat/desktopBoot).
+	let status = $state<DesktopStatus>('starting');
 
-	// Retrying forever is right for a blip and wrong for a machine that has no
-	// desktop at all: /ws/desktop 404s off Linux, so on a Mac or Windows install
-	// the old loop reconnected every 3s for as long as the pane stayed open.
-	// Never connected → give up after a few tries and say so. Connected once →
-	// it's a real desktop, so keep redialling, but still bounded.
-	const RETRIES_BEFORE_CONNECT = 3;
-	const RETRIES_AFTER_CONNECT = 10;
-	let attempts = 0;
-	let everConnected = false;
+	// Clipboard text is often a password: it lives only in this component,
+	// only until it is handed over, and is never logged or stored.
+	let sink: HTMLTextAreaElement | undefined = $state();
+	let notice = $state<ClipNotice | null>(null);
+	let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+	/** The computer's copy, when the browser wanted a click to take it. */
+	let offered = $state<string | null>(null);
+	let offerTimer: ReturnType<typeof setTimeout> | null = null;
+	const OFFER_FOR_MS = 60_000;
 
-	function connect() {
-		if (closed || !container) return;
-		status = 'connecting';
-		attempts += 1;
-		container.replaceChildren();
-		const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
-		r.scaleViewport = true;
-		r.resizeSession = false;
-		r.addEventListener('connect', () => {
-			status = 'connected';
-			everConnected = true;
-			attempts = 0;
-		});
-		r.addEventListener('disconnect', () => {
-			rfb = null;
-			if (closed) return;
-			// The desktop survives transport loss server-side (x11vnc -forever,
-			// tunnel redial) — keep trying quietly instead of dying on a blip.
-			const limit = everConnected ? RETRIES_AFTER_CONNECT : RETRIES_BEFORE_CONNECT;
-			if (attempts >= limit) {
-				status = 'unavailable';
-				return;
-			}
-			status = 'error';
-			setTimeout(connect, 3000);
-		});
-		rfb = r;
+	function showNotice(kind: ClipNotice) {
+		notice = kind;
+		if (noticeTimer) clearTimeout(noticeTimer);
+		noticeTimer = setTimeout(() => (notice = null), kind === 'copied' ? 2500 : 6000);
 	}
 
+	function offerCopy(text: string | null) {
+		offered = text;
+		if (offerTimer) clearTimeout(offerTimer);
+		offerTimer = text === null ? null : setTimeout(() => (offered = null), OFFER_FOR_MS);
+	}
+
+	const noticeText: Record<ClipNotice, string> = {
+		copied: 'chat.computerCopied',
+		pasteBlocked: 'chat.computerPasteBlocked',
+		clipboardEmpty: 'chat.computerClipboardEmpty',
+		pasteLossy: 'chat.computerPasteLossy'
+	};
+
+	const session = desktopSession<RFB>({
+		dial: () => {
+			if (!container) return null;
+			container.replaceChildren();
+			const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
+			r.scaleViewport = true;
+			r.resizeSession = false;
+			// The computer copied (Ctrl+C there): noVNC's `clipboard` event.
+			r.addEventListener('clipboard', (e) => {
+				const text = (e as CustomEvent<{ text: string }>).detail?.text ?? '';
+				if (session.current() === r) void clipboard.fromComputer(text);
+			});
+			return r;
+		},
+		ownScreen: () => $ownScreen,
+		onStatus: (s) => (status = s),
+		keepFrame: (dropped) => {
+			const frame = lastFrameOf(dropped);
+			if (frame) lastFrame?.replaceChildren(frame);
+		},
+		dropFrame: () => lastFrame?.replaceChildren()
+	});
+
+	const clipboard = createDesktopClipboard({
+		rfb: () => (status === 'ready' ? session.current() : null),
+		sink: () => sink,
+		notice: showNotice,
+		offerCopy,
+		mac: isMacPlatform()
+	});
+
 	function retry() {
-		attempts = 0;
-		connect();
+		session.boot();
 	}
 
 	function onkeydown(e: KeyboardEvent) {
@@ -75,19 +105,22 @@
 	}
 
 	onMount(() => {
-		connect();
+		session.boot();
 		// noVNC only rescales on window resize — a panel drag or the opening
 		// animation leaves the canvas frozen at its connect-moment size.
 		// Re-assigning scaleViewport forces a rescale to the current box.
 		const ro = new ResizeObserver(() => {
+			const rfb = session.current();
 			if (rfb) rfb.scaleViewport = true;
 		});
 		if (container) ro.observe(container);
 		return () => {
-			closed = true;
+			session.close();
 			ro.disconnect();
-			rfb?.disconnect();
-			rfb = null;
+			clipboard.dispose();
+			if (noticeTimer) clearTimeout(noticeTimer);
+			if (offerTimer) clearTimeout(offerTimer);
+			offered = null;
 		};
 	});
 
@@ -103,13 +136,31 @@
 		<Monitor class="w-4 h-4 opacity-70" />
 		<span class="text-sm font-medium">{$t('chat.botComputer')}</span>
 		<span
-			class="w-1.5 h-1.5 rounded-full {status === 'connected'
+			class="w-1.5 h-1.5 rounded-full {status === 'ready'
 				? 'bg-success'
-				: status === 'connecting'
+				: status === 'starting'
 					? 'bg-warning animate-pulse'
 					: 'bg-error'}"
 		></span>
 		<div class="flex-1"></div>
+		{#if status === 'ready'}
+			{#if offered !== null}
+				<button type="button" class="desktop-clipboard-offer" onclick={() => offered !== null && clipboard.copyOffered(offered)}>
+					<ClipboardCopy class="w-4 h-4" />
+					{$t('chat.computerCopyOffer')}
+				</button>
+			{/if}
+			<button
+				type="button"
+				class="desktop-clipboard-bar-button"
+				onclick={() => clipboard.pasteButton()}
+				title={$t('chat.computerPaste')}
+				aria-label={$t('chat.computerPaste')}
+			>
+				<ClipboardPaste class="w-4 h-4" />
+				<span class="hidden md:inline">{$t('chat.computerPaste')}</span>
+			</button>
+		{/if}
 		{#if onrecord}
 			<button
 				type="button"
@@ -132,8 +183,19 @@
 			</button>
 		{/if}
 	</div>
-	<div class="flex-1 min-h-0 bg-neutral relative">
+	<div
+		class="flex-1 min-h-0 bg-neutral relative"
+		onkeydowncapture={(e) => clipboard.onkeydown(e)}
+		onpaste={(e) => clipboard.onpaste(e)}
+		onpointerdowncapture={() => clipboard.onpointerdown()}
+		role="presentation"
+	>
 		<div bind:this={container} class="absolute inset-0 [&_canvas]:outline-none"></div>
+		<textarea bind:this={sink} class="desktop-clipboard-sink" tabindex="-1" aria-hidden="true" autocomplete="off" spellcheck="false"></textarea>
+		{#if notice}
+			<div class="desktop-clipboard-notice" role="status">{$t(noticeText[notice])}</div>
+		{/if}
+		<div bind:this={lastFrame} class="absolute inset-0 pointer-events-none empty:hidden" data-desktop-last-frame></div>
 		{#if status === 'unavailable'}
 			<div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-neutral-content/80 px-6 text-center">
 				<Monitor class="w-8 h-8" />
@@ -143,12 +205,18 @@
 				</div>
 				<button type="button" class="btn btn-xs btn-neutral" onclick={retry}>{$t('common.retry')}</button>
 			</div>
-		{:else if status !== 'connected'}
-			<div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-neutral-content/80 pointer-events-none">
+		{:else if status === 'failed'}
+			<div class="absolute inset-0 bg-neutral flex flex-col items-center justify-center gap-3 text-neutral-content/80 px-6 text-center" data-desktop-failed>
 				<Monitor class="w-8 h-8" />
-				<span class="text-sm">
-					{status === 'connecting' ? $t('chat.startingComputer') : $t('chat.computerReconnecting')}
-				</span>
+				<p class="text-sm">{$t('chat.computerStartFailed')}</p>
+				<button type="button" class="btn btn-xs btn-neutral" onclick={retry}>{$t('chat.tryAgain')}</button>
+			</div>
+		{:else if status === 'starting'}
+			<!-- Opaque until the first frame: nothing of a desktop that is still
+			     coming up shows through. -->
+			<div class="absolute inset-0 bg-neutral flex flex-col items-center justify-center gap-3 text-neutral-content/80 pointer-events-none" data-desktop-starting>
+				<span class="loading loading-spinner loading-md"></span>
+				<span class="text-sm">{$t('chat.startingComputer')}</span>
 			</div>
 		{/if}
 	</div>

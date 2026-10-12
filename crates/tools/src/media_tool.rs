@@ -22,6 +22,7 @@
 
 mod audio;
 mod cast;
+mod parts;
 mod tag;
 
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+use futures::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 
 use crate::origin::ToolContext;
@@ -44,6 +46,19 @@ const MAX_SECONDS: u64 = 30;
 const SPEECH_MODEL: &str = "nebo-speech";
 /// The speed transcripts are made and billed as.
 const TRANSCRIBE_MODEL: &str = "nebo-transcribe";
+/// The plugin whose engine pulls a video's sound out as small speech and
+/// cuts a long recording in pauses, for a transcript.
+const MEDIA_PLUGIN: &str = "nebo-media";
+/// The longest part of a recording sent in one transcription request, in
+/// seconds; a longer one is cut into parts in its pauses.
+const TRANSCRIPT_PART: u32 = 1200;
+/// Seconds each part after the first also holds before its cut, heard
+/// again to match its voices with the part before's.
+const TRANSCRIPT_OVERLAP: u32 = 30;
+/// Parts transcribed at once.
+const TRANSCRIPT_PARALLEL: usize = 4;
+/// How long the plugin may take to pull the sound out and cut it.
+const SPEECH_PREP: Duration = Duration::from_secs(30 * 60);
 /// The model a character swap is made with when no `model` is named.
 const SWAP_MODEL: &str = "nebo-video-swap";
 /// The resolution a character swap is made at when none is named.
@@ -53,6 +68,11 @@ const SWAP_RESOLUTION: &str = "720p";
 const SWAP_WAIT_FACTOR: u32 = 3;
 /// The largest file the upload path takes (the edge's limit).
 const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+/// The most reference images one image or clip is sent; NeboAI says when a
+/// model takes fewer.
+const MAX_REFERENCES: usize = 4;
+/// The largest reference image file sent (as a data URL).
+const MAX_REFERENCE_BYTES: u64 = 8 * 1024 * 1024;
 /// How long a file lent to Janus stays reachable by its link.
 const LEND_FOR: chrono::TimeDelta = chrono::TimeDelta::hours(1);
 /// How a wait that ran out begins (`Media::wait_video`): the job may still
@@ -844,6 +864,70 @@ fn first_frame(ctx: &ToolContext, base: &Path, image: &str) -> Result<String, St
     ))
 }
 
+/// The reference images a call sends (`references`): pictures whose subjects
+/// the image or clip keeps, such as a character's cast portrait. Each is a
+/// file read as `readable` reads it (absolute, `~/`, or inside `base`) and
+/// sent as a data URL, or a data URL as given. Empty when none were given.
+fn references(ctx: &ToolContext, base: &Path, input: &Value) -> Result<Vec<String>, String> {
+    let Some(given) = input.get("references") else {
+        return Ok(Vec::new());
+    };
+    let given: Vec<&str> = match given {
+        Value::Null => return Ok(Vec::new()),
+        Value::String(one) => vec![one.as_str()],
+        Value::Array(many) => many
+            .iter()
+            .map(|v| v.as_str().ok_or("`references` is a list of picture files."))
+            .collect::<Result<_, _>>()?,
+        _ => return Err("`references` is a list of picture files.".to_string()),
+    };
+    let given: Vec<&str> = given.into_iter().map(str::trim).filter(|g| !g.is_empty()).collect();
+    if given.len() > MAX_REFERENCES {
+        return Err(format!("`references` takes up to {MAX_REFERENCES} pictures; got {}.", given.len()));
+    }
+    given
+        .into_iter()
+        .map(|g| {
+            if g.starts_with("data:image/") {
+                return Ok(g.to_string());
+            }
+            if g.starts_with("https://") || g.starts_with("http://") {
+                return Err(format!("`references` are picture files; save `{g}` to a file first and give its path."));
+            }
+            let path = readable(ctx, base, g)?;
+            let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+                Some("png") => "image/png",
+                Some("webp") => "image/webp",
+                Some("jpg" | "jpeg") => "image/jpeg",
+                _ => return Err(format!("Each of `references` must be a PNG, WebP or JPEG file; got `{g}`.")),
+            };
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if size > MAX_REFERENCE_BYTES {
+                return Err(format!(
+                    "{} is {} MB; a reference picture takes up to {} MB. Save a smaller copy (2048 px on the long side is plenty).",
+                    path.display(),
+                    size.div_ceil(1024 * 1024),
+                    MAX_REFERENCE_BYTES / (1024 * 1024)
+                ));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+            Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+        })
+        .collect()
+}
+
+/// What a refusal of reference images becomes while NeboAI cannot take
+/// them yet: one that predates them refuses the request's size (images) or
+/// its mode (video). Any other failure is passed on as it is.
+fn without_references(e: String) -> String {
+    if e.contains("request body too large") || e.contains("mode must be generate or replace") {
+        "Reference images aren't available on NeboAI yet. Make it without `references`: describe the character in          the same words as before, and start each clip from an approved start frame. Don't try `references` again in          this task."
+            .to_string()
+    } else {
+        e
+    }
+}
+
 /// A file this call reads, named by `given`: an absolute or `~/` path as it
 /// is, a relative one inside `base`. It meets the limits and folders a
 /// `read_file` of it meets, so nothing the run may not read is sent out.
@@ -1163,6 +1247,10 @@ pub struct GenerateMediaTool {
     /// `<data_dir>/files/cast` and this bot's NeboAI connection.
     cast_root: Option<PathBuf>,
     hub: Option<Arc<comm::api::NeboAIApi>>,
+    /// The installed plugins: a transcript of a video, or of a recording
+    /// too long for one request, is prepared by the Nebo Media plugin's
+    /// engine (`MEDIA_PLUGIN`).
+    plugins: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 impl GenerateMediaTool {
@@ -1173,7 +1261,13 @@ impl GenerateMediaTool {
             triggers: TRIGGERS.iter().map(|t| t.to_string()).collect(),
             cast_root: None,
             hub: None,
+            plugins: None,
         }
+    }
+
+    pub fn with_plugin_store(mut self, plugins: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugins = Some(plugins);
+        self
     }
 
     #[cfg(test)]
@@ -1266,10 +1360,14 @@ impl GenerateMediaTool {
 
     /// Makes the images and answers the result text and every file, each
     /// of which the chat shows as a card.
-    async fn image(&self, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+    async fn image(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
         let into = str_of(input, "into");
         let (_, ext) = image_format(into, str_of(input, "output_format"));
-        let body = image_body(input);
+        let refs = references(ctx, &target.base, input)?;
+        let mut body = image_body(input);
+        if !refs.is_empty() {
+            body["references"] = json!(refs);
+        }
         let count = body["n"].as_u64().unwrap_or(1) as usize;
         let names = file_names(
             into,
@@ -1283,14 +1381,23 @@ impl GenerateMediaTool {
             .iter()
             .map(|n| destination(&target.base, n))
             .collect::<Result<Vec<_>, _>>()?;
-        let (images, model) = self.media.images(&body).await?;
+        let (images, model) = match self.media.images(&body).await {
+            Ok(made) => made,
+            Err(e) if !refs.is_empty() => return Err(without_references(e)),
+            Err(e) => return Err(e),
+        };
         // The model stays in the log: a result line can reach the owner,
         // who never sees what made it.
-        tracing::info!(model = %model, count = images.len(), "made images");
+        tracing::info!(model = %model, count = images.len(), references = refs.len(), "made images");
         let mut lines = vec![format!(
-            "Made {} image{} into {}:",
+            "Made {} image{}{} into {}:",
             images.len(),
             if images.len() == 1 { "" } else { "s" },
+            match refs.len() {
+                0 => String::new(),
+                1 => " from 1 reference picture".to_string(),
+                n => format!(" from {n} reference pictures"),
+            },
             paths.first().map(|p| target.place(p)).unwrap_or_default(),
         )];
         let mut revised = None;
@@ -1414,7 +1521,9 @@ impl GenerateMediaTool {
             return Ok("No voices are listed right now; leave `voice` out for the default.".to_string());
         }
         let mut lines = vec![format!(
-            "{} voices. Give one's id as `voice` with kind \"speech\" (an off-screen narrator or voice-over); ids never change:",
+            "{} voices. Give one's id as `voice` with kind \"speech\" (an off-screen narrator or voice-over); ids never change. \
+             Cast by the description: a woman's voice for a woman, a man's for a man, and a different voice for each \
+             character:",
             voices.len()
         )];
         for v in &voices {
@@ -1440,27 +1549,22 @@ impl GenerateMediaTool {
     /// word timings and speakers, saved as transcript JSON (`into`, else
     /// `<file>.transcript.json` beside it when that may be written, else
     /// in the default folder).
+    ///
+    /// An audio file the endpoint takes, under its size limit, goes as it
+    /// is, in one request. Anything else (a video, another format, a file
+    /// over the limit, however long) goes through the Nebo Media plugin's
+    /// engine: its sound as small mono speech, in parts of at most
+    /// `TRANSCRIPT_PART` seconds cut in pauses, transcribed
+    /// `TRANSCRIPT_PARALLEL` at a time and stitched into one transcript
+    /// (`parts`). Each part is an ordinary transcription request, billed as
+    /// one.
     async fn transcript(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
         let given = str_of(input, "file").ok_or("Give `file`: the audio or video file to transcribe.")?;
         let source = readable(ctx, &target.base, given)?;
         let filename = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let ext = source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-        if !ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(format!(
-                "{filename} cannot be transcribed as it is: send {}. Extract its audio to MP3 or M4A with the Nebo Media \
-                 plugin first, then transcribe that file.",
-                ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.join(", ")
-            ));
-        }
         let size = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
-        if size as usize > ai::transcribe::MAX_AUDIO_BYTES {
-            return Err(format!(
-                "{filename} is {} MB; a transcript takes up to {} MB. Extract its audio as a compressed MP3 or M4A with the \
-                 Nebo Media plugin (or split it), then transcribe that.",
-                size.div_ceil(1024 * 1024),
-                ai::transcribe::MAX_AUDIO_BYTES / (1024 * 1024)
-            ));
-        }
+        let as_is = ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str()) && size as usize <= ai::transcribe::MAX_AUDIO_BYTES;
         let path = match str_of(input, "into") {
             Some(into) => destination(&target.base, into)?,
             None => {
@@ -1476,9 +1580,14 @@ impl GenerateMediaTool {
                 }
             }
         };
-        let bytes = std::fs::read(&source).map_err(|e| format!("Could not read {}: {e}", source.display()))?;
-        let raw = self.media.transcribe(&filename, bytes, str_of(input, "language")).await?;
-        let t = audio::transcript(&raw);
+        let language = str_of(input, "language");
+        let (t, how) = if as_is {
+            let bytes = std::fs::read(&source).map_err(|e| format!("Could not read {}: {e}", source.display()))?;
+            (audio::transcript(&self.media.transcribe(&filename, bytes, language).await?), None)
+        } else {
+            let (t, how) = self.transcript_in_parts(ctx, &source, &filename, size, language).await?;
+            (t, Some(how))
+        };
         let json = serde_json::to_string_pretty(&t).map_err(|e| format!("The transcript could not be written: {e}"))?;
         std::fs::write(&path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
         let speakers: std::collections::BTreeSet<&str> =
@@ -1499,6 +1608,7 @@ impl GenerateMediaTool {
             path.display(),
             about.join(", ")
         )];
+        lines.extend(how);
         if t.words.is_empty() && !t.segments.is_empty() {
             lines.push("No word timings came back for this file; the segments carry the timing.".to_string());
         }
@@ -1518,6 +1628,138 @@ impl GenerateMediaTool {
                 .to_string(),
         );
         Ok((lines.join("\n"), vec![path]))
+    }
+
+    /// A recording the endpoint cannot take as it is, transcribed in parts:
+    /// the Nebo Media plugin writes its sound as mono speech in parts cut
+    /// in pauses, each part is sent (a failed one once more), and the
+    /// parts are stitched (`parts::stitch`). Any part that still fails
+    /// fails the whole: nothing partial is saved. With the line that says
+    /// how it was done.
+    async fn transcript_in_parts(
+        &self,
+        ctx: &ToolContext,
+        source: &Path,
+        filename: &str,
+        size: u64,
+        language: Option<&str>,
+    ) -> Result<(audio::Transcript, String), String> {
+        let _waiting = ctx.waiting.enter();
+        let why = if ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS
+            .contains(&source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default().as_str())
+        {
+            format!("{filename} is {} MB, over the {} MB a transcription request takes", size.div_ceil(1024 * 1024), ai::transcribe::MAX_AUDIO_BYTES / (1024 * 1024))
+        } else {
+            format!("{filename} is not an audio file a transcription request takes")
+        };
+        let binary = self.plugins.as_ref().and_then(|p| p.resolve(MEDIA_PLUGIN, "*").map(|b| (p.clone(), b)));
+        let Some((plugins, binary)) = binary else {
+            return Err(format!(
+                "{why}: its sound is pulled out (and a long recording cut into parts) by the Nebo Media plugin, which is \
+                 not installed. Install Nebo Media, then transcribe {filename} again."
+            ));
+        };
+        let work = tempfile::Builder::new()
+            .prefix("nebo-transcript-")
+            .tempdir()
+            .map_err(|e| format!("Could not make a folder for the parts: {e}"))?;
+        let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "audio".into());
+        let speech = work.path().join(format!("{stem}.m4a"));
+        let args: Vec<String> = vec![
+            "audio".into(),
+            "convert".into(),
+            source.to_string_lossy().into_owned(),
+            "--output".into(),
+            speech.to_string_lossy().into_owned(),
+            "--preset".into(),
+            "speech".into(),
+            "--split".into(),
+            TRANSCRIPT_PART.to_string(),
+            "--overlap".into(),
+            TRANSCRIPT_OVERLAP.to_string(),
+        ];
+        let ran = napp::PluginRuntime::new(MEDIA_PLUGIN, binary, plugins)
+            .with_deps()
+            .with_permissions()
+            .run_capture_args(&args, SPEECH_PREP)
+            .await
+            .map_err(|e| format!("{why}, and Nebo Media could not pull its sound out: {e}"))?;
+        let stdout = String::from_utf8_lossy(&ran.stdout);
+        if !ran.status.success() {
+            let said = String::from_utf8_lossy(&ran.stderr);
+            let said = said.trim();
+            if said.contains("--preset") || said.contains("--split") {
+                return Err(format!("{why}, and the installed Nebo Media is too old to cut it into parts: update Nebo Media, then transcribe {filename} again."));
+            }
+            return Err(format!("{why}, and Nebo Media could not pull its sound out: {}", said.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect::<String>()));
+        }
+        let (duration, parts) = parts::parse(&stdout)?;
+        let total = parts.len();
+        let each: Vec<audio::Transcript> = futures::stream::iter(parts.clone().into_iter().enumerate())
+            .map(|(k, part)| self.transcript_part(k, total, part, filename, language))
+            .buffered(TRANSCRIPT_PARALLEL)
+            .try_collect()
+            .await?;
+        let s = parts::stitch(&parts, each, duration);
+        let mut how = if total == 1 {
+            format!("{why}, so Nebo Media pulled its sound out as mono speech first.")
+        } else {
+            format!(
+                "{why}, so Nebo Media pulled its sound out as mono speech and cut it in pauses into {total} parts of up to {} \
+                 minutes, transcribed separately and stitched on one clock.",
+                TRANSCRIPT_PART / 60
+            )
+        };
+        if total > 1 && s.matched + s.unmatched > 0 {
+            how.push_str(&format!(
+                " Speaker labels follow the voices across parts by the {TRANSCRIPT_OVERLAP} s each part shares with the one before"
+            ));
+            how.push_str(&if s.unmatched == 0 {
+                ".".to_string()
+            } else {
+                format!(
+                    "; {} voice{} could not be matched to an earlier part and {} a label of {} own, so one person may appear \
+                     under two labels.",
+                    s.unmatched,
+                    if s.unmatched == 1 { "" } else { "s" },
+                    if s.unmatched == 1 { "has" } else { "have" },
+                    if s.unmatched == 1 { "its" } else { "their" }
+                )
+            });
+        }
+        Ok((s.transcript, how))
+    }
+
+    /// Part `k` (from 0) of `total`, transcribed with its voices' own
+    /// labels; a failed request is sent once more, and a second failure
+    /// fails the part.
+    async fn transcript_part(
+        &self,
+        k: usize,
+        total: usize,
+        part: parts::Part,
+        filename: &str,
+        language: Option<&str>,
+    ) -> Result<audio::Transcript, String> {
+        let clock = |s: f64| format!("{}:{:02}", (s / 60.0).floor() as u64, (s % 60.0).floor() as u64);
+        let bytes = std::fs::read(&part.file).map_err(|e| format!("Could not read part {} of {total}: {e}", k + 1))?;
+        let name = part.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("part-{}.m4a", k + 1));
+        let raw = match self.media.transcribe(&name, bytes.clone(), language).await {
+            Ok(raw) => raw,
+            Err(first) => {
+                tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
+                self.media.transcribe(&name, bytes, language).await.map_err(|e| {
+                    format!(
+                        "Part {} of {total} of {filename} ({}–{}) could not be transcribed, twice: {e}. Nothing was saved; \
+                         transcribe {filename} again.",
+                        k + 1,
+                        clock(part.keep),
+                        clock(part.end)
+                    )
+                })?
+            }
+        };
+        Ok(audio::labelled(&raw))
     }
 
     /// Makes the video and answers the result text and its file, which the
@@ -1580,7 +1822,19 @@ impl GenerateMediaTool {
                     Some(img) => Some(first_frame(ctx, &target.base, img)?),
                     None => None,
                 };
-                self.media.submit_video(&video_body(input, frame)).await?
+                // References in place of a first frame: the clip keeps
+                // their subjects through it (mode "reference").
+                let refs = references(ctx, &target.base, input)?;
+                let mut body = video_body(input, frame);
+                if !refs.is_empty() {
+                    body["mode"] = json!("reference");
+                    body["references"] = json!(refs);
+                }
+                match self.media.submit_video(&body).await {
+                    Ok(job) => job,
+                    Err(e) if !refs.is_empty() => return Err(without_references(e)),
+                    Err(e) => return Err(e),
+                }
             }
         };
         let waited = if replace {
@@ -1871,7 +2125,7 @@ impl DynTool for GenerateMediaTool {
            clip's sound, never extract or join its dialogue.\n\
          - Swap the person in an existing video: kind \"video\", `mode` \"replace\", `video`, `cast`; kind \"cast\" lists and \
            adds who a swap may use (the owner confirms each once). Recipe: the character-swap skill. One character across \
-           new shots: approved start frames.\n\
+           new shots: start frames from their portrait (`references`).\n\
          - kind \"speech\": `text` read aloud, for an off-screen narrator or voice-over only; stock voices, never a real \
            person's. kind \"music\": a track from `prompt`.{} kind \"transcript\": `file` to JSON \
            with word timings, speakers.\n\
@@ -1896,11 +2150,11 @@ impl DynTool for GenerateMediaTool {
                 "kind": { "type": "string", "enum": kinds(), "description": "What to make; `transcript` to transcribe `file`; `voices` to list the speech voices; `cast` to manage the people a swap may use." },
                 "prompt": { "type": "string", "description": format!("Image or video: what it shows, in detail: subject, style, light, framing, motion. Someone speaking on camera: one speaker per clip, a medium or close shot, the exact line in quotes, the voice described in the same words in every clip of that person, and \"Only her voice. No music, no background sound.\" (his, for a man). Music: the style the brief asks for, never a house style (none given: offer 2-3 contrasting takes), mood, instruments, tempo, what it is for.{sound_prompt}") },
                 "text": { "type": "string", "description": "Speech: the exact words to say, up to about 4,000 characters. Only for an off-screen narrator or voice-over, never a person seen speaking: their line goes in the video `prompt`." },
-                "voice": { "type": "string", "description": "Speech (an off-screen narrator or voice-over): a voice id from kind `voices`. Left out: the default voice." },
-                "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate." },
+                "voice": { "type": "string", "description": "Speech (an off-screen narrator or voice-over): a voice id from kind `voices`, chosen by its description: a woman's voice for a woman, a man's for a man, and a different voice for each character, kept for that character every time. Left out: the default voice." },
+                "direction": { "type": "string", "description": "Speech: how the words are said: tone, pace, warmth, emotion, accent, e.g. \"deep, warm, unhurried documentary narrator; calm authority, slight gravel, pauses between phrases\". Describe the qualities; never name a real person to imitate. It shapes how the chosen voice speaks, not whose voice it is: pick the voice for the character first, and give each character their own direction." },
                 "lyrics": { "type": "string", "description": "Music: the words to sing, lines separated by newlines; [Verse], [Chorus], [Bridge] tags allowed. Left out: instrumental." },
                 "instrumental": { "type": "boolean", "description": "Music: no vocals (the default without `lyrics`). false without `lyrics`: words are written for it." },
-                "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe (an absolute, `~/` or relative path)." },
+                "file": { "type": "string", "description": "Transcript: the audio or video file to transcribe, as it is, of any length or size (an absolute, `~/` or relative path); never extract or split it first." },
                 "language": { "type": "string", "description": "Transcript: the spoken language code (e.g. en, es) when known. Left out: detected." },
                 "into": { "type": "string", "description": "The file to write: an absolute or `~/` path is saved there; a relative one (e.g. `assets/hero.png`) is inside the app's folder or the workspace. Project work always goes inside its project, `~/NeboAI/Media/Projects/<project>/`, in sources/, voice/, music/, frames/, clips/, work/, versions/ or deliver/ (finals), e.g. `~/NeboAI/Media/Projects/lighthouse/frames/s1-start.png`. Left out: a name from the prompt, loose in the workspace." },
                 "app": { "type": "string", "description": "The app whose folder the file goes in. Leave out when you are the app, or for the workspace." },
@@ -1914,6 +2168,7 @@ impl DynTool for GenerateMediaTool {
                 "resolution": { "type": "string", "description": "Video: e.g. 720p, 1080p." },
                 "aspect_ratio": { "type": "string", "description": "Video: e.g. 16:9, 9:16, 1:1." },
                 "image": { "type": "string", "description": "Video: the first frame, a picture the owner approved: make each shot's start frame as an image, show it and get the owner's yes, then make the clip from it. A file (absolute, `~/`, or relative to the folder), an https URL or a data URL. Kind cast: a photo of `cast` to add." },
+                "references": { "type": "array", "items": { "type": "string" }, "maxItems": MAX_REFERENCES, "description": "Image or video: up to 4 pictures whose people, products or places the result keeps, such as a character's cast portrait: files (absolute, `~/` or relative to the folder). Name them in the prompt by order: \"the woman in Image 1\", \"Image 2's red kart\". Video: the clip keeps them throughout and starts from no `image`; prefer an approved start frame made with them." },
                 "scrub": { "type": "boolean", "description": "Video: re-encode with every frame a keyframe for scroll-scrubbing (needs ffmpeg)." },
                 "job": { "type": "string", "description": "Video: a job id from an earlier call that did not finish; picks it up instead of making a new one." },
                 "mode": { "type": "string", "enum": ["replace"], "description": "Video: `replace` puts cast member `cast` in place of the person in `video` (720p unless `resolution` says otherwise; `prompt` optional; up to 30 minutes). Prepare the clip with the Nebo Media plugin first; afterwards its `audio mix` with `audio-from` the clip and `ai-generated` puts the sound back and tags the file, which reaches the owner as a card by itself." },
@@ -1988,6 +2243,24 @@ impl DynTool for GenerateMediaTool {
             _ => {}
         }
         let video = str_of(input, "kind") == Some("video");
+        let has_refs = match input.get("references") {
+            None | Some(Value::Null) => false,
+            Some(Value::Array(a)) => !a.is_empty(),
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(_) => return Err("`references` is a list of picture files.".to_string()),
+        };
+        if has_refs {
+            if str_of(input, "mode").is_some() {
+                return Err("`references` is not used with `mode` replace: the person comes from `cast`.".to_string());
+            }
+            if str_of(input, "image").is_some() {
+                return Err(
+                    "Give `image` (an approved start frame) or `references`, not both: a clip from a start frame keeps \
+                     what the frame shows."
+                        .to_string(),
+                );
+            }
+        }
         match str_of(input, "mode") {
             Some("replace") if video => {
                 if str_of(input, "job").is_some() {
@@ -2010,7 +2283,7 @@ impl DynTool for GenerateMediaTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match str_of(input, "kind") {
             Some("video") if str_of(input, "mode") == Some("replace") => "swapping the person in a video".to_string(),
             Some("video") => "making a video".to_string(),
@@ -2021,20 +2294,6 @@ impl DynTool for GenerateMediaTool {
             Some("transcript") => "transcribing".to_string(),
             Some("voices") => "listing voices".to_string(),
             _ => "making an image".to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match str_of(input, "kind") {
-            Some("video") if str_of(input, "mode") == Some("replace") => "Swapped the person in a video".to_string(),
-            Some("video") => "Made a video".to_string(),
-            Some("cast") => "Worked on the cast".to_string(),
-            Some("speech") => "Made speech".to_string(),
-            Some("music") => "Made music".to_string(),
-            Some("sound") => "Made a sound effect".to_string(),
-            Some("transcript") => "Transcribed".to_string(),
-            Some("voices") => "Listed voices".to_string(),
-            _ => "Made an image".to_string(),
         }
     }
 
@@ -2049,7 +2308,7 @@ impl DynTool for GenerateMediaTool {
                 Err(e) => return ToolResult::error(e),
             };
             let made = match str_of(&input, "kind") {
-                Some("image") => self.image(&target, &input).await,
+                Some("image") => self.image(ctx, &target, &input).await,
                 Some("video") => self.video(ctx, &target, &input).await,
                 Some(kind @ ("speech" | "music" | "sound")) => self.audio_file(&target, &input, kind).await,
                 Some("transcript") => self.transcript(ctx, &target, &input).await,
@@ -2093,8 +2352,14 @@ mod tests {
     }
 
     type Reply = Box<dyn Fn(&str, usize) -> (u16, &'static str, Vec<u8>) + Send + Sync>;
+    /// A reply that also reads the request's body.
+    type BodyReply = Box<dyn Fn(&str, usize, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync>;
 
     async fn mock(reply: Reply) -> MockJanus {
+        mock_reading(Box::new(move |path, count, _| reply(path, count))).await
+    }
+
+    async fn mock_reading(reply: BodyReply) -> MockJanus {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<(String, String, Vec<(String, String)>)>>> = Arc::default();
@@ -2143,12 +2408,12 @@ mod tests {
                     let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
                     let count = {
                         let mut s = seen.lock().unwrap();
-                        s.push((line.clone(), body, headers));
+                        s.push((line.clone(), body.clone(), headers));
                         s.iter()
                             .filter(|(l, _, _)| l.split_whitespace().nth(1) == Some(path.as_str()))
                             .count()
                     };
-                    let (status, ctype, out) = reply(&path, count);
+                    let (status, ctype, out) = reply(&path, count, &body);
                     let head = format!(
                         "HTTP/1.1 {status} X\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                         out.len()
@@ -2381,6 +2646,7 @@ mod tests {
 
         let (text, files) = tool
             .image(
+                &ToolContext::default(),
                 &target,
                 &json!({"prompt": "a red kart", "into": "hero.png"}),
             )
@@ -2491,6 +2757,117 @@ mod tests {
         assert_eq!(files, [tmp.path().join("clips/s1.mp4")]);
         assert!(!text.contains("vendor-video-9") && !text.contains("model"), "{text}");
         assert!(text.contains("5 seconds"), "{text}");
+    }
+
+    /// Reference pictures (a character's cast portrait) go to Janus as data
+    /// URLs, read the way a start frame is read, in the order given; the
+    /// result says how many were used.
+    #[tokio::test]
+    async fn image_references_go_to_janus_as_data_urls_in_order() {
+        let png = b"\x89PNG\r\n\x1a\nmade".to_vec();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let answer: &'static str = Box::leak(format!(r#"{{"created":1,"data":[{{"b64_json":"{b64}"}}]}}"#).into_boxed_str());
+        let janus = mock(Box::new(move |_, _| (200, "application/json", answer.as_bytes().to_vec()))).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None), store);
+        std::fs::create_dir_all(tmp.path().join("cast/mara")).unwrap();
+        std::fs::write(tmp.path().join("cast/mara/portrait.png"), b"mara-png").unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let kart = elsewhere.path().join("kart.jpg");
+        std::fs::write(&kart, b"kart-jpg").unwrap();
+        let target = Target { base: tmp.path().to_path_buf(), label: "the workspace".into(), default_folder: "media" };
+        let (text, files) = tool
+            .image(
+                &ToolContext::default(),
+                &target,
+                &json!({"prompt": "The woman in Image 1 beside Image 2's kart", "into": "frames/s1.png",
+                        "references": ["cast/mara/portrait.png", kart.to_string_lossy()]}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(files, [tmp.path().join("frames/s1.png")]);
+        assert!(text.contains("from 2 reference pictures"), "{text}");
+        let seen = janus.seen.lock().unwrap();
+        let body: Value = serde_json::from_str(&seen[0].1).unwrap();
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        assert_eq!(
+            body["references"],
+            json!([format!("data:image/png;base64,{}", enc(b"mara-png")), format!("data:image/jpeg;base64,{}", enc(b"kart-jpg"))])
+        );
+        assert_eq!(body["prompt"], "The woman in Image 1 beside Image 2's kart");
+        assert!(body.get("mode").is_none());
+    }
+
+    /// A clip from references is mode "reference" with no first frame.
+    /// While NeboAI cannot take them yet (it refuses the mode, or an image
+    /// request's size), the model is told plainly to go on without them,
+    /// and nothing else changes for a call without references.
+    #[tokio::test]
+    async fn references_are_refused_cleanly_until_janus_takes_them() {
+        let janus = mock(Box::new(|path, _| match path {
+            "/v1/videos" => (400, "application/json", br#"{"error":{"message":"mode must be generate or replace","type":"invalid_request_error","code":"invalid_request"}}"#.to_vec()),
+            _ => (400, "application/json", br#"{"error":{"message":"Invalid JSON: http: request body too large","type":"invalid_request_error","code":"invalid_json"}}"#.to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+        let tool = GenerateMediaTool::new(Media::new(janus.url.clone(), "bot-1".into(), None).with_polling(fast()), store);
+        std::fs::write(tmp.path().join("mara.png"), b"mara-png").unwrap();
+        let target = Target { base: tmp.path().to_path_buf(), label: "the workspace".into(), default_folder: "media" };
+        let ctx = ToolContext::default();
+
+        let video = tool
+            .video(&ctx, &target, &json!({"kind": "video", "prompt": "Image 1 waves", "references": ["mara.png"]}))
+            .await
+            .unwrap_err();
+        assert!(video.starts_with("Reference images aren't available on NeboAI yet."), "{video}");
+        let image = tool
+            .image(&ctx, &target, &json!({"prompt": "Image 1 on a porch", "references": ["mara.png"]}))
+            .await
+            .unwrap_err();
+        assert!(image.starts_with("Reference images aren't available on NeboAI yet."), "{image}");
+        {
+            let seen = janus.seen.lock().unwrap();
+            let body: Value = serde_json::from_str(&seen[0].1).unwrap();
+            assert_eq!(body["mode"], "reference");
+            assert!(body.get("image").is_none());
+            assert_eq!(body["references"].as_array().map(Vec::len), Some(1));
+        }
+        // Without references the same refusal is passed on as it is.
+        let plain = tool.image(&ctx, &target, &json!({"prompt": "a porch"})).await.unwrap_err();
+        assert!(!plain.contains("Reference images"), "{plain}");
+    }
+
+    #[test]
+    fn references_are_checked_before_anything_is_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.gif"), b"gif").unwrap();
+        std::fs::write(tmp.path().join("a.png"), b"png").unwrap();
+        let ctx = ToolContext::default();
+        let refs = |v: Value| references(&ctx, tmp.path(), &json!({ "references": v }));
+        assert_eq!(refs(json!([])).unwrap(), Vec::<String>::new());
+        assert_eq!(refs(json!("a.png")).unwrap().len(), 1);
+        assert!(refs(json!(["a.gif"])).unwrap_err().contains("PNG, WebP or JPEG"));
+        assert!(refs(json!(["https://x/y.png"])).unwrap_err().contains("save `https://x/y.png` to a file"));
+        assert!(refs(json!(["../a.png"])).is_err());
+        assert!(refs(json!(["a.png", "a.png", "a.png", "a.png", "a.png"])).unwrap_err().contains("up to 4"));
+        assert_eq!(refs(json!(["data:image/png;base64,eA=="])).unwrap(), ["data:image/png;base64,eA=="]);
+
+        let tool_ok = |v: Value| {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = Arc::new(db::Store::new(&tmp.path().join("t.db").to_string_lossy()).unwrap());
+            GenerateMediaTool::new(Media::new("http://127.0.0.1:9".into(), "bot-1".into(), None), store).validate_input(&v)
+        };
+        assert!(tool_ok(json!({"kind": "image", "prompt": "p", "references": ["a.png"]})).is_ok());
+        assert!(tool_ok(json!({"kind": "video", "prompt": "p", "references": ["a.png"]})).is_ok());
+        assert!(tool_ok(json!({"kind": "video", "prompt": "p", "image": "s1.png", "references": ["a.png"]}))
+            .unwrap_err()
+            .contains("not both"));
+        assert!(tool_ok(json!({"kind": "video", "mode": "replace", "cast": "mara", "video": "v.mp4", "references": ["a.png"]}))
+            .unwrap_err()
+            .contains("comes from `cast`"));
+        assert!(tool_ok(json!({"kind": "image", "prompt": "p", "references": 3})).unwrap_err().contains("list of picture files"));
     }
 
     /// A refusal from the service behind NeboAI never reaches the model in
@@ -2885,14 +3262,233 @@ mod tests {
             assert!(body.contains(part), "{part} missing from the form");
         }
 
-        // A file the endpoint does not take is refused before it is sent.
+        // A file the endpoint does not take needs Nebo Media to pull its
+        // sound out; without it, nothing is sent.
         let mov = tmp.path().join("in/clip.mov");
         std::fs::write(&mov, b"x").unwrap();
         drop(seen);
         let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": mov.to_string_lossy()})).await;
-        assert!(result.is_error && result.content.contains("Extract its audio"), "{}", result.content);
+        assert!(result.is_error && result.content.contains("Nebo Media plugin, which is not installed"), "{}", result.content);
         assert_eq!(janus.seen.lock().unwrap().len(), 1);
         assert!(tool.validate_input(&json!({"kind": "transcript"})).unwrap_err().contains("`file`"));
+    }
+
+    /// A Nebo Media install whose binary is `script` (a shell script
+    /// standing in for the plugin, or the real binary copied in).
+    fn plugins_with_media(tmp: &Path, binary: &[u8]) -> Arc<napp::plugin::PluginStore> {
+        let installed = tmp.join("plugins");
+        let dir = installed.join(MEDIA_PLUGIN).join("0.5.8");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.json"),
+            json!({"id": MEDIA_PLUGIN, "slug": MEDIA_PLUGIN, "name": "Nebo Media", "version": "0.5.8", "platforms": {}}).to_string(),
+        )
+        .unwrap();
+        let bin = dir.join(MEDIA_PLUGIN);
+        std::fs::write(&bin, binary).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir_all(tmp.join("user_plugins")).unwrap();
+        Arc::new(napp::plugin::PluginStore::new(installed, tmp.join("user_plugins"), None))
+    }
+
+    /// Stands in for Nebo Media's `audio convert --preset speech --split`:
+    /// records its arguments, writes three parts and lists them.
+    fn three_part_plugin(args_log: &Path) -> Vec<u8> {
+        format!(
+            r#"#!/bin/sh
+echo "$@" > '{log}'
+out=""
+while [ $# -gt 0 ]; do [ "$1" = "--output" ] && out="$2"; shift; done
+d=$(dirname "$out"); s=$(basename "$out" .m4a)
+printf 'part one' > "$d/$s-1.m4a"; printf 'part two' > "$d/$s-2.m4a"; printf 'part three' > "$d/$s-3.m4a"
+echo "Result: $d/$s-1.m4a (speech)"
+echo "Parts: {{\"duration\": 3000.0, \"cut_in_pauses\": 2, \"cut_without_pause\": 0, \"parts\": [{{\"file\": \"$d/$s-1.m4a\", \"start\": 0, \"keep\": 0, \"end\": 1190.5}}, {{\"file\": \"$d/$s-2.m4a\", \"start\": 1160.5, \"keep\": 1190.5, \"end\": 2380.25}}, {{\"file\": \"$d/$s-3.m4a\", \"start\": 2350.25, \"keep\": 2380.25, \"end\": 3000.0}}]}}"
+"#,
+            log = args_log.display()
+        )
+        .into_bytes()
+    }
+
+    /// What Janus hears in each part, on the part's own clock: each part
+    /// labels its two voices its own way (the second part names them the
+    /// other way round), and the overlap repeats the end of the part before.
+    fn part_answer(body: &str) -> Option<&'static str> {
+        if body.contains("part one") {
+            Some(r#"{"language":"en","duration":1190.5,"words":[
+                {"text":"Welcome","start":0.5,"end":0.9,"speaker":0},{"text":"back.","start":1.0,"end":1.4,"speaker":0},
+                {"text":"Thanks","start":1170.0,"end":1170.4,"speaker":1},{"text":"for","start":1170.5,"end":1170.7,"speaker":1},{"text":"having","start":1170.8,"end":1171.2,"speaker":1},{"text":"me.","start":1171.3,"end":1171.6,"speaker":1},
+                {"text":"Sure.","start":1185.0,"end":1185.5,"speaker":0},{"text":"Okay.","start":1188.0,"end":1188.4,"speaker":0}]}"#)
+        } else if body.contains("part two") {
+            Some(r#"{"language":"en","duration":1219.75,"words":[
+                {"text":"Thanks","start":9.52,"end":9.9,"speaker":"A"},{"text":"for","start":10.0,"end":10.2,"speaker":"A"},{"text":"having","start":10.3,"end":10.7,"speaker":"A"},{"text":"me.","start":10.8,"end":11.1,"speaker":"A"},
+                {"text":"Sure.","start":24.48,"end":25.0,"speaker":"B"},{"text":"Okay.","start":27.55,"end":27.9,"speaker":"B"},
+                {"text":"So","start":31.0,"end":31.2,"speaker":"B"},{"text":"why?","start":31.3,"end":31.7,"speaker":"B"},
+                {"text":"Because.","start":33.0,"end":33.5,"speaker":"A"}]}"#)
+        } else if body.contains("part three") {
+            Some(r#"{"language":"en","duration":649.75,"words":[{"text":"Bye.","start":40.0,"end":40.4,"speaker":0},{"text":"Bye!","start":41.0,"end":41.3,"speaker":1}]}"#)
+        } else {
+            None
+        }
+    }
+
+    /// A long video: Nebo Media writes its sound in three parts, each is
+    /// transcribed (the second fails once and is sent again), and one
+    /// transcript comes back on the video's clock, in the same JSON as
+    /// one request makes, with each voice labelled the same in every part.
+    #[tokio::test]
+    async fn a_long_video_is_transcribed_in_parts_and_stitched() {
+        let failed_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let failed = failed_once.clone();
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(_)) if body.contains("part two") && !failed.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                (502, "text/plain", b"upstream hiccup".to_vec())
+            }
+            ("/v1/audio/transcriptions", Some(a)) => (200, "application/json", a.as_bytes().to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("args.txt");
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&log)));
+        let video = tmp.path().join("in/podcast.mp4");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        // Over the request limit, so it cannot go as it is.
+        std::fs::File::create(&video).unwrap().set_len(ai::transcribe::MAX_AUDIO_BYTES as u64 + 1).unwrap();
+
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        let args = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            args.starts_with(&format!("audio convert {} --output ", video.display())) && args.contains("--preset speech --split 1200 --overlap 30"),
+            "{args}"
+        );
+        assert_eq!(janus.seen.lock().unwrap().len(), 4, "three parts, the second sent twice");
+        assert!(result.content.contains("into 3 parts of up to 20 minutes"), "{}", result.content);
+        assert!(result.content.contains("Speaker labels follow the voices across parts"), "{}", result.content);
+        // Part three repeats no words of part two: its two voices cannot be placed.
+        assert!(result.content.contains("2 voices could not be matched to an earlier part"), "{}", result.content);
+
+        let out = tmp.path().join("in/podcast.transcript.json");
+        let t: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        // The same shape as one request's transcript.
+        assert_eq!(t.as_object().unwrap().keys().collect::<Vec<_>>(), ["duration", "language", "segments", "words"]);
+        assert_eq!(t["duration"], 3000.0);
+        let words: Vec<(String, f64, String)> = t["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| (w["text"].as_str().unwrap().to_string(), w["start"].as_f64().unwrap(), w["speaker"].as_str().unwrap().to_string()))
+            .collect();
+        let want = [
+            ("Welcome", 0.5, "S1"),
+            ("back.", 1.0, "S1"),
+            ("Thanks", 1170.0, "S2"),
+            ("for", 1170.5, "S2"),
+            ("having", 1170.8, "S2"),
+            ("me.", 1171.3, "S2"),
+            ("Sure.", 1185.0, "S1"),
+            ("Okay.", 1188.0, "S1"),
+            // Part two's own words, moved by its start (1160.5 s); "A" is S2, "B" is S1.
+            ("So", 1191.5, "S1"),
+            ("why?", 1191.8, "S1"),
+            ("Because.", 1193.5, "S2"),
+            // Part three heard no overlap words: its voices are new labels.
+            ("Bye.", 2390.25, "S3"),
+            ("Bye!", 2391.25, "S4"),
+        ];
+        assert_eq!(words.iter().map(|(a, b, c)| (a.as_str(), *b, c.as_str())).collect::<Vec<_>>(), want);
+        assert!(words.windows(2).all(|p| p[0].1 <= p[1].1), "times only move forward");
+        for seg in t["segments"].as_array().unwrap() {
+            assert!(seg.as_object().unwrap().keys().all(|k| ["text", "start", "end", "speaker"].contains(&k.as_str())), "{seg}");
+        }
+    }
+
+    /// A part that fails twice fails the whole transcript: nothing is saved.
+    #[tokio::test]
+    async fn a_part_that_fails_twice_fails_the_transcript() {
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(_)) if body.contains("part three") => (500, "text/plain", b"down".to_vec()),
+            ("/v1/audio/transcriptions", Some(a)) => (200, "application/json", a.as_bytes().to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&tmp.path().join("args.txt"))));
+        let video = tmp.path().join("in/podcast.mov");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"a small video").unwrap();
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("Part 3 of 3 of podcast.mov (39:40–50:00) could not be transcribed, twice"), "{}", result.content);
+        assert!(result.content.contains("Nothing was saved"), "{}", result.content);
+        assert!(!tmp.path().join("in/podcast.transcript.json").exists());
+        let tries = janus.seen.lock().unwrap().iter().filter(|(_, b, _)| b.contains("part three")).count();
+        assert_eq!(tries, 2, "the failed part is sent once more, no more");
+    }
+
+    /// With the real Nebo Media (`NEBO_MEDIA_BIN`, 0.5.8 or later) and
+    /// ffmpeg here: 45 minutes of talk made with ffmpeg, and a video, go
+    /// through the real engine; the cuts land in pauses and every time is
+    /// on the recording's clock. Skipped when either is missing.
+    #[tokio::test]
+    async fn the_real_engine_cuts_long_talk_in_pauses() {
+        let (Some(bin), Ok(ffmpeg)) = (std::env::var_os("NEBO_MEDIA_BIN"), which::which("ffmpeg")) else {
+            eprintln!("skipped: set NEBO_MEDIA_BIN to a Nebo Media binary (and have ffmpeg) to run this");
+            return;
+        };
+        // Each part's answer: one word 35 s into it, past the 30 s overlap.
+        let janus = mock(Box::new(|path, _| match path {
+            "/v1/audio/transcriptions" => (200, "application/json", br#"{"language":"en","words":[{"text":"word","start":35.0,"end":35.3}]}"#.to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &std::fs::read(bin).unwrap()));
+        let make = |args: &[&str]| {
+            let out = command::new::<std::process::Command>(&ffmpeg, command::Console::Hidden)
+                .args(["-hide_banner", "-loglevel", "error", "-y"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        // 45 minutes: 0.3 s words a tenth of a second apart, a 0.6 s pause after each 6 s sentence.
+        let talk = tmp.path().join("talk.wav");
+        make(&[
+            "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=2700:sample_rate=16000,volume='if(lt(mod(t\\,6.6)\\,6)*lt(mod(t\\,0.4)\\,0.3)\\,0.3\\,0)':eval=frame",
+            "-c:a", "pcm_s16le", &talk.to_string_lossy(),
+        ]);
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": talk.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("into 3 parts"), "{}", result.content);
+        let t: Value = serde_json::from_slice(&std::fs::read(tmp.path().join("talk.transcript.json")).unwrap()).unwrap();
+        let starts: Vec<f64> = t["words"].as_array().unwrap().iter().map(|w| w["start"].as_f64().unwrap()).collect();
+        assert_eq!(starts.len(), 3, "one word a part: {starts:?}");
+        assert_eq!(starts[0], 35.0);
+        for (k, s) in starts.iter().enumerate().skip(1) {
+            // Part k starts 30 s before its cut, so its word is 5 s after the cut: the cut is
+            // in a sentence's pause (6.0–6.6 s into each 6.6 s), never in a word, and no
+            // later than 20 minutes after the cut before.
+            let cut = s - 5.0;
+            let into = cut.rem_euclid(6.6);
+            assert!((5.99..6.61).contains(&into), "cut {k} at {cut} s is {into:.3} s into a sentence");
+            let before = if k == 1 { 0.0 } else { starts[k - 1] - 5.0 };
+            assert!(cut - before <= 1200.0 && cut > before + 600.0, "{starts:?}");
+        }
+        // A video in a format the endpoint does not take: its sound goes the same way.
+        let video = tmp.path().join("clip.mov");
+        make(&["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5", "-f", "lavfi", "-i", "sine=frequency=330:duration=5", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", &video.to_string_lossy()]);
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("pulled its sound out as mono speech first"), "{}", result.content);
     }
 
     #[test]

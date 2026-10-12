@@ -10,9 +10,19 @@ package main
 //  3. Add the mapping: "list_agent_chats.chats": "EnrichedChat[]"
 //  4. If the type isn't in neboComponents.ts, add it to extraInterfaces below.
 var typeOverrides = map[string]string{
+	// ── Teach a task ──
+	"teach_start.capSeconds": "number",
+	"teach_stop.keyframes":   "number",
+	"teach_stop.narrated":    "boolean",
+	"teach_stop.capped":      "boolean",
+
 	// ── Agent chats (enriched with preview, message count, relative time) ──
 	"list_agent_chats.chats":     "EnrichedChat[]",
 	"list_agent_chats.teammates": "EnrichedChat[]",
+	"list_agent_chats.pinned":    "EnrichedChat[]",
+	"list_agent_chats.nextCursor": "string | null",
+	"pin_chat.pinned":            "boolean",
+	"pin_chat.pinnedAt":          "number | null",
 	"edit_team.team":        "Team",
 
 	// ── Active agents ──
@@ -91,6 +101,21 @@ var typeOverrides = map[string]string{
 	// ── Model picker: provider id → that provider's models (a map, NOT an array) ──
 	"list_models.models": "Record<string, unknown[]>",
 
+	// ── Intelligence packs (Pack is generated from types::packs::Pack) ──
+	// The bot's default: a pack ref `pack/<id>[/<level>]` or a model.
+	"list_packs.default":         "string",
+	"set_default_pack.default":   "string",
+	"list_pack_choices.chat":     "PackChoice[]",
+	"list_pack_choices.decision": "PackChoice[]",
+	"list_pack_choices.voice":    "PackChoice[]",
+
+	// ── A connection's models (ConnectionModel/CatalogModel are generated) ──
+	"list_connection_models.models":         "ConnectionModel[]",
+	"add_connection_model.model":            "ConnectionModel",
+	"update_connection_model.model":         "ConnectionModel",
+	"browse_connection_catalog.models":      "CatalogModel[]",
+	"browse_connection_catalog.refreshedAt": "number | null",
+
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
 	"list_aliases.aliases":        "AliasEntry[]",
@@ -100,6 +125,62 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	// A file as it travels (comm::wire::Attachment), in an upload's status
+	// (handlers/uploads.rs UploadStatus).
+	"Attachment": `export interface Attachment {
+	fileId: string
+	filename: string
+	mimeType: string
+	size: number
+	url: string
+	thumbnailUrl?: string
+	width?: number
+	height?: number
+	duration?: number
+}`,
+
+	// Where a landed file's hub copy stands (crates/server/src/hub_sync.rs).
+	"SyncState": `export type SyncState = 'pending' | 'synced' | 'failed' | 'refused'`,
+
+	// One piece of background work (crates/server/src/background.rs).
+	"BackgroundTask": `export type BackgroundKind = 'agent' | 'shell' | 'workflow' | 'monitor' | 'loop'
+
+export type BackgroundSource = 'helper' | 'turn' | 'workflow' | 'timer' | 'watch' | 'heartbeat' | 'shell' | 'handoff'
+
+export type BackgroundStatus = 'running' | 'waiting' | 'scheduled' | 'watching' | 'degraded'
+
+export type BackgroundAction = 'stop' | 'cancel' | 'approve' | 'pause' | 'delete' | 'off'
+
+export interface BackgroundTask {
+	id: string
+	kind: BackgroundKind
+	source: BackgroundSource
+	agentId: string
+	employee: string
+	title: string
+	detail: string
+	call: CallName | null
+	status: BackgroundStatus
+	wait: string | null
+	trigger: string | null
+	startedAt: number | null
+	lastActivityAt: number | null
+	nextRunAt: number | null
+	createdBy: string
+	sourceRunId: string | null
+	sessionKey: string | null
+	fromAgentId: string | null
+	fromSessionKey: string | null
+	turnsUsed: number | null
+	turnsCap: number | null
+	actions: BackgroundAction[]
+}`,
+	// A piece of background work that ended, and how.
+	"FinishedTask": `export interface FinishedTask {
+	task: BackgroundTask
+	outcome: 'done' | 'failed' | 'stopped' | 'removed'
+	endedAt: number
+}`,
 	// One row of a team's "who's working" strip (GET /teams/{id}/working).
 	"TeamWorkEntry": `export interface TeamWorkEntry {
 	kind: 'member' | 'helper'
@@ -107,9 +188,17 @@ var extraInterfaces = map[string]string{
 	member: string
 	title: string
 	taskId: string
+	call: CallName | null
 	activity: string
 	sessionKey: string
 	chatId: string
+}`,
+	// A tool call's structured name (crates/tools/src/humanize.rs Call):
+	// a kind every client words in the owner's language, and the call's own
+	// values verbatim.
+	"CallName": `export interface CallName {
+	kind: string
+	params?: Record<string, string>
 }`,
 	"RunDisplay": `export interface RunDisplayFact {
 	key: string
@@ -140,6 +229,8 @@ export interface RunDisplay {
 	source: string
 	version?: string
 	isApp: boolean
+	/** AGENT.md's starters: asks an empty chat offers to tap (at most 4). */
+	starters: string[]
 	isEnabled: boolean
 	inputValues: string
 	installedAt?: number
@@ -179,6 +270,25 @@ export interface RunDisplay {
 	/** RFC 3339; empty = never. */
 	expiresAt: string
 	createdAt: string
+	/** The Work-panel reference of the file. */
+	source: string
+	/** The link follows its file; otherwise it keeps the version it has. */
+	live: boolean
+	contentHash: string
+	/** Published as a site: its address and https://<address>.nebo.page. */
+	address?: string
+	siteUrl?: string
+}`,
+
+	// One model a pack slot may name (GET /intelligence-packs/choices):
+	// value is the provider/model string the slot stores.
+	"PackChoice": `export interface PackChoice {
+	value: string
+	provider: string
+	connection: string
+	modelId: string
+	capabilities?: string[]
+	local: boolean
 }`,
 
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {
@@ -232,8 +342,8 @@ export interface RunDisplay {
 	openOnWork: boolean
 	/** window.isolated: the page is served cross-origin isolated (SharedArrayBuffer for threaded engine exports). */
 	isolated: boolean
-	/** window.share_menu: the header's Share button entries, each say sent into the app's chat. */
-	shareMenu: { label: string; say: string }[]
+	/** window.share_menu: the header's Share button entries, each say sent into the app's chat; share: the answer's file opens in the Share dialog. */
+	shareMenu: { label: string; say: string; share?: boolean }[]
 }`,
 
 	"EnrichedChat": `export interface EnrichedChat {
@@ -250,6 +360,10 @@ export interface RunDisplay {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
+	/** Whether the owner pinned it to the top of the employee's list. */
+	pinned: boolean
+	/** When he pinned it (unix seconds); null when not pinned. */
+	pinnedAt: number | null
 }`,
 
 	"ActiveAgent": `export interface ActiveAgent {

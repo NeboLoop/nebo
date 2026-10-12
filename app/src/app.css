@@ -170,8 +170,71 @@
   color: transparent;
   animation: nebo-shimmer 1.8s linear infinite;
 }
+/* The folded activity line sits apart from the answer by exactly the
+   space between two of its paragraphs (prose-sm: 1.1428571em of 0.875rem
+   = 1rem = 4 spacing steps). At the top of a turn the turn's own margin
+   already separates it from the message above. */
+.chat-activity {
+  margin-block: calc(var(--spacing) * 4);
+}
+.chat-activity:first-child {
+  margin-top: 0;
+}
 @media (prefers-reduced-motion: reduce) {
   .activity-live { animation: none; color: inherit; background-image: none; }
+}
+
+/* Text the employee wrote between its calls: one muted line cut with an
+   ellipsis, opened to every word. Its names and paths wrap anywhere. */
+.chat-note {
+  @apply flex items-start gap-1.5 min-w-0 my-1.5 text-sm text-base-content/70;
+}
+.chat-activity .chat-note {
+  @apply my-0 text-xs;
+}
+.chat-note-line {
+  @apply m-0 min-w-0 flex-1 truncate;
+}
+.chat-note-full {
+  @apply m-0 min-w-0 flex-1 whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* One line per call: its kind, then its own value cut with an ellipsis; the
+   duration and the chevron never leave the row. Under it, what came back. */
+.call-row-label {
+  @apply shrink-0 max-w-[45%] truncate font-medium text-start bg-transparent border-none p-0;
+}
+.call-row-subject {
+  @apply min-w-0 flex-1 truncate text-start bg-transparent border-none p-0;
+}
+.call-row-result {
+  @apply mt-0.5 flex w-full min-w-0 items-baseline gap-1.5 ps-1 text-start bg-transparent border-none p-0;
+}
+
+/* An opened call: what was asked and what came back, each in its own box,
+   long tokens wrapped, tall output scrolled within. */
+.call-detail {
+  @apply rounded-lg border border-base-300 bg-base-200/40 px-3 py-2;
+}
+.call-detail-error {
+  @apply border-error/40 bg-error/5;
+}
+.call-detail-head {
+  @apply mb-1 text-[11px] font-medium text-base-content/50;
+}
+.call-detail-body {
+  @apply m-0 max-h-60 overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Where a run stopped on an error, kept in the thread. */
+.chat-run-error {
+  @apply max-w-[640px] mt-3 flex items-start gap-2 rounded-lg border border-error/30 bg-error/5 px-3 py-2 text-xs;
+}
+.chat-run-error-text {
+  @apply mt-0.5 text-base-content/80;
+  overflow-wrap: anywhere;
 }
 
 /* Contenteditable placeholder */
@@ -554,6 +617,14 @@
   .agent-working-dot { animation: none; }
 }
 
+/* A pinned conversation in an employee's list: a small pin before its
+   name, quiet beside the title. */
+.chat-pin-mark {
+  flex-shrink: 0;
+  align-self: center;
+  color: color-mix(in srgb, var(--color-base-content) 45%, transparent);
+}
+
 /* ===== Permission ask card: one step waits on the owner =====
    The same family as the install and question cards in the chat. It
    arrives at the bottom of the conversation and rises in; answered, it
@@ -580,6 +651,9 @@
   background-color: color-mix(in srgb, var(--color-primary) 14%, var(--color-base-100));
   border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-base-100));
   box-shadow: none;
+}
+.ask-select {
+  @apply w-full;
 }
 .ask-receipt {
   @apply mb-1 max-w-md text-xs text-base-content/70;
@@ -710,4 +784,493 @@
 }
 .consent-chip-hint {
   @apply text-xs text-base-content/50;
+}
+
+/* ===== Background work =====
+   The line above the composer (BackgroundStatus), the task list it opens,
+   and the workspace's "Running now" (BackgroundPanel, BackgroundRow). One
+   line high, never wrapping: pieces are separated by a middle dot and
+   enter and leave by width and fade (widthFade). */
+:root {
+  --bg-row-icon-size: 1.25rem;
+  --bg-thinking-dim: 0.75;
+}
+.bg-status {
+  /* In line with the composer card under it (ChatComposer's px-6). */
+  @apply relative px-7 -mb-2;
+}
+.bg-status-row {
+  @apply flex items-center min-w-0 h-6 overflow-hidden whitespace-nowrap text-xs text-base-content/60 tabular-nums;
+}
+.bg-status-piece {
+  @apply inline-flex items-center shrink-0;
+}
+.bg-status-piece + .bg-status-piece::before {
+  content: '·';
+  @apply mx-1.5 text-base-content/40;
+}
+.bg-status-phrase {
+  @apply shrink truncate min-w-0;
+}
+.bg-status-tasks {
+  @apply btn btn-ghost btn-xs h-6 min-h-6 px-1.5 font-normal text-base-content/70 border-0;
+}
+.bg-status-tasks[aria-pressed='true'] {
+  @apply bg-base-200 text-base-content;
+}
+.bg-status-thinking {
+  animation: bg-thinking 2s ease-in-out 3s infinite;
+}
+@keyframes bg-thinking {
+  0%, 100% { opacity: 1; }
+  50% { opacity: var(--bg-thinking-dim); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bg-status-thinking { animation: none; }
+}
+.bg-status-backdrop {
+  @apply fixed inset-0 z-40 cursor-default;
+}
+.bg-status-popover {
+  @apply absolute bottom-full start-6 end-6 z-50 mb-1 max-h-[60vh] overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg;
+}
+
+.bg-panel {
+  @apply rounded-2xl border border-base-content/15 bg-base-100 shadow-sm min-w-0;
+}
+.bg-status-popover .bg-panel {
+  @apply rounded-none border-0 shadow-none;
+}
+.bg-panel-empty {
+  @apply px-4 py-3 text-xs text-base-content/50;
+}
+.bg-panel-header {
+  @apply flex w-full items-center gap-2 px-3 py-2 text-start;
+}
+.bg-panel-title {
+  @apply flex-1 min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-base-content/50;
+}
+.bg-panel-count {
+  @apply text-xs text-base-content/50 tabular-nums;
+}
+.bg-panel-chevron {
+  @apply w-3.5 h-3.5 shrink-0 text-base-content/40 transition-transform;
+}
+.bg-panel-rows {
+  @apply flex flex-col pb-1;
+}
+.bg-panel-more {
+  @apply mx-1 rounded-lg px-2 py-1.5 text-start text-xs text-base-content/60 hover:bg-base-200;
+}
+
+.bg-row {
+  @apply mx-1 rounded-lg;
+}
+.bg-row-open {
+  @apply bg-base-200/60;
+}
+.bg-row-line {
+  @apply flex items-center gap-1 min-w-0;
+}
+.bg-row-main {
+  @apply flex flex-1 items-center gap-2 min-w-0 rounded-lg px-2 py-1.5 text-start text-[13px] hover:bg-base-200;
+}
+.bg-row-finished .bg-row-main {
+  @apply hover:bg-transparent text-base-content/60;
+}
+.bg-row-icon {
+  width: var(--bg-row-icon-size);
+  height: var(--bg-row-icon-size);
+  @apply inline-flex shrink-0 items-center justify-center text-base-content/50;
+}
+.bg-row-title {
+  @apply flex-1 min-w-0 truncate;
+}
+.bg-row-employee {
+  @apply text-base-content/50;
+}
+.bg-row-meta {
+  @apply shrink-0 text-xs text-base-content/50 tabular-nums;
+}
+.bg-row-stop {
+  @apply btn btn-ghost btn-xs btn-square h-6 min-h-6 w-6 me-1 text-base-content/50 opacity-0 transition-opacity;
+}
+.bg-row:hover .bg-row-stop,
+.bg-row-stop:focus-visible,
+.bg-row-stop:disabled {
+  @apply opacity-100;
+}
+@media (hover: none) {
+  .bg-row-stop { @apply opacity-100; }
+}
+.bg-row-detail {
+  @apply flex flex-col gap-1.5 px-2 pb-2 ps-9;
+}
+.bg-row-detail-line {
+  @apply text-xs text-base-content/70 break-words;
+}
+.bg-row-muted {
+  @apply text-base-content/50;
+}
+.bg-output {
+  @apply max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-base-100 px-2 py-1.5 font-mono text-[11px] text-base-content/80;
+}
+.bg-row-actions {
+  @apply flex flex-wrap gap-1;
+}
+
+/* A conversation hears its employee's background work end, fail, or set a
+   timer: one quiet line in the thread, never a message. */
+.bg-notice {
+  @apply max-w-[640px] mt-2 text-xs text-base-content/55;
+}
+.bg-notice-failed {
+  @apply text-error;
+}
+
+/* Hand-offs between employees: the line in the sender's chat ("→ Name:
+   ask" with its status beneath) and the header of the receiving thread
+   ("From Name: ask", back to where it came from). A failure stays visible. */
+.handoff-header {
+  @apply shrink-0 flex flex-col gap-0.5 border-b border-base-300 px-5 py-2.5 text-sm;
+}
+.handoff-header-line {
+  @apply flex items-center gap-1.5 min-w-0 text-base-content/70;
+}
+.handoff-header-from {
+  @apply truncate text-base-content/80 no-underline hover:text-base-content;
+}
+.handoff-status {
+  @apply truncate text-xs text-base-content/50;
+}
+.handoff-status-failed {
+  @apply text-error;
+}
+.handoff-status-stopped {
+  @apply text-warning;
+}
+.handoff-line {
+  @apply flex flex-col min-w-0 my-1.5 text-xs no-underline;
+}
+.handoff-line-link {
+  @apply cursor-pointer;
+}
+.handoff-line-ask {
+  @apply min-w-0 truncate font-medium text-base-content/80;
+}
+.handoff-line-link:hover .handoff-line-ask {
+  @apply text-base-content;
+}
+.handoff-line-status {
+  @apply mt-0.5 flex min-w-0 items-baseline gap-1.5 ps-1;
+}
+
+/* The bot's computer: copy and paste with the owner's computer
+   (DesktopView.svelte, $lib/chat/desktopClipboard). The sink is the
+   textarea the browser pastes into: focusable, never seen, never clicked. */
+.desktop-clipboard-sink {
+  @apply absolute top-0 left-0 w-px h-px p-0 border-0 opacity-0 resize-none overflow-hidden pointer-events-none;
+}
+.desktop-clipboard-bar-button {
+  @apply btn btn-sm btn-ghost normal-case gap-1.5 text-neutral-content hover:bg-white/10;
+}
+.desktop-clipboard-offer {
+  @apply btn btn-sm btn-primary normal-case gap-1.5;
+}
+.desktop-clipboard-notice {
+  @apply absolute bottom-3 left-1/2 -translate-x-1/2 max-w-[90%] px-3 py-1.5 rounded-lg bg-base-100 text-base-content text-xs shadow-lg pointer-events-none text-center;
+}
+
+/* Intelligence picker (composer chip popover, employee settings): cards on a
+   sheet. One card of the five levels, one drill-in row for the pack, a
+   round close / back button beside a centered title. */
+.intel-popover-backdrop {
+	@apply fixed inset-0 z-20 cursor-default bg-transparent border-none;
+}
+.intel-popover {
+	@apply absolute bottom-full start-0 mb-2 z-30 w-80 max-w-[calc(100vw-2rem)];
+}
+.intel-picker {
+	@apply flex flex-col gap-2 rounded-2xl bg-base-200 p-3 shadow-lg border border-base-300 text-start;
+}
+.intel-head {
+	@apply flex items-center justify-between gap-2 pb-1;
+}
+.intel-title {
+	@apply text-base font-semibold text-center flex-1 truncate;
+}
+.intel-round {
+	@apply w-8 h-8 shrink-0 rounded-full grid place-items-center bg-base-100 text-base-content/70 hover:text-base-content cursor-pointer border-none;
+}
+.intel-round-spacer {
+	@apply w-8 h-8 shrink-0;
+}
+.intel-card {
+	@apply flex flex-col rounded-xl bg-base-100 divide-y divide-base-content/10 overflow-hidden;
+}
+.intel-row {
+	@apply flex w-full items-center gap-3 px-3.5 py-2.5 text-start bg-transparent border-none cursor-pointer hover:bg-base-200/60;
+}
+div.intel-row {
+	@apply cursor-default hover:bg-transparent;
+}
+.intel-icon {
+	@apply w-[1.125rem] h-[1.125rem] shrink-0 text-base-content/70;
+}
+.intel-text {
+	@apply flex flex-col min-w-0 flex-1 gap-0.5;
+}
+.intel-name {
+	@apply text-sm font-medium flex items-center gap-1.5 flex-wrap;
+}
+.intel-desc {
+	@apply text-xs text-base-content/70;
+}
+.intel-check {
+	@apply shrink-0 text-primary;
+}
+.intel-foot {
+	@apply text-xs text-base-content/60 px-1;
+}
+.intel-drill {
+	@apply flex-row items-center gap-2 px-3.5 py-3 border-none divide-y-0 cursor-pointer hover:bg-base-200/60 text-start;
+}
+.intel-drill .intel-name {
+	@apply flex-1;
+}
+.intel-value {
+	@apply text-sm text-base-content/60 truncate max-w-[50%];
+}
+.intel-link {
+	@apply text-sm text-primary hover:brightness-110 px-1 py-1;
+}
+/* Employee settings: the same cards, inline and full width. */
+.intel-settings {
+	@apply flex flex-col gap-2 max-w-2xl;
+}
+.intel-settings .intel-card {
+	@apply border border-base-300;
+}
+
+/* ── Connectors (Settings → Connectors) ─────────────────────────────── */
+.connectors {
+  @apply mx-auto flex max-w-xl flex-col gap-5;
+}
+.connectors-head {
+  @apply flex items-center gap-2;
+}
+.connectors-title {
+  @apply flex-1 truncate text-center text-lg font-semibold;
+}
+.connectors-head-spacer {
+  @apply w-9 shrink-0;
+}
+.connectors-back {
+  @apply grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full border-none bg-transparent text-primary hover:bg-base-200;
+}
+.connectors-add {
+  @apply relative shrink-0;
+}
+.connectors-plus {
+  @apply grid h-9 w-9 cursor-pointer place-items-center rounded-full border-none bg-base-200 text-base-content hover:bg-base-300;
+}
+.connectors-menu {
+  @apply menu absolute end-0 top-11 z-20 w-60 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg;
+}
+.connectors-menu a,
+.connectors-menu button {
+  @apply flex items-center gap-3 text-sm;
+}
+.connectors-empty {
+  @apply flex flex-col items-center gap-2 py-10 text-center;
+}
+.connector-card {
+  @apply flex flex-col overflow-hidden rounded-2xl bg-base-200/60;
+}
+.connector-card > * + * {
+  @apply border-t border-base-300/70;
+}
+.connector-row {
+  @apply flex w-full flex-wrap items-start gap-3 border-none bg-transparent px-5 py-3.5 text-start;
+}
+button.connector-row {
+  @apply cursor-pointer hover:bg-base-300/40 disabled:cursor-default;
+}
+/* A row's title wraps beside its icon; the value stays on its first line. */
+.connector-row-title {
+  @apply min-w-0 flex-1 text-sm leading-6 text-base-content;
+}
+.connector-row-icon {
+  @apply mt-0.5 h-5 w-5 shrink-0 text-base-content/60;
+}
+.connector-row-danger .connector-row-title,
+.connector-row-danger .connector-row-icon {
+  @apply text-error;
+}
+.connector-header {
+  @apply gap-3 p-5;
+}
+.connector-header > * + * {
+  @apply border-t-0;
+}
+.connector-header-top {
+  @apply flex items-center gap-3;
+}
+.connector-header-status {
+  @apply mt-0.5 flex items-start gap-1.5 text-xs text-base-content/50;
+}
+.connector-header-status strong {
+  @apply font-semibold text-base-content/70;
+}
+.connector-header-status .connector-dot {
+  @apply mt-1;
+}
+.connector-list-row {
+  @apply items-center;
+}
+.connector-row-open {
+  @apply flex min-w-0 flex-1 cursor-pointer items-center gap-3 border-none bg-transparent p-0 text-start;
+}
+.connector-open-chevron {
+  @apply grid cursor-pointer place-items-center border-none bg-transparent p-0;
+}
+.connector-row-name {
+  @apply text-sm font-medium text-base-content;
+}
+.connector-row-sub {
+  @apply text-sm text-base-content/60;
+}
+.connector-meta {
+  @apply text-xs text-base-content/50;
+}
+.connector-value {
+  @apply whitespace-nowrap text-sm leading-6 text-base-content/50;
+}
+.connector-chevron {
+  @apply mt-1 h-4 w-4 shrink-0 text-base-content/30;
+}
+.connector-pill {
+  @apply rounded-full bg-info/15 px-2 py-0.5 text-xs font-semibold text-info;
+}
+.connector-status-line {
+  @apply ms-14 basis-full cursor-pointer border-none bg-transparent p-0 text-start text-xs text-base-content/50 disabled:cursor-default;
+}
+.connector-status-expired,
+.connector-status-error,
+.connector-status-timedOut {
+  @apply text-error;
+}
+.connector-icon {
+  @apply grid shrink-0 place-items-center overflow-hidden border border-base-300 bg-base-100 font-semibold text-base-content/70;
+}
+.connector-icon img {
+  @apply h-full w-full object-contain;
+}
+.connector-icon-sm {
+  @apply h-7 w-7 rounded-md text-xs;
+}
+.connector-icon-md {
+  @apply h-9 w-9 rounded-lg text-sm;
+}
+.connector-dot {
+  @apply h-2 w-2 shrink-0 rounded-full bg-base-content/40;
+}
+.connector-dot-connected {
+  @apply bg-success;
+}
+.connector-dot-expired,
+.connector-dot-error,
+.connector-dot-timedOut {
+  @apply bg-error;
+}
+.connector-dot-waiting {
+  @apply bg-warning;
+}
+.connector-actions {
+  @apply flex flex-wrap gap-2;
+}
+.connector-url {
+  @apply flex min-w-0 cursor-pointer items-center gap-1.5 border-none bg-transparent p-0 font-mono text-xs text-base-content/50 hover:text-base-content;
+}
+.connector-error {
+  @apply text-xs text-error;
+}
+.connector-section {
+  @apply -mb-3 px-1 text-xs font-semibold text-base-content/50;
+}
+.connector-footnote {
+  @apply -mt-3 px-1 text-xs text-base-content/50;
+}
+.connector-choice {
+  @apply flex w-full cursor-pointer items-center gap-3 border-none bg-transparent px-4 py-3 text-start hover:bg-base-200/60 disabled:cursor-default;
+}
+.connector-choice-text {
+  @apply flex min-w-0 flex-1 flex-col;
+}
+.connector-check {
+  @apply h-5 w-5 shrink-0 text-info;
+}
+.connector-add {
+  @apply flex max-w-md flex-col gap-4;
+}
+.connector-field {
+  @apply flex flex-col gap-1.5;
+}
+.connector-field-label {
+  @apply text-sm font-semibold;
+}
+.connector-trust {
+  @apply flex items-start gap-2 rounded-xl bg-base-200 p-3 text-sm text-base-content/70;
+}
+.connector-expander {
+  @apply flex cursor-pointer items-center justify-between border-none bg-transparent p-0 text-sm font-medium text-base-content/70;
+}
+.composer-menu-value {
+  @apply flex items-center justify-between gap-3 text-sm;
+}
+.composer-menu-value-text {
+  @apply text-base-content/50;
+}
+/* The tag by the model chip: this conversation runs in a mode other than
+   the employee's own. */
+.composer-mode-tag {
+  @apply px-1.5 text-xs text-warning whitespace-nowrap;
+}
+/* The composer's Permission sheet: the four modes for one conversation. */
+.chat-mode-body {
+  @apply flex flex-1 flex-col gap-3 overflow-y-auto p-4;
+}
+.chat-mode-list {
+  @apply flex flex-col overflow-hidden rounded-2xl bg-base-200;
+}
+.chat-mode-row {
+  @apply flex w-full cursor-pointer items-center gap-3 border-none bg-transparent px-4 py-3 text-left hover:bg-base-300;
+}
+.chat-mode-row + .chat-mode-row {
+  @apply border-t border-base-300;
+}
+.chat-mode-main {
+  @apply flex min-w-0 flex-1 flex-col;
+}
+.chat-mode-name {
+  @apply flex flex-wrap items-center gap-2 text-sm font-medium;
+}
+.chat-mode-desc {
+  @apply mt-0.5 text-xs text-base-content/60;
+}
+.chat-mode-pill {
+  @apply rounded-full bg-base-300 px-2 py-0.5 text-[11px] font-normal text-base-content/60;
+}
+.chat-mode-pill-care {
+  @apply bg-warning/15 text-warning;
+}
+.chat-mode-check {
+  @apply grid w-5 shrink-0 place-items-center text-primary;
+}
+.chat-mode-foot {
+  @apply px-1 text-xs text-base-content/60;
+}
+/* A level an owner's pack leaves empty: said, but quieter. */
+.intel-desc-muted {
+	@apply text-base-content/50 italic;
 }

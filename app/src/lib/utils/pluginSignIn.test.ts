@@ -12,7 +12,7 @@ vi.mock('$lib/api/nebo', () => ({
 	authLoginAccount: (...a: unknown[]) => authLoginAccount(...a),
 }));
 
-import { isSignInFor, startPluginSignIn } from './pluginSignIn';
+import { isSignInFor, openSignInLink, startPluginSignIn } from './pluginSignIn';
 
 beforeEach(() => {
 	authLogin.mockClear();
@@ -43,5 +43,27 @@ describe('isSignInFor', () => {
 		expect(isSignInFor({ plugin: 'xero', agentId: null }, 'xero', 'bk')).toBe(true);
 		expect(isSignInFor({ plugin: 'xero' }, 'quickbooks', 'bk')).toBe(false);
 		expect(isSignInFor(undefined, 'xero', 'bk')).toBe(false);
+	});
+});
+
+describe('openSignInLink', () => {
+	// A cloud bot opened in the browser reaches the bot through its tunnel, so
+	// the login answers with the link instead of broadcasting it. Nothing
+	// opened it, and every Connect did nothing (2026-10-11).
+	it('opens the link a tunnelled login hands back', async () => {
+		const open = vi.fn().mockReturnValue({});
+		vi.stubGlobal('window', { open });
+		authLogin.mockResolvedValueOnce({ started: true, authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' });
+		await startPluginSignIn('gmail', { multiAccount: false });
+		expect(open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?x=1', '_blank');
+		vi.unstubAllGlobals();
+	});
+
+	it('opens nothing when the bot opens the link itself', () => {
+		const open = vi.fn();
+		vi.stubGlobal('window', { open });
+		openSignInLink({ started: true } as { authUrl?: string });
+		expect(open).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
 	});
 });

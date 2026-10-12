@@ -12,8 +12,6 @@
 # CLI providers are auto-detected based on installed tools.
 # To install: brew install claude-code, npm i -g @openai/codex, npm i -g @google/gemini-cli
 #
-# Updated: April 2026 - Latest model IDs from official docs
-
 version: "1.0"
 
 # Provider credentials (use environment variables or UI)
@@ -29,140 +27,17 @@ credentials:
 
 # Model selection defaults
 defaults:
-  # Primary provider/model (used first)
-  # Nebo 1 (Janus gateway) is the default — works out of the box with NeboAI auth.
-  # Users with their own API keys can override in Settings > Routing.
-  primary: janus/nebo-1
+  # The Nebo AI pack is the default: it works out of the box with NeboAI auth.
+  primary: pack/nebo-ai
 
-  # When the reviewer would stop a run, it first moves the next few steps to
-  # this model (once per run). A stronger speed costs more per step, but a run
-  # stopped at step forty has already spent forty steps. Empty = stop instead.
-  # nebo-1-pro IS the high speed: "high" was merged into pro when the three
-  # speeds were settled, and the gateway has served no nebo-1-high since.
-  # Escalation skips fuzzy resolution, so a name the gateway does not serve
-  # failed terminally at exactly the moment a run was already in trouble.
-  escalation: janus/nebo-1-pro
-
-  # Fallback chain (tried in order if primary fails)
-  fallbacks:
-    - anthropic/claude-sonnet-4-6
-    - anthropic/claude-haiku-4-5-20251001
-
-# Task-based model routing
-# Automatically selects the best model based on the task type
-# Nebo 1 handles all tasks by default (server-side routing picks the best upstream model).
-# Users with direct API keys can override per-task in Settings > Routing.
+# The bot's default: a model, or an intelligence pack (pack/<id>).
 task_routing:
-  vision: janus/nebo-1
-  audio: janus/nebo-1
-  reasoning: janus/nebo-1
-  code: janus/nebo-1
-  general: janus/nebo-1
-  fallbacks:
-    vision:
-      - anthropic/claude-sonnet-4-6
-      - openai/gpt-5.4
-    reasoning:
-      - anthropic/claude-opus-4-6
-      - openai/gpt-5.4
-    code:
-      - anthropic/claude-sonnet-4-6
-      - openai/gpt-5.4
-    general:
-      - anthropic/claude-haiku-4-5-20251001
-      - openai/gpt-5.4-nano
+  general: pack/nebo-ai
 
-# Available models by provider
+# Available models by provider. Only Nebo AI's boot floor lives here: a
+# provider the owner adds runs exactly the models he types on it (Settings >
+# Providers), and Nebo never picks one for him.
 providers:
-  anthropic:
-    - id: claude-opus-4-6
-      displayName: Claude Opus 4.6
-      contextWindow: 1000000
-      capabilities: [vision, tools, streaming, code, reasoning, thinking]
-      pricing:
-        input: 5.0
-        output: 25.0
-        cachedInput: 0.50
-      active: false
-    - id: claude-sonnet-4-6
-      displayName: Claude Sonnet 4.6
-      contextWindow: 1000000
-      capabilities: [vision, tools, streaming, code, thinking]
-      pricing:
-        input: 3.0
-        output: 15.0
-        cachedInput: 0.30
-      active: false
-    - id: claude-haiku-4-5-20251001
-      displayName: Claude Haiku 4.5
-      contextWindow: 200000
-      capabilities: [vision, tools, streaming, code]
-      pricing:
-        input: 1.0
-        output: 5.0
-        cachedInput: 0.10
-      active: false
-
-  openai:
-    - id: gpt-5.4
-      displayName: GPT-5.4
-      contextWindow: 400000
-      capabilities: [vision, tools, streaming, code, reasoning]
-      active: false
-    - id: gpt-5.4-mini
-      displayName: GPT-5.4 Mini
-      contextWindow: 400000
-      capabilities: [vision, tools, streaming, code, reasoning]
-      active: false
-    - id: gpt-5.4-nano
-      displayName: GPT-5.4 Nano
-      contextWindow: 128000
-      capabilities: [vision, tools, streaming, code]
-      active: false
-    - id: codex-mini-latest
-      displayName: Codex
-      contextWindow: 256000
-      capabilities: [tools, streaming, code, reasoning]
-      active: false
-
-  google:
-    - id: gemini-3.1-pro-preview
-      displayName: Gemini 3.1 Pro
-      contextWindow: 1000000
-      capabilities: [vision, tools, streaming, code, reasoning, thinking]
-      pricing:
-        input: 1.25
-        output: 5.00
-      active: false
-    - id: gemini-3-flash-preview
-      displayName: Gemini 3 Flash
-      contextWindow: 1000000
-      capabilities: [vision, tools, streaming, code]
-      pricing:
-        input: 0.10
-        output: 0.40
-      active: false
-    - id: gemini-2.5-flash
-      displayName: Gemini 2.5 Flash
-      contextWindow: 1000000
-      capabilities: [vision, tools, streaming, code]
-      pricing:
-        input: 0.15
-        output: 0.60
-      active: false
-
-  deepseek:
-    - id: deepseek-chat
-      displayName: DeepSeek Chat
-      contextWindow: 128000
-      capabilities: [tools, streaming, code]
-      active: false
-    - id: deepseek-reasoner
-      displayName: DeepSeek Reasoner
-      contextWindow: 128000
-      capabilities: [reasoning, code]
-      active: false
-
   # nebo-1 is the boot floor: build_providers needs one active Janus chat
   # model before the first sync. The pickable speeds (nebo-1-flash, ...)
   # and every Janus model's context window come from Janus GET /v1/models —
@@ -190,26 +65,21 @@ providers:
 # These use locally installed CLI tools.
 # Auto-detected: if the command exists in PATH, it's available.
 # Auth: Uses your existing account (Claude subscription, ChatGPT, Google)
+# Model: each tool runs its own default; Nebo names none.
 
 cli_providers:
   - id: claude-code
     displayName: Claude Agent
     command: claude
     installHint: brew install claude-code
-    models: [opus, sonnet, haiku]
-    defaultModel: opus
     active: false
   - id: codex-cli
     displayName: OpenAI Codex CLI
     command: codex
     installHint: npm i -g @openai/codex
-    models: [gpt-5.4, gpt-5.4-mini, codex-mini-latest]
-    defaultModel: gpt-5.4
     active: false
   - id: gemini-cli
     displayName: Gemini CLI
     command: gemini
     installHint: npm i -g @google/gemini-cli
-    models: [gemini-3-flash-preview, gemini-3.1-pro-preview]
-    defaultModel: gemini-3.1-pro-preview
     active: false

@@ -6,11 +6,19 @@ use tracing::{info, warn};
 
 use db::Store;
 use tools::registry::DynTool;
+use tools::workflows::step_tools::names_tool;
 
 use crate::WorkflowError;
 use crate::parser::{Activity, WorkflowDef};
 
-const MAX_ITERATIONS: u32 = 50;
+/// Model turns one step may take (an activity without steps is one step).
+pub const MAX_ITERATIONS: u32 = 50;
+
+/// Model turns one whole run may take, across every step of every activity:
+/// three steps' worth. A one-step workflow and a ten-step one are held to
+/// the same total. Set from the 2026-10-10 bake-off: every run that did its
+/// job stayed under 140 turns; the runs past that (146 to 336) were loops.
+pub const RUN_MAX_ITERATIONS: u32 = 3 * MAX_ITERATIONS;
 
 use crate::loop_contract::{ActivityLoop, LoopTurn};
 
@@ -29,20 +37,99 @@ pub(crate) fn is_lean(activity: &Activity) -> bool {
 /// ends the turn on the call itself.
 const LEAN_MAX_ITERATIONS: u32 = 2;
 
-/// Per-activity turn budget: [`LEAN_MAX_ITERATIONS`] for a lean activity,
-/// else params.maxIterations over the default — the same shape the graph
-/// loop node accepts (graph.rs).
-fn activity_max_iterations(activity: &Activity) -> u32 {
-    if is_lean(activity) {
-        return LEAN_MAX_ITERATIONS;
-    }
+/// The `params.maxIterations` an activity sets, when it sets one — the same
+/// shape the graph loop node accepts (graph.rs).
+fn explicit_max_iterations(activity: &Activity) -> Option<u32> {
     activity
         .params
         .as_ref()
         .and_then(|p| p.get("maxIterations"))
         .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
         .map(|v| v as u32)
-        .unwrap_or(MAX_ITERATIONS)
+}
+
+/// Per-step turn budget: [`LEAN_MAX_ITERATIONS`] for a lean activity, else
+/// params.maxIterations over the default.
+fn activity_max_iterations(activity: &Activity) -> u32 {
+    if is_lean(activity) {
+        return LEAN_MAX_ITERATIONS;
+    }
+    explicit_max_iterations(activity).unwrap_or(MAX_ITERATIONS)
+}
+
+/// The model turns a run has left, shared by every step of every activity
+/// (graph forks included, hence atomic). A run resumed after an approval or
+/// an expert starts a fresh budget: the wait between is the owner's or the
+/// expert's, and the turns before it were already bounded.
+#[derive(Debug)]
+pub struct RunBudget {
+    cap: u32,
+    used: std::sync::atomic::AtomicU32,
+    /// Where the turns used are told as they are spent, so the owner sees
+    /// how far into its budget a running workflow is.
+    progress: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+}
+
+impl RunBudget {
+    /// [`RUN_MAX_ITERATIONS`], or more when an activity explicitly gives one
+    /// step more than that (a loop node's maxIterations counts its visits,
+    /// not model turns, and is left out).
+    pub(crate) fn for_workflow(def: &WorkflowDef, progress: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>) -> Self {
+        let cap = def
+            .activities
+            .iter()
+            .filter(|a| a.activity_type != "loop")
+            .filter_map(explicit_max_iterations)
+            .fold(RUN_MAX_ITERATIONS, u32::max);
+        Self { cap, used: std::sync::atomic::AtomicU32::new(0), progress }
+    }
+
+    fn left(&self) -> u32 {
+        self.cap.saturating_sub(self.used.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn spend(&self, turns: u32) {
+        let used = self.used.fetch_add(turns, std::sync::atomic::Ordering::Relaxed) + turns;
+        if let Some(tx) = &self.progress {
+            let _ = tx.send(WorkflowProgress::Turns { used, cap: self.cap });
+        }
+    }
+
+    /// The turns the next step may take: its own cap, or what the run has
+    /// left when that is less. `Err` when the run has none left.
+    fn grant(&self, own: u32) -> Result<u32, WorkflowError> {
+        match self.left() {
+            0 => Err(WorkflowError::RunMaxIterations(self.cap)),
+            left => Ok(own.min(left)),
+        }
+    }
+
+    /// Account for one turn of a step granted `granted` of its own `own`
+    /// turns. A step that used everything it was granted because the run
+    /// ran out stopped at the run's cap, not its own.
+    fn settle<T>(
+        &self,
+        granted: u32,
+        own: u32,
+        outcome: Result<crate::LoopOutcome, WorkflowError>,
+        ok: impl FnOnce(crate::LoopOutcome) -> T,
+    ) -> Result<T, WorkflowError> {
+        match outcome {
+            Ok(out) => {
+                self.spend(out.steps);
+                Ok(ok(out))
+            }
+            Err(WorkflowError::MaxIterations { .. }) if granted < own => {
+                self.spend(granted);
+                Err(WorkflowError::RunMaxIterations(self.cap))
+            }
+            Err(e @ WorkflowError::MaxIterations { .. }) => {
+                self.spend(granted);
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 
@@ -68,51 +155,108 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
         .unwrap_or_else(|| agent_id.to_string())
 }
 
-/// Scope an activity's toolset to what it declares and references.
-///
-/// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
-/// LLM turn and invited small models to wander — web-searching for
-/// instructions the step already spells out, or shelling out to plugin
-/// binaries via `os` instead of the plugin's own tool. A tool is included when:
-///
-/// - the activity DECLARES it in agent.json — `mcps` entries select that
-///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands,
-///   the plugin's slug first) select that plugin's `plugin__<slug>` tool —
-///   the authored contract comes first;
-/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` (stored
-///   workflows name the current tools: the upgrade moved every old name,
-///   `server::stored_tool_names`);
-/// - or it is a delivery primitive ([`DELIVERY_TOOLS`] — steps often say
-///   "alert" or "tell the owner" without naming a tool).
-///
-/// When nothing is declared or referenced, fall back to the NON-DEFERRED
-/// roster only. Deferred tools (MCP proxies, heavyweight domain tools) are
-/// deferred precisely so their schemas don't ship until needed — the old
-/// fail-open-with-everything sent every connected MCP server's full schemas
-/// (~20k tokens/call) to activities whose agent.json declared `mcps: []`.
-/// What an activity always gets: the tools that deliver its result.
-/// A coworker is reached with send_message; the owner with message_owner or
-/// push_notification.
+/// What an undeclared activity always gets: the tools that deliver its
+/// result. A coworker is reached with send_message; the owner with
+/// message_owner or push_notification.
 const DELIVERY_TOOLS: [&str; 3] = ["send_message", "message_owner", "push_notification"];
 
+/// What a declared activity gets beyond its declaration — kept tiny, each
+/// one a thing no activity can work without:
+/// - `exit`: the step ends itself (success or a reasoned stop); it is the
+///   loop's control primitive, not a capability.
+/// - `emit_event`: the step's events are the workflow's output to whatever
+///   listens (listed where the activity emits: `event_bus` present, terminal
+///   node on the graph path).
+/// - `message_owner`: the one way to report a need to the owner. Every
+///   refusal an unattended step meets ("tell the owner instead") points at
+///   it, so a step without it could only fail silently.
+pub const RUNTIME_TOOLS: [&str; 3] = ["exit", "emit_event", "message_owner"];
+
+/// The hard tool allowlist for an activity's turns, or `None` for no
+/// dispatch limit. A declared activity (`tools` present, `[]` included) is
+/// held to its scoped toolset and the runtime set; a call outside it pauses
+/// the run for the owner (`AskCase::StepTool`). An undeclared activity
+/// keeps the old behavior until the employees declare their tools: its
+/// scoped list is a listing, not a limit.
+pub fn enforced_tools(activity: &Activity, scoped: &[String]) -> Option<HashSet<String>> {
+    activity.tools.as_ref()?;
+    Some(scoped.iter().cloned().chain(RUNTIME_TOOLS.iter().map(|t| t.to_string())).collect())
+}
+
+/// Declared `mcps` → proxy-name prefixes (server keys normalized the same
+/// way proxy names are built: lowercase, non-alphanumeric → `_`).
+fn mcp_prefixes(activity: &Activity) -> Vec<String> {
+    activity
+        .mcps
+        .iter()
+        .map(|s| {
+            let norm: String = s
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            format!("mcp__{norm}")
+        })
+        .collect()
+}
+
+/// Declared plugin commands run through that plugin's tool ("emit" is the
+/// event primitive, injected separately — it declares no plugin need).
+fn cmd_plugin_tools(activity: &Activity) -> Vec<String> {
+    activity
+        .cmds
+        .iter()
+        .filter(|c| c.as_str() != "emit")
+        .filter_map(|c| c.split_whitespace().next())
+        .map(tools::plugin_tools::plugin_tool_name)
+        .collect()
+}
+
+/// Whether an `mcps`/`cmds` declaration selects tool `n`.
+fn selected_by_mcps_or_cmds(activity: &Activity, mcp_prefixes: &[String], plugin_tools: &[String], n: &str) -> bool {
+    plugin_tools.iter().any(|p| p == n)
+        || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
+        || activity.mcps.iter().any(|m| m == n)
+}
+
+/// Scope an activity's toolset.
+///
+/// A DECLARED activity (`tools` present, `[]` included) gets exactly what it
+/// declares: its `tools` entries ([`names_tool`]), the tools its `mcps` and
+/// `cmds` select, the tools its skills bring (added to `tools` when the run
+/// starts, `server::workflow_manager::add_skill_tools`), and
+/// [`RUNTIME_TOOLS`]. No delivery tools, no text sniffing, no roster;
+/// [`enforced_tools`] makes it a limit at dispatch.
+///
+/// An UNDECLARED activity gets what it references:
+///
+/// - `mcps` entries select that server's proxy tools (`mcp__<server>__*`),
+///   `cmds` (plugin commands, the plugin's slug first) select that plugin's
+///   `plugin__<slug>` tool;
+/// - its intent/steps/skill docs REFERENCE it — `<tool>(` (stored
+///   workflows name the current tools: the upgrade moved every old name,
+///   `server::stored_tool_names`);
+/// - or it is a delivery primitive ([`DELIVERY_TOOLS`]).
+///
+/// When nothing is referenced, it falls back to the NON-DEFERRED roster
+/// only. Deferred tools (MCP proxies, heavyweight domain tools) are deferred
+/// precisely so their schemas don't ship until needed.
 pub(crate) fn scoped_activity_tools<'a>(
     activity: &Activity,
     resolved_tools: &'a [Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     deferred: Option<&HashSet<String>>,
 ) -> Vec<&'a Box<dyn DynTool>> {
-    // Explicit declaration wins outright: deterministic, auditable, immune to
-    // the text-sniffing gap below (dotted tool names in prose never match
-    // `name(` and silently fall back to the full roster).
+    let mcp_prefixes = mcp_prefixes(activity);
+    let plugin_tools = cmd_plugin_tools(activity);
     if let Some(declared_names) = &activity.tools {
         let declared: Vec<&'a Box<dyn DynTool>> = resolved_tools
             .iter()
             .filter(|t| {
                 let n = t.name();
-                DELIVERY_TOOLS.contains(&n)
-                    || declared_names.iter().any(|d| {
-                        n == d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('.'))
-                    })
+                RUNTIME_TOOLS.contains(&n)
+                    || selected_by_mcps_or_cmds(activity, &mcp_prefixes, &plugin_tools, n)
+                    || declared_names.iter().any(|d| names_tool(d, n))
             })
             .collect();
         info!(
@@ -135,38 +279,13 @@ pub(crate) fn scoped_activity_tools<'a>(
         }
     }
 
-    // Declared MCP servers → proxy-name prefixes (server keys are normalized
-    // the same way proxy names are built: lowercase, non-alphanumeric → `_`).
-    let mcp_prefixes: Vec<String> = activity
-        .mcps
-        .iter()
-        .map(|s| {
-            let norm: String = s
-                .to_lowercase()
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect();
-            format!("mcp__{norm}")
-        })
-        .collect();
-    // Declared plugin commands run through that plugin's tool ("emit" is the
-    // event primitive, injected separately — it declares no plugin need).
-    let plugin_tools: Vec<String> = activity
-        .cmds
-        .iter()
-        .filter(|c| c.as_str() != "emit")
-        .filter_map(|c| c.split_whitespace().next())
-        .map(tools::plugin_tools::plugin_tool_name)
-        .collect();
     let referenced: Vec<&'a Box<dyn DynTool>> = resolved_tools
         .iter()
         .filter(|t| {
             let n = t.name();
             DELIVERY_TOOLS.contains(&n)
                 || text.contains(&format!("{n}("))
-                || plugin_tools.iter().any(|p| p == n)
-                || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
-                || activity.mcps.iter().any(|m| m == n)
+                || selected_by_mcps_or_cmds(activity, &mcp_prefixes, &plugin_tools, n)
         })
         .collect();
     if referenced.iter().any(|t| !DELIVERY_TOOLS.contains(&t.name())) {
@@ -218,6 +337,8 @@ pub enum WorkflowProgress {
         seq: i64,
         status: String,
     },
+    /// Model turns the run has used of its budget, after a step spends some.
+    Turns { used: u32, cap: u32 },
 }
 
 /// Approval-checkpoint context for a run: an activity whose call the
@@ -356,6 +477,7 @@ pub async fn execute_workflow(
     // activity's parent is the one before it (`graph::step_context`).
     let mut outputs: HashMap<String, String> = HashMap::new();
     let activity_count = def.activities.len();
+    let budget = RunBudget::for_workflow(def, progress_tx.clone());
 
     // Circuit breaker: abort if 3+ consecutive activities fail with the same error pattern
     const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
@@ -453,8 +575,8 @@ pub async fn execute_workflow(
             checkpoint,
             resume.as_ref().filter(|r| r.activity_id == activity.id),
             "", // sequential engine has no loop nodes
-        
             cancel_token,
+            &budget,
         )
         .await
         {
@@ -706,6 +828,7 @@ pub(crate) async fn execute_activity_with_retry(
     resume: Option<&ResumeState>,
     iteration: &str,
     cancel_token: Option<&CancellationToken>,
+    budget: &RunBudget,
 ) -> Result<(String, u32), WorkflowError> {
     // Resume fast-forward: an activity this run already completed returns its
     // recorded output instead of re-executing — the Temporal property that a
@@ -746,8 +869,8 @@ pub(crate) async fn execute_activity_with_retry(
             checkpoint,
             resume,
             iteration,
-        
             cancel_token,
+            budget,
         )
         .await
         {
@@ -761,7 +884,8 @@ pub(crate) async fn execute_activity_with_retry(
                 e @ (WorkflowError::Exited(_)
                 | WorkflowError::Cancelled
                 | WorkflowError::Blocked(..)
-                | WorkflowError::AwaitingApproval { .. }),
+                | WorkflowError::AwaitingApproval { .. }
+                | WorkflowError::RunMaxIterations(_)),
             ) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -805,6 +929,7 @@ pub async fn execute_activity(
     resume: Option<&ResumeState>,
     iteration: &str,
     cancel_token: Option<&CancellationToken>,
+    budget: &RunBudget,
 ) -> Result<(String, u32), WorkflowError> {
     // The owner's per-run spending limit for this employee (0 = none). The
     // package's token_budget figures are estimates and never enforced.
@@ -859,6 +984,8 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
+        let own = activity_max_iterations(activity);
+        let granted = budget.grant(own)?;
         let turn = LoopTurn {
             activity,
             instructions,
@@ -873,7 +1000,7 @@ pub async fn execute_activity(
             pending,
             iteration,
             step_index: None,
-            max_iterations: activity_max_iterations(activity),
+            max_iterations: granted,
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
             spend_cap_microcents,
@@ -881,7 +1008,7 @@ pub async fn execute_activity(
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}", activity.id, iteration),
         };
-        let out = loop_impl.run_turn(turn).await?;
+        let out = budget.settle(granted, own, loop_impl.run_turn(turn).await, |o| o)?;
         *spent += out.total_tokens;
         *spent_output += out.output_tokens;
         return Ok((out.text, out.total_tokens));
@@ -956,7 +1083,12 @@ pub async fn execute_activity(
             });
         }
 
-        // Run this step through the ONE injected agentic loop.
+        // Run this step through the ONE injected agentic loop, with the
+        // turns it may take: its own, or what the run has left.
+        let own = activity_max_iterations(activity);
+        let granted = budget.grant(own).inspect_err(|e| {
+            let _ = store.update_task_item(&task_item.id, "failed", None, Some(&e.to_string()), 0, 0);
+        })?;
         let turn = LoopTurn {
             activity,
             instructions: instructions.clone(),
@@ -975,7 +1107,7 @@ pub async fn execute_activity(
             },
             iteration,
             step_index: Some(i as i64),
-            max_iterations: activity_max_iterations(activity),
+            max_iterations: granted,
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
             spend_cap_microcents,
@@ -983,10 +1115,8 @@ pub async fn execute_activity(
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}:{}", activity.id, iteration, i),
         };
-        let (step_result, step_tokens, step_tainted) = loop_impl
-            .run_turn(turn)
-            .await
-            .map(|o| {
+        let (step_result, step_tokens, step_tainted) = budget
+            .settle(granted, own, loop_impl.run_turn(turn).await, |o| {
                 *spent += o.total_tokens;
                 *spent_output += o.output_tokens;
                 (o.text, o.total_tokens, o.tainted)
@@ -1492,6 +1622,16 @@ fn build_activity_prompt_with_context(
                  its tool injects the account credentials, so the shell path fails auth.\n",
             );
         }
+        // State between runs is the employee's own memory (bake-off
+        // 2026-10-10: steps without it read made-up paths and Nebo's own
+        // database looking for what the last run saw).
+        if tool_names.iter().any(|t| t == "remember") {
+            prompt.push_str(
+                "Keep what this workflow's later runs need (what you already flagged, sent or saw) with \
+                 remember, as a sentence under a stable key, and read it back next run with recall. It is \
+                 this employee's own memory. Never look for saved state in files, folders or Nebo's database.\n",
+            );
+        }
         prompt.push('\n');
     }
 
@@ -1869,6 +2009,134 @@ mod engine_tests {
         assert_eq!(names, vec!["plugin__gws", "send_message", "message_owner", "push_notification"]);
     }
 
+    // The shape `scoped_activity_tools` returns.
+    #[allow(clippy::borrowed_box)]
+    fn names_of(scoped: &[&Box<dyn DynTool>]) -> Vec<String> {
+        scoped.iter().map(|t| t.name().to_string()).collect()
+    }
+
+    fn registry_of(names: &[&'static str]) -> Vec<Box<dyn DynTool>> {
+        names.iter().map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>).collect()
+    }
+
+    /// A declared activity gets what it declares, what its mcps and cmds
+    /// select, and the runtime set: no delivery tools, no text sniffing.
+    #[test]
+    fn a_declared_activity_gets_exactly_its_declaration() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "file",
+            "intent": "File the changes",
+            "tools": ["remember"],
+            "mcps": ["monument"],
+            "cmds": ["gws gmail +triage"],
+            "steps": ["Tell them with send_message(to: \"x\") and browser(open)"]
+        }))
+        .unwrap();
+        let mut registry = fake_registry();
+        registry.extend(registry_of(&["create_schedule", "mcp__monument__project"]));
+        let scoped = names_of(&scoped_activity_tools(&activity, &registry, None, None));
+        assert_eq!(scoped, ["plugin__gws", "remember", "message_owner", "mcp__monument__project"]);
+        let enforced = enforced_tools(&activity, &scoped).expect("a declaration is enforced");
+        for t in ["plugin__gws", "remember", "message_owner", "mcp__monument__project", "exit", "emit_event"] {
+            assert!(enforced.contains(t), "{t} in {enforced:?}");
+        }
+        for t in ["create_schedule", "send_message", "push_notification", "browser", "os", "web"] {
+            assert!(!enforced.contains(t), "{t} must not be allowed: {enforced:?}");
+        }
+    }
+
+    /// `tools: []` is a declaration: only the runtime set.
+    #[test]
+    fn an_empty_declaration_gets_only_the_runtime_set() {
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "think", "intent": "Use remember(x)", "tools": []})).unwrap();
+        let mut registry = fake_registry();
+        registry.extend(registry_of(&["create_schedule"]));
+        let scoped = names_of(&scoped_activity_tools(&activity, &registry, None, None));
+        assert_eq!(scoped, ["message_owner"]);
+        let mut got: Vec<String> = enforced_tools(&activity, &scoped).unwrap().into_iter().collect();
+        got.sort();
+        assert_eq!(got, ["emit_event", "exit", "message_owner"]);
+    }
+
+    /// An undeclared activity keeps today's behavior: no limit at dispatch.
+    #[test]
+    fn an_undeclared_activity_is_not_limited() {
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "think", "intent": "Summarize"})).unwrap();
+        assert!(enforced_tools(&activity, &["remember".to_string()]).is_none());
+    }
+
+    /// A `tools` entry can name any tool the bot has, of every kind: a
+    /// plugin's tool, a connected MCP server's tools (one by name, or the
+    /// server's family with `mcp__<server>__*`), an app's tools, and the
+    /// internal data tools (memory, files, sessions, app data, skills).
+    #[test]
+    fn a_declaration_names_any_kind_of_tool() {
+        let registry = registry_of(&[
+            "plugin__odoo", "mcp__github__create_issue", "mcp__github__list_issues", "mcp__notion__search",
+            "app__crm__list_deals", "recall", "remember", "read_file", "read_session", "search_history",
+            "app_data", "use_skill", "read_skill_file", "create_schedule", "message_owner",
+        ]);
+        let cases: [(&str, &[&str]); 9] = [
+            ("plugin__odoo", &["plugin__odoo"]),
+            ("mcp__github__create_issue", &["mcp__github__create_issue"]),
+            ("mcp__github__*", &["mcp__github__create_issue", "mcp__github__list_issues"]),
+            ("app__crm__list_deals", &["app__crm__list_deals"]),
+            ("recall", &["recall"]),
+            ("read_file", &["read_file"]),
+            ("read_session", &["read_session"]),
+            ("app_data", &["app_data"]),
+            ("use_skill", &["use_skill"]),
+        ];
+        for (entry, expected) in cases {
+            let activity: Activity =
+                serde_json::from_value(serde_json::json!({"id": "a", "intent": "x", "tools": [entry]})).unwrap();
+            let enforced = enforced_tools(&activity, &names_of(&scoped_activity_tools(&activity, &registry, None, None))).unwrap();
+            for t in expected {
+                assert!(enforced.contains(*t), "{entry} must allow {t}: {enforced:?}");
+            }
+            assert!(!enforced.contains("mcp__notion__search"), "{entry} names no other server");
+            assert!(!enforced.contains("create_schedule"), "{entry}");
+        }
+        // A connected MCP server declared by `mcps` brings all its tools.
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "a", "intent": "x", "tools": [], "mcps": ["github"]})).unwrap();
+        let enforced = enforced_tools(&activity, &names_of(&scoped_activity_tools(&activity, &registry, None, None))).unwrap();
+        assert!(enforced.contains("mcp__github__create_issue") && enforced.contains("mcp__github__list_issues"));
+        assert!(!enforced.contains("mcp__notion__search"));
+    }
+
+    /// Vivid's order-intake `resolve-and-record` (inventory-administrator),
+    /// as republished: the Odoo plugin and its skill, its chunk files, the
+    /// shell for the known-matches script and waiting; nothing that
+    /// schedules.
+    #[test]
+    fn vivid_resolve_and_record_resolves_to_its_tools_and_nothing_that_schedules() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "resolve-and-record",
+            "intent": "Resolve each row in this chunk to its CRM lead and record the FO number + load date",
+            "skills": ["@nebo-official/skills/vw-fo-matching"],
+            "tools": ["plugin__odoo", "use_skill", "read_skill_file", "read_file", "run_command"]
+        }))
+        .unwrap();
+        let registry = registry_of(&[
+            "plugin__odoo", "plugin__gws", "use_skill", "read_skill_file", "read_file", "write_file", "run_command",
+            "create_schedule", "run_schedule_now", "set_schedule_paused", "create_workflow", "delegate", "send_message",
+            "ask_owner", "fetch_url", "message_owner", "push_notification", "emit_event", "exit",
+        ]);
+        let enforced = enforced_tools(&activity, &names_of(&scoped_activity_tools(&activity, &registry, None, None))).unwrap();
+        for t in ["plugin__odoo", "use_skill", "read_skill_file", "read_file", "run_command", "message_owner", "exit"] {
+            assert!(enforced.contains(t), "{t} in {enforced:?}");
+        }
+        for t in [
+            "create_schedule", "run_schedule_now", "set_schedule_paused", "create_workflow", "delegate",
+            "send_message", "ask_owner", "fetch_url", "write_file", "plugin__gws",
+        ] {
+            assert!(!enforced.contains(t), "{t} must not reach resolve-and-record: {enforced:?}");
+        }
+    }
+
     fn prompt_with_tools(tool_names: &[&str]) -> String {
         let activity: Activity = serde_json::from_value(serde_json::json!({
             "id": "agenda",
@@ -2046,4 +2314,145 @@ mod engine_tests {
         assert_eq!(truncate_at_char_boundary("📊📊", 5), "📊");
     }
 
+    
+    /// A loop whose every turn wants `want` model turns: it takes them when
+    /// it was given that many, and otherwise stops at its limit the way the
+    /// harness does (MaxIterations). Records the limit each turn was given.
+    struct TurnHog {
+        want: u32,
+        granted: std::sync::Mutex<Vec<u32>>,
     }
+
+    impl TurnHog {
+        fn new(want: u32) -> Self {
+            Self { want, granted: std::sync::Mutex::new(Vec::new()) }
+        }
+        fn granted(&self) -> Vec<u32> {
+            self.granted.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ActivityLoop for TurnHog {
+        async fn run_turn(&self, turn: LoopTurn<'_>) -> Result<crate::LoopOutcome, WorkflowError> {
+            self.granted.lock().unwrap().push(turn.max_iterations);
+            if self.want > turn.max_iterations {
+                return Err(WorkflowError::MaxIterations {
+                    activity_id: turn.activity.id.clone(),
+                    step: turn.step_index.map(|i| (i as usize + 1, turn.activity.steps.len())),
+                    turns: turn.max_iterations,
+                });
+            }
+            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, output_tokens: 1, tainted: false, steps: self.want })
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
+        }
+        fn cleanup(&self, _run_id: &str) {}
+    }
+
+    fn turn_store() -> Arc<Store> {
+        let path = std::env::temp_dir().join(format!("nebo-runcap-test-{}.db", uuid::Uuid::new_v4()));
+        Arc::new(Store::new(path.to_str().unwrap()).expect("test store"))
+    }
+
+    async fn run(def: &str, looper: &TurnHog) -> Result<(String, String), WorkflowError> {
+        let mut def: serde_json::Value = serde_json::from_str(def).unwrap();
+        def["version"] = serde_json::json!("1.0");
+        let def = crate::parser::parse_workflow(&def.to_string()).unwrap();
+        execute_workflow(
+            &def, "", "owner", false, serde_json::json!({}), "manual", None, &turn_store(), None, looper, &[], None,
+            None, None, None, None, Vec::new(), None, None, None,
+        )
+        .await
+    }
+
+    /// Bake-off 2026-10-10: stepped hourly beats ran 146 to 336 model turns,
+    /// because each step had its own 50 and the run had no total. Five steps
+    /// of 40 turns each now stop at the run's 150: the fourth step gets the
+    /// 30 left and is stopped there, with words that say the run ran out.
+    #[tokio::test]
+    async fn a_stepped_run_stops_at_the_run_cap() {
+        let looper = TurnHog::new(40);
+        let err = run(
+            r#"{"id":"beat","name":"Hourly beat","activities":[{"id":"run","intent":"beat","steps":["a","b","c","d","e"]}]}"#,
+            &looper,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, WorkflowError::RunMaxIterations(150)), "{err:?}");
+        assert_eq!(looper.granted(), [50, 50, 50, 30], "each step gets its 50, the last what is left");
+        let said = err.to_string();
+        assert!(said.contains("150 model turns in total") && said.contains("split the work"), "{said}");
+    }
+
+    /// Every spend tells the turns the run has used of its cap, so the
+    /// owner sees how far into its budget a running workflow is.
+    #[test]
+    fn spending_tells_the_turns_used_of_the_cap() {
+        let def = crate::parser::parse_workflow(r#"{"version":"1.0","id":"w","name":"w","activities":[{"id":"a","intent":"a"}]}"#).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let budget = RunBudget::for_workflow(&def, Some(tx));
+        budget.spend(3);
+        budget.spend(2);
+        let told: Vec<(u32, u32)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|p| match p {
+                WorkflowProgress::Turns { used, cap } => (used, cap),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(told, [(3, RUN_MAX_ITERATIONS), (5, RUN_MAX_ITERATIONS)]);
+    }
+
+    /// The budget is the run's, not an activity's: four activities of 45
+    /// turns, in sequence or on a graph, leave the fourth 15.
+    #[tokio::test]
+    async fn the_budget_is_shared_across_activities_and_graph_nodes() {
+        let sequential = r#"{"id":"w","name":"w","activities":[
+            {"id":"a","intent":"a"},{"id":"b","intent":"b"},{"id":"c","intent":"c"},{"id":"d","intent":"d"}]}"#;
+        let graph = r#"{"id":"w","name":"w","activities":[
+            {"id":"a","intent":"a"},{"id":"b","intent":"b"},{"id":"c","intent":"c"},{"id":"d","intent":"d"}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"c","to":"d"}]}"#;
+        for def in [sequential, graph] {
+            let looper = TurnHog::new(45);
+            let err = run(def, &looper).await.unwrap_err();
+            assert!(matches!(err, WorkflowError::RunMaxIterations(150)), "{err:?}");
+            assert_eq!(looper.granted(), [50, 50, 50, 15]);
+        }
+    }
+
+    /// A one-step workflow that loops stops at its step's 50 turns and says
+    /// which step and what to do, not "activity run exceeded max
+    /// iterations"; a step of a stepped activity is named by its number.
+    #[tokio::test]
+    async fn a_step_that_uses_its_turns_says_which_step() {
+        let looper = TurnHog::new(60);
+        let err = run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"do everything"}]}"#, &looper)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Stopped: \"run\" used its 50 model turns without finishing. Split the work into smaller steps, each one \
+             thing to do with its result."
+        );
+        let err = run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"x","steps":["a","b"]}]}"#, &TurnHog::new(60))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("Stopped: Step 1/2 of \"run\" used its 50 model turns"), "{err}");
+    }
+
+    /// An activity that explicitly gives one step more than a run's total
+    /// raises the run's cap to it; under the cap, a run finishes.
+    #[tokio::test]
+    async fn an_explicit_step_budget_raises_the_run_cap() {
+        let looper = TurnHog::new(180);
+        run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"x","params":{"maxIterations":200}}]}"#, &looper)
+            .await
+            .expect("finishes within its own 200");
+        assert_eq!(looper.granted(), [200]);
+        let looper = TurnHog::new(30);
+        run(r#"{"id":"w","name":"w","activities":[{"id":"run","intent":"x","steps":["a","b","c","d"]}]}"#, &looper)
+            .await
+            .expect("120 turns fit");
+    }
+}

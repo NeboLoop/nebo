@@ -1,0 +1,11 @@
+id: sc96-duties-made-in-chat-are-live-at-once
+name: "SC96 — Duties made in chat are live at once"
+description: |
+  An event or hourly duty the owner has an employee given in chat runs from that moment, with
+  no restart: create_employee and update_employee restart the employee's worker as they return,
+  so the event subscription is there at once, goes when the duty is turned off or removed, and
+  comes back when it is turned on or added; the hourly heartbeat is a live binding the engine
+  arms on its next pass. Nothing tells the owner to restart.
+target_component: staffed-company
+proof: staffed_proof::seats::duties_made_in_chat_are_live_at_once
+conversation: []

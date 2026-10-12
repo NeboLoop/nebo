@@ -53,6 +53,14 @@ pub struct CallEffects {
     /// time, in every mode: never "Allow always".
     #[serde(default)]
     pub removes_employee: bool,
+    /// The call creates, re-arms or fires scheduled work: a schedule, a
+    /// workflow trigger, an employee's automations. Only a run someone is
+    /// attending may do that (`limits::arms_schedule`): an unattended run
+    /// that schedules more runs can multiply without end (2026-10-08: a
+    /// workflow step "retried in 30 seconds" with schedules whose runs
+    /// scheduled more, ~60 of them).
+    #[serde(default)]
+    pub arms_schedule: bool,
     /// The call watches the owner (his screen, microphone or camera) or
     /// drives his other apps: a command such as `screencapture`, `osascript`
     /// telling an app what to do, or `open -a Safari`. It asks in every
@@ -76,7 +84,7 @@ pub enum OwnerReach {
 }
 
 impl OwnerReach {
-    /// What the call does, as its activity line: "capturing your screen".
+    /// What the call does, as a sentence: "capturing your screen".
     pub fn sentence(&self) -> String {
         match self {
             OwnerReach::Screen => "capturing your screen".into(),
@@ -197,6 +205,27 @@ impl Mode {
             "full_access" => Some(Mode::FullAccess),
             _ => None,
         }
+    }
+
+    /// How much this mode holds back, strictest highest: Plan, Ask,
+    /// Automatic, Full Access.
+    fn strictness(self) -> u8 {
+        match self {
+            Mode::FullAccess => 0,
+            Mode::Automatic => 1,
+            Mode::Ask => 2,
+            Mode::Plan => 3,
+        }
+    }
+
+    /// Whether this mode holds back more than `other`.
+    pub fn is_stricter_than(self, other: Mode) -> bool {
+        self.strictness() > other.strictness()
+    }
+
+    /// The stricter of the two.
+    pub fn stricter(self, other: Mode) -> Mode {
+        if other.is_stricter_than(self) { other } else { self }
     }
 }
 
@@ -364,6 +393,14 @@ pub struct Grant {
     /// copy and nowhere else. File writes and shell outside are refused.
     #[serde(default)]
     pub fence: Option<Vec<PathBuf>>,
+    /// The mode everything this run starts is held to: the mode the owner
+    /// picked for a conversation when it is stricter than the employee's
+    /// own, carried on to the workflow runs, hand-offs and team posts the
+    /// conversation starts, and from them to what they start. A looser pick
+    /// stays in its conversation. `None` = nothing carried: what the run
+    /// starts runs in its own employee's mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrow: Option<Mode>,
 }
 
 /// A grant a run can only narrow: its parent's (a helper) or its creator's
@@ -589,6 +626,10 @@ pub enum AskCase {
     /// row `effect_id` is held): only the owner can say whether it went
     /// out. Not a permission; nothing runs on the answer.
     UnconfirmedSend { effect_id: i64 },
+    /// A workflow step called a tool its activity doesn't declare. The run
+    /// pauses; the owner's allow adds the tool to that activity's
+    /// declaration and the run continues at the call.
+    StepTool { step: String, tool: String },
 }
 
 /// What the check decided for one call.
@@ -642,6 +683,7 @@ impl Grant {
             ceiling: None,
             run_folders: Vec::new(),
             fence: None,
+            narrow: None,
         }
     }
 }
@@ -712,5 +754,21 @@ mod tests {
         assert_eq!(fx.deletes, vec!["file:/w/nebo", "file:/a/c", "command:rm …"]);
         assert_eq!(fx.overwrites, vec!["file:/w/r"]);
         assert_eq!(fx.creates, vec!["file:/w/new"], "an existing folder is not the employee's to claim");
+    }
+
+    /// Plan is strictest, then Ask, then Automatic, then Full Access; the
+    /// stricter of two is the same either way round.
+    #[test]
+    fn modes_order_plan_ask_automatic_full_access() {
+        use Mode::*;
+        let order = [Plan, Ask, Automatic, FullAccess];
+        for (i, a) in order.iter().enumerate() {
+            for (j, b) in order.iter().enumerate() {
+                assert_eq!(a.is_stricter_than(*b), i < j, "{a:?} vs {b:?}");
+                let want = if i <= j { *a } else { *b };
+                assert_eq!(a.stricter(*b), want);
+                assert_eq!(b.stricter(*a), want);
+            }
+        }
     }
 }

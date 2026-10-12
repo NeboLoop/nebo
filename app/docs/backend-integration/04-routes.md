@@ -111,6 +111,7 @@ Every route in the app, what data it consumes, what user actions it supports, an
 |--------|----------|
 | Send message | `POST /api/v1/chats/message` or WebSocket `/ws` |
 | Edit message | `POST /api/v1/chats/messages/{id}/edit` |
+| Keep a file (voice note star) | `PUT /api/v1/chats/messages/{id}/keep` |
 | Get tool output | `GET /api/v1/chats/{chatId}/tool-output/{toolCallId}` |
 
 ### `/[agentId]/runs/+page.svelte` — Runs Overview

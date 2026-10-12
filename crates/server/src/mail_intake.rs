@@ -608,6 +608,7 @@ pub(crate) async fn intake(state: &AppState, mail: InboundMail) {
         channel: EMAIL_CHANNEL.to_string(),
         origin,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: placement.agent_id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),

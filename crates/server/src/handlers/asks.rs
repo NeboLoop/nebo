@@ -14,6 +14,10 @@
 //! When no decision can be had, the words are not an answer: the question
 //! stays open and visible, and the words are handled as a new message. A
 //! guessed answer is the costlier mistake.
+//!
+//! An open question (no options) needs no decision: it shows in the chat as
+//! the employee's own message, and the owner's next words there are its
+//! answer, whatever they say. The employee reads them as his reply.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -519,6 +523,12 @@ pub(crate) async fn read_reply(
     if words.trim().is_empty() {
         return Reading::NotAnAnswer;
     }
+    // An open question is a question in the conversation: his next words
+    // answer it (live 2026-10-11: "Are you flying from Salt Lake City, and
+    // on what dates?" waited behind "Other…" while the composer sat unused).
+    if open_question(w) {
+        return Reading::OwnWords;
+    }
     if let Some(i) = exact_option(&w.card.options, words).or_else(|| permission_word(w, words)) {
         return Reading::Option(i);
     }
@@ -562,6 +572,11 @@ pub(crate) async fn read_reply(
         "the owner's words read against a waiting ask"
     );
     reading
+}
+
+/// A parked question with nothing to pick: any answer is his own words.
+fn open_question(w: &Waiting) -> bool {
+    matches!(w.answers, Answers::Question) && w.card.answerable && w.card.free_text && w.card.options.is_empty()
 }
 
 /// The owner's words turn a card down: "skip" anywhere, or a short reply
@@ -1030,6 +1045,40 @@ pub(crate) mod tests {
             read_reply(Some(&dead), &w, "  ", "").await,
             Reading::NotAnAnswer
         );
+    }
+
+    /// Live 2026-10-11: an open question ("Are you flying from Salt Lake
+    /// City, and on what dates?") showed a card with only "Other…" and
+    /// Skip while the composer sat unused. It is a question in the
+    /// conversation: his next words answer it, with or without a decision,
+    /// whatever they say; nothing is read against options it doesn't have.
+    /// A card that is done in the app still is.
+    #[tokio::test]
+    async fn the_next_words_answer_an_open_question() {
+        let w = question("q1", "Are you flying from Salt Lake City, and on what dates?", &[]);
+        assert!(w.card.free_text && w.card.options.is_empty());
+        let dead = DecideClient::new("http://127.0.0.1:9", || {
+            Some(ai::Bearer {
+                token: "t".into(),
+                bot_id: None,
+            })
+        });
+        for words in ["Yes, Oct 20 to 25", "no", "Which conversation is this in?"] {
+            assert_eq!(read_reply(None, &w, words, "").await, Reading::OwnWords, "{words}");
+            assert_eq!(read_reply(Some(&dead), &w, words, "").await, Reading::OwnWords, "{words}");
+        }
+        assert_eq!(read_reply(None, &w, "  ", "").await, Reading::NotAnAnswer, "nothing said");
+        let install = from_parked_shape_test_card(serde_json::json!([{ "type": "install_plugin", "name": "Shopify" }]));
+        assert!(!open_question(&install));
+    }
+
+    fn from_parked_shape_test_card(widgets: serde_json::Value) -> Waiting {
+        let mut w = question("q2", "Install Shopify?", &[]);
+        let shape = parked_shape(&PendingAsk { request_id: "q2".into(), prompt: "Install Shopify?".into(), widgets: Some(widgets), created_at: 100 });
+        w.card.options = shape.options;
+        w.card.free_text = shape.free_text;
+        w.card.answerable = shape.answerable;
+        w
     }
 
     /// A near tie with "not an answer" keeps the question open.

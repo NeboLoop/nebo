@@ -250,6 +250,15 @@ impl Tasks {
                      assignment.blocked, or assignment.failed when it closes; until then it is theirs — \
                      do not do it yourself."
                 ))
+                // The hand-off line in the assigner's chat; the assignment
+                // is traced under its own id (`server::handoff`).
+                .with_payload(serde_json::json!({
+                    "kind": "coworker_message",
+                    "to": assignee.name,
+                    "toAgentId": assignee.id,
+                    "text": subject,
+                    "handoffId": id,
+                }))
             }
             Err(e) => {
                 release();
@@ -502,9 +511,9 @@ impl DynTool for TaskTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match self.op {
-            TaskOp::Create => format!("adding a task: {}", input["subject"].as_str().unwrap_or("")),
+            TaskOp::Create => format!("adding a task: {}", crate::humanize::cap(input["subject"].as_str().unwrap_or(""), crate::humanize::DESCRIPTION_CAP)),
             TaskOp::Update => format!("marking a task {}", input["status"].as_str().unwrap_or("")),
             TaskOp::Get | TaskOp::List => "checking tasks".to_string(),
             TaskOp::Assign => format!(
@@ -513,20 +522,6 @@ impl DynTool for TaskTool {
             ),
             TaskOp::Assignments => "checking assignments".to_string(),
             TaskOp::Runs => "checking running work".to_string(),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match self.op {
-            TaskOp::Create => format!("Added a task: {}", input["subject"].as_str().unwrap_or("")),
-            TaskOp::Update => format!("Marked a task {}", input["status"].as_str().unwrap_or("")),
-            TaskOp::Get | TaskOp::List => "Checked tasks".to_string(),
-            TaskOp::Assign => format!(
-                "Assigned work to {}",
-                input["to"].as_str().unwrap_or("a coworker")
-            ),
-            TaskOp::Assignments => "Checked assignments".to_string(),
-            TaskOp::Runs => "Checked running work".to_string(),
         }
     }
 

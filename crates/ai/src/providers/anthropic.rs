@@ -41,11 +41,7 @@ impl AnthropicProvider {
     fn api_request(&self, req: &ChatRequest) -> AnthropicApiRequest {
         let (mut messages, system_prompt) = self.build_messages(req);
 
-        let model = if req.model.is_empty() {
-            self.model.clone()
-        } else {
-            req.model.clone()
-        };
+        let model = if req.model.is_empty() { self.model.clone() } else { req.model.clone() };
 
         let budget = thinking_budget(req.effort);
         let max_tokens = if req.max_tokens > 0 {
@@ -560,6 +556,7 @@ impl Provider for AnthropicProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+        crate::chosen_model(&req.model, &self.model, "anthropic")?;
         let api_req = self.api_request(req);
         let model = api_req.model.as_str();
 

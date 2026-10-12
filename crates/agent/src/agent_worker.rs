@@ -1424,6 +1424,7 @@ async fn watch_loop(
                                     watch_detail,
                                     &agent_id,
                                     emit_sources.clone(),
+                                    None,
                                 ).await {
                                     Ok(run_id) => {
                                         info!(
@@ -1806,6 +1807,7 @@ async fn folder_watch_loop(
                         detail,
                         &agent_id,
                         emit_sources.clone(),
+                        None,
                     )
                     .await
                 {

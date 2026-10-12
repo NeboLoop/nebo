@@ -45,6 +45,8 @@ grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 walkdir = "2"
+# Already in the build (typst); caps owner-facing text by grapheme.
+unicode-segmentation = "1"
 which = "7"
 urlencoding = "2"
 url = "2"

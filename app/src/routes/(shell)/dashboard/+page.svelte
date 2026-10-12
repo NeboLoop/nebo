@@ -28,6 +28,7 @@
   import { storage } from '$lib/storage';
   import { openAsks } from '$lib/stores/permissionAsks';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
+  import RunningNow from '$lib/components/background/RunningNow.svelte';
 
   // The phone has no sidebar on screen: the header's back chevron opens the
   // employee list the way every thread page does. The bell opens the Inbox.
@@ -407,6 +408,9 @@
           </section>
           {/if}
         {/each}
+
+        <!-- Running now: every employee's background work, live. -->
+        <RunningNow {colors} />
 
         <!-- Work in progress: temporary workflows and teams, made for one
              piece of work and gone once its outcome has reached the owner. -->

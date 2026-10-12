@@ -2,8 +2,8 @@
 //!
 //! No image ever enters an employee's conversation. A file it reads, a
 //! screenshot a tool takes, a picture the owner attaches: each is handed to
-//! one model call on the sidecar model (the pick every side call makes,
-//! through the same provider) that looks at it and answers in text. The
+//! one model call on the turn's intelligence pack's Vision model ([`Eyes`])
+//! that looks at it and answers in text. The
 //! conversation holds that reading and the image's reference; a question
 //! about the same image later is another look (`read_file` with `question`),
 //! answered in text again. A summary keeps the reading like any other text,
@@ -11,6 +11,8 @@
 //! the conversation past its window and into a summarize-and-re-read loop
 //! (2026-09-30: a landscape plan PNG read, summarized away, read again, a
 //! dozen times, and the plans were never drawn).
+
+use std::sync::Arc;
 
 use ai::image_norm::Picture;
 use ai::{ChatRequest, Message, Provider, StreamEventType};
@@ -66,12 +68,13 @@ const WATCHING_TOKENS: i32 = 2_000;
 /// same bound (`video::read`).
 pub const READING_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Resolve the sidecar model for the provider that will serve the request.
-/// Empty string lets the provider pick.
-fn sidecar_model(provider: &str) -> String {
-    config::ModelsConfig::load()
-        .sidecar_model(provider)
-        .unwrap_or_default()
+/// Who reads an image: the provider and the model name it is sent (empty:
+/// the provider's own default), from the turn's pack's Vision slot
+/// (`Harness::eyes`).
+#[derive(Clone)]
+pub struct Eyes {
+    pub provider: Arc<dyn Provider>,
+    pub model: String,
 }
 
 /// One look at `picture`: the helper's reading, in text. `context` says
@@ -79,21 +82,21 @@ fn sidecar_model(provider: &str) -> String {
 /// answered first. None when the helper could not answer.
 pub async fn look(
     trace: ai::RequestTrace,
-    provider: &dyn Provider,
+    eyes: &Eyes,
     picture: &Picture,
     context: &str,
     question: Option<&str>,
 ) -> Option<String> {
     // A provider that never puts images on the wire (a CLI wrapper, a
     // local model) would answer as if it had seen nothing.
-    if !provider.supports_vision() {
+    if !eyes.provider.supports_vision() {
         return None;
     }
     let mut ask = format!("{context}\nThe image is {}×{} pixels.", picture.width, picture.height);
     if let Some(q) = question.map(str::trim).filter(|q| !q.is_empty()) {
         ask.push_str(&format!("\nQuestion: {q}"));
     }
-    read(trace, provider, READER_SYSTEM, ask, vec![picture.image.clone()], READING_TOKENS).await
+    read(trace, eyes, READER_SYSTEM, ask, vec![picture.image.clone()], READING_TOKENS).await
 }
 
 /// One watch of a video, as frames in order, each with the moment it was
@@ -102,12 +105,12 @@ pub async fn look(
 /// could not answer.
 pub async fn watch(
     trace: ai::RequestTrace,
-    provider: &dyn Provider,
+    eyes: &Eyes,
     frames: &[(f64, Picture)],
     duration: Option<f64>,
     context: &str,
 ) -> Option<String> {
-    if !provider.supports_vision() || frames.is_empty() {
+    if !eyes.provider.supports_vision() || frames.is_empty() {
         return None;
     }
     let long = duration.map(|d| format!(", {} long", crate::video::clock(d))).unwrap_or_default();
@@ -116,14 +119,14 @@ pub async fn watch(
         ask.push_str(&format!("\nimage {}: at {} ({}×{} px)", n + 1, crate::video::clock(*at), picture.width, picture.height));
     }
     let images = frames.iter().map(|(_, p)| p.image.clone()).collect();
-    read(trace, provider, WATCHER_SYSTEM, ask, images, WATCHING_TOKENS).await
+    read(trace, eyes, WATCHER_SYSTEM, ask, images, WATCHING_TOKENS).await
 }
 
 /// One call to the helper: `ask` and `images` under `system`, answered in
 /// text, given up past [`READING_LIMIT`].
 async fn read(
     trace: ai::RequestTrace,
-    provider: &dyn Provider,
+    eyes: &Eyes,
     system: &str,
     ask: String,
     images: Vec<ai::ImageContent>,
@@ -146,7 +149,7 @@ async fn read(
         max_tokens,
         temperature: 0.0,
         system: system.to_string(),
-        model: sidecar_model(provider.id()),
+        model: eyes.model.clone(),
         enable_thinking: false,
         effort: None,
         metadata: None,
@@ -156,7 +159,7 @@ async fn read(
     };
 
     let reading = async {
-        let mut rx = match provider.stream(&req).await {
+        let mut rx = match eyes.provider.stream(&req).await {
             Ok(rx) => rx,
             Err(e) => {
                 debug!("vision reading failed: {e}");
@@ -273,6 +276,10 @@ mod tests {
         }
     }
 
+    fn silent() -> Eyes {
+        Eyes { provider: std::sync::Arc::new(Silent), model: String::new() }
+    }
+
     /// A helper that never answers gives up within the limit, and the
     /// owner's message goes on with a note that the image could not be read.
     #[tokio::test(start_paused = true)]
@@ -286,7 +293,7 @@ mod tests {
         // Bounded from outside too, so a look with no limit fails here rather than hanging.
         let reading = tokio::time::timeout(
             READING_LIMIT * 2,
-            look(ai::RequestTrace::new("image_read"), &Silent, &picture, "attached", None),
+            look(ai::RequestTrace::new("image_read"), &silent(), &picture, "attached", None),
         )
         .await
         .expect("the look never gave up");
@@ -308,7 +315,7 @@ mod tests {
         let started = tokio::time::Instant::now();
         let reading = tokio::time::timeout(
             READING_LIMIT * 2,
-            watch(ai::RequestTrace::new("video_read"), &Silent, &[(0.0, picture.clone()), (1.0, picture)], Some(2.0), "attached"),
+            watch(ai::RequestTrace::new("video_read"), &silent(), &[(0.0, picture.clone()), (1.0, picture)], Some(2.0), "attached"),
         )
         .await
         .expect("the watch never gave up");
