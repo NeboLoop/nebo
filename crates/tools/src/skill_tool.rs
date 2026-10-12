@@ -340,6 +340,15 @@ impl SkillCore {
     /// A skill switched off on disk is switched on and loaded in the same
     /// call.
     async fn load(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str, args: Option<&str>) -> ToolResult {
+        // A retired bundle's skill for work another plugin has taken over
+        // here: that plugin's own skills say how (`superseded`).
+        if let Some(successor) = self.loader.replaced_by(name).await {
+            return ToolResult::error(format!(
+                "The skill {name} is not used on this bot: {successor} has replaced it. Do the work with {} \
+                 and load {successor}'s own skills (its tool names them).",
+                crate::plugin_tools::plugin_tool_name(successor)
+            ));
+        }
         if !self.loader.get(name, scope.agent).await.is_some_and(|s| s.enabled) {
             // Switched off on disk: switch it back on, then load it.
             let skill_dir = match Self::user_skill_dir(name) {
@@ -388,9 +397,10 @@ impl SkillCore {
             .unwrap_or_default();
         let studio = self.store.as_deref().and_then(|store| app_studio_developer_mode(store, &skill.name)).unwrap_or_default();
         ToolResult::ok(format!(
-            "Loaded skill '{}'. {studio}Follow its instructions:\n\n{base}{body}{}",
+            "Loaded skill '{}'. {studio}Follow its instructions:\n\n{base}{body}{}{}",
             skill.name,
-            files_line(&skill.name, skill.list_resources().unwrap_or_default())
+            files_line(&skill.name, skill.list_resources().unwrap_or_default()),
+            step_check_rule(&body)
         ))
     }
 
@@ -1157,19 +1167,19 @@ impl Kind {
     }
 
     /// (activity, outcome) for the owner.
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let name = str_field(input, "name");
         let skill = if name.is_empty() { "a skill".to_string() } else { format!("the {name} skill") };
         match self {
-            Kind::UseSkill => (format!("loading {skill}"), format!("Loaded {skill}")),
-            Kind::FindSkills => ("searching skills".into(), "Searched skills".into()),
-            Kind::ReadSkillFile => (format!("reading {skill}'s files"), format!("Read {skill}'s files")),
-            Kind::SaveSkill => (format!("saving {skill}"), format!("Saved {skill}")),
-            Kind::DeleteSkill => (format!("deleting {skill}"), format!("Deleted {skill}")),
-            Kind::InstallSkill => ("installing a skill".into(), "Installed a skill".into()),
-            Kind::ConfigureSkill => (format!("setting up {skill}"), format!("Set up {skill}")),
-            Kind::RateSkill => (format!("reviewing {skill}"), format!("Reviewed {skill}")),
-            Kind::ReadSkillReviews => (format!("reading reviews of {skill}"), format!("Read reviews of {skill}")),
+            Kind::UseSkill => format!("loading {skill}"),
+            Kind::FindSkills => "searching skills".into(),
+            Kind::ReadSkillFile => format!("reading {skill}'s files"),
+            Kind::SaveSkill => format!("saving {skill}"),
+            Kind::DeleteSkill => format!("deleting {skill}"),
+            Kind::InstallSkill => "installing a skill".into(),
+            Kind::ConfigureSkill => format!("setting up {skill}"),
+            Kind::RateSkill => format!("reviewing {skill}"),
+            Kind::ReadSkillReviews => format!("reading reviews of {skill}"),
         }
     }
 }
@@ -1225,12 +1235,8 @@ impl DynTool for SkillTool {
         }
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(
@@ -1276,6 +1282,22 @@ impl DynTool for SkillTool {
     }
 }
 
+/// How a skill whose steps carry step checks (a task learned from a
+/// demonstration writes each step's expected after-state as a browser_expect
+/// call) is run: one step at a time, each checked before the next. Empty for
+/// any other skill.
+fn step_check_rule(body: &str) -> &'static str {
+    if body.contains("browser_expect") {
+        "\n\nRun these steps in order. Find each step's element by its locators, strongest first \
+         (role and name with browser_find or browser_read), and use coordinates only when nothing else \
+         matches. After each step, call browser_expect with that step's expected state before starting \
+         the next (load it with find_tools, query \"select:browser_expect\", if you don't have it). \
+         If a check fails, stop: don't try the remaining steps another way."
+    } else {
+        ""
+    }
+}
+
 /// The skill's other files, named at the end of its instructions with the
 /// call that reads one: its instructions point at them by relative path
 /// ("see reference/actions.md"), and on 2026-09-26 runs asked use_skill for
@@ -1297,6 +1319,15 @@ fn files_line(name: &str, mut files: Vec<String>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_skill_with_step_checks_is_run_step_by_step() {
+        let learned = "1. Click link \"Orders\" (role=link[name=\"Orders\"]).\n   Expect: browser_expect(step: \"1\", heading: \"Orders\")";
+        let rule = super::step_check_rule(learned);
+        assert!(rule.contains("After each step, call browser_expect"));
+        assert!(rule.contains("If a check fails, stop"));
+        assert_eq!(super::step_check_rule("Write a haiku about the sea."), "");
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -89,9 +89,11 @@ describe('working', () => {
 
 	it('the snapshot drops an employee no run names any more', () => {
 		const w = startWork(startWork({}, 'ap', KEY), 'cfo', 'agent:cfo:web');
-		const next = snapshotWork(w, [{ entityId: 'cfo', sessionKey: 'agent:cfo:web', activity: 'drafting' }]);
+		const call = { kind: 'write', params: { path: 'draft.md' } };
+		const word = (c: unknown) => (c === call ? 'Write draft.md' : '');
+		const next = snapshotWork(w, [{ entityId: 'cfo', sessionKey: 'agent:cfo:web', call }], word);
 		expect(Object.keys(next)).toEqual(['cfo']);
-		expect(next.cfo['agent:cfo:web']).toBe('drafting');
+		expect(next.cfo['agent:cfo:web']).toBe('Write draft.md');
 	});
 
 	it('a team works while a member works in its seat for the team', () => {

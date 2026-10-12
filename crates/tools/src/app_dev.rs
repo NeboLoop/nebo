@@ -410,17 +410,10 @@ impl DynTool for AppReloadTool {
         "reload refresh open app views restore version undo"
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         match restore_id(input) {
             Some(_) => format!("restoring {}", app_label(input)),
             None => format!("reloading {}", app_label(input)),
-        }
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        match restore_id(input) {
-            Some(_) => format!("Restored {}", app_label(input)),
-            None => format!("Reloaded {}", app_label(input)),
         }
     }
 
@@ -490,12 +483,8 @@ impl DynTool for AppStatusTool {
         true
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("checking {}", app_label(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Checked {}", app_label(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {

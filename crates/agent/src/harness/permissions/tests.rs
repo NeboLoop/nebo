@@ -722,6 +722,33 @@ async fn a_newly_connected_servers_tools_follow_the_mode() {
     assert_eq!(purge_ran.load(Ordering::SeqCst), 1);
 }
 
+/// "Blocked" on a connector hides its tools from the model: a deny on the
+/// tool or its server, from either scope; a tool's own allow under a blocked
+/// server stays listed; an ask, and every non-connector tool, stay listed.
+#[test]
+fn a_blocked_connector_tool_is_never_listed() {
+    let (_d, store) = store();
+    let tools = ["mcp__crm__lookup", "mcp__crm__purge", "mcp__docs__search", "mcp__docs__write", "run_command"];
+    let blocked = |agent: &str| {
+        let mut b: Vec<String> = blocked_connector_tools(&store, agent, tools).into_iter().collect();
+        b.sort();
+        b
+    };
+    assert!(blocked("emp-1").is_empty(), "no setting hides nothing");
+
+    put(&store, rule(Scope::Company, RuleKey::Tool("mcp__crm__purge".into()), None, Effect::Deny));
+    put(&store, rule(Scope::Company, RuleKey::Tool("mcp__docs__*".into()), None, Effect::Deny));
+    put(&store, rule(Scope::Company, RuleKey::Tool("mcp__docs__search".into()), None, Effect::Allow));
+    put(&store, rule(Scope::Company, RuleKey::Tool("mcp__crm__lookup".into()), None, Effect::Ask));
+    put(&store, rule(Scope::Company, RuleKey::Tool("run_command".into()), None, Effect::Deny));
+    assert_eq!(blocked("emp-1"), ["mcp__crm__purge", "mcp__docs__write"]);
+
+    // An employee's own deny hides it for that employee only.
+    put(&store, rule(Scope::Employee("emp-2".into()), RuleKey::Tool("mcp__crm__lookup".into()), None, Effect::Deny));
+    assert_eq!(blocked("emp-2"), ["mcp__crm__lookup", "mcp__crm__purge", "mcp__docs__write"]);
+    assert_eq!(blocked("emp-1"), ["mcp__crm__purge", "mcp__docs__write"]);
+}
+
 #[tokio::test]
 async fn a_parked_call_writes_an_ask_and_the_owners_answer_runs_it() {
     let (_d, store) = store();
@@ -853,7 +880,7 @@ async fn an_unattended_run_never_schedules_work() {
     for tool in tools::event_tool::tools(store.clone()) {
         reg.register(Box::new(tool)).await;
     }
-    let once = |name: &str| json!({ "name": name, "at": "in 30 seconds", "prompt": "Retry the Odoo write." });
+    let once = |name: &str| json!({ "name": name, "reason": "retry the write", "at": "in 30 seconds", "prompt": "Retry the Odoo write." });
     let unattended = [
         (Origin::Workflow, Door::Workflow, "agent:emp:workflow:run-1:resolve-and-record:0:0"),
         (Origin::System, Door::Schedule, "agent:emp:cron:odoo-retry"),
@@ -924,7 +951,7 @@ async fn a_declared_workflow_step_pauses_on_a_tool_it_wasnt_given() {
     assert_eq!(ask.case, AskCase::StepTool { step: "resolve-and-record".into(), tool: "fetch_url".into() });
     assert!(!ask.this_once_offered(), "one allow");
     assert!(ask.reason_text().contains("resolve-and-record") && ask.reason_text().contains("fetch_url"), "{}", ask.reason_text());
-    let r = reg.execute(&c, "create_schedule", json!({ "name": "retry", "at": "in 30 seconds", "prompt": "x" })).await;
+    let r = reg.execute(&c, "create_schedule", json!({ "name": "retry", "reason": "retry", "at": "in 30 seconds", "prompt": "x" })).await;
     assert!(r.is_error && r.parked_ask.is_none() && r.content.contains("can't create, turn on or start"), "{}", r.content);
     assert_eq!((odoo_ran.load(Ordering::SeqCst), fetch_ran.load(Ordering::SeqCst)), (1, 0));
 

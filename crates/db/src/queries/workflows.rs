@@ -3,7 +3,7 @@ use rusqlite::params;
 use crate::{DbErrExt, OptionalExt};
 use crate::Store;
 use crate::models::{
-    AgentWorkflowStats, InterruptedRun, Workflow, WorkflowActivityResult, WorkflowRun,
+    AgentWorkflowStats, InterruptedRun, LiveWorkflowRun, Workflow, WorkflowActivityResult, WorkflowRun,
     WorkflowRunError, WorkflowToolBinding,
 };
 use crate::queries::engine::{NewRun, NewWait};
@@ -274,6 +274,31 @@ impl Store {
         Ok(())
     }
 
+    /// Hold a workflow run to `mode`: started from a conversation in a mode
+    /// stricter than its employee's own, every turn of it runs no looser
+    /// (`Grant::narrow`). Written once, before the run's first turn; a
+    /// resumed or relaunched run keeps it.
+    pub fn set_workflow_run_narrow(&self, id: &str, mode: types::permissions::Mode) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE workflow_runs SET permission_mode = ?2 WHERE id = ?1",
+            params![id, mode.as_str()],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The mode a workflow run is held to, if what started it carried one.
+    pub fn workflow_run_narrow(&self, id: &str) -> Result<Option<types::permissions::Mode>, NeboError> {
+        let conn = self.conn()?;
+        let mode: Option<String> = conn
+            .query_row("SELECT permission_mode FROM workflow_runs WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?
+            .flatten();
+        Ok(mode.as_deref().and_then(types::permissions::Mode::parse))
+    }
+
     /// The `provider/model` a run was routed to, once known.
     pub fn workflow_run_model(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;
@@ -512,6 +537,39 @@ impl Store {
             |row| row.get(0),
         )
         .db_err("has_live_run")
+    }
+
+    /// Every workflow run still going, across every workflow and employee,
+    /// oldest first: queued, running, interrupted, or waiting (with its live
+    /// wait). What the owner's "running now" list and an employee's
+    /// background note read.
+    pub fn list_live_workflow_runs(&self) -> Result<Vec<LiveWorkflowRun>, NeboError> {
+        let conn = self.conn()?;
+        let sql = format!(
+            "SELECT * FROM ({}) AS run
+             JOIN (SELECT r.id AS live_id, r.state AS live_state,
+                          (SELECT MAX(COALESCE(a.completed_at, a.started_at)) FROM workflow_activity_results a WHERE a.run_id = r.id) AS last_activity,
+                          ew.on_kind AS wait_kind, NULLIF(ew.reason, '') AS wait_reason, ew.deadline AS wait_deadline
+                   FROM engine_runs r LEFT JOIN engine_waits ew ON ew.id = r.current_wait_id AND ew.superseded_at IS NULL
+                   WHERE r.kind = 'workflow' AND r.state IN ('queued', 'running', 'waiting', 'interrupted')) AS live
+               ON live.live_id = run.id
+             ORDER BY run.started_at",
+            run_select()
+        );
+        let mut stmt = conn.prepare(&sql).db_err("list_live_workflow_runs prepare")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LiveWorkflowRun {
+                    run: row_to_workflow_run(row)?,
+                    state: row.get("live_state")?,
+                    last_activity: row.get("last_activity")?,
+                    wait_kind: row.get("wait_kind")?,
+                    wait_reason: row.get("wait_reason")?,
+                    wait_deadline: row.get("wait_deadline")?,
+                })
+            })
+            .db_err("list_live_workflow_runs query")?;
+        rows.collect::<Result<Vec<_>, _>>().db_err("list_live_workflow_runs collect")
     }
 
     /// Runs across every workflow that started at or after `since` (unix

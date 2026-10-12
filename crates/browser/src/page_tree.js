@@ -325,6 +325,45 @@
     return [rect.left + rect.width / 2, rect.top + rect.height / 2];
   };
 
+  // What a step check needs to know about the page: where it is, its visible
+  // headings, whether each expected text shows, and how many visible
+  // elements carry each expected role and name. The extension's
+  // __neboExpectFacts, for the built-in browser; the engine compares.
+  window.__neboExpectFacts = function (spec) {
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const headings = [];
+    document.querySelectorAll('h1, h2, h3, [role="heading"]').forEach(hd => {
+      if (headings.length < 10 && isVisible(hd)) {
+        const t = String(hd.innerText || hd.textContent || '').replace(/\s+/g, ' ').trim();
+        if (t) headings.push(t.slice(0, 120));
+      }
+    });
+    const body = norm(document.body ? (document.body.innerText || document.body.textContent) : '');
+    const text = {};
+    for (const t of (spec && spec.text) || []) text[t] = body.includes(norm(t));
+    const wanted = ((spec && spec.elements) || []).map(e => ({ role: e.role, name: e.name, n: norm(e.name), visible: 0, exact: 0 }));
+    if (wanted.length && document.body) {
+      const all = document.body.querySelectorAll('*');
+      for (let i = 0; i < all.length && i < 30000; i++) {
+        const role = getRole(all[i]);
+        for (const w of wanted) {
+          if (w.role !== role) continue;
+          const name = norm(getAccessibleName(all[i]));
+          if (!name.includes(w.n) || !isVisible(all[i])) continue;
+          w.visible++;
+          if (name === w.n) w.exact++;
+        }
+      }
+    }
+    return {
+      url: location.href,
+      title: document.title,
+      headings,
+      text,
+      elements: wanted.map(w => ({ role: w.role, name: w.name, visible: w.visible, exact: w.exact })),
+    };
+  };
+
   // Resolves once the DOM has been quiet for `quietMs`, or after `maxMs`:
   // what a click or keystroke changed has landed before the page is read.
   window.__neboDomStable = function (quietMs, maxMs) {

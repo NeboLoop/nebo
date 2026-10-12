@@ -697,19 +697,19 @@ impl Kind {
         Ok(())
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let target = format!("channel {}", str_field(input, "channel_id"));
         match self {
-            Kind::SendMessage => (format!("messaging {target}"), format!("Messaged {target}")),
-            Kind::EnsureChannel => ("setting up a hub channel".into(), "Set up a hub channel".into()),
-            Kind::ListChannels => ("checking hub channels".into(), "Checked hub channels".into()),
-            Kind::ReadChannel => ("reading a hub channel".into(), "Read a hub channel".into()),
-            Kind::ChannelMembers | Kind::LoopMembers => ("checking hub members".into(), "Checked hub members".into()),
-            Kind::ListLoops | Kind::GetLoop => ("checking hub loops".into(), "Checked hub loops".into()),
-            Kind::Subscribe => ("subscribing to a hub topic".into(), "Subscribed to a hub topic".into()),
-            Kind::Unsubscribe => ("unsubscribing from a hub topic".into(), "Unsubscribed from a hub topic".into()),
-            Kind::TopicStatus => ("checking the hub connection".into(), "Checked the hub connection".into()),
-            Kind::Share => ("attaching a file".into(), "Attached a file".into()),
+            Kind::SendMessage => format!("messaging {target}"),
+            Kind::EnsureChannel => "setting up a hub channel".into(),
+            Kind::ListChannels => "checking hub channels".into(),
+            Kind::ReadChannel => "reading a hub channel".into(),
+            Kind::ChannelMembers | Kind::LoopMembers => "checking hub members".into(),
+            Kind::ListLoops | Kind::GetLoop => "checking hub loops".into(),
+            Kind::Subscribe => "subscribing to a hub topic".into(),
+            Kind::Unsubscribe => "unsubscribing from a hub topic".into(),
+            Kind::TopicStatus => "checking the hub connection".into(),
+            Kind::Share => "attaching a file".into(),
         }
     }
 }
@@ -760,12 +760,8 @@ impl DynTool for LoopTool {
         self.kind.validate(input)
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(

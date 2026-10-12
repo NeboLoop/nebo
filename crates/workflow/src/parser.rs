@@ -59,12 +59,12 @@ pub struct InputParam {
 pub struct Activity {
     pub id: String,
     /// Activity type from the builder: custom, research, email, notify, code,
-    /// condition, loop, wait, agent, connector, http, command, decide, transform, expert.
-    /// Empty = custom.
+    /// condition, loop, wait, agent, connector, http, command, operation, decide,
+    /// transform, expert. Empty = custom.
     #[serde(rename = "type", default)]
     pub activity_type: String,
     /// Natural-language task. Optional — typed nodes (http, wait, condition,
-    /// command, decide) may be fully described by `params`.
+    /// command, operation, decide) may be fully described by `params`.
     #[serde(default)]
     pub intent: String,
     /// Display label from the builder.
@@ -482,6 +482,31 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
                     return Err(WorkflowError::Validation(format!(
                         "command activity '{}' requires params.command (shell command; \
                          stdout becomes the node output)",
+                        activity.id
+                    )));
+                }
+            }
+            // An interface operation, performed by whichever connected plugin
+            // binds it: every page of a read, or one call per row of a write.
+            "operation" => {
+                let params = activity.params.as_ref();
+                if param_str(activity, "operation").split('.').count() < 3 {
+                    return Err(WorkflowError::Validation(format!(
+                        "operation activity '{}' requires params.operation, a catalog \
+                         operation such as \"ledger.invoice.search\"",
+                        activity.id
+                    )));
+                }
+                if params.and_then(|p| p.get("input")).is_some_and(|v| !v.is_object()) {
+                    return Err(WorkflowError::Validation(format!(
+                        "operation activity '{}': params.input is an object of the operation's fields",
+                        activity.id
+                    )));
+                }
+                if params.and_then(|p| p.get("rows")).is_some_and(|v| !v.is_string()) {
+                    return Err(WorkflowError::Validation(format!(
+                        "operation activity '{}': params.rows is a data path to a list, \
+                         such as \"nodes.judge.decisions\"",
                         activity.id
                     )));
                 }
@@ -1111,6 +1136,29 @@ mod tests {
         .is_ok());
         assert!(wf(
             r#"[{"id":"h","type":"http","params":{"url":"https://example.com"}}]"#,
+            "[]"
+        )
+        .is_ok());
+        // operation: a catalog operation; input an object; rows a data path.
+        assert!(wf(r#"[{"id":"o","type":"operation"}]"#, "[]").is_err());
+        assert!(wf(r#"[{"id":"o","type":"operation","params":{"operation":"invoices"}}]"#, "[]").is_err());
+        assert!(wf(
+            r#"[{"id":"o","type":"operation","params":{"operation":"ledger.invoice.search","input":"open"}}]"#,
+            "[]"
+        )
+        .is_err());
+        assert!(wf(
+            r#"[{"id":"o","type":"operation","params":{"operation":"ledger.invoice.update","rows":[{"id":1}]}}]"#,
+            "[]"
+        )
+        .is_err());
+        assert!(wf(
+            r#"[{"id":"o","type":"operation","params":{"operation":"ledger.invoice.search","input":{"status":"open"}}}]"#,
+            "[]"
+        )
+        .is_ok());
+        assert!(wf(
+            r#"[{"id":"o","type":"operation","params":{"operation":"ledger.invoice.update","rows":"nodes.judge.decisions"}}]"#,
             "[]"
         )
         .is_ok());

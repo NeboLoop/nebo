@@ -112,7 +112,7 @@ describe('recording a clip', () => {
 		expect(clips[0].name).toMatch(/^recording-\d{8}-\d{6}\.m4a$/);
 		expect(clips[0].size).toBe(6);
 		expect(track.stop).toHaveBeenCalled();
-		expect(get(rec)).toEqual({ stage: 'idle', elapsedMs: 0, level: 0, notice: '' });
+		expect(get(rec)).toEqual({ stage: 'idle', elapsedMs: 0, level: 0, muted: false, notice: '' });
 	});
 
 	it('cancel throws the recording away', async () => {
@@ -158,6 +158,52 @@ describe('recording a clip', () => {
 		expect(clips).toHaveLength(1);
 		expect(get(rec).stage).toBe('idle');
 		expect(get(rec).notice).toBe('capReached');
+	});
+
+	it('stops at the cap it is given (a teach recording\'s)', async () => {
+		const { stream } = fakeStream();
+		const rec = createClipRecorder({
+			onClip: (f) => clips.push(f),
+			acquire: async () => stream,
+			Recorder: FakeRecorder,
+			now: () => clock,
+			meter: () => ({ level: () => 0.5, close: () => {} }),
+			capMs: 5_000
+		});
+		await rec.start();
+		const r = FakeRecorder.instances[0];
+		clock += 4_999;
+		r.tick();
+		expect(r.stopped).toBe(false);
+		clock += 1;
+		r.tick();
+		expect(r.stopped).toBe(true);
+		expect(clips).toHaveLength(1);
+	});
+
+	it('mutes and unmutes the microphone while the recording keeps going', async () => {
+		const { stream, track } = fakeStream();
+		const audio = track as unknown as { enabled: boolean };
+		audio.enabled = true;
+		const rec = recorderWith(async () => stream);
+		rec.mute(true); // not recording yet: nothing to mute
+		expect(audio.enabled).toBe(true);
+		await rec.start();
+		rec.mute(true);
+		expect(audio.enabled).toBe(false);
+		expect(get(rec).muted).toBe(true);
+		clock += SLICE_MS;
+		FakeRecorder.instances[0].tick();
+		expect(get(rec).level).toBe(0);
+		expect(get(rec).elapsedMs).toBe(SLICE_MS);
+		rec.mute(false);
+		expect(audio.enabled).toBe(true);
+		clock += SLICE_MS;
+		FakeRecorder.instances[0].tick();
+		expect(get(rec).level).toBe(0.5);
+		rec.stop();
+		expect(clips).toHaveLength(1);
+		expect(get(rec).muted).toBe(false);
 	});
 
 	it('a refused microphone says so plainly and records nothing', async () => {

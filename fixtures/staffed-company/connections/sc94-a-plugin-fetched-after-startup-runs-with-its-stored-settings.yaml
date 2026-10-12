@@ -1,0 +1,11 @@
+id: sc94-a-plugin-fetched-after-startup-runs-with-its-stored-settings
+name: "SC94 — A plugin fetched after startup runs with its stored settings"
+description: |
+  A restored cloud bot has its plugins' settings back with its state and
+  fetches their packages minutes after it starts. A plugin fetched then
+  runs with the owner's stored settings, the secret ones decrypted, exactly
+  as a plugin present at startup does: one door for every way a plugin
+  arrives (codes::activate_plugin), no special case for a restore.
+target_component: staffed-company
+proof: staffed_proof::connections::a_plugin_fetched_after_startup_runs_with_its_stored_settings
+conversation: []

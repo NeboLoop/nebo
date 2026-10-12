@@ -223,7 +223,7 @@ export const NODE_CATALOG_ITEMS = [
     ],
   },
   {
-    category: 'Connectors (MCP)',
+    category: 'Connectors',
     items: [] as { type: string; label: string; desc: string; icon: string; serverId?: string; serverName?: string }[],
   },
   {

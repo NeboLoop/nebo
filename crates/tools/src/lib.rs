@@ -109,6 +109,7 @@ pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
 pub mod store_app;
+pub mod superseded;
 pub mod vm_tool;
 pub mod walk_bounds;
 pub mod workspace_history;

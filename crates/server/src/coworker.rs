@@ -78,6 +78,29 @@ impl CoworkerRail for CoworkerRailImpl {
     }
 }
 
+/// The rail a message from `from` to `to` is counted on, and its ceiling
+/// per five minutes. A message sent from a turn a colleague's message set
+/// off (handoff depth 1 and on) is part of a chain, held to the chain
+/// backstop [`crate::AGENT_TRIGGERS_PER_5_MIN`]. One from the employee's
+/// own work (depth 0: its workflows, its schedules, the owner's runs) sets
+/// no chain going, so it gets the volume ceiling
+/// [`crate::OWN_WORK_MESSAGES_PER_5_MIN`], counted apart.
+pub(crate) fn coworker_rail(from: &str, to: &str, handoff_depth: u8) -> (String, usize) {
+    if handoff_depth == 0 {
+        (format!("coworker-own:{from}:{to}"), crate::OWN_WORK_MESSAGES_PER_5_MIN)
+    } else {
+        (format!("coworker:{from}:{to}"), crate::AGENT_TRIGGERS_PER_5_MIN)
+    }
+}
+
+/// What a sender is told when a rail's ceiling refuses its message.
+fn rail_refusal(to_name: &str, cap: usize) -> String {
+    format!(
+        "Not sent: you have messaged {to_name} {cap} times in the last five minutes. This message was not \
+         delivered; don't say it was. Finish with what you have, or report back to whoever asked you."
+    )
+}
+
 pub(crate) async fn send_coworker_message(
     state: AppState,
     msg: CoworkerMessage,
@@ -149,19 +172,15 @@ pub(crate) async fn send_coworker_message(
         }
     }
 
-    // The ceiling on a chain the owner did not start himself: an
-    // employee's own messages to one colleague set work off at most
-    // `AGENT_TRIGGERS_PER_5_MIN` times in five minutes. His own request,
-    // passed straight on, is never held back.
+    // The ceiling on messages to one colleague (`coworker_rail`): a chain
+    // the owner did not start himself is held to the chain backstop, an
+    // employee's own work to a volume ceiling. His own request, passed
+    // straight on, is never held back.
     let owners_own = msg.handoff_depth == 0 && authority.owners_request().is_some();
     if msg.team.is_none() && !owners_own {
-        let rail = format!("coworker:{}:{}", msg.from_agent_id, to_id);
-        if !crate::agent_trigger_allowed(&state, &rail, crate::AGENT_TRIGGERS_PER_5_MIN).await {
-            return Err(format!(
-                "Not sent: you have messaged {to_name} {} times in the last five minutes. Finish with what you have, \
-                 or report back to whoever asked you.",
-                crate::AGENT_TRIGGERS_PER_5_MIN
-            ));
+        let (rail, cap) = coworker_rail(&msg.from_agent_id, &to_id, msg.handoff_depth);
+        if !crate::agent_trigger_allowed(&state, &rail, cap).await {
+            return Err(rail_refusal(&to_name, cap));
         }
     }
 
@@ -396,6 +415,7 @@ pub(crate) async fn send_coworker_message(
         sender_depth: msg.handoff_depth,
         team: team.as_ref().map(|t| TeamLeg { team_id: t.id.clone(), team_name: t.name.clone() }),
         authority,
+        narrow: msg.narrow,
     };
     crate::reply_route::set(&state, &thread_key, "", Some(&ReplyRoute::Coworker(route.clone())));
 
@@ -408,12 +428,38 @@ pub(crate) async fn send_coworker_message(
     };
     crate::addressing::open(&state, &post_id, &to_id, &team_id, &thread_key, &asker_session, &msg.from_agent_id)?;
 
+    // The trace of the hand-off (`handoff`): every delivery between
+    // employees, nested under the one its sender was working on. The
+    // owner's own team post is his, not a hand-off between employees.
+    let handoff_id = if matches!(route.authority, Authority::Owner { .. }) {
+        None
+    } else {
+        crate::handoff::queued(
+            &state,
+            &crate::handoff::Delivery {
+                from_agent_id: &msg.from_agent_id,
+                to_agent_id: &to_id,
+                team_id: &team_id,
+                sender_session: if asker_session.is_empty() { &msg.sender_session_key } else { &asker_session },
+                sender_run_id: msg.sender_run_id.as_deref(),
+                receiver_session: &thread_key,
+                ask: &msg.text,
+            },
+        )
+    };
+
     // A member asked to act in a team acknowledges there before it works.
     let acknowledge = team.is_some();
     let route_owners_request = route.authority.owners_request().map(str::to_string);
     if let Err(e) = run_in_thread(&state, &thread_key, route, prompt, Some(mention_context), seed_taint, acknowledge).await {
         crate::addressing::withdraw(&state, &post_id, &to_id);
+        if let Some(id) = handoff_id.as_deref() {
+            crate::handoff::failed(&state, id, &e);
+        }
         return Err(e);
+    }
+    if let Some(id) = handoff_id.as_deref() {
+        crate::handoff::running(&state, id);
     }
 
     if let Some(t) = team.as_ref() {
@@ -445,6 +491,7 @@ pub(crate) async fn send_coworker_message(
         to_agent_id: to_id,
         to_name,
         thread_key,
+        handoff_id,
     })
 }
 
@@ -545,14 +592,17 @@ pub(crate) async fn run_in_thread(
             None,
         ),
     };
+    let run_started = chrono::Utc::now().timestamp();
     let config = ChatConfig {
         session_key: thread_key.to_string(),
         prompt,
         user_id: String::new(),
         channel: COWORKER_CHANNEL.to_string(),
         origin,
-        // The target acts with its own grant; the requester's is never read.
+        // The target acts with its own grant; the requester's is never read,
+        // save the mode the request carries, which only narrows it.
         door,
+        narrow: route.narrow,
         agent_id: route.to_agent_id.clone(),
         cancel_token: cancel_token.clone(),
         lane: types::constants::lanes::COMM.to_string(),
@@ -613,8 +663,10 @@ pub(crate) async fn run_in_thread(
         // A run that could not answer at all (a linked bot that is not
         // reachable) says so where its reply would have gone, in the
         // runtime's own words — never silence.
-        let said = if reply.text.is_empty() { reply.error.unwrap_or_default() } else { reply.text };
-        deliver_reply(&state, &route, &thread_key, said, reply.provenance).await;
+        let error = reply.error.filter(|_| reply.text.is_empty());
+        let said = if reply.text.is_empty() { error.clone().unwrap_or_default() } else { reply.text };
+        deliver_reply(&state, &route, &thread_key, said.clone(), reply.provenance).await;
+        crate::handoff::turn_ended(&state, &thread_key, &said, error.as_deref(), run_started);
     });
     Ok(())
 }
@@ -647,6 +699,9 @@ async fn deliver_reply(
                     mention: Vec::new(),
                     handoff_depth: depth,
                     provenance: provenance.clone(),
+                    // The member's answer asks on (a lead's steps) under
+                    // what its thread carries.
+                    narrow: route.narrow,
                     reply_to: Some(thread_key.to_string()),
                 };
                 if let Err(e) = crate::team::post(state.clone(), post).await {
@@ -1102,9 +1157,37 @@ pub(crate) fn origin_matter_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        coworker_thread_keys, named, parse_team_envelope, team_context, team_envelope,
+        coworker_rail, coworker_thread_keys, named, parse_team_envelope, rail_refusal, team_context, team_envelope,
         OWNER,
     };
+
+    /// Bake-off 2026-10-10: a hub-and-spoke team (four workflows reporting
+    /// to one manager) was refused at the 7th message in five minutes,
+    /// though no chain was running. An employee's own work (depth 0) now
+    /// sends 7, and up to 30; a chain a colleague set off (depth 1) still
+    /// stops at 6, and the two are counted apart.
+    #[test]
+    fn own_work_reaches_a_hub_and_a_chain_still_stops_at_six() {
+        let mut counts = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        let send = |counts: &mut _, depth: u8| {
+            let (rail, cap) = coworker_rail("analyst", "manager", depth);
+            crate::trigger_counted(counts, &rail, cap, now)
+        };
+        for i in 0..7 {
+            assert!(send(&mut counts, 0), "own work, message {} goes through", i + 1);
+        }
+        for _ in 7..crate::OWN_WORK_MESSAGES_PER_5_MIN {
+            assert!(send(&mut counts, 0));
+        }
+        assert!(!send(&mut counts, 0), "the volume ceiling holds at 30");
+        for i in 0..crate::AGENT_TRIGGERS_PER_5_MIN {
+            assert!(send(&mut counts, 1), "chain message {} goes through", i + 1);
+        }
+        assert!(!send(&mut counts, 1), "a chain stops at 6");
+        let said = rail_refusal("Sales Floor Manager", 6);
+        assert!(said.starts_with("Not sent:") && said.contains("don't say it was"), "{said}");
+    }
     use types::provenance::ProvenanceClass;
 
     fn employee(id: &str, name: &str) -> db::models::Agent {

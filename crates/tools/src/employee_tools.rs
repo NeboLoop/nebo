@@ -84,7 +84,11 @@ fn draft_param() -> serde_json::Value {
 
 /// What an automation's `tools` say: a duty runs with only the tools it
 /// lists (`workflow::engine::scoped_activity_tools`).
-const AUTOMATION_TOOLS: &str = "Every tool the steps call, by exact name (plugin__<slug> for a plugin, e.g. plugin__odoo; read_file, run_command, send_message, push_notification). It runs with only these, plus exit, emit_event and message_owner; anything else is refused. Scheduling tools are refused in every automation.";
+const AUTOMATION_TOOLS: &str = "Every tool the steps call, by exact name (plugin__<slug> for a plugin, e.g. plugin__odoo; read_file, run_command, send_message, push_notification). It runs with only these, plus exit, emit_event and message_owner, its memory (recall and remember, to keep state between runs) and any tool its steps name; anything else is refused. A call written in a step uses the tool's own parameters. Scheduling tools are refused in every automation.";
+
+/// What an automation's `requires_tools` say: the delivery the step owes,
+/// checked before it may finish (`turn_end::WorkflowContractCheck`).
+const AUTOMATION_REQUIRES_TOOLS: &str = "Tools that must succeed before the step may finish. Set it for a step whose job is to deliver, e.g. [\"message_owner\"] for a report the owner always gets; leave it out when sending depends on what the step finds.";
 
 /// One recurring or triggered duty, the item `automations` and
 /// `add_automations` take.
@@ -98,23 +102,28 @@ fn automation_item() -> serde_json::Value {
             "interval": { "type": "string", "description": "Instead of a schedule: run every interval (\"15m\", \"1h\")." },
             "window": { "type": "string", "description": "With interval: the hours it runs in, e.g. \"08:00-18:00\"." },
             "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Instead of a schedule: the events that start it, e.g. \"email.received\"." },
-            "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps, run in order in one run: what to do, with which tool or data, producing what." },
+            "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps, run in order in one run: what to do, with which tool or data, producing what. Each step gets up to 50 model turns and a run up to 150 in all, so split a long job into steps." },
             "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
+            "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS },
             "activities": {
                 "type": "array",
-                "description": "Instead of steps, for a duty in stages: each stage runs on its own and sees the earlier stages' outputs.",
+                "description": "Instead of steps, for a duty in stages, designed by create_workflow's rules: each stage runs on its own. Stages may be typed exactly as in create_workflow (command, condition, loop, expert, with params).",
                 "items": {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
+                        "type": { "type": "string", "description": "Empty for an AI stage; command, http, condition, loop or expert as in create_workflow." },
+                        "params": { "type": "object" },
                         "intent": { "type": "string", "description": "What this stage accomplishes, in a line." },
                         "steps": { "type": "array", "items": { "type": "string" } },
                         "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills this stage may use." },
-                        "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS }
+                        "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
+                        "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS }
                     },
-                    "required": ["id", "intent", "steps"]
+                    "required": ["id"]
                 }
             },
+            "connections": { "type": "array", "items": { "type": "object" }, "description": "With activities: the wiring, as in create_workflow ({from, to, label?}, starting at __trigger__)." },
             "emit": { "type": "string", "description": "An event to emit when it finishes, e.g. briefing.ready." }
         },
         "required": ["name"]
@@ -127,7 +136,7 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
     let props = serde_json::json!({
         "description": { "type": "string", "description": "What the employee does, in a sentence or two." },
         "agent_md": { "type": "string", "description": "The whole AGENT.md (frontmatter and instructions). Rarely needed: description and instructions cover most employees." },
-        "automations": { "type": "array", "items": automation_item(), "description": "The employee's recurring or triggered duties; each becomes its own workflow, run as the employee." },
+        "automations": { "type": "array", "items": automation_item(), "description": "The employee's recurring or triggered duties; each becomes its own workflow, run as the employee. Design every duty by create_workflow's rules: a duty that reads a system starts with a code stage, so use `activities` and `connections`, not plain steps." },
         "ceiling": {
             "type": "object",
             "additionalProperties": { "type": "string", "enum": ["approval"] },
@@ -150,7 +159,7 @@ fn job_properties() -> serde_json::Map<String, serde_json::Value> {
                         "voice": { "type": "boolean", "description": "true puts the chat's dictate and voice buttons in the app's bar in the mobile app, for an app the owner directs by talking while they look at it (a design canvas). Default false; fullscreen apps never have it." },
                         "open_on_work": { "type": "boolean", "description": "true opens the app over its chat (mobile app and desktop) as soon as the employee writes that chat's chat: record, so the owner watches it build without pressing Open App. Default false." },
                         "isolated": { "type": "boolean", "description": "true serves the page cross-origin isolated (SharedArrayBuffer), for a threaded WebAssembly engine export (Godot 4, Unity, Bevy). The page then loads nothing from another site (no esm.sh or CDN): every file ships in ui/. Default false." },
-                        "share_menu": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "say": { "type": "string" } }, "required": ["label", "say"] }, "description": "The header's Share button: up to 6 of the app's own ways to share or export its work (label up to 40 characters); picking one sends its say into the app's chat as the owner's words." }
+                        "share_menu": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "say": { "type": "string" }, "share": { "type": "boolean" } }, "required": ["label", "say"] }, "description": "The header's Share button: up to 6 of the app's own ways to share or export its work (label up to 40 characters); picking one sends its say into the app's chat as the owner's words. share: true makes it a link: the app answers with one file (its reply hands it over, or its page with nebo.share) and Nebo opens its Share dialog on it, where the owner picks who can open the link." }
                     }
                 },
                 "permissions": { "type": "array", "items": { "type": "string" }, "description": "prefix:scope entries, default [\"storage:readwrite\"]; device:motion for the gyroscope and accelerometer." }
@@ -223,7 +232,7 @@ impl Kind {
                 - The first call drafts it and returns one plain line of what it will be able to do; nothing is created yet. Say that line to the owner and ask them to confirm, unless their latest message already told you to create it now.\n\
                 - On their yes, or at once when they already told you to create it, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
-                - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone. List every tool the steps call in the automation's `tools`: it runs with only those.\n\
+                - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone. List every tool the steps call in the automation's `tools`: it runs with only those. create_workflow's design rules apply to every duty.\n\
                 - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the app-studio skill before writing one.\n\
                 - To change an employee that exists, its name included, use update_employee."
                 .to_string(),
@@ -335,6 +344,7 @@ impl Kind {
                             "description": { "type": "string" },
                             "steps": { "type": "array", "items": { "type": "string" } },
                             "tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_TOOLS },
+                            "requires_tools": { "type": "array", "items": { "type": "string" }, "description": AUTOMATION_REQUIRES_TOOLS },
                             "schedule": { "type": "string" },
                             "interval": { "type": "string" },
                             "window": { "type": "string" },
@@ -445,28 +455,27 @@ impl Kind {
         }
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let who = str_field(input, "name").unwrap_or("an employee");
-        let pair = |a: String, b: String| (a, b);
         match self {
-            Kind::ListEmployees => pair("listing employees".into(), "Listed employees".into()),
-            Kind::GetEmployee => pair(format!("reading about {who}"), format!("Read about {who}")),
-            Kind::FindEmployees => pair("searching the marketplace".into(), "Searched the marketplace".into()),
-            Kind::HireEmployee => pair("hiring from the marketplace".into(), "Hired from the marketplace".into()),
-            Kind::CreateEmployee => pair(format!("making {who}"), format!("Made {who}")),
-            Kind::UpdateEmployee => pair(format!("updating {who}"), format!("Updated {who}")),
-            Kind::DeleteEmployee => pair(format!("deleting {who}"), format!("Deleted {who}")),
+            Kind::ListEmployees => "listing employees".into(),
+            Kind::GetEmployee => format!("reading about {who}"),
+            Kind::FindEmployees => "searching the marketplace".into(),
+            Kind::HireEmployee => "hiring from the marketplace".into(),
+            Kind::CreateEmployee => format!("making {who}"),
+            Kind::UpdateEmployee => format!("updating {who}"),
+            Kind::DeleteEmployee => format!("deleting {who}"),
             Kind::SetEmployeeActive => match input.get("active").and_then(|v| v.as_bool()) {
-                Some(false) => pair(format!("turning off {who}"), format!("Turned off {who}")),
-                _ => pair(format!("turning on {who}"), format!("Turned on {who}")),
+                Some(false) => format!("turning off {who}"),
+                _ => format!("turning on {who}"),
             },
-            Kind::SetupEmployee => pair(format!("opening {who}'s setup"), format!("Opened {who}'s setup")),
+            Kind::SetupEmployee => format!("opening {who}'s setup"),
             Kind::RepairEmployee => match str_field(input, "name") {
-                Some(n) => pair(format!("repairing {n}'s schedules"), format!("Repaired {n}'s schedules")),
-                None => pair("repairing schedules".into(), "Repaired schedules".into()),
+                Some(n) => format!("repairing {n}'s schedules"),
+                None => "repairing schedules".into(),
             },
-            Kind::ReloadEmployee => pair(format!("reloading {who}"), format!("Reloaded {who}")),
-            Kind::EmployeeStats => pair(format!("reading {who}'s runs"), format!("Read {who}'s runs")),
+            Kind::ReloadEmployee => format!("reloading {who}"),
+            Kind::EmployeeStats => format!("reading {who}'s runs"),
         }
     }
 }
@@ -560,12 +569,8 @@ impl DynTool for EmployeeTool {
         Ok(())
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(
@@ -611,6 +616,19 @@ mod tests {
 
     fn tool<'a>(family: &'a [EmployeeTool], name: &str) -> &'a EmployeeTool {
         family.iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// The authoring eval's input (`make eval-authoring`): these tools'
+    /// definitions exactly as the model is shown them, one file each in the
+    /// `AUTHORING_EXPORT` folder.
+    #[test]
+    #[ignore = "writes the authoring surfaces for make eval-authoring"]
+    fn export_authoring_surfaces() {
+        let dir = std::path::PathBuf::from(std::env::var("AUTHORING_EXPORT").expect("AUTHORING_EXPORT names the folder"));
+        for kind in [Kind::CreateEmployee, Kind::UpdateEmployee] {
+            let def = serde_json::json!({"name": kind.name(), "description": kind.description(), "input_schema": kind.schema()});
+            std::fs::write(dir.join(format!("{}.json", kind.name())), serde_json::to_string_pretty(&def).unwrap()).unwrap();
+        }
     }
 
     /// The family is the design's group C, every one deferred.
@@ -668,8 +686,8 @@ mod tests {
             assert!(!text.contains("agent("), "{}: {text}", t.name());
             assert!(!text.contains("resource"), "{}: {text}", t.name());
             assert!(!text.to_lowercase().contains(" agent "), "{}: {text}", t.name());
-            let (doing, done) = (t.activity(&json!({"name": "Front Desk"})), t.outcome(&json!({"name": "Front Desk"})));
-            assert!(!doing.contains("agent") && !done.contains("agent"), "{doing} / {done}");
+            let doing = t.describe(&json!({"name": "Front Desk"}));
+            assert!(!doing.contains("agent"), "{doing}");
         }
     }
 
@@ -838,7 +856,7 @@ mod tests {
             .upsert_agent_workflow(id, "nightly", "schedule", "0 3 * * *", Some("Nightly"), None, None, None, None, false)
             .unwrap();
         store
-            .create_cron_job(&format!("agent-{id}-nightly"), "0 3 * * *", "", "agent", None, None, None, true, Some(id), None, None)
+            .create_cron_job(&format!("agent-{id}-nightly"), "0 3 * * *", "", "agent", None, None, None, true, Some(id), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Workflow, "the nightly workflow"))
             .unwrap();
         folder
     }

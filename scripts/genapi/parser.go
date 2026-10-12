@@ -26,6 +26,7 @@ type RustField struct {
 	Skip          bool   // #[serde(skip_serializing)] or #[serde(skip)]
 	Optional      bool   // has #[serde(default)] or type is Option<T>
 	SerializeWith string // #[serde(serialize_with = "...")]
+	Flatten       bool   // #[serde(flatten)]: the type's fields sit beside this struct's own
 }
 
 // scanStructs reads all .rs files in dir (non-recursive) and extracts
@@ -61,8 +62,11 @@ var (
 	reStructHead = regexp.MustCompile(`pub\s+struct\s+(\w+)\s*\{`)
 	// Match field-level serde attributes.
 	reSerdeField = regexp.MustCompile(`#\[serde\(([^)]+)\)\]`)
-	// Match a struct field: pub name: Type,
-	reField = regexp.MustCompile(`pub\s+(\w+)\s*:\s*(.+?)\s*[,}]`)
+	// Match a struct field: name: Type, — any visibility: serde writes a
+	// private field (`value: Value` on a sheet cell) like a pub one.
+	// The type runs to the line's trailing comma, so `BTreeMap<String, f64>`
+	// stays whole.
+	reField = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:\s*(.+?)\s*[,}]?\s*$`)
 	// Match Query<StructName> in handler function signatures.
 	reQueryType = regexp.MustCompile(`Query<(\w+)>`)
 )
@@ -149,7 +153,8 @@ func parseStructsMatching(src, path string, deriveMatcher *regexp.Regexp) []*Rus
 			}
 
 			// Try to match a field.
-			if fm := reField.FindStringSubmatch(fline); fm != nil {
+			// A type split over lines (`HashMap<` … `>,`) is not one field line.
+			if fm := reField.FindStringSubmatch(fline); fm != nil && strings.Count(fm[2], "<") == strings.Count(fm[2], ">") {
 				field := RustField{
 					Name:     fm[1],
 					RustType: strings.TrimSpace(fm[2]),
@@ -180,7 +185,7 @@ func parseStructsMatching(src, path string, deriveMatcher *regexp.Regexp) []*Rus
 
 func parseSerdeContainerAttr(attr string) string {
 	// Extract rename_all = "camelCase"
-	re := regexp.MustCompile(`rename_all\s*=\s*"(\w+)"`)
+	re := regexp.MustCompile(`rename_all\s*=\s*"([\w-]+)"`)
 	if m := re.FindStringSubmatch(attr); m != nil {
 		return m[1]
 	}
@@ -197,10 +202,15 @@ func applySerdeFieldAttr(f *RustField, attr string) {
 				f.Rename = m[1]
 			}
 		}
-		if p == "skip_serializing" || p == "skip" || strings.HasPrefix(p, "skip_serializing_if") {
-			if p == "skip_serializing" || p == "skip" {
-				f.Skip = true
-			}
+		if p == "skip_serializing" || p == "skip" {
+			f.Skip = true
+		}
+		// The key is left out when the predicate holds: it may be absent.
+		if strings.HasPrefix(p, "skip_serializing_if") {
+			f.Optional = true
+		}
+		if p == "flatten" {
+			f.Flatten = true
 		}
 		if p == "default" || strings.HasPrefix(p, "default") {
 			f.Optional = true
@@ -435,14 +445,35 @@ func scanHandlers(dir string, structs map[string]*RustStruct, storeMethodTypes m
 
 var reFuncSig = regexp.MustCompile(`pub\s+async\s+fn\s+(\w+)\s*\(`)
 
-// reHandlerReturn captures a typed response struct from `-> HandlerResult<StructName>`.
-var reHandlerReturn = regexp.MustCompile(`->\s*HandlerResult<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>`)
+// reAnyFuncSig is any function, a private helper included.
+var reAnyFuncSig = regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*[<(]`)
+
+// reHandlerReturn captures a typed response struct from `-> HandlerResult<StructName>`
+// or `-> Result<Json<StructName>, E>` (a handler with its own error type),
+// the struct path-qualified or not (`sheet::Edited`).
+var reHandlerReturn = regexp.MustCompile(`->\s*(?:HandlerResult<|Result<\s*(?:axum::)?(?:response::)?Json<)\s*((?:\w+::)*[A-Za-z_][A-Za-z0-9_]*)\s*>`)
+
+// reExtractorBinding is a handler argument's typed binding:
+// `Json(body): Json<KeepFileBody>`, `Query(q): Query<ListQuery>`.
+var reExtractorBinding = regexp.MustCompile(`(?:Json|Query)\(\s*(\w+)\s*\)\s*:\s*(?:axum::)?(?:extract::)?(?:Json|Query)<\s*(?:\w+::)*(\w+)\s*>`)
+
+// reFieldAccess is `var.field`.
+var reFieldAccess = regexp.MustCompile(`^(\w+)\.(\w+)$`)
+
+// reReturnedVar is the handler's final `Ok(Json(body))`.
+var reReturnedVar = regexp.MustCompile(`Ok\(\s*(?:axum::)?(?:response::)?Json\(\s*(\w+)\s*\)\s*\)`)
+
+// reCall is a call of a plain function: `roster(`.
+var reCall = regexp.MustCompile(`(?:^|[^\w.:])(\w+)\s*\(`)
 
 func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruct, storeMethodTypes map[string]string, queryStructs map[string]*RustStruct) []*HandlerInfo {
 	var result []*HandlerInfo
 
 	// Split into functions by finding pub async fn signatures.
 	funcBodies := splitFunctions(src)
+	// Every function in the file, its private helpers included: a handler
+	// may return the body a helper builds.
+	helpers := splitFunctionsMatching(src, reAnyFuncSig)
 
 	for funcName, body := range funcBodies {
 		h := &HandlerInfo{
@@ -457,10 +488,43 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 		// Build a variable type map from let bindings + store method calls.
 		varTypes := extractVarTypes(body)
 		traceStoreMethodCalls(body, varTypes, storeMethodTypes)
+		traceHelperCalls(body, varTypes, helpers)
 
 		// Find the last Ok(Json(serde_json::json!({...}))) pattern.
 		keys := extractJsonResponse(body)
+		if keys == nil {
+			// `Ok(Json(body))` where `let body = roster(..)`: the helper
+			// builds the response (GET /agents, built off the workers).
+			if hb := helperResponseBody(body, funcName, helpers); hb != "" {
+				keys = extractJsonResponse(hb)
+				varTypes = extractVarTypes(hb)
+				traceStoreMethodCalls(hb, varTypes, storeMethodTypes)
+				traceHelperCalls(hb, varTypes, helpers)
+			}
+		}
 		if keys != nil {
+			// `"keep": body.keep` where `Json(body): Json<KeepFileBody>`: the
+			// field's own type.
+			for _, m := range reExtractorBinding.FindAllStringSubmatch(body, -1) {
+				s := queryStructs[sourceFile+"::"+m[2]]
+				if s == nil {
+					s = structs[m[2]]
+				}
+				if s == nil {
+					continue
+				}
+				for _, k := range keys {
+					fm := reFieldAccess.FindStringSubmatch(strings.TrimSpace(k.ValueExpr))
+					if fm == nil || fm[1] != m[1] {
+						continue
+					}
+					for _, f := range s.Fields {
+						if f.Name == fm[2] {
+							varTypes[fm[0]] = f.RustType
+						}
+					}
+				}
+			}
 			// Refine inferred types using variable type info and key-name heuristics.
 			for i := range keys {
 				keys[i].InferredTS = refineType(keys[i], varTypes, structs, handlerToFuncName(h.QualifiedName), h.FuncName)
@@ -469,8 +533,12 @@ func parseHandlers(src, module, sourceFile string, structs map[string]*RustStruc
 		} else if m := reHandlerReturn.FindStringSubmatch(body); m != nil {
 			// No json! response — wire the typed return struct `-> HandlerResult<StructName>`
 			// when StructName is a known Serialize struct.
-			if _, ok := structs[m[1]]; ok {
-				h.ResponseStruct = m[1]
+			name := m[1]
+			if i := strings.LastIndex(name, "::"); i >= 0 {
+				name = name[i+2:]
+			}
+			if _, ok := structs[name]; ok && m[1] != "serde_json::Value" {
+				h.ResponseStruct = name
 			}
 		}
 
@@ -574,6 +642,12 @@ func traceStoreMethodCalls(body string, varTypes map[string]string, storeMethodT
 		}
 		chunk := body[start:end]
 
+		// A match's value is its arms', not its scrutinee's: `let key =
+		// match state.store.get_chat(..) { Ok(Some(_)) => .. }` is no Chat.
+		if strings.HasPrefix(strings.TrimSpace(chunk), "match ") {
+			continue
+		}
+
 		// Skip if the expression transforms the result (.len(), .map(), .count(), etc.)
 		if storeResultTransformed(chunk) {
 			continue
@@ -601,6 +675,50 @@ func traceStoreMethodCalls(body string, varTypes map[string]string, storeMethodT
 		if retType, ok := storeMethodTypes[methodName]; ok {
 			varTypes[varName] = retType
 		}
+	}
+}
+
+// reLetCall is `let var = name(` — a call of a plain function — or
+// `let var = format!(`.
+var reLetCall = regexp.MustCompile(`let\s+(?:mut\s+)?(\w+)\s*=\s*(\w+!?)\s*\(`)
+
+// reHelperReturn is a function signature's return type, up to its body.
+var reHelperReturn = regexp.MustCompile(`(?s)^[^{]*?\)\s*->\s*(.+?)\s*(?:where\b|\{)`)
+
+// traceHelperCalls types `let var = helper(..)` from the same-file helper's
+// return type (`Result<T, E>` is T: the call ends in `?`), and `let var =
+// format!(..)` as a String.
+func traceHelperCalls(body string, varTypes map[string]string, helpers map[string]string) {
+	for _, mi := range reLetCall.FindAllStringSubmatchIndex(body, -1) {
+		varName := body[mi[2]:mi[3]]
+		callee := body[mi[4]:mi[5]]
+		if _, already := varTypes[varName]; already {
+			continue
+		}
+		stmtEnd := findStatementEnd(body, mi[1])
+		if stmtEnd > mi[1] && storeResultTransformed(body[mi[1]:stmtEnd]) {
+			continue
+		}
+		if callee == "format!" {
+			varTypes[varName] = "String"
+			continue
+		}
+		hb, ok := helpers[callee]
+		if !ok {
+			continue
+		}
+		m := reHelperReturn.FindStringSubmatch(hb)
+		if m == nil {
+			continue
+		}
+		ret := strings.TrimSpace(m[1])
+		if strings.HasPrefix(ret, "Result<") && strings.HasSuffix(ret, ">") {
+			ret = extractFirstGenericArg(ret[len("Result<"):])
+		}
+		if i := strings.LastIndex(ret, "::"); i >= 0 && !strings.Contains(ret, "<") {
+			ret = ret[i+2:] // types::packs::Pack → Pack
+		}
+		varTypes[varName] = ret
 	}
 }
 
@@ -853,14 +971,46 @@ func inferFromKeyName(key string) string {
 	return "" // no heuristic match
 }
 
+// helperResponseBody is the body of the same-file helper a handler returns
+// the value of (`let body = ... roster(..) ...; Ok(Json(body))`), when the
+// handler builds no json! of its own. Empty when there is none.
+func helperResponseBody(body, self string, helpers map[string]string) string {
+	ms := reReturnedVar.FindAllStringSubmatch(body, -1)
+	if len(ms) == 0 {
+		return ""
+	}
+	v := ms[len(ms)-1][1]
+	let := regexp.MustCompile(`let\s+(?:mut\s+)?` + regexp.QuoteMeta(v) + `\s*=`).FindStringIndex(body)
+	if let == nil {
+		return ""
+	}
+	stmt := body[let[1]:findStatementEnd(body, let[1])]
+	for _, c := range reCall.FindAllStringSubmatch(stmt, -1) {
+		if c[1] == self {
+			continue
+		}
+		if hb, ok := helpers[c[1]]; ok && strings.Contains(hb, "json!({") {
+			return hb
+		}
+	}
+	return ""
+}
+
 // splitFunctions splits Rust source into named function bodies.
 func splitFunctions(src string) map[string]string {
+	return splitFunctionsMatching(src, reFuncSig)
+}
+
+// splitFunctionsMatching splits Rust source into the bodies of the
+// functions whose signature line sig matches. The first of a name wins (a
+// test module's same-named function comes later in the file).
+func splitFunctionsMatching(src string, sig *regexp.Regexp) map[string]string {
 	result := make(map[string]string)
 	lines := strings.Split(src, "\n")
 
 	i := 0
 	for i < len(lines) {
-		m := reFuncSig.FindStringSubmatch(lines[i])
+		m := sig.FindStringSubmatch(lines[i])
 		if m == nil {
 			i++
 			continue
@@ -869,6 +1019,7 @@ func splitFunctions(src string) map[string]string {
 		// Find the function body by tracking braces.
 		depth := 0
 		started := false
+		closed := false
 		var bodyLines []string
 		for j := i; j < len(lines); j++ {
 			line := lines[j]
@@ -878,12 +1029,16 @@ func splitFunctions(src string) map[string]string {
 				started = true
 			}
 			if started && depth <= 0 {
-				result[funcName] = strings.Join(bodyLines, "\n")
+				if _, dup := result[funcName]; !dup {
+					result[funcName] = strings.Join(bodyLines, "\n")
+				}
 				i = j + 1
+				closed = true
 				break
 			}
 		}
-		if !started {
+		// No body (a trait method's `;`), or braces that never balance.
+		if !closed {
 			i++
 		}
 	}
@@ -921,6 +1076,11 @@ func extractJsonResponse(body string) []ResponseKey {
 	}
 	content := ""
 	for k := range spans {
+		// An error body (`(StatusCode::BAD_REQUEST, Json(json!({..})))`)
+		// is not the response the client reads.
+		if errorStatusBefore(body[:spans[k].start]) {
+			continue
+		}
 		enclosed := false
 		for m := range spans {
 			if m != k && spans[m].start < spans[k].start && spans[k].end <= spans[m].end {
@@ -939,6 +1099,27 @@ func extractJsonResponse(body string) []ResponseKey {
 
 	// Parse top-level "key": value pairs from the json!({...}) content.
 	return parseJsonMacroKeys(content)
+}
+
+// reErrorStatus is a non-2xx status paired with the Json body that follows:
+// `StatusCode::BAD_REQUEST, axum::Json(serde_json::`.
+var reErrorStatus = regexp.MustCompile(`StatusCode::(\w+)\s*,\s*(?:axum::)?(?:response::)?Json\(\s*(?:serde_json::)?$`)
+
+// errorStatusBefore reports whether the json! literal right after before is
+// the body of an error status.
+func errorStatusBefore(before string) bool {
+	if len(before) > 200 {
+		before = before[len(before)-200:]
+	}
+	m := reErrorStatus.FindStringSubmatch(before)
+	if m == nil {
+		return false
+	}
+	switch m[1] {
+	case "OK", "CREATED", "ACCEPTED", "NO_CONTENT":
+		return false
+	}
+	return true
 }
 
 // extractBraced extracts a balanced {...} block from the start of s.
@@ -1195,4 +1376,153 @@ func parseWSEvents(src string) []WSEvent {
 	}
 
 	return events
+}
+
+// ── Rust Enum Parsing ───────────────────────────────────────────────────
+
+// RustEnum is a Serialize enum whose variants are all units: serde writes
+// each as its (renamed) name, so in TypeScript it is a union of strings.
+type RustEnum struct {
+	Name   string
+	Values []string
+	Source string
+}
+
+var reEnumHead = regexp.MustCompile(`^pub\s+enum\s+(\w+)\s*\{`)
+
+// reUnitVariant is a variant with no data: `Low,` (or the last, `Max`).
+var reUnitVariant = regexp.MustCompile(`^(\w+)\s*,?$`)
+
+// scanEnums reads all .rs files in dir (non-recursive) and extracts the
+// unit-only enums that derive Serialize.
+func scanEnums(dir string) []*RustEnum {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var result []*RustEnum
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".rs") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		result = append(result, parseEnums(string(data), path)...)
+	}
+	return result
+}
+
+func parseEnums(src, path string) []*RustEnum {
+	lines := strings.Split(src, "\n")
+	var result []*RustEnum
+	for i := 0; i < len(lines); i++ {
+		if !reDerive.MatchString(strings.TrimSpace(lines[i])) {
+			continue
+		}
+		// Container attributes up to the head. A tagged or untagged enum is
+		// not a plain string on the wire.
+		renameAll := ""
+		plain := true
+		j := i + 1
+		for ; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if m := reSerdeCont.FindStringSubmatch(t); m != nil {
+				if strings.Contains(m[1], "tag") {
+					plain = false
+				}
+				if r := parseSerdeContainerAttr(m[1]); r != "" {
+					renameAll = r
+				}
+				continue
+			}
+			if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "#[") {
+				continue
+			}
+			break
+		}
+		if j >= len(lines) {
+			break
+		}
+		m := reEnumHead.FindStringSubmatch(strings.TrimSpace(lines[j]))
+		if m == nil {
+			continue
+		}
+		var values []string
+		rename := ""
+		unit := true
+		for j++; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == "}" {
+				break
+			}
+			if sm := reSerdeField.FindStringSubmatch(t); sm != nil {
+				if rm := regexp.MustCompile(`rename\s*=\s*"([^"]+)"`).FindStringSubmatch(sm[1]); rm != nil {
+					rename = rm[1]
+				}
+				if strings.Contains(sm[1], "skip") {
+					rename = "\x00skip"
+				}
+				continue
+			}
+			if t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "#[") {
+				continue
+			}
+			vm := reUnitVariant.FindStringSubmatch(t)
+			if vm == nil {
+				unit = false // a variant carries data
+				continue
+			}
+			switch {
+			case rename == "\x00skip":
+			case rename != "":
+				values = append(values, rename)
+			default:
+				values = append(values, renameVariant(vm[1], renameAll))
+			}
+			rename = ""
+		}
+		i = j
+		if plain && unit && len(values) > 0 {
+			result = append(result, &RustEnum{Name: m[1], Values: values, Source: path})
+		}
+	}
+	return result
+}
+
+// renameVariant applies a container rename_all to a PascalCase variant name.
+func renameVariant(name, renameAll string) string {
+	var words []string
+	start := 0
+	for i := 1; i < len(name); i++ {
+		if name[i] >= 'A' && name[i] <= 'Z' {
+			words = append(words, name[start:i])
+			start = i
+		}
+	}
+	words = append(words, name[start:])
+	lower := make([]string, len(words))
+	for i, w := range words {
+		lower[i] = strings.ToLower(w)
+	}
+	switch renameAll {
+	case "lowercase":
+		return strings.ToLower(name)
+	case "UPPERCASE":
+		return strings.ToUpper(name)
+	case "snake_case":
+		return strings.Join(lower, "_")
+	case "SCREAMING_SNAKE_CASE":
+		return strings.ToUpper(strings.Join(lower, "_"))
+	case "kebab-case":
+		return strings.Join(lower, "-")
+	case "SCREAMING-KEBAB-CASE":
+		return strings.ToUpper(strings.Join(lower, "-"))
+	case "camelCase":
+		return strings.ToLower(name[:1]) + name[1:]
+	default: // PascalCase and none: the variant's own name
+		return name
+	}
 }

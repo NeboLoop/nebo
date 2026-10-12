@@ -97,7 +97,6 @@ impl DynTool for EmitTool {
         })
     }
 
-
     fn search_hint(&self) -> &str {
         "announce an event that triggers workflows"
     }
@@ -119,12 +118,8 @@ impl DynTool for EmitTool {
         }
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
+    fn describe(&self, input: &serde_json::Value) -> String {
         format!("announcing {}", input["source"].as_str().unwrap_or("an event").trim())
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        format!("Announced {}", input["source"].as_str().unwrap_or("an event").trim())
     }
 
     fn execute_dyn<'a>(

@@ -410,6 +410,11 @@ impl CdpBridge {
                 let content = tree.get("pageContent").and_then(|v| v.as_str()).unwrap_or("");
                 Ok(json!({ "text": find_in_tree(content, query) }))
             }
+            "expect" => {
+                let page = self.page_for(session_id).await?;
+                let spec = json!({ "text": args["text"], "elements": args["elements"] });
+                self.page_call(&page, &format!("window.__neboExpectFacts({spec})")).await
+            }
             "wait" => {
                 let seconds = args
                     .get("duration")

@@ -79,7 +79,7 @@ fn scan_mcp(root: &Path, m: &mut ImportManifest) {
             tier,
             name: s.name,
             detail,
-            target: "MCP integration",
+            target: "Connector",
             source_path: "config.yaml".into(),
         });
     }

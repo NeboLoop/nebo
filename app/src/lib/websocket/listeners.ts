@@ -15,9 +15,12 @@ import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
 import { opensHere } from './origin';
+import { watchConnection } from './connectionNotice';
+import { botName, loadBotName } from '$lib/stores/botName';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { loadWaitingAsks, setWaitingAsks, waitingAsks } from '$lib/stores/waitingAsks';
+import { loadBackground, setBackground, backgroundEnded, timerCreated } from '$lib/stores/background';
 import { newBlockingAsks, seedBlockingAsks, openAsk, answerById, inAsksChat } from '$lib/stores/blockingAsks';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 import { addToast, removeToast } from '$lib/stores/toast';
@@ -106,6 +109,36 @@ export function attachWebSocketListeners(): void {
     ws.on('asks_waiting', (data: any) => {
       setWaitingAsks(data);
       for (const ask of newBlockingAsks(data?.asks ?? [])) tellBlockingAsk(ask);
+    })
+  );
+
+  // --- Background work: the "Running now" list and each chat's strip,
+  // loaded once and replaced whole on every change; an ended piece or a new
+  // timer is told to its employee's chats. ---
+  void loadBackground().catch(() => log.debug('Background API unavailable'));
+  unsubs.push(ws.on('background_changed', (data: any) => setBackground(data)));
+  unsubs.push(ws.on('background_finished', (data: any) => backgroundEnded(data)));
+  unsubs.push(ws.on('background_timer_created', (data: any) => timerCreated(data)));
+
+  // --- An app's page handed the owner a file to share (`nebo.share`): on
+  // the client whose page asked, and only there, bring this window forward
+  // on the app's chat, which opens the Share dialog. ---
+  unsubs.push(
+    ws.on('app_share_requested', async (data: any) => {
+      const { shareRequest, shareRequestOf, shareRequestPath } = await import('$lib/stores/appShare');
+      const req = shareRequestOf(data);
+      if (!req) return;
+      shareRequest.set(req);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((window as any).__TAURI_INTERNALS__) {
+        try {
+          const { getCurrentWindow } = await import('@tauri-apps/api/window');
+          await getCurrentWindow().setFocus();
+        } catch (e) {
+          log.debug(`share request: window not focused: ${String(e)}`);
+        }
+      }
+      await goto(shareRequestPath(req));
     })
   );
 
@@ -262,39 +295,31 @@ export function attachWebSocketListeners(): void {
   );
 
   // --- Connection status toast ---
-  // A dropped socket is routine on a phone (backgrounding, wifi↔cell) and
-  // heals in a second or two. Say nothing for the first few seconds; then a
-  // quiet "Reconnecting…" that goes away on its own the moment we are back;
-  // only after half a minute does it become worth the owner's attention.
-  let reconnectToast: number | null = null;
-  let reconnectSoon: ReturnType<typeof setTimeout> | null = null;
-  let reconnectLong: ReturnType<typeof setTimeout> | null = null;
-  const clearReconnect = () => {
-    if (reconnectSoon) { clearTimeout(reconnectSoon); reconnectSoon = null; }
-    if (reconnectLong) { clearTimeout(reconnectLong); reconnectLong = null; }
-    if (reconnectToast !== null) { removeToast(reconnectToast); reconnectToast = null; }
-  };
+  // A short drop is never mentioned (./connectionNotice.ts); one that
+  // outlasts the redials is the plain failure, with Try again.
+  void loadBotName();
+  let connectionToast: number | null = null;
   unsubs.push(
-    ws.onStatus((status) => {
-      if (status === 'connected') {
-        clearReconnect();
-        return;
-      }
-      if ((status === 'error' || status === 'disconnected') && !reconnectSoon && reconnectToast === null) {
-        reconnectSoon = setTimeout(() => {
-          reconnectSoon = null;
-          if (ws.getStatus() === 'connected') return;
-          reconnectToast = addToast(get(t)('common.reconnecting'), 'info', 0);
-          reconnectLong = setTimeout(() => {
-            if (ws.getStatus() === 'connected') return;
-            if (reconnectToast !== null) removeToast(reconnectToast);
-            reconnectToast = addToast(get(t)('common.stillReconnecting'), 'warning', 0);
-          }, 30_000);
-        }, 4_000);
-      }
+    watchConnection(ws, {
+      show(tryAgain) {
+        const name = get(botName) || 'Nebo';
+        connectionToast = addToast(get(t)('common.couldNotConnect', { values: { name } }), 'error', 0, {
+          label: get(t)('chat.tryAgain'),
+          onClick: tryAgain,
+        });
+      },
+      hide() {
+        if (connectionToast !== null) removeToast(connectionToast);
+        connectionToast = null;
+      },
     })
   );
-  unsubs.push(clearReconnect);
+  unsubs.push(
+    ws.onStatus((status) => {
+      // What changed while the socket was down was never told.
+      if (status === 'connected') void loadBackground().catch(() => log.debug('Background API unavailable'));
+    })
+  );
 
   // --- Artifact update toasts ---
   unsubs.push(

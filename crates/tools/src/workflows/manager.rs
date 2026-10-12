@@ -51,6 +51,9 @@ pub struct SaveOptions {
     /// again). The definition given with it adds to or replaces its fields
     /// (a schedule trigger, say).
     pub from_run: Option<String>,
+    /// The mode the saving run carries (`ToolContext::narrow`): temporary
+    /// work that starts as it is made is held to it.
+    pub narrow: Option<types::permissions::Mode>,
 }
 
 /// Info about a workflow run.
@@ -116,12 +119,15 @@ pub trait WorkflowManager: Send + Sync {
     /// Run a workflow. Returns run_id immediately; execution happens in a spawned task.
     /// Accepts a standalone workflow id, or a binding-scoped id
     /// (`agent:{agent_id}:{binding_name}`) as returned by `resolve` for agent
-    /// bindings — those fire through `run_inline`.
+    /// bindings — those fire through `run_inline`. `narrow`: the mode the
+    /// run that starts it carries (`ToolContext::narrow`); the run's every
+    /// turn is held to it.
     fn run<'a>(
         &'a self,
         id: &'a str,
         inputs: serde_json::Value,
         trigger_type: &'a str,
+        narrow: Option<types::permissions::Mode>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Get the status of a workflow run.
@@ -199,6 +205,9 @@ pub trait WorkflowManager: Send + Sync {
     /// Run an inline workflow from a JSON definition (no DB/filesystem lookup).
     /// Used by agent workers for inline workflow bindings defined in agent.json.
     /// `emit_sources` — the events the last activity is instructed to announce its output as.
+    /// `narrow` — the mode the run that starts it carries (a conversation's
+    /// stricter pick); `None` for every scheduled, watched or triggered run,
+    /// which runs in its employee's own mode.
     fn run_inline<'a>(
         &'a self,
         definition_json: String,
@@ -207,6 +216,7 @@ pub trait WorkflowManager: Send + Sync {
         trigger_detail: Option<String>,
         agent_id: &'a str,
         emit_sources: Vec<String>,
+        narrow: Option<types::permissions::Mode>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Cancel a running workflow by run_id.

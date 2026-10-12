@@ -1004,6 +1004,24 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         parent_run_id: req.parent_run_id,
         case_key: &key,
     })?;
+    // The hand-off trace (`server::handoff`): the assignment is the
+    // assignee's case, traced under the same id.
+    store.create_handoff(
+        &db::NewHandoff {
+            id: &assignment_id,
+            kind: "assignment",
+            from_agent_id: req.assigner_agent_id,
+            to_agent_id: req.assignee_agent_id,
+            team_id: "",
+            sender_session: req.assigner_session_key,
+            sender_run_id: req.parent_run_id,
+            receiver_session: &session_key,
+            receiver_run_id: Some(&case_id),
+            ask: req.subject,
+            status: "running",
+        },
+        t,
+    )?;
     store.engine_create_run(&NewRun {
         id: &case_id,
         kind: "case",
@@ -1082,6 +1100,15 @@ pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status:
     let state = assignment_state_for(status);
     if !store.close_assignment(id, state, Some(status), t)? {
         return Ok(()); // already settled
+    }
+    // Its hand-off ends with it: done with the summary, or failed (or
+    // blocked) with why. A failure stays on the record.
+    let ended = match state {
+        "done" => store.finish_handoff(id, "done", summary, "", t),
+        _ => store.finish_handoff(id, "failed", "", summary, t),
+    };
+    if let Err(e) = ended {
+        tracing::warn!(error = %e, assignment = %id, "assignment: hand-off end not recorded");
     }
     let assignee = a["assignee_agent_id"].as_str().unwrap_or("");
     let payload = serde_json::json!({

@@ -322,6 +322,7 @@ impl<'a> Rig<'a> {
             channel: LOOP.to_string(),
             origin: Origin::User,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.to_string(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::MAIN.to_string(),
@@ -576,7 +577,7 @@ async fn the_owner_is_answered_while_the_company_works() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coworker_message_returns_at_once_and_the_reply_wakes_the_sender() {
     let nebo = session().await;
-    nebo.hire("Proof Clerk", json!({ "workflows": {} })).await;
+    let clerk = nebo.hire("Proof Clerk", json!({ "workflows": {} })).await;
     const SENDER: &str = "proof:dm:sender-b1";
     let rules: Vec<Rule> = vec![
         worker("MARK-CLERK", "clerk", "CLERK-RESULT"),
@@ -628,6 +629,129 @@ async fn a_coworker_message_returns_at_once_and_the_reply_wakes_the_sender() {
             .any(|m| m.role == "assistant" && m.content.contains("HEARD"))
     })
     .await;
+
+    // The hand-off is on record: who sent what to whom, done with what came
+    // back, and the sender's tool result names it for the chat's line.
+    let handoff_id = sent
+        .payload
+        .as_ref()
+        .and_then(|p| p["handoffId"].as_str())
+        .expect("the receipt names its hand-off")
+        .to_string();
+    rig.until(30, "the hand-off ends with the answer", || {
+        nebo.store().get_handoff(&handoff_id).unwrap().is_some_and(|h| h.status == "done")
+    })
+    .await;
+    let h = nebo.store().get_handoff(&handoff_id).unwrap().expect("recorded");
+    assert_eq!(h.sender_session, SENDER);
+    assert_eq!(h.to_agent_id, clerk);
+    assert!(h.ask.contains("MARK-CLERK file the invoice"), "{}", h.ask);
+    assert_eq!(h.status, "done", "{h:?}");
+    assert!(h.result.contains("CLERK-RESULT"), "{}", h.result);
+    assert!(h.started_at.is_some() && h.finished_at.is_some(), "{h:?}");
+}
+
+/// A hand-off chain traces as one tree: the owner's employee messages
+/// Mid, Mid hands a piece on to Leaf while working it, and Mid's hand-off
+/// to Leaf is nested under the one it was working. Both run while Leaf
+/// works; each ends done with what it said once its answer is in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handoff_chain_traces_as_one_tree() {
+    let nebo = session().await;
+    let mid = nebo.hire("Proof Chain Mid", json!({ "workflows": {} })).await;
+    let leaf = nebo.hire("Proof Chain Leaf", json!({ "workflows": {} })).await;
+    const SENDER: &str = "proof:dm:sender-chain";
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            if !t.opener().contains("MARK-CH1") {
+                return None;
+            }
+            if t.says("LEAF-RESULT") && !t.answered("MID-RESULT") {
+                return Some(Step::say("MID-RESULT: the leaf counted 7."));
+            }
+            if t.has_tool_results() {
+                return Some(Step::say("Asked the leaf."));
+            }
+            t.new_text().contains("MARK-CH1").then(|| {
+                Step::call(vec![(
+                    "send_message",
+                    json!({"to": "Proof Chain Leaf", "message": "MARK-CH2 count the boxes"}),
+                )])
+            })
+        }),
+        worker("MARK-CH2", "leaf", "LEAF-RESULT"),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.open_session(SENDER);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(SENDER, "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof Chain Mid", "message": "MARK-CH1 how many boxes?"}))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let top_id = sent.payload.as_ref().and_then(|p| p["handoffId"].as_str()).expect("the receipt names its hand-off").to_string();
+
+    let child = || {
+        nebo.store()
+            .list_handoffs(&db::HandoffQuery { parent_id: Some(&top_id), ..Default::default() })
+            .unwrap()
+            .into_iter()
+            .next()
+    };
+    rig.until(30, "Mid's hand-off to Leaf is nested under the one it works", || child().is_some()).await;
+    let below = child().unwrap();
+    assert_eq!((below.from_agent_id.as_str(), below.to_agent_id.as_str()), (mid.as_str(), leaf.as_str()));
+    assert!(below.ask.contains("MARK-CH2"), "{}", below.ask);
+    rig.until(30, "Mid's hand-off runs while Mid waits on Leaf", || {
+        nebo.store().get_handoff(&top_id).unwrap().is_some_and(|h| h.status == "running")
+    })
+    .await;
+    let top = nebo.store().get_handoff(&top_id).unwrap().unwrap();
+    assert_eq!(top.to_agent_id, mid);
+    assert_eq!(top.parent_id, None);
+    let live = crate::handoff::receiver_sessions(&nebo.state);
+    assert!(live.contains(&top.receiver_session) && live.contains(&below.receiver_session), "{live:?}");
+
+    rig.company.open("leaf");
+    rig.until(30, "the chain ends done, top and bottom", || {
+        let done = |id: &str| nebo.store().get_handoff(id).unwrap().is_some_and(|h| h.status == "done");
+        done(&top_id) && done(&below.id)
+    })
+    .await;
+    assert!(nebo.store().get_handoff(&below.id).unwrap().unwrap().result.contains("LEAF-RESULT"));
+    assert!(nebo.store().get_handoff(&top_id).unwrap().unwrap().result.contains("MID-RESULT"));
+    // A hand-off is recorded done before its run lets go of the live list.
+    rig.until(30, "nothing is left running", || crate::handoff::live(&nebo.state).is_empty()).await;
+}
+
+/// The owner stops a hand-off while its employee works: the receiving run
+/// stops, and the hand-off stays on record as stopped, never left running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_handoff_stays_on_record_as_stopped() {
+    let nebo = session().await;
+    nebo.hire("Proof Stop Clerk", json!({ "workflows": {} })).await;
+    const SENDER: &str = "proof:dm:sender-stop";
+    let rules: Vec<Rule> = vec![worker("MARK-STOP", "stop-clerk", "STOP-RESULT")];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.open_session(SENDER);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(SENDER, "s1");
+    let sent = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof Stop Clerk", "message": "MARK-STOP file it"}))
+        .await;
+    assert!(!sent.is_error, "{}", sent.content);
+    let id = sent.payload.as_ref().and_then(|p| p["handoffId"].as_str()).unwrap().to_string();
+    rig.until(30, "the clerk is working", || rig.company.calls_naming("MARK-STOP") > 0).await;
+    rig.until(30, "the hand-off is running", || {
+        nebo.store().get_handoff(&id).unwrap().is_some_and(|h| h.status == "running")
+    })
+    .await;
+
+    crate::handoff::stop(&nebo.state, &id).await.unwrap();
+    let h = nebo.store().get_handoff(&id).unwrap().unwrap();
+    assert_eq!(h.status, "stopped", "{h:?}");
+    assert!(h.finished_at.is_some());
+    rig.company.open("stop-clerk");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(nebo.store().get_handoff(&id).unwrap().unwrap().status, "stopped", "a stop is final");
 }
 
 /// B2: a team's replies reach the session that posted: the lead's answer,
@@ -1377,6 +1501,55 @@ async fn the_owners_answer_answers_the_open_question_and_a_new_message_is_new() 
     assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the card is closed");
 }
 
+/// Live 2026-10-11, on his phone: an open question ("Are you flying from
+/// Salt Lake City, and on what dates?") came as a card with only "Other…"
+/// and Skip, the composer below it unused. An open question is a question
+/// in the conversation: the owner's next message there answers it, with no
+/// decision to read it, and the turn goes on with his words; the message
+/// starts no turn of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_next_message_answers_an_open_question() {
+    let nebo = session().await;
+    const OWNER: &str = "agent:proof-open-q:web";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("OWNER-OPEN") {
+            return None;
+        }
+        if t.has_tool_results() {
+            let answer = t
+                .since_last_answer()
+                .iter()
+                .filter_map(|m| m.tool_results.as_ref())
+                .map(|r| r.to_string())
+                .collect::<String>();
+            let heard = if answer.contains("Oct 20 to 25") { "Oct 20 to 25" } else { "nothing" };
+            return Some(Step::say(format!("ANSWER-OPEN heard {heard}.")));
+        }
+        t.new_text().contains("OWNER-OPEN").then(|| {
+            Step::call(vec![(
+                "ask_owner",
+                json!({"question": "Are you flying from Salt Lake City, and on what dates?"}),
+            )])
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(OWNER, "", None, "OWNER-OPEN find me flights to Tokyo").await;
+    rig.until(20, "the question is open on the conversation", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
+    })
+    .await;
+
+    rig.owner_writes(OWNER, "", None, "Yes, Oct 20 to 25").await;
+    rig.until(20, "the turn goes on with his words", || {
+        rig.thread(OWNER).iter().any(|m| m.role == "assistant" && m.content.contains("ANSWER-OPEN"))
+    })
+    .await;
+    let said: Vec<String> = rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect();
+    assert!(said.iter().any(|c| c.contains("ANSWER-OPEN heard Oct 20 to 25.")), "{said:?}");
+    assert_eq!(said.iter().filter(|c| c.contains("ANSWER-OPEN")).count(), 1, "his answer started no turn of its own: {said:?}");
+    assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the question is closed");
+}
+
 /// Live 2026-10-02, on his phone: asked "can you use the cards?", Chief
 /// drew an A2UI panel no app shows, said "a card panel on the side", took
 /// the owner's "k" as "you picked option A", and drew the next question the
@@ -1759,6 +1932,19 @@ async fn a_colleagues_thread_is_never_the_employees_own_chat() {
     assert_eq!(session_names(&listed["teammates"]), vec![colleague.clone()], "{listed}");
     assert_eq!(listed["teammates"][0]["kind"], "colleague", "{listed}");
     assert_eq!(listed["teammates"][0]["with"], "Proof Peer Sender", "{listed}");
+
+    // Paged, the owner's conversations come a page at a time, the total
+    // counts them all, and the teammates come with the first page only.
+    let first = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1")).await;
+    assert_eq!(session_names(&first["chats"]), vec![own.clone()], "{first}");
+    assert_eq!(session_names(&first["teammates"]), vec![colleague.clone()], "{first}");
+    assert_eq!(first["total"], 1, "{first}");
+    assert!(first["nextCursor"].is_null(), "one conversation is one page: {first}");
+    let cursor = format!("{}:{}", first["chats"][0]["updatedAtEpoch"], first["chats"][0]["id"].as_str().unwrap());
+    let next = nebo.get_ok(&format!("/agents/{coder}/chats?limit=1&cursor={}", urlencoding::encode(&cursor))).await;
+    assert!(session_names(&next["chats"]).is_empty(), "{next}");
+    assert!(session_names(&next["teammates"]).is_empty(), "{next}");
+    assert_eq!(next["total"], 1, "{next}");
     assert_eq!(
         nebo.state.store.get_latest_agent_chat(&coder).unwrap().and_then(|c| c.session_name).as_deref(),
         Some(own.as_str()),
@@ -1809,6 +1995,7 @@ async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
         channel: "slack".to_string(),
         origin: Origin::Comm,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: String::new(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),
@@ -3606,7 +3793,7 @@ async fn the_teams_working_list_names_members_and_helpers_and_a_rows_stop_stops_
     let bo_seat = format!("agent:{bo}:coworker:team:{TEAM}");
     let working = until_working(&nebo, TEAM, "Bo at work, and Ann's helper on its tool step", |w| {
         let bo_working = w.iter().any(|e| e["kind"] == "member" && e["agentId"] == bo.as_str());
-        let helper = w.iter().any(|e| e["kind"] == "helper" && e["activity"].as_str().is_some_and(|a| !a.is_empty()));
+        let helper = w.iter().any(|e| e["kind"] == "helper" && e["call"]["kind"].is_string());
         let ann_done = !w.iter().any(|e| e["kind"] == "member" && e["agentId"] == ann.as_str());
         bo_working && helper && ann_done
     })
@@ -3880,4 +4067,421 @@ async fn an_apps_own_files_never_ride_its_replies_as_cards() {
         !attached.iter().any(|a| a.contains("App.tsx") || a.contains("index.html")),
         "the app's own files never do: {attached:?}"
     );
+}
+
+/// Every file a turn hands the owner rides its final reply, in order, from
+/// whichever step made it (live 2026-10-09: a turn rendered a reel, then
+/// its cover, and the reply carried only the cover; a turn that rendered a
+/// reel early carried no card at all): the reel from the first step and
+/// the cover from a later one, after text of its own, are both on the
+/// reply that ends the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_file_a_turn_hands_over_rides_its_final_reply() {
+    let nebo = session().await;
+    let agent = nebo.hire("Proof Deliverables", json!({ "workflows": {} })).await;
+    nebo.activate(&agent).await;
+    nebo.store()
+        .set_permission_mode(&types::permissions::Scope::Employee(agent.clone()), types::permissions::Mode::FullAccess)
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(out.path().join("deliver")).unwrap();
+    let (reel, cover) = (out.path().join("deliver/proof-reel.mp4"), out.path().join("deliver/proof-cover.jpg"));
+    std::fs::write(&reel, b"\x00\x00\x00\x18ftypmp42 reel").unwrap();
+    std::fs::write(&cover, b"\xff\xd8\xff cover").unwrap();
+    let (reel_path, cover_path) = (reel.to_string_lossy().to_string(), cover.to_string_lossy().to_string());
+    let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![Box::new(move |t| {
+        if !t.opener().contains("MARK-DELIVER") {
+            return None;
+        }
+        Some(match steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Step::call(vec![("share_file", json!({ "paths": [reel_path] }))]),
+            1 => {
+                let mut step = Step::call(vec![("share_file", json!({ "paths": [cover_path] }))]);
+                step.events.insert(0, ai::StreamEvent::text("The reel is done; now its cover."));
+                step
+            }
+            _ => Step::say("DELIVER-DONE"),
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let opened = nebo.post_ok(&format!("/agents/{agent}/chats"), &json!({})).await;
+    let thread = opened["sessionKey"].as_str().expect("thread").to_string();
+    rig.owner_writes(&thread, &agent, None, "MARK-DELIVER make the reel and its cover").await;
+    rig.until(30, "the turn ends", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.contains("DELIVER-DONE"))
+    })
+    .await;
+    let chat_id = thread.rsplit(':').next().unwrap().to_string();
+    let mut cards: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        let reply = nebo
+            .store()
+            .get_chat_messages(&chat_id)
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .expect("the final reply");
+        assert!(reply.content.contains("DELIVER-DONE"), "the final reply is the turn's last: {}", reply.content);
+        let meta: Value = serde_json::from_str(reply.metadata.as_deref().unwrap_or("{}")).unwrap_or_default();
+        cards = meta["artifacts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|a| a.as_str().map(|u| u.rsplit('/').next().unwrap_or(u).to_string()))
+            .collect();
+        if !cards.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(cards, vec!["proof-reel.mp4", "proof-cover.jpg"], "{}", tool_results(&rig, &thread));
+}
+
+/// An employee with many conversations: the app reads them a page at a time
+/// and pins the ones the owner keeps at the top. The first page carries
+/// every pinned conversation, most recently pinned first, whatever page it
+/// falls on, and the cursor walks the rest newest first with none twice and
+/// none missed. A pin is kept on the bot, told to every open app, and never
+/// moves a conversation by time; an unpin takes it off. A search narrows
+/// every list and its count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_conversations_head_a_paged_list() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof Pin Clerk", json!({ "workflows": {} })).await;
+    // Five of the owner's conversations, a second apart.
+    let mut made = Vec::new();
+    for at in 1..=5 {
+        let id = format!("pin-proof-{at}");
+        nebo.store()
+            .create_chat_imported(&id, &format!("agent:{clerk}:thread:{id}"), &format!("Matter {at}"), 1_000 + at, 1_000 + at)
+            .unwrap();
+        made.push(id);
+    }
+    // Newest first: the last one made is the most recently active.
+    let newest_first: Vec<String> = made.iter().rev().cloned().collect();
+    let ids = |rows: &Value| -> Vec<String> {
+        rows.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect()
+    };
+
+    // The owner pins the two oldest, the very oldest last.
+    let mut events = nebo.state.hub.subscribe();
+    for id in [&made[1], &made[0]] {
+        let pinned = nebo.put_ok(&format!("/chats/{id}/pin"), &json!({"pinned": true})).await;
+        assert_eq!(pinned["pinned"], true, "{pinned}");
+        // Pins are stamped in whole seconds: the next is a second later.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+    }
+    let told = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(e) = events.recv().await {
+                if e.event_type == "chat_pinned" && e.payload["chatId"] == made[1].as_str() {
+                    break e.payload;
+                }
+            }
+        }
+    })
+    .await
+    .expect("every open app is told of the pin");
+    assert_eq!(told["pinned"], true, "{told}");
+    assert_eq!(told["agentId"], clerk.as_str(), "whose list it moves in: {told}");
+
+    // The first page: two recent conversations, the pinned ones with it.
+    let first = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2")).await;
+    assert_eq!(ids(&first["chats"]), newest_first[..2].to_vec(), "{first}");
+    assert_eq!(ids(&first["pinned"]), vec![made[0].clone(), made[1].clone()], "newest pin first: {first}");
+    assert_eq!(first["pinned"][0]["pinned"], true, "{first}");
+    assert_eq!(first["chats"][0]["pinned"], false, "{first}");
+    assert_eq!(first["total"], 5, "{first}");
+
+    // The cursor walks the rest; the pages after the first carry no pins.
+    let mut walked = ids(&first["chats"]);
+    let mut cursor = first["nextCursor"].as_str().expect("more to come").to_string();
+    loop {
+        let page = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2&cursor={}", urlencoding::encode(&cursor))).await;
+        assert!(ids(&page["pinned"]).is_empty(), "{page}");
+        walked.extend(ids(&page["chats"]));
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+    }
+    assert_eq!(walked, newest_first, "every conversation once, newest first, pinned ones in their place by time");
+
+    // A pin is not activity: the pinned conversations keep their times.
+    let whole = nebo.get_ok(&format!("/agents/{clerk}/chats")).await;
+    assert_eq!(ids(&whole["chats"]), newest_first, "{whole}");
+    assert!(whole["nextCursor"].is_null(), "{whole}");
+
+    // A search narrows the list, its pins and its count.
+    let found = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2&q=Matter%201")).await;
+    assert_eq!(ids(&found["chats"]), vec![made[0].clone()], "{found}");
+    assert_eq!(ids(&found["pinned"]), vec![made[0].clone()], "{found}");
+    assert_eq!(found["total"], 1, "{found}");
+
+    // Unpinned, it leaves the pins.
+    nebo.put_ok(&format!("/chats/{}/pin", made[0]), &json!({"pinned": false})).await;
+    let after = nebo.get_ok(&format!("/agents/{clerk}/chats?limit=2")).await;
+    assert_eq!(ids(&after["pinned"]), vec![made[1].clone()], "{after}");
+
+    assert_eq!(nebo.put("/chats/no-such-chat/pin", &json!({"pinned": true})).await.0, 404);
+    assert_eq!(nebo.get(&format!("/agents/{clerk}/chats?limit=2&cursor=nonsense")).await.0, 400);
+}
+
+/// The modes the script saw, by marker and seat: each `MARK-CM…` word the
+/// latest message a turn (or a workflow step) was asked names, with the
+/// employee whose turn it was and the permission mode it ran in (the last
+/// "Permission mode: …" row its thread carries). The first such turn of a
+/// seat is the one recorded: an answer that comes back to the sender names
+/// the marker again, and is the sender's turn, not the receiver's.
+type ModesSeen = Arc<Mutex<HashMap<String, String>>>;
+
+fn reports_its_mode(seen: ModesSeen) -> Rule {
+    Box::new(move |t| {
+        if !matches!(t.req.trace.purpose, "agent_turn" | "workflow_activity") {
+            return None;
+        }
+        let asked = t.req.messages.iter().rev().find(|m| m.role == "user" && m.content.contains("MARK-CM"))?;
+        if asked.content.contains(" SAW ") {
+            return Some(Step::say("noted"));
+        }
+        let marker = asked
+            .content
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .find(|w| w.starts_with("MARK-CM"))?
+            .to_string();
+        let seat = t
+            .req
+            .messages
+            .iter()
+            .find_map(|m| m.content.split("You are Proof ").nth(1).map(|rest| format!("Proof {}", rest.split([',', '.']).next().unwrap_or(""))))?;
+        let mode = t
+            .req
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| m.content.split("Permission mode: ").nth(1).map(|rest| rest.split('.').next().unwrap_or("").to_string()))?;
+        seen.lock().unwrap().entry(format!("{marker}@{seat}")).or_insert_with(|| mode.clone());
+        Some(Step::say(format!("{marker} SAW {mode}")))
+    })
+}
+
+/// The mode `seat`'s turn asked with `marker` ran in.
+async fn mode_seen(rig: &Rig<'_>, seen: &ModesSeen, marker: &str, seat: &str) -> String {
+    let key = format!("{marker}@{seat}");
+    rig.until(30, &format!("{seat}'s turn asked with {marker}"), || seen.lock().unwrap().contains_key(&key)).await;
+    seen.lock().unwrap()[&key].clone()
+}
+
+/// A conversation's own mode (the composer's Permission sheet): its turns
+/// run in the mode the owner picked for it, Plan and Full Access alike, and
+/// in the employee's own mode again once he picks none. The pick is kept on
+/// the bot (a fresh read finds it), every open app is told of it
+/// (`chat_mode`), and the employee's own setting never changes. A turn the
+/// conversation did not start (a heartbeat in the same session) runs in the
+/// employee's own mode, whatever the conversation picked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conversation_runs_in_the_mode_picked_for_it() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof CM Clerk", json!({ "workflows": {} })).await;
+    let seen: ModesSeen = Default::default();
+    let rig = Rig::new(&nebo, vec![reports_its_mode(seen.clone())]).await;
+    let key = format!("agent:{clerk}:web");
+
+    rig.owner_writes(&key, &clerk, None, "MARK-CM0 hello").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM0", "Proof CM Clerk").await, "Automatic", "no pick: the employee's own");
+    let sessions = nebo.state.harness.sessions();
+    let chat_id = sessions.active_chat_id(&sessions.resolve_session_id_by_key(&key).unwrap());
+    let view = nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await;
+    assert!(view["mode"].is_null(), "{view}");
+    assert_eq!(view["employeeMode"], "automatic", "{view}");
+
+    // Plan, picked for this conversation: every open app hears it.
+    let mut events = nebo.state.hub.subscribe();
+    let put = nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "plan" })).await;
+    assert_eq!((put["mode"].as_str(), put["employeeMode"].as_str()), (Some("plan"), Some("automatic")), "{put}");
+    let told = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(e) = events.recv().await
+                && e.event_type == "chat_mode"
+                && e.payload["chatId"] == chat_id.as_str()
+            {
+                break e.payload;
+            }
+        }
+    })
+    .await
+    .expect("every open app is told of the conversation's mode");
+    assert_eq!(told["mode"], "plan", "{told}");
+    assert_eq!(told["agentId"], clerk.as_str(), "whose conversation: {told}");
+    assert_eq!(nebo.store().get_chat(&chat_id).unwrap().unwrap().permission_mode, Some(types::permissions::Mode::Plan), "kept on the bot");
+    assert_eq!(nebo.get_ok(&format!("/chats/{chat_id}/permission-mode")).await["mode"], "plan", "a fresh read finds it");
+    rig.owner_writes(&key, &clerk, None, "MARK-CM1 plan this").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM1", "Proof CM Clerk").await, "Plan");
+
+    // A turn the conversation did not start runs in the employee's own mode.
+    let heartbeat = crate::chat_dispatch::ChatConfig {
+        session_key: key.clone(),
+        prompt: "MARK-CM2 heartbeat".to_string(),
+        user_id: String::new(),
+        channel: "heartbeat".to_string(),
+        origin: Origin::System,
+        door: types::permissions::Door::Heartbeat,
+        narrow: None,
+        agent_id: clerk.clone(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config: None,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+        client_id: None,
+        platform: None,
+        message_id: None,
+    };
+    crate::chat_dispatch::run_chat(&nebo.state, heartbeat).await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM2", "Proof CM Clerk").await, "Automatic", "unattended work ignores the conversation's mode");
+
+    // Full Access, looser than the employee's own, holds this conversation.
+    nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "full_access" })).await;
+    rig.owner_writes(&key, &clerk, None, "MARK-CM3 go").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM3", "Proof CM Clerk").await, "Full Access");
+
+    // None picked: the employee's own again. Its own setting never moved.
+    let cleared = nebo.put_ok(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": null })).await;
+    assert!(cleared["mode"].is_null(), "{cleared}");
+    rig.owner_writes(&key, &clerk, None, "MARK-CM4 back").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CM4", "Proof CM Clerk").await, "Automatic");
+    assert_eq!(nebo.store().permission_mode(&types::permissions::Scope::Employee(clerk.clone())).unwrap(), None);
+
+    assert_eq!(nebo.put(&format!("/chats/{chat_id}/permission-mode"), &json!({ "mode": "anything" })).await.0, 400);
+    assert_eq!(nebo.put("/chats/no-such-chat/permission-mode", &json!({ "mode": "plan" })).await.0, 404);
+}
+
+/// The context of a turn in `agent_id`'s own conversation that carries
+/// `narrow` (what a conversation picked stricter than the employee's own
+/// holds what it starts to: `seat::run_grant`), as the runner hands it to
+/// a tool.
+fn conversation_ctx(nebo: &Nebo, rig: &Rig<'_>, agent_id: &str, narrow: Option<types::permissions::Mode>) -> tools::ToolContext {
+    let key = format!("agent:{agent_id}:web");
+    rig.open_session(&key);
+    let mut grant = agent::harness::permissions::resolve_grant(nebo.store(), agent_id, narrow);
+    grant.narrow = narrow;
+    let mut ctx = tools::ToolContext::new(Origin::User).with_session(key, "s1");
+    ctx.grant = Some(Arc::new(grant));
+    ctx
+}
+
+/// What a conversation starts follows its mode only when it is stricter:
+/// a colleague it hands work to and a team it posts to run in their own
+/// mode narrowed to the conversation's (an Ask conversation holds a Full
+/// Access colleague to Ask), never loosened by it (a Plan colleague stays
+/// in Plan), and in their own mode when the conversation carries nothing.
+/// A workflow run it starts is held to it the same way; a scheduled run of
+/// the same workflow runs in the employee's own mode. (In Ask the owner
+/// allows the hand-off; here an allow rule stands in for his yes. A Plan
+/// conversation starts nothing that changes anything: the hand-off itself
+/// does not run.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
+    use types::permissions::{Effect, Mode, Rule, RuleKey, RuleSource, Scope, Writer};
+    let nebo = session().await;
+    let asker = nebo.hire("Proof CMS Asker", json!({ "workflows": {} })).await;
+    let builder = nebo.hire("Proof CMS Builder", json!({ "workflows": {} })).await;
+    let planner = nebo.hire("Proof CMS Planner", json!({ "workflows": {} })).await;
+    let lead = nebo.hire("Proof CMS Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof CMS Member", json!({ "workflows": {} })).await;
+    let runner = nebo
+        .hire(
+            "Proof CMS Runner",
+            json!({ "workflows": { "mode-check": {
+                "trigger": { "type": "manual" },
+                "activities": [{ "id": "work", "type": "custom", "intent": "MARK-CMW1 report the mode you run in" }]
+            } } }),
+        )
+        .await;
+    for (seat, mode) in [(&builder, Mode::FullAccess), (&planner, Mode::Plan), (&lead, Mode::FullAccess), (&runner, Mode::FullAccess)] {
+        nebo.store().set_permission_mode(&Scope::Employee(seat.clone()), mode).unwrap();
+    }
+    for (seat, tool) in [(&asker, "send_message"), (&runner, "run_workflow")] {
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee(seat.clone()),
+            key: RuleKey::Tool(tool.into()),
+            field: None,
+            effect: Effect::Allow,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        nebo.store().write_permission_rule(&rule, &Writer::Owner).unwrap();
+    }
+    nebo.activate(&runner).await;
+    const TEAM: &str = "proof-team-cms";
+    nebo.store()
+        .create_team(TEAM, "Proof CMS Team", "ship it", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let seen: ModesSeen = Default::default();
+    let rig = Rig::new(&nebo, vec![reports_its_mode(seen.clone())]).await;
+    // A workflow step is its own kind of call (`workflow_activity`).
+    rig.answer_background(reports_its_mode(seen.clone()));
+
+    let send = |ctx: tools::ToolContext, to: &'static str, text: &'static str| {
+        let nebo = &nebo;
+        async move {
+            let sent = nebo.tool(&ctx, "send_message", json!({ "to": to, "message": text })).await;
+            assert!(!sent.is_error, "{}", sent.content);
+        }
+    };
+
+    // A hand-off from an Ask conversation: the Full Access colleague asks.
+    send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Builder", "MARK-CMH1 build it").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH1", "Proof CMS Builder").await, "Ask");
+    // Nothing carried: the colleague's own mode.
+    send(conversation_ctx(&nebo, &rig, &asker, None), "Proof CMS Builder", "MARK-CMH2 build it").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH2", "Proof CMS Builder").await, "Full Access");
+    // Never loosened: an Ask conversation leaves a Plan colleague in Plan.
+    send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Planner", "MARK-CMH3 look").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMH3", "Proof CMS Planner").await, "Plan");
+
+    // A team post from an Ask conversation: the Full Access lead asks.
+    send(conversation_ctx(&nebo, &rig, &asker, Some(Mode::Ask)), "Proof CMS Team", "MARK-CMT1 ship the page").await;
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMT1", "Proof CMS Lead").await, "Ask");
+
+    // A workflow run started from an Ask conversation is held to Ask.
+    let ctx = conversation_ctx(&nebo, &rig, &runner, Some(Mode::Ask));
+    let started = nebo.tool(&ctx, "run_workflow", json!({ "workflow": "mode-check" })).await;
+    assert!(!started.is_error, "{}", started.content);
+    let run_id = serde_json::from_str::<Value>(&started.content).unwrap()["runId"].as_str().unwrap().to_string();
+    assert_eq!(nebo.store().workflow_run_narrow(&run_id).unwrap(), Some(Mode::Ask), "the run is held to it");
+    assert_eq!(mode_seen(&rig, &seen, "MARK-CMW1", "Proof CMS Runner").await, "Ask", "its step runs in Ask");
+
+    // The same workflow fired by its schedule carries nothing: the
+    // employee's own mode.
+    let scheduled = tools::workflows::WorkflowManager::run(
+        &*nebo.state.workflow_manager,
+        &format!("agent:{runner}:mode-check"),
+        json!({}),
+        "cron",
+        None,
+    )
+    .await
+    .expect("the scheduled run starts");
+    assert_eq!(nebo.store().workflow_run_narrow(&scheduled).unwrap(), None, "nothing scheduled is affected");
 }

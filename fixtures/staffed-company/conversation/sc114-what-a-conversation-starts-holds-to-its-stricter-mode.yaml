@@ -1,0 +1,10 @@
+id: sc114-what-a-conversation-starts-holds-to-its-stricter-mode
+name: "SC114 — What a conversation starts holds to its stricter mode"
+description: |
+  A colleague a conversation hands work to, a team it posts to and a workflow run it starts run
+  in their own mode narrowed to the conversation's when that is stricter, never loosened by it,
+  and in their own mode when the conversation carries nothing. A scheduled run of the same
+  workflow runs in the employee's own mode.
+target_component: staffed-company
+proof: staffed_proof::conversation::what_a_conversation_starts_holds_to_its_stricter_mode
+conversation: []

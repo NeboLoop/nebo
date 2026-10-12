@@ -51,6 +51,9 @@ fn attempts(store: &db::Store, id: i64) -> i64 {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_engine_tick_claims_an_event_once_draining_starts() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
     let store = server.db_store();
 

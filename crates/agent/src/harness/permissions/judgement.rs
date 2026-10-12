@@ -6,10 +6,10 @@
 //! - **Primary: Jev.** One typed decision for the round's questions, with a
 //!   deadline. Each answer is the probability the call goes outside; its
 //!   distance from even odds is the confidence.
-//! - **Fallback: a classifier on the aux route.** The questions Jev didn't
-//!   settle (unavailable, timed out, or below [`JEV_MIN_CONFIDENCE`]) go to
-//!   one call on the turn's aux model route, which answers JSON verdicts with
-//!   a reason.
+//! - **Second: a classifier on the run's background route** (`model_call::
+//!   Housekeeper`). The questions Jev didn't settle (unavailable, timed out,
+//!   or below [`JEV_MIN_CONFIDENCE`]) go to one call there, which answers
+//!   JSON verdicts with a reason.
 //! - **Both down:** the call proceeds, [`Verdict::Unjudged`], and the check
 //!   records it unreviewed ("the permission check couldn't run"): an outage
 //!   of the judges must not stop the employee's work.
@@ -21,10 +21,9 @@
 //! enforce.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
 
-use ai::{ChatRequest, DecideClient, Provider, RequestTrace, StreamEventType};
+use ai::{ChatRequest, DecideClient, RequestTrace, StreamEventType};
 use tracing::debug;
 pub use types::permissions::{JudgedBy, JudgementMode, Verdict};
 
@@ -67,7 +66,9 @@ const REDACTED: &str = "[redacted]";
 /// run is doing.
 pub struct JudgeCx<'a> {
     pub decide: Option<&'a DecideClient>,
-    pub providers: &'a [Arc<dyn Provider>],
+    /// The run's background route (`model_call::Housekeeper`): where the
+    /// questions Jev didn't settle are classified. `None`: nowhere.
+    pub aux: Option<&'a crate::harness::model_call::Route>,
     /// The trace each side call carries (its purpose and the agent).
     pub trace: &'a (dyn Fn(&'static str) -> RequestTrace + Sync),
     /// What the run is for: the session's task, or the workflow step.
@@ -179,14 +180,12 @@ Answer with one JSON object and nothing else:
 {\"verdicts\": [{\"id\": \"<the call's id>\", \"ask\": true or false, \"reason\": \"<one short sentence>\"}]}
 Give exactly one verdict per call. \"ask\": true means it reaches someone outside, so the owner should be asked first.";
 
-/// One classifier call on the aux route for the questions Jev didn't
+/// One classifier call on the run's background route for the questions Jev didn't
 /// settle. `None` when no model answered in time or the answer wasn't the
 /// JSON asked for (every question needs its verdict).
 async fn aux_classify(cx: &JudgeCx<'_>, questions: &[&Question]) -> Option<Vec<Verdict>> {
-    let (provider, model) = match super::super::model_call::resolve_aux(&config::ModelsConfig::load(), cx.providers) {
-        Some(routed) => routed,
-        None => (crate::harness::model_call::prefer_non_gateway(cx.providers)?, String::new()),
-    };
+    let route = cx.aux?;
+    let (provider, model) = (&route.provider, route.model.clone());
     let ids: Vec<String> = (0..questions.len()).map(|i| format!("c{i}")).collect();
     let body = serde_json::json!({
         "objective": clip_or_none(cx.objective, OBJECTIVE_CAP),

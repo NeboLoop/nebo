@@ -24,6 +24,7 @@ pub fn spawn(
     state: AppState,
 ) {
     tokio::spawn(async move {
+        let booted = chrono::Utc::now().timestamp();
         // Initial delay to let the server boot
         tokio::time::sleep(Duration::from_secs(10)).await;
 
@@ -40,6 +41,14 @@ pub fn spawn(
         // Session wakes persisted but not delivered before a crash (session
         // wake rail, R1): redeliver on boot.
         crate::wake::recover_pending_wakes(&state).await;
+
+        // Hand-offs between employees whose runs died with the last process
+        // are ended as stopped, so none shows as running forever.
+        match state.store.stop_orphaned_handoffs(booted, chrono::Utc::now().timestamp()) {
+            Ok(0) => {}
+            Ok(n) => info!(count = n, "hand-offs left running by the last process recorded stopped"),
+            Err(e) => warn!(error = %e, "hand-offs left running by the last process not swept"),
+        }
 
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -177,6 +186,7 @@ fn scheduled_turn(
             origin: Origin::System,
             door: types::permissions::Door::Schedule,
             mode: None,
+            narrow: None,
             ceiling: None,
             cwd: None,
             seed_taint: Vec::new(),
@@ -479,7 +489,7 @@ async fn execute_workflow_task(
     workflow_id: &str,
 ) -> (bool, String, Option<String>) {
     match manager
-        .run(workflow_id, serde_json::Value::Null, "cron")
+        .run(workflow_id, serde_json::Value::Null, "cron", None)
         .await
     {
         Ok(run_id) => (true, format!("workflow run started: {}", run_id), None),
@@ -586,6 +596,7 @@ pub(crate) async fn execute_agent_workflow_task(
             Some(binding_name.to_string()),
             agent_id,
             emit_sources,
+            None,
         )
         .await
     {
@@ -726,8 +737,8 @@ mod tests {
     async fn deleting_a_schedule_stops_its_running_turn() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(&dir.path().join("w.db").to_string_lossy()).unwrap());
-        let job = store.create_cron_job("retry", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
-        let kept = store.create_cron_job("kept", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let job = store.create_cron_job("retry", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
+        let kept = store.create_cron_job("kept", "0 9 * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let (turn, other) = (tokio_util::sync::CancellationToken::new(), tokio_util::sync::CancellationToken::new());
         let _w1 = ScheduleWatch::start(store.clone(), job.id, turn.clone());
         let _w2 = ScheduleWatch::start(store.clone(), kept.id, other.clone());

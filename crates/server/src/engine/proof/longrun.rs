@@ -29,6 +29,7 @@ impl AskSurfaces for Owner {
         self.told.lock().unwrap().push(text.to_string());
     }
     fn release_run(&self, _run_id: &str, _allowed: bool) {}
+    fn expire_run(&self, _run_id: &str) {}
 }
 
 /// A text message: outside the employee's job, so it asks.
@@ -47,7 +48,7 @@ impl DynTool for Text {
     fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
         Some("sms")
     }
-    fn activity(&self, input: &serde_json::Value) -> String {
+    fn describe(&self, input: &serde_json::Value) -> String {
         format!("texting {}", input["to"].as_str().unwrap_or(""))
     }
     fn execute_dyn<'a>(

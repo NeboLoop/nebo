@@ -292,7 +292,7 @@ pub async fn sound(video: &Path) -> Result<Option<Vec<u8>>, String> {
 /// [`crate::sidecar::READING_LIMIT`]: the owner's message waits on it.
 pub async fn read(
     trace: ai::RequestTrace,
-    provider: Option<&dyn ai::Provider>,
+    eyes: Option<&crate::sidecar::Eyes>,
     video: Option<&Path>,
     file_id: &str,
     reference: &str,
@@ -321,7 +321,7 @@ pub async fn read(
             Ok(taken) => taken,
             Err(why) => return crate::sidecar::video_note(reference, None, &[], None, Some(&why)),
         };
-        let Some(provider) = provider else {
+        let Some(eyes) = eyes else {
             return crate::sidecar::video_note(
                 reference,
                 duration,
@@ -334,7 +334,7 @@ pub async fn read(
             .iter()
             .filter_map(|f| Some((f.at, Picture::from_bytes(&std::fs::read(&f.path).ok()?)?)))
             .collect();
-        let reading = crate::sidecar::watch(trace, provider, &pictures, duration, context).await;
+        let reading = crate::sidecar::watch(trace, eyes, &pictures, duration, context).await;
         crate::sidecar::video_note(reference, duration, &frames, reading.as_deref(), None)
     };
     match tokio::time::timeout(crate::sidecar::READING_LIMIT, watched).await {
@@ -535,10 +535,11 @@ mod tests {
                 let Some(video) = make_video(home, 5, true) else {
                     return;
                 };
-                let seeing = Seeing::default();
+                let seeing = std::sync::Arc::new(Seeing::default());
+                let eyes = crate::sidecar::Eyes { provider: seeing.clone(), model: String::new() };
                 let note = read(
                     ai::RequestTrace::new("video_read"),
-                    Some(&seeing),
+                    Some(&eyes),
                     Some(&video),
                     "file-1",
                     "recording.mp4",
@@ -589,10 +590,11 @@ mod tests {
                 NO_FFMPEG.with(|n| n.set(true));
                 let video = home.join("recording.mp4");
                 std::fs::write(&video, b"not looked at").unwrap();
-                let seeing = Seeing::default();
+                let seeing = std::sync::Arc::new(Seeing::default());
+                let eyes = crate::sidecar::Eyes { provider: seeing.clone(), model: String::new() };
                 let note = read(
                     ai::RequestTrace::new("video_read"),
-                    Some(&seeing),
+                    Some(&eyes),
                     Some(&video),
                     "file-2",
                     "recording.mp4",

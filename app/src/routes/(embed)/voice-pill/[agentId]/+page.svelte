@@ -33,7 +33,7 @@
 
 	const label = $derived(
 		call.status === 'connecting' ? $t('settingsPlugins.connecting')
-		: call.status === 'reconnecting' ? $t('voice.reconnecting')
+		: call.status === 'reconnecting' ? $t('common.couldNotConnect', { values: { name } })
 		: call.status === 'listening' ? (call.muted ? $t('chatInput.muted') : $t('chatInput.listening'))
 		: call.status === 'processing' ? $t('chatInput.thinking')
 		: call.status === 'speaking' ? $t('voice.isSpeaking', { values: { name } })
@@ -76,13 +76,13 @@
 		<button class="btn btn-primary btn-xs" onclick={consent}>{$t('voice.consentAccept')}</button>
 	{:else if mine}
 		<span class="grid place-items-center w-5 h-5 shrink-0">
-			{#if call.status === 'connecting' || call.status === 'reconnecting'}
+			{#if call.status === 'connecting'}
 				<span class="loading loading-spinner loading-xs text-base-content/50"></span>
 			{:else if call.status === 'speaking'}
 				<AudioLines class="w-4 h-4 text-primary" />
 			{:else if call.status === 'processing'}
 				<span class="loading loading-dots loading-xs text-primary"></span>
-			{:else if call.status === 'error'}
+			{:else if call.status === 'error' || call.status === 'reconnecting'}
 				<span class="text-error font-semibold">!</span>
 			{:else if call.muted}
 				<MicOff class="w-4 h-4 text-base-content/50" />
@@ -91,7 +91,7 @@
 			{/if}
 		</span>
 		<span class="flex-1 min-w-0 truncate text-sm font-medium">{label}</span>
-		{#if call.status === 'error'}
+		{#if call.status === 'error' || call.status === 'reconnecting'}
 			<button class="btn btn-ghost btn-xs" onclick={start}>{$t('voice.tryAgain')}</button>
 		{:else}
 			<button

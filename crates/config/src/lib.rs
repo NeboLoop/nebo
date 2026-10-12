@@ -5,7 +5,7 @@ mod logging;
 pub mod models;
 mod settings;
 
-pub use cli_detect::{AllCliStatuses, CliAvailability, CliStatus, detect_all_clis};
+pub use cli_detect::{AllCliStatuses, CliAvailability, CliStatus, detect_all_clis, ensure_full_path};
 pub use config::{
     memory_url, Config, RuntimeConfig, DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_MEMORY_URL,
 };

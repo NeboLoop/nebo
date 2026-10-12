@@ -50,8 +50,8 @@ pub(crate) async fn announce_ask(state: &AppState, session_key: &str, event: &ai
 /// stops, whichever turn started it, then the running turn. The colleagues
 /// it asked and is still waiting on stop with it, and the ones they asked,
 /// down the chain: nobody waits for their answers any more, so none wakes
-/// the stopped conversation. Returns whether a turn was running in any of
-/// them.
+/// the stopped conversation. A hand-off worked in any of them is recorded
+/// stopped. Returns whether a turn was running in any of them.
 pub(crate) async fn stop_session(
     store: &db::Store,
     helpers: &agent::harness::delegation::Helpers,
@@ -71,6 +71,7 @@ pub(crate) async fn stop_session(
         }
         helpers.stop_session(Some(&key));
         running |= runs.cancel_by_session(&key).await;
+        crate::handoff::stopped_into(store, &key);
         stopped.push(key);
     }
     running
@@ -251,6 +252,20 @@ pub(crate) fn plan_usage_warning(store: &db::Store, rl: &ai::RateLimitMeta) -> O
     first.then_some((percent, reset_at))
 }
 
+/// The purchased-credit balance to keep after a completion's rate-limit
+/// headers. Janus reads the balance only when credit pays for the request
+/// (active pool "credits"); on a request the plan, the free grant or a gift
+/// pays for, its `X-Budget-Credits-Cents` is 0, which is not the balance.
+/// The balance last known (from `/v1/usage` or a credit-paid request) is
+/// kept then; before one is known, the header's value.
+fn credits_after(known: Option<u64>, header: Option<u64>, active_pool: Option<&str>) -> u64 {
+    match (active_pool, header, known) {
+        (Some("credits"), Some(cents), _) => cents,
+        (_, _, Some(cents)) => cents,
+        (_, header, None) => header.unwrap_or(0),
+    }
+}
+
 fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
     if error.is_empty() {
         return;
@@ -290,6 +305,10 @@ pub struct ChatConfig {
     /// The entry this run came through; recorded with every permission
     /// decision.
     pub door: types::permissions::Door,
+    /// The mode the work that started this run holds it to
+    /// (`SeatRequest::narrow`): a hand-off or team post from a conversation
+    /// in a stricter mode. Set by the coworker rail only; `None` otherwise.
+    pub narrow: Option<types::permissions::Mode>,
     pub agent_id: String,
     pub cancel_token: tokio_util::sync::CancellationToken,
     /// Which lane to enqueue on (e.g., lanes::MAIN, lanes::COMM).
@@ -386,6 +405,16 @@ fn chat_model_for_session(harness: &agent::Harness, session_key: &str) -> Option
         .flatten()?
         .model
         .filter(|m| !m.is_empty())
+}
+
+/// The mode the owner picked for one conversation (`chats.permission_mode`),
+/// if he picked one. Resolves the session key to its active chat, as
+/// [`chat_model_for_session`] does, and is read fresh every turn: a change
+/// applies to the conversation's next turn.
+fn chat_mode_for_session(harness: &agent::Harness, session_key: &str) -> Option<types::permissions::Mode> {
+    let session_id = harness.sessions().resolve_session_id_by_key(session_key).ok()?;
+    let chat_id = harness.sessions().active_chat_id(&session_id);
+    harness.store().get_chat(&chat_id).ok().flatten()?.permission_mode
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -537,7 +566,14 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             user_id: config.user_id.clone(),
             origin: config.origin,
             door: config.door.clone(),
-            mode: None,
+            // The owner's own conversation runs in the mode he picked for it
+            // (the employee's own when none). Nothing else reads it: a
+            // schedule, a heartbeat or a workflow comes through its own door.
+            mode: match config.door {
+                types::permissions::Door::Chat => chat_mode_for_session(&state.harness, &config.session_key),
+                _ => None,
+            },
+            narrow: config.narrow,
             ceiling: None,
             cwd: run_cwd(config.cwd.as_deref()),
             seed_taint: config.seed_taint.clone(),
@@ -1025,18 +1061,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                             if let Some(ref tc) = event.tool_call {
-                                // Humanize once and feed every consumer: the desktop
-                                // broadcast (friendly label), the loop emission, and the
-                                // typing indicator — one tool-naming source of truth.
-                                let activity = spec_tools.labels(&tc.name, &tc.input).await.0;
-                                _run_handle.show_activity(&activity);
+                                // Every screen names the call by its structured name:
+                                // the desktop broadcast, the progress snapshot, the loop.
+                                let call = tools::humanize::call(&tc.name, &tc.input);
+                                _run_handle.show_call(&tc.name, &tc.input);
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
                                         "tool_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
-                                        "label": activity,
+                                        "call": call,
                                     ),
                                 );
                                 // Mirror the tool event to the loop so it shows live
@@ -1052,18 +1087,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "start",
                                         &tc.name,
                                         &tc.id,
-                                        activity.clone(),
+                                        String::new(),
                                         Some(request.as_str()),
                                         None,
-                                        None,
+                                        Some(&call),
                                     )
                                     .await;
                                 }
                                 if let Some(ref cm) = comm_manager {
                                     if let Some(ref cr) = comm_reply {
-                                        let _ = cm
-                                            .send_typing(&cr.conversation_id, true, Some(&activity))
-                                            .await;
+                                        let _ = cm.send_typing(&cr.conversation_id, true, None).await;
                                     }
                                 }
                             }
@@ -1079,11 +1112,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .as_ref()
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("");
-                            // Humanize once for both the desktop broadcast and the loop.
-                            let outcome = match event.tool_call.as_ref() {
-                                Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
-                                None => tools::humanize::raw_name(tool_name).1,
-                            };
+                            let call = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| tools::humanize::call(&tc.name, &tc.input));
                             // The files this call hands the owner, as app URLs: on
                             // the event so the chat shows each one under its row
                             // the moment the call ends, mid-run.
@@ -1095,7 +1127,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "tool_name": tool_name,
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
-                                    "outcome": outcome,
+                                    "call": call,
                                     "payload": event.payload,
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
                                     "files": &files,
@@ -1147,7 +1179,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     response,
                                     None,
                                     Some(event.error.is_some()),
-                                    Some(outcome),
+                                    call.as_ref(),
                                 )
                                 .await;
                             }
@@ -1200,7 +1232,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
-                                let summary = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                let summary = spec_tools.describe(&tc.name, &tc.input).await;
                                 let request = approvals_origin.stamp(serde_json::json!({
                                     "request_id": tc.id,
                                     "tool": tc.name,
@@ -1324,12 +1356,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     // The header carries no "included" flag
                                     // (a plan with no work reads 0%): keep what
                                     // /v1/usage said, or infer it from use.
-                                    let plan_included = janus_usage
+                                    let (known_included, known_credits) = janus_usage
                                         .read()
                                         .await
                                         .as_ref()
-                                        .is_some_and(|u| u.plan_included)
-                                        || rl.plan_used_percent.unwrap_or(0) > 0;
+                                        .map_or((false, None), |u| (u.plan_included, Some(u.budget_credits_cents)));
+                                    let plan_included =
+                                        known_included || rl.plan_used_percent.unwrap_or(0) > 0;
                                     let usage = crate::state::JanusUsage {
                                         session_limit_credits: rl
                                             .session_limit_credits
@@ -1364,7 +1397,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         budget_gift_available: rl
                                             .budget_gift_available
                                             .unwrap_or(0),
-                                        budget_credits_cents: rl.budget_credits_cents.unwrap_or(0),
+                                        budget_credits_cents: credits_after(
+                                            known_credits,
+                                            rl.budget_credits_cents,
+                                            rl.budget_active_pool.as_deref(),
+                                        ),
                                         budget_active_pool: rl
                                             .budget_active_pool
                                             .clone()
@@ -1803,6 +1840,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         cleanup_tools.close_browser_session(cleanup_id).await;
 
+        // A turn the owner stopped takes the schedules it made with it.
+        crate::background::turn_ended(&wake_state, &_run_handle, &cancel_token);
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
 
@@ -1840,6 +1879,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         channel: "web".to_string(),
         origin: Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -1885,6 +1925,7 @@ pub async fn run_chat_events(
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
     let harness = state.harness.clone();
     let cleanup_tools = state.tools.clone();
+    let end_state = state.clone();
 
     remember_input(state, &config);
     let sid = config.session_key.clone();
@@ -1960,6 +2001,8 @@ pub async fn run_chat_events(
             .map(|s| s.id);
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         cleanup_tools.close_browser_session(cleanup_id).await;
+        // A turn the owner stopped takes the schedules it made with it.
+        crate::background::turn_ended(&end_state, &_run_handle, &cancel_token);
         drop(_run_handle);
         Ok(())
     });
@@ -2732,7 +2775,7 @@ async fn send_comm_tool_activity(
     content: String,
     request: Option<&str>,
     is_error: Option<bool>,
-    outcome: Option<String>,
+    call: Option<&tools::humanize::Call>,
 ) {
     let mut metadata = HashMap::new();
     metadata.insert("phase".to_string(), phase.to_string());
@@ -2747,10 +2790,10 @@ async fn send_comm_tool_activity(
     if let Some(err) = is_error {
         metadata.insert("is_error".to_string(), err.to_string());
     }
-    // The result phase carries the past-tense outcome label — collapsed work
-    // lines report what WAS DONE ("Read a file"), not effort.
-    if let Some(outcome) = outcome {
-        metadata.insert("outcome".to_string(), outcome);
+    // Both phases carry the call's structured name (`tools::humanize::call`,
+    // as JSON in the string map): the loop words it as the local app does.
+    if let Some(call) = call {
+        metadata.insert("call".to_string(), serde_json::to_string(call).unwrap_or_default());
     }
     send_comm_msg(
         cfg,
@@ -2864,7 +2907,6 @@ mod tests {
         let helpers = agent::harness::delegation::Helpers::new(
             store.clone(),
             Arc::new(harness.sessions().clone()),
-            tools,
             Arc::new(harness.clone()),
             None,
             None,
@@ -3171,6 +3213,33 @@ mod session_key_contract_tests {
         assert_eq!(types::keyparser::agent_id_from_workflow_id(&wf), Some("a1"));
         assert_eq!(types::keyparser::agent_id_from_workflow_id("agent:"), None);
         assert_eq!(types::keyparser::agent_id_from_workflow_id("wf-123"), None);
+    }
+}
+
+#[cfg(test)]
+mod credits_after_tests {
+    use super::credits_after;
+
+    /// A plan-paid completion says 0 credits; the $100 bought is still
+    /// there (2026-10-09: the usage page showed $0 after a credit pack).
+    #[test]
+    fn a_plan_paid_request_keeps_the_known_balance() {
+        assert_eq!(credits_after(Some(10_000), Some(0), Some("plan")), 10_000);
+        assert_eq!(credits_after(Some(10_000), Some(0), Some("free")), 10_000);
+        assert_eq!(credits_after(Some(10_000), None, None), 10_000);
+    }
+
+    /// A credit-paid completion reads the balance: it is the news.
+    #[test]
+    fn a_credit_paid_request_sets_the_balance() {
+        assert_eq!(credits_after(Some(10_000), Some(8_120), Some("credits")), 8_120);
+        assert_eq!(credits_after(None, Some(8_120), Some("credits")), 8_120);
+    }
+
+    #[test]
+    fn with_no_balance_known_the_header_is_all_there_is() {
+        assert_eq!(credits_after(None, Some(0), Some("plan")), 0);
+        assert_eq!(credits_after(None, None, None), 0);
     }
 }
 

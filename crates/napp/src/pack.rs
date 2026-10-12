@@ -972,7 +972,8 @@ impl Pack {
 }
 
 /// Watch `packs_dir` and call `on_change` after a burst of file changes
-/// settles (same coalescing debounce as the agent loader).
+/// settles (same coalescing debounce as the agent loader), and once when
+/// the watch is in place, for whatever landed while it was being set up.
 ///
 /// It reports THAT the folder changed, never what it now holds: the reader
 /// scans, so what a reader records is the directory as it stands when it
@@ -1021,44 +1022,54 @@ pub fn watch_packs(
         };
 
         let debounce = std::time::Duration::from_secs(1);
-        while let Some(result) = rx.recv().await {
-            match result {
-                Ok(event) => {
-                    if !is_write(&event) {
+        // Setting up the watch is not instant (seconds, on a loaded
+        // machine), and nothing written to the folder before it is in place
+        // is ever reported: a pack copied in then was never parked. The
+        // boot's read ran before the watch began, so the first pass looks
+        // once without waiting for an event, the way an event would, and
+        // finds whatever landed meanwhile.
+        let mut look_now = true;
+        loop {
+            if !std::mem::take(&mut look_now) {
+                match rx.recv().await {
+                    None => return,
+                    Some(Ok(event)) if is_write(&event) => {}
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => {
+                        warn!(error = %e, "filesystem watch error (packs)");
                         continue;
                     }
-                    // A pack arrives as a burst: a folder copied in, a pack
-                    // written file by file. The first event is the first file,
-                    // and reading the disk on it parks half a pack — a company
-                    // layer missing the laws that had not landed yet. Wait for
-                    // the burst to stop before reading, and only then read.
-                    //
-                    // Only a WRITE says the burst is still going. Counting
-                    // every message here counted the reads too, and the loudest
-                    // reader is whoever is waiting for this rescan: the layers
-                    // screen scanning the folder on each `GET /layers`. On
-                    // Linux that is ~480 events a second, so the burst never
-                    // ended, every change ran the full 30 rounds, and the
-                    // rescan landed at 30.03s — just past the 30s the waiter
-                    // allowed it. (macOS has no read events, which is why this
-                    // only ever showed on the Linux CI runner.)
-                    for _ in 0..30 {
-                        tokio::time::sleep(debounce).await;
-                        let mut more = false;
-                        while let Ok(next) = rx.try_recv() {
-                            if next.as_ref().is_ok_and(is_write) {
-                                more = true;
-                            }
-                        }
-                        if !more {
-                            break;
-                        }
-                    }
-                    info!("packs directory changed");
-                    on_change();
                 }
-                Err(e) => warn!(error = %e, "filesystem watch error (packs)"),
             }
+            // A pack arrives as a burst: a folder copied in, a pack
+            // written file by file. The first event is the first file,
+            // and reading the disk on it parks half a pack — a company
+            // layer missing the laws that had not landed yet. Wait for
+            // the burst to stop before reading, and only then read.
+            //
+            // Only a WRITE says the burst is still going. Counting
+            // every message here counted the reads too, and the loudest
+            // reader is whoever is waiting for this rescan: the layers
+            // screen scanning the folder on each `GET /layers`. On
+            // Linux that is ~480 events a second, so the burst never
+            // ended, every change ran the full 30 rounds, and the
+            // rescan landed at 30.03s — just past the 30s the waiter
+            // allowed it. (macOS has no read events, which is why this
+            // only ever showed on the Linux CI runner.)
+            for _ in 0..30 {
+                tokio::time::sleep(debounce).await;
+                let mut more = false;
+                while let Ok(next) = rx.try_recv() {
+                    if next.as_ref().is_ok_and(is_write) {
+                        more = true;
+                    }
+                }
+                if !more {
+                    break;
+                }
+            }
+            info!("packs directory changed");
+            on_change();
         }
     })
 }
@@ -1443,5 +1454,21 @@ mod tests {
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::write(staging.join("COMPANY.md"), "---\ncompany: Acme\n---\n\n# Acme\n").unwrap();
         assert!(scan_packs(tmp.path()).is_empty());
+    }
+
+    /// A pack copied in after the boot's read and before the folder watch is
+    /// in place is reported anyway: the watch looks once when it starts.
+    /// Nothing is written after `watch_packs`, so no event ever names it.
+    #[tokio::test]
+    async fn a_pack_written_before_the_watch_is_in_place_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        sample_pack(tmp.path(), "sample-trade");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = watch_packs(tmp.path().to_path_buf(), move || {
+            let _ = tx.send(());
+        });
+        let reported = tokio::time::timeout(std::time::Duration::from_secs(40), rx.recv()).await;
+        handle.abort();
+        assert!(matches!(reported, Ok(Some(()))), "the watch never reported the pack written before it");
     }
 }

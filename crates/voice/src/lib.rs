@@ -1,16 +1,20 @@
-//! Voice — speech-to-speech conversation via the xAI Grok realtime API.
+//! Voice — speech-to-speech conversation via the xAI Grok realtime API, and
+//! dictation through NeboAI's streaming transcription.
 //!
 //! The local pipeline (whisper STT cascade + Kokoro TTS) was removed:
 //! conversation was structurally too slow as a serialized STT → LLM → TTS
-//! cascade, and dictation is covered natively — and on-device — by the OS
-//! (macOS dictation, Win+H) typing straight into the composer. A local
-//! whisper pathway was a worse competing implementation of both.
+//! cascade. Desktop dictation is the OS's own (macOS dictation, Win+H)
+//! typing straight into the composer; the phone app dictates through the
+//! bot (`dictation`), which streams its microphone to the metered `/v1/stt`
+//! relay and hands back live, punctuated text with no time limit per request.
 //!
-//! What remains is the realtime protocol client (`realtime`) and the shared
+//! What remains is the realtime protocol client (`realtime`), the shared
 //! event vocabulary (`conversation`) consumed by the server's
-//! `/ws/voice/conversation` relay.
+//! `/ws/voice/conversation` relay, and the dictation relay (`dictation`)
+//! behind `/ws/voice/dictation`.
 
 pub mod conversation;
+pub mod dictation;
 pub mod realtime;
 
 #[derive(Debug, thiserror::Error)]

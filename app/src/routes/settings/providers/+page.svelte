@@ -43,10 +43,6 @@
   let testResult = $state<{ id: string; success: boolean; message: string } | null>(null);
   let discovering = $state(false);
 
-  // Opened remotely (phone, or the web console through NeboAI's tunnel): a
-  // key typed here would cross NeboAI on its way, so keys are added only on
-  // the computer running Nebo. The server says which this is.
-  let keysLocalOnly = $state(false);
 
   const providerOptions = $derived([
     { value: 'anthropic', label: $t('settingsProviders.providerOptions.anthropic') },
@@ -145,7 +141,6 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listProviders();
       providers = resp.profiles || [];
-      keysLocalOnly = !!resp.keysLocalOnly;
     } catch (err: any) {
       error = err?.message || $t('settingsProviders.loadFailed');
     } finally { loading = false; }
@@ -340,8 +335,6 @@
   async function saveProvider() {
     if (!form.name.trim()) { formError = $t('settingsProviders.nameRequired'); return; }
     if (needsBaseUrl(form.provider) && !form.baseUrl.trim()) { formError = $t('settingsProviders.baseUrlRequired'); return; }
-    if (form.apiKey && keysLocalOnly) { formError = $t('settingsProviders.keysLocalOnly'); return; }
-    if (!editingId && keysLocalOnly) { formError = $t('settingsProviders.keysLocalOnly'); return; }
     if (!editingId && !form.apiKey) { formError = $t('settingsProviders.apiKeyRequired'); return; }
 
     isSaving = true;
@@ -377,7 +370,7 @@
   // --- Browse models ---
   const CONTEXT_STEPS = [32_000, 128_000, 200_000, 1_000_000];
   let browse = $state<{
-    profile: AuthProfile; loading: boolean; error: string; total: number; refreshedAt?: number;
+    profile: AuthProfile; loading: boolean; error: string; total: number; refreshedAt?: number | null;
     models: CatalogModel[]; selected: string[]; adding: boolean;
   } | null>(null);
   let bSearch = $state('');
@@ -786,17 +779,13 @@
             <input id="base-url" type="url" bind:value={form.baseUrl} placeholder={$t('settingsProviders.compatibleUrlPlaceholder')} class="input input-bordered input-sm w-full font-mono" />
           </div>
         {/if}
-        {#if keysLocalOnly}
-          <Alert type="info">{$t('settingsProviders.keysLocalOnly')}</Alert>
-        {:else}
-          <div>
-            <label class="text-xs font-medium text-base-content/70 mb-1 block" for="api-key">{$t('onboarding.apiKey.apiKeyLabel')}</label>
-            <input id="api-key" type="password" bind:value={form.apiKey} placeholder={$t('settingsProviders.apiKeyPlaceholder')} class="input input-bordered input-sm w-full font-mono" />
-            {#if editingId}
-              <p class="text-xs text-base-content/40 mt-1">{$t('settingsProviders.apiKeyKeepHint')}</p>
-            {/if}
-          </div>
-        {/if}
+        <div>
+          <label class="text-xs font-medium text-base-content/70 mb-1 block" for="api-key">{$t('onboarding.apiKey.apiKeyLabel')}</label>
+          <input id="api-key" type="password" bind:value={form.apiKey} placeholder={$t('settingsProviders.apiKeyPlaceholder')} class="input input-bordered input-sm w-full font-mono" />
+          {#if editingId}
+            <p class="text-xs text-base-content/40 mt-1">{$t('settingsProviders.apiKeyKeepHint')}</p>
+          {/if}
+        </div>
 
         {#if !editingId}
           <div class="flex flex-col gap-2">
@@ -852,7 +841,7 @@
       </div>
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10 shrink-0">
         <button type="button" class="btn btn-ghost btn-sm" onclick={closeForm}>{$t('common.cancel')}</button>
-        <button type="button" class="btn btn-primary btn-sm" onclick={saveProvider} disabled={isSaving || (!editingId && keysLocalOnly)}>
+        <button type="button" class="btn btn-primary btn-sm" onclick={saveProvider} disabled={isSaving}>
           {#if isSaving}<Spinner size={14} />{/if}
           {editingId ? $t('common.save') : $t('settingsProviders.addProvider')}
         </button>

@@ -8,6 +8,10 @@ use crate::state::AppState;
 /// the generated client is emitted against them).
 pub fn routes() -> Router<AppState> {
     Router::new()
+        // Hand-offs between employees: the trace of who passed what to whom.
+        .route("/handoffs", axum::routing::get(handlers::handoffs::list_handoffs))
+        .route("/handoffs/{id}", axum::routing::get(handlers::handoffs::get_handoff))
+        .route("/handoffs/{id}/stop", axum::routing::post(handlers::handoffs::stop_handoff))
         .route(
             "/teams",
             axum::routing::get(handlers::teams::list_teams).post(handlers::teams::open_team),

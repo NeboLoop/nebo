@@ -144,6 +144,25 @@ fn step_task(
     (objective, instruction)
 }
 
+/// `text` with one "Not sent: …" line per delivery in `messages` (the
+/// turn's stored conversation) that failed and was never made good. An
+/// empty output stays empty: it claims nothing, and it is what ends a
+/// branch.
+fn with_failed_deliveries(text: String, messages: &[db::models::ChatMessage]) -> String {
+    if text.trim().is_empty() {
+        return text;
+    }
+    let parse = |s: Option<&String>| s.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let parsed: Vec<(Option<serde_json::Value>, Option<serde_json::Value>)> =
+        messages.iter().map(|m| (parse(m.tool_calls.as_ref()), parse(m.tool_results.as_ref()))).collect();
+    let failed = super::turn_end::failed_deliveries(parsed.iter().map(|(c, r)| (c.as_ref(), r.as_ref())));
+    if failed.is_empty() {
+        return text;
+    }
+    let lines: Vec<String> = failed.iter().map(super::turn_end::FailedDelivery::line).collect();
+    format!("{}\n\n{}", text.trim_end(), lines.join("\n"))
+}
+
 /// The workflow engine's loop: each activity turn runs on the harness.
 pub struct WorkflowTurns {
     harness: Harness,
@@ -234,7 +253,6 @@ impl WorkflowTurns {
             is_error: result.is_error,
             image_url: None,
             payload: None,
-            outcome: None,
             duration_ms: None,
             loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
         };
@@ -348,19 +366,27 @@ impl ActivityLoop for WorkflowTurns {
         });
 
         let cancel = turn.cancel.clone().unwrap_or_default();
+        // A run started from a conversation in a stricter mode is held to
+        // it (its row says so); every other run carries nothing.
+        let narrow = self.harness.store.workflow_run_narrow(&turn.trace.run_id).unwrap_or_else(|e| {
+            warn!(run_id = %turn.trace.run_id, error = %e, "workflow: the mode the run carries is unreadable");
+            None
+        });
         let (objective, instruction) = step_task(turn.workflow_name, turn.activity, turn.step_index, &turn.seed_messages);
         let req = TurnRequest {
             session_key: key,
             // The seed carries the work order.
             input: TurnInput::None,
-            // The activity runs under its employee's own grant, through the
-            // one permission check: an ask parks the run for the owner.
+            // The activity runs under its employee's own grant (no looser
+            // than what the run carries), through the one permission check:
+            // an ask parks the run for the owner.
             seat: SeatRequest {
                 agent_id: turn.agent_id.to_string(),
                 user_id: turn.user_id.to_string(),
                 origin: tools::Origin::Workflow,
                 door: types::permissions::Door::Workflow,
                 mode: None,
+                narrow,
                 ceiling: None,
                 cwd: None,
                 seed_taint: Vec::new(),
@@ -400,6 +426,13 @@ impl ActivityLoop for WorkflowTurns {
             progress: None,
         };
 
+        // The model turns this turn takes are the assistant rows it adds to
+        // its scratch conversation: what it spends of the run's budget.
+        let assistant_rows = |id: &str| {
+            sessions.get_messages(id).unwrap_or_default().iter().filter(|m| m.role == "assistant").count() as u32
+        };
+        let rows_before = assistant_rows(&session_id);
+        let step = turn.step_index.and_then(|i| usize::try_from(i).ok()).map(|i| (i + 1, turn.activity.steps.len()));
         let mut rx = self
             .harness
             .start_turn(req)
@@ -486,7 +519,11 @@ impl ActivityLoop for WorkflowTurns {
                 });
             }
             super::delegation::collect::STOP_MAX_STEPS => {
-                return Err(WorkflowError::MaxIterations(turn.activity.id.clone()));
+                return Err(WorkflowError::MaxIterations {
+                    activity_id: turn.activity.id.clone(),
+                    step,
+                    turns: turn.max_iterations,
+                });
             }
             _ => {}
         }
@@ -500,6 +537,10 @@ impl ActivityLoop for WorkflowTurns {
         if text.trim().is_empty() {
             text = self.synthesize_output(&session_id);
         }
+        // What the step says it sent is not the record: each delivery that
+        // didn't go through is stated in its output, whatever the model
+        // wrote (bake-off 2026-10-10: "has been sent" after a refusal).
+        text = with_failed_deliveries(text, &self.harness.sessions.get_messages(&session_id).unwrap_or_default());
         info!(
             activity = %turn.activity.id,
             run_id = %turn.trace.run_id,
@@ -511,6 +552,7 @@ impl ActivityLoop for WorkflowTurns {
             total_tokens: total_in + total_out,
             output_tokens: total_out,
             tainted,
+            steps: assistant_rows(&session_id).saturating_sub(rows_before).max(1),
         })
     }
 
@@ -543,6 +585,48 @@ mod tests {
 
     fn assistant(text: &str) -> ai::Message {
         ai::Message { role: "assistant".into(), content: text.into(), ..Default::default() }
+    }
+
+    fn row(role: &str, calls: Option<serde_json::Value>, results: Option<serde_json::Value>, content: &str) -> db::models::ChatMessage {
+        db::models::ChatMessage {
+            id: String::new(),
+            chat_id: String::new(),
+            role: role.into(),
+            content: content.into(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: calls.map(|c| c.to_string()),
+            tool_results: results.map(|r| r.to_string()),
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// Bake-off 2026-10-10: the step's send_message was refused and it
+    /// reported the forecast "sent to the Sales Floor Manager". Its output
+    /// now says it was not sent, from the stored calls; a step that sent
+    /// nothing, or whose send went through, is left as it is.
+    #[test]
+    fn a_refused_send_is_stated_in_the_steps_output() {
+        let stored = [
+            row("assistant", Some(serde_json::json!([{"id": "c1", "name": "send_message", "input": {"to": "Sales Floor Manager", "message": "forecast"}}])), None, ""),
+            row(
+                "tool",
+                None,
+                Some(serde_json::json!([{"tool_call_id": "c1", "content": "Not sent: you have messaged Sales Floor Manager 6 times in the last five minutes.\nFinish with what you have.", "is_error": true}])),
+                "",
+            ),
+            row("assistant", None, None, "The forecast has been sent to the Sales Floor Manager."),
+        ];
+        let out = super::with_failed_deliveries("The forecast has been sent to the Sales Floor Manager.".into(), &stored);
+        assert_eq!(
+            out,
+            "The forecast has been sent to the Sales Floor Manager.\n\nNot sent: send_message to Sales Floor Manager — \
+             Not sent: you have messaged Sales Floor Manager 6 times in the last five minutes."
+        );
+        assert_eq!(super::with_failed_deliveries(String::new(), &stored), "", "an empty output stays empty");
+        assert_eq!(super::with_failed_deliveries("Done.".into(), &stored[2..]), "Done.");
     }
 
     #[test]

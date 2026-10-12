@@ -135,8 +135,8 @@ create_employee(draft_id: "<the id it returned>")
   pull-down reload, never on a canvas); `voice: true` (the chat's dictate
   and voice buttons in the mobile app's bar, for an app run by talking).
 - `isolated: true` only for a threaded engine export (games.md).
-- `share_menu`: the header's Share button, up to 6 `{label, say}`: the app's
-  own ways to share or export its work, each `say` sent into its chat.
+- `share_menu`: the header's Share button, up to 6 `{label, say}`, ways to
+  share or export the work, each `say` sent to its chat (link: sdk-more.md).
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt).
 
@@ -309,7 +309,7 @@ the top level (`NeboAppSDK.identity` is `NeboAppSDK.nebo.identity`), but two
 are renamed there so they don't shadow the browser's: `nebo.fetch` is
 `NeboAppSDK.neboFetch`, `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
 The full top-level list is `nebo`, `identity`, `storage`, `agents`,
-`janus`, `decide`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
+`janus`, `decide`, `share`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
 `NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
 `setBaseUrl`. The canonical address is `/sdk/nebo.global.js`; from
 `ui/index.html` it is loaded as `../../../sdk/nebo.global.js`.

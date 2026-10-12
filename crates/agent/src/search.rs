@@ -74,13 +74,6 @@ pub async fn hybrid_search(
         (0.0, 1.0)
     };
 
-    let mut merged: HashMap<String, SearchResult> = HashMap::new();
-    // Strongest UNWEIGHTED component per candidate (raw cosine or raw
-    // normalized BM25). The relevance FILTER runs on this; the fused weighted
-    // score only ORDERS. Filtering on the fused score structurally floored
-    // any memory missing one leg — an unembedded memory tops out at
-    // text_weight (0.2 on long queries) no matter how exact its text match.
-    let mut strength: HashMap<String, f64> = HashMap::new();
     let fts_limit = (config.limit * 3) as i64;
 
     // Every leg searches the whole read-scope chain: the run's own scope and
@@ -88,71 +81,15 @@ pub async fn hybrid_search(
     // owner scope every employee on this Nebo shares) as well as its own.
     let scope_chain = crate::memory::memory_scope_chain(user_id);
 
-    // 1. FTS5 on memories table.
-    if let Ok(fts_results) = store.search_memories_fts(query, &scope_chain, fts_limit) {
-        for (memory_id, rank) in &fts_results {
-            let raw = normalize_bm25(*rank);
-            let norm_score = raw * text_weight;
-            if let Ok(Some(mem)) = store.get_memory(*memory_id) {
-                let merge_key = format!("mem:{}", memory_id);
-                let st = strength.entry(merge_key.clone()).or_insert(0.0);
-                *st = st.max(raw);
-                let entry = merged.entry(merge_key).or_insert_with(|| SearchResult {
-                    memory_id: Some(*memory_id),
-                    chunk_id: None,
-                    key: mem.key.clone(),
-                    value: mem.value.clone(),
-                    namespace: mem.namespace.clone(),
-                    scope: mem.user_id.clone(),
-                    score: 0.0,
-                    source: "fts_memory".to_string(),
-                });
-                entry.score += norm_score;
-            }
-        }
-    }
-
-    // 2. FTS5 on memory_chunks table (0.6x dampening for session chunks)
-    for scope in &scope_chain {
-        let Ok(chunk_results) = store.search_chunks_fts(query, scope, fts_limit) else {
-            continue;
-        };
-        for (chunk_id, rank) in &chunk_results {
-            if let Ok(Some((_, memory_id, text, source))) = store.get_memory_chunk(*chunk_id) {
-                let dampening = if source.as_deref() == Some("session") {
-                    0.6
-                } else {
-                    1.0
-                };
-                let raw = normalize_bm25(*rank) * dampening;
-                let norm_score = raw * text_weight;
-
-                // Merge by memory_id if available, else by chunk_id
-                let merge_key = if let Some(mid) = memory_id {
-                    format!("mem:{}", mid)
-                } else {
-                    format!("chunk:{}", chunk_id)
-                };
-                let st = strength.entry(merge_key.clone()).or_insert(0.0);
-                *st = st.max(raw);
-
-                let entry = merged.entry(merge_key).or_insert_with(|| {
-                    let (key, value, namespace, scope) = chunk_parent(store, memory_id, &text, scope);
-                    SearchResult {
-                        memory_id,
-                        chunk_id: Some(*chunk_id),
-                        key,
-                        value,
-                        namespace,
-                        scope,
-                        score: 0.0,
-                        source: "fts_chunk".to_string(),
-                    }
-                });
-                entry.score += norm_score;
-            }
-        }
-    }
+    // 1–2. The FTS legs, off the runtime workers: they are blocking SQLite
+    // reads, and on a large memory store a recall's match held a request
+    // worker for seconds (2026-10-09).
+    let (mut merged, mut strength) = {
+        let (store, query, scope_chain) = (store.clone(), query.to_string(), scope_chain.clone());
+        tokio::task::spawn_blocking(move || fts_legs(&store, &query, &scope_chain, fts_limit, text_weight))
+            .await
+            .unwrap_or_default()
+    };
 
     // 3. Vector search (when the query embedded above)
     if let Some(query_vec) = &query_vec {
@@ -211,6 +148,94 @@ pub async fn hybrid_search(
     });
     results.truncate(config.limit);
     results
+}
+
+/// The text legs of [`hybrid_search`]: FTS5 over the memories, then over the
+/// memory chunks (0.6x dampening for session chunks), in every scope of the
+/// read chain. Returns the merged hits and each one's strongest unweighted
+/// component. Blocks: run it from `spawn_blocking`.
+fn fts_legs(
+    store: &Store,
+    query: &str,
+    scope_chain: &[String],
+    fts_limit: i64,
+    text_weight: f64,
+) -> (HashMap<String, SearchResult>, HashMap<String, f64>) {
+    let mut merged: HashMap<String, SearchResult> = HashMap::new();
+    // Strongest UNWEIGHTED component per candidate (raw cosine or raw
+    // normalized BM25). The relevance FILTER runs on this; the fused weighted
+    // score only ORDERS. Filtering on the fused score structurally floored
+    // any memory missing one leg — an unembedded memory tops out at
+    // text_weight (0.2 on long queries) no matter how exact its text match.
+    let mut strength: HashMap<String, f64> = HashMap::new();
+
+    // 1. FTS5 on memories table.
+    if let Ok(fts_results) = store.search_memories_fts(query, scope_chain, fts_limit) {
+        for (memory_id, rank) in &fts_results {
+            let raw = normalize_bm25(*rank);
+            let norm_score = raw * text_weight;
+            if let Ok(Some(mem)) = store.get_memory(*memory_id) {
+                let merge_key = format!("mem:{}", memory_id);
+                let st = strength.entry(merge_key.clone()).or_insert(0.0);
+                *st = st.max(raw);
+                let entry = merged.entry(merge_key).or_insert_with(|| SearchResult {
+                    memory_id: Some(*memory_id),
+                    chunk_id: None,
+                    key: mem.key.clone(),
+                    value: mem.value.clone(),
+                    namespace: mem.namespace.clone(),
+                    scope: mem.user_id.clone(),
+                    score: 0.0,
+                    source: "fts_memory".to_string(),
+                });
+                entry.score += norm_score;
+            }
+        }
+    }
+
+    // 2. FTS5 on memory_chunks table (0.6x dampening for session chunks)
+    for scope in scope_chain {
+        let Ok(chunk_results) = store.search_chunks_fts(query, scope, fts_limit) else {
+            continue;
+        };
+        for (chunk_id, rank) in &chunk_results {
+            if let Ok(Some((_, memory_id, text, source))) = store.get_memory_chunk(*chunk_id) {
+                let dampening = if source.as_deref() == Some("session") {
+                    0.6
+                } else {
+                    1.0
+                };
+                let raw = normalize_bm25(*rank) * dampening;
+                let norm_score = raw * text_weight;
+
+                // Merge by memory_id if available, else by chunk_id
+                let merge_key = if let Some(mid) = memory_id {
+                    format!("mem:{}", mid)
+                } else {
+                    format!("chunk:{}", chunk_id)
+                };
+                let st = strength.entry(merge_key.clone()).or_insert(0.0);
+                *st = st.max(raw);
+
+                let entry = merged.entry(merge_key).or_insert_with(|| {
+                    let (key, value, namespace, scope) = chunk_parent(store, memory_id, &text, scope);
+                    SearchResult {
+                        memory_id,
+                        chunk_id: Some(*chunk_id),
+                        key,
+                        value,
+                        namespace,
+                        scope,
+                        score: 0.0,
+                        source: "fts_chunk".to_string(),
+                    }
+                });
+                entry.score += norm_score;
+            }
+        }
+    }
+
+    (merged, strength)
 }
 
 /// Cosine similarity between two f32 vectors.
@@ -534,6 +559,20 @@ fn adaptive_weights(class: &QueryClass) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text legs run on a blocking thread and still find what the scope
+    /// holds, and only what it holds.
+    #[tokio::test(flavor = "current_thread")]
+    async fn text_legs_find_the_scopes_matches_off_the_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
+        let mine = store.insert_memory_chunk(None, 0, "the quarterly invoice reconciliation", "session", "", 0, 0, "", "owner").unwrap();
+        store.insert_memory_chunk(None, 0, "another invoice", "session", "", 0, 0, "", "elsewhere").unwrap();
+        let config = SearchConfig { limit: 10, min_score: 0.0 };
+        let found = hybrid_search(&store, None, "invoice", "owner", &config, None).await;
+        let chunks: Vec<Option<i64>> = found.iter().map(|r| r.chunk_id).collect();
+        assert_eq!(chunks, vec![Some(mine)]);
+    }
 
     #[test]
     fn test_cosine_similarity_identical() {

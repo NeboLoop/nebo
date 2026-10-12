@@ -70,7 +70,7 @@ export function runsOn(value: string | undefined, choices: PackChoice[]): RunsOn
 	if (hit) return { label: choiceProviderLabel(hit), modelId: hit.modelId, local: hit.local };
 	const { kind, modelId } = parseModelString(value);
 	const sameKind = choices.find((c) => parseModelString(c.value).kind === kind);
-	return { label: sameKind?.provider ?? kind, modelId, local: sameKind?.local ?? false };
+	return { label: sameKind?.provider ?? (kind === 'janus' ? 'Nebo AI' : kind), modelId, local: sameKind?.local ?? false };
 }
 
 /**

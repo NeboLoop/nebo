@@ -264,9 +264,10 @@ pub struct DecideEndpoint {
 pub struct DecideClient {
     url: String,
     auth: Box<dyn Fn() -> Option<Bearer> + Send + Sync>,
-    /// Resolved on every call, before Janus: `Some` sends the decision to
-    /// the owner's endpoint instead. Cheap and local (no network).
-    endpoint: Box<dyn Fn() -> Option<DecideEndpoint> + Send + Sync>,
+    /// Resolved on every call from what the call is for (its trace names
+    /// the employee), before Janus: `Some` sends the decision to the owner's
+    /// endpoint instead. Cheap and local (no network).
+    endpoint: Box<dyn Fn(&RequestTrace) -> Option<DecideEndpoint> + Send + Sync>,
     http: reqwest::Client,
 }
 
@@ -283,14 +284,15 @@ impl DecideClient {
         Self {
             url: format!("{}/v1/systemone", janus_url.trim_end_matches('/')),
             auth: Box::new(auth),
-            endpoint: Box::new(|| None),
+            endpoint: Box::new(|_| None),
             http: crate::http::request_client(),
         }
     }
 
-    /// Where the owner's pack sends decisions, resolved per call; `None`
-    /// keeps the call on Janus. Without it every call goes to Janus.
-    pub fn with_endpoint(mut self, endpoint: impl Fn() -> Option<DecideEndpoint> + Send + Sync + 'static) -> Self {
+    /// Where the owner's pack sends decisions, resolved per call from the
+    /// call's trace; `None` keeps the call on Janus. Without it every call
+    /// goes to Janus.
+    pub fn with_endpoint(mut self, endpoint: impl Fn(&RequestTrace) -> Option<DecideEndpoint> + Send + Sync + 'static) -> Self {
         self.endpoint = Box::new(endpoint);
         self
     }
@@ -305,7 +307,7 @@ impl DecideClient {
         state: &serde_json::Value,
         questions: &BTreeMap<&str, Question>,
     ) -> Result<Decision, ProviderError> {
-        if let Some(endpoint) = (self.endpoint)() {
+        if let Some(endpoint) = (self.endpoint)(trace) {
             // The owner pointed this slot at his own endpoint: a failure there
             // fails to the caller's safe default like a Janus failure, never
             // a retry on Janus (that would bill Nebo for his slot).
@@ -524,7 +526,7 @@ mod tests {
         assert_eq!(systemone_url(" https://api.typesafe.ai/ "), "https://api.typesafe.ai/v1/systemone");
         assert_eq!(systemone_url("https://clef.example/v1/"), "https://clef.example/v1/systemone");
         let c = DecideClient::new("https://janus.example.com/", || None);
-        assert!((c.endpoint)().is_none(), "without a resolver every call is Janus's");
+        assert!((c.endpoint)(&RequestTrace::new("test")).is_none(), "without a resolver every call is Janus's");
     }
 
     /// A one-shot HTTP stub: answers every request with `status` and `body`
@@ -581,7 +583,7 @@ mod tests {
         let (owner, owner_seen) = stub(200, ANSWER).await;
         let (janus, janus_seen) = stub(200, ANSWER).await;
         let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
-            .with_endpoint(move || {
+            .with_endpoint(move |_| {
                 Some(DecideEndpoint { base_url: owner.clone(), key: "owner-key".into(), model: "jev-owner".into(), profile_id: "p1".into() })
             });
         let d = client
@@ -606,7 +608,7 @@ mod tests {
         let (owner, owner_seen) = stub(401, r#"{"error":{"message":"bad key"}}"#).await;
         let (janus, janus_seen) = stub(200, ANSWER).await;
         let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: None }))
-            .with_endpoint(move || {
+            .with_endpoint(move |_| {
                 Some(DecideEndpoint { base_url: owner.clone(), key: "stale".into(), model: "jev-latest".into(), profile_id: "p1".into() })
             });
         let err = client
@@ -622,7 +624,7 @@ mod tests {
     async fn no_owner_endpoint_keeps_the_janus_path() {
         let (janus, janus_seen) = stub(200, ANSWER).await;
         let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
-            .with_endpoint(|| None);
+            .with_endpoint(|_| None);
         client
             .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
             .await
