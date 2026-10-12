@@ -3,6 +3,7 @@ pub mod agent_loader;
 pub mod app_data;
 pub mod app_view;
 pub mod child_guard;
+pub mod condition;
 pub mod hooks;
 pub mod manifest;
 pub mod napp;
@@ -23,6 +24,7 @@ pub mod test_signing;
 pub mod trash;
 pub mod user_agent;
 pub mod version;
+pub mod workflow_check;
 
 pub use agent_loader::{AgentFsEvent, AgentLoader, AgentSource, LoadedAgent};
 pub use hooks::{HookCaller, HookDispatcher, HookType, register_plugin_hooks};
