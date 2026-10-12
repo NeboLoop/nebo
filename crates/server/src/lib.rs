@@ -7,6 +7,7 @@ pub mod app_lifecycle;
 pub mod backup_ship;
 mod artifact_updates;
 pub mod background;
+mod byok_models;
 mod revocation;
 mod channel_dispatch;
 pub mod chat_dispatch;
@@ -308,6 +309,12 @@ fn jwt_claim(token: &str, claim: &str) -> Option<String> {
     v.get(claim)?.as_str().map(|s| s.to_string())
 }
 
+/// Nebo's own catalog, as built in: Nebo AI's boot floor, never the
+/// owner's file.
+fn embedded_models() -> config::ModelsConfig {
+    serde_yaml::from_str(include_str!("../../config/src/models.yaml")).expect("the embedded models.yaml parses")
+}
+
 /// Seed the provider_models table from the embedded models.yaml catalog.
 /// - New models are inserted with is_active=1
 /// - Existing models get metadata updated (pricing, capabilities, context_window)
@@ -470,7 +477,9 @@ fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize
 /// otherwise map an unknown "janus/nebo-1-pro" to the nearest known name)
 /// needs them injected separately.
 /// Every connection's own models (`<kind>@<profile>` rows: typed by hand or
-/// picked while browsing), so a turn may send to them.
+/// picked while browsing), so a turn may send to them. The first active
+/// connection of each kind also answers to the bare kind (`anthropic/…`), as
+/// `build_providers` loads it, so its models are known under that name too.
 /// ponytail: a connection whose last model was removed keeps its stale list
 /// until restart; clear per key if that ever matters.
 pub fn inject_connection_models(store: &db::Store, selector: &agent::ModelSelector) {
@@ -480,44 +489,53 @@ pub fn inject_connection_models(store: &db::Store, selector: &agent::ModelSelect
     for key in keys {
         inject_db_models(store, selector, &key);
     }
+    let mut kinds = std::collections::BTreeSet::new();
+    for profile in store.list_auth_profiles().unwrap_or_default() {
+        if profile.is_active.unwrap_or(0) == 0 || !kinds.insert(profile.provider.clone()) {
+            continue;
+        }
+        let models = db_model_infos(store, &handlers::connections::connection_key(&profile));
+        if !models.is_empty() {
+            selector.inject_provider_models(&profile.provider, models);
+        }
+    }
 }
 
 pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, provider: &str) {
-    if let Ok(db_models) = store.list_active_provider_models(provider) {
-        if !db_models.is_empty() {
-            let infos: Vec<agent::selector::ModelInfo> = db_models
-                .iter()
-                .map(|m| agent::selector::ModelInfo {
-                    id: m.model_id.clone(),
-                    display_name: m.display_name.clone(),
-                    // Unknown = 0: the selector assumes its one default.
-                    context_window: m.context_window.unwrap_or(0) as i32,
-                    input_price: 0.0,
-                    output_price: 0.0,
-                    cached_input_price: 0.0,
-                    capabilities: {
-                        let mut caps: Vec<String> = m
-                            .capabilities
-                            .as_ref()
-                            .and_then(|c| serde_json::from_str(c).ok())
-                            .unwrap_or_default();
-                        if m.model_kind == "decision" {
-                            caps.push("decision".into());
-                        }
-                        caps
-                    },
-                    kind: m
-                        .kind
-                        .as_ref()
-                        .and_then(|k| serde_json::from_str(k).ok())
-                        .unwrap_or_default(),
-                    preferred: false,
-                    active: true,
-                })
-                .collect();
-            selector.inject_provider_models(provider, infos);
-        }
+    let infos = db_model_infos(store, provider);
+    if !infos.is_empty() {
+        selector.inject_provider_models(provider, infos);
     }
+}
+
+/// The active models the DB holds under `provider`, as the selector knows a
+/// model.
+fn db_model_infos(store: &db::Store, provider: &str) -> Vec<agent::selector::ModelInfo> {
+    store
+        .list_active_provider_models(provider)
+        .unwrap_or_default()
+        .iter()
+        .map(|m| agent::selector::ModelInfo {
+            id: m.model_id.clone(),
+            display_name: m.display_name.clone(),
+            // Unknown = 0: the selector assumes its one default.
+            context_window: m.context_window.unwrap_or(0) as i32,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: {
+                let mut caps: Vec<String> =
+                    m.capabilities.as_ref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+                if m.model_kind == "decision" {
+                    caps.push("decision".into());
+                }
+                caps
+            },
+            kind: m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default(),
+            preferred: false,
+            active: true,
+        })
+        .collect()
 }
 
 /// Build a map of "provider/model_id" → is_active from the DB provider_models table.
@@ -716,8 +734,6 @@ pub fn build_providers(
         }
     };
 
-    let models_cfg = config::ModelsConfig::load();
-
     let mut providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
     let mut gateway_providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
     for profile in &profiles {
@@ -726,30 +742,21 @@ pub fn build_providers(
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
             "anthropic" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("anthropic")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::AnthropicProvider::new(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             "openai" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("openai")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::OpenAIProvider::new(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             "deepseek" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("deepseek")
-                    .unwrap_or_default();
                 let mut p = ai::OpenAIProvider::with_base_url(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                     profile
                         .base_url
                         .clone()
@@ -759,12 +766,9 @@ pub fn build_providers(
                 Some(Arc::new(p))
             }
             "google" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("google")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::GeminiProvider::new(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             // OpenRouter speaks the OpenAI format at its own fixed URL.
@@ -798,15 +802,12 @@ pub fn build_providers(
             // not chat providers: the decide client reaches them.
             "systemone_compatible" => None,
             "ollama" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("ollama")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::OllamaProvider::new(
                     profile
                         .base_url
                         .clone()
                         .unwrap_or_else(|| "http://localhost:11434".into()),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             "neboai" => {
@@ -1562,11 +1563,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The owner's models.yaml says the Nebo AI pack where it named a speed
     // (one-time), before anything reads it.
     migration::migrate_models_yaml();
-    {
-        let boot_models_cfg = config::ModelsConfig::load();
-        seed_models_from_catalog(&store, &boot_models_cfg);
-        info!("seeded provider_models from embedded catalog (pre-provider-build)");
-    }
+    // What each owner runs on his own providers is his, once, before the
+    // seed below stops naming vendor models (`byok_models`).
+    byok_models::upgrade(&store);
+    seed_models_from_catalog(&store, &embedded_models());
+    info!("seeded provider_models from embedded catalog (pre-provider-build)");
     // The pickable speeds come from Janus. Bounded so an offline boot
     // still boots; the catalog keeps its last copy until the next sync.
     match tokio::time::timeout(std::time::Duration::from_secs(4), sync_janus_models(&store, &cfg)).await {

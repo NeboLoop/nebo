@@ -607,11 +607,7 @@ impl Provider for OpenAIProvider {
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let messages = self.build_messages(req);
 
-        let model = if req.model.is_empty() {
-            &self.model
-        } else {
-            &req.model
-        };
+        let model = crate::chosen_model(&req.model, &self.model, &self.provider_id)?;
 
         // Build tools
         let tools: Option<Vec<ChatCompletionTools>> = if req.tools.is_empty() {

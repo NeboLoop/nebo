@@ -1,7 +1,7 @@
 //! A provider as a connection: one key the owner added, and the models it
-//! offers — the vendor's catalog, models typed in by hand, and models picked
-//! while browsing the provider's own list. Nothing is limited to Nebo's
-//! catalog (owner, 2026-10-07). A model is a chat model or a decision model
+//! offers — models typed in by hand, and models picked while browsing the
+//! provider's own list. Nebo names no model for a connection (owner,
+//! 2026-10-11). A model is a chat model or a decision model
 //! (Jev and other SystemOne-compatible ones). Design: neboloop
 //! `docs/prd/intelligence-packs.md` §1a.
 
@@ -60,36 +60,10 @@ fn model_of_row(row: &db::models::ProviderModel) -> ConnectionModel {
     }
 }
 
-/// Every model a connection offers: its own rows (typed, browsed, or a
-/// catalog model it toggled) first, then the vendor's catalog models it has
-/// no row for.
-pub fn connection_models(
-    store: &db::Store,
-    catalog: &config::ModelsConfig,
-    profile: &db::models::AuthProfile,
-) -> Vec<ConnectionModel> {
-    let own: Vec<ConnectionModel> = store
-        .list_provider_models(&connection_key(profile))
-        .unwrap_or_default()
-        .iter()
-        .map(model_of_row)
-        .collect();
-    let mut out = own.clone();
-    for m in catalog.providers.get(&profile.provider).into_iter().flatten() {
-        if own.iter().any(|o| o.model_id == m.id) {
-            continue;
-        }
-        out.push(ConnectionModel {
-            model_id: m.id.clone(),
-            display_name: if m.display_name.is_empty() { m.id.clone() } else { m.display_name.clone() },
-            kind: "chat".into(),
-            context_window: (m.context_window > 0).then_some(m.context_window),
-            capabilities: abilities(&m.capabilities),
-            source: "catalog".into(),
-            is_active: m.is_active(),
-        });
-    }
-    out
+/// Every model a connection offers: the ones the owner typed or picked
+/// while browsing, and nothing Nebo chose for him.
+pub fn connection_models(store: &db::Store, profile: &db::models::AuthProfile) -> Vec<ConnectionModel> {
+    store.list_provider_models(&connection_key(profile)).unwrap_or_default().iter().map(model_of_row).collect()
 }
 
 fn profile(state: &AppState, id: &str) -> Result<db::models::AuthProfile, types::NeboError> {
@@ -102,7 +76,7 @@ pub async fn list_connection_models(
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
     let p = profile(&state, &id).map_err(to_error_response)?;
-    let models = connection_models(&state.store, &config::ModelsConfig::load(), &p);
+    let models = connection_models(&state.store, &p);
     Ok(Json(serde_json::json!({ "models": models })))
 }
 
@@ -170,14 +144,14 @@ pub async fn add_connection_model(
 }
 
 /// PUT /api/v1/providers/{id}/models/{modelId} — turn a model on or off, or
-/// change its kind, context or abilities (a catalog model gets its own row).
+/// change its kind, context or abilities.
 pub async fn update_connection_model(
     State(state): State<AppState>,
     Path((id, model_id)): Path<(String, String)>,
     Json(body): Json<ModelBody>,
 ) -> HandlerResult<serde_json::Value> {
     let p = profile(&state, &id).map_err(to_error_response)?;
-    let mut model = connection_models(&state.store, &config::ModelsConfig::load(), &p)
+    let mut model = connection_models(&state.store, &p)
         .into_iter()
         .find(|m| m.model_id == model_id)
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
@@ -201,7 +175,7 @@ pub async fn update_connection_model(
 }
 
 /// DELETE /api/v1/providers/{id}/models/{modelId} — remove a model the
-/// connection added (a catalog model falls back to the catalog's default).
+/// connection added.
 pub async fn delete_connection_model(
     State(state): State<AppState>,
     Path((id, model_id)): Path<(String, String)>,
@@ -391,7 +365,7 @@ pub async fn browse_connection_catalog(
     let Some(list) = fetch_catalog(&p).await else {
         return Ok(Json(serde_json::json!({ "browsable": false, "total": 0, "models": [] })));
     };
-    let have: Vec<String> = connection_models(&state.store, &config::ModelsConfig::load(), &p)
+    let have: Vec<String> = connection_models(&state.store, &p)
         .into_iter()
         .map(|m| m.model_id)
         .collect();
@@ -483,27 +457,22 @@ mod tests {
         assert!(!ids.iter().any(|i| i.starts_with("openai_compatible") || i.starts_with("systemone")), "{ids:?}");
     }
 
-    /// A connection's models: its own rows first, then the vendor's catalog
-    /// models it has no row for; a toggled catalog model keeps its source.
+    /// A connection's models are the ones the owner added, and nothing else.
     #[test]
-    fn a_connection_offers_its_own_models_then_the_catalog() {
+    fn a_connection_offers_only_the_models_the_owner_added() {
         let dir = tempfile::tempdir().unwrap();
         let store = db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap();
         store.create_auth_profile("a1", "Company key", "anthropic", "k", None, None, 0, 1, None, None).unwrap();
         let p = store.get_auth_profile("a1").unwrap().unwrap();
         let key = connection_key(&p);
-        store.put_connection_model(&key, "claude-opus-5", "claude-opus-5", "chat", Some(1_000_000), "[\"vision\"]", "added", true).unwrap();
-        store.put_connection_model(&key, "jev-latest", "jev-latest", "decision", None, "[]", "added", true).unwrap();
-        let catalog: config::ModelsConfig = serde_yaml::from_str(
-            "providers:\n  anthropic:\n    - id: claude-haiku-4-5\n      displayName: Claude Haiku 4.5\n      contextWindow: 200000\n      capabilities: [vision, tools]\n    - id: claude-opus-5\n      displayName: Claude Opus 5\n",
-        )
-        .unwrap();
-        let models = connection_models(&store, &catalog, &p);
+        assert!(connection_models(&store, &p).is_empty(), "nothing until the owner adds a model");
+        store.put_connection_model(&key, "model-a", "model-a", "chat", Some(1_000_000), "[\"vision\"]", "added", true).unwrap();
+        store.put_connection_model(&key, "decider-b", "decider-b", "decision", None, "[]", "browsed", true).unwrap();
+        let models = connection_models(&store, &p);
         let ids: Vec<(&str, &str, &str)> = models.iter().map(|m| (m.model_id.as_str(), m.source.as_str(), m.kind.as_str())).collect();
-        assert!(ids.contains(&("claude-opus-5", "added", "chat")), "the own row wins over the catalog: {ids:?}");
-        assert!(ids.contains(&("jev-latest", "added", "decision")));
-        assert!(ids.contains(&("claude-haiku-4-5", "catalog", "chat")));
-        assert_eq!(ids.iter().filter(|(id, _, _)| *id == "claude-opus-5").count(), 1);
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(ids.contains(&("model-a", "added", "chat")));
+        assert!(ids.contains(&("decider-b", "browsed", "decision")));
     }
 
     /// OpenRouter's model ids hold a slash (`anthropic/claude-sonnet-5`):

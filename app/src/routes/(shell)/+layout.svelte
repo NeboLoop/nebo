@@ -426,7 +426,7 @@
   let threadsLoading = $state<Record<string, boolean>>({});
 
 
-  const DEFAULT_CONFIG = { persona: '', agentMd: '', soul: '', rules: '', model: 'claude-sonnet-4-6', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
+  const DEFAULT_CONFIG = { persona: '', agentMd: '', soul: '', rules: '', model: '', inputs: [] as unknown[], workflows: {} as Record<string, WorkflowConfig> };
 
   // Load agents from API and return roster-refresh function
   async function loadAgentRoster() {
@@ -852,7 +852,7 @@
         const agentMd = (ar.agent as Agent)?.agentMd || '';
         const soul = (ar.agent as Agent)?.soul || '';
         const rules = (ar.agent as Agent)?.rules || '';
-        const model = typeof ar.model === 'string' ? ar.model : (ar.model as Record<string, unknown>)?.id as string ?? 'claude-sonnet-4-6';
+        const model = typeof ar.model === 'string' ? ar.model : (ar.model as Record<string, unknown>)?.id as string ?? '';
         const inputs = Array.isArray(ar.inputFields) ? ar.inputFields as Record<string, unknown>[] : [];
         // Workflows from separate endpoint — merged below
         apiConfig[id] = { persona, agentMd, soul, rules, model, inputs, workflows: apiConfig[id]?.workflows ?? {} };

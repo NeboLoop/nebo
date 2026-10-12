@@ -258,6 +258,23 @@ impl Store {
         Ok(())
     }
 
+    /// Every model the owner chose outside the packs: a conversation's
+    /// model, a session's override and an employee's preference, once each.
+    pub fn stored_model_choices(&self) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT model FROM chats WHERE model IS NOT NULL AND model != ''
+                 UNION SELECT model_override FROM sessions WHERE model_override IS NOT NULL AND model_override != ''
+                 UNION SELECT model_preference FROM entity_config WHERE model_preference IS NOT NULL AND model_preference != ''",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn delete_provider_models_by_provider(&self, provider: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
