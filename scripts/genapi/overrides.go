@@ -107,6 +107,7 @@ var typeOverrides = map[string]string{
 	"set_default_pack.default":   "string",
 	"list_pack_choices.chat":     "PackChoice[]",
 	"list_pack_choices.decision": "PackChoice[]",
+	"list_pack_choices.voice":    "PackChoice[]",
 
 	// ── A connection's models (ConnectionModel/CatalogModel are generated) ──
 	"list_connection_models.models":         "ConnectionModel[]",

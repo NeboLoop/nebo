@@ -2395,6 +2395,7 @@ export interface ListNotificationsResponse {
 export interface ListPackChoicesResponse {
 	chat: PackChoice[]
 	decision: PackChoice[]
+	voice: PackChoice[]
 }
 
 export interface ListPacksResponse {

@@ -3131,7 +3131,9 @@
 		"callLost": "Panggilan terputus dan tidak dapat disertai semula. Mulakan sekali lagi.",
 		"callEndedStartAgain": "Panggilan telah tamat. Mulakan sekali lagi.",
 		"needsConsent": "Perbualan suara menghantar audio mikrofon anda ke perkhidmatan suara awan untuk diproses. Dayakan dalam panel suara untuk memberi persetujuan.",
-		"startFailed": "Tidak dapat memulakan panggilan. Cuba lagi."
+		"startFailed": "Tidak dapat memulakan panggilan. Cuba lagi.",
+		"voiceModelUnsupported": "Model suara pek ini belum disokong untuk panggilan. Pilih model suara lain dalam pek.",
+		"voiceModelUnreachable": "Model suara pek ini tidak disambungkan. Sambungkannya semula, atau pilih model suara lain dalam pek."
 	},
 	"flows": {
 		"none": "Belum ada aliran",
@@ -4058,7 +4060,6 @@
 		"decisions": "Keputusan",
 		"visionDefault": "Model tahap ini, apabila ia melihat imej",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Tidak tersedia",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Lalai selamat terbina dalam Nebo (tiada model keputusan)",
 		"decisionsDefaultOption": "Nebo AI · Jev (lalai)",

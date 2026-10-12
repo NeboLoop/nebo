@@ -44,7 +44,9 @@
   let savingDefault = $state(false);
   let chatChoices = $state<PackChoice[]>([]);
   let decisionChoices = $state<PackChoice[]>([]);
-  const allChoices = $derived([...chatChoices, ...decisionChoices]);
+  // What calls can speak through today: Nebo AI's Voice and the xAI-compatible realtime models.
+  let voiceOptions = $state<PackChoice[]>([]);
+  const allChoices = $derived([...chatChoices, ...decisionChoices, ...voiceOptions]);
 
   // The editor: null when closed; id '' for a new pack.
   let editing = $state<{
@@ -58,6 +60,11 @@
   const visionChoices = $derived(
     chatChoices.filter((c) => c.capabilities?.includes('vision') || c.value === editing?.levels.vision),
   );
+  // A Voice model saved before calls were limited to these still shows, so the owner sees what to replace.
+  const voiceChoices = $derived([
+    ...voiceOptions,
+    ...chatChoices.filter((c) => c.value === editing?.levels.voice && !voiceOptions.some((v) => v.value === c.value)),
+  ]);
 
   function levelLabel(level: Effort | 'auto' | 'every'): string {
     return $t(`settingsPacks.level.${level}`);
@@ -76,6 +83,7 @@
       defaultValue = packsRes.default ?? '';
       chatChoices = choicesRes.chat ?? [];
       decisionChoices = choicesRes.decision ?? [];
+      voiceOptions = choicesRes.voice ?? [];
     } catch (err: any) {
       error = err?.message || $t('settingsPacks.loadFailed');
     } finally {
@@ -293,7 +301,7 @@
               </div>
               <div class="flex items-center justify-between gap-3 py-1.5 px-3 rounded-md bg-base-200/50">
                 <span class="text-sm shrink-0">{$t('settingsPacks.voice')}</span>
-                {@render runsOnCell(pack.levels.voice, pack.fallback || pack.builtIn ? $t('settingsPacks.voiceDefault') : $t('settingsPacks.voiceUnavailable'))}
+                {@render runsOnCell(pack.levels.voice, $t('settingsPacks.voiceDefault'))}
               </div>
               <div class="flex items-center justify-between gap-3 py-1.5 px-3 rounded-md bg-base-200/50">
                 <span class="text-sm shrink-0">{$t('settingsPacks.decisions')}</span>
@@ -375,7 +383,7 @@
             <label class="text-sm" for="cap-voice">{$t('settingsPacks.voice')}</label>
             <select id="cap-voice" bind:value={editing.levels.voice} class="select select-bordered select-sm w-full min-w-0">
               <option value={undefined}>{$t('settingsPacks.voiceDefault')}</option>
-              {#each chatChoices as c (c.value)}
+              {#each voiceChoices as c (c.value)}
                 <option value={c.value}>{choiceLabel(c)}</option>
               {/each}
             </select>

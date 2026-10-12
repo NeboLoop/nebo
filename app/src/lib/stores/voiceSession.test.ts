@@ -354,6 +354,17 @@ describe('voiceSession reconnect', () => {
 		expect(FakeSocket.instances).toHaveLength(2);
 	});
 
+	it("says the pack's voice model can't take calls, in the owner's words, when the server refuses it", async () => {
+		const { voiceSession, first } = await liveCall();
+		first.emit({ type: 'Error', code: 'voice_model_unsupported', message: 'English line for other clients' });
+
+		const state = get(voiceSession);
+		expect(state.status).toBe('error');
+		expect(state.errorMessage).toBe(
+			"This pack's voice model isn't supported for calls yet. Pick another voice model in the pack."
+		);
+	});
+
 	it('gives up at the end of the resume window, saying what happened', async () => {
 		const { voiceSession } = await liveCall();
 		// The error state clears itself after a few seconds, so the sentence is

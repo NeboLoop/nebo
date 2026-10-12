@@ -228,7 +228,7 @@ pub fn nebo_ai() -> Pack {
             // Janus reads images and video on its image_read and
             // video_read pools.
             vision: janus("nebo-1"),
-            voice: janus("nebo-1-voice"),
+            voice: Some(NEBO_AI_VOICE.to_string()),
             decisions: janus("jev-latest"),
         },
         fallback: false,
@@ -278,6 +278,28 @@ impl Pack {
                 .or_else(|| self.model_for(DEFAULT_EFFORT)),
         }
     }
+}
+
+/// Nebo AI's Voice: Janus's realtime relay, asked for its voice speed. The
+/// speed serves only the realtime protocol calls speak today (xAI's); a
+/// second protocol joins it only once calls can speak it.
+pub const NEBO_AI_VOICE: &str = "janus/nebo-1-voice";
+
+/// The realtime model an xAI connection is asked for when it lists none of
+/// its own.
+pub const XAI_VOICE_MODEL: &str = "grok-voice-latest";
+
+/// Whether a connection (its provider kind and base URL) is xAI's: the only
+/// realtime protocol calls speak today.
+pub fn is_xai_connection(kind: &str, base_url: Option<&str>) -> bool {
+    kind.split('@').next() == Some("xai") || base_url.is_some_and(|u| u.contains("api.x.ai"))
+}
+
+/// Whether `model` (a model name, no provider) is one of xAI's realtime
+/// voice models (`grok-voice-latest`).
+pub fn is_xai_voice_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    m.starts_with("grok") && m.contains("voice")
 }
 
 /// The prefix a model string names a pack with.
@@ -364,6 +386,16 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(mine.model_for_ref(None), Some("a/mid"), "no Auto: the default level");
+    }
+
+    #[test]
+    fn nebo_ai_speaks_through_the_janus_voice_relay_and_only_xai_voice_models_are_realtime() {
+        assert_eq!(nebo_ai().levels.voice.as_deref(), Some("janus/nebo-1-voice"));
+        assert!(is_xai_voice_model("grok-voice-latest") && is_xai_voice_model(XAI_VOICE_MODEL));
+        assert!(!is_xai_voice_model("grok-4") && !is_xai_voice_model("gpt-realtime-2") && !is_xai_voice_model("nebo-1-voice"));
+        assert!(is_xai_connection("xai", None) && is_xai_connection("xai@k1", None));
+        assert!(is_xai_connection("openai_compatible@k1", Some("https://api.x.ai/v1")));
+        assert!(!is_xai_connection("openai@k1", Some("https://api.openai.com/v1")) && !is_xai_connection("janus", None));
     }
 
     #[test]

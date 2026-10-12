@@ -3131,7 +3131,9 @@
 		"callLost": "Het gesprek viel weg en kon niet worden hervat. Start het opnieuw.",
 		"callEndedStartAgain": "Het gesprek is beëindigd. Start het opnieuw.",
 		"needsConsent": "Een spraakgesprek stuurt je microfoonaudio naar een cloudspraakdienst voor verwerking. Zet het aan in het spraakpaneel om toestemming te geven.",
-		"startFailed": "Het gesprek kon niet worden gestart. Probeer het opnieuw."
+		"startFailed": "Het gesprek kon niet worden gestart. Probeer het opnieuw.",
+		"voiceModelUnsupported": "Het spraakmodel van dit pakket wordt nog niet ondersteund voor gesprekken. Kies een ander spraakmodel in het pakket.",
+		"voiceModelUnreachable": "Het spraakmodel van dit pakket is niet verbonden. Verbind het opnieuw of kies een ander spraakmodel in het pakket."
 	},
 	"flows": {
 		"none": "Nog geen flows",
@@ -4058,7 +4060,6 @@
 		"decisions": "Beslissingen",
 		"visionDefault": "Het model van het niveau, wanneer het afbeeldingen ziet",
 		"voiceDefault": "Nebo AI",
-		"voiceUnavailable": "Niet beschikbaar",
 		"decisionsDefault": "Nebo AI · Jev",
 		"decisionsNone": "Nebo's ingebouwde veilige standaarden (geen beslismodel)",
 		"decisionsDefaultOption": "Nebo AI · Jev (standaard)",
