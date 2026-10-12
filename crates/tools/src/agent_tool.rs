@@ -2497,7 +2497,7 @@ impl PersonaTool {
                 serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
             merge_ceiling(&mut existing, ceiling);
             current_frontmatter = existing.to_string();
-            if let Err(e) = Self::validated_frontmatter(&current_frontmatter) {
+            if let Err(e) = Self::validated_frontmatter(&db_agent.frontmatter, &current_frontmatter) {
                 return ToolResult::error(e);
             }
             if agent_dir.exists() {
@@ -4777,7 +4777,7 @@ export default function App({ label }: Props = { label: "hi" }) { return <div>{l
         .unwrap();
         assert_eq!(staged["workflows"]["chase"]["connections"].as_array().unwrap().len(), 2);
         assert_eq!(staged["workflows"]["chase"]["activities"][0]["type"], "command");
-        assert!(PersonaTool::validated_frontmatter(&staged.to_string()).is_ok());
+        assert!(PersonaTool::validated_frontmatter("", &staged.to_string()).is_ok());
     }
 
     /// Bake-off 2026-10-10: a weekly forecast said "sent to the owner" with
