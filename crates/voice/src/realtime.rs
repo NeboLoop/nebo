@@ -194,7 +194,7 @@ pub async fn connect(
     Ok((cmd_tx, event_rx))
 }
 
-type Socket = tokio_tungstenite::WebSocketStream<
+pub(crate) type Socket = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
@@ -204,26 +204,36 @@ async fn dial(cfg: &RealtimeConfig) -> Result<Socket, VoiceError> {
     if let Some(cid) = &cfg.conversation_id {
         url.push_str(&format!("&conversation_id={}", cid));
     }
+    // Janus groups usage by purpose; a realtime session is always voice.
+    open(&url, &cfg.bearer, cfg.bot_id.as_deref(), "voice").await
+}
 
+/// Open a socket to a Janus (or direct) audio endpoint: the bearer, the bot
+/// it is for, and the purpose Janus groups the usage under. The voice call
+/// and dictation both dial through here.
+pub(crate) async fn open(
+    url: &str,
+    bearer: &str,
+    bot_id: Option<&str>,
+    purpose: &'static str,
+) -> Result<Socket, VoiceError> {
     let mut request = url
-        .clone()
         .into_client_request()
         .map_err(|e| VoiceError::Realtime(format!("bad realtime url: {e}")))?;
     request.headers_mut().insert(
         "Authorization",
-        format!("Bearer {}", cfg.bearer)
+        format!("Bearer {}", bearer)
             .parse()
             .map_err(|_| VoiceError::Realtime("invalid bearer token".into()))?,
     );
-    if let Some(bot_id) = &cfg.bot_id {
+    if let Some(bot_id) = bot_id {
         if let Ok(v) = bot_id.parse() {
             request.headers_mut().insert("X-Bot-ID", v);
         }
     }
-    // Janus groups usage by purpose; a realtime session is always voice.
     request
         .headers_mut()
-        .insert("X-Purpose", HeaderValue::from_static("voice"));
+        .insert("X-Purpose", HeaderValue::from_static(purpose));
     request
         .headers_mut()
         .insert("User-Agent", HeaderValue::from_static(types::constants::USER_AGENT));
