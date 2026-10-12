@@ -4242,7 +4242,8 @@
 		"disconnect": "연결 해제",
 		"connected": "연결됨",
 		"refreshTools": "도구 새로고침",
-		"updated": "{count, plural, other{업데이트됨 · 도구 {count}개}}"
+		"upToDate": "도구가 최신 상태입니다 · 도구 {count}개",
+		"toolsUpdated": "도구 {changed}개 업데이트됨 · 도구 {count}개"
 	},
 	"chatMode": {
 		"title": "권한",

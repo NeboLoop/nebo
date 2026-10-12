@@ -4242,7 +4242,8 @@
 		"disconnect": "נתק",
 		"connected": "מחובר",
 		"refreshTools": "רענון כלים",
-		"updated": "{count, plural, =1{עודכן · כלי אחד} other{עודכן · {count} כלים}}"
+		"upToDate": "הכלים מעודכנים · {count, plural, =1{כלי אחד} other{{count} כלים}}",
+		"toolsUpdated": "{changed, plural, =1{כלי אחד עודכן} other{{changed} כלים עודכנו}} · {count, plural, =1{כלי אחד} other{{count} כלים}}"
 	},
 	"chatMode": {
 		"title": "הרשאה",

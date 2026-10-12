@@ -4242,7 +4242,8 @@
 		"disconnect": "Desconectar",
 		"connected": "Conectado",
 		"refreshTools": "Atualizar ferramentas",
-		"updated": "{count, plural, =1{Atualizado · 1 ferramenta} other{Atualizado · {count} ferramentas}}"
+		"upToDate": "{count, plural, =1{Ferramentas em dia · 1 ferramenta} other{Ferramentas em dia · {count} ferramentas}}",
+		"toolsUpdated": "{changed, plural, =1{1 ferramenta atualizada} other{{changed} ferramentas atualizadas}} · {count, plural, =1{1 ferramenta} other{{count} ferramentas}}"
 	},
 	"chatMode": {
 		"title": "Permissão",

@@ -4242,7 +4242,8 @@
 		"disconnect": "切断",
 		"connected": "接続済み",
 		"refreshTools": "ツールを更新",
-		"updated": "{count, plural, other{更新しました · {count} 個のツール}}"
+		"upToDate": "ツールは最新です · {count} 個のツール",
+		"toolsUpdated": "{changed} 個のツールを更新しました · {count} 個のツール"
 	},
 	"chatMode": {
 		"title": "権限",

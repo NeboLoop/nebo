@@ -4242,7 +4242,8 @@
 		"disconnect": "Putuskan",
 		"connected": "Terhubung",
 		"refreshTools": "Segarkan alat",
-		"updated": "{count, plural, other{Diperbarui · {count} alat}}"
+		"upToDate": "Alat sudah terbaru · {count} alat",
+		"toolsUpdated": "{changed} alat diperbarui · {count} alat"
 	},
 	"chatMode": {
 		"title": "Izin",

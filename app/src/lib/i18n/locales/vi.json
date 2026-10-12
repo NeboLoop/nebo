@@ -4242,7 +4242,8 @@
 		"disconnect": "Ngắt kết nối",
 		"connected": "Đã kết nối",
 		"refreshTools": "Làm mới công cụ",
-		"updated": "{count, plural, other{Đã cập nhật · {count} công cụ}}"
+		"upToDate": "Công cụ đã mới nhất · {count} công cụ",
+		"toolsUpdated": "Đã cập nhật {changed} công cụ · {count} công cụ"
 	},
 	"chatMode": {
 		"title": "Quyền",

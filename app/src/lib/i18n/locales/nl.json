@@ -4242,7 +4242,8 @@
 		"disconnect": "Verbinding verbreken",
 		"connected": "Verbonden",
 		"refreshTools": "Tools vernieuwen",
-		"updated": "{count, plural, =1{Bijgewerkt · 1 tool} other{Bijgewerkt · {count} tools}}"
+		"upToDate": "{count, plural, =1{Tools up-to-date · 1 tool} other{Tools up-to-date · {count} tools}}",
+		"toolsUpdated": "{changed, plural, =1{1 tool bijgewerkt} other{{changed} tools bijgewerkt}} · {count, plural, =1{1 tool} other{{count} tools}}"
 	},
 	"chatMode": {
 		"title": "Toestemming",
