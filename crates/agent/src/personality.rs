@@ -15,6 +15,7 @@ const LIFESPAN_DAYS_PER_REINFORCEMENT: i64 = 14;
 pub async fn synthesize_directive(
     store: &Store,
     provider: &dyn Provider,
+    model: &str,
     user_id: &str,
 ) -> Option<String> {
     // Load all style observations
@@ -133,7 +134,7 @@ pub async fn synthesize_directive(
         temperature: 0.3,
         system: "You are a personality synthesis engine. Produce concise, actionable directives."
             .to_string(),
-        model: String::new(),
+        model: model.to_string(),
         enable_thinking: false,
         effort: None,
         metadata: None,

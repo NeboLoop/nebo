@@ -29,48 +29,14 @@ credentials:
 
 # Model selection defaults
 defaults:
-  # Primary provider/model (used first)
-  # Nebo 1 (Janus gateway) is the default — works out of the box with NeboAI auth.
-  # Users with their own API keys can override in Settings > Routing.
-  primary: janus/nebo-1
+  # The catalog's primary model, and the model a provider's connection runs
+  # when it names none and this names that provider.
+  # The Nebo AI pack is the default: it works out of the box with NeboAI auth.
+  primary: pack/nebo-ai
 
-  # When the reviewer would stop a run, it first moves the next few steps to
-  # this model (once per run). A stronger speed costs more per step, but a run
-  # stopped at step forty has already spent forty steps. Empty = stop instead.
-  # nebo-1-pro IS the high speed: "high" was merged into pro when the three
-  # speeds were settled, and the gateway has served no nebo-1-high since.
-  # Escalation skips fuzzy resolution, so a name the gateway does not serve
-  # failed terminally at exactly the moment a run was already in trouble.
-  escalation: janus/nebo-1-pro
-
-  # Fallback chain (tried in order if primary fails)
-  fallbacks:
-    - anthropic/claude-sonnet-4-6
-    - anthropic/claude-haiku-4-5-20251001
-
-# Task-based model routing
-# Automatically selects the best model based on the task type
-# Nebo 1 handles all tasks by default (server-side routing picks the best upstream model).
-# Users with direct API keys can override per-task in Settings > Routing.
+# The bot's default: a model, or an intelligence pack (pack/<id>).
 task_routing:
-  vision: janus/nebo-1
-  audio: janus/nebo-1
-  reasoning: janus/nebo-1
-  code: janus/nebo-1
-  general: janus/nebo-1
-  fallbacks:
-    vision:
-      - anthropic/claude-sonnet-4-6
-      - openai/gpt-5.4
-    reasoning:
-      - anthropic/claude-opus-4-6
-      - openai/gpt-5.4
-    code:
-      - anthropic/claude-sonnet-4-6
-      - openai/gpt-5.4
-    general:
-      - anthropic/claude-haiku-4-5-20251001
-      - openai/gpt-5.4-nano
+  general: pack/nebo-ai
 
 # Available models by provider
 providers:
@@ -92,6 +58,8 @@ providers:
         input: 3.0
         output: 15.0
         cachedInput: 0.30
+      # A connection that names no model runs this one.
+      preferred: true
       active: false
     - id: claude-haiku-4-5-20251001
       displayName: Claude Haiku 4.5

@@ -333,15 +333,22 @@ impl Harness {
         info!(count, "reloaded AI providers");
     }
 
+    /// The ONE resolver for background work (`model_call::Housekeeper`).
+    pub fn housekeeper(&self) -> model_call::Housekeeper {
+        model_call::Housekeeper::new(self.store.clone(), self.selector.clone(), self.providers.clone())
+    }
+
     /// Title a chat whose turns were stored outside a turn (the voice loop
     /// writes its own rows): the same generator and sink a turn uses.
     pub fn spawn_title_generation(&self, session_id: &str, chat_id: &str) {
+        // The chat's own model, else the bot's default.
+        let chosen = self.store.get_chat(chat_id).ok().flatten().and_then(|c| c.model).unwrap_or_default();
         after_turn::spawn_chat_title_generation(
-            self.providers.clone(),
+            self.housekeeper(),
+            chosen,
             self.store.clone(),
             chat_id.to_string(),
             session_id.to_string(),
-            self.selector.background_model(),
             self.title_sink(),
         );
     }

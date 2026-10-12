@@ -635,10 +635,12 @@ fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delega
     hub.broadcast(name, payload);
 }
 
-/// The decide client. `default_model` reads the bot's default (a model or
-/// a pack reference) on every call; when it names a pack whose Decisions
-/// slot points at the owner's own endpoint ([`decision_endpoint`]), the
-/// decision goes there, else to Janus.
+/// The decide client. Each call's decisions follow the intelligence pack of
+/// the employee it is for (the call's trace names it): its own model
+/// preference, else the bot's default, read through `default_model` (a
+/// model or a pack reference) on every call. When that pack's Decisions slot
+/// points at the owner's own endpoint ([`decision_endpoint`]), the decision
+/// goes there, else to Janus.
 pub fn build_decide_client(
     store: Arc<db::Store>,
     cfg: &Config,
@@ -652,21 +654,34 @@ pub fn build_decide_client(
                 bot_id: config::read_bot_id(),
             })
         })
-        .with_endpoint(move || decision_endpoint(&store, &default_model()?)),
+        .with_endpoint(move |trace| {
+            let model = employee_pack(&store, &trace.agent_id).or_else(&default_model)?;
+            decision_endpoint(&store, &model)
+        }),
     )
+}
+
+/// The intelligence pack an employee's own model preference names, if it
+/// names one.
+fn employee_pack(store: &db::Store, agent_id: &str) -> Option<String> {
+    if agent_id.is_empty() {
+        return None;
+    }
+    let preference = store.get_entity_config("agent", agent_id).ok()??.model_preference?;
+    types::packs::parse_ref(&preference).is_some().then_some(preference)
 }
 
 /// The kind of connection a pack's Decisions slot names to send decisions
 /// to the owner's own endpoint: `systemone_compatible@<connection>/<model>`.
 const SYSTEMONE_COMPATIBLE: &str = "systemone_compatible";
 
-/// Where decisions go when the bot's default is a pack whose Decisions slot
+/// Where decisions go when the active pack (`model`) is a pack whose Decisions slot
 /// names one of the owner's SystemOne-compatible connections that exists
 /// and is active: its base URL, its key, the slot's model. `None` (the
 /// default is not a pack, the slot is empty or Nebo AI's `janus/…`, the
 /// connection is gone or off) keeps decisions on Janus. Local reads only.
-pub fn decision_endpoint(store: &db::Store, default_model: &str) -> Option<ai::DecideEndpoint> {
-    let (pack_id, _) = types::packs::parse_ref(default_model)?;
+pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEndpoint> {
+    let (pack_id, _) = types::packs::parse_ref(model)?;
     let pack = store.get_intelligence_pack(pack_id).ok()??;
     let slot = pack.levels.decisions.as_deref()?.trim();
     let (profile_id, model) = slot.strip_prefix(SYSTEMONE_COMPATIBLE)?.strip_prefix('@')?.split_once('/')?;
@@ -1544,6 +1559,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // has-active-chat-models gate reads this table — seeding it afterwards
     // left every newly provisioned bot with NO LLM provider until a restart
     // (observed live: providers built at t+0.0s, catalog seeded at t+1.3s).
+    // The owner's models.yaml says the Nebo AI pack where it named a speed
+    // (one-time), before anything reads it.
+    migration::migrate_models_yaml();
     {
         let boot_models_cfg = config::ModelsConfig::load();
         seed_models_from_catalog(&store, &boot_models_cfg);
@@ -2281,7 +2299,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
-        harness.providers(),
+        harness.housekeeper(),
         embedding_provider.clone(),
         Some(decide_client.clone()),
     );
@@ -2966,7 +2984,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and grants them on the owner's yes, through the ONE permission store.
     state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
         state.permission_asks.clone(),
-        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.providers())),
+        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone())),
     )));
 
     // Wire the coworker message rail (late, like the installer above — it needs
@@ -7541,6 +7559,20 @@ mod decision_endpoint_tests {
         assert_eq!(ep.model, "jev-latest");
         assert_eq!(ep.profile_id, "p1");
         assert!(decision_endpoint(&store, "pack/mine/low").is_some(), "any level of the pack");
+    }
+
+    /// An employee's decisions follow its own pack, else the bot's default.
+    #[test]
+    fn an_employees_decisions_follow_its_own_pack() {
+        let (_d, store) = store();
+        store
+            .create_auth_profile("p1", "TypeSafe", "systemone_compatible", "owner-key", None, Some("https://api.typesafe.ai"), 0, 1, None, None)
+            .unwrap();
+        save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
+        store.upsert_entity_config("agent", "e1", &serde_json::json!({ "modelPreference": "pack/mine/high" })).unwrap();
+        assert_eq!(super::employee_pack(&store, "e1").as_deref(), Some("pack/mine/high"));
+        assert_eq!(super::employee_pack(&store, "e2"), None);
+        assert_eq!(super::employee_pack(&store, ""), None);
     }
 
     #[test]

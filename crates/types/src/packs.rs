@@ -70,7 +70,8 @@ pub struct PackLevels {
     pub high: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<String>,
-    /// Describes images when the level's model can't see them.
+    /// Reads the turn's images and video (the vision helper). Empty: the
+    /// level's model when it sees images, else Nebo AI's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vision: Option<String>,
     /// Calls and spoken replies.
@@ -115,6 +116,10 @@ pub enum Lane {
     Build,
     /// Running a workflow's steps.
     Workflow,
+    /// Background work for the owner's turns and employees: titles, memory,
+    /// tool summaries, permission and goal checks. Always the pack's
+    /// Instant level.
+    Housekeeping,
 }
 
 impl PackLanes {
@@ -127,6 +132,7 @@ impl PackLanes {
             Lane::Helpers => self.helpers,
             Lane::Build => self.build,
             Lane::Workflow => self.workflow,
+            Lane::Housekeeping => Some(Effort::Instant),
         }
     }
 }
@@ -219,7 +225,9 @@ pub fn nebo_ai() -> Pack {
             medium: janus("nebo-1-medium"),
             high: janus("nebo-1-pro"),
             max: janus("nebo-1-pro"),
-            vision: None,
+            // Janus reads images and video on its image_read and
+            // video_read pools.
+            vision: janus("nebo-1"),
             voice: janus("nebo-1-voice"),
             decisions: janus("jev-latest"),
         },

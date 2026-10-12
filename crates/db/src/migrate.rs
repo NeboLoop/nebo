@@ -1206,6 +1206,43 @@ Two leads.', NULL, 3),
         assert!(store.engine_get_run("old-1").unwrap().is_none(), "a settled ask waits on nothing");
     }
 
+    /// Every stored choice of a Nebo AI speed becomes the Nebo AI pack at
+    /// its level; a pack level, any other model and a run's record stay as
+    /// they were.
+    #[test]
+    fn stored_speed_choices_become_nebo_ai_pack_refs() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 230).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title, model) VALUES ('a', 'A', 'janus/nebo-1-flash'), ('b', 'B', 'nebo-1'), ('c', 'C', 'openai/gpt-5.4'), ('d', 'D', NULL);
+               INSERT INTO sessions (id, created_at, updated_at, model_override) VALUES ('s', 1, 1, 'nebo-1-pro');
+               INSERT INTO entity_config (entity_type, entity_id, model_preference) VALUES ('agent', 'e1', 'janus/nebo-1-medium'), ('agent', 'e2', 'pack/mine/high');
+               INSERT INTO workflows (id, name, definition) VALUES ('w', 'W', '{"version":"1","activities":[{"id":"a1","model":"nebo-1"},{"id":"a2","model":"janus/nebo-1-pro"},{"id":"a3"}]}');
+               INSERT INTO agents (id, name, description, agent_md, frontmatter) VALUES ('g', 'G', '', '', '{"pricing":{"model":"monthly_fixed"},"workflows":{"brief":{"description":"x","activities":[{"id":"t","model":"nebo-1"},{"id":"u","model":"sonnet"}]},"watch":{"trigger":{"type":"watch"}}}}');"#,
+        )
+        .unwrap();
+        run_migrations_to(&conn, 231).unwrap();
+        let text = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, Option<String>>(0)).unwrap();
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'a'").as_deref(), Some("pack/nebo-ai/instant"));
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'b'").as_deref(), Some("pack/nebo-ai"));
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'c'").as_deref(), Some("openai/gpt-5.4"), "another model stays");
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'd'"), None);
+        assert_eq!(text("SELECT model_override FROM sessions WHERE id = 's'").as_deref(), Some("pack/nebo-ai/high"));
+        assert_eq!(text("SELECT model_preference FROM entity_config WHERE entity_id = 'e1'").as_deref(), Some("pack/nebo-ai/medium"));
+        assert_eq!(text("SELECT model_preference FROM entity_config WHERE entity_id = 'e2'").as_deref(), Some("pack/mine/high"));
+        let def: serde_json::Value = serde_json::from_str(&text("SELECT definition FROM workflows WHERE id = 'w'").unwrap()).unwrap();
+        let models: Vec<Option<&str>> = def["activities"].as_array().unwrap().iter().map(|a| a["model"].as_str()).collect();
+        assert_eq!(models, [Some("pack/nebo-ai"), Some("pack/nebo-ai/high"), None], "in order, untouched beside them");
+        assert_eq!(def["activities"][0]["id"], "a1");
+        let fm: serde_json::Value = serde_json::from_str(&text("SELECT frontmatter FROM agents WHERE id = 'g'").unwrap()).unwrap();
+        assert_eq!(fm["workflows"]["brief"]["activities"][0]["model"], "pack/nebo-ai");
+        assert_eq!(fm["workflows"]["brief"]["activities"][1]["model"], "sonnet");
+        assert_eq!(fm["workflows"]["brief"]["description"], "x");
+        assert_eq!(fm["workflows"]["watch"]["trigger"]["type"], "watch", "a workflow without activities stays");
+        assert_eq!(fm["pricing"]["model"], "monthly_fixed", "a pricing model is not a choice of AI");
+    }
+
     /// Every stored reply with calls leaves 0220 in the one shape the
     /// thread reads: calls kept only in metadata move to `tool_calls` with
     /// their outputs on a `tool` row; a reply with no block order gets one

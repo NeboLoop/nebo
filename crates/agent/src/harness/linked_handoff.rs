@@ -13,7 +13,6 @@ use ai::{ChatRequest, RequestTrace};
 
 use super::compact::checkpoint;
 use super::events;
-use super::model_call::{prefer_non_gateway, resolve_aux};
 use super::Harness;
 
 /// The most teammates a briefing names.
@@ -73,11 +72,10 @@ impl ai::LinkedContext for Handoff {
         if !before.iter().any(|m| m.role == "assistant") {
             return None;
         }
-        let (provider, model) = {
-            let providers = self.harness.providers.read().await;
-            resolve_aux(&config::ModelsConfig::load(), &providers).or_else(|| prefer_non_gateway(&providers).map(|p| (p, String::new())))?
-        };
-        let provider = self.harness.concurrency.background(provider);
+        // A linked employee's model is its agent, which answers only for it:
+        // the summary runs on the bot default's background route.
+        let route = self.harness.housekeeper().route("").await?;
+        let (provider, model) = (self.harness.concurrency.background(route.provider), route.model);
         let base = ChatRequest {
             model,
             ..ChatRequest::new(self.trace.clone())

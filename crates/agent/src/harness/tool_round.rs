@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use ai::{Provider, RequestTrace, StreamEvent, StreamEventType};
+use ai::{RequestTrace, StreamEvent, StreamEventType};
 use tools::{Origin, Registry, ToolContext, ToolResult};
 
 use crate::concurrency::ConcurrencyController;
@@ -311,7 +311,6 @@ impl RunToolScope<'_> {
 pub(crate) struct RoundContext<'a> {
     pub scope: &'a RunToolScope<'a>,
     pub tools: &'a Arc<Registry>,
-    pub providers: &'a Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     pub concurrency: &'a Arc<ConcurrencyController>,
     pub hooks: &'a napp::HookDispatcher,
     pub user_prompt: &'a str,
@@ -327,6 +326,12 @@ pub(crate) struct RoundContext<'a> {
     /// The owner's own chat turn: he is there to stop it, so a repeated
     /// failure only ever nudges the model ([`MAX_IDENTICAL_FAILURES`]).
     pub attended: bool,
+    /// Who reads the images the calls return (`Harness::eyes`).
+    pub eyes: Option<&'a crate::sidecar::Eyes>,
+    /// The run's background work (`model_call::Housekeeper`) and the turn's
+    /// model reference it resolves for.
+    pub housekeeper: &'a crate::harness::model_call::Housekeeper,
+    pub chosen: &'a str,
 }
 
 /// The run's state the round reads and updates: the called tools and the
@@ -379,11 +384,11 @@ pub(crate) async fn run_tool_round(
     let RoundContext {
         scope,
         tools,
-        providers,
         iteration,
         workflow_mode,
         side_trace,
         attended,
+        eyes,
         ..
     } = *cx;
     let RunToolScope {
@@ -470,8 +475,7 @@ pub(crate) async fn run_tool_round(
     // A `question` on the call (a second look at a detail) is the helper's
     // to answer.
     let mut had_image: Vec<usize> = Vec::new();
-    let helper = ai::default_provider(&providers.read().await);
-    if let Some(provider) = helper {
+    if let Some(eyes) = eyes {
         let mut looks = FuturesUnordered::new();
         for (idx, entry) in results.iter().enumerate() {
             let Some((tc, result)) = entry else { continue };
@@ -481,10 +485,10 @@ pub(crate) async fn run_tool_round(
             let reference = image_reference(tc, raw);
             let context = format!("Where it came from: {} returned it ({}).", tc.name, truncate_str(&result.content, 300));
             let question = tc.input.get("question").and_then(|q| q.as_str()).map(str::to_string);
-            let prov = provider.clone();
+            let eyes = eyes.clone();
             let trace = side_trace("image_read");
             looks.push(async move {
-                let reading = crate::sidecar::look(trace, prov.as_ref(), &picture, &context, question.as_deref()).await;
+                let reading = crate::sidecar::look(trace, &eyes, &picture, &context, question.as_deref()).await;
                 (idx, crate::sidecar::note(&reference, Some((picture.width, picture.height)), reading.as_deref()))
             });
         }
@@ -1012,7 +1016,6 @@ async fn run_call(
     let RoundContext {
         scope,
         tools,
-        providers,
         concurrency,
         hooks,
         user_prompt,
@@ -1021,6 +1024,8 @@ async fn run_call(
         active_task,
         turn_mode,
         side_trace,
+        housekeeper,
+        chosen,
         ..
     } = *cx;
     let RunToolScope { sessions, tx, session_id, run_cwd, .. } = *scope;
@@ -1109,10 +1114,10 @@ async fn run_call(
                 Some(m) => (m.objective.as_str(), m.instruction.as_str()),
                 None => (active_task.as_str(), user_prompt),
             };
-            let providers = providers.read().await.clone();
+            let aux = housekeeper.route(chosen).await;
             let judge = crate::harness::permissions::judgement::JudgeCx {
                 decide: decide.map(|d| d.as_ref()),
-                providers: &providers,
+                aux: aux.as_ref(),
                 trace: side_trace,
                 objective,
                 last_message,

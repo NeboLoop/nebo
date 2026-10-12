@@ -37,6 +37,8 @@ use ai::{Answer, DecideClient, EmbeddingProvider, Provider, Question, StreamEven
 use db::Store;
 use db::models::Memory;
 
+use crate::harness::model_call::Housekeeper;
+
 /// Curation operates on relationships BETWEEN facts (duplicates,
 /// contradictions, merges) — a scope needs at least a pair before a curator
 /// call can do anything. Deliberately not a size gate: correctness does not
@@ -91,14 +93,14 @@ static SCOPE_LOCKS: LazyLock<Mutex<HashSet<String>>> =
 static MICRO_LOCKS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// Chat-provider handle for the write-time micro-curator, set once by
+/// The background resolver for the write-time micro-curator, set once by
 /// [`spawn_sweep`] (the same wiring that powers the sweep). The memory write
 /// paths deliberately don't carry chat providers — when this is unset (unit
 /// tests, no server wiring) the micro-check silently skips.
-static PROVIDERS: OnceLock<Arc<tokio::sync::RwLock<Vec<Arc<dyn Provider>>>>> = OnceLock::new();
+static HOUSEKEEPER: OnceLock<Housekeeper> = OnceLock::new();
 
 /// Typed-decision client for the write-time micro-curator, set once by
-/// [`spawn_sweep`] beside [`PROVIDERS`]. None (Janus absent) means every
+/// [`spawn_sweep`] beside [`HOUSEKEEPER`]. None (Janus absent) means every
 /// candidate pair is kept as two facts — no call.
 static DECIDE: OnceLock<Option<Arc<DecideClient>>> = OnceLock::new();
 
@@ -110,13 +112,11 @@ pub struct ConsolidationResult {
     pub deleted: usize,
 }
 
-/// The ONE provider/model resolution for every curator call (sweep and
-/// micro-check): honor aux task-routing (`task_routing.aux` in models.yaml)
-/// when configured, otherwise prefer a non-gateway provider with its default
-/// model — the sweep's historical selection.
-fn curation_provider(providers: &[Arc<dyn Provider>]) -> Option<(Arc<dyn Provider>, String)> {
-    crate::harness::model_call::resolve_aux(&config::ModelsConfig::load(), providers)
-        .or_else(|| crate::harness::model_call::prefer_non_gateway(providers).map(|p| (p, String::new())))
+/// Where every curator call (sweep and micro-check) goes: the bot default's
+/// background route (`model_call::Housekeeper`). A memory scope is not one
+/// turn, so it runs on the bot's default pack.
+async fn curation_provider(housekeeper: &Housekeeper) -> Option<(Arc<dyn Provider>, String)> {
+    housekeeper.route("").await.map(|r| (r.provider, r.model))
 }
 
 /// Spawn the background consolidation sweep task.
@@ -128,13 +128,13 @@ fn curation_provider(providers: &[Arc<dyn Provider>]) -> Option<(Arc<dyn Provide
 /// call); the sweep curator does not use it.
 pub fn spawn_sweep(
     store: Arc<Store>,
-    providers: Arc<tokio::sync::RwLock<Vec<Arc<dyn Provider>>>>,
+    housekeeper: Housekeeper,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     decide: Option<Arc<DecideClient>>,
 ) {
-    // Share the provider handle and the decide client with the write-time
-    // micro-curator.
-    let _ = PROVIDERS.set(providers.clone());
+    // Share the background resolver and the decide client with the
+    // write-time micro-curator.
+    let _ = HOUSEKEEPER.set(housekeeper.clone());
     let _ = DECIDE.set(decide);
 
     tokio::spawn(async move {
@@ -196,10 +196,7 @@ pub fn spawn_sweep(
                     locks.insert(user_id.clone());
                 }
 
-                let provider = {
-                    let prov_lock = providers.read().await;
-                    curation_provider(&prov_lock)
-                };
+                let provider = curation_provider(&housekeeper).await;
 
                 if let Some((provider, model)) = provider {
                     match consolidate_scope(
@@ -463,7 +460,7 @@ pub async fn check_new_memories(
     keys: &[(String, String)],
     user_id: &str,
 ) {
-    let Some(providers) = PROVIDERS.get() else {
+    let Some(housekeeper) = HOUSEKEEPER.get() else {
         return; // no server wiring (tests, embedded use) — skip
     };
     let Some(decide) = DECIDE.get().and_then(|d| d.clone()) else {
@@ -472,10 +469,7 @@ pub async fn check_new_memories(
     };
     // The chat model only WRITES a merged value; without one, merge falls
     // back to keeping both while supersede still applies.
-    let writer = {
-        let lock = providers.read().await;
-        curation_provider(&lock)
-    };
+    let writer = curation_provider(housekeeper).await;
 
     // Rate limit: at most one in-flight micro-check per scope.
     {

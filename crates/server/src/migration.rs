@@ -32,6 +32,54 @@ pub fn migrate_if_needed(data_dir: &Path) {
     info!("migration complete");
 }
 
+/// Marker for [`migrate_models_yaml`].
+const MODELS_YAML_MARKER: &str = ".models-yaml-packs";
+
+/// The owner's models.yaml, rewritten once to what Nebo reads now
+/// (`config::ModelsConfig::upgrade`): a Nebo AI speed chosen as the bot's
+/// default becomes the Nebo AI pack at that level, and the Janus catalog's
+/// old ids are renamed. A file that needs nothing is left untouched.
+pub fn migrate_models_yaml() {
+    let Ok(data_dir) = config::data_dir() else {
+        return;
+    };
+    let marker = data_dir.join(MODELS_YAML_MARKER);
+    if marker.exists() {
+        return;
+    }
+    if let Some(mut cfg) = config::ModelsConfig::load_owned() {
+        if cfg.upgrade(&old_fallbacks()) {
+            if let Err(e) = cfg.save() {
+                warn!(error = %e, "models.yaml could not be rewritten; it is tried again at the next start");
+                return;
+            }
+            info!("models.yaml: the bot's default names the Nebo AI pack");
+        }
+    }
+    if let Err(e) = std::fs::write(&marker, "migrated") {
+        warn!(error = %e, "failed to write the models.yaml migration marker");
+    }
+}
+
+/// The owner's file's `defaults.fallbacks`, which Nebo no longer reads:
+/// what [`config::ModelsConfig::upgrade`] keeps of it is each provider's
+/// default model.
+fn old_fallbacks() -> Vec<String> {
+    let Some(text) = config::data_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join(types::constants::files::MODELS_YAML)).ok())
+    else {
+        return Vec::new();
+    };
+    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+        return Vec::new();
+    };
+    yaml["defaults"]["fallbacks"]
+        .as_sequence()
+        .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
 /// Move skills from `<data_dir>/skills/` → `<data_dir>/user/skills/`
 fn migrate_skills(data_dir: &Path) {
     let old_skills = data_dir.join("skills");
