@@ -114,7 +114,9 @@ pub struct Activity {
     /// to anything else pauses the run for the owner, who can add the tool
     /// (`AskCase::StepTool`) (2026-10-08: a Vivid step created schedules to
     /// "retry in 30 seconds", and those runs created more). Undeclared
-    /// (`None`): see `engine::enforced_tools`.
+    /// (`None`): see `engine::enforced_tools`. `Some([])` declares no tools:
+    /// a lean activity (`engine::is_lean`), so an empty declaration survives
+    /// a round trip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
 }
