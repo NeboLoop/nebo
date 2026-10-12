@@ -1880,6 +1880,9 @@ export interface ConfigResponse {
 export interface ConnectIntegrationResponse {
 	success: boolean
 	message: string
+	toolCount: number
+	toolsUpdated: number
+	tools: string[]
 }
 
 export interface CreateAdminResponse {

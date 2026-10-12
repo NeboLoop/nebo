@@ -4242,7 +4242,8 @@
 		"disconnect": "قطع الاتصال",
 		"connected": "متصل",
 		"refreshTools": "تحديث الأدوات",
-		"updated": "{count, plural, =1{تم التحديث · أداة واحدة} other{تم التحديث · {count} أدوات}}"
+		"upToDate": "الأدوات محدّثة · {count, plural, =1{أداة واحدة} other{{count} أدوات}}",
+		"toolsUpdated": "{changed, plural, =1{تم تحديث أداة واحدة} other{تم تحديث {changed} أدوات}} · {count, plural, =1{أداة واحدة} other{{count} أدوات}}"
 	},
 	"chatMode": {
 		"title": "الإذن",

@@ -169,16 +169,22 @@
     }
   }
 
-  /** Refresh tools: connect again and read the server's tool list anew. */
+  /** Refresh tools: connect again and read the server's tool list anew;
+   *  says whether any tool arrived, left or changed, and how many there are. */
   async function refresh(id: string) {
     refreshing = true;
     refreshed = null;
     const api = await import('$lib/api/nebo');
     try {
-      const r = (await api.connectIntegration(id)) as { success?: boolean; toolCount?: number; message?: string; needsReauth?: boolean };
+      const r = (await api.connectIntegration(id)) as { success?: boolean; toolCount?: number; toolsUpdated?: number; message?: string; needsReauth?: boolean };
       if (r?.success) {
-        patch(id, { isEnabled: true, connectionStatus: 'connected', toolCount: r.toolCount ?? 0, lastError: null });
-        refreshed = { ok: true, text: $t('connectors.updated', { values: { count: r.toolCount ?? 0 } }) };
+        const count = r.toolCount ?? 0;
+        const changed = r.toolsUpdated ?? 0;
+        patch(id, { isEnabled: true, connectionStatus: 'connected', toolCount: count, lastError: null });
+        refreshed = {
+          ok: true,
+          text: changed > 0 ? $t('connectors.toolsUpdated', { values: { changed, count } }) : $t('connectors.upToDate', { values: { count } })
+        };
         await loadTools(id);
       } else {
         patch(id, { connectionStatus: r?.needsReauth ? 'needs_reauth' : 'error', lastError: r?.message || null });

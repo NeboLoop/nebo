@@ -4242,7 +4242,8 @@
 		"disconnect": "সংযোগ বিচ্ছিন্ন",
 		"connected": "সংযুক্ত",
 		"refreshTools": "টুল রিফ্রেশ করুন",
-		"updated": "{count, plural, =1{আপডেট হয়েছে · ১টি টুল} other{আপডেট হয়েছে · {count}টি টুল}}"
+		"upToDate": "টুলগুলো হালনাগাদ আছে · {count}টি টুল",
+		"toolsUpdated": "{changed}টি টুল আপডেট হয়েছে · {count}টি টুল"
 	},
 	"chatMode": {
 		"title": "অনুমতি",

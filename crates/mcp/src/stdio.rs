@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::debug;
 
 use crate::{McpError, McpToolDef, McpToolResult};
@@ -37,10 +37,14 @@ pub struct StdioSession {
 
 impl StdioSession {
     /// Spawn the server process and perform the MCP `initialize` handshake.
+    /// `tools_changed` hears `integration_id` whenever the server says its
+    /// tools changed (`notifications/tools/list_changed`).
     pub async fn spawn(
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        integration_id: &str,
+        tools_changed: mpsc::UnboundedSender<String>,
     ) -> Result<Arc<Self>, McpError> {
         let mut child = command::new::<tokio::process::Command>(command, command::Console::Hidden)
             .args(args)
@@ -64,10 +68,12 @@ impl StdioSession {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
 
         // Background reader: dispatch each response line to its waiting caller by
-        // `id`. Notifications (no `id`) are ignored. Ends when stdout closes (i.e.
-        // the child exits / is killed).
+        // `id`. Of the notifications (no `id`), a changed tool list is passed
+        // on; the rest are ignored. Ends when stdout closes (i.e. the child
+        // exits / is killed).
         {
             let pending = pending.clone();
+            let integration_id = integration_id.to_string();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -82,6 +88,10 @@ impl StdioSession {
                         if let Some(tx) = pending.lock().await.remove(&id) {
                             let _ = tx.send(msg);
                         }
+                    } else if msg.get("method").and_then(|m| m.as_str())
+                        == Some(crate::client::TOOLS_LIST_CHANGED)
+                    {
+                        let _ = tools_changed.send(integration_id.clone());
                     }
                 }
             });
@@ -175,7 +185,8 @@ impl StdioSession {
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error");
-            return Err(McpError::Other(format!("Connector '{method}' error: {m}")));
+            let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+            return Err(McpError::Other(format!("Connector '{method}' error ({code}): {m}")));
         }
         Ok(msg.get("result").cloned().unwrap_or(Value::Null))
     }

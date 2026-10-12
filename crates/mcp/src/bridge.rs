@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::client::McpClient;
 use crate::{McpError, McpToolDef, McpToolResult};
@@ -13,8 +13,35 @@ struct Connection {
     server_slug: String,
     tool_names: Vec<String>,     // namespaced: mcp__server__tool
     original_names: Vec<String>, // original tool names from the server
-    /// The server's definitions, as it offered them at this connect.
+    /// The server's definitions, as it offered them when last listed.
     defs: Vec<McpToolDef>,
+}
+
+/// A server's tools listed again on its live connection.
+#[derive(Debug, Clone)]
+pub struct Relisted {
+    /// Every tool the server offers now.
+    pub tools: Vec<McpToolDef>,
+    /// The tools (their own names) that arrived, left, or changed definition.
+    pub changed: Vec<String>,
+}
+
+/// The tools (their own names) that arrived, left, or changed definition
+/// between two listings of one server.
+pub fn changed_tools(before: &[McpToolDef], after: &[McpToolDef]) -> Vec<String> {
+    let value = |d: &McpToolDef| serde_json::to_value(d).unwrap_or_default();
+    let mut changed: Vec<String> = after
+        .iter()
+        .filter(|a| before.iter().find(|b| b.name == a.name).is_none_or(|b| value(b) != value(a)))
+        .map(|a| a.name.clone())
+        .collect();
+    changed.extend(
+        before
+            .iter()
+            .filter(|b| !after.iter().any(|a| a.name == b.name))
+            .map(|b| b.name.clone()),
+    );
+    changed
 }
 
 /// Callback to register/unregister proxy tools in the agent's tool registry.
@@ -159,6 +186,67 @@ impl Bridge {
             "connected MCP integration"
         );
         Ok(tools)
+    }
+
+    /// List a connected server's tools again on its live connection (no
+    /// reconnect: a stdio server keeps its process) and register what
+    /// changed: a new or changed tool is registered with its new definition,
+    /// a tool the server stopped offering is removed. Every chat reads its
+    /// tools from the registry, so the next step of a running chat and every
+    /// new chat get the new definitions.
+    pub async fn refresh(&self, integration_id: &str) -> Result<Relisted, McpError> {
+        let (server_type, before) = {
+            let conns = self.connections.lock().await;
+            let conn = conns
+                .get(integration_id)
+                .ok_or_else(|| McpError::NotFound(format!("connection {integration_id}")))?;
+            (conn.server_slug.clone(), conn.defs.clone())
+        };
+        let tools = self.client.relist_tools(integration_id).await?;
+        let changed = changed_tools(&before, &tools);
+
+        let mut conns = self.connections.lock().await;
+        let Some(conn) = conns.get_mut(integration_id) else {
+            return Err(McpError::NotFound(format!("connection {integration_id}")));
+        };
+        for gone in before.iter().filter(|b| !tools.iter().any(|t| t.name == b.name)) {
+            self.registry.unregister_proxy(&make_tool_name(&server_type, &gone.name));
+        }
+        let tool_names: Vec<String> = tools.iter().map(|t| make_tool_name(&server_type, &t.name)).collect();
+        let original_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        for (t, proxy_name) in tools.iter().zip(tool_names.iter()) {
+            if changed.contains(&t.name) {
+                self.registry.register_proxy(proxy_name, t, integration_id);
+            }
+        }
+        if !changed.is_empty() {
+            let synced: Vec<(String, String)> =
+                original_names.iter().cloned().zip(tool_names.iter().cloned()).collect();
+            self.registry.tools_synced(integration_id, &server_slug(&server_type), &synced);
+        }
+        conn.tool_names = tool_names;
+        conn.original_names = original_names;
+        conn.defs = tools.clone();
+        info!(id = integration_id, tools = tools.len(), changed = changed.len(), "MCP tools listed again");
+        Ok(Relisted { tools, changed })
+    }
+
+    /// List a server's tools again whenever it says they changed
+    /// (`notifications/tools/list_changed`). Started once, beside the
+    /// bridge; ends when the bridge is dropped.
+    pub fn watch_tool_changes(self: &Arc<Self>) {
+        let Some(mut changed) = self.client.take_tools_changed() else {
+            return;
+        };
+        let bridge = Arc::downgrade(self);
+        tokio::spawn(async move {
+            while let Some(id) = changed.recv().await {
+                let Some(bridge) = bridge.upgrade() else { break };
+                if let Err(e) = bridge.refresh(&id).await {
+                    warn!(integration = %id, error = %e, "MCP tools changed but could not be listed again");
+                }
+            }
+        });
     }
 
     /// Disconnect an integration and remove its proxy tools.
@@ -319,5 +407,24 @@ mod tests {
         // Anything a provider would refuse in a name becomes `_`.
         assert_eq!(make_tool_name("docs.example", "files/read:v2"), "mcp__docs_example__files_read_v2");
 
+    }
+
+    /// A listing's change is every tool that arrived, left, or changed
+    /// definition; an identical listing changes nothing.
+    #[test]
+    fn changed_tools_are_the_ones_that_arrived_left_or_changed() {
+        let def = |v: serde_json::Value| serde_json::from_value::<McpToolDef>(v).unwrap();
+        let before = vec![
+            def(serde_json::json!({"name": "prices", "inputSchema": {"type": "object", "properties": {"ids": {"type": "array"}}}})),
+            def(serde_json::json!({"name": "old"})),
+            def(serde_json::json!({"name": "same", "description": "x"})),
+        ];
+        let after = vec![
+            def(serde_json::json!({"name": "prices", "inputSchema": {"type": "object", "properties": {"ids": {"type": "array"}, "display_names": {"type": "boolean"}}}})),
+            def(serde_json::json!({"name": "new"})),
+            def(serde_json::json!({"name": "same", "description": "x"})),
+        ];
+        assert_eq!(changed_tools(&before, &after), vec!["prices", "new", "old"]);
+        assert!(changed_tools(&after, &after).is_empty());
     }
 }

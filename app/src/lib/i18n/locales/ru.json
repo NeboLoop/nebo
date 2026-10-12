@@ -4242,7 +4242,8 @@
 		"disconnect": "Отключить",
 		"connected": "Подключено",
 		"refreshTools": "Обновить инструменты",
-		"updated": "{count, plural, =1{Обновлено · 1 инструмент} few{Обновлено · {count} инструмента} many{Обновлено · {count} инструментов} other{Обновлено · {count} инструмента}}"
+		"upToDate": "Инструменты актуальны · {count, plural, one{{count} инструмент} few{{count} инструмента} many{{count} инструментов} other{{count} инструмента}}",
+		"toolsUpdated": "Обновлено: {changed} · {count, plural, one{{count} инструмент} few{{count} инструмента} many{{count} инструментов} other{{count} инструмента}}"
 	},
 	"chatMode": {
 		"title": "Разрешение",

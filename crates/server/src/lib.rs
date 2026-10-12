@@ -2033,6 +2033,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mcp_client = Arc::new(mcp::McpClient::new(encryptor));
     let bridge = Arc::new(mcp::Bridge::new(mcp_client, tool_registry.clone()));
     tool_registry.set_bridge(bridge.clone());
+    // A server that says its tools changed gets them listed again.
+    bridge.watch_tool_changes();
     // Store is needed by MCP proxy tools for OAuth token refresh during calls.
     tool_registry.set_store(store.clone());
     // Wire owner alerts (message notify/alert) to the frontend: the message tool

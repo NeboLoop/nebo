@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use ai::ToolDefinition;
 
@@ -1059,8 +1059,19 @@ impl Registry {
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
 
-        let input = match self.settle(tool.as_ref(), name, input, ctx.answered_ask.is_some()).await {
-            Ok(input) => input,
+        let replayed = ctx.answered_ask.is_some();
+        let (tool, input) = match self.settle(tool.as_ref(), name, input.clone(), replayed).await {
+            Ok(settled) => (tool, settled),
+            // A connector tool's schema may be stale (its server added a
+            // field since it was listed): list the server's tools again and,
+            // when this tool changed, settle the call against the new one.
+            Err(invalid @ Invalid::Schema { .. }) => match self.relisted(tool.as_ref(), name).await {
+                Some(fresh) => match self.settle(fresh.as_ref(), name, input, replayed).await {
+                    Ok(settled) => (fresh, settled),
+                    Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
+                },
+                None => return self.invalid_call(ctx, name, invalid).await,
+            },
             Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
         };
 
@@ -1132,6 +1143,25 @@ impl Registry {
             self.load_with_error(ctx, name, &mut result).await;
         }
         result
+    }
+
+    /// An MCP proxy tool as registered after its server's tools were listed
+    /// again, when its definition changed; `None` for any other tool, or
+    /// when nothing about it changed.
+    async fn relisted(&self, tool: &dyn DynTool, name: &str) -> Option<Arc<dyn DynTool>> {
+        let (integration_id, original) = tool.mcp_proxy_info()?;
+        let bridge = self.bridge.read().ok()?.clone()?;
+        match bridge.refresh(&integration_id).await {
+            Ok(relisted) if relisted.changed.contains(&original) => {
+                info!(tool = %name, "connector tool changed; settling the call against its new definition");
+                self.get(name).await
+            }
+            Ok(_) => None,
+            Err(e) => {
+                warn!(tool = %name, error = %e, "connector tools could not be listed again");
+                None
+            }
+        }
     }
 
     /// The error for a call that won't run as written: what is wrong with

@@ -4242,7 +4242,8 @@
 		"disconnect": "Koppla bort",
 		"connected": "Ansluten",
 		"refreshTools": "Uppdatera verktyg",
-		"updated": "{count, plural, other{Uppdaterat · {count} verktyg}}"
+		"upToDate": "Verktygen är aktuella · {count} verktyg",
+		"toolsUpdated": "{changed, plural, =1{1 verktyg uppdaterat} other{{changed} verktyg uppdaterade}} · {count} verktyg"
 	},
 	"chatMode": {
 		"title": "Behörighet",

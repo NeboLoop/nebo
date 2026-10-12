@@ -4242,7 +4242,8 @@
 		"disconnect": "中斷連線",
 		"connected": "已連線",
 		"refreshTools": "重新整理工具",
-		"updated": "{count, plural, other{已更新 · {count} 個工具}}"
+		"upToDate": "工具已是最新 · {count} 個工具",
+		"toolsUpdated": "已更新 {changed} 個工具 · 共 {count} 個工具"
 	},
 	"chatMode": {
 		"title": "權限",

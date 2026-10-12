@@ -4242,7 +4242,8 @@
 		"disconnect": "ตัดการเชื่อมต่อ",
 		"connected": "เชื่อมต่อแล้ว",
 		"refreshTools": "รีเฟรชเครื่องมือ",
-		"updated": "{count, plural, other{อัปเดตแล้ว · {count} เครื่องมือ}}"
+		"upToDate": "เครื่องมือเป็นปัจจุบันแล้ว · {count} เครื่องมือ",
+		"toolsUpdated": "อัปเดต {changed} เครื่องมือ · {count} เครื่องมือ"
 	},
 	"chatMode": {
 		"title": "สิทธิ์",

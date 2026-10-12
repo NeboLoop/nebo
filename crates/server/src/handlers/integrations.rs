@@ -1034,8 +1034,11 @@ pub async fn connect_integration(
     // e.g. "monument.sh" → "monument_sh" → tools named mcp__monument_sh__comment
     let tool_prefix = mcp::bridge::tool_name_prefix(&integration.name);
 
+    // What the server offered before, so the answer says what changed.
+    let before = state.bridge.tool_defs(&id).await;
+
     // Try to connect and list tools
-    match state
+    let tools = match state
         .bridge
         .connect(
             &id,
@@ -1046,34 +1049,7 @@ pub async fn connect_integration(
         )
         .await
     {
-        Ok(tools) => {
-            let tool_count = tools.len();
-            // Update connection status in DB. Also re-enable the integration: a
-            // successful connect is an explicit user action, and the connect_all
-            // sync disconnects (and refuses to reconnect) any is_enabled=0 server.
-            // Without this, reconnecting a deactivated server has no lasting
-            // effect — it drops again on the next sync.
-            let _ = state.store.update_mcp_integration(
-                &id,
-                None,
-                None,
-                None,
-                Some(true),
-                Some(&serde_json::json!({"connection_status": "connected", "tool_count": tool_count}).to_string()),
-            );
-            // Also update connection_status column directly
-            let _ = state
-                .store
-                .set_mcp_connection_status(&id, "connected", tool_count as i64, None);
-
-            let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-            Ok(Json(serde_json::json!({
-                "success": true,
-                "message": format!("Connected — {} tools registered", tool_count),
-                "toolCount": tool_count,
-                "tools": tool_names,
-            })))
-        }
+        Ok(tools) => tools,
         Err(e) => {
             warn!(
                 integration = %id,
@@ -1092,12 +1068,43 @@ pub async fn connect_integration(
                 None,
                 Some(&serde_json::json!({"last_error": &err_msg}).to_string()),
             );
-            Ok(Json(serde_json::json!({
+            return Ok(Json(serde_json::json!({
                 "success": false,
                 "message": err_msg,
-            })))
+            })));
         }
-    }
+    };
+    let tool_count = tools.len();
+    // Update connection status in DB. Also re-enable the integration: a
+    // successful connect is an explicit user action, and the connect_all
+    // sync disconnects (and refuses to reconnect) any is_enabled=0 server.
+    // Without this, reconnecting a deactivated server has no lasting
+    // effect — it drops again on the next sync.
+    let _ = state.store.update_mcp_integration(
+        &id,
+        None,
+        None,
+        None,
+        Some(true),
+        Some(&serde_json::json!({"connection_status": "connected", "tool_count": tool_count}).to_string()),
+    );
+    // Also update connection_status column directly
+    let _ = state
+        .store
+        .set_mcp_connection_status(&id, "connected", tool_count as i64, None);
+
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    // The tools that arrived, left, or changed definition since the
+    // server was last listed: Refresh tools says "Tools up to date"
+    // when there are none.
+    let updated_count = mcp::bridge::changed_tools(&before, &tools).len();
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Connected — {} tools registered", tool_count),
+        "toolCount": tool_count,
+        "toolsUpdated": updated_count,
+        "tools": tool_names,
+    })))
 }
 
 /// POST /api/v1/integrations/:id/reauthenticate — clear stored credentials and restart OAuth.

@@ -4242,7 +4242,8 @@
 		"disconnect": "Bağlantıyı kes",
 		"connected": "Bağlı",
 		"refreshTools": "Araçları yenile",
-		"updated": "{count, plural, other{Güncellendi · {count} araç}}"
+		"upToDate": "Araçlar güncel · {count} araç",
+		"toolsUpdated": "{changed} araç güncellendi · {count} araç"
 	},
 	"chatMode": {
 		"title": "İzin",

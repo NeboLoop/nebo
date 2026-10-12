@@ -4242,7 +4242,8 @@
 		"disconnect": "Від'єднати",
 		"connected": "Підключено",
 		"refreshTools": "Оновити інструменти",
-		"updated": "{count, plural, =1{Оновлено · 1 інструмент} few{Оновлено · {count} інструменти} many{Оновлено · {count} інструментів} other{Оновлено · {count} інструмента}}"
+		"upToDate": "Інструменти актуальні · {count, plural, one{{count} інструмент} few{{count} інструменти} many{{count} інструментів} other{{count} інструменти}}",
+		"toolsUpdated": "Оновлено: {changed} · {count, plural, one{{count} інструмент} few{{count} інструменти} many{{count} інструментів} other{{count} інструменти}}"
 	},
 	"chatMode": {
 		"title": "Дозвіл",

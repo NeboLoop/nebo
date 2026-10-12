@@ -4242,7 +4242,8 @@
 		"disconnect": "डिस्कनेक्ट करें",
 		"connected": "कनेक्टेड",
 		"refreshTools": "टूल रीफ़्रेश करें",
-		"updated": "{count, plural, =1{अपडेट किया गया · 1 टूल} other{अपडेट किया गया · {count} टूल}}"
+		"upToDate": "टूल अप टू डेट हैं · {count} टूल",
+		"toolsUpdated": "{changed, plural, =1{1 टूल अपडेट हुआ} other{{changed} टूल अपडेट हुए}} · {count} टूल"
 	},
 	"chatMode": {
 		"title": "अनुमति",
