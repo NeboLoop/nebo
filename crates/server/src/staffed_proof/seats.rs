@@ -666,3 +666,88 @@ async fn the_hire_list_answers_from_what_is_known_and_an_app_found_later_is_sent
     let next = list().await.unwrap().0;
     assert_eq!(next["computers"], sent["computers"]);
 }
+
+/// A duty the owner has an employee given in chat runs from that moment
+/// (model bake-off 2026-10-10, B8). The create result said heartbeat and
+/// event duties "do not run until the app restarts", every builder told the
+/// owner so, and an event duty waited on the directory watcher to start the
+/// employee's worker; a duty turned off or removed (no file is written)
+/// kept firing until a restart. Now `create_employee` and `update_employee`
+/// restart the employee's worker, the one owner of its live triggers, as
+/// they return: the event subscription is there at once, it goes when the
+/// duty is turned off or removed and comes back when it is added, and the
+/// hourly heartbeat is a binding the engine arms on its next pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duties_made_in_chat_are_live_at_once() {
+    let nebo = session().await;
+    let mut ctx = tools::ToolContext::new(Origin::User).with_session("agent:assistant:web".to_string(), "s1");
+    ctx.owner_request = true;
+    let call = |name: &'static str, input: Value| {
+        let ctx = ctx.clone();
+        let tools = nebo.state.tools.clone();
+        async move { tools.get(name).await.expect(name).execute_dyn(&ctx, input).await }
+    };
+    let subscribed = |id: String, source: &'static str| {
+        let dispatcher = nebo.state.event_dispatcher.clone();
+        async move {
+            let event = tools::Event { source: source.into(), payload: json!({}), origin: String::new(), timestamp: 0 };
+            dispatcher.match_event(&event).await.iter().any(|s| s.agent_source == id && s.binding_name == "stalled-deal")
+        }
+    };
+
+    let duties = json!({
+        "name": "Live Duty Watcher",
+        "description": "Watches the pipeline for stalled deals.",
+        "automations": [
+            { "name": "stalled-deal", "sources": ["deal.stalled"], "steps": ["Tell the owner which deal stalled."], "tools": ["message_owner"] },
+            { "name": "urgent-watch", "interval": "1h", "window": "08:00-18:00", "steps": ["Check for urgent deals."], "tools": ["message_owner"] }
+        ]
+    });
+    let drafted = call("create_employee", duties).await;
+    assert!(!drafted.is_error, "{}", drafted.content);
+    let created = match drafted.payload.as_ref().and_then(|p| p["draftId"].as_str()) {
+        Some(draft) => call("create_employee", json!({ "draft_id": draft })).await,
+        None => drafted,
+    };
+    assert!(!created.is_error, "{}", created.content);
+    assert!(!created.content.contains("restart"), "nothing waits for a restart: {}", created.content);
+    let id = nebo.store().get_agent_by_name("Live Duty Watcher").unwrap().expect("created").id;
+
+    // The event duty is subscribed as the call returns.
+    assert!(subscribed(id.clone(), "deal.stalled").await, "the event duty is live at once");
+
+    // The heartbeat: an active binding of a live employee, which the engine
+    // arms on its next pass (every minute) with no restart.
+    let live: std::collections::HashSet<String> = nebo.state.agent_registry.read().await.keys().cloned().collect();
+    assert!(live.contains(&id), "the employee is live");
+    // Every active heartbeat binding, as the engine's pass reads them.
+    let beats = nebo.store().list_active_heartbeat_workflows().unwrap();
+    let mine: Vec<&str> = beats.iter().filter(|b| b.agent_id == id).map(|b| b.binding_name.as_str()).collect();
+    assert_eq!(mine, ["urgent-watch"]);
+    crate::engine::arm_binding_heartbeats(nebo.store(), chrono::Utc::now().timestamp(), beats, &live);
+    let target = format!("hb:{id}:urgent-watch");
+    assert!(nebo.store().engine_pending_timers("binding").unwrap().iter().any(|t| t.target_id == target), "the heartbeat is armed");
+
+    // Turned off: unsubscribed at once (no file is written, so nothing
+    // else would have noticed). Turned on again: back.
+    let off = call("update_employee", json!({ "name": "Live Duty Watcher", "toggle_automation": "stalled-deal" })).await;
+    assert!(!off.is_error && off.content.contains("disabled"), "{}", off.content);
+    assert!(!subscribed(id.clone(), "deal.stalled").await, "a duty turned off stops listening at once");
+    let on = call("update_employee", json!({ "name": "Live Duty Watcher", "toggle_automation": "stalled-deal" })).await;
+    assert!(!on.is_error && on.content.contains("enabled"), "{}", on.content);
+    assert!(subscribed(id.clone(), "deal.stalled").await, "turned on again, it listens again");
+
+    // Removed: gone at once. Added back: live at once.
+    let removed = call("update_employee", json!({ "name": "Live Duty Watcher", "remove_automations": ["stalled-deal"] })).await;
+    assert!(!removed.is_error, "{}", removed.content);
+    assert!(!subscribed(id.clone(), "deal.stalled").await, "a removed duty stops listening at once");
+    let added = call(
+        "update_employee",
+        json!({ "name": "Live Duty Watcher", "add_automations": [
+            { "name": "stalled-deal", "sources": ["deal.stalled"], "steps": ["Tell the owner which deal stalled."], "tools": ["message_owner"] }
+        ] }),
+    )
+    .await;
+    assert!(!added.is_error, "{}", added.content);
+    assert!(subscribed(id.clone(), "deal.stalled").await, "a duty added in chat is live at once");
+}

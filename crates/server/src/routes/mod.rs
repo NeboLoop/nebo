@@ -7,6 +7,7 @@
 mod agent;
 mod apps;
 mod artifact_updates;
+mod background;
 mod auth;
 mod browser;
 mod desktop;
@@ -69,10 +70,11 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(provider::routes())
         .merge(skills::routes())
         .merge(tasks::routes())
+        .merge(background::routes())
         .merge(import::routes())
         .merge(integrations::routes())
         .merge(browser::routes())
-        .merge(desktop::routes())
+        .merge(desktop::routes(max_upload_bytes))
         .merge(update::routes())
         .merge(files::routes(max_upload_bytes))
         .merge(neboai::routes())
@@ -88,7 +90,7 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(store::routes())
         .merge(entity_config::routes())
         .merge(notifications::routes())
-        .merge(apps::routes())
+        .merge(apps::routes(max_upload_bytes))
         .merge(artifact_updates::routes())
         .merge(user::public_routes())
         .merge(self::codes_and_deps());
@@ -106,7 +108,8 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(protected)
 }
 
-/// Codes and dependency cascade routes (small enough to inline here).
+/// Codes, dependency cascade, active runs and the engine's quit (small
+/// enough to inline here).
 fn codes_and_deps() -> Router<AppState> {
     use crate::codes;
     use crate::deps;
@@ -115,6 +118,8 @@ fn codes_and_deps() -> Router<AppState> {
         .route("/codes", axum::routing::post(codes::submit_code))
         .route("/deps/approve", axum::routing::post(deps::approve_deps))
         .route("/runs/active", axum::routing::get(active_runs_handler))
+        // The desktop shell's "Quit Nebo".
+        .route("/engine/quit", axum::routing::post(crate::process::quit))
 }
 
 /// GET /api/v1/runs/active — list all top-level active agent runs.

@@ -4,6 +4,7 @@
 // then kept by the events the work already sends — never polled.
 import type { TeamWorkEntry } from '$lib/api/neboComponents';
 import { endsRun } from '$lib/chat/runEnd';
+import { isCallName, type CallName } from '$lib/chat/callLabel';
 
 export type WorkEntry = TeamWorkEntry;
 
@@ -32,7 +33,7 @@ export function stopBody(e: WorkEntry): { agentId: string; taskId?: string } {
 
 interface EventData {
 	session_id?: unknown;
-	label?: unknown;
+	call?: unknown;
 	task_id?: unknown;
 	description?: unknown;
 	current_operation?: unknown;
@@ -40,10 +41,11 @@ interface EventData {
 	agentId?: unknown;
 	state?: unknown;
 	stop_reason?: unknown;
-	runs?: { sessionKey?: string; activity?: string }[];
+	runs?: { sessionKey?: string; call?: unknown }[];
 }
 
 const text = (v: unknown) => (typeof v === 'string' ? v : '');
+const callOf = (v: unknown): CallName | null => (isCallName(v) ? v : null);
 
 /** The list after one event, for the team `teamId`. `nameOf` names a
  *  member by its agent id. Events for other conversations change nothing. */
@@ -54,19 +56,20 @@ export function applyWorkEvent(
 	teamId: string,
 	nameOf: (agentId: string) => string
 ): WorkEntry[] {
-	// `base` with the member at work, its activity updated when given.
-	const member = (base: WorkEntry[], agentId: string, activity?: string): WorkEntry[] => {
+	// `base` with the member at work, the call it makes updated when given.
+	const member = (base: WorkEntry[], agentId: string, call?: CallName | null): WorkEntry[] => {
 		const sessionKey = seatKey(agentId, teamId);
 		const known = base.find((e) => e.kind === 'member' && e.sessionKey === sessionKey);
 		const entry: WorkEntry = known
-			? { ...known, activity: activity ?? known.activity }
+			? { ...known, call: call ?? known.call }
 			: {
 					kind: 'member',
 					agentId,
 					member: nameOf(agentId),
 					title: nameOf(agentId),
 					taskId: '',
-					activity: activity ?? '',
+					call: call ?? null,
+					activity: '',
 					sessionKey,
 					chatId: '',
 				};
@@ -80,7 +83,7 @@ export function applyWorkEvent(
 		case 'chat_created': {
 			const agentId = seatMember(data.session_id, teamId);
 			if (!agentId) return list;
-			return member(list, agentId, type === 'tool_start' ? text(data.label) : undefined);
+			return member(list, agentId, type === 'tool_start' ? callOf(data.call) : undefined);
 		}
 		case 'chat_complete':
 		case 'chat_error':
@@ -104,9 +107,12 @@ export function applyWorkEvent(
 			const taskId = text(data.task_id);
 			if (!agentId || !taskId) return list;
 			const known = list.find((e) => e.kind === 'helper' && e.taskId === taskId);
+			// A step is a call; background work says its own line.
+			const call = type === 'subagent_progress' ? callOf(data.call) : null;
 			const activity = type === 'subagent_progress' ? text(data.current_operation) : '';
 			if (known) {
-				return list.map((e) => (e === known ? { ...e, activity: activity || e.activity } : e));
+				const moved = call ? { call, activity: '' } : activity ? { call: null, activity } : {};
+				return list.map((e) => (e === known ? { ...e, ...moved } : e));
 			}
 			return [
 				...list,
@@ -116,6 +122,7 @@ export function applyWorkEvent(
 					member: nameOf(agentId),
 					title: text(data.description) || nameOf(agentId),
 					taskId,
+					call,
 					activity,
 					sessionKey: `subagent:${seatKey(agentId, teamId)}:${taskId}`,
 					chatId: '',
@@ -129,16 +136,16 @@ export function applyWorkEvent(
 		case 'agent_progress': {
 			// The periodic snapshot of every running turn: a member's seat
 			// that is no longer in it has stopped; one that is gets its
-			// current activity. Helpers are not turns; their own events keep
+			// current call. Helpers are not turns; their own events keep
 			// them.
 			const runs = Array.isArray(data.runs) ? data.runs : [];
-			const live = new Map<string, string>();
+			const live = new Map<string, CallName | null>();
 			for (const r of runs) {
 				const agentId = seatMember(r.sessionKey, teamId);
-				if (agentId) live.set(agentId, r.activity ?? '');
+				if (agentId) live.set(agentId, callOf(r.call));
 			}
 			let next = list.filter((e) => e.kind === 'helper' || live.has(e.agentId));
-			for (const [agentId, activity] of live) next = member(next, agentId, activity || undefined);
+			for (const [agentId, call] of live) next = member(next, agentId, call ?? undefined);
 			return next;
 		}
 		default:

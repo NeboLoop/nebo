@@ -485,6 +485,13 @@ impl ToolContext {
         self
     }
 
+    /// The mode what this run starts is held to (`Grant::narrow`): a
+    /// workflow run, a hand-off or a team post it starts runs no looser.
+    /// `None` = nothing carried.
+    pub fn narrow(&self) -> Option<types::permissions::Mode> {
+        self.grant.as_ref().and_then(|g| g.narrow)
+    }
+
     /// Whether the run's tool allowlist admits this call. `None` =
     /// unrestricted (every normal run). Entries are either a bare tool name
     /// ("use_skill" — the whole tool), a `tool:subject` compound admitting

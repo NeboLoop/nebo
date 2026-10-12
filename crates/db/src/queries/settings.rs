@@ -277,15 +277,16 @@ impl Store {
         Ok(())
     }
 
-    /// List all non-secret settings for a plugin by name.
+    /// List all non-secret settings for a plugin by name: each key, its
+    /// value, and when it was last written (unix seconds).
     pub fn list_plugin_settings(
         &self,
         plugin_name: &str,
-    ) -> Result<Vec<(String, String)>, NeboError> {
+    ) -> Result<Vec<(String, String, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT ps.setting_key, ps.setting_value FROM plugin_settings ps
+                "SELECT ps.setting_key, ps.setting_value, ps.updated_at FROM plugin_settings ps
                  JOIN plugin_registry pr ON ps.plugin_id = pr.id
                  WHERE pr.name = ?1 AND ps.is_secret = 0
                  ORDER BY ps.setting_key",
@@ -293,7 +294,7 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![plugin_name], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let mut results = Vec::new();

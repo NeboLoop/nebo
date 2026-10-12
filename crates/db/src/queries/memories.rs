@@ -315,21 +315,6 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Delete memories under a namespace prefix across ALL user scopes.
-    /// Used to retire a whole layer (e.g. the legacy `daily/` layer).
-    pub fn delete_memories_by_namespace_prefix(
-        &self,
-        namespace_prefix: &str,
-    ) -> Result<usize, NeboError> {
-        let conn = self.conn()?;
-        let pattern = format!("{namespace_prefix}%");
-        conn.execute(
-            "DELETE FROM memories WHERE namespace LIKE ?1",
-            params![pattern],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
     /// Most recently updated memories in an agent's scope (any owner), newest
     /// first. Complements `list_memories_for_agent` (most-accessed): together
     /// they give workflow runs both what the agent uses most and what just
@@ -755,29 +740,6 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 #[cfg(test)]
 mod tests {
     use crate::Store;
-
-    #[test]
-    fn test_delete_memories_by_namespace_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("memq-test.db");
-        let store = Store::new(&path.to_string_lossy()).unwrap();
-
-        store
-            .upsert_memory("daily/2026-04-14", "old-fact", "v", None, None, "u1")
-            .unwrap();
-        store
-            .upsert_memory("daily/2026-06-12", "new-fact", "v", None, None, "u2:agent:x")
-            .unwrap();
-        store
-            .upsert_memory("tacit/preferences", "keep-me", "v", None, None, "u1")
-            .unwrap();
-
-        // Deletes across ALL user scopes, prefix-bounded
-        let deleted = store.delete_memories_by_namespace_prefix("daily/").unwrap();
-        assert_eq!(deleted, 2);
-        assert_eq!(store.count_memories_by_namespace("daily/").unwrap(), 0);
-        assert_eq!(store.count_memories_by_namespace("tacit/").unwrap(), 1);
-    }
 
     #[test]
     fn test_memory_scope_activity_bursts() {

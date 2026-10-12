@@ -52,6 +52,8 @@ struct GraphState {
     /// Output tokens only — the unit `budget.total_per_run` is enforced in
     /// (input is dominated by fixed tool-schema overhead resent every turn).
     total_output_tokens: u32,
+    /// Expert requests this pass found still out: (request key, deadline).
+    pending_experts: Vec<(String, i64)>,
 }
 
 struct GraphCtx<'a> {
@@ -94,6 +96,8 @@ struct GraphCtx<'a> {
     /// Per-loop body node sets (validated self-contained).
     loop_bodies: HashMap<String, HashSet<String>>,
     state: Mutex<GraphState>,
+    /// The model turns the run has left, shared by every node.
+    budget: crate::engine::RunBudget,
 }
 
 /// One barrier scope: the top-level walk, or one loop-body iteration.
@@ -238,6 +242,13 @@ pub(crate) async fn execute_graph(
             Ok((run_id.to_string(), final_context))
         }
         Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // Parked on experts: one wait for every request still out.
+        Err(WorkflowError::AwaitingExpert(_)) => {
+            let pending = std::mem::take(&mut ctx.state.lock().unwrap().pending_experts);
+            park_on_experts(store, run_id, &pending)?;
+            info!(workflow = def.id.as_str(), run_id, experts = pending.len(), "workflow waiting on experts (graph)");
+            Err(WorkflowError::AwaitingExpert(pending.len()))
+        }
         // Parked on the owner's answer: the suspension already set the run
         // awaiting_approval, and the answer resumes it. Not a failure.
         Err(e @ WorkflowError::AwaitingApproval { .. }) => Err(e),
@@ -370,6 +381,7 @@ fn build_ctx<'a>(
         skill_content,
         event_bus,
         emit_sources,
+        budget: crate::engine::RunBudget::for_workflow(def, progress_tx.clone()),
         progress_tx,
         checkpoint: checkpoint.cloned(),
         resume,
@@ -388,6 +400,7 @@ fn build_ctx<'a>(
             visits: HashMap::new(),
             total_tokens: 0,
             total_output_tokens: 0,
+            pending_experts: Vec::new(),
         }),
     }
 }
@@ -441,12 +454,21 @@ fn scoped_edges(ctx: &GraphCtx, scope: &WalkScope, node: &str) -> Vec<Edge> {
 }
 
 /// Deterministic error aggregation: branches settle (join_all), then the
-/// first error in edge order wins.
+/// first error in edge order wins. A branch parked on an expert is not an
+/// error of its own: a sibling's real error wins over it, and only when every
+/// other branch finished does the walk park.
 fn first_error(results: Vec<Result<(), WorkflowError>>) -> Result<(), WorkflowError> {
+    let mut parked = None;
     for r in results {
-        r?;
+        match r {
+            Ok(()) => {}
+            Err(e @ WorkflowError::AwaitingExpert(_)) => {
+                parked.get_or_insert(e);
+            }
+            Err(e) => return Err(e),
+        }
     }
-    Ok(())
+    parked.map_or(Ok(()), Err)
 }
 
 /// A walker arrives at `node` over one incoming edge. The join barrier
@@ -562,7 +584,9 @@ async fn execute_node<'a>(
         "wait" => run_wait(ctx, scope, activity).await,
         "http" => run_http(ctx, scope, activity).await,
         "command" => run_command(ctx, scope, activity).await,
+        "operation" => run_operation(ctx, scope, activity).await,
         "decide" => run_decide(ctx, scope, activity).await,
+        "expert" => run_expert(ctx, scope, activity).await,
         _ => run_llm_activity(ctx, scope, activity).await,
     }
 }
@@ -651,6 +675,17 @@ async fn run_command<'a>(
     // Owner-authored deterministic step: plugin auth env rides along so
     // env-auth plugin binaries work in command nodes (see ToolContext docs).
     tool_ctx.trusted_plugin_env = true;
+    // `params.stdin` names data the command reads on its standard input
+    // (`nodes.fetch.records`): a list of any size, quotes and all, which a
+    // `{{...}}` in the command line cannot carry (one argument is capped at
+    // 128 KiB on Linux, and a quote in a name ends the shell string).
+    let stdin = param_str(activity, "stdin");
+    if !stdin.trim().is_empty() {
+        tool_ctx.stdin = Some(match resolve_path(&data, stdin) {
+            Some(v) => value_as_string(&v).into_bytes(),
+            None => return fail(format!("params.stdin '{stdin}' names no data in this run")),
+        });
+    }
     let tool_ctx = tool_ctx;
     let result = {
         let _permit = ctx.loop_impl.acquire_tool_permit().await;
@@ -680,6 +715,231 @@ async fn run_command<'a>(
     info!(activity = activity.id.as_str(), "command node completed");
     record_output(ctx, scope, &activity.id, result.content);
     route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Pages one `operation` read follows before it stops: a plugin that never
+/// stops naming a next page is a broken plugin, not a long list.
+const MAX_OPERATION_PAGES: usize = 1_000;
+
+/// Deterministic interface step: perform a catalog operation
+/// (`params.operation`, e.g. `ledger.invoice.search`) through its operation
+/// tool, which resolves to whichever connected plugin binds it. The call goes
+/// through the same door as a model's call to that tool: the employee's
+/// permission check (a call that needs the owner's OK is refused — nobody
+/// waits on a code step), the write ledger and the lease.
+///
+/// Two shapes, by whether `params.rows` is set:
+/// - **read every page** — one call with `params.input`; while the answer
+///   names a `nextCursor`, the next call carries it as `cursor`. Each page's
+///   records are the answer's one list. Output:
+///   `{"operation", "records": [...], "pages": n}`.
+/// - **one call per row** — `params.rows` is a data path to a list of
+///   objects; each row's fields over `params.input` make one call, serially.
+///   A write row without a `clientKey` gets one from the run, the step and
+///   the row, so a resumed run never performs a row twice. Output:
+///   `{"operation", "results": [{"index", "ok", "result"|"error"}],
+///   "succeeded": n, "failed": m}`; a failed row does not stop the others.
+///
+/// `{{...}}` in `params.input`'s text values interpolates like a command.
+async fn run_operation<'a>(
+    ctx: &GraphCtx<'a>,
+    scope: &WalkScope,
+    activity: &Activity,
+) -> Result<(), WorkflowError> {
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed operation node");
+        record_output(ctx, scope, &activity.id, content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
+    let started_at = chrono::Utc::now().timestamp();
+
+    let fail = |err_msg: String| {
+        let _ = ctx.store.create_activity_result(
+            &ctx.run_id,
+            &activity.id,
+            &scope.iteration,
+            "failed",
+            0,
+            1,
+            Some(&err_msg),
+            started_at,
+            Some(chrono::Utc::now().timestamp()),
+        );
+        Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
+    };
+
+    let operation = param_str(activity, "operation").trim();
+    let tool_name = tools::operation_tools::operation_tool_name(operation);
+    let Some(tool) = ctx.resolved_tools.iter().find(|t| t.name() == tool_name) else {
+        return fail(format!(
+            "No connected plugin performs {operation}. Connect a plugin that binds it, then run this again."
+        ));
+    };
+
+    let data = data_context(ctx, scope);
+    let mut base = activity
+        .params
+        .as_ref()
+        .and_then(|p| p.get("input"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    interpolate_strings(&mut base, &data);
+
+    // As the employee that owns the workflow, like a command step.
+    let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+        tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
+        ctx.run_id.clone(),
+    );
+    tool_ctx.door = types::permissions::Door::Workflow;
+    tool_ctx.cannot_wait = true;
+    tool_ctx.user_id = ctx.memory_user_id.clone();
+    tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
+    let tool_ctx = tool_ctx;
+    let call = |input: serde_json::Value| {
+        let tool_ctx = &tool_ctx;
+        async move {
+            let _permit = ctx.loop_impl.acquire_tool_permit().await;
+            tool.execute_dyn(tool_ctx, input).await
+        }
+    };
+    let cancelled = || ctx.cancel_token.is_some_and(|t| t.is_cancelled());
+
+    let rows_path = param_str(activity, "rows");
+    let output = if rows_path.trim().is_empty() {
+        let mut records = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            if cancelled() {
+                return Err(WorkflowError::Cancelled);
+            }
+            if pages == MAX_OPERATION_PAGES {
+                return fail(format!("{operation} named a next page after {MAX_OPERATION_PAGES} pages; stopped"));
+            }
+            let mut input = base.clone();
+            if let (Some(c), Some(obj)) = (&cursor, input.as_object_mut()) {
+                obj.insert("cursor".into(), serde_json::Value::String(c.clone()));
+            }
+            let result = call(input).await;
+            pages += 1;
+            if result.is_error {
+                return fail(format!("{operation}, page {pages}: {}", result.content));
+            }
+            let (page, next) = match page_records(&result.content) {
+                Ok(p) => p,
+                Err(e) => return fail(format!("{operation}, page {pages}: {e}")),
+            };
+            records.extend(page);
+            match next {
+                Some(n) if cursor.as_deref() == Some(n.as_str()) => {
+                    return fail(format!("{operation} named page {n} as the next page twice; stopped"));
+                }
+                Some(n) => cursor = Some(n),
+                None => break,
+            }
+        }
+        serde_json::json!({ "operation": operation, "records": records, "pages": pages })
+    } else {
+        let rows = match resolve_path(&data, rows_path) {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Array(rows)) => rows,
+            Some(_) => return fail(format!("params.rows '{rows_path}' is not a list")),
+        };
+        let keyed = !tools::operation_tools::reads_only(operation);
+        let mut results = Vec::with_capacity(rows.len());
+        let (mut succeeded, mut failed) = (0, 0);
+        for (index, row) in rows.into_iter().enumerate() {
+            if cancelled() {
+                return Err(WorkflowError::Cancelled);
+            }
+            let serde_json::Value::Object(fields) = row else {
+                failed += 1;
+                results.push(serde_json::json!({ "index": index, "ok": false, "error": "the row is not an object of fields" }));
+                continue;
+            };
+            let mut input = base.clone();
+            if let Some(obj) = input.as_object_mut() {
+                obj.extend(fields);
+                if keyed && !obj.contains_key("clientKey") {
+                    let key = format!("{}:{}:{}:{index}", ctx.run_id, activity.id, scope.iteration);
+                    obj.insert("clientKey".into(), serde_json::Value::String(key));
+                }
+            }
+            let result = call(input).await;
+            if result.is_error {
+                failed += 1;
+                results.push(serde_json::json!({ "index": index, "ok": false, "error": result.content }));
+            } else {
+                succeeded += 1;
+                let parsed = serde_json::from_str::<serde_json::Value>(&result.content)
+                    .unwrap_or(serde_json::Value::String(result.content));
+                results.push(serde_json::json!({ "index": index, "ok": true, "result": parsed }));
+            }
+        }
+        serde_json::json!({
+            "operation": operation,
+            "results": results,
+            "succeeded": succeeded,
+            "failed": failed,
+        })
+    };
+
+    let content = output.to_string();
+    let _ = ctx.store.create_activity_result(
+        &ctx.run_id,
+        &activity.id,
+        &scope.iteration,
+        "completed",
+        0,
+        1,
+        None,
+        started_at,
+        Some(chrono::Utc::now().timestamp()),
+    );
+    let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &content);
+    info!(activity = activity.id.as_str(), operation, "operation node completed");
+    record_output(ctx, scope, &activity.id, content);
+    route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// One page of a list read: its records and the cursor of the next page.
+/// The answer is a list, or an object whose one list holds the records
+/// (`{"invoices": [...]}`, `{"items": [...], "count": 3}`), with
+/// `nextCursor` naming the next page when there is one.
+fn page_records(content: &str) -> Result<(Vec<serde_json::Value>, Option<String>), String> {
+    let page: serde_json::Value = serde_json::from_str(content.trim())
+        .map_err(|_| format!("the answer is not JSON: {}", types::strutil::safe_prefix(content.trim(), 200)))?;
+    let obj = match page {
+        serde_json::Value::Array(records) => return Ok((records, None)),
+        serde_json::Value::Object(obj) => obj,
+        _ => return Err("the answer is neither a list nor an object holding one".into()),
+    };
+    let next = match obj.get("nextCursor") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) if s.is_empty() => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        Some(_) => return Err("nextCursor is not text".into()),
+    };
+    let mut lists = obj.into_iter().filter_map(|(k, v)| match v {
+        serde_json::Value::Array(records) => Some((k, records)),
+        _ => None,
+    });
+    match (lists.next(), lists.next()) {
+        (Some((_, records)), None) => Ok((records, next)),
+        (None, _) => Err("the answer holds no list of records".into()),
+        (Some((a, _)), Some((b, _))) => Err(format!("the answer holds more than one list ({a}, {b}); return the records as its only list")),
+    }
+}
+
+/// Interpolate `{{...}}` in every text value of `value`, in place.
+fn interpolate_strings(value: &mut serde_json::Value, data: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => *s = interpolate_context(s, data),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| interpolate_strings(v, data)),
+        serde_json::Value::Object(map) => map.values_mut().for_each(|v| interpolate_strings(v, data)),
+        _ => {}
+    }
 }
 
 /// Replace `{{path}}` placeholders with values from the data context. String
@@ -1034,6 +1294,153 @@ fn cap_decide_state(activity_id: &str, state: serde_json::Value) -> serde_json::
     serde_json::Value::String(ai::decide::clip(&text, DECIDE_STATE_CAP).into_owned())
 }
 
+/// Expert step: the work is done by another agent (`params.expert`), asked
+/// once per attempt and waited on durably (see `crate::expert`). No model
+/// turn here; the reply becomes the node output, always with a `summary`.
+///
+/// `params.task` (or the intent) and `params.expert` interpolate from the
+/// data context, so a loop body can name `{{item.expert}}`; `params.input`
+/// hands the expert explicit references (`{"leads": "{{nodes.fetch}}"}`)
+/// as JSON; `params.output` is the contract; `params.timeout` is required.
+///
+/// A request still out parks the walk at this node (the run parks once every
+/// other branch is done). A refusal, an unreachable expert or a timeout is
+/// tried again under `on_error.retry`; after that `on_error.fallback: abort`
+/// fails the run, and otherwise (the default) the node completes with
+/// `{failed: true, reason, summary}` so a join or a loop carries it and the
+/// run goes on. An expert on another bot blocks the run: nothing leaves the
+/// owner's bot without his approval.
+async fn run_expert<'a>(
+    ctx: &GraphCtx<'a>,
+    scope: &WalkScope,
+    activity: &Activity,
+) -> Result<(), WorkflowError> {
+    use crate::expert::{self, Standing, Unsent};
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed expert node");
+        record_output(ctx, scope, &activity.id, content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
+    let started_at = chrono::Utc::now().timestamp();
+    let data = data_context(ctx, scope);
+    let expert_label = interpolate_context(param_str(activity, "expert"), &data).trim().to_string();
+    let task = {
+        let t = param_str(activity, "task");
+        interpolate_context(if t.trim().is_empty() { &activity.intent } else { t }, &data)
+    };
+    // Validation requires a timeout; an unreadable one waits an hour.
+    let timeout_secs = expert::parse_timeout(param_str(activity, "timeout")).map_or(3_600, |d| d.as_secs());
+    let input = expert::resolve_input(activity, &|path| resolve_path(&data, path));
+    let contract = expert::output_contract(activity);
+    let finish = |status: &str, error: Option<&str>, content: Option<&str>| {
+        let _ = ctx.store.create_activity_result(
+            &ctx.run_id,
+            &activity.id,
+            &scope.iteration,
+            status,
+            0,
+            1,
+            error,
+            started_at,
+            Some(chrono::Utc::now().timestamp()),
+        );
+        if let Some(content) = content {
+            let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, content);
+        }
+    };
+
+    let mut failure = String::new();
+    for attempt in 0..activity.on_error.retry.max(1) {
+        let key = expert::request_key(&ctx.run_id, &activity.id, &scope.iteration, attempt);
+        let now = chrono::Utc::now().timestamp();
+        let standing = match expert::standing(ctx.store, &ctx.run_id, &key, timeout_secs, now) {
+            Some(standing) => standing,
+            None => {
+                let target = match expert::resolve(ctx.store, &ctx.agent_id, &expert_label) {
+                    Ok(target) => target,
+                    Err(Unsent::NeedsOwner(why)) => {
+                        finish("exited", Some(&why), None);
+                        return Err(WorkflowError::Blocked(why, None));
+                    }
+                    // Naming nobody is not fixed by asking again.
+                    Err(Unsent::Unreachable(why)) => {
+                        failure = why;
+                        break;
+                    }
+                };
+                let req = expert::Request {
+                    run_id: &ctx.run_id,
+                    key: &key,
+                    owner_agent_id: &ctx.agent_id,
+                    workflow_name: &ctx.def.name,
+                    task: &task,
+                    input: &input,
+                    contract: &contract,
+                    timeout_secs,
+                };
+                match expert::send(ctx.store, &target, &req, now) {
+                    Ok(standing) => standing,
+                    Err(Unsent::Unreachable(why) | Unsent::NeedsOwner(why)) => {
+                        failure = why;
+                        continue;
+                    }
+                }
+            }
+        };
+        match standing {
+            Standing::Answered(output) => {
+                let output = output.to_string();
+                finish("completed", None, Some(&output));
+                info!(activity = activity.id.as_str(), expert = %expert_label, "expert node answered");
+                record_output(ctx, scope, &activity.id, output);
+                return route(ctx, scope, &activity.id, |_| true).await;
+            }
+            Standing::Waiting { deadline } => {
+                ctx.state.lock().unwrap().pending_experts.push((key, deadline));
+                return Err(WorkflowError::AwaitingExpert(1));
+            }
+            Standing::Failed(why) => failure = why,
+        }
+    }
+
+    warn!(activity = activity.id.as_str(), expert = %expert_label, reason = %failure, "expert node failed");
+    if matches!(activity.on_error.fallback, crate::parser::Fallback::Abort) {
+        finish("failed", Some(&failure), None);
+        return Err(WorkflowError::ActivityFailed(activity.id.clone(), failure));
+    }
+    let output = expert::failure(&expert_label, &failure).to_string();
+    finish("completed", Some(&failure), Some(&output));
+    record_output(ctx, scope, &activity.id, output);
+    route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Park the run on its experts: one `resume` wait on `expert:<run>` with the
+/// earliest deadline, so the first reply or the first timeout wakes it. A
+/// reply that landed while the run was still busy woke nothing; it wakes
+/// the run now.
+fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, i64)]) -> Result<(), WorkflowError> {
+    let now = chrono::Utc::now().timestamp();
+    let reason = format!("waiting on {} expert(s)", pending.len());
+    let target = crate::expert::run_target(run_id);
+    let wait_id = store.engine_declare_wait(
+        run_id,
+        &db::NewWait {
+            action: "resume",
+            on_kind: crate::expert::REPLY_KIND,
+            key: &target,
+            deadline: pending.iter().map(|(_, d)| *d).min(),
+            parked: None,
+            reason: &reason,
+        },
+        now,
+    )?;
+    let keys: Vec<String> = pending.iter().map(|(k, _)| k.clone()).collect();
+    if let Some(event_id) = crate::expert::any_reply(store, run_id, &keys) {
+        store.engine_resume_from_wait(wait_id, event_id, now)?;
+    }
+    Ok(())
+}
+
 /// Deterministic condition: evaluate params against the data context and
 /// activate only the matching branch. No tokens, no model.
 async fn run_condition<'a>(
@@ -1247,6 +1654,7 @@ async fn run_loop<'a>(
     // So it ends the ITERATION; siblings keep going and the loop still routes
     // to Done. Surfaced below, never silent.
     let mut exited: Vec<(u64, String)> = Vec::new();
+    let mut parked: Option<WorkflowError> = None;
 
     if declared_concurrency.is_some_and(|c| c <= 1) {
         for (idx, item) in taken {
@@ -1261,6 +1669,7 @@ async fn run_loop<'a>(
                     );
                     exited.push((idx, reason));
                 }
+                // Strictly sequential: the next item waits for this one.
                 Err(e) => return Err(e),
             }
         }
@@ -1314,9 +1723,17 @@ async fn run_loop<'a>(
                     );
                     queue.push_back((idx, item, attempt + 1));
                 }
+                // An iteration parked on an expert: its siblings keep going;
+                // the loop parks once they are all done.
+                Err(e @ WorkflowError::AwaitingExpert(_)) => {
+                    parked.get_or_insert(e);
+                }
                 Err(e) => return Err(e),
             }
         }
+    }
+    if let Some(e) = parked {
+        return Err(e);
     }
 
     // Fan-in: the loop's output carries EVERY iteration's body outputs in
@@ -1478,8 +1895,8 @@ async fn run_llm_activity<'a>(
             .as_ref()
             .filter(|r| r.activity_id == activity.id && r.iteration == scope.iteration),
         &scope.iteration,
-    
         ctx.cancel_token,
+        &ctx.budget,
     )
     .await
     {
@@ -2101,6 +2518,7 @@ mod walk_tests {
                 total_tokens: (ti.max(0) + to.max(0)) as u32,
                 output_tokens: to.max(0) as u32,
                 tainted,
+                steps: 1,
             })
         }
 
@@ -3648,6 +4066,606 @@ mod walk_tests {
             .unwrap()
             .status;
         assert_eq!(status, "failed");
+    }
+
+    // ── expert nodes ────────────────────────────────────────────────────
+
+    /// A store with the owner and its coworkers installed.
+    fn expert_store(coworkers: &[&str]) -> Arc<Store> {
+        let store = test_store();
+        store.create_agent("owner", None, "Owner", "Runs the workflow.", "", "{}", None, None).unwrap();
+        for c in coworkers {
+            store
+                .create_agent(c, None, &format!("{c} expert"), &format!("Prices things for {c}. Fast."), "", "{}", None, None)
+                .unwrap();
+        }
+        store
+    }
+
+    fn new_run(store: &Arc<Store>, def_json: &str) -> String {
+        let def = parse_workflow(def_json).expect("valid def");
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, Some(def_json))
+            .expect("run row");
+        run_id
+    }
+
+    /// One pass of the run under its own id — a first launch, or the
+    /// re-entry a reply, a deadline or a restart causes (`_relaunch_run`).
+    /// Every pass builds its context from nothing: what survives is the store.
+    async fn pass(
+        store: &Arc<Store>,
+        run_id: &str,
+        def_json: &str,
+        inputs: serde_json::Value,
+        provider: &MockProvider,
+    ) -> Result<(String, String), WorkflowError> {
+        let def = parse_workflow(def_json).expect("valid def");
+        let looper = ScriptedLoop::new(provider);
+        execute_graph(
+            &def, "owner", "test-owner", false, &inputs, store, None, &looper, &[], None, run_id, None, None,
+            None, Vec::new(), None, None, None,
+        )
+        .await
+    }
+
+    /// The coworker closes the assignment a request opened, as its case
+    /// would: `status` and `summary` are its close.
+    fn coworker_closes(store: &Store, run_id: &str, expert: &str, status: &str, summary: &str) {
+        let effect = store
+            .engine_effects_for_run(run_id)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.class == crate::expert::EFFECT_CLASS && e.counterparty.as_deref() == Some(expert))
+            .expect("a request to that expert");
+        let assignment = effect.provider_ref.expect("the assignment it opened");
+        let case = store.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the expert's case");
+        let inputs: serde_json::Value = serde_json::from_str(case.inputs.as_deref().unwrap()).unwrap();
+        crate::cases::settle_assignment(store, &inputs, status, summary, chrono::Utc::now().timestamp()).unwrap();
+    }
+
+    /// Make one expert's request older than its timeout: the clock moved.
+    fn age_request(store: &Store, run_id: &str, expert: &str, secs: i64) {
+        store.conn_exec_for_test(&format!(
+            "UPDATE engine_effects SET created_at = created_at - {secs} WHERE run_id = '{run_id}' AND counterparty = '{expert}'"
+        ));
+    }
+
+    fn expert_requests(store: &Store, run_id: &str) -> usize {
+        store
+            .engine_effects_for_run(run_id)
+            .unwrap()
+            .iter()
+            .filter(|e| e.class == crate::expert::EFFECT_CLASS)
+            .count()
+    }
+
+    fn live_wait(store: &Store, run_id: &str) -> db::EngineWait {
+        let run = store.engine_get_run(run_id).unwrap().unwrap();
+        assert_eq!(run.state, "waiting", "the run is parked");
+        store.engine_get_wait(run.current_wait_id.expect("a live wait")).unwrap().unwrap()
+    }
+
+    fn node_output(store: &Store, run_id: &str, node: &str, iteration: &str) -> serde_json::Value {
+        let done = store.completed_activity_contents(run_id).unwrap();
+        serde_json::from_str(&done[&(node.to_string(), iteration.to_string())]).unwrap()
+    }
+
+    const SAME_BOT: &str = r#"{
+        "version": "1.0", "id": "quote", "name": "quote",
+        "activities": [
+            {"id": "ask", "type": "expert", "params": {
+                "expert": "ana", "task": "Price the order",
+                "input": {"order": "{{inputs.order}}"},
+                "output": {"total": "number"}, "timeout": "2h"}},
+            {"id": "report", "intent": "Write the quote"}
+        ],
+        "connections": [
+            {"from": "__trigger__", "to": "ask"},
+            {"from": "ask", "to": "report"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn an_expert_on_this_bot_answers_and_the_run_goes_on() {
+        let store = expert_store(&["ana"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, SAME_BOT);
+        let inputs = serde_json::json!({ "order": { "sku": "A-1", "qty": 3 } });
+
+        let first = pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await;
+        assert!(matches!(first, Err(WorkflowError::AwaitingExpert(1))), "{first:?}");
+        assert_eq!(expert_requests(&store, &run_id), 1);
+        assert!(provider.calls().is_empty(), "nothing after the expert ran yet");
+        let wait = live_wait(&store, &run_id);
+        assert_eq!(run_status(&store, &run_id), "waiting", "waiting on an expert, not on the owner");
+        assert_eq!(wait.on_kind, crate::expert::REPLY_KIND);
+        assert_eq!(wait.key, crate::expert::run_target(&run_id));
+        assert!(wait.deadline.is_some(), "the timeout wakes the run");
+        // The expert was handed the task and the referenced data.
+        let effect = &store.engine_effects_for_run(&run_id).unwrap()[0];
+        let assignment = store.get_assignment(effect.provider_ref.as_deref().unwrap()).unwrap().unwrap();
+        assert_eq!(assignment.assignee_agent_id, "ana");
+        assert!(assignment.subject.contains("Price the order"));
+        assert!(assignment.done_means.contains("\"sku\":\"A-1\""), "{}", assignment.done_means);
+        assert!(assignment.done_means.contains("total"));
+
+        coworker_closes(&store, &run_id, "ana", "done", "Priced the order. {\"total\": 42}");
+        // The reply is the event that wakes the parked run.
+        let reply = store
+            .engine_events_for("run", &crate::expert::run_target(&run_id), 10)
+            .unwrap()
+            .pop()
+            .expect("reply recorded");
+        assert_eq!(store.engine_match_wait(&reply).unwrap().map(|w| w.id), Some(wait.id));
+
+        let second = pass(&store, &run_id, SAME_BOT, inputs, &provider).await;
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(run_status(&store, &run_id), "completed");
+        let out = node_output(&store, &run_id, "ask", "");
+        assert_eq!(out["summary"], "Priced the order.");
+        assert_eq!(out["reply"]["total"], 42);
+        assert_eq!(expert_requests(&store, &run_id), 1, "never asked twice");
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].contains("Priced the order."), "the next step reads the reply");
+    }
+
+    #[tokio::test]
+    async fn an_expert_that_does_not_answer_in_time_follows_on_error() {
+        let store = expert_store(&["ana"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, SAME_BOT);
+        let inputs = serde_json::json!({ "order": 1 });
+        assert!(matches!(
+            pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await,
+            Err(WorkflowError::AwaitingExpert(1))
+        ));
+        // A pass before the deadline only parks again.
+        assert!(matches!(
+            pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await,
+            Err(WorkflowError::AwaitingExpert(1))
+        ));
+        age_request(&store, &run_id, "ana", 3 * 3600);
+
+        // Default: the failure is carried and the run goes on.
+        let done = pass(&store, &run_id, SAME_BOT, inputs.clone(), &provider).await;
+        assert!(done.is_ok(), "{done:?}");
+        let out = node_output(&store, &run_id, "ask", "");
+        assert_eq!(out["failed"], true);
+        assert!(out["reason"].as_str().unwrap().contains("did not answer within 2h"));
+        assert!(out["summary"].as_str().is_some());
+        assert_eq!(provider.calls().len(), 1, "the next step still ran");
+
+        // on_error abort: the same timeout fails the run.
+        let abort = SAME_BOT.replace(r#""timeout": "2h"}}"#, r#""timeout": "2h"}, "on_error": {"fallback": "abort"}}"#);
+        let run_id = new_run(&store, &abort);
+        let _ = pass(&store, &run_id, &abort, inputs.clone(), &provider).await;
+        age_request(&store, &run_id, "ana", 3 * 3600);
+        let failed = pass(&store, &run_id, &abort, inputs, &provider).await;
+        assert!(matches!(failed, Err(WorkflowError::ActivityFailed(ref id, _)) if id == "ask"), "{failed:?}");
+        assert_eq!(run_status(&store, &run_id), "failed");
+    }
+
+    #[tokio::test]
+    async fn an_expert_on_another_bot_is_blocked_without_the_owners_approval() {
+        let store = expert_store(&[]);
+        let provider = MockProvider::new(&[]);
+        let def = SAME_BOT.replace(r#""expert": "ana""#, r#""expert": "loop:acme/pricing""#);
+        let run_id = new_run(&store, &def);
+        let out = pass(&store, &run_id, &def, serde_json::json!({ "order": 1 }), &provider).await;
+        assert!(out.is_ok(), "a block is a standing outcome, not a failure: {out:?}");
+        assert_eq!(run_status(&store, &run_id), "exited");
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert!(run.error.unwrap_or_default().contains("approval"));
+        assert_eq!(expert_requests(&store, &run_id), 0, "nothing left the bot");
+        assert!(provider.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_paused_expert_is_a_failure_the_run_carries() {
+        let store = expert_store(&["ana"]);
+        store.set_agent_enabled("ana", false).unwrap();
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, SAME_BOT);
+        let out = pass(&store, &run_id, SAME_BOT, serde_json::json!({ "order": 1 }), &provider).await;
+        assert!(out.is_ok(), "{out:?}");
+        let node = node_output(&store, &run_id, "ask", "");
+        assert_eq!(node["failed"], true);
+        assert!(node["reason"].as_str().unwrap().contains("paused"));
+        assert_eq!(expert_requests(&store, &run_id), 0);
+    }
+
+    const FAN_OUT: &str = r#"{
+        "version": "1.0", "id": "panel", "name": "panel",
+        "activities": [
+            {"id": "a", "type": "expert", "params": {"expert": "ana", "task": "Price it", "timeout": "1h"}},
+            {"id": "b", "type": "expert", "params": {"expert": "ben", "task": "Check stock", "timeout": "30m"}},
+            {"id": "join", "intent": "Combine the answers"}
+        ],
+        "connections": [
+            {"from": "__trigger__", "to": "a"},
+            {"from": "__trigger__", "to": "b"},
+            {"from": "a", "to": "join"},
+            {"from": "b", "to": "join"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn parallel_experts_wait_together_survive_a_restart_and_the_join_gets_each_summary() {
+        let store = expert_store(&["ana", "ben"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, FAN_OUT);
+
+        let first = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(matches!(first, Err(WorkflowError::AwaitingExpert(2))), "{first:?}");
+        assert_eq!(expert_requests(&store, &run_id), 2, "both asked at once");
+        let wait = live_wait(&store, &run_id);
+        let ben_deadline = store
+            .engine_effects_for_run(&run_id)
+            .unwrap()
+            .iter()
+            .find(|e| e.counterparty.as_deref() == Some("ben"))
+            .map(|e| e.created_at + 1800)
+            .unwrap();
+        assert_eq!(wait.deadline, Some(ben_deadline), "the earliest timeout wakes the run");
+
+        // A restart: nothing in memory, both requests still out. The run
+        // re-enters, sends nothing again, and parks on both.
+        let restarted = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(matches!(restarted, Err(WorkflowError::AwaitingExpert(2))), "{restarted:?}");
+        assert_eq!(expert_requests(&store, &run_id), 2);
+        assert!(provider.calls().is_empty(), "the join waits for both branches");
+
+        // Ana answers; Ben runs out of time.
+        coworker_closes(&store, &run_id, "ana", "done", "Price is 40.");
+        let one_left = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(matches!(one_left, Err(WorkflowError::AwaitingExpert(1))), "{one_left:?}");
+        age_request(&store, &run_id, "ben", 3600);
+
+        let done = pass(&store, &run_id, FAN_OUT, serde_json::json!({}), &provider).await;
+        assert!(done.is_ok(), "{done:?}");
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 1, "the join ran once");
+        assert!(calls[0].contains("Price is 40."), "the join reads a's summary");
+        assert!(calls[0].contains("\"failed\":true"), "and b's failure, marked");
+        assert_eq!(node_output(&store, &run_id, "b", "")["failed"], true);
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_lands_before_the_run_parks_wakes_it_at_once() {
+        let store = expert_store(&["ana"]);
+        let run_id = new_run(&store, SAME_BOT);
+        let key = crate::expert::request_key(&run_id, "ask", "", 0);
+        crate::expert::record_reply(&store, &run_id, &key, "done", "fast", "ana").unwrap();
+        park_on_experts(&store, &run_id, &[(key, chrono::Utc::now().timestamp() + 60)]).unwrap();
+        let run = store.engine_get_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.state, "queued", "woken, not left waiting for the deadline");
+        assert!(run.woken_by().is_some());
+    }
+
+    const PER_ITEM: &str = r#"{
+        "version": "1.0", "id": "fan", "name": "fan",
+        "activities": [
+            {"id": "each", "type": "loop", "params": {"source": "inputs.items", "concurrency": 2}},
+            {"id": "ask", "type": "expert", "params": {"expert": "{{item.expert}}", "task": "Review {{item.doc}}", "timeout": "1h"}},
+            {"id": "report", "intent": "Report"}
+        ],
+        "connections": [
+            {"from": "__trigger__", "to": "each"},
+            {"from": "each", "to": "ask", "label": "Each item"},
+            {"from": "ask", "to": "each"},
+            {"from": "each", "to": "report", "label": "Done"}
+        ]
+    }"#;
+
+    #[tokio::test]
+    async fn a_loop_asks_an_expert_per_item_and_collects_every_answer_in_order() {
+        let store = expert_store(&["ana", "ben", "cy"]);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, PER_ITEM);
+        let inputs = serde_json::json!({ "items": [
+            { "expert": "ana", "doc": "one" },
+            { "expert": "ben", "doc": "two" },
+            { "expert": "cy", "doc": "three" }
+        ]});
+
+        let first = pass(&store, &run_id, PER_ITEM, inputs.clone(), &provider).await;
+        assert!(matches!(first, Err(WorkflowError::AwaitingExpert(_))), "{first:?}");
+        assert_eq!(expert_requests(&store, &run_id), 3, "every item asked its own expert");
+
+        coworker_closes(&store, &run_id, "cy", "done", "Three is fine.");
+        coworker_closes(&store, &run_id, "ana", "done", "One is fine.");
+        coworker_closes(&store, &run_id, "ben", "blocked", "I do not review contracts.");
+
+        let (_, final_context) = pass(&store, &run_id, PER_ITEM, inputs, &provider).await.expect("completes");
+        let out: serde_json::Value = final_context
+            .lines()
+            .find_map(|l| l.strip_prefix("[Activity 'each' result]: "))
+            .map(|j| serde_json::from_str(j).unwrap())
+            .expect("the loop's output");
+        let results = out["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0]["outputs"]["ask"]["summary"], "One is fine.");
+        assert_eq!(results[1]["outputs"]["ask"]["failed"], true);
+        assert!(results[1]["outputs"]["ask"]["reason"].as_str().unwrap().contains("blocked"));
+        assert_eq!(results[2]["outputs"]["ask"]["summary"], "Three is fine.");
+        assert_eq!(expert_requests(&store, &run_id), 3);
+        assert_eq!(provider.calls().len(), 1, "the report ran once, after every item");
+    }
+
+    #[test]
+    fn an_expert_node_needs_its_expert_task_and_timeout() {
+        let missing = SAME_BOT.replace(r#", "timeout": "2h""#, "");
+        let err = parse_workflow(&missing).unwrap_err().to_string();
+        assert!(err.contains("params.timeout"), "{err}");
+        let loose = SAME_BOT.replace(r#""{{inputs.order}}""#, r#""the order""#);
+        let err = parse_workflow(&loose).unwrap_err().to_string();
+        assert!(err.contains("explicit reference"), "{err}");
+    }
+
+    #[test]
+    fn the_catalog_lists_enabled_coworkers_with_a_capability_each() {
+        let store = expert_store(&["ana", "ben"]);
+        store.set_agent_enabled("ben", false).unwrap();
+        let cat = crate::expert::catalog(&store, "owner");
+        assert_eq!(cat.len(), 1, "not the owner, not a paused coworker");
+        assert_eq!(cat[0].name, "ana expert");
+        assert_eq!(cat[0].capability, "Prices things for ana.");
+        assert!(crate::expert::catalog_lines(&cat).contains("expert: \"ana\""));
+    }
+
+    /// A stand-in for an operation tool (`ledger_invoice_search`): answers
+    /// each call with `answer(input)` and records every input it was given,
+    /// with the stdin the call carried.
+    struct Recorded {
+        name: &'static str,
+        answer: fn(&serde_json::Value) -> tools::ToolResult,
+        seen: Arc<StdMutex<Vec<(serde_json::Value, Option<String>)>>>,
+    }
+
+    impl DynTool for Recorded {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>> {
+            let stdin = ctx.stdin.as_ref().map(|b| String::from_utf8_lossy(b).into_owned());
+            self.seen.lock().unwrap().push((input.clone(), stdin));
+            let r = (self.answer)(&input);
+            Box::pin(async move { r })
+        }
+    }
+
+    fn recorded(
+        name: &'static str,
+        answer: fn(&serde_json::Value) -> tools::ToolResult,
+    ) -> (Box<dyn DynTool>, Arc<StdMutex<Vec<(serde_json::Value, Option<String>)>>>) {
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        (Box::new(Recorded { name, answer, seen: seen.clone() }), seen)
+    }
+
+    /// Run `def_json` with `tools` as the run's roster.
+    async fn run_with_tools(
+        def_json: &str,
+        inputs: serde_json::Value,
+        tools: &[Box<dyn DynTool>],
+    ) -> (Result<(String, String), WorkflowError>, Arc<Store>, String) {
+        let provider = MockProvider::new(&[]);
+        let def = parse_workflow(def_json).expect("valid def");
+        let store = test_store();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
+            .expect("run row");
+        let result = execute_graph(
+            &def,
+            "clerk",
+            "test-owner",
+            false,
+            &inputs,
+            &store,
+            None,
+            &ScriptedLoop::new(&provider),
+            tools,
+            None,
+            &run_id,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .await;
+        (result, store, run_id)
+    }
+
+    fn one_step(id: &str, kind: &str, params: serde_json::Value) -> String {
+        serde_json::json!({
+            "version": "1.0", "id": "t", "name": "T",
+            "activities": [{ "id": id, "type": kind, "params": params }],
+            "connections": [{ "from": "__trigger__", "to": id }, { "from": id, "to": "__emit__" }],
+        })
+        .to_string()
+    }
+
+    /// FETCH: a read follows `nextCursor` until the plugin names none, and
+    /// the records of every page land in one list. Each page's records are
+    /// the answer's one list, whatever the plugin calls it.
+    #[tokio::test]
+    async fn an_operation_read_collects_every_page() {
+        let (tool, seen) = recorded("ledger_invoice_search", |input| {
+            tools::ToolResult::ok(match input.get("cursor").and_then(|c| c.as_str()) {
+                None => r#"{"count":2,"items":[{"id":"1"},{"id":"2"}],"nextCursor":"p2","note":"x"}"#,
+                Some("p2") => r#"{"count":2,"items":[{"id":"3"},{"id":"4"}],"nextCursor":"p3"}"#,
+                Some(_) => r#"{"count":1,"items":[{"id":"5"}],"nextCursor":null}"#,
+            })
+        });
+        let def = one_step(
+            "fetch",
+            "operation",
+            serde_json::json!({"operation": "ledger.invoice.search", "input": {"status": "{{inputs.status}}"}}),
+        );
+        let (result, store, run_id) = run_with_tools(&def, serde_json::json!({"status": "open"}), &[tool]).await;
+        result.expect("run ok");
+        let out = node_output(&store, &run_id, "fetch", "");
+        assert_eq!(out["pages"], 3);
+        let ids: Vec<&str> = out["records"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["1", "2", "3", "4", "5"]);
+        let calls: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|(i, _)| i.clone()).collect();
+        assert_eq!(
+            calls,
+            [
+                serde_json::json!({"status": "open"}),
+                serde_json::json!({"status": "open", "cursor": "p2"}),
+                serde_json::json!({"status": "open", "cursor": "p3"}),
+            ],
+            "the input is interpolated and each next page carries its cursor"
+        );
+    }
+
+    /// A plugin that answers with a bare list, or never pages, is one page.
+    #[tokio::test]
+    async fn an_operation_read_of_a_plugin_that_does_not_page_is_one_page() {
+        let (tool, seen) = recorded("ledger_account_list", |_| tools::ToolResult::ok(r#"[{"id":"a"},{"id":"b"}]"#));
+        let def = one_step("fetch", "operation", serde_json::json!({"operation": "ledger.account.list"}));
+        let (result, store, run_id) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
+        result.expect("run ok");
+        let out = node_output(&store, &run_id, "fetch", "");
+        assert_eq!((out["pages"].as_u64(), out["records"].as_array().unwrap().len()), (Some(1), 2));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    /// A page that can't be read, or a cursor that never moves, fails the
+    /// step with the reason; it never loops or guesses.
+    #[tokio::test]
+    async fn an_operation_read_fails_on_a_page_it_cannot_follow() {
+        for (answer, says) in [
+            (
+                (|_: &serde_json::Value| tools::ToolResult::ok(r#"{"items":[1],"nextCursor":"same"}"#))
+                    as fn(&serde_json::Value) -> tools::ToolResult,
+                "named page same as the next page twice",
+            ),
+            (|_| tools::ToolResult::ok(r#"{"bills":[1],"invoices":[2]}"#), "more than one list (bills, invoices)"),
+            (|_| tools::ToolResult::ok("Here are your invoices"), "not JSON"),
+            (|_| tools::ToolResult::error("QuickBooks refused the call"), "page 1: QuickBooks refused the call"),
+        ] {
+            let (tool, _) = recorded("ledger_invoice_search", answer);
+            let def = one_step("fetch", "operation", serde_json::json!({"operation": "ledger.invoice.search"}));
+            let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
+            match result {
+                Err(WorkflowError::ActivityFailed(id, msg)) => {
+                    assert_eq!(id, "fetch");
+                    assert!(msg.contains(says), "{msg}");
+                }
+                other => panic!("expected the step to fail with '{says}', got {other:?}"),
+            }
+        }
+    }
+
+    /// APPLY: one call per row, serially, each row's fields over the shared
+    /// input. A failed row is a row result, not the end of the batch. A write
+    /// row without a key gets one from the run, the step and the row; a row's
+    /// own key is kept.
+    #[tokio::test]
+    async fn an_operation_write_reports_every_row() {
+        let (tool, seen) = recorded("ledger_invoice_update", |input| {
+            if input["invoiceId"] == "bad" {
+                tools::ToolResult::error("QuickBooks: no invoice bad")
+            } else {
+                tools::ToolResult::ok(format!(r#"{{"id":{},"updated":true}}"#, input["invoiceId"]))
+            }
+        });
+        let def = one_step(
+            "apply",
+            "operation",
+            serde_json::json!({"operation": "ledger.invoice.update", "input": {"terms": "Net 30"}, "rows": "inputs.decisions"}),
+        );
+        let decisions = serde_json::json!({"decisions": [
+            {"invoiceId": "101", "dueDate": "2026-11-01"},
+            {"invoiceId": "bad"},
+            {"invoiceId": "103", "clientKey": "mine-103"},
+            "not a row",
+        ]});
+        let (result, store, run_id) = run_with_tools(&def, decisions, &[tool]).await;
+        result.expect("a failed row does not fail the step");
+        let out = node_output(&store, &run_id, "apply", "");
+        assert_eq!((out["succeeded"].as_u64(), out["failed"].as_u64()), (Some(2), Some(2)));
+        let results = out["results"].as_array().unwrap();
+        assert_eq!(results[0], serde_json::json!({"index": 0, "ok": true, "result": {"id": "101", "updated": true}}));
+        assert_eq!(results[1], serde_json::json!({"index": 1, "ok": false, "error": "QuickBooks: no invoice bad"}));
+        assert_eq!(results[2]["ok"], true);
+        assert_eq!(results[3]["ok"], false);
+        let calls: Vec<serde_json::Value> = seen.lock().unwrap().iter().map(|(i, _)| i.clone()).collect();
+        assert_eq!(calls.len(), 3, "the non-object row never reached the tool");
+        assert_eq!(
+            calls[0],
+            serde_json::json!({"terms": "Net 30", "invoiceId": "101", "dueDate": "2026-11-01", "clientKey": format!("{run_id}:apply::0")})
+        );
+        assert_eq!(calls[1]["clientKey"], format!("{run_id}:apply::1"));
+        assert_eq!(calls[2]["clientKey"], "mine-103", "the row's own key is kept");
+    }
+
+    /// VERIFY: one read per row (a get by id) carries no key: a read is never
+    /// put in the write ledger.
+    #[tokio::test]
+    async fn an_operation_read_per_row_carries_no_key() {
+        let (tool, seen) = recorded("ledger_invoice_get", |input| {
+            tools::ToolResult::ok(format!(r#"{{"id":{},"dueDate":"2026-11-01"}}"#, input["invoiceId"]))
+        });
+        let def = one_step("verify", "operation", serde_json::json!({"operation": "ledger.invoice.get", "rows": "inputs.ids"}));
+        let ids = serde_json::json!({"ids": [{"invoiceId": "101"}, {"invoiceId": "103"}]});
+        let (result, store, run_id) = run_with_tools(&def, ids, &[tool]).await;
+        result.expect("run ok");
+        assert_eq!(node_output(&store, &run_id, "verify", "")["succeeded"], 2);
+        assert!(seen.lock().unwrap().iter().all(|(i, _)| i.get("clientKey").is_none()));
+    }
+
+    /// No connected plugin binds the operation: the step fails and says so.
+    #[tokio::test]
+    async fn an_operation_no_plugin_performs_fails_the_step() {
+        let def = one_step("fetch", "operation", serde_json::json!({"operation": "crm.contact.find"}));
+        let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[]).await;
+        match result {
+            Err(WorkflowError::ActivityFailed(_, msg)) => {
+                assert!(msg.contains("No connected plugin performs crm.contact.find"), "{msg}")
+            }
+            other => panic!("expected the step to fail, got {other:?}"),
+        }
+    }
+
+    /// MATCH: a command step reads a step's data on stdin — a list with a
+    /// quote in a name, which a command line could not carry.
+    #[tokio::test]
+    async fn a_command_step_reads_its_stdin_from_the_run() {
+        let (tool, seen) = recorded("run_command", |_| tools::ToolResult::ok("[]"));
+        let def = one_step(
+            "match",
+            "command",
+            serde_json::json!({"command": "jq length", "stdin": "inputs.records"}),
+        );
+        let records = serde_json::json!({"records": [{"name": "O'Brien & Sons"}]});
+        let (result, _, _) = run_with_tools(&def, records, &[tool]).await;
+        result.expect("run ok");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].1.as_deref(), Some(r#"[{"name":"O'Brien & Sons"}]"#));
+
+        let (tool, _) = recorded("run_command", |_| tools::ToolResult::ok("[]"));
+        let def = one_step("match", "command", serde_json::json!({"command": "jq length", "stdin": "nodes.nothing"}));
+        let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
+        assert!(matches!(result, Err(WorkflowError::ActivityFailed(_, m)) if m.contains("names no data")));
     }
 }
 

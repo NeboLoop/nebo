@@ -84,7 +84,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         employee: employee_name(state, &ask.agent_id),
         session_key: ask.session_key.clone(),
         sentence: ask.sentence.clone(),
-        reason: ask.reason().to_string(),
+        reason: ask.reason_text(),
         command: match &ask.target.field {
             Some(RuleField::CommandPrefix(c)) => Some(c.clone()),
             _ => None,
@@ -757,7 +757,7 @@ fn page(
     // server's tool is no capability, so outside Ask and Plan mode it runs
     // as everyday work (the surfaced cases still ask).
     let standing = if mode == Mode::FullAccess { Effect::Allow } else { Effect::Ask };
-    let tool_standing = if matches!(mode, Mode::Ask | Mode::Plan) { Effect::Ask } else { Effect::Allow };
+    let tool_standing = tool_standing(mode);
 
     // What employees can do: the built-in capabilities.
     for cap in builtin_capabilities() {
@@ -815,7 +815,9 @@ fn page(
 
     // The MCP servers, and any other a rule names, each with its tools.
     let mut servers: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
-    for integration in store.list_mcp_integrations()? {
+    // Shared memory (the Nebo KB) takes no tool permissions: the website
+    // governs it and the server enforces it.
+    for integration in store.list_mcp_integrations()?.into_iter().filter(|i| !tools::mcp_tool::is_shared_memory(i)) {
         let prefix = mcp::bridge::tool_name_prefix(&integration.name);
         let tools = store.get_mcp_known_tools(&integration.id)?;
         let entry = servers.entry(mcp::bridge::server_slug(&prefix)).or_insert_with(|| (integration.name.clone(), BTreeSet::new()));
@@ -831,26 +833,8 @@ fn page(
             }
         }
     }
-    let mut mcp_groups = Vec::new();
-    for (slug, (name, tool_keys)) in &servers {
-        let default_key = RuleKey::Tool(format!("mcp__{slug}__*"));
-        let family = format!("mcp__{slug}__");
-        let mut rows: Vec<PermissionSwitch> = tool_keys
-            .iter()
-            .map(|key| {
-                let tool = key.strip_prefix(&family).unwrap_or(key);
-                scopes.switch(sentence_case(&words(tool)), &[RuleKey::Tool(key.clone()), default_key.clone()], tool_standing)
-            })
-            .collect();
-        rows.sort_by(|a, b| a.sentence.cmp(&b.sentence));
-        mcp_groups.push(PermissionGroup {
-            id: format!("group:mcp:{slug}"),
-            title: name.clone(),
-            subtitle: String::new(),
-            default: scopes.switch(key_phrase(&format!("{family}*")), &[default_key], tool_standing),
-            rows,
-        });
-    }
+    let mut mcp_groups: Vec<PermissionGroup> =
+        servers.iter().map(|(slug, (name, tool_keys))| mcp_group(&scopes, slug, name, tool_keys, tool_standing)).collect();
     p.groups.sort_by(|a, b| a.title.cmp(&b.title));
     mcp_groups.sort_by(|a, b| a.title.cmp(&b.title));
     p.groups.extend(mcp_groups);
@@ -902,6 +886,48 @@ fn page(
     }
     p.specific.sort_by(|a, b| a.sentence.cmp(&b.sentence));
     Ok(p)
+}
+
+/// What a connected server's tool does with no setting at all: outside Ask
+/// and Plan mode it runs as everyday work (the surfaced cases still ask).
+fn tool_standing(mode: Mode) -> Effect {
+    if matches!(mode, Mode::Ask | Mode::Plan) { Effect::Ask } else { Effect::Allow }
+}
+
+/// One MCP server's switches: its default (`mcp__<slug>__*`) and one per
+/// tool key, by sentence.
+fn mcp_group(scopes: &Scopes, slug: &str, name: &str, tool_keys: &BTreeSet<String>, standing: Effect) -> PermissionGroup {
+    let default_key = RuleKey::Tool(format!("mcp__{slug}__*"));
+    let family = format!("mcp__{slug}__");
+    let mut rows: Vec<PermissionSwitch> = tool_keys
+        .iter()
+        .map(|key| {
+            let tool = key.strip_prefix(&family).unwrap_or(key);
+            scopes.switch(sentence_case(&words(tool)), &[RuleKey::Tool(key.clone()), default_key.clone()], standing)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.sentence.cmp(&b.sentence));
+    PermissionGroup {
+        id: format!("group:mcp:{slug}"),
+        title: name.to_string(),
+        subtitle: String::new(),
+        default: scopes.switch(key_phrase(&format!("{family}*")), &[default_key], standing),
+        rows,
+    }
+}
+
+/// One MCP server's switches on the company Permissions page, the same ones
+/// that page shows: what a connector's own view reads its settings from.
+pub(crate) fn company_mcp_group(
+    store: &db::Store,
+    slug: &str,
+    name: &str,
+    tool_keys: &BTreeSet<String>,
+) -> Result<PermissionGroup, NeboError> {
+    let mode = store.permission_mode(&Scope::Company)?.unwrap_or_default();
+    let shown = shown_rules(store, None)?;
+    let scopes = Scopes { own: shown.iter().map(|(r, _)| r).collect(), company: None };
+    Ok(mcp_group(&scopes, slug, name, tool_keys, tool_standing(mode)))
 }
 
 /// A rule's key as its switch names it (an operation as the catalog does).
@@ -1121,6 +1147,7 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str, door: &str) -> (St
             "origin" => "Someone outside your company started this, so it can only reply".into(),
             "coworker" => "Another employee asked for this, and a coworker's request can only reply".into(),
             "credentials" => "It would have shared a password or key".into(),
+            "unattended_schedule" => "It would have scheduled more work from a run nobody was watching; only you schedule work, from your chat".into(),
             "not_its_own" => "It would have removed or replaced something it didn't make, and you didn't ask for it".into(),
             _ => "A safety limit".into(),
         },
@@ -1191,6 +1218,7 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
             format!("An employee it made needs more than it holds: {}", needs.join(", "))
         }
         AskCase::UnconfirmedSend { .. } => "A send whose outcome never came back: did it go out?".into(),
+        AskCase::StepTool { step, tool } => format!("The workflow step \u{201c}{step}\u{201d} called {tool}, which it wasn't given"),
     }
 }
 
@@ -1414,14 +1442,14 @@ fn folder_words(p: &FsPath) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn words(s: &str) -> String {
+pub(super) fn words(s: &str) -> String {
     s.split(['_', '-', '.'])
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn sentence_case(s: &str) -> String {
+pub(super) fn sentence_case(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),

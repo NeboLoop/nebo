@@ -8,7 +8,7 @@ impl Store {
     pub fn list_all_provider_models(&self) -> Result<Vec<ProviderModel>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT * FROM provider_models ORDER BY provider, display_name")
+            .prepare("SELECT * FROM provider_models ORDER BY provider, rank IS NULL, rank, display_name")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map([], row_to_provider_model)
@@ -20,7 +20,7 @@ impl Store {
     pub fn list_provider_models(&self, provider: &str) -> Result<Vec<ProviderModel>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT * FROM provider_models WHERE provider = ?1 ORDER BY display_name")
+            .prepare("SELECT * FROM provider_models WHERE provider = ?1 ORDER BY rank IS NULL, rank, display_name")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![provider], row_to_provider_model)
@@ -36,7 +36,7 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT * FROM provider_models WHERE provider = ?1 AND is_active = 1 ORDER BY display_name",
+                "SELECT * FROM provider_models WHERE provider = ?1 AND is_active = 1 ORDER BY rank IS NULL, rank, display_name",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -243,11 +243,36 @@ impl Store {
         Ok(())
     }
 
+    /// Set a synced speed's place on Janus's ladder.
+    pub fn set_provider_model_rank(&self, id: &str, rank: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE provider_models SET rank = ?2 WHERE id = ?1", params![id, rank])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_provider_model(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM provider_models WHERE id = ?1", params![id])
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Every model the owner chose outside the packs: a conversation's
+    /// model, a session's override and an employee's preference, once each.
+    pub fn stored_model_choices(&self) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT model FROM chats WHERE model IS NOT NULL AND model != ''
+                 UNION SELECT model_override FROM sessions WHERE model_override IS NOT NULL AND model_override != ''
+                 UNION SELECT model_preference FROM entity_config WHERE model_preference IS NOT NULL AND model_preference != ''",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn delete_provider_models_by_provider(&self, provider: &str) -> Result<(), NeboError> {
@@ -311,6 +336,7 @@ fn row_to_provider_model(row: &rusqlite::Row) -> rusqlite::Result<ProviderModel>
         seeded_version: row.get("seeded_version")?,
         model_kind: row.get("model_kind")?,
         source: row.get("source")?,
+        rank: row.get("rank")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })

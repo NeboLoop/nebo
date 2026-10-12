@@ -102,6 +102,26 @@ impl DynTool for MessageTool {
         matches!(self.rule_key(input).as_str(), "sms_conversations" | "sms_search" | "sms_read")
     }
 
+    /// The owner's Messages app: every read is his own chat history, and a
+    /// send that names no texting line (`from`) goes out from his Messages
+    /// when the employee has no line. Like any app of his, the one
+    /// permission check asks him for it in every mode until he allows it
+    /// always for that employee (`CallEffects::reaches_owner`); no schedule
+    /// or workflow texts from his Messages by default. A send from a texting
+    /// line is NeboAI's phone service, not his app.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        let mut effects = if self.read_only(input) {
+            types::permissions::CallEffects::none()
+        } else {
+            types::permissions::CallEffects::unknown()
+        };
+        let from_line = input.get("from").and_then(|v| v.as_str()).is_some_and(|f| !f.trim().is_empty());
+        if self.rule_key(input).starts_with("sms_") && !(self.rule_key(input) == "sms_message_send" && from_line) {
+            effects.reaches_owner = Some(types::permissions::OwnerReach::App { app: Some("Messages".to_string()) });
+        }
+        effects
+    }
+
     /// SMS reads bring outside people's words into the run.
     fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
         matches!(self.rule_key(input).as_str(), "sms_conversations" | "sms_search" | "sms_read")
@@ -186,6 +206,13 @@ async fn handle_sms(store: &Store, ctx: &ToolContext, agent_id: Option<&str>, ac
                     // No texting line: the owner's Messages.app. AppleScript
                     // raises before anything is dispatched, so an error is a
                     // confirmed failure; a clean hand-off is the send.
+                    // A send that named its line never falls back to the
+                    // owner's Messages: that app was never allowed for it.
+                    None if input["from"].as_str().is_some_and(|f| !f.trim().is_empty()) => {
+                        crate::effects::SendOutcome::PreSendFailure(
+                            "Not sent: your texting lines couldn't be reached, so the text wasn't sent. Try again later, or tell the owner.".to_string(),
+                        )
+                    }
                     None => {
                         let r = handle_sms_send(input).await;
                         if r.is_error {

@@ -65,6 +65,14 @@ pub(crate) fn note(kind: Kind, filename: &str, size: u64, body: &str) -> String 
     )
 }
 
+/// The note carrying a sound's transcript. The transcript rides INSIDE the
+/// note, so the model reads it on this turn and every later one while the
+/// clients strip it with the rest of the note — after the note it showed in
+/// the bubble as if the user had typed it.
+pub(crate) fn transcript(filename: &str, size: u64, text: &str) -> String {
+    note(Kind::Audio, filename, size, &format!("transcript follows:\n{text}"))
+}
+
 /// An attachment's size in the words the notes use.
 pub(crate) fn size_label(size: u64) -> String {
     let size_kb = size / 1024;
@@ -181,6 +189,19 @@ mod tests {
                 "note not strippable by the client regex: {n}"
             );
         }
+    }
+
+    /// A transcript is the model's and never the bubble's: the stored message
+    /// carries it, and the one reader strips all of it — lines and `]` included.
+    #[test]
+    fn transcript_reaches_the_model_not_the_bubble() {
+        let re = regex::Regex::new(NOTE_RE).unwrap();
+        let stored = format!(
+            "what can we do with this?{}",
+            transcript("IMG_2457.mp4", 94_000_000, "I feel a friend in you\nBecause you're mine [chorus]")
+        );
+        assert!(stored.contains("I feel a friend in you\nBecause you're mine"), "model must read the transcript: {stored}");
+        assert_eq!(re.replace_all(&stored, "").trim(), "what can we do with this?");
     }
 
     /// Sizes read the way they always did: KB under a megabyte, MB above.

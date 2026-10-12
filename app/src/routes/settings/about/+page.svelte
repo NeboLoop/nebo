@@ -9,12 +9,38 @@
   import { updateState, checkForUpdates, setApplying } from '$lib/stores/update';
   import { addToast } from '$lib/stores/toast';
   import { backendHealth, backendUrl } from '$lib/api/base';
+  import { engineService, setKeepAfterLogout, setStartAtLogin, type EngineService } from '$lib/api/engineService';
+  import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
 
   let version = $state('—');
   let platform = $state('—');
   let licensesText = $state('');
   let showLicenses = $state(false);
   let checkingUpdate = $state(false);
+  // Start at login: shown in the desktop app while the OS service is on offer.
+  let service = $state<EngineService | null>(null);
+  let savingStartAtLogin = $state(false);
+
+  async function toggleStartAtLogin(on: boolean) {
+    savingStartAtLogin = true;
+    service = (await setStartAtLogin(on)) ?? service;
+    savingStartAtLogin = false;
+  }
+
+  // Keep running after I log out (Linux): turned on only after the owner
+  // says yes in the confirm; off at once.
+  let confirmingKeep = $state(false);
+  async function changeKeepAfterLogout(on: boolean) {
+    savingStartAtLogin = true;
+    const next = await setKeepAfterLogout(on);
+    if (next) service = next;
+    else addToast($t('settingsAbout.keepAfterLogoutFailed'), 'error');
+    savingStartAtLogin = false;
+  }
+  function toggleKeepAfterLogout(on: boolean) {
+    if (on) confirmingKeep = true;
+    else changeKeepAfterLogout(false);
+  }
 
   async function runUpdateCheck() {
     checkingUpdate = true;
@@ -33,6 +59,7 @@
   }
 
   onMount(async () => {
+    engineService().then((s) => (service = s));
     const data = await backendHealth();
     if (data?.version) version = data.version;
     if (typeof navigator !== 'undefined') {
@@ -83,6 +110,36 @@
       <span class="text-xs text-base-content/70">{$t('settingsAbout.platform')}</span>
       <span class="text-xs font-mono">{platform}</span>
     </div>
+    {#if service?.offered}
+      <div class="flex justify-between items-center gap-3 py-1.5 border-b border-base-content/5">
+        <div class="flex flex-col gap-0.5 min-w-0">
+          <span class="text-xs text-base-content/70">{$t('settingsAbout.startAtLogin')}</span>
+          <span class="text-xs text-base-content/50">{$t('settingsAbout.startAtLoginHint')}</span>
+        </div>
+        <input
+          type="checkbox"
+          class="toggle toggle-sm toggle-primary shrink-0"
+          checked={service.startAtLogin}
+          disabled={savingStartAtLogin}
+          onchange={(e) => toggleStartAtLogin((e.currentTarget as HTMLInputElement).checked)}
+        />
+      </div>
+      {#if service.keepAfterLogout !== null && service.startAtLogin}
+        <div class="flex justify-between items-center gap-3 py-1.5 border-b border-base-content/5">
+          <div class="flex flex-col gap-0.5 min-w-0">
+            <span class="text-xs text-base-content/70">{$t('settingsAbout.keepAfterLogout')}</span>
+            <span class="text-xs text-base-content/50">{$t('settingsAbout.keepAfterLogoutHint')}</span>
+          </div>
+          <input
+            type="checkbox"
+            class="toggle toggle-sm toggle-primary shrink-0"
+            checked={service.keepAfterLogout}
+            disabled={savingStartAtLogin}
+            onchange={(e) => toggleKeepAfterLogout((e.currentTarget as HTMLInputElement).checked)}
+          />
+        </div>
+      {/if}
+    {/if}
     <div class="flex justify-between items-center py-1.5">
       {#if $updateState.available}
         <span class="text-xs text-base-content/70">{$t('settingsAbout.versionAvailable', { values: { version: $updateState.latestVersion } })}</span>
@@ -151,3 +208,13 @@
     ></textarea>
   {/if}
 </div>
+
+{#if confirmingKeep}
+  <ConfirmModal
+    title={$t('settingsAbout.keepAfterLogoutConfirmTitle')}
+    message={$t('settingsAbout.keepAfterLogoutConfirmMessage')}
+    confirmLabel={$t('settingsAbout.keepAfterLogoutConfirmButton')}
+    onConfirm={() => { confirmingKeep = false; changeKeepAfterLogout(true); }}
+    onCancel={() => { confirmingKeep = false; service = service ? { ...service } : service; }}
+  />
+{/if}

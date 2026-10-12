@@ -145,6 +145,8 @@ func snakeToPascal(s string) string {
 var prefixedModules = map[string]string{
 	"neboai": "neboAI",
 	"user":   "user",
+	// view / edit / save of a workbook: sheetView, sheetEdit, sheetSave.
+	"sheet": "sheet",
 }
 
 // handlerToFuncName converts a Rust handler function name to a TS function name.

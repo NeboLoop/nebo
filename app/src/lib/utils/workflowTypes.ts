@@ -9,6 +9,7 @@
  * - Flow control: condition, loop, wait
  * - Integrations: connector (MCP), http
  * - Decisions: decide (typed questions, engine-executed)
+ * - Expert: another employee does the step; the run waits for the reply
  * - Composition: agent (delegation), transform
  *
  * The English text in ACTIVITY_TYPES is the source and the fallback;
@@ -34,6 +35,7 @@ export type ActivityType =
 	| 'connector'
 	| 'http'
 	| 'decide'
+	| 'expert'
 	| 'transform'
 	// Call-tree nodes — only legal inside a call_tree binding; never
 	// executed by the workflow engine (the voice session consumes them).
@@ -138,10 +140,10 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 			},
 			{
 				key: 'mcp',
-				label: 'Allowed MCP servers',
+				label: 'Allowed connectors',
 				type: 'text',
 				placeholder: 'crm',
-				description: 'Comma-separated connected MCP server names.',
+				description: 'Comma-separated connector names.',
 			},
 		],
 	},
@@ -465,28 +467,28 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 	connector: {
 		type: 'connector',
 		label: 'Connector',
-		description: 'Use an MCP integration',
+		description: 'Use a connector',
 		icon: '⊞',
 		accentClass: 'border-primary',
 		defaultSkills: [],
 		defaultSteps: [
-			'Execute tool from connected MCP server',
+			'Run a tool on the connector',
 			'Process and pass results downstream',
 		],
 		parameters: [
 			{
 				key: 'serverId',
-				label: 'MCP Server',
+				label: 'Connector',
 				type: 'select',
 				options: [],
-				description: 'Connected MCP server to use',
+				description: 'The connector to use',
 			},
 			{
 				key: 'tool',
 				label: 'Tool',
 				type: 'text',
 				placeholder: 'e.g. read_file, send_message',
-				description: 'Which tool to invoke on the MCP server',
+				description: 'Which tool to use on the connector',
 			},
 			{
 				key: 'input',
@@ -576,6 +578,52 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				placeholder: '{ "intent": "other" }',
 				description:
 					'Answers to use when no decision can be made: an option for a choice, a level for a score, true or false for a noul. The node then sets nodes.<id>.defaulted',
+			},
+		],
+	},
+	expert: {
+		type: 'expert',
+		label: 'Expert',
+		description: 'Another employee does this step; the run waits for the reply',
+		icon: '✪',
+		accentClass: 'border-primary',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'expert',
+				label: 'Expert',
+				type: 'text',
+				placeholder: 'ana',
+				description: 'The coworker who does the work: an id, handle or name',
+			},
+			{
+				key: 'task',
+				label: 'Task',
+				type: 'textarea',
+				placeholder: 'Price the order for {{inputs.customer}}',
+				description: 'What the expert should do',
+			},
+			{
+				key: 'input',
+				label: 'Input',
+				type: 'text',
+				placeholder: '{{nodes.fetch}}',
+				description: 'One reference the expert receives, such as {{nodes.fetch}}',
+			},
+			{
+				key: 'output',
+				label: 'Expected reply',
+				type: 'textarea',
+				placeholder: '{ "total": "number" }',
+				description: 'What should come back: a JSON shape or a short description',
+			},
+			{
+				key: 'timeout',
+				label: 'Timeout',
+				type: 'text',
+				placeholder: '4h',
+				description: 'How long to wait for the reply, such as 30m, 4h or 2d',
 			},
 		],
 	},
@@ -735,6 +783,9 @@ export function createTypedActivity(
 	let intent = catalogItem.desc || typeDef.description;
 	if (isAgent) intent = `Delegate to ${catalogItem.label}`;
 	if (isConnector && catalogItem.serverName) intent = `Use ${catalogItem.serverName}`;
+	// The engine sends an expert its intent when params.task is empty, so a
+	// new expert step starts blank rather than with the catalog blurb.
+	if (actType === 'expert') intent = '';
 
 	return {
 		id,

@@ -6,6 +6,8 @@ pub mod agents_export;
 pub mod app_lifecycle;
 pub mod backup_ship;
 mod artifact_updates;
+pub mod background;
+mod byok_models;
 mod revocation;
 mod channel_dispatch;
 pub mod chat_dispatch;
@@ -17,11 +19,14 @@ pub mod deps;
 mod default_artifacts;
 pub mod entity_config;
 pub mod handlers;
+pub mod handoff;
+mod hub_sync;
 mod engine;
 mod heartbeat;
 mod workforce_reporter;
 pub mod import;
 pub(crate) mod linked_apps;
+mod live_shares;
 pub mod local_access;
 pub mod middleware;
 mod mail_intake;
@@ -32,15 +37,18 @@ mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
 mod preflight;
+pub mod process;
 mod redact;
 pub mod routes;
 pub mod run_display;
 pub mod run_registry;
 mod scheduler;
 mod shared_files;
+mod upload_sessions;
 pub mod wake;
 mod reply_route;
 pub mod layers_update;
+mod liveness;
 #[cfg(test)]
 mod staffed_proof;
 #[cfg(all(test, unix))]
@@ -49,6 +57,8 @@ mod sidecar_proof;
 mod harness;
 #[cfg(test)]
 mod nebo_files_proof;
+#[cfg(all(test, unix))]
+mod interface_bulk_proof;
 mod spa;
 mod app_listing;
 mod state;
@@ -105,21 +115,39 @@ pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 /// when its depth was lost somewhere.
 pub(crate) const AGENT_TRIGGERS_PER_5_MIN: usize = 6;
 
+/// How many messages an employee's own work (its workflows, schedules and
+/// the owner's requests: handoff depth 0) may send one colleague in five
+/// minutes. No chain runs on these, so the chain backstop above is the
+/// wrong ceiling: a hub-and-spoke team whose four workflows each report to
+/// one manager sent 13 messages that the 6 refused (bake-off 2026-10-10).
+/// This is a volume ceiling only, the size the workroom gives a mission.
+pub(crate) const OWN_WORK_MESSAGES_PER_5_MIN: usize = 30;
+
 /// One more agent-set-off piece of work on `rail`, when fewer than `cap`
 /// were in the last five minutes: counted and allowed. The ONE rate
 /// ceiling on agent-to-agent chains, for the loop channel and the
 /// coworker rail alike.
 pub(crate) async fn agent_trigger_allowed(state: &AppState, rail: &str, cap: usize) -> bool {
     let mut triggers = state.channel_agent_triggers.lock().await;
+    trigger_counted(&mut triggers, rail, cap, std::time::Instant::now())
+}
+
+/// [`agent_trigger_allowed`] over the counts themselves, at `now`.
+pub(crate) fn trigger_counted(
+    triggers: &mut std::collections::HashMap<String, std::collections::VecDeque<std::time::Instant>>,
+    rail: &str,
+    cap: usize,
+    now: std::time::Instant,
+) -> bool {
     let entry = triggers.entry(rail.to_string()).or_default();
-    let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
+    let cutoff = now.checked_sub(std::time::Duration::from_secs(300)).unwrap_or(now);
     while entry.front().is_some_and(|t| *t < cutoff) {
         entry.pop_front();
     }
     if entry.len() >= cap {
         return false;
     }
-    entry.push_back(std::time::Instant::now());
+    entry.push_back(now);
     true
 }
 
@@ -281,6 +309,12 @@ fn jwt_claim(token: &str, claim: &str) -> Option<String> {
     v.get(claim)?.as_str().map(|s| s.to_string())
 }
 
+/// Nebo's own catalog, as built in: Nebo AI's boot floor, never the
+/// owner's file.
+fn embedded_models() -> config::ModelsConfig {
+    serde_yaml::from_str(include_str!("../../config/src/models.yaml")).expect("the embedded models.yaml parses")
+}
+
 /// Seed the provider_models table from the embedded models.yaml catalog.
 /// - New models are inserted with is_active=1
 /// - Existing models get metadata updated (pricing, capabilities, context_window)
@@ -390,6 +424,10 @@ struct JanusEntry {
     /// it (a pool's smallest member, capped at 200k).
     #[serde(default)]
     context_window: Option<i64>,
+    /// The speed's place on the ladder (nebo-1 0, then lowest = fastest).
+    /// A listing without it is still in ladder order: its position stands in.
+    #[serde(default)]
+    rank: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -397,11 +435,12 @@ struct JanusListing {
     data: Vec<JanusEntry>,
 }
 
-/// Store the sellable entries of a Janus listing, each with the window Janus
-/// reported for it, and remove the synced rows it no longer lists.
+/// Store the sellable entries of a Janus listing, each with the window and
+/// ladder rank Janus reported for it, and remove the synced rows it no longer
+/// lists.
 fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize, String> {
     let mut listed: Vec<String> = Vec::new();
-    for m in listing.data.into_iter().filter(|m| m.owned_by == "neboai") {
+    for (pos, m) in listing.data.into_iter().filter(|m| m.owned_by == "neboai").enumerate() {
         let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
         store
             .upsert_provider_model(
@@ -419,6 +458,9 @@ fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize
                 true,
             )
             .map_err(|e| e.to_string())?;
+        store
+            .set_provider_model_rank(&format!("janus/{}", m.id), m.rank.unwrap_or(pos as i64))
+            .map_err(|e| e.to_string())?;
         listed.push(m.id);
     }
     for row in store.list_provider_models("janus").map_err(|e| e.to_string())? {
@@ -435,7 +477,9 @@ fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize
 /// otherwise map an unknown "janus/nebo-1-pro" to the nearest known name)
 /// needs them injected separately.
 /// Every connection's own models (`<kind>@<profile>` rows: typed by hand or
-/// picked while browsing), so a turn may send to them.
+/// picked while browsing), so a turn may send to them. The first active
+/// connection of each kind also answers to the bare kind (`anthropic/…`), as
+/// `build_providers` loads it, so its models are known under that name too.
 /// ponytail: a connection whose last model was removed keeps its stale list
 /// until restart; clear per key if that ever matters.
 pub fn inject_connection_models(store: &db::Store, selector: &agent::ModelSelector) {
@@ -445,44 +489,53 @@ pub fn inject_connection_models(store: &db::Store, selector: &agent::ModelSelect
     for key in keys {
         inject_db_models(store, selector, &key);
     }
+    let mut kinds = std::collections::BTreeSet::new();
+    for profile in store.list_auth_profiles().unwrap_or_default() {
+        if profile.is_active.unwrap_or(0) == 0 || !kinds.insert(profile.provider.clone()) {
+            continue;
+        }
+        let models = db_model_infos(store, &handlers::connections::connection_key(&profile));
+        if !models.is_empty() {
+            selector.inject_provider_models(&profile.provider, models);
+        }
+    }
 }
 
 pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, provider: &str) {
-    if let Ok(db_models) = store.list_active_provider_models(provider) {
-        if !db_models.is_empty() {
-            let infos: Vec<agent::selector::ModelInfo> = db_models
-                .iter()
-                .map(|m| agent::selector::ModelInfo {
-                    id: m.model_id.clone(),
-                    display_name: m.display_name.clone(),
-                    // Unknown = 0: the selector assumes its one default.
-                    context_window: m.context_window.unwrap_or(0) as i32,
-                    input_price: 0.0,
-                    output_price: 0.0,
-                    cached_input_price: 0.0,
-                    capabilities: {
-                        let mut caps: Vec<String> = m
-                            .capabilities
-                            .as_ref()
-                            .and_then(|c| serde_json::from_str(c).ok())
-                            .unwrap_or_default();
-                        if m.model_kind == "decision" {
-                            caps.push("decision".into());
-                        }
-                        caps
-                    },
-                    kind: m
-                        .kind
-                        .as_ref()
-                        .and_then(|k| serde_json::from_str(k).ok())
-                        .unwrap_or_default(),
-                    preferred: false,
-                    active: true,
-                })
-                .collect();
-            selector.inject_provider_models(provider, infos);
-        }
+    let infos = db_model_infos(store, provider);
+    if !infos.is_empty() {
+        selector.inject_provider_models(provider, infos);
     }
+}
+
+/// The active models the DB holds under `provider`, as the selector knows a
+/// model.
+fn db_model_infos(store: &db::Store, provider: &str) -> Vec<agent::selector::ModelInfo> {
+    store
+        .list_active_provider_models(provider)
+        .unwrap_or_default()
+        .iter()
+        .map(|m| agent::selector::ModelInfo {
+            id: m.model_id.clone(),
+            display_name: m.display_name.clone(),
+            // Unknown = 0: the selector assumes its one default.
+            context_window: m.context_window.unwrap_or(0) as i32,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: {
+                let mut caps: Vec<String> =
+                    m.capabilities.as_ref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+                if m.model_kind == "decision" {
+                    caps.push("decision".into());
+                }
+                caps
+            },
+            kind: m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default(),
+            preferred: false,
+            active: true,
+        })
+        .collect()
 }
 
 /// Build a map of "provider/model_id" → is_active from the DB provider_models table.
@@ -600,10 +653,12 @@ fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delega
     hub.broadcast(name, payload);
 }
 
-/// The decide client. `default_model` reads the bot's default (a model or
-/// a pack reference) on every call; when it names a pack whose Decisions
-/// slot points at the owner's own endpoint ([`decision_endpoint`]), the
-/// decision goes there, else to Janus.
+/// The decide client. Each call's decisions follow the intelligence pack of
+/// the employee it is for (the call's trace names it): its own model
+/// preference, else the bot's default, read through `default_model` (a
+/// model or a pack reference) on every call. When that pack's Decisions slot
+/// points at the owner's own endpoint ([`decision_endpoint`]), the decision
+/// goes there, else to Janus.
 pub fn build_decide_client(
     store: Arc<db::Store>,
     cfg: &Config,
@@ -617,21 +672,34 @@ pub fn build_decide_client(
                 bot_id: config::read_bot_id(),
             })
         })
-        .with_endpoint(move || decision_endpoint(&store, &default_model()?)),
+        .with_endpoint(move |trace| {
+            let model = employee_pack(&store, &trace.agent_id).or_else(&default_model)?;
+            decision_endpoint(&store, &model)
+        }),
     )
+}
+
+/// The intelligence pack an employee's own model preference names, if it
+/// names one.
+fn employee_pack(store: &db::Store, agent_id: &str) -> Option<String> {
+    if agent_id.is_empty() {
+        return None;
+    }
+    let preference = store.get_entity_config("agent", agent_id).ok()??.model_preference?;
+    types::packs::parse_ref(&preference).is_some().then_some(preference)
 }
 
 /// The kind of connection a pack's Decisions slot names to send decisions
 /// to the owner's own endpoint: `systemone_compatible@<connection>/<model>`.
 const SYSTEMONE_COMPATIBLE: &str = "systemone_compatible";
 
-/// Where decisions go when the bot's default is a pack whose Decisions slot
+/// Where decisions go when the active pack (`model`) is a pack whose Decisions slot
 /// names one of the owner's SystemOne-compatible connections that exists
 /// and is active: its base URL, its key, the slot's model. `None` (the
 /// default is not a pack, the slot is empty or Nebo AI's `janus/…`, the
 /// connection is gone or off) keeps decisions on Janus. Local reads only.
-pub fn decision_endpoint(store: &db::Store, default_model: &str) -> Option<ai::DecideEndpoint> {
-    let (pack_id, _) = types::packs::parse_ref(default_model)?;
+pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEndpoint> {
+    let (pack_id, _) = types::packs::parse_ref(model)?;
     let pack = store.get_intelligence_pack(pack_id).ok()??;
     let slot = pack.levels.decisions.as_deref()?.trim();
     let (profile_id, model) = slot.strip_prefix(SYSTEMONE_COMPATIBLE)?.strip_prefix('@')?.split_once('/')?;
@@ -666,8 +734,6 @@ pub fn build_providers(
         }
     };
 
-    let models_cfg = config::ModelsConfig::load();
-
     let mut providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
     let mut gateway_providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
     for profile in &profiles {
@@ -676,30 +742,21 @@ pub fn build_providers(
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
             "anthropic" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("anthropic")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::AnthropicProvider::new(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             "openai" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("openai")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::OpenAIProvider::new(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             "deepseek" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("deepseek")
-                    .unwrap_or_default();
                 let mut p = ai::OpenAIProvider::with_base_url(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                     profile
                         .base_url
                         .clone()
@@ -709,12 +766,9 @@ pub fn build_providers(
                 Some(Arc::new(p))
             }
             "google" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("google")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::GeminiProvider::new(
                     auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             // OpenRouter speaks the OpenAI format at its own fixed URL.
@@ -748,15 +802,12 @@ pub fn build_providers(
             // not chat providers: the decide client reaches them.
             "systemone_compatible" => None,
             "ollama" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("ollama")
-                    .unwrap_or_default();
                 Some(Arc::new(ai::OllamaProvider::new(
                     profile
                         .base_url
                         .clone()
                         .unwrap_or_else(|| "http://localhost:11434".into()),
-                    profile.model.clone().unwrap_or(default_model),
+                    profile.model.clone().unwrap_or_default(),
                 )))
             }
             "neboai" => {
@@ -991,9 +1042,14 @@ async fn handle_comm_install_event(
                 tracing::debug!(tool_id = %event.tool_id, slug = %item.slug, "install event: already installed, skipping");
                 return Ok(());
             }
-            if event.event_type == "tool_updated"
-                && artifact_updates::on_update_notice(state, &api, &event, &detail).await
-            {
+            // An update notice updates what is installed here and never
+            // installs: something the owner removed (or never had) here stays
+            // away when a new version is approved, whatever the hub's install
+            // rows say. Only an install event installs.
+            if event.event_type == "tool_updated" {
+                if !artifact_updates::on_update_notice(state, &api, &event, &detail).await {
+                    tracing::info!(tool_id = %event.tool_id, slug = %item.slug, "update notice for an artifact not installed here: ignored");
+                }
                 return Ok(());
             }
             // Backstop against any echo the check above misses: the same
@@ -1160,6 +1216,10 @@ pub(crate) fn compression() -> CompressionLayer<
 }
 
 pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
+    // Full speed with no window in front: every engine holds it (the desktop
+    // app's, `nebo-cli serve`, dev).
+    process::hold_full_speed();
+    std::sync::LazyLock::force(&STARTED_AT);
     let host = cfg.host.clone();
     // The port is taken first and held until the server serves on it, so
     // nothing else can take it while Nebo starts. Port 0 takes whichever
@@ -1171,6 +1231,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?
         .port();
     let port = cfg.port;
+    // Every local caller in this process (in-process tools, the plugins it
+    // starts) addresses the port actually held, not the configured one.
+    let _ = napp::plugin::SERVING_PORT.set(port);
     let bind_addr = format!("{host}:{port}");
 
     if !quiet {
@@ -1192,6 +1255,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    liveness::start(store.clone());
 
     // Initialize encryption: try OS keyring → file key → generate new
     let encryptor = if let Some(key_hex) = auth::keyring::get() {
@@ -1231,7 +1295,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Ok(n) => info!(count = n, "encrypted provider keys stored in the clear"),
         Err(e) => warn!(error = %e, "provider keys could not be encrypted at rest"),
     }
-    handlers::apps::serve_desktop_from(store.clone(), port);
     // The old permission settings become rules once, before anything runs a
     // tool: every call is decided by the rules from here on.
     agent::migrate_legacy(&store)?;
@@ -1497,11 +1560,14 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // has-active-chat-models gate reads this table — seeding it afterwards
     // left every newly provisioned bot with NO LLM provider until a restart
     // (observed live: providers built at t+0.0s, catalog seeded at t+1.3s).
-    {
-        let boot_models_cfg = config::ModelsConfig::load();
-        seed_models_from_catalog(&store, &boot_models_cfg);
-        info!("seeded provider_models from embedded catalog (pre-provider-build)");
-    }
+    // The owner's models.yaml says the Nebo AI pack where it named a speed
+    // (one-time), before anything reads it.
+    migration::migrate_models_yaml();
+    // What each owner runs on his own providers is his, once, before the
+    // seed below stops naming vendor models (`byok_models`).
+    byok_models::upgrade(&store);
+    seed_models_from_catalog(&store, &embedded_models());
+    info!("seeded provider_models from embedded catalog (pre-provider-build)");
     // The pickable speeds come from Janus. Bounded so an offline boot
     // still boots; the catalog keeps its last copy until the next sync.
     match tokio::time::timeout(std::time::Duration::from_secs(4), sync_janus_models(&store, &cfg)).await {
@@ -1588,9 +1654,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let extension_bridge = browser_manager.bridge();
 
     // Install/update native messaging host manifest for Chrome extension.
-    // The manifest must point to the `nebo` CLI binary (which has the relay code),
-    // NOT `nebo-desktop` (the Tauri GUI). When running as `nebo-desktop`, we find
-    // the sibling `nebo` binary in the same directory.
+    // The manifest points at this executable where it stays
+    // (`process::stable_exe`: an AppImage's own file, never its transient
+    // mount): the desktop app's `nebo` and `nebo-cli` both run the relay
+    // when the browser starts them.
     // The manifests live in the user's browser profiles, outside the Nebo root,
     // and bind those browsers to ONE binary: the Nebo at the platform data
     // directory. A relocated root (tests, cloud pods, side installs) never
@@ -1598,16 +1665,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if config::data_dir_overridden() {
         info!("data dir overridden — leaving the browser native messaging manifests alone");
     } else {
-        let nebo_binary = std::env::current_exe()
-            .map(|p| {
-                if p.file_name().and_then(|n| n.to_str()) == Some("nebo-desktop") {
-                    let sibling = p.with_file_name("nebo");
-                    if sibling.exists() {
-                        return sibling.to_string_lossy().to_string();
-                    }
-                }
-                p.to_string_lossy().to_string()
-            })
+        let nebo_binary = process::stable_exe()
+            .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "nebo".to_string());
         let local_ext_id = cfg.browser_extension_id.as_deref().unwrap_or("");
         if browser::native_host::needs_manifest_update(&nebo_binary, local_ext_id) {
@@ -1678,21 +1737,14 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // scan / skill load below so resumed plugins are picked up.
     plugin_store.reconcile_orphaned_staging().await;
 
-    // Populate plugin env var cache from DB (stored API keys, tokens, etc.)
+    // Every installed plugin runs with the owner's stored settings (API keys,
+    // tokens, …): the same load a plugin that arrives later gets.
     {
-        let installed = plugin_store.list_installed();
-        for (slug, _, _, _) in &installed {
-            if let Ok(settings) = store.list_plugin_settings_by_slug(slug) {
-                let vars: std::collections::HashMap<String, String> = settings
-                    .into_iter()
-                    .filter(|s| !s.setting_value.is_empty())
-                    .map(|s| (s.setting_key, s.setting_value))
-                    .collect();
-                if !vars.is_empty() {
-                    plugin_store.set_env_vars(slug, vars);
-                }
-            }
-        }
+        let mut slugs: Vec<String> =
+            plugin_store.list_installed().into_iter().map(|(slug, ..)| slug).collect();
+        slugs.sort();
+        slugs.dedup();
+        codes::load_plugin_settings(&store, &plugin_store, &slugs);
     }
 
     // Warm the readiness cache. Nothing else fills it until a plugin's first
@@ -1892,8 +1944,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     };
     let napp_registry = Arc::new(napp::Registry::new(napp_config, port));
 
-    // Plan tier — updated by NeboAI AUTH_OK handler, read by ExecuteTool
-    let plan_tier = Arc::new(tokio::sync::RwLock::new("free".to_string()));
+    // Plan tier — "" until read from NeboAI on connect (codes::sync_plan),
+    // then kept by the hub's tokenRefresh; read by ExecuteTool and the
+    // account status.
+    let plan_tier = Arc::new(tokio::sync::RwLock::new(String::new()));
 
     // Initialize OS-level sandbox for script execution (macOS Seatbelt / Linux bubblewrap)
     let sandbox_manager = {
@@ -1980,6 +2034,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mcp_client = Arc::new(mcp::McpClient::new(encryptor));
     let bridge = Arc::new(mcp::Bridge::new(mcp_client, tool_registry.clone()));
     tool_registry.set_bridge(bridge.clone());
+    // A server that says its tools changed gets them listed again.
+    bridge.watch_tool_changes();
     // Store is needed by MCP proxy tools for OAuth token refresh during calls.
     tool_registry.set_store(store.clone());
     // Wire owner alerts (message notify/alert) to the frontend: the message tool
@@ -2246,7 +2302,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
-        harness.providers(),
+        harness.housekeeper(),
         embedding_provider.clone(),
         Some(decide_client.clone()),
     );
@@ -2288,6 +2344,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
         workflow_loop,
     ));
+    workflow_manager.set_harness(harness.clone());
     // Register the workflow tools now that the manager exists
     tool_registry
         .register_workflows(workflow_manager.clone() as Arc<dyn tools::WorkflowManager>)
@@ -2583,7 +2640,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let helpers = agent::harness::delegation::Helpers::new(
         store.clone(),
         Arc::new(harness.sessions().clone()),
-        tool_registry.clone(),
         Arc::new(harness.clone()),
         Some(wake_tx),
         Some(helper_ui_tx),
@@ -2821,6 +2877,13 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     tokio::spawn(async move { wake::answer_thread(&state, &key, 0, Vec::new()).await });
                 })
             }),
+            background_note: Some({
+                let state = state.clone();
+                Arc::new(move |agent_id: String, session_key: String| {
+                    let state = state.clone();
+                    Box::pin(async move { background::note_for(&state, &agent_id, &session_key).await })
+                })
+            }),
         });
         // `suggest_goal` reaches the agreed goal through the harness.
         state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(
@@ -2924,7 +2987,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and grants them on the owner's yes, through the ONE permission store.
     state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
         state.permission_asks.clone(),
-        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.providers())),
+        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone())),
     )));
 
     // Wire the coworker message rail (late, like the installer above — it needs
@@ -2933,6 +2996,12 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     state
         .tools
         .set_coworker_rail(Arc::new(coworker::CoworkerRailImpl::new(state.clone())));
+
+    // Wire the worker restart into create_employee / update_employee (late,
+    // like the rail above): a duty made, changed, toggled or removed in chat
+    // is registered by its worker at once, not when the directory watcher
+    // or a restart gets to it.
+    state.tools.set_live_triggers(Arc::new(LiveTriggersImpl(state.clone())));
 
     // Restart workers that have DB channel bindings (they were started before the
     // channel dispatcher was wired, so channels didn't start).
@@ -3244,6 +3313,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // never waits on the package mirrors (`tools::system_packages`).
     tokio::spawn(tools::system_packages::reinstall());
 
+    // Hub copies of uploaded files still owed, and every one owed from now
+    // on, made in the background (`hub_sync`); idle upload sessions swept.
+    hub_sync::spawn(state.clone());
+
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
         tracing::debug!("skipping background update checker in dev build");
@@ -3412,6 +3485,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The one durable-work loop (heartbeats and schedules are its timers). Dark until the conversion migration moves
     // the seven mechanisms into its tables; real from day one.
     engine::spawn(state.clone());
+    // Background work: the owner's "Running now", told as it changes.
+    background::spawn(state.clone());
     // The workforce reporter: runs and duties pushed to the platform as they
     // happen, so an owner hears about a failure from us in seconds instead of
     // when they next open the console (accountability W2, bot half).
@@ -3423,6 +3498,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Files handed to the owner that no message shows any more go
     // (`shared_files`).
     shared_files::spawn_sweep(state.store.clone());
+    live_shares::spawn(state.clone());
+
+    // Teach replays a restart cut off mid-upload go up to NeboAI storage
+    // again (`handlers::desktop::resume_replay_uploads`).
+    handlers::desktop::resume_replay_uploads(&state);
 
     // Once per start: turn off what NeboAI withdrew while this bot could
     // not hear it (`revocation::spawn_sweep`).
@@ -3496,6 +3576,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
         .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
+        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
         .route("/ws/desktop", axum::routing::get(handlers::desktop::desktop_ws_handler))
         // Root + wildcard forms. The slashless /apps/x/ui is the matchable
         // root — a TRAILING-slash route ("…/ui/") never matches in axum's
@@ -3579,6 +3660,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // peer address. A credential carried in the path comes off it before
     // routing (`middleware::path_credential`).
     let app = tower::ServiceExt::map_request(app, middleware::path_credential);
+    liveness::serving();
     axum::serve(listener, axum::ServiceExt::into_make_service_with_connect_info::<std::net::SocketAddr>(app))
         .with_graceful_shutdown(async move {
             shutdown.await;
@@ -3630,6 +3712,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
 
+    // Stopped on purpose: the next run is not a restart.
+    process::end_run();
     Ok(())
 }
 
@@ -3678,7 +3762,9 @@ async fn drain_in_flight_runs(registry: &run_registry::RunRegistry) {
 }
 
 /// The shutdown signals: SIGTERM (kill, Kubernetes, hot reload), SIGINT
-/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere.
+/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere,
+/// and a stop asked of the engine itself (`process::stop`: Quit, the shell
+/// that started it gone).
 /// They are registered when this is called; the returned future resolves on
 /// the first one to arrive. This is the only shutdown signal handler in the
 /// process: the graceful drain it starts owns shutdown end to end.
@@ -3696,6 +3782,7 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
             _ = term.recv() => "SIGTERM",
             _ = int.recv() => "SIGINT",
             _ = hup.recv() => "SIGHUP",
+            _ = process::stopped() => "stop",
         };
         info!(signal = sig, "received shutdown signal");
     })
@@ -3704,8 +3791,11 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
 #[cfg(not(unix))]
 fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
     Ok(async {
-        tokio::signal::ctrl_c().await.ok();
-        info!("received Ctrl+C");
+        let sig = tokio::select! {
+            _ = tokio::signal::ctrl_c() => "Ctrl+C",
+            _ = process::stopped() => "stop",
+        };
+        info!(signal = sig, "received shutdown signal");
     })
 }
 
@@ -3763,6 +3853,18 @@ async fn handle_plugin_fs_event(state: &AppState, event: napp::plugin::PluginFsE
         }
     }
     state.hub.broadcast("plugin_changed", serde_json::json!({"slug": slug, "action": action}));
+}
+
+/// The worker restart behind the employee tools' live triggers
+/// (`tools::agent_tool::LiveTriggers`): the one owner of an employee's live
+/// trigger registration is its worker.
+struct LiveTriggersImpl(AppState);
+
+#[async_trait::async_trait]
+impl tools::agent_tool::LiveTriggers for LiveTriggersImpl {
+    async fn resync(&self, agent_id: &str) {
+        handlers::agents::restart_agent_worker_if_active(&self.0, agent_id).await;
+    }
 }
 
 /// Process filesystem agent change events: sync DB, update registry, broadcast WS.
@@ -4194,6 +4296,44 @@ mod janus_sync_tests {
         let catalog: config::ModelsConfig = serde_yaml::from_str(include_str!("../../config/src/models.yaml")).unwrap();
         seed_models_from_catalog(&store, &catalog);
         assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
+    }
+
+    /// The speeds list by their rank on the ladder, never by name (which
+    /// read Balanced, Deep, Fast), whether Janus sends the rank or only its
+    /// order.
+    #[test]
+    fn the_speeds_list_by_rank_not_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let names = |store: &db::Store| -> Vec<String> {
+            store.list_provider_models("janus").unwrap().into_iter().map(|m| m.display_name).collect()
+        };
+        let ordered: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Default"},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Fast"},
+            {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Balanced"},
+            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "Deep"}
+        ]}))
+        .unwrap();
+        store_janus_listing(&store, ordered).unwrap();
+        assert_eq!(names(&store), ["Default", "Fast", "Balanced", "Deep"]);
+        let ranked: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "Deep", "rank": 3},
+            {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Balanced", "rank": 2},
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Default", "rank": 0},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Fast", "rank": 1}
+        ]}))
+        .unwrap();
+        store_janus_listing(&store, ranked).unwrap();
+        assert_eq!(names(&store), ["Default", "Fast", "Balanced", "Deep"]);
+        let all: Vec<String> = store
+            .list_all_provider_models()
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.provider == "janus")
+            .map(|m| m.display_name)
+            .collect();
+        assert_eq!(all, ["Default", "Fast", "Balanced", "Deep"]);
     }
 }
 
@@ -4698,6 +4838,7 @@ async fn run_webhook_workflow(
             Some(binding_name.to_string()),
             agent_id,
             emit_sources,
+            None,
         )
         .await
     {
@@ -4918,13 +5059,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                         }
                     }
 
-                    // Update in-memory plan tier so account_status reads the fresh value
-                    *state.plan_tier.write().await = plan.to_string();
-
-                    // Notify UI
-                    state
-                        .hub
-                        .broadcast("plan_changed", serde_json::json!({"plan": plan}));
+                    // The plan account_status reads; the UI hears of a change.
+                    codes::apply_plan(&state, plan).await;
                 }
             }
         }
@@ -5173,6 +5309,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel: "neboai".to_string(),
             origin: comm_origin(is_personal && !is_outside),
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -5359,6 +5496,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             // says otherwise — enforced in the runner, not by prompt.
             origin: tools::Origin::Visitor,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -5644,6 +5782,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 channel: "neboai".to_string(),
                 origin: comm_origin(is_personal),
                 door: types::permissions::Door::Chat,
+                narrow: None,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -5759,6 +5898,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -6524,6 +6664,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
                 door: types::permissions::Door::Chat,
+                narrow: None,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -7014,7 +7155,7 @@ fn extract_message_text(content: &str) -> String {
 ///
 /// An explicit OpenAI-compatible key wins; otherwise the Janus gateway the user
 /// already bills through, which speaks the same `/audio/transcriptions` shape.
-fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
+pub(crate) fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
     const DEFAULT_STT_MODEL: &str = "whisper-1";
 
     let profiles = state.store.list_auth_profiles().ok()?;
@@ -7053,11 +7194,11 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
     match transcription_endpoint(state) {
         Some((key, base_url, model)) => {
             match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &key, &base_url, &model, named, bytes).await {
-                Ok(text) if text.is_empty() => audio(
+                Ok(heard) if heard.text.is_empty() => audio(
                     "transcribed, but no speech was found in it. Say so rather than \
                      guessing at its contents.",
                 ),
-                Ok(text) => format!("{}\n{}", audio("transcript follows"), text),
+                Ok(heard) => crate::attachments::transcript(filename, size, &heard.text),
                 Err(e) => {
                     tracing::warn!(file = %filename, error = %e, "transcription failed");
                     audio(&format!(
@@ -7100,6 +7241,9 @@ async fn process_comm_attachments(
         // when the bytes genuinely live somewhere else.
         let local = agent::uploads::by_id(&att.file_id);
         let bytes = match &local {
+            // A video here is read from its path below, never into memory:
+            // it can be gigabytes.
+            Some(_) if agent::video::is_video(&att.filename, &att.mime_type) => Vec::new(),
             Some(path) => match std::fs::read(path) {
                 Ok(b) => b,
                 Err(e) => {
@@ -7262,11 +7406,49 @@ async fn process_comm_attachments(
     images
 }
 
-async fn health_handler() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok".into(),
-        version: VERSION.into(),
-    })
+/// Liveness: 200 while the runtime and the database both answer, 503 once
+/// either has been silent past `liveness::STALE_AFTER` (a cloud bot's
+/// liveness probe restarts it on that). A runtime with no free worker cannot
+/// answer at all, which a probe's timeout reads the same way.
+async fn health_handler() -> (axum::http::StatusCode, Json<HealthResponse>) {
+    health_response(liveness::LIVENESS.stall(std::time::Instant::now()).is_some())
+}
+
+/// When this process started, for `/health`.
+static STARTED_AT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| chrono::Utc::now().to_rfc3339());
+
+fn health_response(stalled: bool) -> (axum::http::StatusCode, Json<HealthResponse>) {
+    let (code, status) = if stalled {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "stalled")
+    } else {
+        (axum::http::StatusCode::OK, "ok")
+    };
+    (
+        code,
+        Json(HealthResponse {
+            status: status.into(),
+            version: VERSION.into(),
+            role: "engine".into(),
+            pid: std::process::id(),
+            supervised: process::supervisor().is_some(),
+            started_at: STARTED_AT.clone(),
+        }),
+    )
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn stalled_server_reports_unhealthy() {
+        let (code, Json(body)) = health_response(true);
+        assert_eq!(code, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.status, "stalled");
+        let (code, Json(body)) = health_response(false);
+        assert_eq!(code, axum::http::StatusCode::OK);
+        assert_eq!(body.status, "ok");
+    }
 }
 
 /// Readiness = the hub gateway actually accepts us, not just process liveness.
@@ -7381,6 +7563,20 @@ mod decision_endpoint_tests {
         assert_eq!(ep.model, "jev-latest");
         assert_eq!(ep.profile_id, "p1");
         assert!(decision_endpoint(&store, "pack/mine/low").is_some(), "any level of the pack");
+    }
+
+    /// An employee's decisions follow its own pack, else the bot's default.
+    #[test]
+    fn an_employees_decisions_follow_its_own_pack() {
+        let (_d, store) = store();
+        store
+            .create_auth_profile("p1", "TypeSafe", "systemone_compatible", "owner-key", None, Some("https://api.typesafe.ai"), 0, 1, None, None)
+            .unwrap();
+        save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
+        store.upsert_entity_config("agent", "e1", &serde_json::json!({ "modelPreference": "pack/mine/high" })).unwrap();
+        assert_eq!(super::employee_pack(&store, "e1").as_deref(), Some("pack/mine/high"));
+        assert_eq!(super::employee_pack(&store, "e2"), None);
+        assert_eq!(super::employee_pack(&store, ""), None);
     }
 
     #[test]

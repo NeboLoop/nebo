@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use axum::response::Json;
 use tracing::{info, warn};
 
@@ -29,51 +28,20 @@ pub(crate) async fn reload_providers(
     crate::inject_connection_models(store, harness.selector());
 }
 
-/// Whether a provider API key may arrive on this request. A key typed into a
-/// remote console (the phone, or the web console through NeboAI's tunnel)
-/// would cross NeboLoop's hub readable on its way here, and a user's own key
-/// goes only from this computer to its provider — so it is entered on the
-/// computer running Nebo. A cloud bot is the exception: it runs on NeboLoop's
-/// machine, so the tunnel is its only door and adds no new holder.
-fn keys_local_only(headers: &HeaderMap) -> bool {
-    crate::middleware::came_through_tunnel(headers) && !tools::cloud_bot()
-}
-
-/// Refuse a provider key that came in through the tunnel (see
-/// [`keys_local_only`]). A body without `apiKey` — a toggle, a rename, a
-/// model pin — passes.
-fn refuse_remote_key(headers: &HeaderMap, body: &serde_json::Value) -> Result<(), types::NeboError> {
-    let has_key = body["apiKey"].as_str().is_some_and(|k| !k.trim().is_empty());
-    if has_key && keys_local_only(headers) {
-        return Err(types::NeboError::Validation(
-            "API keys are added on the computer running Nebo, so they never pass through NeboAI".into(),
-        ));
-    }
-    Ok(())
-}
-
 /// GET /api/v1/providers
-pub async fn list_providers(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> HandlerResult<serde_json::Value> {
+pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
         .list_auth_profiles()
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({
-        "profiles": profiles,
-        "keysLocalOnly": keys_local_only(&headers),
-    })))
+    Ok(Json(serde_json::json!({ "profiles": profiles })))
 }
 
 /// POST /api/v1/providers
 pub async fn create_provider(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    refuse_remote_key(&headers, &body).map_err(to_error_response)?;
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
@@ -133,11 +101,9 @@ pub async fn get_provider(
 /// PUT /api/v1/providers/:id
 pub async fn update_provider(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    refuse_remote_key(&headers, &body).map_err(to_error_response)?;
     let existing = state
         .store
         .get_auth_profile(&id)
@@ -238,7 +204,7 @@ pub async fn test_provider(
 
     // Basic validation first
     let api_key = auth::credential::profile_key(&profile);
-    if api_key.is_empty() && profile.auth_type.as_deref() != Some("local") {
+    if api_key.is_empty() && profile.auth_type.as_deref() != Some("local") && profile.provider != "openai_compatible" {
         return Ok(Json(serde_json::json!({
             "success": false,
             "provider": profile.provider,
@@ -246,8 +212,17 @@ pub async fn test_provider(
         })));
     }
 
-    // Build a temporary provider and try a minimal API call
-    let model = profile.model.clone().unwrap_or_default();
+    // Build a temporary provider and try a minimal API call.
+    let model = test_model(&state.store, &profile);
+    // A compatible server with no model yet: its own model list, read with
+    // the key, is the check.
+    if model.is_empty() && profile.provider == "openai_compatible" {
+        let (success, message) = match super::connections::fetch_catalog(&profile).await {
+            Some(list) => (true, format!("Connection successful — the server lists {} models", list.len())),
+            None => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
+        };
+        return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
+    }
     let test_result: Result<String, String> = match profile.provider.as_str() {
         "anthropic" => {
             let provider = ai::AnthropicProvider::new(api_key.clone(), model);
@@ -269,6 +244,22 @@ pub async fn test_provider(
         "google" => {
             let provider = ai::GeminiProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
+        }
+        // The OpenAI format at OpenRouter's fixed URL, or at the owner's.
+        "openrouter" | "openai_compatible" => {
+            let base_url = if profile.provider == "openrouter" {
+                Some("https://openrouter.ai/api/v1".to_string())
+            } else {
+                profile.base_url.clone().filter(|u| !u.trim().is_empty())
+            };
+            match base_url {
+                Some(url) => {
+                    let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
+                    provider.set_provider_id(&profile.provider);
+                    test_provider_connection(&provider).await
+                }
+                None => Err("This provider needs its base URL.".to_string()),
+            }
         }
         "ollama" => {
             let base_url = profile
@@ -307,6 +298,18 @@ pub async fn test_provider(
             "message": msg,
         }))),
     }
+}
+
+/// The model a provider test asks: the one the connection pins, else the
+/// first chat model it has on. Empty when it has none.
+fn test_model(store: &db::Store, profile: &db::models::AuthProfile) -> String {
+    profile.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| {
+        super::connections::connection_models(store, profile)
+            .into_iter()
+            .find(|m| m.is_active && m.kind == "chat")
+            .map(|m| m.model_id)
+            .unwrap_or_default()
+    })
 }
 
 /// Test a provider by sending a minimal chat request.
@@ -392,6 +395,7 @@ fn picker_models(
             "kind": kind,
             "preferred": m.preferred.unwrap_or(0) == 1,
             "isActive": m.is_active.unwrap_or(0) == 1,
+            "rank": m.rank,
         });
 
         // Add pricing if available
@@ -431,44 +435,11 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
         cfg.aliases.iter().map(|a| (a.alias.clone(), a.model_id.clone())).collect();
     state.harness.selector().rebuild_fuzzy(&user_aliases);
 
-    // Task routing
+    // The bot's routes
     let task_routing = cfg.task_routing.as_ref().map(|tr| {
         serde_json::json!({
-            "vision": tr.vision,
-            "audio": tr.audio,
-            "reasoning": tr.reasoning,
-            "code": tr.code,
             "general": tr.general,
-            "aux": tr.aux,
-            "fallbacks": tr.fallbacks,
         })
-    });
-
-    // Lane routing
-    let lane_routing = cfg.lane_routing.as_ref().map(|lr| {
-        let mut m = serde_json::Map::new();
-        if !lr.heartbeat.is_empty() {
-            m.insert(
-                "heartbeat".into(),
-                serde_json::Value::String(lr.heartbeat.clone()),
-            );
-        }
-        if !lr.events.is_empty() {
-            m.insert(
-                "events".into(),
-                serde_json::Value::String(lr.events.clone()),
-            );
-        }
-        if !lr.comm.is_empty() {
-            m.insert("comm".into(), serde_json::Value::String(lr.comm.clone()));
-        }
-        if !lr.subagent.is_empty() {
-            m.insert(
-                "subagent".into(),
-                serde_json::Value::String(lr.subagent.clone()),
-            );
-        }
-        serde_json::Value::Object(m)
     });
 
     // Aliases
@@ -515,8 +486,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
                 "displayName": cp.display_name,
                 "command": cp.command,
                 "installHint": cp.install_hint,
-                "models": cp.models,
-                "defaultModel": cp.default_model,
                 "active": cp.is_active(),
             })
         })
@@ -525,7 +494,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
     Ok(Json(serde_json::json!({
         "models": models,
         "taskRouting": task_routing,
-        "laneRouting": lane_routing,
         "aliases": aliases,
         "availableCLIs": available_clis,
         "cliStatuses": cli_statuses,
@@ -636,26 +604,9 @@ pub async fn update_model_config(
 ) -> HandlerResult<serde_json::Value> {
     let mut cfg = config::ModelsConfig::load();
 
-    if cfg.defaults.is_none() {
-        cfg.defaults = Some(config::models::Defaults {
-            // Routing settings do not edit the escalation model; keep what the file says.
-            escalation: cfg.defaults.as_ref().map(|d| d.escalation.clone()).unwrap_or_default(),
-            primary: String::new(),
-            fallbacks: Vec::new(),
-        });
-    }
-
-    if let Some(primary) = body.get("primary").and_then(|v| v.as_str()) {
-        if !primary.is_empty() {
-            cfg.defaults.as_mut().unwrap().primary = primary.to_string();
-        }
-    }
-
-    if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_array()) {
-        cfg.defaults.as_mut().unwrap().fallbacks = fallbacks
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
+    if let Some(primary) = body.get("primary").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+        cfg.defaults.get_or_insert_with(|| config::models::Defaults { primary: String::new() }).primary =
+            primary.to_string();
     }
 
     cfg.save()
@@ -683,72 +634,10 @@ pub async fn update_task_routing(
     // Update task routing
     let tr = cfg
         .task_routing
-        .get_or_insert_with(|| config::models::TaskRouting {
-            vision: String::new(),
-            audio: String::new(),
-            reasoning: String::new(),
-            code: String::new(),
-            general: String::new(),
-            aux: String::new(),
-            fallbacks: std::collections::HashMap::new(),
-        });
-    if let Some(v) = body.get("vision").and_then(|v| v.as_str()) {
-        tr.vision = v.to_string();
-    }
-    if let Some(v) = body.get("audio").and_then(|v| v.as_str()) {
-        tr.audio = v.to_string();
-    }
-    if let Some(v) = body.get("reasoning").and_then(|v| v.as_str()) {
-        tr.reasoning = v.to_string();
-    }
-    if let Some(v) = body.get("code").and_then(|v| v.as_str()) {
-        tr.code = v.to_string();
-    }
+        .get_or_insert_with(Default::default);
     if let Some(v) = body.get("general").and_then(|v| v.as_str()) {
         tr.general = v.to_string();
     }
-    if let Some(v) = body.get("aux").and_then(|v| v.as_str()) {
-        tr.aux = v.to_string();
-    }
-    if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_object()) {
-        let mut fb = std::collections::HashMap::new();
-        for (k, v) in fallbacks {
-            if let Some(arr) = v.as_array() {
-                fb.insert(
-                    k.clone(),
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect(),
-                );
-            }
-        }
-        tr.fallbacks = fb;
-    }
-
-    // Update lane routing
-    if let Some(lr_val) = body.get("laneRouting").and_then(|v| v.as_object()) {
-        let lr = cfg
-            .lane_routing
-            .get_or_insert_with(|| config::models::LaneRouting {
-                heartbeat: String::new(),
-                events: String::new(),
-                comm: String::new(),
-                subagent: String::new(),
-            });
-        if let Some(v) = lr_val.get("heartbeat").and_then(|v| v.as_str()) {
-            lr.heartbeat = v.to_string();
-        }
-        if let Some(v) = lr_val.get("events").and_then(|v| v.as_str()) {
-            lr.events = v.to_string();
-        }
-        if let Some(v) = lr_val.get("comm").and_then(|v| v.as_str()) {
-            lr.comm = v.to_string();
-        }
-        if let Some(v) = lr_val.get("subagent").and_then(|v| v.as_str()) {
-            lr.subagent = v.to_string();
-        }
-    }
-
     // Update aliases
     if let Some(aliases) = body.get("aliases").and_then(|v| v.as_array()) {
         cfg.aliases = aliases
@@ -874,6 +763,7 @@ mod picker_tests {
             seeded_version: None,
             model_kind: "chat".into(),
             source: "catalog".into(),
+            rank: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -1025,15 +915,7 @@ pub async fn set_default_pack(
     }
     let mut cfg = config::ModelsConfig::load();
     cfg.task_routing
-        .get_or_insert_with(|| config::models::TaskRouting {
-            vision: String::new(),
-            audio: String::new(),
-            reasoning: String::new(),
-            code: String::new(),
-            general: String::new(),
-            aux: String::new(),
-            fallbacks: std::collections::HashMap::new(),
-        })
+        .get_or_insert_with(Default::default)
         .general = value.clone();
     cfg.save().map_err(|e| to_error_response(types::NeboError::Server(e)))?;
     state.harness.selector().set_task_routing(agent::selector::task_routes(&cfg));
@@ -1057,13 +939,18 @@ fn kind_label(kind: &str) -> &str {
 /// GET /api/v1/intelligence-packs/choices — every active model a pack slot
 /// may name, grouped by kind: Nebo AI's speeds, each connection's models,
 /// Ollama and the agents on this computer (`local`). Decisions always offers
-/// Nebo AI's Jev first.
+/// Nebo AI's Jev first. Voice offers only what calls speak through today,
+/// xAI's realtime protocol (`Harness::call_voice`): Nebo AI's Voice first,
+/// then each xAI connection's realtime models.
 pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    use types::packs::{NEBO_AI_VOICE, XAI_VOICE_MODEL, is_xai_connection, is_xai_voice_model};
     let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
         serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
     };
     let mut chat = Vec::new();
     let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
+    let nebo_voice = NEBO_AI_VOICE.split_once('/').map_or(NEBO_AI_VOICE, |(_, m)| m);
+    let mut voice = vec![choice(NEBO_AI_VOICE.into(), "Nebo AI", "", nebo_voice, &[], false)];
     for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
         let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
         if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
@@ -1076,7 +963,19 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
             continue;
         }
         let key = super::connections::connection_key(&p);
-        for m in super::connections::connection_models(&state.store, &catalog, &p).into_iter().filter(|m| m.is_active) {
+        let models: Vec<_> = super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active).collect();
+        if is_xai_connection(&p.provider, p.base_url.as_deref()) {
+            let mut names = vec![XAI_VOICE_MODEL];
+            for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
+                if !names.contains(&m) {
+                    names.push(m);
+                }
+            }
+            for m in names {
+                voice.push(choice(format!("{key}/{m}"), kind_label(&p.provider), &p.name, m, &[], false));
+            }
+        }
+        for m in models {
             let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
             if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
         }
@@ -1092,13 +991,12 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
             "gemini" => clis.gemini.installed,
             _ => false,
         };
+        // The tool runs its own default model: Nebo names none.
         if installed {
-            for model in &cp.models {
-                chat.push(choice(format!("{}/{model}", cp.id), &cp.display_name, "", model, &[], true));
-            }
+            chat.push(choice(format!("{}/", cp.id), &cp.display_name, "", "", &[], true));
         }
     }
-    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision })))
+    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision, "voice": voice })))
 }
 
 /// POST /api/v1/intelligence-packs — make a pack.
@@ -1139,6 +1037,27 @@ pub async fn delete_pack(
 }
 
 #[cfg(test)]
+mod test_model_tests {
+    /// A connection added with no model pinned is tested on a chat model it
+    /// has on, never on an empty model id.
+    #[test]
+    fn a_test_asks_the_pinned_model_else_a_chat_model_the_connection_has_on() {
+        let store = db::Store::new(":memory:").unwrap();
+        store.create_auth_profile("x", "xAI", "openai_compatible", "", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
+        let p = store.get_auth_profile("x").unwrap().unwrap();
+        assert_eq!(super::test_model(&store, &p), "", "nothing to ask yet");
+        let key = super::super::connections::connection_key(&p);
+        store.put_connection_model(&key, "jev", "Jev", "decision", None, "[]", "added", true).unwrap();
+        store.put_connection_model(&key, "grok-off", "Grok off", "chat", None, "[]", "added", false).unwrap();
+        store.put_connection_model(&key, "grok-5", "Grok 5", "chat", None, "[]", "added", true).unwrap();
+        assert_eq!(super::test_model(&store, &p), "grok-5");
+        store.create_auth_profile("y", "Pinned", "openai_compatible", "", Some("pinned-1"), Some("https://x/v1"), 0, 1, None, None).unwrap();
+        let pinned = store.get_auth_profile("y").unwrap().unwrap();
+        assert_eq!(super::test_model(&store, &pinned), "pinned-1");
+    }
+}
+
+#[cfg(test)]
 mod pack_tests {
     use super::{PackBody, pack_of};
     use types::packs::PackLevels;
@@ -1167,39 +1086,13 @@ mod pack_tests {
     }
 }
 
-/// A user's own provider key goes from this computer to its provider and
-/// nowhere else: never back out of the API, never in through NeboAI's tunnel.
+/// A user's own provider key is taken from the owner's apps (the phone
+/// through the tunnel included) and goes from this computer to its provider:
+/// never back out of the API.
 #[cfg(test)]
 mod key_egress_tests {
-    use super::*;
-
     /// A sentinel no real provider issues; any appearance is a leak.
     const SENTINEL: &str = "sk-SENTINEL-byo-key-0000000000000000";
-
-    fn tunneled() -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert("x-nebo-tunnel-auth", comm::tunnel::tunnel_auth_secret().parse().unwrap());
-        h
-    }
-
-    #[test]
-    fn a_key_typed_through_the_tunnel_is_refused() {
-        let body = serde_json::json!({"name": "Mine", "provider": "xai", "apiKey": SENTINEL});
-        let err = refuse_remote_key(&tunneled(), &body).unwrap_err();
-        assert!(!err.to_string().contains(SENTINEL), "the refusal does not echo the key: {err}");
-        assert!(refuse_remote_key(&HeaderMap::new(), &body).is_ok(), "a key typed on this computer is taken");
-    }
-
-    #[test]
-    fn a_tunneled_edit_without_a_key_passes() {
-        for body in [
-            serde_json::json!({"isActive": false}),
-            serde_json::json!({"name": "Renamed", "model": "grok-4"}),
-            serde_json::json!({"apiKey": "  "}),
-        ] {
-            assert!(refuse_remote_key(&tunneled(), &body).is_ok(), "{body}");
-        }
-    }
 
     /// `GET /api/v1/providers` answers the phone over the tunnel too: the
     /// NeboAI account's refresh token (and its access token) never go with it.
@@ -1212,17 +1105,10 @@ mod key_egress_tests {
             &store, "https://api.example.com", "owner-1", "owner@example.com", "Owner", SENTINEL, REFRESH, true,
         )
         .unwrap();
-        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap(), "keysLocalOnly": true}).to_string();
+        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap()}).to_string();
         assert!(!list.contains(REFRESH), "the refresh token reached an API response: {list}");
         assert!(!list.contains(SENTINEL), "the access token reached an API response: {list}");
         assert!(list.contains("janus_provider"), "what the app reads still goes: {list}");
-    }
-
-    #[test]
-    fn a_forged_tunnel_stamp_is_not_the_tunnel() {
-        let mut h = HeaderMap::new();
-        h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
-        assert!(!keys_local_only(&h));
     }
 
     /// Every response that carries a profile (list, get, create, update) is
@@ -1235,7 +1121,7 @@ mod key_egress_tests {
                 .create_auth_profile(&format!("p-{provider}"), provider, provider, SENTINEL, None, None, 0, 1, Some("api_key"), Some("{}"))
                 .unwrap();
         }
-        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap(), "keysLocalOnly": false}).to_string();
+        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap()}).to_string();
         let one = serde_json::to_string(&store.get_auth_profile("p-xai").unwrap()).unwrap();
         for out in [list, one] {
             assert!(!out.contains(SENTINEL), "a provider key reached an API response: {out}");

@@ -9,7 +9,9 @@ use super::HandlerResult;
 /// POST /api/v1/client/events. One line in the server log per client-side
 /// connection event (socket open, close code, visibility change, a read that
 /// stalled), so a phone's side of a dropped session shows up next to the
-/// server's own lines. Nothing is stored.
+/// server's own lines. Nothing is stored, except the desktop shell's
+/// `window` event (focused, background, hidden): stall reports carry the
+/// window's last state.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientEventRequest {
@@ -26,6 +28,9 @@ pub async fn client_event(
     headers: HeaderMap,
     Json(body): Json<ClientEventRequest>,
 ) -> HandlerResult<serde_json::Value> {
+    if body.event == "window" && crate::process::from_the_shell(&headers) {
+        crate::process::set_window_state(&body.detail);
+    }
     let ua = headers
         .get(USER_AGENT)
         .and_then(|v| v.to_str().ok())

@@ -393,7 +393,7 @@ fn outcome_of(status: &str, started_at: i64, now_ts: i64) -> &'static str {
     match status {
         "completed" => "done",
         "exited" => "skipped",
-        "suspended" | "awaiting_approval" => "waiting",
+        "suspended" | "awaiting_approval" | "waiting" => "waiting",
         "running" | "pending" => {
             if started_at > 0 && now_ts - started_at > ABANDONED_RUN_SECS { "stopped" } else { "working" }
         }

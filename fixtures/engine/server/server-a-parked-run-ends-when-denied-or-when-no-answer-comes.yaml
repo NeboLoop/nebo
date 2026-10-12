@@ -1,0 +1,10 @@
+id: server-a-parked-run-ends-when-denied-or-when-no-answer-comes
+name: "A parked run ends when denied or when no answer comes"
+description: |
+  A workflow run parked on an ask nobody answers for a day ends failed,
+  saying it waited and what for, instead of waiting forever. A run the owner
+  said no to ends denied. Both keep their tokens and step, get their
+  completion time, and drop the suspension.
+target_component: engine
+proof: engine::proof::server::a_parked_run_ends_when_denied_or_when_no_answer_comes
+conversation: []

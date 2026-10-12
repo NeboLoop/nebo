@@ -332,8 +332,8 @@ fn normalized(s: &str) -> String {
         .to_lowercase()
 }
 
-/// The model the done check runs on: the aux route, or the cheapest
-/// provider when none is routed.
+/// The model the done check runs on: the turn's background route
+/// (`model_call::Housekeeper`).
 #[derive(Clone)]
 pub struct DoneJudge {
     pub provider: Arc<dyn Provider>,
@@ -343,19 +343,9 @@ pub struct DoneJudge {
     pub window_tokens: usize,
 }
 
-impl DoneJudge {
-    pub fn for_providers(providers: &[Arc<dyn Provider>], selector: &crate::selector::ModelSelector) -> Option<Self> {
-        let cfg = config::ModelsConfig::load();
-        let (provider, model) = match super::model_call::resolve_aux(&cfg, providers) {
-            Some(routed) => routed,
-            None => (crate::harness::model_call::prefer_non_gateway(providers)?, String::new()),
-        };
-        let window_tokens = selector.context_window(&format!("{}/{}", provider.id(), model));
-        Some(Self {
-            provider,
-            model,
-            window_tokens,
-        })
+impl From<super::model_call::Route> for DoneJudge {
+    fn from(route: super::model_call::Route) -> Self {
+        Self { provider: route.provider, model: route.model, window_tokens: route.window_tokens }
     }
 }
 

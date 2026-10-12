@@ -107,7 +107,7 @@ async fn the_page_reads_what_the_employee_wrote_and_hears_of_it() {
     let r = call(&t, "crm", json!({"action": "delete", "key": "note"})).await;
     assert!(!r.is_error);
     assert_eq!(page_get(&store, "crm", "note"), None);
-    assert!(!list(&store, "crm").unwrap().iter().any(|(k, _)| k == "note"));
+    assert!(!list(&store, "crm").unwrap().iter().any(|(k, _, _)| k == "note"));
 
     let sent = sent.lock().unwrap();
     assert_eq!(sent.len(), 3);

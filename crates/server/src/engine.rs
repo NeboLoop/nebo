@@ -1228,7 +1228,9 @@ async fn drive(state: &AppState) {
     // call is the same.
     let queued = store.engine_queued_runs_of_kind("workflow", TURNS_PER_TICK).unwrap_or_default();
     for run in queued {
-        if let Some(event_id) = run.woken_by() {
+        if let Some(event_id) = run.woken_by().filter(|id| woke_for_expert(store, *id)) {
+            resume_after_expert(state, &run, event_id, t).await;
+        } else if let Some(event_id) = run.woken_by() {
             resume_after_approval(state, &run, event_id, t).await;
         } else if run.parent_run_id.is_some() {
             start_turn(state, &run, t).await;
@@ -1811,7 +1813,7 @@ async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     inputs["_relaunch_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "case", binding, &run.agent_id, Vec::new())
+        .run_inline(definition, inputs, "case", binding, &run.agent_id, Vec::new(), None)
         .await
     {
         Ok(_) => info!(run = %run.id, "engine: case turn started"),
@@ -1822,16 +1824,93 @@ async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     }
 }
 
+/// Whether the event that woke a run is an expert's: a reply, or the
+/// deadline timer of a run's expert wait.
+fn woke_for_expert(store: &Store, event_id: i64) -> bool {
+    let Some(e) = store.engine_get_event(event_id).ok().flatten() else {
+        return false;
+    };
+    if e.kind == workflow::expert::REPLY_KIND {
+        return true;
+    }
+    e.target_type == "wait"
+        && e.target_id
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| store.engine_get_wait(id).ok().flatten())
+            .is_some_and(|w| w.on_kind == workflow::expert::REPLY_KIND)
+}
+
+/// An expert's reply (or its deadline) woke a run parked on experts: it
+/// re-enters under its own id with the definition it launched with; the
+/// nodes it finished replay, and each expert step reads its reply, times
+/// out, or parks the run again.
+async fn resume_after_expert(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
+    let store = &state.store;
+    let Some(definition) = run.definition.clone() else {
+        let _ = store.engine_set_run_state(&run.id, "failed", t, Some("parked run has no definition snapshot to resume"));
+        return;
+    };
+    let detail = store.get_workflow_run(&run.id).ok().flatten().and_then(|r| r.trigger_detail);
+    let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    inputs.as_object_mut().map(|m| m.remove("woken_by"));
+    inputs["_relaunch_run"] = serde_json::json!(run.id);
+    match state
+        .workflow_manager
+        .run_inline(definition, inputs, "expert", detail, &run.agent_id, Vec::new(), None)
+        .await
+    {
+        Ok(_) => info!(run = %run.id, event = event_id, "engine: an expert answered or timed out; parked run resumed"),
+        Err(e) => {
+            warn!(run = %run.id, error = %e, "engine: run parked on experts failed to resume");
+            let _ = store.update_workflow_run(&run.id, Some("failed"), None, None, Some(&format!("resume after expert failed: {e}")), None);
+        }
+    }
+}
+
+/// End a run parked on the owner's answer that will not continue: he said
+/// no (`denied`), or nobody answered in a day (`expired`: it fails with
+/// [`expired_run_message`]). It ends like any run, with its tokens, its
+/// step and its completion time, and its suspension goes. Returns the
+/// reason it ended with.
+pub(crate) fn end_parked_run(store: &Store, run_id: &str, display: &str, expired: bool) -> String {
+    let _ = store.delete_workflow_suspension(run_id);
+    let detail = store.get_workflow_run(run_id).ok().flatten();
+    let tokens = detail.as_ref().and_then(|r| r.total_tokens_used).unwrap_or(0);
+    let step = detail.as_ref().and_then(|r| r.error_activity.clone().or(r.current_activity.clone()));
+    let (status, why) = if expired {
+        ("failed", expired_run_message(display))
+    } else {
+        ("denied", format!("Owner denied: {display}"))
+    };
+    if let Err(e) = store.complete_workflow_run(run_id, status, tokens, Some(&why), step.as_deref(), None) {
+        warn!(run = run_id, error = %e, "parked run not ended");
+    }
+    why
+}
+
+/// What the owner reads when a parked run stopped because nobody answered
+/// its ask in a day (`agent::harness::permissions::ask::RUN_ASK_EXPIRES_AFTER`).
+pub(crate) fn expired_run_message(display: &str) -> String {
+    format!(
+        "Stopped: this run waited a day for your OK on {display}, and no answer came. Nothing after that point ran. \
+         To let it run next time, allow it when asked, or give the step that tool."
+    )
+}
+
 /// An approval event resumed a parked run: continue it at the approved
-/// call, or end it as denied. The event's payload is the owner's answer.
+/// call, or end it as denied, or as stopped when nobody answered in a day
+/// (`{"expired": true}`). The event's payload is the owner's answer.
 async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
     let store = &state.store;
-    let approved = store
+    let payload = store
         .engine_get_event(event_id)
         .ok()
         .flatten()
         .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.payload).ok())
-        .and_then(|p| p["approved"].as_bool());
+        .unwrap_or_default();
+    let approved = payload["approved"].as_bool();
+    let expired = payload["expired"].as_bool().unwrap_or(false);
     let Some(approved) = approved else {
         // Woken by something that is not an answer; nothing to continue.
         let _ = store.engine_set_run_state(&run.id, "failed", t, Some("woken without an approval decision"));
@@ -1846,10 +1925,24 @@ async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64,
         }
     };
     if !approved {
-        let _ = store.delete_workflow_suspension(&run.id);
-        let _ = store.update_workflow_run(&run.id, Some("denied"), None, None, Some(&format!("Owner denied: {display}")), None);
-        state.hub.broadcast("workflow_run_denied", serde_json::json!({ "runId": run.id, "agentId": agent_id }));
-        info!(run = %run.id, "engine: approval denied; run ended");
+        let why = end_parked_run(store, &run.id, &display, expired);
+        if expired {
+            crate::workflow_manager::post_automation_message(
+                store,
+                &state.hub,
+                &format!("agent:{agent_id}:web"),
+                &format!("**Automation stopped** — {binding}: {why}"),
+            );
+            crate::workflow_manager::notify_workflow_failure(store, &state.hub, &agent_id, &run.id, &binding, &why);
+            state.hub.broadcast(
+                "workflow_run_failed",
+                serde_json::json!({ "runId": run.id, "agentId": agent_id, "bindingName": binding, "error": why }),
+            );
+            info!(run = %run.id, "engine: no answer came in a day; parked run ended");
+        } else {
+            state.hub.broadcast("workflow_run_denied", serde_json::json!({ "runId": run.id, "agentId": agent_id }));
+            info!(run = %run.id, "engine: approval denied; run ended");
+        }
         return;
     }
     let Some(definition) = run.definition.clone() else {
@@ -1861,7 +1954,7 @@ async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64,
     inputs["_resume_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager
-        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, Vec::new())
+        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, Vec::new(), None)
         .await
     {
         Ok(_) => info!(run = %run.id, "engine: approval accepted; parked run resumed"),
@@ -2386,7 +2479,7 @@ mod tests {
     /// A job whose floor is `floor`: one consumed timer at that moment, the
     /// way a job that has fired before carries its floor.
     fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
+        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -2503,7 +2596,7 @@ mod tests {
 
         // Rescheduled: the pending timer is replaced by one on the new schedule.
         tick(&s, local(2026, 8, 24, 9, 0, 6), &idle, &no_steer);
-        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
+        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let r = tick(&s, local(2026, 8, 24, 9, 0, 11), &idle, &no_steer);
         assert_eq!(r.armed, 1);
         let pending = s.engine_pending_timers("binding").unwrap();
@@ -2558,7 +2651,7 @@ mod tests {
     /// An employee's own job at `schedule`, with its floor consumed like
     /// [`job`]'s.
     fn employee_job(s: &Store, name: &str, schedule: &str, task_type: &str, command: &str, agent: &str, message: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None, None).unwrap();
+        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -3296,7 +3389,7 @@ mod tests {
         let t = now();
         s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
         let job = s
-            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None, None)
+            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, ""))
             .unwrap();
         let key = db::cron_ref(job.id);
         past_fire(&s, "prev", &key, "emp", t, 120, "done", "The engagement-desk workflow no longer exists.\nDetails follow.");
@@ -3325,14 +3418,14 @@ mod tests {
         // A failed last run is a change.
         let s2 = store();
         s2.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
-        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         past_fire(&s2, "prev", &db::cron_ref(job2.id), "emp", t, 120, "failed", "");
         let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s2, &fire2, None, t).unwrap().flags.last_run_failed);
 
         // No run on record: a first run.
         let s3 = store();
-        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None, None).unwrap();
+        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false, false).unwrap()).unwrap().unwrap();
         let b3 = triage_binding(&s3, &fire3, None, t).unwrap();
         assert!(b3.flags.first_run && b3.since_last_run.is_none());
@@ -3343,13 +3436,13 @@ mod tests {
     fn triage_does_not_apply_without_an_employee_to_a_run_now_or_to_a_shell_job() {
         let s = store();
         let t = now();
-        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None, None).unwrap();
+        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let fire = s.engine_get_run(&s.queue_cron_run(&shell, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None, None).unwrap();
+        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None, &db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "")).unwrap();
         let manual = s.engine_get_run(&s.queue_cron_run(&agent, true, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &manual, None, t).is_none());
         // The main agent's heartbeat has no employee id.

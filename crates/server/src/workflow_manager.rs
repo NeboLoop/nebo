@@ -59,6 +59,9 @@ pub struct WorkflowManagerImpl {
     config: config::Config,
     /// Active run cancellation tokens, keyed by run_id.
     active_runs: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
+    /// Model turns each running run has used of its budget (used, cap),
+    /// keyed by run_id, as its progress last told; gone when the run ends.
+    turns: Arc<std::sync::Mutex<HashMap<String, (u32, u32)>>>,
     /// Maps agent_id → list of active run_ids, for cancelling all runs when an agent stops.
     agent_runs: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
     /// Event bus for emitting workflow lifecycle events.
@@ -83,6 +86,9 @@ pub struct WorkflowManagerImpl {
     /// a new binding's live triggers (event/heartbeat/watch/folder) register
     /// immediately — schedule triggers fire via the cron scheduler regardless.
     agent_workers: std::sync::OnceLock<Arc<agent::AgentWorkerRegistry>>,
+    /// Late-injected harness: the workflow tune rewrites workflows, which is
+    /// build work, and runs on its build lane (`Harness::build_lane`).
+    harness: std::sync::OnceLock<agent::harness::Harness>,
 }
 
 impl WorkflowManagerImpl {
@@ -107,6 +113,7 @@ impl WorkflowManagerImpl {
             hub,
             config,
             active_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_bus,
             skill_loader,
@@ -114,7 +121,19 @@ impl WorkflowManagerImpl {
             binding_semaphores: Arc::new(std::sync::Mutex::new(HashMap::new())),
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_workers: std::sync::OnceLock::new(),
+            harness: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The model turns run `run_id` has used of its budget, (used, cap),
+    /// while it runs and has spent some.
+    pub fn turns_used(&self, run_id: &str) -> Option<(u32, u32)> {
+        self.turns.lock().unwrap_or_else(|e| e.into_inner()).get(run_id).copied()
+    }
+
+    /// Wire in the harness the workflow tune takes its build lane from.
+    pub fn set_harness(&self, harness: agent::harness::Harness) {
+        let _ = self.harness.set(harness);
     }
 
     /// Wire in the agent worker registry once it has been constructed (it
@@ -150,8 +169,36 @@ impl WorkflowManagerImpl {
                 info!(run_id, "workflow run cancelled");
                 Ok(())
             }
-            None => Err(format!("no active run found: {}", run_id)),
+            None => self.cancel_parked_run(run_id),
         }
+    }
+
+    /// A run parked on the owner's answer or on experts has no task to
+    /// stop: it waits in the table. Cancelling it ends it there, cancelled
+    /// with its completion time, and drops its suspension; the ask it
+    /// waited on is withdrawn the moment anything looks
+    /// (`Asks::open`, `Asks::withdraw_for_run`).
+    fn cancel_parked_run(&self, run_id: &str) -> Result<(), String> {
+        let run = self
+            .store
+            .get_workflow_run(run_id)
+            .map_err(|e| e.to_string())?
+            .filter(|r| matches!(r.status.as_str(), "awaiting_approval" | "waiting"))
+            .ok_or_else(|| format!("no active run found: {}", run_id))?;
+        let _ = self.store.delete_workflow_suspension(run_id);
+        self.store
+            .complete_workflow_run(
+                run_id,
+                "cancelled",
+                run.total_tokens_used.unwrap_or(0),
+                Some("cancelled by user"),
+                run.error_activity.as_deref().or(run.current_activity.as_deref()),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        self.hub.broadcast("workflow_run_cancelled", serde_json::json!({ "runId": run_id }));
+        info!(run_id, "parked workflow run cancelled");
+        Ok(())
     }
 
     /// Boot recovery (WS4): sweep runs stranded by process death and resume
@@ -214,6 +261,7 @@ impl WorkflowManagerImpl {
                     run.trigger_detail.clone(),
                     &agent_id,
                     Vec::new(),
+                    None,
                 )
                 .await
             {
@@ -392,12 +440,14 @@ impl WorkflowManagerImpl {
     /// (`scheduler::execute_agent_workflow_task`) and the manual-run HTTP
     /// endpoint (`handlers::agents::run_agent_workflow`) perform — then fires
     /// it through `run_inline`, the one firing body every binding trigger uses.
+    /// `narrow`: the mode the run is held to (`WorkflowManager::run`).
     async fn run_binding(
         &self,
         agent_id: &str,
         binding_name: &str,
         inputs: serde_json::Value,
         trigger_type: &str,
+        narrow: Option<types::permissions::Mode>,
     ) -> Result<String, String> {
         let agent_rec = self
             .store
@@ -485,6 +535,7 @@ impl WorkflowManagerImpl {
             Some(binding_name.to_string()),
             agent_id,
             emit_sources,
+            narrow,
         )
         .await
     }
@@ -712,6 +763,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         id: &'a str,
         inputs: serde_json::Value,
         trigger_type: &'a str,
+        narrow: Option<types::permissions::Mode>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -720,7 +772,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // standalone path below.
             if let Some((agent_id, binding_name)) = split_binding_id(id) {
                 return self
-                    .run_binding(agent_id, binding_name, inputs, trigger_type)
+                    .run_binding(agent_id, binding_name, inputs, trigger_type, narrow)
                     .await;
             }
 
@@ -755,6 +807,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                 )
                 .map_err(|e| format!("create_workflow_run: {}", e))?;
+            // Held to the mode it carries, before its first turn.
+            if let Some(mode) = narrow {
+                self.store
+                    .set_workflow_run_narrow(&run_id, mode)
+                    .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
+            }
 
             // Create cancellation token
             let cancel_token = CancellationToken::new();
@@ -829,26 +887,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 // Load skill content for activities that reference skills
                 // Template variables are expanded at activation time.
-                let skill_content = if let Some(ref loader) = skill_loader {
-                    let mut map = HashMap::new();
-                    for activity in &def.activities {
-                        for skill_name in &activity.skills {
-                            if !map.contains_key(skill_name) {
-                                // Global scope: Learned skills are per-employee
-                                // and not declarable in workflow activities.
-                                if let Some(skill) = loader.get(skill_name, None).await {
-                                    if !skill.template.is_empty() {
-                                        let expanded = loader.expand_template(&skill, Some(&store), "");
-                                        map.insert(skill_name.clone(), expanded);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if map.is_empty() { None } else { Some(map) }
-                } else {
-                    None
-                };
+                let skill_content = load_activity_skills(skill_loader.as_deref(), &store, &mut def, "").await;
 
                 // Deferred tool names (MCP proxies etc.): activities only get
                 // their schemas when they declare or reference them.
@@ -1134,11 +1173,13 @@ impl WorkflowManager for WorkflowManagerImpl {
         &'a self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
+            let build = self.harness.get().and_then(|h| h.build_lane());
             workflow_tuning_sweep(
                 &self.store,
                 &self.providers,
                 (&self.tools, &self.hub),
                 &self.config.neboai.api_url,
+                build,
             )
             .await;
         })
@@ -1228,6 +1269,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         trigger_detail: Option<String>,
         agent_id: &'a str,
         emit_sources: Vec<String>,
+        narrow: Option<types::permissions::Mode>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -1428,6 +1470,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                         }
                         format!("create_workflow_run: {}", e)
                     })?;
+                // Held to the mode it carries, before its first turn. A
+                // resumed or relaunched run keeps what its row says.
+                if let Some(mode) = narrow {
+                    self.store
+                        .set_workflow_run_narrow(&run_id, mode)
+                        .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
+                }
             }
 
             // Create cancellation token
@@ -1445,6 +1494,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             }
 
             // Clone Arcs for the spawned task
+            let run_turns = self.turns.clone();
             let store = self.store.clone();
             let providers = self.providers.clone();
             let decide = self.decide.clone();
@@ -1554,18 +1604,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // sealed employee the whole company graph.
                 let isolated_employee = agent_memory_mode(&store, &agent_id_owned).separates_conversations();
                 if isolated_employee {
-                    let memory_url = config::memory_url();
-                    let memory_ids: std::collections::HashSet<String> = if memory_url.is_empty() {
-                        std::collections::HashSet::new()
-                    } else {
-                        store
-                            .list_mcp_integrations()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
-                            .map(|i| i.id)
-                            .collect()
-                    };
+                    let memory_ids: std::collections::HashSet<String> = store
+                        .list_mcp_integrations()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(tools::mcp_tool::is_shared_memory)
+                        .map(|i| i.id)
+                        .collect();
                     if !memory_ids.is_empty() {
                         let mut withheld = 0usize;
                         let mut keep = Vec::with_capacity(tool_defs.len());
@@ -1627,26 +1672,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }),
                 );
 
-                let skill_content = if let Some(ref loader) = skill_loader {
-                    let mut map = HashMap::new();
-                    for activity in &def.activities {
-                        for skill_name in &activity.skills {
-                            if !map.contains_key(skill_name) {
-                                // Global scope: Learned skills are per-employee
-                                // and not declarable in workflow activities.
-                                if let Some(skill) = loader.get(skill_name, None).await {
-                                    if !skill.template.is_empty() {
-                                        let expanded = loader.expand_template(&skill, Some(&store), &agent_id_owned);
-                                        map.insert(skill_name.clone(), expanded);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if map.is_empty() { None } else { Some(map) }
-                } else {
-                    None
-                };
+                let skill_content = load_activity_skills(skill_loader.as_deref(), &store, &mut def, &agent_id_owned).await;
 
                 // Create progress channel for live activity + task updates
                 let (progress_tx, mut progress_rx) =
@@ -1656,6 +1682,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     let agent_id_for_progress = agent_id_owned.clone();
                     let run_id = run_id_clone.clone();
                     let binding = binding_name.clone();
+                    let turns = run_turns.clone();
                     tokio::spawn(async move {
                         while let Some(progress) = progress_rx.recv().await {
                             match progress {
@@ -1692,8 +1719,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                                         }),
                                     );
                                 }
+                                workflow::WorkflowProgress::Turns { used, cap } => {
+                                    turns.lock().unwrap_or_else(|e| e.into_inner()).insert(run_id.clone(), (used, cap));
+                                }
                             }
                         }
+                        // The run ended: its sender is gone with it.
+                        turns.lock().unwrap_or_else(|e| e.into_inner()).remove(&run_id);
                     });
                 }
 
@@ -1779,6 +1811,21 @@ impl WorkflowManager for WorkflowManagerImpl {
                         let installed = agent::agent_worker::installed_interfaces(&plugin_store);
                         tell_owner_if_blocked(&store, &hub, &neboai_api_url, &installed, &agent_id_owned, &binding_name, &run_id_clone);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
+                    }
+                    Err(workflow::WorkflowError::AwaitingExpert(waiting)) => {
+                        // Not a failure: the run is parked on one engine wait
+                        // that the next reply or the earliest deadline wakes
+                        // (engine::resume_after_expert).
+                        hub.broadcast(
+                            "workflow_run_waiting",
+                            serde_json::json!({
+                                "agentId": agent_id_owned,
+                                "runId": run_id_clone,
+                                "bindingName": binding_name,
+                                "experts": waiting,
+                            }),
+                        );
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, waiting, "inline workflow waiting on experts");
                     }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
                         // Not a failure: the run is parked (engine persisted the
@@ -1946,6 +1993,20 @@ impl WorkflowManager for WorkflowManagerImpl {
         agent_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move { self.cancel_runs_for_agent_impl(agent_id).await })
+    }
+
+    fn cancel_all_runs(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = usize> + Send + '_>> {
+        Box::pin(async move {
+            let run_ids: Vec<String> = self.active_runs.lock().unwrap().keys().cloned().collect();
+            let mut count = 0;
+            for run_id in &run_ids {
+                match self.cancel_run(run_id).await {
+                    Ok(()) => count += 1,
+                    Err(e) => warn!(run_id = %run_id, error = %e, "emergency stop: workflow run not cancelled"),
+                }
+            }
+            count
+        })
     }
 }
 
@@ -2163,7 +2224,7 @@ pub(crate) fn tell_owner_if_blocked(
     }
 }
 
-fn notify_workflow_failure(
+pub(crate) fn notify_workflow_failure(
     store: &db::Store,
     hub: &ClientHub,
     agent_id: &str,
@@ -2623,6 +2684,19 @@ async fn save_binding(
                 }
             }
 
+            // Each declared step runs with only its tools: complete them from
+            // what the step names, and its memory; refuse a call its words
+            // write that its tool can't take.
+            if let Some(acts) = def.get_mut("activities").and_then(|v| v.as_array_mut()) {
+                let defs: HashMap<String, ai::ToolDefinition> =
+                    mgr.tools.list().await.into_iter().map(|d| (d.name.clone(), d)).collect();
+                for a in acts.iter_mut() {
+                    let id = a.get("id").and_then(|i| i.as_str()).unwrap_or("run").to_string();
+                    tools::workflows::step_tools::complete(a, &defs)
+                        .map_err(|e| format!("activity '{id}': {e} Nothing was saved."))?;
+                }
+            }
+
             // Reject hollow definitions loudly — a workflow with no activities
             // can never execute, and silently storing one reads as success.
             let has_runnable_activity = def
@@ -2783,7 +2857,7 @@ async fn save_binding(
             // Temporary work with no trigger is for now: it starts as it is
             // made. One with a trigger starts on its first fire.
             let run_id = if temporary && trigger_type == "manual" && !must_exist {
-                Some(mgr.run_binding(agent_id, &binding_name, serde_json::json!({}), "manual").await.map_err(|e| {
+                Some(mgr.run_binding(agent_id, &binding_name, serde_json::json!({}), "manual", options.narrow).await.map_err(|e| {
                     format!(
                         "the temporary workflow '{binding_name}' was made but did not start: {e}. Start it with \
                          run_workflow once that is fixed, or delete it."
@@ -2980,6 +3054,46 @@ pub(crate) fn current_binding_json(store: &db::Store, agent_id: &str, binding: &
         .unwrap_or_default()
 }
 
+/// The tune's model call. A tune rewrites a workflow, which is build work:
+/// with the bot's build lane (`Harness::build_lane`) it runs on that lane's
+/// model (`lane`: the model's name on its provider, and its effort) and
+/// reaches Janus as the `build` purpose; without one it runs on the default
+/// provider's model as before.
+fn tune_request(
+    agent_id: &str,
+    report: String,
+    system: &str,
+    build: Option<&(String, Option<types::packs::ProviderEffort>)>,
+) -> ai::ChatRequest {
+    ai::ChatRequest {
+        tool_credential: None,
+        chat_id: String::new(),
+        ask_channels: None,
+        permission_mode: None,
+        linked_context: None,
+        tool_choice: Default::default(),
+        messages: vec![ai::Message {
+            role: "user".into(),
+            content: report,
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: 1500,
+        temperature: 0.0,
+        system: system.to_string(),
+        model: build.map(|(model, _)| model.clone()).unwrap_or_default(),
+        enable_thinking: false,
+        effort: build.and_then(|(_, effort)| *effort),
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+        trace: ai::RequestTrace {
+            agent_id: agent_id.to_string(),
+            ..ai::RequestTrace::new(if build.is_some() { "build" } else { "workflow_tune" })
+        },
+    }
+}
+
 /// Weekly workflow tuning pass. For each agent with learning enabled and
 /// clear evidence of trouble (2+ failed runs in the last 7 days), an aux
 /// model reads the stats, recent errors, definitions, and outcome history,
@@ -2995,6 +3109,7 @@ async fn workflow_tuning_sweep(
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     registry_hub: (&Arc<tools::Registry>, &Arc<ClientHub>),
     neboai_api_url: &str,
+    build: Option<(String, Option<types::packs::ProviderEffort>)>,
 ) {
     let (_registry, hub) = registry_hub;
     const WEEK_SECS: i64 = 7 * 24 * 3600;
@@ -3075,40 +3190,23 @@ async fn workflow_tuning_sweep(
             serde_json::to_string_pretty(&workflows_json).unwrap_or_default()
         );
 
-        let provider = {
+        // The build lane's model on its own provider (`provider/model`), as a
+        // turn sends it; else the default provider's own model.
+        let (provider, lane) = {
             let guard = providers.read().await;
-            match ai::default_provider(&guard) {
-                Some(p) => p,
-                None => return,
+            let on_lane = build.as_ref().and_then(|(model, effort)| {
+                let (id, name) = model.split_once('/')?;
+                guard.iter().find(|p| p.id() == id).map(|p| (p.clone(), (name.to_string(), *effort)))
+            });
+            match on_lane {
+                Some((p, lane)) => (p, Some(lane)),
+                None => match ai::default_provider(&guard) {
+                    Some(p) => (p, None),
+                    None => return,
+                },
             }
         };
-        let req = ai::ChatRequest {
-            tool_credential: None,
-            chat_id: String::new(),
-            ask_channels: None,
-            permission_mode: None,
-            linked_context: None,
-            tool_choice: Default::default(),
-            messages: vec![ai::Message {
-                role: "user".into(),
-                content: report,
-                ..Default::default()
-            }],
-            tools: vec![],
-            max_tokens: 1500,
-            temperature: 0.0,
-            system: TUNER_SYSTEM.to_string(),
-            model: String::new(),
-            enable_thinking: false,
-            effort: None,
-            metadata: None,
-            cache_breakpoints: vec![],
-            cancel_token: None,
-            trace: ai::RequestTrace {
-                agent_id: agent.id.clone(),
-                ..ai::RequestTrace::new("workflow_tune")
-            },
-        };
+        let req = tune_request(&agent.id, report, TUNER_SYSTEM, lane.as_ref());
         let mut rx = match provider.stream(&req).await {
             Ok(rx) => rx,
             Err(e) => {
@@ -3239,7 +3337,7 @@ async fn workflow_tuning_sweep(
 /// the owner, never the employee's own words. It carries the automation
 /// marker, which the model's view and memory extraction leave out (a
 /// five-minute workflow once left 36,980 of them as context).
-fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
+pub(crate) fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
     let msg_id = uuid::Uuid::new_v4().to_string();
     let metadata = serde_json::json!({ db::AUTOMATION_KEY: true }).to_string();
     match store.create_chat_message_for_runner(
@@ -3267,6 +3365,66 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
         }
         Err(e) => {
             warn!(session = %session_key, error = %e, "failed to post automation message to chat");
+        }
+    }
+}
+
+
+/// The declared skills of a run's activities: each skill's expanded body
+/// (injected into the activity's prompt, keyed by the name it is declared
+/// by), and — for an activity that declares its tools — the tools the skill
+/// brings, added to its declaration: the `plugin__<slug>` of every plugin it
+/// depends on (a plugin's own skill depends on its plugin) and its
+/// `allowed-tools`. Global scope: learned skills are per-employee and not
+/// declarable in workflow activities.
+async fn load_activity_skills(
+    loader: Option<&tools::skills::Loader>,
+    store: &db::Store,
+    def: &mut workflow::WorkflowDef,
+    agent_id: &str,
+) -> Option<HashMap<String, String>> {
+    let loader = loader?;
+    let mut bodies = HashMap::new();
+    let mut brought: HashMap<String, Vec<String>> = HashMap::new();
+    for activity in &def.activities {
+        for skill_name in &activity.skills {
+            if brought.contains_key(skill_name) {
+                continue;
+            }
+            let Some(skill) = loader.get(skill_name, None).await else {
+                brought.insert(skill_name.clone(), Vec::new());
+                continue;
+            };
+            if !skill.template.is_empty() {
+                bodies.insert(skill_name.clone(), loader.expand_template(&skill, Some(store), agent_id));
+            }
+            brought.insert(skill_name.clone(), skill_tools(&skill));
+        }
+    }
+    add_skill_tools(def, &brought);
+    (!bodies.is_empty()).then_some(bodies)
+}
+
+/// The tools a skill brings to an activity that declares it.
+fn skill_tools(skill: &tools::skills::Skill) -> Vec<String> {
+    skill
+        .plugins
+        .iter()
+        .map(|p| tools::plugin_tools::plugin_tool_name(&p.name))
+        .chain(skill.allowed_tools.split_whitespace().map(str::to_string))
+        .collect()
+}
+
+/// Add each declared skill's tools to the declaration of every activity
+/// that declares its tools. An undeclared activity is left as it is.
+fn add_skill_tools(def: &mut workflow::WorkflowDef, brought: &HashMap<String, Vec<String>>) {
+    for activity in &mut def.activities {
+        let skills = activity.skills.clone();
+        let Some(tools) = activity.tools.as_mut() else { continue };
+        for tool in skills.iter().filter_map(|s| brought.get(s)).flatten() {
+            if !tools.contains(tool) {
+                tools.push(tool.clone());
+            }
         }
     }
 }
@@ -3372,6 +3530,23 @@ mod run_end_tests {
         let rows = store.list_user_notifications(&user, 10, 0).unwrap();
         let row = rows.iter().find(|n| n.id == "wf-fail:run-1").unwrap();
         assert_eq!(row.action_url.as_deref(), Some("/emp/runs/run-1"));
+    }
+}
+
+#[cfg(test)]
+mod tune_tests {
+    /// A workflow tune rewrites a workflow: build work. With the bot's build
+    /// lane it runs on that lane's model at its effort and reaches Janus as
+    /// the `build` purpose; without one it keeps the default model and its
+    /// own purpose.
+    #[test]
+    fn a_workflow_tune_runs_on_the_build_lane() {
+        let lane = ("nebo-1-pro".to_string(), Some(types::packs::ProviderEffort::High));
+        let on_lane = super::tune_request("emp", "report".into(), "tune", Some(&lane));
+        assert_eq!((on_lane.model.as_str(), on_lane.effort, on_lane.trace.purpose), ("nebo-1-pro", lane.1, "build"));
+        assert_eq!(on_lane.trace.agent_id, "emp");
+        let default = super::tune_request("emp", "report".into(), "tune", None);
+        assert_eq!((default.model.as_str(), default.effort, default.trace.purpose), ("", None, "workflow_tune"));
     }
 }
 
@@ -3520,6 +3695,30 @@ mod list_tests {
 
     const STEPS: &str = r#"{"steps": ["Ask the owner for the customer name.", "Draft the invoice."]}"#;
 
+    /// Bake-off 2026-10-10 (B10): cancelling a run parked on the owner's
+    /// answer said "no active run found" and left it waiting. It ends
+    /// cancelled, with its completion time, and its suspension goes; a run
+    /// that is neither running nor parked is still refused.
+    #[tokio::test]
+    async fn a_parked_run_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let mgr = manager(store.clone());
+        store.create_workflow_run("run-p", &types::keyparser::agent_workflow_id("emp"), "schedule", Some("scan"), Some("{}"), None, Some("{}")).unwrap();
+        store.update_workflow_run("run-p", Some("running"), Some("run"), None, None, None).unwrap();
+        store.create_workflow_suspension("run-p", "emp", "scan", "run", "", Some(0), "[]", "{}", "find_tools", "loading tools").unwrap();
+        assert_eq!(store.get_workflow_run("run-p").unwrap().unwrap().status, "awaiting_approval");
+
+        mgr.cancel_run("run-p").await.expect("a parked run is cancelled");
+        let run = store.get_workflow_run("run-p").unwrap().unwrap();
+        assert_eq!(run.status, "cancelled");
+        assert!(run.completed_at.is_some());
+        assert_eq!(store.engine_get_run("run-p").unwrap().unwrap().current_wait_id, None, "nothing waits for an answer");
+
+        let err = mgr.cancel_run("run-p").await.unwrap_err();
+        assert!(err.starts_with("no active run found"), "{err}");
+    }
+
     /// Release proof of 2026-09-27 (plugin-many-skills-fan-out run 2, call
     /// #52): thirteen create_workflow calls on the Billing Desk succeeded,
     /// then list_workflows from the main conversation (no employee of its
@@ -3558,5 +3757,39 @@ mod list_tests {
         let err = mgr.create("bd-1", "create-estimate", objects, SaveOptions::default()).await.unwrap_err();
         assert!(err.starts_with("invalid workflow definition: "), "{err}");
         assert_eq!(mgr.list("bd-1").await.len(), 2, "nothing was stored");
+    }
+
+    /// The emergency stop reaches workflow runs: every running run's token
+    /// is cancelled (its activity turns stop with it), and they are counted.
+    #[tokio::test]
+    async fn cancel_all_runs_stops_every_running_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let mgr = manager(store);
+        let (a, b) = (tokio_util::sync::CancellationToken::new(), tokio_util::sync::CancellationToken::new());
+        mgr.active_runs.lock().unwrap().insert("run-a".into(), a.clone());
+        mgr.active_runs.lock().unwrap().insert("run-b".into(), b.clone());
+        assert_eq!(mgr.cancel_all_runs().await, 2);
+        assert!(a.is_cancelled() && b.is_cancelled(), "every run's turns stop");
+    }
+
+    /// A declared skill brings its plugin's tool and its allowed-tools to an
+    /// activity that declares its tools; an undeclared one is left as it is.
+    #[test]
+    fn declared_skills_bring_their_tools() {
+        let mut def = workflow::parser::parse_workflow(
+            r#"{"version":"1.0","id":"wf","name":"wf","activities":[
+                {"id":"declared","intent":"x","skills":["fo"],"tools":["read_file"]},
+                {"id":"undeclared","intent":"x","skills":["fo"]},
+                {"id":"plain","intent":"x"}
+            ]}"#,
+        )
+        .unwrap();
+        let brought: std::collections::HashMap<String, Vec<String>> =
+            [("fo".to_string(), vec!["plugin__odoo".to_string(), "read_file".to_string()])].into();
+        super::add_skill_tools(&mut def, &brought);
+        assert_eq!(def.activities[0].tools, Some(vec!["read_file".to_string(), "plugin__odoo".to_string()]));
+        assert_eq!(def.activities[1].tools, None);
+        assert_eq!(def.activities[2].tools, None);
     }
 }

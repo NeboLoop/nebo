@@ -39,14 +39,21 @@ pub async fn run(relay_secret: Option<String>) -> anyhow::Result<()> {
     // NOTE: stdout is the native messaging channel — ALL diagnostic logging goes to stderr.
     eprintln!("[nebo-relay] starting native messaging bridge");
 
-    let ws_url = "ws://127.0.0.1:27895/ws/extension";
+    // The engine's port: the default, or `NEBO_PORT` as the server reads it
+    // (a test engine on another port). The browser starts the relay with
+    // neither set.
+    let port = std::env::var("NEBO_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(types::constants::DEFAULT_PORT);
+    let ws_url = format!("ws://127.0.0.1:{port}/ws/extension");
 
     let relay_secret = relay_secret.unwrap_or_default();
 
     // Build the upgrade request fresh each attempt (connect_ws consumes it).
     let build_request = || -> anyhow::Result<_> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        let mut request = ws_url.into_client_request()?;
+        let mut request = ws_url.as_str().into_client_request()?;
         let value = relay_secret
             .parse()
             .map_err(|_| anyhow::anyhow!("relay secret is not a valid header value"))?;

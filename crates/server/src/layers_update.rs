@@ -136,6 +136,7 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
         channel: "layers".to_string(),
         origin: tools::Origin::System,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: seat.id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),

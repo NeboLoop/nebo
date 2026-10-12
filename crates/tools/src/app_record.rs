@@ -278,12 +278,8 @@ impl DynTool for AppRecordTool {
         false
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "recording the app".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Recorded the app".to_string()
     }
 
     fn execute_dyn<'a>(

@@ -1,0 +1,10 @@
+id: sc112-pinned-conversations-head-a-paged-list
+name: "SC112 — Pinned conversations head a paged list"
+description: |
+  An employee with many conversations is read a page at a time: the first page carries every
+  pinned conversation, most recently pinned first, and the cursor walks the rest newest first
+  with none twice and none missed. A pin is kept on the bot, told to every open app, and never
+  moves a conversation by time; a search narrows the list and its count.
+target_component: staffed-company
+proof: staffed_proof::conversation::pinned_conversations_head_a_paged_list
+conversation: []

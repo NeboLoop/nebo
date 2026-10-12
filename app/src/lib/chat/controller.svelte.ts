@@ -24,6 +24,7 @@ import { endsRun } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
+import { callText, callWords, isCallName, type CallName } from '$lib/chat/callLabel';
 import { formatTime } from '$lib/time';
 import { clientId } from '$lib/websocket/origin';
 import { userMessageRow } from '$lib/chat/userMessage';
@@ -73,10 +74,9 @@ export interface ToolUse {
   status: 'running' | 'success' | 'error';
   request: Record<string, unknown>;
   response: string;
-  /** Human activity label (gerund), from the start phase. */
-  label?: string;
-  /** Past-tense outcome, from the result phase. */
-  outcome?: string;
+  /** The call's structured name, `{kind, params}`: the thread words its
+   *  kind in the owner's language and shows its values verbatim. */
+  call?: CallName;
   /** Live sub-step text (e.g. "Initialized sub-agent"). */
   statusText?: string;
   startedAt?: number;
@@ -115,6 +115,8 @@ export type ChatMessage =
   /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
    *  prose or a note in the turn's work; `segment`: its index in the turn. */
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
+  /** The error a run ended on: it stays in the thread where it happened. */
+  | { type: 'runError'; content: string; time?: string; id?: string }
   /** The boundary the backend leaves where earlier conversation was
    *  summarized, or (`cleared`) where the owner cleared it. */
   | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
@@ -267,7 +269,7 @@ export function createChatController(config: ChatControllerConfig) {
   let helpers = $state<HelperLine[]>([]);
 
   // --- Internal tracking ---
-  let phaseStartTime = 0;
+  let phaseStartTime = $state(0);
   /** What the model has thought since its last call or text (`thinking`). */
   let thought = '';
   let usageClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -283,15 +285,32 @@ export function createChatController(config: ChatControllerConfig) {
   const nextId = () => `msg-${Date.now()}-${++idSeq}`;
 
   /** Index of `aid`'s open (streaming) reply bubble, or -1. Searches from the end
-   *  (the open reply is always near the tail). */
+   *  (the open reply is always near the tail). A reply with one of the owner's
+   *  messages after it is not open: what the work does next belongs under that
+   *  message, where the thread's history puts it. */
   function replyIndex(aid: string): number {
     const id = replyId[aid];
     if (!id) return -1;
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
+      if (m.type === 'user') return -1;
       if (m.type === 'assistant' && m.id === id) return m.streaming ? i : -1;
     }
     return -1;
+  }
+
+  /** The owner's message joins the thread: typed here, sent from another
+   *  window or the phone, or delivered by another door. The ONE way a user
+   *  row is added live. Whatever has streamed so far stays in the reply it
+   *  streamed into, and that reply closes: the work that follows renders
+   *  under the message. Appending it while the reply stayed open put every
+   *  later tool row and step ABOVE the message, so a thread continued from
+   *  another device sat still under the owner's last message until a
+   *  refresh (2026-10-08). */
+  function addOwnerMessage(msg: Extract<ChatMessage, { type: 'user' }>) {
+    flushPending();
+    for (const aid of Object.keys(replyId)) finalizeReply(aid);
+    messages = [...messages, msg];
   }
 
   /** Open a fresh streaming reply bubble for `aid` and return its index. */
@@ -446,7 +465,12 @@ export function createChatController(config: ChatControllerConfig) {
     // turns to nobody — yet its rows are persisted: reload the transcript.
     // Without this, a voice conversation only appeared after a hard refresh
     // (2026-09-15).
-    if (idx === -1 && activeSessionKey && data.session_id === activeSessionKey) {
+    // A call still showing as running when the run is over never ran: the
+    // work stopped before it (the owner's message ended the turn), and the
+    // thread keeps neither the call nor the fold it put on the words before
+    // it. The live view no longer matches the thread: read it, once.
+    const unrun = aid === agentId && messages.some((m) => m.type === 'assistant' && m.tools?.some((t) => t.status === 'running'));
+    if ((idx === -1 || unrun) && activeSessionKey && data.session_id === activeSessionKey) {
       void loadHistory(historyTarget);
     }
     if (idx !== -1) {
@@ -589,10 +613,9 @@ export function createChatController(config: ChatControllerConfig) {
     if (m.type === 'assistant') {
       const tool: ToolUse = {
         toolId: data.tool_id,
-        // Raw tool name so the display formats the signature (MCP → "slug · tool",
-        // STRAP → "name · resource.action"); label + outcome come from the backend.
+        // The row is worded from the call's structured name.
         name: data.tool || 'tool',
-        label: data.label,
+        ...(isCallName(data.call) ? { call: data.call } : {}),
         status: 'running',
         request,
         response: '',
@@ -600,9 +623,8 @@ export function createChatController(config: ChatControllerConfig) {
       };
       messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
-    // The backend's label (each tool's own words) is the live indicator, so
-    // it and the persisted timeline speak the same vocabulary.
-    activityStatus = data.label || data.tool || '';
+    // The live indicator words the call as its row does.
+    activityStatus = callText({ name: data.tool || 'tool', status: 'running', ...(isCallName(data.call) ? { call: data.call } : {}) }, get(t));
   }
 
   function handleToolResult(data: any) {
@@ -625,7 +647,7 @@ export function createChatController(config: ChatControllerConfig) {
         ...tools[ti],
         status,
         response,
-        outcome: data.outcome,
+        ...(isCallName(data.call) ? { call: data.call } : {}),
         ...(data.payload && typeof data.payload === 'object' ? { payload: data.payload } : {}),
         ...(Array.isArray(data.files) && data.files.length ? { files: data.files.filter((f: unknown): f is string => typeof f === 'string') } : {}),
         durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : (started ? Date.now() - started : undefined),
@@ -640,7 +662,8 @@ export function createChatController(config: ChatControllerConfig) {
       messages[idx] = {
         ...m,
         tools: [...(m.tools ?? []), {
-          toolId, name: data.tool_name || 'tool', status, outcome: data.outcome, request: {}, response,
+          toolId, name: data.tool_name || 'tool', status, request: {}, response,
+          ...(isCallName(data.call) ? { call: data.call } : {}),
         }],
       };
     }
@@ -699,6 +722,12 @@ export function createChatController(config: ChatControllerConfig) {
     phaseStartTime = 0;
     activityStatus = '';
     chatError = data.error || get(t)('common.errorOccurred');
+    // The banner can be dismissed; the thread keeps where the run stopped,
+    // as a reloaded thread shows the row the server stored for it.
+    const last = messages[messages.length - 1];
+    if (!(last?.type === 'runError' && last.content === chatError)) {
+      messages = [...messages, { type: 'runError' as const, content: chatError, time: formatTime(Date.now()) }];
+    }
   }
 
   function handleAskRequest(data: any) {
@@ -753,7 +782,10 @@ export function createChatController(config: ChatControllerConfig) {
   function handleSubagentProgress(data: any) {
     if (!isMyEvent(data)) return;
     helpers = applyHelperEvent(helpers, 'subagent_progress', data);
-    const op = data.current_operation as string | undefined;
+    // A helper's step: its call, worded; background work: its own line.
+    const op = isCallName(data.call)
+      ? callWords(data.call, get(t))
+      : (data.current_operation as string | undefined);
     if (!op) return;
     // The delegate's current step IS this turn's live status: without it a
     // long delegated job reads as "Still working: agent" for minutes, and a
@@ -794,11 +826,20 @@ export function createChatController(config: ChatControllerConfig) {
   function handleUserMessage(data: any) {
     const row = userMessageRow(data, activeSessionKey, clientId);
     if (!row || messages.some((m) => 'id' in m && m.id === row.id)) return;
-    messages = [...messages, { id: row.id, type: 'user' as const, content: row.content, time: formatTime(row.createdAt) }];
+    addOwnerMessage({ id: row.id, type: 'user' as const, content: row.content, time: formatTime(row.createdAt) });
+  }
+
+  // A step of the running work took in the owner's messages queued behind it
+  // (from this window or any other): they are part of the conversation now.
+  function handleTakenIn(data: any) {
+    if (!activeSessionKey || data?.session_id !== activeSessionKey) return;
+    if (!messages.some((m) => m.type === 'user' && m.pending)) return;
+    messages = messages.map((m) => (m.type === 'user' && m.pending ? { ...m, pending: false } : m));
   }
 
   function handleChatCancelled(data: any) {
-    if (!isMyEvent(data)) return;
+    // "all": the owner stopped everything, this conversation's turn with it.
+    if (data?.session_id !== 'all' && !isMyEvent(data)) return;
     isLoading = false;
     resetStreaming();
     phaseStartTime = 0;
@@ -856,6 +897,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_cancelled', handleChatCancelled));
   unsubs.push(onServer('chat_created', handleChatCreated));
   unsubs.push(ws.on('chat_user_message', handleUserMessage));
+  unsubs.push(ws.on('chat_taken_in', handleTakenIn));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
   unsubs.push(onServer('text_verdict', handleTextVerdict));
@@ -928,13 +970,13 @@ export function createChatController(config: ChatControllerConfig) {
   function send(text: string, options?: SendOptions & { attachments?: UploadedAttachment[] }) {
     chatError = '';
     if (!options?.silent) {
-      messages = [...messages, {
+      addOwnerMessage({
         id: 'msg-' + Date.now(),
         type: 'user' as const,
         content: text,
         time: formatTime(Date.now()),
         ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
-      }];
+      });
     }
 
     // Marketplace install code: sendInstallCode opens the modal (which owns all
@@ -1014,7 +1056,7 @@ export function createChatController(config: ChatControllerConfig) {
    *  modal posts its own): show the owner's bubble and wait for the reply. */
   function noteSent(text: string) {
     if (!text) return;
-    messages = [...messages, { id: nextId(), type: 'user' as const, content: text, time: formatTime(Date.now()) }];
+    addOwnerMessage({ id: nextId(), type: 'user' as const, content: text, time: formatTime(Date.now()) });
     isLoading = true;
   }
 
@@ -1095,9 +1137,9 @@ export function createChatController(config: ChatControllerConfig) {
       const run = resp.activeRun;
       if (run) {
         isLoading = true;
-        activityStatus = run.currentTool
-          ? get(t)('chat.resumedActivity', { values: { tool: run.currentTool } })
-          : get(t)('chat.working');
+        // The running call's raw tool name is never a word on his screen
+        // (live 2026-10-11: "ask_owner"); its own row names it, worded.
+        activityStatus = get(t)('chat.working');
       }
       // ...and if that work is parked on a question, the card the live event
       // carried is rendered here too, answerable the same way.
@@ -1269,6 +1311,8 @@ export function createChatController(config: ChatControllerConfig) {
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
+    /** When the running turn started (ms), 0 while none runs. */
+    get turnStartedAt() { return phaseStartTime; },
     get goal() { return goal; },
     get helpers() { return helpers; },
     set activityStatus(v: string) { activityStatus = v; },

@@ -27,8 +27,9 @@ pub struct ToolRequest {
     /// the actions array and options.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_batch: bool,
-    /// If true, this is a fire-and-forget command (show_indicators, hide_indicators).
-    /// No response is expected — the WS handler serializes it as `{ "type": tool }`.
+    /// If true, this is a fire-and-forget command (show_indicators, hide_indicators,
+    /// teach_record_start/stop). No response is expected — the WS handler serializes
+    /// it as `{ "type": tool, ...args }`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_command: bool,
     /// Session/agent identifier — extension uses this to scope tab groups per agent.
@@ -99,7 +100,16 @@ pub struct ExtensionBridge {
     last_connected: Arc<Mutex<Option<Instant>>>,
     /// Per-session cache for read_page results (2.5s TTL).
     page_cache: Arc<Mutex<HashMap<String, PageCacheEntry>>>,
+    /// The teach session recording right now, if any: every browser records
+    /// into it, including one that connects mid-recording.
+    teach: Arc<Mutex<Option<crate::teach::TeachCapture>>>,
+    /// Signalled when an extension has flushed its last teach events.
+    teach_flushed: Arc<tokio::sync::Notify>,
 }
+
+/// How long stop waits for the extension to hand over what it still holds
+/// (a half-typed field, the last after-state).
+const TEACH_FLUSH_WAIT: Duration = Duration::from_secs(3);
 
 impl ExtensionBridge {
     pub fn new() -> Self {
@@ -110,6 +120,8 @@ impl ExtensionBridge {
             default_browser: Arc::new(Mutex::new(None)),
             last_connected: Arc::new(Mutex::new(None)),
             page_cache: Arc::new(Mutex::new(HashMap::new())),
+            teach: Arc::new(Mutex::new(None)),
+            teach_flushed: Arc::new(tokio::sync::Notify::new()),
         };
         // Detect default browser in background
         let db = bridge.default_browser.clone();
@@ -135,6 +147,10 @@ impl ExtensionBridge {
     pub async fn connect(&self, browser: String) -> (i64, mpsc::Receiver<ToolRequest>) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel(64);
+        // A browser that connects mid-recording records too.
+        if let Some(cap) = self.teach.lock().await.as_ref() {
+            let _ = tx.try_send(teach_command("teach_record_start", &cap.session));
+        }
         let mut conns = self.connections.lock().await;
         conns.insert(
             id,
@@ -482,6 +498,74 @@ impl ExtensionBridge {
     }
 }
 
+impl ExtensionBridge {
+    /// Begin element recording for teach session `session`, whose files go
+    /// in `dir` and whose clock starts at `started_ms` (epoch ms). Every
+    /// connected browser is told to record.
+    pub async fn teach_start(&self, session: &str, dir: std::path::PathBuf, started_ms: u64) {
+        *self.teach.lock().await = Some(crate::teach::TeachCapture::new(session.to_string(), dir, started_ms));
+        self.broadcast(teach_command("teach_record_start", session)).await;
+        info!(session, "teach: element recording on");
+    }
+
+    /// One event from a browser's recording. Events for any other session
+    /// (a stale tab, a late message) are dropped.
+    pub async fn teach_event(&self, session: &str, event: serde_json::Value, crop: Option<&str>) {
+        if let Some(cap) = self.teach.lock().await.as_mut().filter(|c| c.session == session) {
+            cap.add(event, crop);
+        }
+    }
+
+    /// A browser says it has sent everything it held for `session`.
+    pub fn teach_flushed(&self, session: &str) {
+        debug!(session, "teach: extension flushed");
+        self.teach_flushed.notify_waiters();
+    }
+
+    /// Stop element recording (`only`: just when it is that session) and
+    /// write `elements.jsonl` + `actions.json` into the session dir. Waits
+    /// briefly for the browsers to flush; with no browser connected there is
+    /// nothing to wait for. Returns the number of actions written, or None
+    /// when no such recording was on.
+    pub async fn teach_stop(&self, only: Option<&str>) -> Option<Result<usize, String>> {
+        let session = self.teach.lock().await.as_ref()?.session.clone();
+        if only.is_some_and(|id| id != session) {
+            return None;
+        }
+        if self.is_connected() {
+            let flushed = self.teach_flushed.notified();
+            self.broadcast(teach_command("teach_record_stop", &session)).await;
+            if tokio::time::timeout(TEACH_FLUSH_WAIT, flushed).await.is_err() {
+                warn!(session = %session, "teach: no flush from the extension; writing what arrived");
+            }
+        }
+        let cap = self.teach.lock().await.take()?;
+        let result = tokio::task::spawn_blocking(move || cap.finish())
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        info!(session = %session, result = ?result, "teach: element recording off");
+        Some(result)
+    }
+
+    async fn broadcast(&self, request: ToolRequest) {
+        for conn in self.connections.lock().await.values() {
+            let _ = conn.tx.send(request.clone()).await;
+        }
+    }
+}
+
+/// A teach-recording command for the extension: `{type, session}`.
+fn teach_command(command: &str, session: &str) -> ToolRequest {
+    ToolRequest {
+        id: 0,
+        tool: command.to_string(),
+        args: serde_json::json!({ "session": session }),
+        is_batch: false,
+        is_command: true,
+        session_id: None,
+    }
+}
+
 /// Detect the system default browser on macOS.
 /// Returns a short name like "chrome", "brave", "firefox", "safari".
 async fn detect_default_browser() -> String {
@@ -580,6 +664,54 @@ mod result_binding_tests {
             .await;
         let result = exec.await.unwrap().unwrap();
         assert_eq!(result["late"], true);
+    }
+}
+
+#[cfg(test)]
+mod teach_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_browser_records_and_stop_writes_what_they_sent() {
+        let dir = std::env::temp_dir().join(format!("nebo-bridge-teach-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bridge = ExtensionBridge::new();
+        let (_a, mut rx_a) = bridge.connect("chrome".into()).await;
+        bridge.teach_start("t1", dir.clone(), 1_000).await;
+        let start = rx_a.recv().await.unwrap();
+        assert_eq!(start.tool, "teach_record_start");
+        assert!(start.is_command);
+        assert_eq!(start.args["session"], "t1");
+
+        // A browser that connects mid-recording is told to record at once.
+        let (_b, mut rx_b) = bridge.connect("chrome".into()).await;
+        assert_eq!(rx_b.recv().await.unwrap().tool, "teach_record_start");
+
+        bridge
+            .teach_event("t1", serde_json::json!({"id": "c1", "kind": "click", "at_ms": 3_000, "tab": 1,
+                "url": "https://a.test/", "element": {"role": "button", "name": "Go", "locators": ["role=button[name=\"Go\"]"]}}), None)
+            .await;
+        // Another session's late event is not this recording's.
+        bridge.teach_event("old", serde_json::json!({"id": "x", "kind": "click", "at_ms": 3_500}), None).await;
+
+        // The extension answers the stop with its flush.
+        let b = bridge.clone();
+        let flusher = tokio::spawn(async move {
+            let stop = rx_a.recv().await.unwrap();
+            assert_eq!(stop.tool, "teach_record_stop");
+            b.teach_event("t1", serde_json::json!({"id": "a1", "kind": "after", "of": "c1", "at_ms": 4_000, "url": "https://a.test/done", "heading": "Done"}), None).await;
+            b.teach_flushed("t1");
+        });
+        assert!(bridge.teach_stop(Some("another")).await.is_none(), "another session's stop leaves this one recording");
+        let written = bridge.teach_stop(Some("t1")).await.unwrap().unwrap();
+        flusher.await.unwrap();
+        assert_eq!(written, 1);
+        let line: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(dir.join("elements.jsonl")).unwrap().trim()).unwrap();
+        assert_eq!(line["t_ms"], 2_000);
+        assert_eq!(line["after"]["heading"], "Done", "what the flush carried is in the record");
+        assert!(bridge.teach_stop(None).await.is_none(), "nothing is recording any more");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

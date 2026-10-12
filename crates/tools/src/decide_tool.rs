@@ -191,12 +191,8 @@ impl DynTool for DecideTool {
         request(input).map(|_| ())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "deciding".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Decided".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {

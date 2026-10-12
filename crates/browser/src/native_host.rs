@@ -356,6 +356,33 @@ pub fn install_manifest(
     Ok(())
 }
 
+/// Remove the native messaging host from every browser: the manifests, and
+/// on Windows the registry keys pointing at them. The uninstaller's: the
+/// executable they name is about to be removed. Best-effort; each failure
+/// is logged.
+pub fn uninstall_manifest() {
+    for dir in all_native_messaging_dirs() {
+        let path = std::path::Path::new(&dir).join("dev.neboai.nebo.json");
+        match std::fs::remove_file(&path) {
+            Ok(()) => info!(path = %path.display(), "removed native messaging host manifest"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!(path = %path.display(), error = %e, "could not remove native messaging host manifest"),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    for (reg_key, _) in windows_native_messaging_registry_keys() {
+        match command::new::<std::process::Command>("reg", command::Console::Hidden)
+            .args(["delete", &reg_key, "/f"])
+            .output()
+        {
+            Ok(out) if out.status.success() => info!(key = %reg_key, "removed native messaging host registry key"),
+            // Absent: that browser never had it.
+            Ok(_) => {}
+            Err(e) => warn!(key = %reg_key, error = %e, "could not run reg delete"),
+        }
+    }
+}
+
 /// Check if the native messaging host manifest is installed in at least one browser.
 pub fn is_manifest_installed() -> bool {
     all_native_messaging_dirs().iter().any(|dir| {
@@ -590,5 +617,34 @@ mod tests {
         assert_eq!(msg.id, Some(42));
         assert_eq!(msg.error, Some("boom".to_string()));
         assert!(msg.result.is_none());
+    }
+
+    /// The cloud bot image ships its own copy of the manifest
+    /// (assets/cloud-desktop, placed system-wide by the Dockerfile): it must
+    /// name the host, and admit the extensions, this file does.
+    #[test]
+    fn cloud_image_manifest_matches() {
+        let image: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../assets/cloud-desktop/native-messaging-host.json"
+        ))
+        .unwrap();
+        assert_eq!(image["name"], "dev.neboai.nebo");
+        assert_eq!(image["type"], "stdio");
+        let origins = image["allowed_origins"].as_array().unwrap();
+        for id in [PRODUCTION_EXTENSION_ID, DEV_EXTENSION_ID] {
+            let origin = format!("chrome-extension://{id}/");
+            assert!(
+                origins.iter().any(|o| o.as_str() == Some(origin.as_str())),
+                "{origin}"
+            );
+        }
+        let policy: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../assets/cloud-desktop/chromium-policy.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            policy["ExtensionInstallForcelist"][0],
+            format!("{PRODUCTION_EXTENSION_ID};https://clients2.google.com/service/update2/crx")
+        );
     }
 }

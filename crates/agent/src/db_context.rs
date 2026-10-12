@@ -224,11 +224,12 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         let mut values = Vec::new();
         for sm in &ctx.tacit_memories {
             let staleness_note = memory_staleness_note(&sm.memory, &now);
+            let source = tools::memory_tools::local_source(&sm.memory.namespace);
             if staleness_note.is_empty() {
-                values.push(format!("{}: {}", sm.memory.key, sm.memory.value));
+                values.push(format!("{}: {} ({source})", sm.memory.key, sm.memory.value));
             } else {
                 values.push(format!(
-                    "{}: {} {}",
+                    "{}: {} ({source}) {}",
                     sm.memory.key, sm.memory.value, staleness_note
                 ));
             }
@@ -504,7 +505,10 @@ pub fn format_prompt_relevant_memories(
     if picked.is_empty() {
         return (String::new(), Vec::new());
     }
-    let lines: Vec<String> = picked.iter().map(|r| format!("{}: {}", r.key, r.value)).collect();
+    let lines: Vec<String> = picked
+        .iter()
+        .map(|r| format!("{}: {} ({})", r.key, r.value, tools::memory_tools::local_source(&r.namespace)))
+        .collect();
     let injected_ids: Vec<i64> = picked.iter().filter_map(|r| r.memory_id).collect();
 
     debug!(count = lines.len(), "injected prompt-relevant memories");
@@ -668,8 +672,8 @@ mod tests {
         }
         assert!(i2.len() <= ids.len());
         assert!(
-            text.contains("Alice leads the migration project"),
-            "FTS-only recall should still inject: {text:?}"
+            text.contains("person/alice: Alice leads the migration project (local:tacit/general)"),
+            "FTS-only recall should still inject, saying where it lives: {text:?}"
         );
         assert_eq!(ids.len(), 1);
 
@@ -960,6 +964,9 @@ mod tests {
 
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("What You Know"));
-        assert!(result.contains("favorite-color: blue"));
+        assert!(
+            result.contains("favorite-color: blue (local:tacit/preferences)"),
+            "the model reads where a memory lives: {result}"
+        );
     }
 }

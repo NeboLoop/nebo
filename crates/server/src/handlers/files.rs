@@ -262,8 +262,11 @@ pub async fn upload_file(
         duration: None,
     };
 
-    // Best-effort loop copy. Failing here costs sharing with other bots, not the
-    // attachment itself, so it is logged rather than returned as an error.
+    // Loop copy. Failing here costs sharing with other bots, not the
+    // attachment itself, so it is not returned as an error: the copy is owed
+    // instead, and made in the background (`hub_sync`), whose record is what
+    // `GET /api/v1/uploads/{id}` reports.
+    let mut owed = true;
     match crate::codes::build_api_client(&state) {
         Ok(api) => match api.upload_file(&filename, &mime_type, data, &[]).await {
             Ok(mut attachment) => {
@@ -275,6 +278,7 @@ pub async fn upload_file(
                     tracing::warn!(error = %e, "could not re-key local attachment copy");
                 }
                 landed = attachment;
+                owed = false;
             }
             Err(e) => {
                 // A full account is the one refusal the upload itself fails
@@ -283,10 +287,17 @@ pub async fn upload_file(
                     let _ = std::fs::remove_file(&path);
                     return Ok(refusal);
                 }
-                tracing::warn!(error = %e, "loop upload failed; attachment is local-only")
+                tracing::warn!(error = %e, "loop upload failed; the copy is owed")
             }
         },
-        Err(e) => tracing::debug!(error = %e, "not signed in; attachment is local-only"),
+        Err(e) => tracing::debug!(error = %e, "not signed in; the copy is owed"),
+    }
+    if owed {
+        match crate::hub_sync::Records::open().map(|r| r.owe(&landed)) {
+            Some(Ok(_)) => {}
+            Some(Err(e)) => tracing::warn!(error = %e, "hub copy not recorded"),
+            None => tracing::warn!("hub copy not recorded: no data directory"),
+        }
     }
 
     // The file is on this machine and named: announce the arrival so a flow
@@ -314,6 +325,7 @@ pub async fn serve_comm_file(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    request: axum::extract::Request,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     // The id is interpolated into the loop URL — restrict to uuid characters
     // so it can't traverse into other loop endpoints.
@@ -328,15 +340,7 @@ pub async fn serve_comm_file(
     }
     // Local copy first — an attachment uploaded on this machine renders while
     // signed out, and never costs a round trip to fetch what is already here.
-    let bytes = match agent::uploads::by_id(&file_id) {
-        Some(path) => std::fs::read(&path)
-            .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?,
-        None => {
-            let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
-            api.download_file(&file_id).await.map_err(hub_file_error)?
-        }
-    };
-
+    let local = agent::uploads::by_id(&file_id);
     let mime = params
         .get("mime")
         .filter(|m| {
@@ -346,6 +350,22 @@ pub async fn serve_comm_file(
         })
         .cloned()
         .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    // A local copy streams from disk and answers ranges: a 2 GB video is
+    // never read whole into memory, and the player can seek.
+    if let Some(path) = local {
+        let mut response = stream_file(&path, "application/octet-stream", request).await;
+        if response.status().is_success() {
+            let headers = response.headers_mut();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&mime) {
+                headers.insert(axum::http::header::CONTENT_TYPE, v);
+            }
+            headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("private, max-age=3600"));
+        }
+        return Ok(response);
+    }
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    let bytes = api.download_file(&file_id).await.map_err(hub_file_error)?;
 
     Ok(axum::response::Response::builder()
         .header("Content-Type", mime)

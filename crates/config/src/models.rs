@@ -45,39 +45,12 @@ impl ModelDef {
     }
 }
 
-/// Task-based model routing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The bot's routes in models.yaml.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskRouting {
-    #[serde(default)]
-    pub vision: String,
-    #[serde(default)]
-    pub audio: String,
-    #[serde(default)]
-    pub reasoning: String,
-    #[serde(default)]
-    pub code: String,
+    /// The bot's default: a model, or an intelligence pack (`pack/<id>`).
     #[serde(default)]
     pub general: String,
-    /// Cheap-model route for internal side-tasks (titles, memory extraction,
-    /// tool summaries, auto-continue judge). "provider/model" format; empty = unset
-    /// (each side-task keeps its default provider selection).
-    #[serde(default)]
-    pub aux: String,
-    #[serde(default)]
-    pub fallbacks: HashMap<String, Vec<String>>,
-}
-
-/// Lane-specific model routing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaneRouting {
-    #[serde(default)]
-    pub heartbeat: String,
-    #[serde(default)]
-    pub events: String,
-    #[serde(default)]
-    pub comm: String,
-    #[serde(default)]
-    pub subagent: String,
 }
 
 /// Default model selection.
@@ -85,13 +58,6 @@ pub struct LaneRouting {
 pub struct Defaults {
     #[serde(default)]
     pub primary: String,
-    #[serde(default)]
-    pub fallbacks: Vec<String>,
-    /// Where a run goes when the reviewer would otherwise stop it: one window
-    /// of steps on this model, once per run, then back. "provider/model";
-    /// empty means the reviewer's stop stands. See agent::reviewer.
-    #[serde(default)]
-    pub escalation: String,
 }
 
 /// User-friendly model alias.
@@ -114,10 +80,6 @@ pub struct CliProviderDef {
     #[serde(default, rename = "installHint")]
     pub install_hint: String,
     #[serde(default)]
-    pub models: Vec<String>,
-    #[serde(default, rename = "defaultModel")]
-    pub default_model: String,
-    #[serde(default)]
     pub active: Option<bool>,
 }
 
@@ -137,8 +99,6 @@ pub struct ModelsConfig {
     pub defaults: Option<Defaults>,
     #[serde(default)]
     pub task_routing: Option<TaskRouting>,
-    #[serde(default)]
-    pub lane_routing: Option<LaneRouting>,
     #[serde(default)]
     pub aliases: Vec<ModelAlias>,
     #[serde(default)]
@@ -203,76 +163,52 @@ impl ModelsConfig {
         self.save()
     }
 
-    /// Get the default model ID for a given provider name.
-    /// Checks defaults.primary first, then fallbacks, then first model in provider list.
-    pub fn default_model_for_provider(&self, provider: &str) -> Option<String> {
-        // Check if defaults.primary targets this provider
-        if let Some(ref defaults) = self.defaults {
-            if let Some(model_id) = Self::extract_model_for_provider(&defaults.primary, provider) {
-                return Some(model_id);
+    /// The owner's file, rewritten once to what Nebo reads now (the server's
+    /// `migration::migrate_models_yaml`): a Nebo AI speed chosen as the
+    /// bot's default (`defaults.primary`, `task_routing.general`) becomes the Nebo AI pack at that level, and the
+    /// Janus catalog's ids lose the `janus/` and `neboai/` prefixes and the
+    /// old `janus` id. True when anything changed.
+    pub fn upgrade(&mut self) -> bool {
+        const SPEED_PACKS: [(&str, &str); 4] = [
+            ("nebo-1", "pack/nebo-ai"),
+            ("nebo-1-flash", "pack/nebo-ai/instant"),
+            ("nebo-1-medium", "pack/nebo-ai/medium"),
+            ("nebo-1-pro", "pack/nebo-ai/high"),
+        ];
+        let mut changed = false;
+        let mut to_pack = |value: &mut String| {
+            let speed = value.trim();
+            let speed = speed.strip_prefix("janus/").unwrap_or(speed);
+            if let Some((_, pack)) = SPEED_PACKS.iter().find(|(s, _)| *s == speed) {
+                *value = pack.to_string();
+                changed = true;
             }
-            for fb in &defaults.fallbacks {
-                if let Some(model_id) = Self::extract_model_for_provider(fb, provider) {
-                    return Some(model_id);
+        };
+        if let Some(defaults) = self.defaults.as_mut() {
+            to_pack(&mut defaults.primary);
+        }
+        if let Some(tr) = self.task_routing.as_mut() {
+            to_pack(&mut tr.general);
+        }
+        for model in self.providers.get_mut("janus").into_iter().flatten() {
+            let id = model.id.trim_start_matches("janus/").trim_start_matches("neboai/");
+            let id = if id == "janus" { "nebo-1" } else { id };
+            if id != model.id {
+                if model.id == "janus" && model.display_name == "Janus" {
+                    model.display_name = "Nebo 1".to_string();
                 }
+                model.id = id.to_string();
+                changed = true;
             }
         }
-        // Fall back to first model in provider's model list
-        self.providers
-            .get(provider)
-            .and_then(|models| models.first())
-            .map(|m| m.id.clone())
+        changed
     }
 
-    /// Get the model ID for a specific task type (vision, reasoning, code, general, audio).
-    /// Returns just the model ID portion (without the "provider/" prefix).
-    pub fn model_for_task(&self, task: &str) -> Option<String> {
-        self.task_routing.as_ref().and_then(|tr| {
-            let full = match task {
-                "vision" => &tr.vision,
-                "audio" => &tr.audio,
-                "reasoning" => &tr.reasoning,
-                "code" => &tr.code,
-                "general" => &tr.general,
-                _ => return None,
-            };
-            if full.is_empty() {
-                return None;
-            }
-            Some(full.split('/').last().unwrap_or(full).to_string())
-        })
-    }
-
-    /// Resolve the model a sidecar task should run on for the provider that is
-    /// about to be called.
-    ///
-    /// The model ID must belong to `provider` — a bare ID lifted from another
-    /// provider's spec (handing Anthropic's `claude-sonnet-4-6` to the Janus
-    /// gateway, say) names a model that provider has never heard of, and the
-    /// request fails in a way that reads like the sidecar simply had nothing
-    /// to say. `None` means "let the provider pick its own default", which is
-    /// always a model that provider can actually serve.
-    pub fn sidecar_model(&self, provider: &str) -> Option<String> {
-        // Prefer the explicit vision route when it targets this provider.
-        if let Some(ref tr) = self.task_routing {
-            if let Some(model) = Self::extract_model_for_provider(&tr.vision, provider) {
-                return Some(model);
-            }
-        }
-        // Otherwise the provider's own default, which is provider-correct by
-        // construction.
-        self.default_model_for_provider(provider)
-    }
-
-    /// Extract model ID from "provider/model" format if it matches the given provider.
-    fn extract_model_for_provider(spec: &str, provider: &str) -> Option<String> {
-        spec.split_once('/').and_then(|(p, model)| {
-            if p == provider {
-                Some(model.to_string())
-            } else {
-                None
-            }
-        })
+    /// The owner's own models.yaml as it is on disk, if there is one that
+    /// reads.
+    pub fn load_owned() -> Option<Self> {
+        let path = data_dir().ok()?.join(types::constants::files::MODELS_YAML);
+        serde_yaml::from_str(&fs::read_to_string(path).ok()?).ok()
     }
 
     /// Load models config: try data_dir/models.yaml first, fall back to embedded.
@@ -295,25 +231,6 @@ impl ModelsConfig {
                         }
                     }
 
-                    // Migrate janus model IDs: strip legacy prefixes
-                    if let Some(janus_models) = cfg.providers.get_mut("janus") {
-                        for model in janus_models.iter_mut() {
-                            if let Some(stripped) = model.id.strip_prefix("janus/") {
-                                model.id = stripped.to_string();
-                            }
-                            if let Some(stripped) = model.id.strip_prefix("neboai/") {
-                                model.id = stripped.to_string();
-                            }
-                            // Migrate old "janus" model ID to "nebo-1"
-                            if model.id == "janus" {
-                                model.id = "nebo-1".to_string();
-                                if model.display_name == "Janus" {
-                                    model.display_name = "Nebo 1".to_string();
-                                }
-                            }
-                        }
-                    }
-
                     return cfg;
                 }
             }
@@ -324,7 +241,6 @@ impl ModelsConfig {
             version: "1.0".into(),
             defaults: None,
             task_routing: None,
-            lane_routing: None,
             aliases: Vec::new(),
             providers: HashMap::new(),
             cli_providers: Vec::new(),
@@ -340,46 +256,44 @@ mod tests {
         serde_yaml::from_str(EMBEDDED_MODELS_YAML).expect("embedded models.yaml must parse")
     }
 
-    // The sidecar used to take defaults.fallbacks[0] ("anthropic/claude-sonnet-4-6"),
-    // strip the provider, and hand the bare ID to whichever provider was first —
-    // usually the Janus gateway, which has never heard of it. The request failed
-    // in a way that looked like the sidecar just had nothing to say.
+    /// The one-time rewrite of the owner's file: a speed chosen as the
+    /// bot's default becomes the Nebo AI pack at its level; a pack or any
+    /// other model stays; the Janus catalog's old ids are renamed; a file
+    /// that needs nothing reports no change.
     #[test]
-    fn sidecar_model_never_leaks_across_providers() {
+    fn upgrade_names_the_nebo_ai_pack_where_a_speed_was_chosen() {
+        let mut cfg: ModelsConfig = serde_yaml::from_str(
+            "defaults:\n  primary: janus/nebo-1\ntask_routing:\n  general: nebo-1-pro\nproviders:\n  janus:\n    - id: janus\n      displayName: Janus\n    - id: neboai/nebo-embed-small\n",
+        )
+        .unwrap();
+        assert!(cfg.upgrade());
+        assert_eq!(cfg.defaults.as_ref().unwrap().primary, "pack/nebo-ai");
+        let tr = cfg.task_routing.as_ref().unwrap();
+        assert_eq!(tr.general, "pack/nebo-ai/high");
+        let ids: Vec<(&str, &str)> =
+            cfg.providers["janus"].iter().map(|m| (m.id.as_str(), m.display_name.as_str())).collect();
+        assert_eq!(ids, [("nebo-1", "Nebo 1"), ("nebo-embed-small", "")]);
+        assert!(!cfg.upgrade(), "nothing left to change");
+
+        let mut mine: ModelsConfig =
+            serde_yaml::from_str("defaults:\n  primary: pack/abc/low\ntask_routing:\n  general: openai/gpt-5.4\n").unwrap();
+        assert!(!mine.upgrade());
+        assert_eq!(mine.task_routing.unwrap().general, "openai/gpt-5.4");
+    }
+
+    /// Nebo names no model for a provider the owner adds: the catalog holds
+    /// only Nebo AI's boot floor.
+    #[test]
+    fn the_catalog_names_no_model_for_an_owners_provider() {
         let cfg = config();
-        for provider in ["janus", "anthropic", "openai", "google"] {
-            if let Some(model) = cfg.sidecar_model(provider) {
-                assert!(
-                    !model.contains('/'),
-                    "{provider}: model ID must not keep a provider prefix, got {model}"
-                );
-                let owned_by_provider = cfg
-                    .providers
-                    .get(provider)
-                    .map(|models| models.iter().any(|m| m.id == model))
-                    .unwrap_or(false);
-                let from_vision_route = cfg
-                    .task_routing
-                    .as_ref()
-                    .and_then(|tr| ModelsConfig::extract_model_for_provider(&tr.vision, provider))
-                    .is_some_and(|m| m == model);
-                assert!(
-                    owned_by_provider || from_vision_route,
-                    "{provider}: resolved {model}, which that provider does not serve"
-                );
-            }
-        }
+        let providers: Vec<&str> = cfg.providers.keys().map(String::as_str).collect();
+        assert_eq!(providers, ["janus"]);
     }
 
     #[test]
-    fn sidecar_model_prefers_the_vision_route() {
+    fn the_bot_ships_on_the_nebo_ai_pack() {
         let cfg = config();
-        // models.yaml routes vision at janus/nebo-1.
-        assert_eq!(cfg.sidecar_model("janus").as_deref(), Some("nebo-1"));
-    }
-
-    #[test]
-    fn sidecar_model_is_none_for_unknown_provider() {
-        assert!(config().sidecar_model("not-a-provider").is_none());
+        assert_eq!(cfg.defaults.unwrap().primary, "pack/nebo-ai");
+        assert_eq!(cfg.task_routing.unwrap().general, "pack/nebo-ai");
     }
 }

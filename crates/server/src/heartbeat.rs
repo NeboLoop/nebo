@@ -148,6 +148,7 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         channel: "heartbeat".into(),
         origin: Origin::System,
         door: types::permissions::Door::Heartbeat,
+        narrow: None,
         agent_id: if entity_type == "agent" { entity_id.to_string() } else { String::new() },
         cancel_token: CancellationToken::new(),
         lane: lanes::HEARTBEAT.to_string(),

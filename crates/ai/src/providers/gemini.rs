@@ -204,11 +204,7 @@ impl Provider for GeminiProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
-        let model = if req.model.is_empty() {
-            &self.model
-        } else {
-            &req.model
-        };
+        let model = crate::chosen_model(&req.model, &self.model, "google")?;
 
         let (contents, system_text) = self.build_contents(req);
         let tools = self.build_tools(&req.tools);

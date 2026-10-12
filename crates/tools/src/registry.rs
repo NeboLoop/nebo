@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use ai::ToolDefinition;
 
@@ -296,13 +296,12 @@ pub trait DynTool: Send + Sync {
     fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
         Some(DEFAULT_MAX_RESULT_CHARS)
     }
-    /// The owner-facing line while the call runs ("reading notes.md").
-    fn activity(&self, input: &serde_json::Value) -> String {
-        crate::humanize::call_labels(self.name(), input).0
-    }
-    /// The owner-facing line once it ran ("Read notes.md").
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        crate::humanize::call_labels(self.name(), input).1
+    /// What the call does, as a sentence ("reading notes.md"): the model
+    /// reads it when a call is refused or parked, and the owner's approval
+    /// card states it. The owner's screens name a call by
+    /// [`crate::humanize::call`], never by this.
+    fn describe(&self, input: &serde_json::Value) -> String {
+        crate::humanize::sentence(self.name(), input)
     }
     /// The untrusted-content class the call's result brings into the run.
     fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
@@ -382,6 +381,11 @@ enum Invalid {
 }
 
 /// Registry manages available tools.
+/// Every registered tool's definition by name, shared with what reads them
+/// outside the registry (the employee tools check a builder's workflow
+/// steps against them).
+pub type ToolDefinitions = Arc<RwLock<HashMap<String, ToolDefinition>>>;
+
 pub struct Registry {
     // Arc, not Box: execute() clones the handle and drops the map lock BEFORE
     // awaiting the tool (snapshot-then-release). A Box'd map forced holding
@@ -391,7 +395,7 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn DynTool>>>>,
     /// Cached tool definitions (description + schema) computed at registration time.
     /// Avoids regenerating descriptions and JSON schemas on every LLM iteration.
-    def_cache: Arc<RwLock<HashMap<String, ToolDefinition>>>,
+    def_cache: ToolDefinitions,
     /// Each tool's compiled input schema, built with its definition.
     validators: Arc<RwLock<HashMap<String, Arc<jsonschema::Validator>>>>,
     /// Deferred tools (`DynTool::should_defer`): listed by name until
@@ -435,6 +439,9 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The server's worker restart, shared with `PersonaTool` and filled LATE
+    /// like `code_installer`: duties made or changed in chat go live at once.
+    live_triggers: crate::agent_tool::LiveTriggersCell,
     /// The workflow manager, filled when the workflow tools register
     /// ([`Registry::register_workflows`]); `stop_task` shares the cell to
     /// stop workflow runs.
@@ -472,6 +479,7 @@ impl Registry {
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            live_triggers: Arc::new(std::sync::RwLock::new(None)),
             workflows: Default::default(),
             goals: crate::goal_tool::new_handle(),
             resource_permits: ResourcePermits::new(),
@@ -527,6 +535,12 @@ impl Registry {
     /// jobs through it from then on.
     pub fn set_job_consent(&self, consent: Arc<dyn crate::needs::JobConsent>) {
         *self.job_consent.write().unwrap() = Some(consent);
+    }
+
+    /// Set the server's worker restart. Called LATE by the server (the
+    /// workers are built with `AppState`); `PersonaTool` shares the cell.
+    pub fn set_live_triggers(&self, live: Arc<dyn crate::agent_tool::LiveTriggers>) {
+        *self.live_triggers.write().unwrap() = Some(live);
     }
 
     /// Set the broadcast callback (wired to ClientHub). Called LATE by the server
@@ -971,13 +985,13 @@ impl Registry {
         Some(target_of(tool.as_ref(), input))
     }
 
-    /// The owner-facing (activity, outcome) lines for a call. A name no
-    /// tool is registered under (a CLI provider's own tools) gets the
-    /// generic wording.
-    pub async fn labels(&self, tool_name: &str, input: &serde_json::Value) -> (String, String) {
+    /// What a call does, as a sentence (see [`DynTool::describe`]). A name
+    /// no tool is registered under (a CLI provider's own tools) gets the
+    /// generic one.
+    pub async fn describe(&self, tool_name: &str, input: &serde_json::Value) -> String {
         match self.get(tool_name).await {
-            Some(tool) => (tool.activity(input), tool.outcome(input)),
-            None => crate::humanize::call_labels(tool_name, input),
+            Some(tool) => tool.describe(input),
+            None => crate::humanize::sentence(tool_name, input),
         }
     }
 
@@ -1045,8 +1059,19 @@ impl Registry {
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
 
-        let input = match self.settle(tool.as_ref(), name, input, ctx.answered_ask.is_some()).await {
-            Ok(input) => input,
+        let replayed = ctx.answered_ask.is_some();
+        let (tool, input) = match self.settle(tool.as_ref(), name, input.clone(), replayed).await {
+            Ok(settled) => (tool, settled),
+            // A connector tool's schema may be stale (its server added a
+            // field since it was listed): list the server's tools again and,
+            // when this tool changed, settle the call against the new one.
+            Err(invalid @ Invalid::Schema { .. }) => match self.relisted(tool.as_ref(), name).await {
+                Some(fresh) => match self.settle(fresh.as_ref(), name, input, replayed).await {
+                    Ok(settled) => (fresh, settled),
+                    Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
+                },
+                None => return self.invalid_call(ctx, name, invalid).await,
+            },
             Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
         };
 
@@ -1118,6 +1143,25 @@ impl Registry {
             self.load_with_error(ctx, name, &mut result).await;
         }
         result
+    }
+
+    /// An MCP proxy tool as registered after its server's tools were listed
+    /// again, when its definition changed; `None` for any other tool, or
+    /// when nothing about it changed.
+    async fn relisted(&self, tool: &dyn DynTool, name: &str) -> Option<Arc<dyn DynTool>> {
+        let (integration_id, original) = tool.mcp_proxy_info()?;
+        let bridge = self.bridge.read().ok()?.clone()?;
+        match bridge.refresh(&integration_id).await {
+            Ok(relisted) if relisted.changed.contains(&original) => {
+                info!(tool = %name, "connector tool changed; settling the call against its new definition");
+                self.get(name).await
+            }
+            Ok(_) => None,
+            Err(e) => {
+                warn!(tool = %name, error = %e, "connector tools could not be listed again");
+                None
+            }
+        }
     }
 
     /// The error for a call that won't run as written: what is wrong with
@@ -1359,8 +1403,11 @@ impl Registry {
                 config::read_bot_id().unwrap_or_default(),
                 Some(store.clone()),
             );
-            self.register(Box::new(crate::media_tool::GenerateMediaTool::new(media, store.clone())))
-                .await;
+            let mut tool = crate::media_tool::GenerateMediaTool::new(media, store.clone());
+            if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+                tool = tool.with_plugin_store(ps);
+            }
+            self.register(Box::new(tool)).await;
         }
 
         // The packs this company works by (R8): create, add, list, show, remove.
@@ -1428,7 +1475,9 @@ impl Registry {
                     .with_job_consent(self.job_consent.clone())
                     .with_coworker_rail(self.coworker_rail.clone())
                     .with_notify_fn(self.notify_fn.clone())
-                    .with_plugin_runner(self.plugin_runner.clone());
+                    .with_plugin_runner(self.plugin_runner.clone())
+                    .with_live_triggers(self.live_triggers.clone())
+                    .with_tool_definitions(self.def_cache.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }
@@ -2773,8 +2822,16 @@ pub(crate) mod tests {
     /// failed; it moved into the core (share_file 588): 17,194. The owner,
     /// 2026-10-05: our app is "the mobile app", never "phone", so
     /// ask_owner's buttons are in his chat on desktop and in the mobile app
-    /// (ask_owner 865, +12): 17,206.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_206;
+    /// (ask_owner 865, +12): 17,206. The owner, 2026-10-09: a long list of
+    /// options (a dozen brand kits) is a dropdown, not a wall of buttons;
+    /// ask_owner's `style: "select"` (ask_owner 980, +115): 17,321. The
+    /// owner, 2026-10-10: every schedule says who made it and why, so a run
+    /// can't leave timers nobody can account for; create_schedule takes a
+    /// required `reason` (create_schedule 1,526, +93): 17,414. The owner,
+    /// 2026-10-11, after an employee told "use chrome" wrote a Playwright
+    /// script and ran it with node: run_command says it is never the
+    /// browser (run_command 1,151, +95): 17,509.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_509;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2864,7 +2921,6 @@ pub(crate) mod tests {
         }
     }
 
-
     /// Which results context pressure clears, and the taint a result brings
     /// in, are each tool's own answers: file reads and changes, commands,
     /// web searches and fetches are cleared (each can be run again); memory,
@@ -2905,7 +2961,5 @@ pub(crate) mod tests {
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
         assert_eq!(taint("read_file", json!({"path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
     }
-
-
 
 }

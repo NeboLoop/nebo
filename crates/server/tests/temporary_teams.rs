@@ -56,6 +56,9 @@ fn just_heard(messages: &[Value], text: &str) -> bool {
 /// second piece of work on it, or a persistent team removed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_temporary_team_takes_its_one_piece_of_work_and_disbands() {
+    if !common::in_own_process().await {
+        return;
+    }
     let (server, calls) = server_with(Arc::new(|purpose, messages| {
         if !main_call(purpose) {
             return Reply::Text("ok");
