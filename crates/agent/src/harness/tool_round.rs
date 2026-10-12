@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use ai::{RequestTrace, StreamEvent, StreamEventType};
 use tools::{Origin, Registry, ToolContext, ToolResult};
@@ -1131,7 +1131,10 @@ async fn run_call(
 
     let _permit = concurrency.acquire_tool_permit().await;
     let input_str = ::types::redact::redact(&tc.input.to_string());
-    info!(tool = %tc.name, id = %tc.id, input = %truncate_str(&input_str, 500), "executing tool");
+    // Inputs and results carry the owner's data (email bodies, documents):
+    // the default log records that a tool ran, the content only at debug.
+    info!(tool = %tc.name, id = %tc.id, input_len = input_str.len(), "executing tool");
+    debug!(tool = %tc.name, id = %tc.id, input = %truncate_str(&input_str, 500), "tool input");
     // Each tool's own timeout; the loop has none of its own.
     let budget = tools.execution_timeout(&tc.name, &tc.input).await;
     let started = std::time::Instant::now();
@@ -1147,7 +1150,8 @@ async fn run_call(
         },
     };
     let duration_ms = started.elapsed().as_millis() as u64;
-    info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %truncate_str(&result.content, 300), "tool result");
+    info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result_len = result.content.len(), "tool result");
+    debug!(tool = %tc.name, id = %tc.id, result = %truncate_str(&result.content, 300), "tool result content");
     // What the result carries, the run has now read.
     if !result.taint.is_empty() {
         scope.run_taint.lock().unwrap().extend(result.taint.iter().copied());
