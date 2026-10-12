@@ -16,10 +16,12 @@
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Zap from 'lucide-svelte/icons/zap';
-  import Feather from 'lucide-svelte/icons/feather';
-  import Gauge from 'lucide-svelte/icons/gauge';
+  import Lightbulb from 'lucide-svelte/icons/lightbulb';
+  import Scale from 'lucide-svelte/icons/scale';
   import Brain from 'lucide-svelte/icons/brain';
-  import Sparkles from 'lucide-svelte/icons/sparkles';
+  import Rocket from 'lucide-svelte/icons/rocket';
+  import Network from 'lucide-svelte/icons/network';
+  import KeyRound from 'lucide-svelte/icons/key-round';
   import WandSparkles from 'lucide-svelte/icons/wand-sparkles';
   import Settings2 from 'lucide-svelte/icons/settings-2';
   import { withBase } from '$lib/nav';
@@ -43,7 +45,7 @@
     onclose: () => void;
   } = $props();
 
-  const LEVEL_ICONS = { auto: WandSparkles, instant: Zap, low: Feather, medium: Gauge, high: Brain, max: Sparkles } as const;
+  const LEVEL_ICONS = { auto: WandSparkles, instant: Zap, low: Lightbulb, medium: Scale, high: Brain, max: Rocket } as const;
 
   const custom = $derived(isCustom(choice));
   const checkedLevel = $derived(shownLevel(choice));
@@ -109,13 +111,14 @@
   {:else}
     <div class="intel-head">
       <button type="button" class="intel-round" aria-label={$t('common.back')} onclick={() => (view = 'level')}><ChevronLeft class="w-4 h-4" /></button>
-      <h2 class="intel-title">{$t('modelPick.packsTitle')}</h2>
+      <h2 class="intel-title">{$t('modelPick.pack')}</h2>
       <span class="intel-round-spacer"></span>
     </div>
 
     <div class="intel-card">
       {#if custom}
         <div class="intel-row" data-testid="intel-custom">
+          <Settings2 class="intel-icon" />
           <span class="intel-text">
             <span class="intel-name">{$t('modelPick.customModel')}</span>
             <span class="intel-desc">{$t('modelPick.customModelDesc')}</span>
@@ -125,6 +128,7 @@
       {/if}
       {#each packs as pack (pack.id)}
         <button type="button" class="intel-row" data-pack={pack.id} aria-pressed={currentPack === pack.id} onclick={() => pickPack(pack.id)}>
+          {#if pack.builtIn}<Network class="intel-icon" />{:else}<KeyRound class="intel-icon" />{/if}
           <span class="intel-text">
             <span class="intel-name">{packName(pack, $t)}</span>
             <span class="intel-desc">{packSubtitle(pack, choices, $t)}</span>
