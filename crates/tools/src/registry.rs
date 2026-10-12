@@ -1403,8 +1403,11 @@ impl Registry {
                 config::read_bot_id().unwrap_or_default(),
                 Some(store.clone()),
             );
-            self.register(Box::new(crate::media_tool::GenerateMediaTool::new(media, store.clone())))
-                .await;
+            let mut tool = crate::media_tool::GenerateMediaTool::new(media, store.clone());
+            if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+                tool = tool.with_plugin_store(ps);
+            }
+            self.register(Box::new(tool)).await;
         }
 
         // The packs this company works by (R8): create, add, list, show, remove.

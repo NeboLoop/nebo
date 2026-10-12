@@ -200,6 +200,25 @@ const SEGMENT_MAX_WORDS: usize = 16;
 /// of first appearance (dropped when there is only one), and segments as
 /// given or, when none came, built from the words.
 pub fn transcript(raw: &Value) -> Transcript {
+    let mut t = labelled(raw);
+    one_voice_unlabelled(&mut t);
+    t
+}
+
+/// A transcript with fewer than two speakers carries no labels.
+pub fn one_voice_unlabelled(t: &mut Transcript) {
+    let voices: std::collections::BTreeSet<&str> = t.words.iter().chain(&t.segments).filter_map(|p| p.speaker.as_deref()).collect();
+    if voices.len() < 2 {
+        for p in t.words.iter_mut().chain(t.segments.iter_mut()) {
+            p.speaker = None;
+        }
+    }
+}
+
+/// [`transcript`] with every speaker label kept, even a lone voice's: one
+/// part of a long recording, whose voices are matched with the other
+/// parts' before the lone-voice rule applies to the whole.
+pub fn labelled(raw: &Value) -> Transcript {
     let secs = |v: Option<&Value>| v.and_then(Value::as_f64).map(ms).unwrap_or(0.0);
     let speaker_key = |v: Option<&Value>| match v {
         Some(Value::Number(n)) => Some(n.to_string()),
@@ -264,11 +283,6 @@ pub fn transcript(raw: &Value) -> Transcript {
         } else {
             segments_of(&words)
         };
-    }
-    if order.len() < 2 {
-        for p in words.iter_mut().chain(segments.iter_mut()) {
-            p.speaker = None;
-        }
     }
     words.sort_by(|a, b| a.start.total_cmp(&b.start));
     segments.sort_by(|a, b| a.start.total_cmp(&b.start));
