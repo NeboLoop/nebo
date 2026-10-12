@@ -838,3 +838,329 @@ async fn a_phone_turn_is_never_handed_a_checkout_link() {
     assert!(nebo.store().get_agent("sold-AGNT-PAYD-0001").unwrap().is_none());
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// The first-party default plugins, offered by the hub stand-in under their
+/// real codes, and the owner signed in to NeboAI (the profile to remove).
+fn defaults_signed_in(nebo: &Nebo) -> (Vec<tools::default_artifacts::DefaultArtifact>, String) {
+    let defaults: Vec<_> =
+        tools::default_artifacts::DEFAULT_ARTIFACTS.iter().filter(|d| d.is_plugin()).copied().collect();
+    for d in &defaults {
+        hub_offers_plugin(d.code, d.slug, d.slug);
+    }
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    (defaults, profile)
+}
+
+/// Take the defaults off this bot again, with the owner's removals and the
+/// sign-in, so the next scenario starts from a fresh bot.
+async fn forget_defaults(nebo: &Nebo, defaults: &[tools::default_artifacts::DefaultArtifact], profile: &str) {
+    for d in defaults {
+        let _ = nebo.state.plugin_store.remove(d.slug);
+        let _ = std::fs::remove_dir_all(nebo.home.join("user").join("plugins").join(d.slug));
+        let _ = nebo.store().delete_installed_plugin(d.slug);
+    }
+    nebo.state.tools.refresh_plugin_tools().await;
+    crate::default_artifacts::forget_removals(nebo.store());
+    nebo.store().delete_auth_profile(profile).unwrap();
+}
+
+/// Signed in, a pass installs every default this bot lacks, once each,
+/// through the one code door; a default already on the bot is skipped (its
+/// `.napp` is never fetched). The next connect's pass finds them all and
+/// installs nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_defaults_install_once_after_sign_in_and_an_installed_one_is_skipped() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let (kept, missing) = defaults.split_last().expect("default plugins");
+    install_fake_plugin(&nebo.home, kept.slug, json!({}));
+    nebo.wait_until(10, "the kept default resolves", || nebo.state.plugin_store.resolve(kept.slug, "*").is_some())
+        .await;
+    let before: Vec<usize> = defaults.iter().map(|d| napp_downloads_of(d.slug)).collect();
+
+    crate::default_artifacts::spawn_pass(&nebo.state, defaults.clone(), &[], false, Duration::ZERO).expect("no pass was running").await.unwrap();
+    for (d, before) in defaults.iter().zip(&before) {
+        assert!(nebo.state.plugin_store.resolve(d.slug, "*").is_some(), "{} is installed", d.slug);
+        let fetched = napp_downloads_of(d.slug) - before;
+        assert_eq!(fetched, usize::from(missing.contains(d)), "{} fetched {fetched} times", d.slug);
+    }
+    assert!(!nebo.state.codes_in_flight.busy(), "nothing is left installing");
+    let after: Vec<usize> = defaults.iter().map(|d| napp_downloads_of(d.slug)).collect();
+
+    crate::default_artifacts::spawn_pass(&nebo.state, defaults.clone(), &[], false, Duration::ZERO).expect("the pass ended").await.unwrap();
+    let again: Vec<usize> = defaults.iter().map(|d| napp_downloads_of(d.slug)).collect();
+    assert_eq!(again, after, "the next pass installed nothing");
+
+    forget_defaults(&nebo, &defaults, &profile).await;
+}
+
+/// A default the owner removes (the settings page's one removal door) is
+/// recorded, and a pass never puts it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_default_the_owner_removed_is_not_reinstalled_at_startup() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let office = defaults[0];
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[], false, Duration::ZERO).expect("no pass was running").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_some(), "the pass installed it");
+
+    let (status, body) = nebo.delete(&format!("/plugins/{}", office.slug)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_none(), "the owner removed it");
+    let fetched = napp_downloads_of(office.slug);
+
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[], false, Duration::ZERO).expect("the pass ended").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_none(), "the pass left it removed");
+    assert_eq!(napp_downloads_of(office.slug), fetched, "nothing was fetched for it");
+
+    forget_defaults(&nebo, &defaults, &profile).await;
+}
+
+/// Every trigger at once installs a default once: a second pass asked for
+/// while one runs starts nothing, a code door asked for it is refused while
+/// the pass holds the code, and a request that needs it waits for that
+/// install and then has it. Its `.napp` is fetched once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_triggers_install_a_default_once() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let office = defaults[0];
+    let before = napp_downloads_of(office.slug);
+    let release = hub_holds_download(office.slug);
+
+    let pass = crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[], false, Duration::ZERO).expect("no pass was running");
+    nebo.wait_until(10, "the pass's install is in flight", || nebo.state.codes_in_flight.busy()).await;
+    assert!(
+        crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[], false, Duration::ZERO).is_none(),
+        "a second trigger while a pass runs starts nothing"
+    );
+    let door = Arc::new(crate::channel_dispatch::CodeInstallerImpl::new(nebo.state.clone()));
+    let refused = tools::CodeInstaller::install(door.as_ref(), office.code, tools::InstalledBy::Owner, None).await;
+    assert!(refused.contains(tools::bot_tool::ALREADY_INSTALLING), "{refused}");
+    let needed = {
+        let door = door.clone();
+        let plugins = nebo.state.plugin_store.clone();
+        tokio::spawn(async move {
+            tools::default_artifacts::install_on_request(door.as_ref(), &office, tools::InstalledBy::Owner, None, || {
+                let plugins = plugins.clone();
+                async move { plugins.resolve(office.slug, "*").is_some() }
+            })
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    release();
+    pass.await.unwrap();
+    assert!(needed.await.unwrap(), "the request that needed it has it");
+    assert_eq!(napp_downloads_of(office.slug) - before, 1, "one fetch for every trigger");
+
+    forget_defaults(&nebo, &defaults, &profile).await;
+}
+
+/// A restored cloud bot has its plugins' records and data and not their
+/// packages (its saved state leaves those out): its pass fetches each one
+/// through the one plugin installer, and the data the plugin keeps — beside
+/// its versions and where `NEBO_DATA_DIR` points — is untouched. A desktop's
+/// pass leaves such a plugin alone; a pass with nothing to fetch ends at
+/// once, whatever its spread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restored_cloud_bot_fetches_the_plugin_packages_its_state_left_out() {
+    const CODE: &str = "PLUG-REST-0RED";
+    const SLUG: &str = "restored-index";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Restored Index");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Plugin,
+        CODE,
+        &crate::handlers::ws::EventOrigin::unclaimed("restore-proof"),
+    )
+    .await;
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the code installed the plugin");
+
+    // The plugin's own data, in both places a plugin keeps it.
+    let slug_dir = nebo.state.plugin_store.plugins_dir().join(SLUG);
+    std::fs::write(slug_dir.join("index.db"), b"the customer's whole index").unwrap();
+    let data_dir = nebo.state.plugin_store.plugin_data_dir(SLUG);
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("tokens.json"), b"{\"refresh\":\"r\"}").unwrap();
+
+    // Restored from a state that left the package out.
+    let package = napp::plugin::package_entries(&slug_dir);
+    assert!(!package.is_empty(), "the install left a package");
+    for name in &package {
+        let p = slug_dir.join(name);
+        if p.is_dir() { std::fs::remove_dir_all(p).unwrap() } else { std::fs::remove_file(p).unwrap() }
+    }
+    assert!(!nebo.state.plugin_store.package_on_disk(SLUG));
+    let before = napp_downloads_of(SLUG);
+
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![], &[], false, Duration::ZERO).expect("no pass was running").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_none(), "a desktop's pass fetches no package");
+    assert_eq!(napp_downloads_of(SLUG), before);
+
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![], &[], true, Duration::ZERO).expect("no pass was running").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the cloud bot's pass fetched the package");
+    assert_eq!(napp_downloads_of(SLUG) - before, 1, "fetched once");
+    assert_eq!(std::fs::read(slug_dir.join("index.db")).unwrap(), b"the customer's whole index");
+    assert_eq!(std::fs::read(data_dir.join("tokens.json")).unwrap(), b"{\"refresh\":\"r\"}");
+    assert_eq!(nebo.store().plugin_slug_for_code(CODE).unwrap().as_deref(), Some(SLUG), "its record keeps its code");
+
+    let idle = crate::default_artifacts::spawn_pass(&nebo.state, vec![], &[], false, Duration::from_secs(3600)).expect("the pass ended");
+    tokio::time::timeout(Duration::from_secs(10), idle).await.expect("nothing to fetch, so no wait").unwrap();
+    assert_eq!(napp_downloads_of(SLUG) - before, 1);
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = std::fs::remove_dir_all(&slug_dir);
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// A restored cloud bot's settings came back with its state, and its
+/// plugins' packages are fetched minutes after it starts. A plugin fetched
+/// then runs with the owner's stored settings, the secret ones decrypted,
+/// exactly as one present at startup does: before, it ran with no
+/// credentials until the next restart (odoo, quickbooks on a restored bot).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plugin_fetched_after_startup_runs_with_its_stored_settings() {
+    const CODE: &str = "PLUG-REST-0SET";
+    const SLUG: &str = "restored-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Restored Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Plugin,
+        CODE,
+        &crate::handlers::ws::EventOrigin::unclaimed("restore-proof"),
+    )
+    .await;
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the code installed the plugin");
+
+    // Restored: the settings are in the database as the owner saved them
+    // (the key encrypted at rest), the package is not on disk, and the
+    // process that starts holds nothing for the plugin.
+    let sealed = auth::credential::encrypt("ledger-key-123").unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "LEDGER_API_KEY", &sealed, true).unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "LEDGER_REGION", "eu", false).unwrap();
+    let slug_dir = nebo.state.plugin_store.plugins_dir().join(SLUG);
+    for name in napp::plugin::package_entries(&slug_dir) {
+        let p = slug_dir.join(name);
+        if p.is_dir() { std::fs::remove_dir_all(p).unwrap() } else { std::fs::remove_file(p).unwrap() }
+    }
+    nebo.state.plugin_store.set_env_vars(SLUG, Default::default());
+    assert!(nebo.state.plugin_store.auth_env_layers(SLUG).1.is_empty());
+
+    crate::default_artifacts::spawn_pass(&nebo.state, vec![], &[], true, Duration::ZERO).expect("no pass was running").await.unwrap();
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the cloud bot's pass fetched the package");
+    let env = nebo.state.plugin_store.resolved_auth_env(SLUG);
+    assert_eq!(env.get("LEDGER_API_KEY").map(String::as_str), Some("ledger-key-123"), "the key, decrypted: {env:?}");
+    assert_eq!(env.get("LEDGER_REGION").map(String::as_str), Some("eu"));
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = std::fs::remove_dir_all(&slug_dir);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// A plugin copied in by hand after startup, with settings already stored
+/// for it, gets them as a plugin present at startup does: the secret one
+/// decrypted, and one its manifest declares secret but still stored in the
+/// clear encrypted at rest first. With both in place it is ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plugin_copied_in_after_startup_gets_its_stored_settings_sealed() {
+    const SLUG: &str = "late-books";
+    let nebo = session().await;
+    nebo.store().upsert_installed_plugin(SLUG, "Late Books", "0.1.0", "", "", "", "unverified").unwrap();
+    let sealed = auth::credential::encrypt("books-key-456").unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "BOOKS_API_KEY", &sealed, true).unwrap();
+    nebo.store().upsert_plugin_setting_by_slug(SLUG, "BOOKS_TOKEN", "books-token-789", false).unwrap();
+
+    let dir = nebo.home.join("user").join("plugins").join(SLUG).join("0.1.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.json"),
+        json!({
+            "id": SLUG, "slug": SLUG, "name": "Late Books", "version": "0.1.0", "platforms": {},
+            "auth": { "type": "env", "env": { "BOOKS_API_KEY": "", "BOOKS_TOKEN": "" } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let bin = dir.join(SLUG);
+    std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    nebo.wait_until(30, "the hot-loaded plugin to be ready", || nebo.state.plugin_store.is_ready(SLUG)).await;
+    let env = nebo.state.plugin_store.resolved_auth_env(SLUG);
+    assert_eq!(env.get("BOOKS_API_KEY").map(String::as_str), Some("books-key-456"), "{env:?}");
+    assert_eq!(env.get("BOOKS_TOKEN").map(String::as_str), Some("books-token-789"), "{env:?}");
+    let token = nebo
+        .store()
+        .list_plugin_settings_by_slug(SLUG)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.setting_key == "BOOKS_TOKEN")
+        .unwrap();
+    assert_eq!(token.is_secret, 1, "the declared secret is marked secret");
+    assert!(auth::credential::is_encrypted(&token.setting_value), "and is no longer in the clear at rest");
+
+    let _ = std::fs::remove_dir_all(nebo.home.join("user").join("plugins").join(SLUG));
+    nebo.wait_until(30, "the removed plugin to leave", || nebo.state.plugin_store.resolve(SLUG, "*").is_none()).await;
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+}
+
+/// A cloud bot's pass waits out its spread before it fetches anything, and
+/// a request that needs a default meanwhile does not wait for it: the safety
+/// net installs it on the spot, once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cloud_pass_waits_its_spread_and_a_request_that_needs_a_default_does_not() {
+    let nebo = session().await;
+    let (defaults, profile) = defaults_signed_in(&nebo);
+    let office = defaults[0];
+    let before = napp_downloads_of(office.slug);
+
+    let pass = crate::default_artifacts::spawn_pass(&nebo.state, vec![office], &[], true, Duration::from_secs(3600))
+        .expect("no pass was running");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!pass.is_finished(), "the pass waits out its spread");
+    assert!(nebo.state.plugin_store.resolve(office.slug, "*").is_none(), "nothing fetched yet");
+
+    let door = crate::channel_dispatch::CodeInstallerImpl::new(nebo.state.clone());
+    let plugins = nebo.state.plugin_store.clone();
+    let landed = tokio::time::timeout(
+        Duration::from_secs(60),
+        tools::default_artifacts::install_on_request(&door, &office, tools::InstalledBy::Owner, None, || {
+            let plugins = plugins.clone();
+            async move { plugins.resolve(office.slug, "*").is_some() }
+        }),
+    )
+    .await
+    .expect("the request did not wait for the spread");
+    assert!(landed, "the request that needed it has it");
+    assert_eq!(napp_downloads_of(office.slug) - before, 1, "fetched once");
+    assert!(!pass.is_finished(), "the pass is still waiting");
+
+    pass.abort();
+    let _ = pass.await;
+    forget_defaults(&nebo, &defaults, &profile).await;
+}

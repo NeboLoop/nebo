@@ -226,6 +226,8 @@ pub struct AppState {
     /// The owner's live calls, by the conversation each is on: what a turn
     /// says there outside the call is said aloud on it.
     pub live_calls: crate::handlers::voice::LiveCalls,
+    /// Open spreadsheet edit sessions (the Work panel's sheet view).
+    pub sheets: crate::handlers::sheet::Sessions,
 }
 
 impl AppState {

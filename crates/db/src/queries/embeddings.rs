@@ -101,7 +101,7 @@ impl Store {
             .prepare(
                 "SELECT DISTINCT mc.user_id
                  FROM memory_embeddings me
-                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 CROSS JOIN memory_chunks mc ON mc.id = me.chunk_id
                  WHERE me.model = ?1",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -124,7 +124,7 @@ impl Store {
             .prepare(
                 "SELECT me.chunk_id, me.embedding
                  FROM memory_embeddings me
-                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 CROSS JOIN memory_chunks mc ON mc.id = me.chunk_id
                  WHERE mc.user_id = ?1 AND me.model = ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -152,7 +152,7 @@ impl Store {
             .prepare(
                 "SELECT mc.memory_id, m.key, me.embedding
                  FROM memory_embeddings me
-                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 CROSS JOIN memory_chunks mc ON mc.id = me.chunk_id
                  JOIN memories m ON m.id = mc.memory_id
                  WHERE mc.user_id = ?1 AND me.model = ?2",
             )
@@ -186,19 +186,7 @@ impl Store {
         let conn = self.conn()?;
         // FTS5 match query — escape special chars
         let fts_query = sanitize_fts_query(query);
-        let placeholders = (0..user_ids.len())
-            .map(|i| format!("?{}", i + 3))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT m.id, fts.rank
-             FROM memories_fts fts
-             JOIN memories m ON m.id = fts.rowid
-             WHERE memories_fts MATCH ?1
-               AND m.user_id IN ({placeholders})
-             ORDER BY fts.rank
-             LIMIT ?2"
-        );
+        let sql = memories_fts_sql(user_ids.len());
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -225,15 +213,7 @@ impl Store {
         let conn = self.conn()?;
         let fts_query = sanitize_fts_query(query);
         let mut stmt = conn
-            .prepare(
-                "SELECT mc.id, fts.rank
-                 FROM memory_chunks_fts fts
-                 JOIN memory_chunks mc ON mc.id = fts.rowid
-                 WHERE memory_chunks_fts MATCH ?1
-                   AND mc.user_id = ?2
-                 ORDER BY fts.rank
-                 LIMIT ?3",
-            )
+            .prepare(CHUNKS_FTS_SQL)
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![fts_query, user_id, limit], |row| {
@@ -267,6 +247,39 @@ impl Store {
     }
 }
 
+// The FTS searches join the index to its rows to keep one scope's hits.
+// They are CROSS JOINs so the match drives: given a plain JOIN, SQLite
+// walked the scope's rows by its user_id index and ran the whole MATCH once
+// per row (`SCAN fts VIRTUAL TABLE INDEX 32:=M3` inside the loop) — 20 s for
+// a long prompt over 20k chunks, on the turn's recall (2026-10-09). With the
+// match outermost it runs once, in rank order.
+
+/// Ranked memory hits of `?1` in the scopes `?3..` (one per scope), `?2` at most.
+fn memories_fts_sql(scopes: usize) -> String {
+    let placeholders = (0..scopes)
+        .map(|i| format!("?{}", i + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT m.id, fts.rank
+         FROM memories_fts fts
+         CROSS JOIN memories m ON m.id = fts.rowid
+         WHERE memories_fts MATCH ?1
+           AND m.user_id IN ({placeholders})
+         ORDER BY fts.rank
+         LIMIT ?2"
+    )
+}
+
+/// Ranked chunk hits of `?1` in the scope `?2`, `?3` at most.
+const CHUNKS_FTS_SQL: &str = "SELECT mc.id, fts.rank
+     FROM memory_chunks_fts fts
+     CROSS JOIN memory_chunks mc ON mc.id = fts.rowid
+     WHERE memory_chunks_fts MATCH ?1
+       AND mc.user_id = ?2
+     ORDER BY fts.rank
+     LIMIT ?3";
+
 /// Sanitize a query string for FTS5 MATCH: escape double quotes, strip operators.
 fn sanitize_fts_query(query: &str) -> String {
     // For simple queries, wrap each word in quotes to avoid FTS syntax issues
@@ -298,6 +311,32 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Ok(val) => Ok(Some(val)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    /// The match drives each memory search: the FTS index is the outer loop,
+    /// read once in rank order, and each hit seeks its row. The other way
+    /// round runs the match once per row of the scope.
+    #[test]
+    fn memory_searches_run_the_match_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let conn = store.conn().unwrap();
+        for sql in [super::memories_fts_sql(2), super::CHUNKS_FTS_SQL.to_string()] {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let unbound = rusqlite::params_from_iter(vec![rusqlite::types::Null; stmt.parameter_count()]);
+            let plan: Vec<String> = stmt
+                .query_map(unbound, |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan[0].starts_with("SCAN fts VIRTUAL TABLE"), "{sql}: {plan:#?}");
+            assert!(plan[1].starts_with("SEARCH m"), "{sql}: {plan:#?}");
         }
     }
 }

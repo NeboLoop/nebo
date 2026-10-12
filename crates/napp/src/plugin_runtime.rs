@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::plugin::PluginStore;
@@ -64,6 +64,34 @@ impl std::error::Error for LaunchError {}
 pub fn split_command(args_str: &str) -> Vec<String> {
     shlex::split(args_str)
         .unwrap_or_else(|| args_str.split_whitespace().map(String::from).collect())
+}
+
+/// How the app finds the Chromium-family browser it draws with (Chrome,
+/// Chromium, Edge, Brave: one that paints, unlike the headless Obscura).
+/// Registered once at startup by the app (nebo-browser's `find_chrome`).
+static CHROMIUM_RESOLVER: OnceLock<fn() -> Option<PathBuf>> = OnceLock::new();
+static CHROMIUM: OnceLock<Option<String>> = OnceLock::new();
+
+/// Register how plugins' `NEBO_CHROMIUM` is found (called once at startup).
+pub fn set_chromium_resolver(find: fn() -> Option<PathBuf>) {
+    let _ = CHROMIUM_RESOLVER.set(find);
+}
+
+/// `NEBO_CHROMIUM` for a plugin: the one set in Nebo's own environment
+/// wins, else the browser `find` locates; none when neither has one.
+pub fn pick_chromium(own: Option<String>, find: impl FnOnce() -> Option<PathBuf>) -> Option<String> {
+    match own.filter(|v| !v.trim().is_empty()) {
+        Some(v) => Some(v),
+        None => find().map(|p| p.to_string_lossy().into_owned()),
+    }
+}
+
+/// The browser plugins are handed as `NEBO_CHROMIUM` (looked up once).
+fn chromium() -> Option<String> {
+    let own = std::env::var("NEBO_CHROMIUM").ok();
+    // Until the app registers its resolver, nothing is cached.
+    let Some(find) = CHROMIUM_RESOLVER.get().copied() else { return pick_chromium(own, || None) };
+    CHROMIUM.get_or_init(|| pick_chromium(own, find)).clone()
 }
 
 /// Return a sanitized copy of the current process environment,
@@ -220,6 +248,13 @@ impl PluginRuntime {
 
         // Augmented PATH
         env.push(("PATH".into(), self.plugin_store.path_with_plugins()));
+
+        // The browser Nebo draws with, for plugins that render web pages
+        // (e.g. Nebo Media's HTML motion templates). After the permission
+        // filter so an env allowlist never hides it; absent when none is found.
+        if let Some(browser) = chromium() {
+            env.push(("NEBO_CHROMIUM".into(), browser));
+        }
 
         // User-stored auth values (plugin settings) — the top auth layer.
         for (k, v) in stored_auth {

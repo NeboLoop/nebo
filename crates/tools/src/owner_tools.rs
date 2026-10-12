@@ -192,19 +192,11 @@ impl DynTool for OwnerTool {
         Ok(())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         match self.op {
             OwnerOp::Message => "messaging you".to_string(),
             OwnerOp::Notify => "notifying you".to_string(),
             OwnerOp::CheckDnd => "checking Do Not Disturb".to_string(),
-        }
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        match self.op {
-            OwnerOp::Message => "Messaged you".to_string(),
-            OwnerOp::Notify => "Notified you".to_string(),
-            OwnerOp::CheckDnd => "Checked Do Not Disturb".to_string(),
         }
     }
 
@@ -446,8 +438,7 @@ mod focus_tests {
 
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    let output = command::new::<tokio::process::Command>("powershell", command::Console::Hidden)
-        .args(["-NoProfile", "-Command", script])
+    let output = command::powershell::<tokio::process::Command>(&script)
         .output()
         .await;
 

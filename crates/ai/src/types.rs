@@ -97,6 +97,10 @@ pub enum StreamEventType {
     /// `{"segment": n}`, the segment's index in the turn). Sent by the
     /// harness, never by a provider ([`StreamEvent::text_verdict`]).
     TextVerdict,
+    /// A line the owner reads about the turn that is neither reply text nor
+    /// a stop (`text`): an intelligence pack's AI couldn't take the turn, so
+    /// it ran on Nebo AI. Sent by the harness ([`StreamEvent::notice`]).
+    Notice,
     /// The owner's messages queued behind running work that a step took in,
     /// by the ids their clients sent them under (`payload`:
     /// `{"message_ids": [...]}`). Sent by the harness, never by a provider
@@ -228,6 +232,12 @@ impl StreamEvent {
     }
 
     /// The owner's queued messages a step took in, by their client ids.
+    pub fn notice(text: impl Into<String>) -> Self {
+        let mut event = Self::text(text);
+        event.event_type = StreamEventType::Notice;
+        event
+    }
+
     pub fn taken_in(message_ids: Vec<String>) -> Self {
         let mut event = Self::text("");
         event.event_type = StreamEventType::TakenIn;
@@ -652,6 +662,10 @@ pub struct ChatRequest {
     pub model: String,
     #[serde(default)]
     pub enable_thinking: bool,
+    /// The provider's own reasoning effort, from the intelligence pack's
+    /// level; sent only with `enable_thinking` (a model that thinks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<types::packs::ProviderEffort>,
     /// Provider metadata echoed back for Janus tool stickiness routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
@@ -757,6 +771,7 @@ impl ChatRequest {
             system: String::new(),
             model: String::new(),
             enable_thinking: false,
+            effort: None,
             metadata: None,
             cache_breakpoints: Vec::new(),
             cancel_token: None,
@@ -938,6 +953,31 @@ pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Check if an error indicates context window overflow.
+/// The model a request goes to: the one it names, else the one its provider
+/// connection was given. A provider the owner added runs only a model he
+/// typed on it, so with neither there is nothing to send and the owner is
+/// told to add one; Nebo never picks a model for him.
+pub fn chosen_model<'a>(asked: &'a str, own: &'a str, provider: &str) -> Result<&'a str, ProviderError> {
+    let model = if asked.trim().is_empty() { own } else { asked };
+    if model.trim().is_empty() {
+        let name = match provider {
+            "anthropic" => "Anthropic",
+            "openai" => "OpenAI",
+            "google" => "Google",
+            "deepseek" => "DeepSeek",
+            "openrouter" => "OpenRouter",
+            "openai_compatible" => "this OpenAI-compatible provider",
+            other => other,
+        };
+        return Err(ProviderError::Api {
+            code: "model_not_chosen".into(),
+            message: format!("No model is set for {name}. Add one on it in Settings > Providers."),
+            retryable: false,
+        });
+    }
+    Ok(model)
+}
+
 pub fn is_context_overflow(err: &ProviderError) -> bool {
     matches!(err, ProviderError::ContextOverflow)
         || matches!(err, ProviderError::Api { code, message, .. }
@@ -1259,5 +1299,16 @@ mod deterministic_refusal_tests {
         assert!(!is_deterministic_request_error(&ProviderError::Auth(
             "bad key".into()
         )));
+    }
+
+    /// A provider the owner added with no model typed on it sends nothing:
+    /// the owner is told to add one, and the error is not retried.
+    #[test]
+    fn a_provider_with_no_model_asks_for_one() {
+        assert_eq!(chosen_model("claude-x", "", "anthropic").unwrap(), "claude-x");
+        assert_eq!(chosen_model("", "gpt-y", "openai").unwrap(), "gpt-y");
+        let err = chosen_model("", " ", "anthropic").unwrap_err();
+        assert_eq!(err.to_string(), "No model is set for Anthropic. Add one on it in Settings > Providers.");
+        assert!(!err.is_retryable());
     }
 }

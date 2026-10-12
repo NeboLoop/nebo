@@ -572,6 +572,17 @@ impl Store {
         Ok(())
     }
 
+    /// Every (employee, target) recorded under `prefix` (`file:/a/b/`): what
+    /// a moved folder carries to its new place.
+    pub fn employee_created_under(&self, prefix: &str) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT agent_id, target FROM employee_created WHERE substr(target, 1, length(?1)) = ?1")
+            .map_err(db_err)?;
+        let rows = stmt.query_map(params![prefix], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
+    }
+
     /// Which of `targets` the employee created.
     pub fn created_by(
         &self,

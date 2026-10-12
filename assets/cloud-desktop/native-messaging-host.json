@@ -1,0 +1,10 @@
+{
+  "name": "dev.neboai.nebo",
+  "description": "Nebo Browser Automation Host",
+  "path": "/usr/local/bin/nebo-cli",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://heaeiepdllbncnnlfniglgmbfmmemkcg/",
+    "chrome-extension://bmkkjdcmjiebhegfibdnbimjpkmaickm/"
+  ]
+}

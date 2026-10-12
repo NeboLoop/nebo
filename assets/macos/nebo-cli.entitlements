@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The headless `nebo-cli`, signed on its own as the bare `nebo-darwin-<arch>`
+	  release asset (scripts/nebo-cli-darwin.sh). Hardened Runtime exceptions only:
+	  it loads plugins signed by other identities and passes environment variables
+	  to the processes it spawns, like the app. No device or Apple Events access:
+	  a headless server asks for neither.
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+</dict>
+</plist>

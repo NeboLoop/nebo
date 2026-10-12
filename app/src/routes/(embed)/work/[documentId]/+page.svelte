@@ -13,6 +13,7 @@
   import { backendBase, backendUrl } from '$lib/api/base';
   import { parseMarkdown } from '$lib/markdown';
   import { downloadArtifact } from '$lib/chat/download';
+  import { flushPendingSave, hasPendingSave } from '$lib/sheet/pending';
 
   interface DocListing {
     id: string;
@@ -31,6 +32,18 @@
   const canToggleSource = $derived(
     !!doc && ['html', 'md', 'markdown', 'txt'].includes((doc.filename.split('.').pop() || '').toLowerCase())
   );
+
+  /** A spreadsheet with unsaved edits saves first, so the download carries them. */
+  async function download(e: MouseEvent) {
+    if (!doc) return;
+    if (!hasPendingSave(doc.id)) {
+      await downloadArtifact(e, doc.url, doc.filename);
+      return;
+    }
+    e.preventDefault();
+    const url = (await flushPendingSave(doc.id)) ?? doc.url;
+    await downloadArtifact(null, url, doc.filename);
+  }
 
   onMount(async () => {
     try {
@@ -72,7 +85,7 @@
       <a
         href={backendUrl(doc.url)}
         download={doc.filename}
-        onclick={(e) => downloadArtifact(e, doc?.url ?? '', doc?.filename)}
+        onclick={download}
         class="py-1 px-2.5 rounded-md text-xs font-medium bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 no-underline"
       >{$t('common.download')}</a>
     {/if}
@@ -81,7 +94,7 @@
   <main class="flex-1 min-h-0 overflow-y-auto">
     {#if doc}
       {#key `${doc.id}:${viewSource}`}
-        <WorkViewer url={doc.url} title={doc.filename} renderHtml={parseMarkdown} sourceView={viewSource} />
+        <WorkViewer url={doc.url} title={doc.filename} documentId={doc.id} version={doc.latestVersion} renderHtml={parseMarkdown} sourceView={viewSource} />
       {/key}
     {:else if failed}
       <div class="h-full flex items-center justify-center text-sm text-base-content/60">

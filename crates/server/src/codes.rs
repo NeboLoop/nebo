@@ -323,7 +323,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
     let session_id = origin.session_id.as_str();
     let Some(claim) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
-        return format!("{code} is already being installed.");
+        return format!("{code} {}", tools::bot_tool::ALREADY_INSTALLING);
     };
     let code_type_str = code_type_name(code_type);
     let status_message = match code_type {
@@ -335,7 +335,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, orig
         CodeType::Plugin => "Installing plugin...",
         CodeType::App => "Installing app...",
         CodeType::Collection => "Installing collection...",
-        CodeType::Connection => "Adding MCP connection...",
+        CodeType::Connection => "Adding connector...",
     };
 
     state.hub.broadcast(
@@ -447,7 +447,7 @@ pub async fn handle_code_text(
     platform: Option<&str>,
 ) -> String {
     let Some(claim) = state.codes_in_flight.begin(code) else {
-        return format!("{code} is already being installed.");
+        return format!("{code} {}", tools::bot_tool::ALREADY_INSTALLING);
     };
     let code_type_str = match code_type {
         CodeType::Nebo => "NeboAI connection",
@@ -942,7 +942,7 @@ async fn handle_connection_code(
         .await
         .map_err(|e| hub_refusal(HubStep::Fetch, &format!("fetch connector {artifact_id}"), e))?;
     let raw = detail.manifest.ok_or_else(|| {
-        NeboError::Internal(format!("connector '{artifact_name}' has no MCP config"))
+        NeboError::Internal(format!("Connector '{artifact_name}' isn't set up correctly"))
     })?;
     let block = match raw {
         serde_json::Value::String(s) => serde_json::from_str(&s)
@@ -956,7 +956,7 @@ async fn handle_connection_code(
         Some(&artifact_id),
     )
     .await
-    .map_err(|e| NeboError::Internal(format!("create MCP integration(s): {e}")))?;
+    .map_err(|e| NeboError::Internal(format!("Couldn't add connector(s): {e}")))?;
 
     if created.is_empty() {
         // Managed connectors carry no command/url on purpose: NeboLoop drives
@@ -966,7 +966,7 @@ async fn handle_connection_code(
         let managed = crate::handlers::integrations::managed_server_count(&block);
         if managed == 0 {
             return Err(NeboError::Internal(format!(
-                "connector '{artifact_name}' has no valid MCP servers in its config"
+                "Connector '{artifact_name}' isn't set up correctly: it has nothing to connect to"
             )));
         }
         let _ = state
@@ -974,7 +974,7 @@ async fn handle_connection_code(
             .upsert_artifact_update_pref(&artifact_id, "connector", &detail.item.version);
         return Ok(CodeHandlerResult {
             message: format!(
-                "Added \"{artifact_name}\" — a managed connection. Its tools are available through your NeboAI connection; you'll be asked to link your {artifact_name} account the first time an employee uses it."
+                "Added \"{artifact_name}\" — a managed connector. Its tools are available through your NeboAI connection; you'll be asked to link your {artifact_name} account the first time an employee uses it."
             ),
             artifact_name: Some(artifact_name),
             artifact_id: Some(artifact_id),
@@ -991,9 +991,8 @@ async fn handle_connection_code(
 
     Ok(CodeHandlerResult {
         message: format!(
-            "Added MCP connection \"{}\": {} server(s)",
-            artifact_name,
-            created.len()
+            "Added connector \"{}\"",
+            artifact_name
         ),
         artifact_name: Some(artifact_name),
         artifact_id: Some(artifact_id),
@@ -1051,56 +1050,9 @@ pub(crate) async fn finalize_skill_install(
     state.skill_loader.reload_from_disk().await;
 }
 
-/// Land a seat's declaration on its permission rules.
-///
-/// The ONE routine for it (CODE_AUDITOR 8.1). Two entry points reach it, and
-/// they must not drift: `finalize_agent_install`, when a package arrives, and
-/// `update_agent`, when an owner authors the same declaration by hand on the
-/// settings page. A packaged employee and an owner-built one are the same
-/// object — so the thing that gives their declaration effect is one function,
-/// not two copies that forget different steps.
-///
-/// The package's `ceiling` is its own DECLARATION of what this employee
-/// performs and must not perform unattended — including operations no list
-/// of ours has ever heard of (an owner's own employee, built around their own
-/// capability). Each entry lands as an ask rule on the operation, written by
-/// the package: it asks until the owner says otherwise, and a package never
-/// replaces a rule the owner has written for the operation. A declaration
-/// restricts; it never grants (`napp` refuses any ceiling value but
-/// "approval" when it parses the manifest).
-pub(crate) fn apply_seat_declaration(
-    store: &db::Store,
-    agent_id: &str,
-    config: &napp::agent::AgentConfig,
-) {
-    use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
-    let by = Writer::Package { package: agent_id.to_string() };
-    let mut landed = 0usize;
-    for op in config.ceiling.keys() {
-        let suffix = tools::plugin_tool::port_suffix(op);
-        if suffix.is_empty() {
-            continue;
-        }
-        let rule = Rule {
-            id: uuid::Uuid::new_v4().to_string(),
-            scope: Scope::Employee(agent_id.to_string()),
-            key: RuleKey::Operation(suffix),
-            field: None,
-            effect: Effect::Ask,
-            money: None,
-            source: RuleSource::Package { package: agent_id.to_string() },
-            locked: false,
-            created_at: chrono::Utc::now().timestamp(),
-        };
-        match store.write_permission_rule(&rule, &by) {
-            Ok(_) => landed += 1,
-            Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared ceiling did not land"),
-        }
-    }
-    if landed > 0 {
-        tracing::info!(agent = agent_id, declared = landed, "the employee's declared ceiling landed as operations that ask");
-    }
-}
+/// Give an employee's declared `ceiling` effect: the one routine is
+/// `tools::apply_seat_declaration`, shared with the employee tools.
+pub(crate) use tools::apply_seat_declaration;
 
 /// A declaration's needs, through the one needs step.
 async fn declared_needs(
@@ -1138,7 +1090,7 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
     let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
     let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
-    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone());
     let declared = declared_needs(&agent.name, agent_id, &config, &installed, &reader).await;
     let (needs, source) = match before {
         None => {
@@ -1781,14 +1733,68 @@ pub(crate) async fn fetch_and_install_plugin(
     Ok(())
 }
 
+/// Load the owner's stored settings for these plugins into the env each
+/// one runs with. Secret settings still in the clear (written before they
+/// were encrypted) are encrypted first; which keys are secret is each
+/// plugin's own declaration, so a plugin is resealed once its manifest is
+/// on disk. Then every setting is read from the database, the one source of
+/// truth, and decrypted. Startup runs it for every installed plugin, and
+/// `activate_plugin` for each one that arrives later: a restored bot's
+/// plugins are fetched minutes after it starts, and without this ran with
+/// no credentials until the next restart.
+pub(crate) fn load_plugin_settings(
+    store: &db::Store,
+    plugins: &napp::plugin::PluginStore,
+    slugs: &[String],
+) {
+    let declared: Vec<(String, String)> = slugs
+        .iter()
+        .filter_map(|slug| plugins.get_manifest(slug).map(|m| (slug.clone(), m)))
+        .flat_map(|(slug, m)| m.secret_setting_keys().into_iter().map(move |k| (slug.clone(), k)))
+        .collect();
+    match auth::credential::encrypt_stored_plugin_secrets(store, &declared) {
+        Ok(0) => {}
+        Ok(n) => info!(count = n, "encrypted plugin secrets stored in the clear"),
+        Err(e) => warn!(error = %e, "plugin secrets could not be encrypted at rest"),
+    }
+    for slug in slugs {
+        match store.list_plugin_settings_by_slug(slug) {
+            Ok(settings) => {
+                let vars: HashMap<String, String> = settings
+                    .iter()
+                    .map(|s| (s.setting_key.clone(), auth::credential::plugin_setting_value(s)))
+                    .filter(|(_, v)| !v.is_empty())
+                    .collect();
+                plugins.set_env_vars(slug, vars);
+            }
+            Err(e) => warn!(plugin = %slug, error = %e, "the plugin's stored settings could not be read"),
+        }
+    }
+}
+
 /// Make a plugin that just landed on disk usable: its tool and the
 /// operations it binds, its hooks, the workers running its old binary, and
 /// any chat parked on an install card for it. The ONE path for every way a
 /// plugin arrives: a marketplace install and a copy by hand into the
 /// plugins folder (the filesystem watcher) both end here.
 pub(crate) async fn activate_plugin(state: &AppState, slug: &str) {
+    // It runs with the owner's stored settings, as it would have at startup.
+    load_plugin_settings(&state.store, &state.plugin_store, &[slug.to_string()]);
     // The new plugin's tool and the operations it binds are usable immediately.
     state.tools.refresh_plugin_tools().await;
+    // Its readiness, as startup warms it: a plugin with an auth status probe
+    // reads as not ready until the probe has run, and the probe runs with the
+    // settings just loaded. Off this path, as at startup: a probe can take
+    // up to its timeout. The plugin tools are re-derived once it is known.
+    if state.plugin_store.get_manifest(slug).and_then(|m| m.auth).is_some_and(|a| a.commands.status.is_some()) {
+        let ps = state.plugin_store.clone();
+        let tools = state.tools.clone();
+        let slug = slug.to_string();
+        tokio::spawn(async move {
+            ps.update_auth_status(&slug).await;
+            tools.refresh_plugin_tools().await;
+        });
+    }
     if let Some(manifest) = state.plugin_store.get_manifest(slug) {
         if let Some(binary) = state.plugin_store.resolve(slug, "*") {
             let count =
@@ -1963,7 +1969,7 @@ pub async fn submit_code(
         return Err((
             axum::http::StatusCode::CONFLICT,
             axum::response::Json(types::api::ErrorResponse {
-                error: format!("{validated_code} is already being installed."),
+                error: format!("{validated_code} {}", tools::bot_tool::ALREADY_INSTALLING),
             }),
         ));
     };
@@ -2087,6 +2093,43 @@ async fn find_product_by_code(api: &NeboAIApi, kind: &str, code: &str) -> Option
     let item = items.iter().find(|item| item.get("code").and_then(|c| c.as_str()) == Some(code))?;
     let field = |key: &str| item[key].as_str().unwrap_or("").to_string();
     Some((field("id"), field("name"), field("slug")))
+}
+
+/// Reads the account's plan from NeboAI and sets it (`apply_plan`). The app
+/// holds the plan only in memory, and the hub's tokenRefresh only says when
+/// it changes: without this read a restart showed Free on a paid plan until
+/// the next plan change (2026-10-09, a Business upgrade).
+pub(crate) async fn sync_plan(state: &AppState) {
+    let Ok(api) = build_api_client(state) else {
+        return;
+    };
+    match api.billing_subscription().await {
+        Ok(resp) => {
+            let plan = resp.get("plan").and_then(|v| v.as_str()).unwrap_or("");
+            apply_plan(state, plan).await;
+        }
+        Err(e) => warn!(error = %e, "plan sync: the account's plan could not be read"),
+    }
+}
+
+/// Sets the plan the app shows (`plan_tier`, read by account status). The UI
+/// is told (`plan_changed`, which shows the upgrade notice) only when a plan
+/// it already knew changes.
+pub(crate) async fn apply_plan(state: &AppState, plan: &str) {
+    let plan = if plan.is_empty() { "free" } else { plan };
+    let prev = std::mem::replace(&mut *state.plan_tier.write().await, plan.to_string());
+    if plan_changed(&prev, plan) {
+        state
+            .hub
+            .broadcast("plan_changed", serde_json::json!({"plan": plan}));
+    }
+}
+
+/// Whether `next` over `prev` is a plan change to announce. "" is the plan
+/// not yet read since startup: reading it is not a change, and neither is
+/// the hub repeating the plan the app has.
+fn plan_changed(prev: &str, next: &str) -> bool {
+    !prev.is_empty() && prev != next
 }
 
 pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError> {
@@ -2466,11 +2509,13 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             .store
             .list_all_active_auth_profiles_by_provider("neboai")
         {
-            if let Some(p) = profs.first() {
+            if let Some(p) = profs.first()
+                && let Ok(sealed) = auth::credential::encrypt(&new_token)
+            {
                 let _ = state.store.update_auth_profile(
                     &p.id,
                     &p.name,
-                    &new_token,
+                    &sealed,
                     p.model.as_deref(),
                     p.base_url.as_deref(),
                     p.priority.unwrap_or(0),
@@ -2490,6 +2535,10 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // one pass per connect) — the platform only knows the employees we tell it.
     request_agent_reconcile(state, "gateway connect");
 
+    // Signed in: the first-party defaults this bot lacks install in the
+    // background (one pass at a time; nothing pops up).
+    crate::default_artifacts::request(state);
+
     // Refresh the bot's address and license keys in background (non-blocking)
     {
         let st = state.clone();
@@ -2497,6 +2546,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             // The account's time zone and language: the clock and language
             // every turn, schedule and reminder of this bot follows.
             crate::owner_locale::sync(&st).await;
+            // The account's plan: kept only in memory, so read on every
+            // connect (a restart, or a plan changed while the bot was away).
+            sync_plan(&st).await;
             // The bot's own hosted address, as a sender of mail_message_send.
             crate::mail_intake::refresh_bot_address(&st).await;
             // Refresh content protection license keys for sealed .napp files
@@ -2769,7 +2821,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     // colleague or a team is not one the owner talks in.
     for (local_id, loop_agent_id) in &chat_sync_targets {
         let prefix = types::keyparser::agent_session_prefix(local_id);
-        let chats = match state.store.list_chats_by_session_enriched(&prefix) {
+        let chats = match state.store.list_chats_by_session_enriched(&prefix, &db::ConversationQuery::default()) {
             Ok(rows) => rows
                 .into_iter()
                 .filter(|(chat, _, _)| {
@@ -2980,16 +3032,18 @@ async fn refresh_neboai_token(
     new_metadata.insert("refresh_token".to_string(), new_refresh.to_string());
     let metadata_json = serde_json::to_string(&new_metadata).unwrap_or_default();
 
-    let _ = state.store.update_auth_profile(
-        &profile.id,
-        &profile.name,
-        &token_resp.access_token,
-        profile.model.as_deref(),
-        profile.base_url.as_deref(),
-        profile.priority.unwrap_or(0),
-        profile.auth_type.as_deref(),
-        Some(&metadata_json),
-    );
+    if let Ok(sealed) = auth::credential::encrypt(&token_resp.access_token) {
+        let _ = state.store.update_auth_profile(
+            &profile.id,
+            &profile.name,
+            &sealed,
+            profile.model.as_deref(),
+            profile.base_url.as_deref(),
+            profile.priority.unwrap_or(0),
+            profile.auth_type.as_deref(),
+            Some(&metadata_json),
+        );
+    }
     info!("NeboAI OAuth token refreshed successfully");
 
     Some(token_resp.access_token)
@@ -3118,6 +3172,18 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The plan read on connect after a restart is not announced (the
+    /// upgrade notice would pop on every launch); a plan the app knew that
+    /// changes is, and the hub repeating the same plan is not.
+    #[test]
+    fn only_a_known_plan_that_changes_is_announced() {
+        assert!(!plan_changed("", "business"), "first read since startup");
+        assert!(!plan_changed("", "free"), "first read since startup");
+        assert!(plan_changed("free", "business"), "upgrade while running");
+        assert!(plan_changed("business", "free"), "plan ended while running");
+        assert!(!plan_changed("business", "business"), "same plan again");
+    }
 
     /// The phone's card reads the `POST /codes` reply to configure what it
     /// just hired, so the reply names the employee and whether a plugin it
@@ -3470,7 +3536,7 @@ mod tests {
         }
         // Nothing of what NeboAI said, and no Rust error taxonomy.
         let internal =
-            outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("create MCP integration(s): boom".into())), &EventOrigin::default());
+            outcome_line("CONN-V1PR-K421", &Err(NeboError::Internal("Couldn't add connector(s): boom".into())), &EventOrigin::default());
         assert_eq!(internal, "Couldn't install CONN-V1PR-K421. Try again.");
         // A success says what installed; a paid one where to pay.
         let paid = CodeHandlerResult {

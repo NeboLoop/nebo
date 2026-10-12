@@ -38,6 +38,7 @@ pub mod coworker;
 /// is still cut to it (its own package moves it onto the spill path).
 pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;
 pub mod deep_research;
+pub mod default_artifacts;
 pub mod desktop_daemon;
 pub mod desktop_session;
 pub mod ax_native;
@@ -108,8 +109,10 @@ pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
 pub mod store_app;
+pub mod superseded;
 pub mod vm_tool;
 pub mod walk_bounds;
+pub mod workspace_history;
 pub mod web_tool;
 pub mod system_packages;
 pub mod task_tools;
@@ -172,7 +175,7 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
 
 pub use a2ui_tool::{A2UIDomainTool, A2UIHost};
 pub use agent_tool::{
-    ActiveAgent, ActiveAgentState, AgentRegistry, PersonaTool, validate_agent_dependencies,
+    ActiveAgent, ActiveAgentState, AgentRegistry, PersonaTool, apply_seat_declaration, validate_agent_dependencies,
 };
 pub use app_tool::AppTool;
 pub use bot_tool::{
@@ -1057,3 +1060,9 @@ fn generate_minimal_agent_md(name: &str, description: &str) -> String {
 /// in five.
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Held by every test that drives the real desktop (`--include-ignored`):
+/// there is one foreground window, one keyboard and one clipboard, and two
+/// such tests at once take them from each other.
+#[cfg(test)]
+pub(crate) static TEST_DESKTOP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

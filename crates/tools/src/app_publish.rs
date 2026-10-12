@@ -1641,12 +1641,8 @@ impl DynTool for AppScreenshotTool {
         input["for_listing"].as_bool().unwrap_or(false)
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "taking a screenshot of the app".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Took a screenshot of the app".to_string()
     }
 
     fn execute_dyn<'a>(
@@ -1902,12 +1898,8 @@ impl DynTool for AppListingTool {
         types::permissions::CallEffects::none()
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "drafting the listing".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Drafted the listing".to_string()
     }
 
     fn execute_dyn<'a>(
@@ -1967,12 +1959,8 @@ impl DynTool for AppSubmitTool {
         }
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "submitting the app".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Submitted the app".to_string()
     }
 
     fn execute_dyn<'a>(

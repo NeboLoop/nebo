@@ -65,12 +65,12 @@ pub(crate) async fn now(state: AppState, q: CompanyQuery) -> Vec<EmployeeNow> {
         let readable = conversations_readable(&row.frontmatter, &caller);
         let mut work: Vec<(String, Work)> = Vec::new();
         for r in runs.iter().filter(|r| entity(&r.entity_id) == row.id) {
-            let doing = if !r.activity.is_empty() {
-                r.activity.clone()
-            } else if !r.current_tool.is_empty() {
-                format!("running {}", r.current_tool)
-            } else {
-                "thinking".to_string()
+            // Read by the model: the call's sentence, the one it is told
+            // about a refused or parked call.
+            let doing = match &r.call_input {
+                Some((name, input)) => state.tools.describe(name, input).await,
+                None if !r.current_tool.is_empty() => format!("running {}", r.current_tool),
+                None => "thinking".to_string(),
             };
             work.push((
                 r.session_key.clone(),

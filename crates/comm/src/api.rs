@@ -565,7 +565,12 @@ impl NeboAIApi {
         .await
     }
 
-    /// Uninstall an app for this bot.
+    /// Uninstall a marketplace artifact of any type (app, employee, skill,
+    /// plugin) for this bot: the hub's one uninstall route resolves any
+    /// artifact id and removes this bot's install row, so it stops sending
+    /// the artifact's update notices here. (There is no
+    /// `/api/v1/products/{id}/install` on the hub: an uninstall sent there
+    /// was a 404 and the row stayed.)
     pub async fn uninstall_app(&self, id: &str) -> Result<(), CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
         self.do_void(
@@ -756,50 +761,6 @@ impl NeboAIApi {
     /// Install a skill for this bot via universal code redemption.
     pub async fn install_skill(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
         self.redeem_code(code).await
-    }
-
-    /// Install a product (skill/agent/workflow) for this bot by product ID.
-    /// NeboAI may return JSON or an empty body on success.
-    pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
-        self.gate(&reqwest::Method::POST)?;
-        let body = serde_json::json!({ "botId": self.bot_id });
-        let url = format!("{}/api/v1/products/{}/install", self.api_server, id);
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(self.token())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!(
-                "NeboAI returned {}: {}",
-                status, text
-            )));
-        }
-
-        let text = resp.text().await.unwrap_or_default();
-        if text.is_empty() {
-            Ok(serde_json::json!({ "success": true }))
-        } else {
-            Ok(serde_json::from_str(&text)
-                .unwrap_or_else(|_| serde_json::json!({ "success": true })))
-        }
-    }
-
-    /// Uninstall a product for this bot by product ID.
-    pub async fn uninstall_product(&self, id: &str) -> Result<(), CommError> {
-        let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_void(
-            reqwest::Method::DELETE,
-            &format!("/api/v1/products/{}/install", id),
-            Some(&body),
-        )
-        .await
     }
 
     /// Download a sealed .napp archive from a URL to `dest`.
@@ -1950,11 +1911,144 @@ impl NeboAIApi {
             .map_err(|e| CommError::Other(format!("decode upload response: {}", e)))
     }
 
+    /// Copy the file at `path` to NeboAI in chunks through its resumable door
+    /// (`/api/v1/uploads`): a large file is never one long request, and a
+    /// copy cut short resumes where the hub's own count says it stopped.
+    ///
+    /// `session` is the hub's upload id from an earlier attempt, if any; a
+    /// new one is handed to `started` before the first chunk goes, so the
+    /// caller can keep it and resume after a restart. A session the hub no
+    /// longer knows (expired) starts over. Returns the stored attachment,
+    /// as [`Self::upload_file`] does.
+    pub async fn upload_file_resumable(
+        &self,
+        path: &std::path::Path,
+        filename: &str,
+        session: Option<String>,
+        mut started: impl FnMut(&str),
+    ) -> Result<crate::wire::Attachment, CommError> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Session {
+            upload_id: String,
+            offset: u64,
+            chunk_size: u64,
+        }
+        fn session_of(body: &str) -> Result<Session, CommError> {
+            serde_json::from_str(body).map_err(|e| CommError::Transport(format!("decode upload session: {e}")))
+        }
+
+        self.gate(&reqwest::Method::POST)?;
+        let size = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| CommError::Other(format!("open {}: {}", path.display(), e)))?
+            .len();
+        let base = format!("{}/api/v1/uploads", self.api_server);
+
+        let resumed = match session {
+            Some(id) => match self.upload_request(reqwest::Method::GET, &format!("{base}/{id}"), None, None).await {
+                Ok(body) => Some(session_of(&body)?),
+                Err(CommError::Http { status: 404, .. }) => None,
+                Err(e) => return Err(e),
+            },
+            None => None,
+        };
+        let mut s = match resumed {
+            Some(s) => s,
+            None => {
+                let body = serde_json::json!({ "filename": filename, "size": size });
+                let s = session_of(&self.upload_request(reqwest::Method::POST, &base, Some(body), None).await?)?;
+                started(&s.upload_id);
+                s
+            }
+        };
+        if s.chunk_size == 0 {
+            return Err(CommError::Transport("upload session without a chunk size".into()));
+        }
+
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| CommError::Other(format!("open {}: {}", path.display(), e)))?;
+        let mut chunk = Vec::with_capacity(s.chunk_size.min(size) as usize);
+        while s.offset < size {
+            let len = s.chunk_size.min(size - s.offset);
+            chunk.resize(len as usize, 0);
+            file.seek(std::io::SeekFrom::Start(s.offset))
+                .await
+                .map_err(|e| CommError::Other(format!("read {}: {}", path.display(), e)))?;
+            file.read_exact(&mut chunk)
+                .await
+                .map_err(|e| CommError::Other(format!("read {}: {}", path.display(), e)))?;
+            let url = format!("{base}/{}", s.upload_id);
+            let next = match self.upload_request(reqwest::Method::PATCH, &url, None, Some((s.offset, chunk.clone()))).await {
+                Ok(body) => session_of(&body)?.offset,
+                // The hub has a different count than this side: go on from its.
+                Err(CommError::Http { status: 409, body }) => session_of(&body)?.offset,
+                Err(e) => return Err(e),
+            };
+            if next > size {
+                return Err(CommError::Transport(format!("hub counts {next} of {size} bytes")));
+            }
+            s.offset = next;
+        }
+        let body = self
+            .upload_request(reqwest::Method::POST, &format!("{base}/{}/complete", s.upload_id), Some(serde_json::json!({})), None)
+            .await?;
+        serde_json::from_str(&body).map_err(|e| CommError::Transport(format!("decode upload response: {e}")))
+    }
+
+    /// One request of the resumable upload: a JSON body, or a chunk sent at
+    /// its offset (`Upload-Offset`) with the time a slow line needs for it.
+    /// The answer's body on success; the hub's status and body otherwise.
+    async fn upload_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        json: Option<serde_json::Value>,
+        chunk: Option<(u64, Vec<u8>)>,
+    ) -> Result<String, CommError> {
+        let read = method == reqwest::Method::GET;
+        let resp = self
+            .send(read, |token| {
+                let req = self.client.request(method.clone(), url).bearer_auth(token);
+                match (&json, &chunk) {
+                    (_, Some((offset, bytes))) => req
+                        .timeout(upload_window(bytes.len() as u64))
+                        .header("Upload-Offset", offset.to_string())
+                        .header(reqwest::header::CONTENT_TYPE, "application/offset+octet-stream")
+                        .body(bytes.clone()),
+                    (Some(body), None) => req.json(body),
+                    (None, None) => req,
+                }
+            })
+            .await
+            .map_err(|e| CommError::Transport(e.to_string()))?;
+        match resp {
+            Ok(resp) => resp.text().await.map_err(|e| CommError::Transport(body_read_error(&e))),
+            Err((status, body)) => Err(CommError::Http { status: status.as_u16(), body }),
+        }
+    }
+
     /// Download a file by ID. Returns raw bytes. Files are as large as the
     /// upload door allows, so the download gets the upload's time.
     pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, CommError> {
         let url = format!("{}/api/v1/files/{}", self.api_server, file_id);
         self.fetch_raw(&url, FILE_TRANSFER_TIMEOUT).await
+    }
+
+    /// A short-lived signed link to a file this bot stored (`GET
+    /// /api/v1/files/{id}/link`): a teach recording's replay, played
+    /// straight from storage.
+    pub async fn file_link(&self, file_id: &str) -> Result<String, CommError> {
+        #[derive(serde::Deserialize)]
+        struct Link {
+            url: String,
+        }
+        let path = format!("/api/v1/files/{}/link", urlencoding::encode(file_id));
+        let link: Link = self.do_json(reqwest::Method::GET, &path, None::<&()>).await?;
+        Ok(link.url)
     }
 
     // ── File share links ──────────────────────────────────────────────
@@ -2267,7 +2361,7 @@ mod tests {
             .plugin_proxy(reqwest::Method::POST, "gmail", "/send", None, Default::default(), vec![])
             .await;
         assert!(matches!(proxied, Err(CommError::Paused)), "{proxied:?}");
-        let installed = api.install_product("p1").await;
+        let installed = api.install_app("p1").await;
         assert!(matches!(installed, Err(CommError::Paused)), "{installed:?}");
     }
 
@@ -2284,6 +2378,36 @@ mod tests {
         api.lease.granted(1, std::time::Duration::from_secs(60), std::time::Instant::now());
         let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
         assert!(!matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+    }
+
+    /// An uninstall goes to the hub's uninstall route, DELETE
+    /// /api/v1/apps/{id}/install, which takes every artifact type; a refusal
+    /// comes back as an error the caller can log.
+    #[tokio::test]
+    async fn an_uninstall_goes_to_the_hubs_uninstall_route() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else { return };
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_string());
+            let body = r#"{"status":"uninstalled"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let api = NeboAIApi::new(format!("http://{addr}"), "bot".into(), "token".into());
+        api.uninstall_app("6cd4d527").await.expect("uninstalled");
+        let head = rx.await.unwrap();
+        assert!(head.starts_with("DELETE /api/v1/apps/6cd4d527/install "), "{head}");
+
+        let refused = NeboAIApi::new("http://127.0.0.1:9".into(), "bot".into(), "token".into());
+        assert!(refused.uninstall_app("6cd4d527").await.is_err(), "a failed uninstall is an error, not Ok");
     }
 
     /// A file the hub removed after its keeping period answers 410; the
@@ -2445,16 +2569,25 @@ mod tests {
         let settings = crate::api_types::FileShareSettings {
             access: "password".into(),
             password: "hunter22".into(),
-            expires_at: String::new(),
+            ..Default::default()
         };
         let made = api.create_file_share("f1", "/api/v1/files/Go-Live Checklist.md", &settings).await.unwrap();
         assert_eq!(made.id, "s1");
         let keep = crate::api_types::FileShareSettings { access: "password".into(), ..Default::default() };
         api.update_file_share("s1", &keep).await.unwrap();
         api.revoke_file_share("s1").await.unwrap();
+        // A new version behind the same link, and whether it follows the file.
+        let version = crate::api_types::FileShareSettings {
+            access: "link".into(),
+            live: Some(false),
+            file_id: "f2".into(),
+            content_hash: "h2".into(),
+            ..Default::default()
+        };
+        api.update_file_share("s1", &version).await.unwrap();
 
         let seen = seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 4, "{seen:#?}");
+        assert_eq!(seen.len(), 5, "{seen:#?}");
         assert!(seen[0].starts_with("GET /api/v1/shares?source=%2Fapi%2Fv1%2Ffiles%2FGo-Live%20Checklist.md "), "{}", seen[0]);
         assert!(seen[1].starts_with("POST /api/v1/shares "), "{}", seen[1]);
         let created: serde_json::Value = serde_json::from_str(seen[1].split_once("HTTP/1.1 ").unwrap().1).unwrap();
@@ -2464,6 +2597,8 @@ mod tests {
         let updated: serde_json::Value = serde_json::from_str(seen[2].split_once("HTTP/1.1 ").unwrap().1).unwrap();
         assert_eq!(updated, serde_json::json!({"access": "password"}));
         assert!(seen[3].starts_with("DELETE /api/v1/shares/s1 "), "{}", seen[3]);
+        let version: serde_json::Value = serde_json::from_str(seen[4].split_once("HTTP/1.1 ").unwrap().1).unwrap();
+        assert_eq!(version, serde_json::json!({"access": "link", "live": false, "fileId": "f2", "contentHash": "h2"}));
     }
 
     // A connection cut before the body's declared length is a failed

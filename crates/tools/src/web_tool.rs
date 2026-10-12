@@ -35,6 +35,41 @@ const NO_BROWSER_NEXT: &str = "fetch_url reads a page's text as the server sends
      type or run the page's scripts. When a task needs those and nothing here can do them, tell the \
      owner so; never report what a page would show from what you know of it.";
 
+/// What the owner hears when they asked for their Chrome and it isn't
+/// connected (2026-10-11: asked to "use chrome", an employee wrote a
+/// Playwright script instead). Said as written; nothing else is tried in
+/// its place.
+pub const CHROME_NOT_CONNECTED: &str =
+    "Chrome isn't connected to Nebo. Open Chrome and turn on the NeboAI extension, or I can use my own browser.";
+
+/// A browser call in a conversation that asked for the owner's Chrome:
+/// refused, in the owner's words, when the extension isn't connected. The
+/// executor's own order (extension first) serves it when it is.
+fn chrome_refusal(wants_chrome: bool, extension_connected: bool) -> Option<String> {
+    (wants_chrome && !extension_connected).then(|| {
+        format!(
+            "The owner asked for their Chrome, and the NeboAI extension isn't connected. Tell them exactly: \"{CHROME_NOT_CONNECTED}\" \
+             Then wait for their answer. Don't use another browser, a script or any other way in its place; if they \
+             say to use yours, open the page again with browser_open and chrome: false."
+        )
+    })
+}
+
+/// Whether this call picks the owner's Chrome (`Some(true)`), lets go of it
+/// (`Some(false)`), or leaves the conversation's choice as it is: the
+/// `chrome` field of browser_open, browser_new_tab, or a browser_batch
+/// step that is one of them.
+fn chrome_choice(kind: Kind, input: &serde_json::Value) -> Option<bool> {
+    match kind {
+        Kind::BrowserOpen | Kind::BrowserNewTab => input.get("chrome").and_then(|v| v.as_bool()),
+        Kind::BrowserBatch => input["steps"].as_array()?.iter().find_map(|step| {
+            let kind = KINDS.iter().copied().find(|k| Some(k.name()) == str_field(step, "name"))?;
+            matches!(kind, Kind::BrowserOpen | Kind::BrowserNewTab).then(|| chrome_choice(kind, &step["input"]))?
+        }),
+        _ => None,
+    }
+}
+
 fn epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -93,6 +128,10 @@ pub struct WebCore {
     /// Set to now + `JANUS_EXTRACT_COOLDOWN_SECS` on an extract failure;
     /// `extract_via_janus` skips the tier while the deadline is in the future.
     extract_cooldown_until: std::sync::atomic::AtomicU64,
+    /// The conversations (group keys, so their helpers too) whose owner
+    /// asked for their own Chrome: those conversations' browser calls run only on the
+    /// extension, never on the built-in browser in its place.
+    chrome_groups: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Connection details for the Janus `/v1/search` endpoint. Auth mirrors the
@@ -134,7 +173,24 @@ impl WebCore {
             search_in_flight: Mutex::new(HashMap::new()),
             janus_search: None,
             extract_cooldown_until: std::sync::atomic::AtomicU64::new(0),
+            chrome_groups: Mutex::new(std::collections::HashSet::new()),
         }
+    }
+
+    /// Record the conversation's browser choice from a call that makes one.
+    fn choose_chrome(&self, group_key: &str, chrome: bool) {
+        if let Ok(mut groups) = self.chrome_groups.lock() {
+            if chrome {
+                groups.insert(group_key.to_string());
+            } else {
+                groups.remove(group_key);
+            }
+        }
+    }
+
+    /// Whether the conversation asked for the owner's own Chrome.
+    fn wants_chrome(&self, group_key: &str) -> bool {
+        self.chrome_groups.lock().map(|g| g.contains(group_key)).unwrap_or(false)
     }
 
     /// Configure the Janus search tier (platform-owned, provider-agnostic).
@@ -576,7 +632,7 @@ impl WebCore {
                         match self
                             .search_via_api(
                                 provider,
-                                &profile.api_key,
+                                &auth::credential::profile_key(profile),
                                 query,
                                 profile.metadata.as_deref().unwrap_or(""),
                             )
@@ -675,6 +731,8 @@ impl WebCore {
             .post(&url)
             .bearer_auth(&bearer)
             .header("X-Bot-ID", &cfg.bot_id)
+            // The shared client speaks as a browser to web pages; to Janus, as Nebo.
+            .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT)
             .json(&body)
             .timeout(std::time::Duration::from_secs(12))
             .send()
@@ -1029,7 +1087,9 @@ impl WebCore {
         Ok(parse_tavily_results(&result))
     }
 
-    /// Google Custom Search Engine API (key + cx params).
+    /// Google Custom Search Engine API (`cx` param; the key rides the
+    /// `x-goog-api-key` header, never the URL — a transport error prints its
+    /// URL, and that error becomes tool output the model reads).
     async fn search_google_cse(
         &self,
         api_key: &str,
@@ -1040,15 +1100,7 @@ impl WebCore {
             .ok()
             .and_then(|m| m["cx"].as_str().map(String::from))
             .ok_or("Google CSE requires 'cx' in metadata")?;
-        let url = format!(
-            "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
-            api_key,
-            cx,
-            urlencoding::encode(query)
-        );
-        let resp = self
-            .client
-            .get(&url)
+        let resp = google_cse_request(&self.client, api_key, &cx, query)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -1059,7 +1111,8 @@ impl WebCore {
         Ok(parse_google_cse_results(&body))
     }
 
-    /// SerpAPI (api_key as query param).
+    /// SerpAPI (api_key as query param — SerpAPI takes it nowhere else — so
+    /// a transport error drops its URL before it becomes tool output).
     async fn search_serpapi(
         &self,
         api_key: &str,
@@ -1075,7 +1128,7 @@ impl WebCore {
             .get(&url)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(keyed_url_error)?;
         if !resp.status().is_success() {
             return Err(format!("SerpAPI returned status {}", resp.status()));
         }
@@ -1187,11 +1240,15 @@ impl WebCore {
             let onoff = |b: bool| if b { "connected" } else { "not connected" };
             let status = if ext_connected {
                 format!(
-                    "Browser extension: connected (will be used). Built-in browser: {}. Use browser_read to see the current page.",
+                    "The owner's Chrome (NeboAI extension): connected (will be used). Built-in browser: {}. Use browser_read to see the current page.",
                     if cdp { "available" } else { "not available" }
                 )
+            } else if self.wants_chrome(group_key) {
+                format!(
+                    "The owner's Chrome (NeboAI extension): not connected. They asked for their Chrome, so tell them exactly: \"{CHROME_NOT_CONNECTED}\""
+                )
             } else if cdp {
-                "Browser extension: not connected. Built-in browser: available (will be used). Use browser_read to see the current page.".to_string()
+                "The owner's Chrome (NeboAI extension): not connected. Built-in browser: available (will be used). Use browser_read to see the current page.".to_string()
             } else {
                 format!(
                     "Browser extension: {}. Built-in browser: not available. No browser backend; connect the Nebo Chrome/Brave extension. {NO_BROWSER_NEXT}",
@@ -1221,6 +1278,12 @@ impl WebCore {
         // CDP browser is handling this action. The extension is the intended path.
         if !executor.extension_connected() {
             self.broadcast_extension_disconnected("not_connected", session_id);
+        }
+
+        // The owner asked for their own Chrome: the built-in browser never
+        // stands in for it.
+        if let Some(refusal) = chrome_refusal(self.wants_chrome(group_key), executor.extension_connected()) {
+            return ToolResult::error(refusal);
         }
 
         if !executor.is_connected() {
@@ -1638,7 +1701,7 @@ impl WebCore {
         match result {
             Ok(result) => {
                 // Check for post-action screenshot in result: { text: "...", screenshot: { data, format } }
-                let (mut text_result, mut screenshot_b64) =
+                let (mut text_result, screenshot_b64) =
                     if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
                         (text.to_string(), extract_screenshot_b64(&result))
                     } else if action == "snapshot" || action == "read_page" {
@@ -1679,16 +1742,12 @@ impl WebCore {
                     "scroll", "scroll_to", "drag", "hover", "file_upload",
                     "go_back", "go_forward",
                 ];
+                // No screenshot rides along with opening a page: the vision
+                // helper reads every picture before the next step (23 s for
+                // Google Maps, measured 2026-10-07), and the snapshot above is
+                // already the page. browser_act screenshot is there to look.
                 if SNAPSHOT_ACTIONS.contains(&action) {
                     auto_snapshot(executor, session_id, &mut text_result, AUTO_SNAPSHOT_MAX_CHARS).await;
-
-                    // Auto-screenshot after navigate
-                    if action == "navigate" && screenshot_b64.is_none() {
-                        let shot_args = serde_json::json!({});
-                        if let Ok(shot_result) = executor.execute("screenshot", &shot_args, session_id).await {
-                            screenshot_b64 = extract_screenshot_b64(&shot_result);
-                        }
-                    }
                 }
 
                 // Navigate-specific: error page + auth detection + loop detection
@@ -1796,6 +1855,7 @@ enum Kind {
     BrowserBatch,
     BrowserPageTools,
     BrowserCallPageTool,
+    BrowserExpect,
 }
 
 const KINDS: &[Kind] = &[
@@ -1820,6 +1880,7 @@ const KINDS: &[Kind] = &[
     Kind::BrowserBatch,
     Kind::BrowserPageTools,
     Kind::BrowserCallPageTool,
+    Kind::BrowserExpect,
 ];
 
 impl Kind {
@@ -1846,6 +1907,7 @@ impl Kind {
             Kind::BrowserBatch => "browser_batch",
             Kind::BrowserPageTools => "browser_page_tools",
             Kind::BrowserCallPageTool => "browser_call_page_tool",
+            Kind::BrowserExpect => "browser_expect",
         }
     }
 
@@ -1858,7 +1920,7 @@ impl Kind {
         self.is_browser()
             && !matches!(
                 self,
-                Kind::BrowserBatch | Kind::BrowserFillForm | Kind::BrowserHistory | Kind::BrowserStatus
+                Kind::BrowserBatch | Kind::BrowserFillForm | Kind::BrowserHistory | Kind::BrowserStatus | Kind::BrowserExpect
             )
     }
 
@@ -1885,6 +1947,7 @@ impl Kind {
             Kind::BrowserBatch => "run several browser steps at once",
             Kind::BrowserPageTools => "list the tools a page offers",
             Kind::BrowserCallPageTool => "call a tool the page offers",
+            Kind::BrowserExpect => "check the page reached a step's expected state",
         }
     }
 
@@ -1908,11 +1971,12 @@ impl Kind {
                 - To read a page, use fetch_url.\n\
                 - Returns the status and the response body (a web page as its text)."
                 .to_string(),
-            Kind::BrowserOpen => "Opens a URL in this conversation's browser tab and returns the page's interactive elements with refs, and a screenshot.\n\
+            Kind::BrowserOpen => "Opens a URL in this conversation's browser tab and returns the page's interactive elements with refs.\n\
                 - Use the browser for pages that need JavaScript, a sign-in or interaction; to just read a page, fetch_url is faster.\n\
                 - A URL loaded in the last few minutes returns that load; pass fresh: true to reload it.\n\
                 - Don't put a search in the URL: open the site and use its search box.\n\
-                - If the page is a sign-in form, tell the owner; never enter credentials."
+                - If the page is a sign-in form, tell the owner; never enter credentials.\n\
+                - When the owner asks for Chrome, their Chrome or their browser, set chrome: true: their own Chrome through the NeboAI extension, for the rest of this conversation."
                 .to_string(),
             Kind::BrowserRead => "Reads the current page as an accessibility tree, with a ref (ref_1, ref_2, …) on each element for browser_act and browser_fill_form.\n\
                 - filter: \"interactive\" lists only the controls.\n\
@@ -1935,7 +1999,8 @@ impl Kind {
                 - It doesn't submit the form: click its button with browser_act."
                 .to_string(),
             Kind::BrowserRunJs => "Runs JavaScript in the current page and returns the value of the last expression.\n\
-                - For data the page holds that browser_read doesn't show, or a page action the controls can't reach."
+                - For data the page holds that browser_read doesn't show, or a page action the controls can't reach.\n\
+                - This is how a page is scripted: never a Playwright, Puppeteer or Selenium script through run_command."
                 .to_string(),
             Kind::BrowserListTabs => "Lists this conversation's browser tabs with their ids, titles and URLs.".to_string(),
             Kind::BrowserNewTab => "Opens a URL in a new browser tab.\n\
@@ -1967,12 +2032,19 @@ impl Kind {
                 - When a site offers a tool for the job, call it with browser_call_page_tool rather than clicking through the page."
                 .to_string(),
             Kind::BrowserCallPageTool => "Calls one of the tools the current page offers (listed by browser_page_tools) with its arguments.".to_string(),
+            Kind::BrowserExpect => "Checks that the current page reached a step's expected state: the step check of a learned task.\n\
+                - Give what the step should leave on screen: url (a part of it, like /orders), title, heading, text that shows, and elements that show ({role, name} as browser_read prints them).\n\
+                - It waits up to wait_ms (default 5000) for the page to get there.\n\
+                - When the page doesn't match, the task stops and the owner is told which step and what differed. Don't work around it.\n\
+                - The window or viewport size doesn't matter: it checks what's on the page, not where."
+                .to_string(),
         }
     }
 
     fn schema(self) -> serde_json::Value {
         use serde_json::json;
         let url = json!({"type": "string", "description": "The full URL, starting with http:// or https://."});
+        let chrome = json!({"type": "boolean", "description": "true: the owner's own Chrome (the NeboAI extension), when they ask for Chrome or their browser; it stays their Chrome for this conversation. false: whichever browser is connected again."});
         match self {
             Kind::SearchWeb => json!({
                 "type": "object",
@@ -2010,7 +2082,8 @@ impl Kind {
                 "properties": {
                     "url": url,
                     "fresh": {"type": "boolean", "description": "Load the page again even if it was loaded in the last few minutes."},
-                    "force": {"type": "boolean", "description": "Leave the current page even if it asks to stay (unsaved changes)."}
+                    "force": {"type": "boolean", "description": "Leave the current page even if it asks to stay (unsaved changes)."},
+                    "chrome": chrome
                 },
                 "required": ["url"]
             }),
@@ -2080,7 +2153,7 @@ impl Kind {
             }
             Kind::BrowserNewTab => json!({
                 "type": "object",
-                "properties": {"url": url},
+                "properties": {"url": url, "chrome": chrome},
                 "required": ["url"]
             }),
             Kind::BrowserCloseTab => json!({
@@ -2155,6 +2228,30 @@ impl Kind {
                 },
                 "required": ["name"]
             }),
+            Kind::BrowserExpect => json!({
+                "type": "object",
+                "properties": {
+                    "step": {"type": "string", "description": "Which step this checks, as the skill numbers or names it, e.g. \"3\" or \"3: open Orders\"."},
+                    "url": {"type": "string", "description": "A part the page's URL must contain, e.g. /orders."},
+                    "title": {"type": "string", "description": "A part the page title must contain."},
+                    "heading": {"type": "string", "description": "A part one of the page's visible headings must contain."},
+                    "text": {"type": "array", "items": {"type": "string"}, "description": "Text that must show on the page."},
+                    "visible": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string", "description": "The role as browser_read prints it: button, link, textbox, heading, …"},
+                                "name": {"type": "string", "description": "Its name as browser_read prints it."}
+                            },
+                            "required": ["role", "name"]
+                        },
+                        "description": "Elements that must show, e.g. the next step's button."
+                    },
+                    "wait_ms": {"type": "integer", "minimum": 0, "maximum": 15000, "description": "How long to wait for the page to match (default 5000)."}
+                },
+                "required": ["step"]
+            }),
         }
     }
 
@@ -2170,7 +2267,8 @@ impl Kind {
             | Kind::BrowserConsole
             | Kind::BrowserNetwork
             | Kind::BrowserStatus
-            | Kind::BrowserPageTools => true,
+            | Kind::BrowserPageTools
+            | Kind::BrowserExpect => true,
             Kind::HttpRequest => matches!(str_field(input, "method"), Some("GET" | "HEAD")),
             Kind::BrowserAct => matches!(str_field(input, "action"), Some("wait" | "screenshot")),
             _ => false,
@@ -2234,6 +2332,18 @@ impl Kind {
                     kind.validate(step_input).map_err(|e| format!("Step {} ({name}): {e}", i + 1))?;
                 }
                 Ok(())
+            }
+            Kind::BrowserExpect => {
+                let has = |k: &str| match input.get(k) {
+                    Some(serde_json::Value::String(v)) => !v.trim().is_empty(),
+                    Some(serde_json::Value::Array(v)) => !v.is_empty(),
+                    _ => false,
+                };
+                if ["url", "title", "heading", "text", "visible"].iter().any(|k| has(k)) {
+                    Ok(())
+                } else {
+                    Err("browser_expect needs at least one of url, title, heading, text or visible.".into())
+                }
             }
             _ => Ok(()),
         }
@@ -2302,59 +2412,60 @@ impl Kind {
             }
             Kind::BrowserPageTools => ("webmcp_list", serde_json::json!({})),
             Kind::BrowserCallPageTool => ("webmcp_call", pick(&[("name", "name"), ("args", "args")])),
+            Kind::BrowserExpect => ("expect", expect_page_args(input)),
             Kind::SearchWeb | Kind::FetchUrl | Kind::HttpRequest => return None,
         })
     }
 
     /// The owner-facing lines: reads and opens name the site, so a run
     /// that read four pages doesn't read as four searches.
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let site = str_field(input, "url")
             .and_then(|u| url::Url::parse(u).ok())
             .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
             .unwrap_or_else(|| "a page".to_string());
-        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
         match self {
-            Kind::SearchWeb => pair("searching the web", "Searched the web"),
-            Kind::FetchUrl => (format!("reading {site}"), format!("Read {site}")),
+            Kind::SearchWeb => String::from("searching the web"),
+            Kind::FetchUrl => format!("reading {site}"),
             Kind::HttpRequest => match str_field(input, "method") {
-                Some("GET" | "HEAD") | None => (format!("reading {site}"), format!("Read {site}")),
-                Some(m) => (format!("sending {m} to {site}"), format!("Sent {m} to {site}")),
+                Some("GET" | "HEAD") | None => format!("reading {site}"),
+                Some(m) => format!("sending {m} to {site}"),
             },
-            Kind::BrowserOpen => (format!("opening {site}"), format!("Opened {site}")),
-            Kind::BrowserRead => pair("reading the page", "Read the page"),
-            Kind::BrowserFind => pair("finding on the page", "Found on the page"),
+            Kind::BrowserOpen => format!("opening {site}"),
+            Kind::BrowserRead => String::from("reading the page"),
+            Kind::BrowserFind => String::from("finding on the page"),
             Kind::BrowserAct => match str_field(input, "action").unwrap_or_default() {
-                "click" => pair("clicking on the page", "Clicked on the page"),
-                "hover" => pair("pointing at the page", "Pointed at the page"),
-                "type" => pair("typing on the page", "Typed on the page"),
-                "press" => pair("pressing keys", "Pressed keys"),
-                "scroll" => pair("scrolling the page", "Scrolled the page"),
-                "drag" => pair("dragging on the page", "Dragged on the page"),
-                "select" => pair("choosing an option", "Chose an option"),
-                "wait" => pair("waiting for the page", "Waited for the page"),
-                _ => pair("taking a screenshot", "Took a screenshot"),
+                "click" => String::from("clicking on the page"),
+                "hover" => String::from("pointing at the page"),
+                "type" => String::from("typing on the page"),
+                "press" => String::from("pressing keys"),
+                "scroll" => String::from("scrolling the page"),
+                "drag" => String::from("dragging on the page"),
+                "select" => String::from("choosing an option"),
+                "wait" => String::from("waiting for the page"),
+                _ => String::from("taking a screenshot"),
             },
-            Kind::BrowserFillForm => pair("filling in a form", "Filled in a form"),
-            Kind::BrowserRunJs => pair("running a script on the page", "Ran a script on the page"),
-            Kind::BrowserListTabs => pair("listing browser tabs", "Listed browser tabs"),
-            Kind::BrowserNewTab => (format!("opening {site} in a new tab"), format!("Opened {site} in a new tab")),
-            Kind::BrowserCloseTab => pair("closing a tab", "Closed a tab"),
-            Kind::BrowserConsole => pair("reading the page's console", "Read the page's console"),
-            Kind::BrowserNetwork => pair("reading the page's requests", "Read the page's requests"),
-            Kind::BrowserUpload => pair("uploading files", "Uploaded files"),
-            Kind::BrowserResize => pair("resizing the browser", "Resized the browser"),
+            Kind::BrowserFillForm => String::from("filling in a form"),
+            Kind::BrowserRunJs => String::from("running a script on the page"),
+            Kind::BrowserListTabs => String::from("listing browser tabs"),
+            Kind::BrowserNewTab => format!("opening {site} in a new tab"),
+            Kind::BrowserCloseTab => String::from("closing a tab"),
+            Kind::BrowserConsole => String::from("reading the page's console"),
+            Kind::BrowserNetwork => String::from("reading the page's requests"),
+            Kind::BrowserUpload => String::from("uploading files"),
+            Kind::BrowserResize => String::from("resizing the browser"),
             Kind::BrowserHistory => match str_field(input, "direction") {
-                Some("forward") => pair("going forward", "Went forward"),
-                _ => pair("going back", "Went back"),
+                Some("forward") => String::from("going forward"),
+                _ => String::from("going back"),
             },
-            Kind::BrowserStatus => pair("checking the browser", "Checked the browser"),
-            Kind::BrowserBatch => pair("working in the browser", "Worked in the browser"),
-            Kind::BrowserPageTools => pair("listing the page's tools", "Listed the page's tools"),
+            Kind::BrowserStatus => String::from("checking the browser"),
+            Kind::BrowserBatch => String::from("working in the browser"),
+            Kind::BrowserPageTools => String::from("listing the page's tools"),
             Kind::BrowserCallPageTool => {
                 let tool = str_field(input, "name").unwrap_or("a").replace('_', " ");
-                (format!("using the page's {tool} tool"), format!("Used the page's {tool} tool"))
+                format!("using the page's {tool} tool")
             }
+            Kind::BrowserExpect => String::from("checking the step's result"),
         }
     }
 }
@@ -2367,15 +2478,41 @@ fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 pub struct WebTool {
     core: Arc<WebCore>,
     kind: Kind,
+    triggers: Vec<String>,
 }
+
+/// What an owner says when a task needs the browser. A request that says
+/// one has browser_open, browser_act and browser_read loaded in its first
+/// step (`find_tools::triggered`, three at most): loading them mid-task
+/// changed the tool list, every cached token was dropped and the next step
+/// waited 21.7 s for its first word (Google Maps task, 2026-10-07).
+const BROWSER_TRIGGERS: &[&str] = &[
+    "browser", "chrome", "website", "web site", "webpage", "web page", "site", "url",
+    "google maps", "maps", "directions", "google flights", "flight", "hotel", "airbnb", "expedia",
+    "kayak", "delta", "united airlines", "zillow", "redfin", "yelp", "amazon", "log in", "login",
+    "sign in", "checkout", "check out", "book a", "reservation",
+];
 
 /// Every tool of the web and browser family, sharing one core.
 pub fn tools(core: WebCore) -> Vec<WebTool> {
     let core = Arc::new(core);
-    KINDS.iter().map(|&kind| WebTool { core: core.clone(), kind }).collect()
+    KINDS
+        .iter()
+        .map(|&kind| {
+            let triggers = match kind {
+                Kind::BrowserOpen | Kind::BrowserAct | Kind::BrowserRead => BROWSER_TRIGGERS.iter().map(|t| t.to_string()).collect(),
+                _ => Vec::new(),
+            };
+            WebTool { core: core.clone(), kind, triggers }
+        })
+        .collect()
 }
 
 impl DynTool for WebTool {
+    fn triggers(&self) -> &[String] {
+        &self.triggers
+    }
+
     fn name(&self) -> &str {
         self.kind.name()
     }
@@ -2463,12 +2600,8 @@ impl DynTool for WebTool {
         }
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(
@@ -2491,6 +2624,9 @@ impl DynTool for WebTool {
             if let Some(refusal) = unnamed_site(self.kind, ctx, &input) {
                 return ToolResult::error(refusal);
             }
+            if let Some(chrome) = chrome_choice(self.kind, &input) {
+                self.core.choose_chrome(&group_key, chrome);
+            }
             match self.kind {
                 Kind::SearchWeb => self.core.handle_search(&input, session_id, &group_key).await,
                 Kind::FetchUrl => self.core.handle_http(reqwest::Method::GET, &input).await,
@@ -2507,6 +2643,7 @@ impl DynTool for WebTool {
                     };
                     self.core.handle_http(m, &input).await
                 }
+                Kind::BrowserExpect => self.core.handle_expect(&input, session_id, &group_key).await,
                 kind => match kind.browser_step(&input) {
                     Some((action, args)) => self.core.handle_browser(action, &args, session_id, &group_key).await,
                     None => ToolResult::error(format!("{} is not a browser step.", kind.name())),
@@ -2571,6 +2708,117 @@ async fn auto_snapshot(
     }
 }
 
+/// The longest a step check waits for the page to match.
+const EXPECT_MAX_WAIT_MS: u64 = 15_000;
+const EXPECT_DEFAULT_WAIT_MS: u64 = 5_000;
+const EXPECT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+impl WebCore {
+    /// browser_expect: ask the page for the facts the step names, compare,
+    /// and poll until they match or the wait is over. A mismatch is a
+    /// terminal error: the run stops and the owner reads which step and what
+    /// differed, instead of the next step running on the wrong page.
+    async fn handle_expect(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
+        let step = str_field(input, "step").unwrap_or("").trim().to_string();
+        let wait = std::time::Duration::from_millis(
+            input.get("wait_ms").and_then(|v| v.as_u64()).unwrap_or(EXPECT_DEFAULT_WAIT_MS).min(EXPECT_MAX_WAIT_MS),
+        );
+        let args = expect_page_args(input);
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let read = self.handle_browser("expect", &args, session_id, group_key).await;
+            if read.is_error {
+                if read.content.contains("Unknown tool") {
+                    return ToolResult::error(
+                        "This browser can't check a step yet: browser_expect needs the NeboAI extension 0.5.0 or later. \
+                         Check the step yourself with browser_read.",
+                    );
+                }
+                return read;
+            }
+            let facts: serde_json::Value = match serde_json::from_str(&read.content) {
+                Ok(v) => v,
+                Err(_) => return ToolResult::error(format!("The page's answer to the step check was unreadable: {}", read.content)),
+            };
+            let misses = expect_mismatches(input, &facts);
+            if misses.is_empty() {
+                return ToolResult::ok(format!("Step {step} check passed: the page is where the step should leave it."));
+            }
+            if tokio::time::Instant::now() + EXPECT_POLL > deadline {
+                let mut r = ToolResult::error(format!(
+                    "Step {step} did not reach its expected state, so the task stopped there.\n- {}",
+                    misses.join("\n- ")
+                ));
+                r.terminal = true;
+                return r;
+            }
+            tokio::time::sleep(EXPECT_POLL).await;
+        }
+    }
+}
+
+/// What the page is asked for: the texts and elements to look for (url,
+/// title and headings come back always).
+fn expect_page_args(input: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "text": input.get("text").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "elements": input.get("visible").cloned().unwrap_or_else(|| serde_json::json!([])),
+    })
+}
+
+/// Each way the page differs from what the step expects, in words. Empty
+/// when it matches. Comparisons ignore case and runs of whitespace; url,
+/// title and heading match on a part.
+fn expect_mismatches(spec: &serde_json::Value, facts: &serde_json::Value) -> Vec<String> {
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let want = |k: &str| str_field(spec, k).map(str::trim).filter(|v| !v.is_empty());
+    let page_url = str_field(facts, "url").unwrap_or("");
+    let page_title = str_field(facts, "title").unwrap_or("");
+    let headings: Vec<&str> = facts["headings"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).collect();
+    let mut misses = Vec::new();
+    if let Some(check) = str_field(facts, "personCheck").filter(|c| !c.is_empty()) {
+        misses.push(format!("the page is asking to confirm a person is using it (\"{check}\"); the owner has to finish that"));
+    }
+    if let Some(u) = want("url")
+        && !page_url.to_lowercase().contains(&u.to_lowercase())
+    {
+        misses.push(format!("expected the address to contain \"{u}\"; the page is at {page_url}"));
+    }
+    if let Some(t) = want("title")
+        && !norm(page_title).contains(&norm(t))
+    {
+        misses.push(format!("expected the title to contain \"{t}\"; the title is \"{page_title}\""));
+    }
+    if let Some(h) = want("heading")
+        && !headings.iter().any(|x| norm(x).contains(&norm(h)))
+    {
+        let shown = if headings.is_empty() {
+            "no headings".to_string()
+        } else {
+            format!("headings {}", headings.iter().map(|x| format!("\"{x}\"")).collect::<Vec<_>>().join(", "))
+        };
+        misses.push(format!("expected a heading \"{h}\"; the page shows {shown}"));
+    }
+    for t in spec["text"].as_array().into_iter().flatten().filter_map(|t| t.as_str()) {
+        if !facts["text"][t].as_bool().unwrap_or(false) {
+            misses.push(format!("expected the text \"{t}\" to show; it doesn't"));
+        }
+    }
+    let found = facts["elements"].as_array().cloned().unwrap_or_default();
+    for e in spec["visible"].as_array().into_iter().flatten() {
+        let (role, name) = (str_field(e, "role").unwrap_or(""), str_field(e, "name").unwrap_or(""));
+        let shown = found
+            .iter()
+            .find(|f| str_field(f, "role") == Some(role) && str_field(f, "name") == Some(name))
+            .and_then(|f| f["visible"].as_u64())
+            .unwrap_or(0);
+        if shown == 0 {
+            misses.push(format!("expected {role} \"{name}\" to show; it isn't on the page"));
+        }
+    }
+    misses
+}
+
 /// Map a web tool action name to the corresponding extension tool name.
 /// Returns None for actions that don't map (status, new_tab validation, etc.)
 fn map_action_to_tool(action: &str) -> Option<&'static str> {
@@ -2600,6 +2848,7 @@ fn map_action_to_tool(action: &str) -> Option<&'static str> {
         "find" => Some("find"),
         "webmcp_list" => Some("webmcp_list"),
         "webmcp_call" => Some("webmcp_call"),
+        "expect" => Some("expect"),
         _ => None,
     }
 }
@@ -2629,6 +2878,7 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
         "file_upload" => vec!["paths", "ref"],
         "find" => vec!["query"],
         "webmcp_call" => vec!["name", "args"],
+        "expect" => vec!["text", "elements"],
         _ => vec![],
     };
 
@@ -3056,6 +3306,25 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
     }
 }
 
+/// The Google CSE call: the key in the `x-goog-api-key` header, never the
+/// URL (see `WebCore::search_google_cse`).
+fn google_cse_request(client: &reqwest::Client, api_key: &str, cx: &str, query: &str) -> reqwest::RequestBuilder {
+    client
+        .get(format!(
+            "https://www.googleapis.com/customsearch/v1?cx={}&q={}",
+            cx,
+            urlencoding::encode(query)
+        ))
+        .header("x-goog-api-key", api_key)
+}
+
+/// A transport error from a call whose URL holds the user's key: reqwest
+/// prints the URL in its message, and the message becomes tool output the
+/// model (Janus, when it is the model) reads — so the URL is dropped.
+fn keyed_url_error(e: reqwest::Error) -> String {
+    e.without_url().to_string()
+}
+
 /// Format search results into a ToolResult (the payload the model sees).
 /// Contract: numbered `title / url / snippet`
 /// with title ≤200 chars and snippet ≤600, an untrusted-content guard in the header,
@@ -3452,6 +3721,89 @@ fn sanitize_html(html: &str) -> String {
 mod tests {
     use super::*;
 
+    fn page_facts() -> serde_json::Value {
+        serde_json::json!({
+            "url": "https://shop.test/orders?page=1",
+            "title": "Orders · Shop admin",
+            "headings": ["Orders", "Recent"],
+            "text": {"Order saved": true, "Refunded": false},
+            "elements": [
+                {"role": "button", "name": "New order", "visible": 1, "exact": 1},
+                {"role": "link", "name": "Export", "visible": 0, "exact": 0}
+            ]
+        })
+    }
+
+    #[test]
+    fn a_step_check_passes_when_the_page_matches_regardless_of_case_or_spacing() {
+        let spec = serde_json::json!({
+            "step": "3", "url": "/orders", "title": "orders", "heading": "  ORDERS ",
+            "text": ["Order saved"], "visible": [{"role": "button", "name": "New order"}]
+        });
+        assert!(expect_mismatches(&spec, &page_facts()).is_empty());
+    }
+
+    #[test]
+    fn a_step_check_says_each_way_the_page_differs() {
+        let spec = serde_json::json!({
+            "step": "4", "url": "/orders/new", "heading": "New order",
+            "text": ["Refunded"], "visible": [{"role": "link", "name": "Export"}]
+        });
+        let misses = expect_mismatches(&spec, &page_facts());
+        assert_eq!(misses.len(), 4, "{misses:?}");
+        assert!(misses[0].contains("/orders/new") && misses[0].contains("https://shop.test/orders?page=1"));
+        assert!(misses[1].contains("\"New order\"") && misses[1].contains("\"Orders\", \"Recent\""));
+        assert!(misses[2].contains("Refunded"));
+        assert!(misses[3].contains("link \"Export\""));
+    }
+
+    #[test]
+    fn a_person_check_on_the_page_is_a_mismatch() {
+        let mut facts = page_facts();
+        facts["personCheck"] = serde_json::json!("Press & Hold");
+        let misses = expect_mismatches(&serde_json::json!({"step": "1", "url": "/orders"}), &facts);
+        assert_eq!(misses.len(), 1);
+        assert!(misses[0].contains("Press & Hold"));
+    }
+
+    #[test]
+    fn a_step_check_needs_something_to_check_and_never_runs_in_a_batch() {
+        assert!(Kind::BrowserExpect.validate(&serde_json::json!({"step": "1"})).is_err());
+        assert!(Kind::BrowserExpect.validate(&serde_json::json!({"step": "1", "text": []})).is_err());
+        assert!(Kind::BrowserExpect.validate(&serde_json::json!({"step": "1", "heading": "Orders"})).is_ok());
+        assert!(!Kind::BrowserExpect.batchable());
+        assert!(Kind::BrowserExpect.read_only(&serde_json::json!({})));
+        let (action, args) = Kind::BrowserExpect
+            .browser_step(&serde_json::json!({"step": "1", "visible": [{"role": "button", "name": "Go"}]}))
+            .unwrap();
+        assert_eq!(action, "expect");
+        assert_eq!(args["elements"][0]["name"], "Go");
+    }
+
+    /// A user's own search key never reaches tool output — what the model
+    /// (Janus, when it is the model) reads — through a printed URL.
+    const SENTINEL: &str = "SENTINEL-byo-search-key-0000000000";
+
+    #[test]
+    fn the_google_cse_key_rides_a_header_not_the_url() {
+        let req = google_cse_request(&reqwest::Client::new(), SENTINEL, "cx-1", "q").build().unwrap();
+        assert!(!req.url().as_str().contains(SENTINEL), "key in URL: {}", req.url());
+        assert_eq!(req.headers()["x-goog-api-key"], SENTINEL);
+    }
+
+    #[tokio::test]
+    async fn a_keyed_url_transport_error_drops_the_key() {
+        // Port 1 on loopback refuses at once: a real transport error, no network.
+        let err = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:1/search.json?api_key={SENTINEL}&q=x"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(SENTINEL), "reqwest prints the URL — the guard is needed");
+        let out = keyed_url_error(err);
+        assert!(!out.contains(SENTINEL), "key survived: {out}");
+    }
+
     // Site tools ride the same extension pathway as every other browser action:
     // both actions map to their extension tool, and a call forwards exactly
     // its name and arguments.
@@ -3676,6 +4028,64 @@ link "Create account" [ref_5]"#;
         assert!(!r.content.contains("Use fetch_url"), "{}", r.content);
     }
 
+    /// "Use Chrome" is the owner's own Chrome: with the extension connected
+    /// the executor's order serves it; without it, the owner hears plainly
+    /// that Chrome isn't connected, and nothing stands in for it
+    /// (2026-10-11: an employee wrote a Playwright script instead).
+    #[test]
+    fn chrome_runs_on_the_extension_or_says_it_is_not_connected() {
+        assert_eq!(chrome_refusal(true, true), None, "connected: the extension serves it");
+        assert_eq!(chrome_refusal(false, false), None, "no Chrome asked for: any connected browser");
+        assert_eq!(chrome_refusal(false, true), None);
+        let refusal = chrome_refusal(true, false).expect("Chrome asked for and not connected");
+        assert!(refusal.contains(CHROME_NOT_CONNECTED), "{refusal}");
+        assert!(refusal.contains("Don't use another browser, a script or any other way"), "{refusal}");
+        assert_eq!(
+            CHROME_NOT_CONNECTED,
+            "Chrome isn't connected to Nebo. Open Chrome and turn on the NeboAI extension, or I can use my own browser."
+        );
+    }
+
+    /// browser_open, browser_new_tab and a browser_batch step pick the
+    /// owner's Chrome with `chrome`; the choice holds for the conversation
+    /// and its helpers until a call lets go of it.
+    #[test]
+    fn the_chrome_choice_holds_for_the_conversation() {
+        use serde_json::json;
+        let open = json!({"url": "https://www.airbnb.com", "chrome": true});
+        assert_eq!(chrome_choice(Kind::BrowserOpen, &open), Some(true));
+        assert_eq!(chrome_choice(Kind::BrowserNewTab, &json!({"url": "https://a.test", "chrome": false})), Some(false));
+        assert_eq!(chrome_choice(Kind::BrowserOpen, &json!({"url": "https://a.test"})), None);
+        assert_eq!(chrome_choice(Kind::BrowserAct, &json!({"action": "click", "chrome": true})), None);
+        let batch = json!({"steps": [
+            {"name": "browser_open", "input": {"url": "https://a.test", "chrome": true}},
+            {"name": "browser_act", "input": {"action": "click", "ref": "ref_1"}}
+        ]});
+        assert_eq!(chrome_choice(Kind::BrowserBatch, &batch), Some(true));
+
+        let core = WebCore::new();
+        let group = WebCore::session_group_key("agent:main:web:chat-1");
+        let helper = WebCore::session_group_key("subagent:agent:main:web:chat-1:sa-1234");
+        assert!(!core.wants_chrome(&group));
+        core.choose_chrome(&group, true);
+        assert!(core.wants_chrome(&group) && core.wants_chrome(&helper), "the helper browses in the same Chrome");
+        assert!(!core.wants_chrome("agent:main:web:chat-2"), "another conversation is untouched");
+        core.choose_chrome(&group, false);
+        assert!(!core.wants_chrome(&group));
+    }
+
+    /// The browser tools say how a page is scripted and how the owner's
+    /// Chrome is chosen.
+    #[test]
+    fn the_browser_tools_own_browsing() {
+        assert!(Kind::BrowserRunJs.description().contains("never a Playwright, Puppeteer or Selenium script through run_command"));
+        let open = Kind::BrowserOpen.description();
+        assert!(open.contains("When the owner asks for Chrome, their Chrome or their browser, set chrome: true"), "{open}");
+        for kind in [Kind::BrowserOpen, Kind::BrowserNewTab] {
+            assert_eq!(kind.schema()["properties"]["chrome"]["type"], "boolean", "{}", kind.name());
+        }
+    }
+
     #[test]
     fn record_visited_evicts_expired_entries() {
         let tool = WebCore::new();
@@ -3705,7 +4115,6 @@ link "Create account" [ref_5]"#;
         assert!(!guard.contains_key("group-a"), "expired group should be evicted");
         assert!(guard.contains_key("group-b"));
     }
-
 
     // ── Search-result extraction: snippets must be populated (the empty-snippet
     //    regression sent agents into a re-search treadmill — never again). ──
@@ -3903,6 +4312,33 @@ mod interface_tests {
         tools(WebCore::new()).into_iter().find(|t| t.name() == name).unwrap()
     }
 
+    /// A browser request loads open, act and read in its first step, so the
+    /// tool list never changes mid-task; other requests load none of them.
+    #[test]
+    fn a_browser_request_loads_the_browser_up_front() {
+        let catalog: Vec<crate::find_tools::DeferredEntry> = tools(WebCore::new())
+            .into_iter()
+            .map(|t| crate::find_tools::DeferredEntry {
+                definition: ai::ToolDefinition { name: t.name().to_string(), description: String::new(), input_schema: json!({}) },
+                search_hint: String::new(),
+                triggers: t.triggers().to_vec(),
+            })
+            .collect();
+        let picked = |request: &str| -> Vec<String> {
+            let mut names: Vec<String> = crate::find_tools::triggered(&catalog, request, crate::find_tools::TRIGGERED_MAX)
+                .into_iter()
+                .map(|e| e.definition.name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        let browser = vec!["browser_act".to_string(), "browser_open".to_string(), "browser_read".to_string()];
+        assert_eq!(picked("Use my Chrome browser. Open Google Maps and find a coffee shop in Provo"), browser);
+        assert_eq!(picked("look up homes on Zillow in Orem"), browser);
+        assert_eq!(picked("search flights from SLC to JFK next Friday"), browser);
+        assert!(picked("what did we decide about pricing yesterday?").is_empty());
+    }
+
     /// Reads run together; every write runs alone. A web POST, PUT, PATCH
     /// or DELETE is never concurrency-safe, and neither is any step that
     /// changes the page.
@@ -4019,19 +4455,13 @@ mod interface_tests {
     /// Reads and opens name the site (www. stripped), so a run that read
     /// four pages doesn't read as four searches.
     #[test]
-    fn labels_name_the_site() {
-        let labels = |name: &str, input: serde_json::Value| {
-            let t = tool(name);
-            (t.activity(&input), t.outcome(&input))
-        };
-        assert_eq!(
-            labels("fetch_url", json!({"url": "https://www.example.com/page"})),
-            ("reading example.com".to_string(), "Read example.com".to_string())
-        );
-        assert_eq!(labels("browser_open", json!({"url": "https://docs.rs/x"})).0, "opening docs.rs");
-        assert_eq!(labels("search_web", json!({"queries": ["x"]})).1, "Searched the web");
-        assert_eq!(labels("http_request", json!({"method": "POST", "url": "https://api.example.com/v1"})).1, "Sent POST to api.example.com");
-        assert_eq!(labels("browser_act", json!({"action": "screenshot"})).1, "Took a screenshot");
+    fn sentences_name_the_site() {
+        let said = |name: &str, input: serde_json::Value| tool(name).describe(&input);
+        assert_eq!(said("fetch_url", json!({"url": "https://www.example.com/page"})), "reading example.com");
+        assert_eq!(said("browser_open", json!({"url": "https://docs.rs/x"})), "opening docs.rs");
+        assert_eq!(said("search_web", json!({"queries": ["x"]})), "searching the web");
+        assert_eq!(said("http_request", json!({"method": "POST", "url": "https://api.example.com/v1"})), "sending POST to api.example.com");
+        assert_eq!(said("browser_act", json!({"action": "screenshot"})), "taking a screenshot");
     }
 
     /// Only a screenshot the model asked for is media for the owner.
@@ -4051,7 +4481,9 @@ mod interface_tests {
         for r in &web_rows {
             assert!(names.contains(&r.to), "{r:?}");
         }
-        for name in &names {
+        // Tools born after the split never had an old `web(...)` shape.
+        const NO_OLD_SHAPE: &[&str] = &["browser_expect"];
+        for name in names.iter().filter(|n| !NO_OLD_SHAPE.contains(n)) {
             assert!(web_rows.iter().any(|r| r.to == *name), "{name} has no old shape");
         }
     }

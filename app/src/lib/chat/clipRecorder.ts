@@ -8,12 +8,14 @@
  * webview cannot write MP4 it is `.webm` typed `audio/webm` (Opus).
  *
  * Only the owner's click starts it. Nothing an employee does reaches here.
+ * Teach a task records the owner's narration with this same recorder, for
+ * exactly as long as the demonstration records ($lib/chat/teach).
  *
  * Time and the level meter move on the recorder's own `dataavailable` events
  * (one every SLICE_MS), so nothing ticks on a timer.
  */
 
-import { writable, type Readable } from 'svelte/store';
+import { get, writable, type Readable } from 'svelte/store';
 import { deviceManager } from '$lib/stores/devices';
 
 /** Recordings stop here and are attached as they stand. */
@@ -44,6 +46,8 @@ export interface ClipState {
 	elapsedMs: number;
 	/** Microphone level, 0..1. */
 	level: number;
+	/** The microphone is muted: the recording goes on, silent. */
+	muted: boolean;
 	notice: ClipNotice;
 }
 
@@ -76,6 +80,9 @@ export interface ClipDeps {
 	Recorder?: ClipRecorderCtor;
 	now?: () => number;
 	meter?: (stream: MediaStream) => ClipMeter | null;
+	/** Where the recording stops and is kept as it stands; CLIP_CAP_MS when
+	 *  not given. */
+	capMs?: number;
 }
 
 /** The first type this webview can record, or '' to let it choose. */
@@ -170,14 +177,24 @@ export interface ClipRecorder extends Readable<ClipState> {
 	cancel(): void;
 	/** Clear the notice line. */
 	dismiss(): void;
+	/** Mute or unmute the microphone while recording: muted, the recording
+	 *  keeps its time and holds silence. */
+	mute(on: boolean): void;
 }
 
-const IDLE: ClipState = { stage: 'idle', elapsedMs: 0, level: 0, notice: '' };
+/** The stream's sound: its audio tracks (all of it, for a stream that
+ *  does not tell them apart). */
+function audioTracks(stream: MediaStream): MediaStreamTrack[] {
+	return stream.getAudioTracks?.() ?? stream.getTracks();
+}
+
+const IDLE: ClipState = { stage: 'idle', elapsedMs: 0, level: 0, muted: false, notice: '' };
 
 export function createClipRecorder(deps: ClipDeps): ClipRecorder {
 	const acquire = deps.acquire ?? (() => deviceManager.acquireMicStream('clip'));
 	const now = deps.now ?? (() => Date.now());
 	const makeMeter = deps.meter ?? analyserMeter;
+	const capMs = deps.capMs ?? CLIP_CAP_MS;
 
 	const state = writable<ClipState>({ ...IDLE });
 	let stage: ClipStage = 'idle';
@@ -262,8 +279,9 @@ export function createClipRecorder(deps: ClipDeps): ClipRecorder {
 			if (e.data && e.data.size > 0) chunks.push(e.data);
 			if (stage !== 'recording' || stopping) return;
 			const elapsedMs = now() - startedAt;
-			set({ elapsedMs: Math.min(elapsedMs, CLIP_CAP_MS), level: meter?.level() ?? 0 });
-			if (elapsedMs >= CLIP_CAP_MS) {
+			const muted = stream ? audioTracks(stream).some((t) => t.enabled === false) : false;
+			set({ elapsedMs: Math.min(elapsedMs, capMs), level: muted ? 0 : (meter?.level() ?? 0) });
+			if (elapsedMs >= capMs) {
 				capped = true;
 				finish(true);
 			}
@@ -305,7 +323,7 @@ export function createClipRecorder(deps: ClipDeps): ClipRecorder {
 			return;
 		}
 		startedAt = now();
-		set({ stage: 'recording', elapsedMs: 0, level: 0, notice: '' });
+		set({ stage: 'recording', elapsedMs: 0, level: 0, muted: false, notice: '' });
 	}
 
 	return {
@@ -320,6 +338,11 @@ export function createClipRecorder(deps: ClipDeps): ClipRecorder {
 			}
 			finish(false);
 		},
-		dismiss: () => set({ notice: '' })
+		dismiss: () => set({ notice: '' }),
+		mute(on: boolean) {
+			if (stage !== 'recording' || !stream) return;
+			audioTracks(stream).forEach((t) => (t.enabled = !on));
+			set({ muted: on, level: on ? 0 : get(state).level });
+		}
 	};
 }

@@ -37,10 +37,11 @@ fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, Nebo
 ///   (`agent:<id>:workflow:<run>:<activity>::<n>`), the run's plumbing — the
 ///   employee's own list showed every one as a chat titled with its raw key
 ///   (2026-09-09).
-#[derive(Clone, Copy)]
-enum Conversations {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Conversations {
     /// Every conversation: the owner's, and the employee's threads with
     /// colleagues and teams, each shown as what it is.
+    #[default]
     All,
     /// The owner's own. Its latest thread, the thread a loop DM continues,
     /// the roster's preview and the count come only from these: a thread
@@ -49,6 +50,9 @@ enum Conversations {
     /// newest thread, so its own chat opened onto an exchange the owner never
     /// had (2026-09-26 for a team, 2026-09-28 for a colleague).
     Owners,
+    /// The employee's threads with colleagues and teams: work the owner can
+    /// read, never one of his conversations.
+    Teammates,
 }
 
 impl Conversations {
@@ -56,8 +60,66 @@ impl Conversations {
         match self {
             Conversations::All => format!("conversation_kind({session_name}) IS NOT NULL"),
             Conversations::Owners => format!("conversation_kind({session_name}) = 'owner'"),
+            Conversations::Teammates => format!("conversation_kind({session_name}) IN ('colleague', 'team')"),
         }
     }
+}
+
+/// Which of an employee's conversations [`Store::list_chats_by_session_enriched`]
+/// reads, and how many. Every field narrows; the default reads every
+/// conversation, newest first. [`Store::count_conversations`] counts the
+/// same set, without the paging (`before`, `limit`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConversationQuery<'a> {
+    /// Whose conversations.
+    pub whose: Conversations,
+    /// Only the ones the owner pinned, most recently pinned first.
+    pub pinned: bool,
+    /// Only those whose title, or anything said in them, matches.
+    pub search: Option<&'a str>,
+    /// Only those after this one in the newest-first order: its last
+    /// activity (`updated_at`) and id, the cursor a page ends at.
+    pub before: Option<(i64, &'a str)>,
+    /// At most this many.
+    pub limit: Option<i64>,
+}
+
+/// The WHERE clause and its values for `q` over the chats `c` under
+/// `session_name_prefix`, paging aside.
+fn conversation_filter(session_name_prefix: &str, q: &ConversationQuery) -> (String, Vec<rusqlite::types::Value>) {
+    use rusqlite::types::Value;
+    let mut sql = format!("c.session_name LIKE ?1 AND {}", q.whose.sql("c.session_name"));
+    let mut values = vec![Value::Text(format!("{session_name_prefix}%"))];
+    if q.pinned {
+        sql.push_str(" AND c.pinned_at IS NOT NULL");
+    }
+    if let Some(search) = q.search.map(str::trim).filter(|s| !s.is_empty()) {
+        // The title as typed, or every word in what was said (each as the
+        // start of a word: the list narrows while he types).
+        let like = search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let words = search
+            .split_whitespace()
+            .map(|w| format!("\"{}\"*", w.replace('"', "")))
+            .filter(|w| w != "\"\"*")
+            .collect::<Vec<_>>()
+            .join(" ");
+        values.push(Value::Text(format!("%{like}%")));
+        let title = format!("c.title LIKE ?{} ESCAPE '\\'", values.len());
+        if words.is_empty() {
+            sql.push_str(&format!(" AND {title}"));
+        } else {
+            values.push(Value::Text(words));
+            sql.push_str(&format!(
+                " AND ({title} OR c.id IN (
+                     SELECT m.chat_id FROM chat_messages_fts
+                     JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
+                     WHERE chat_messages_fts MATCH ?{}
+                       AND m.role IN ('user', 'assistant')))",
+                values.len()
+            ));
+        }
+    }
+    (sql, values)
 }
 
 /// The metadata key of an automation's notice in an employee's conversation
@@ -91,7 +153,7 @@ fn last_visible_message_sql(chat_id: &str) -> String {
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"isMeta\":true%')
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"runError\":true%')
-          ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)"
+          ORDER BY m2.created_at DESC, m2.rowid DESC LIMIT 1)"
     )
 }
 
@@ -334,6 +396,9 @@ impl Store {
         token_estimate: Option<i64>,
         metadata: Option<&str>,
         session_name: Option<&str>,
+        // When it was said (unix seconds), for a row written after the fact
+        // (a voice reply, stored once its turn closes). None: now.
+        created_at: Option<i64>,
     ) -> Result<ChatMessage, NeboError> {
         let conn = self.conn()?;
         // Ensure parent chat row exists (role/channel sessions don't pre-create one).
@@ -349,8 +414,8 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         conn.query_row(
             "INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, day_marker, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, date('now', 'localtime'), unixepoch()) RETURNING *",
-            params![id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, date(COALESCE(?9, unixepoch()), 'unixepoch', 'localtime'), COALESCE(?9, unixepoch())) RETURNING *",
+            params![id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, created_at],
             row_to_chat_message,
         )
         .map_err(|e| NeboError::Database(e.to_string()))
@@ -365,6 +430,28 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![chat_id], row_to_chat_message)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The whole conversation in order, from message `from` (included) or its
+    /// start, for reading back what was said: rows below a compaction summary
+    /// are kept (the summary hides them from the runner, not from history);
+    /// Nebo's own rows (`isMeta`) are left out.
+    pub fn get_chat_messages_from(&self, chat_id: &str, from: Option<&str>) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM chat_messages m WHERE chat_id = ?1
+                   AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
+                   AND (?2 IS NULL OR (m.created_at, m.rowid) >=
+                        (SELECT created_at, rowid FROM chat_messages WHERE id = ?2))
+                 ORDER BY created_at ASC, rowid ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id, from], row_to_chat_message)
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
@@ -449,7 +536,7 @@ impl Store {
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
                      AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
-                 ORDER BY created_at DESC, id DESC LIMIT ?3",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?3",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -464,10 +551,10 @@ impl Store {
             // Get the last N messages (most recent)
             let mut stmt = conn
                 .prepare(
-                    "SELECT * FROM (
-                    SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
-                    ORDER BY created_at DESC, id DESC LIMIT ?2
-                ) ORDER BY created_at ASC, id ASC",
+                    "SELECT * FROM chat_messages WHERE rowid IN (
+                    SELECT rowid FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                    ORDER BY created_at DESC, rowid DESC LIMIT ?2
+                ) ORDER BY created_at ASC, rowid ASC",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -502,15 +589,18 @@ impl Store {
         let batch_limit: i64 = 250;
         let mut msgs: Vec<ChatMessage> = if let Some(before_id) = before {
             let cursor_ts: i64 = message_created_at(&conn, before_id)?;
-            // Use composite cursor (created_at, id) to avoid skipping messages
-            // created in the same second as the cursor message.
+            // Use composite cursor (created_at, rowid) to avoid skipping
+            // messages created in the same second as the cursor message.
+            // Same-second rows keep the order they were written in: ids are
+            // random, so ordering by id flipped a voice reply under the
+            // answer written with it (2026-10-06).
             let mut stmt = conn
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1
-                     AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                     AND (created_at < ?2 OR (created_at = ?2 AND rowid < (SELECT rowid FROM chat_messages WHERE id = ?3)))
                      AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                      AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
-                 ORDER BY created_at DESC, id DESC LIMIT ?4",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?4",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -526,7 +616,7 @@ impl Store {
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                      AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
-                 ORDER BY created_at DESC, id DESC LIMIT ?2",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt
@@ -575,7 +665,7 @@ impl Store {
             "SELECT EXISTS(
                 SELECT 1 FROM chat_messages
                  WHERE chat_id = ?1
-                   AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                   AND (created_at < ?2 OR (created_at = ?2 AND rowid < (SELECT rowid FROM chat_messages WHERE id = ?3)))
                    AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                    AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true'))",
             params![chat_id, cursor_ts, message_id],
@@ -949,39 +1039,45 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// List all conversations under an employee's session prefix with message
-    /// count and last-message preview in a single query (avoids N+1): the
-    /// owner's (legacy `agent:<id>:web`, per-thread `agent:<id>:thread:<uuid>`)
+    /// An employee's conversations under its session prefix, as `q` picks
+    /// them, each with its message count and last-message preview: the
+    /// owner's (the console's `agent:<id>:web`, per-thread `agent:<id>:thread:<uuid>`)
     /// and its threads with colleagues and teams. The caller tells them apart
-    /// with `types::keyparser::conversation_of`.
+    /// with `types::keyparser::conversation_of`. Newest first (last activity,
+    /// then id); the pinned ones by when they were pinned, newest pin first.
+    /// Count and preview are read per listed row, so a page costs its rows,
+    /// not the employee's whole history.
     pub fn list_chats_by_session_enriched(
         &self,
         session_name_prefix: &str,
+        q: &ConversationQuery,
     ) -> Result<Vec<(Chat, i64, String)>, NeboError> {
+        use rusqlite::types::Value;
         let conn = self.conn()?;
-        let like_pattern = format!("{}%", session_name_prefix);
+        let (mut filter, mut values) = conversation_filter(session_name_prefix, q);
+        if let Some((updated_at, id)) = q.before {
+            values.push(Value::Integer(updated_at));
+            values.push(Value::Text(id.to_string()));
+            let (at, id) = (values.len() - 1, values.len());
+            filter.push_str(&format!(" AND (c.updated_at < ?{at} OR (c.updated_at = ?{at} AND c.id < ?{id}))"));
+        }
+        values.push(Value::Integer(q.limit.unwrap_or(-1)));
+        let order = if q.pinned { "c.pinned_at DESC, c.id DESC" } else { "c.updated_at DESC, c.id DESC" };
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT c.*,
-                        COALESCE(s.cnt, 0) AS msg_count,
-                        COALESCE(s.last_content, '') AS last_content
+                        (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) AS msg_count,
+                        COALESCE({last_visible}, '') AS last_content
                  FROM chats c
-                 LEFT JOIN (
-                     SELECT m.chat_id,
-                            COUNT(*) AS cnt,
-                            {last_visible} AS last_content
-                     FROM chat_messages m
-                     GROUP BY m.chat_id
-                 ) s ON s.chat_id = c.id
-                 WHERE c.session_name LIKE ?1
-                   AND {own}
-                 ORDER BY c.updated_at DESC",
-                last_visible = last_visible_message_sql("m.chat_id"),
-                own = Conversations::All.sql("c.session_name"),
+                 WHERE {filter}
+                 ORDER BY {order}
+                 LIMIT ?{limit}",
+                last_visible = last_visible_message_sql("c.id"),
+                limit = values.len(),
             ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![like_pattern], |row| {
+            .query_map(rusqlite::params_from_iter(values), |row| {
                 let chat = row_to_chat(row)?;
                 let msg_count: i64 = row.get("msg_count")?;
                 let last_content: String = row.get("last_content")?;
@@ -990,6 +1086,52 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// How many of an employee's conversations `q` picks, paging aside.
+    pub fn count_conversations(&self, session_name_prefix: &str, q: &ConversationQuery) -> Result<i64, NeboError> {
+        let conn = self.conn()?;
+        let (filter, values) = conversation_filter(session_name_prefix, q);
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM chats c WHERE {filter}"),
+            rusqlite::params_from_iter(values),
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Pin a conversation to the top of its employee's list, or unpin it.
+    /// Pinning one already pinned keeps its place. Never activity: the
+    /// conversation's last-activity time is untouched. The row as it now
+    /// stands; None when there is no such conversation.
+    pub fn set_chat_pinned(&self, id: &str, pinned: bool) -> Result<Option<Chat>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "UPDATE chats SET pinned_at = CASE WHEN ?2 THEN COALESCE(pinned_at, unixepoch()) END
+             WHERE id = ?1 RETURNING *",
+            params![id, pinned],
+            row_to_chat,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Set the permission mode this conversation runs in (`None` = the
+    /// employee's own). Never activity: the conversation keeps its place.
+    /// Returns the row, or `None` when there is no such conversation.
+    pub fn set_chat_permission_mode(
+        &self,
+        id: &str,
+        mode: Option<types::permissions::Mode>,
+    ) -> Result<Option<Chat>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "UPDATE chats SET permission_mode = ?2 WHERE id = ?1 RETURNING *",
+            params![id, mode.map(|m| m.as_str())],
+            row_to_chat,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     /// Chats that were mid-turn when the server stopped: the last message is the user's (or a
@@ -1007,10 +1149,10 @@ impl Store {
                  FROM chats c
                  WHERE (SELECT m.role FROM chat_messages m
                         WHERE m.chat_id = c.id
-                        ORDER BY m.created_at DESC, m.id DESC LIMIT 1) IN ('user', 'tool')
+                        ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) IN ('user', 'tool')
                    AND (SELECT m2.created_at FROM chat_messages m2
                         WHERE m2.chat_id = c.id
-                        ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) >= ?1
+                        ORDER BY m2.created_at DESC, m2.rowid DESC LIMIT 1) >= ?1
                  ORDER BY c.updated_at DESC
                  LIMIT 20",
             )
@@ -1098,6 +1240,51 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Mark one file on a stored message as kept, or not: `keep: true` on
+    /// that file in the message's `attachments`, which a chat-retention purge
+    /// must leave alone. `id` is the row's own id or the id its client sent it
+    /// under (`messageId`) — a phone knows a message by the latter. False when
+    /// no message carries that file.
+    pub fn set_chat_attachment_keep(
+        &self,
+        id: &str,
+        file_id: &str,
+        keep: bool,
+    ) -> Result<bool, NeboError> {
+        let found: Option<(String, Option<String>)> = {
+            let conn = self.conn()?;
+            conn.query_row(
+                "SELECT id, metadata FROM chat_messages
+                 WHERE id = ?1
+                    OR (CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.messageId') END) = ?1
+                 ORDER BY id = ?1 DESC LIMIT 1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?
+        };
+        let Some((row_id, metadata)) = found else {
+            return Ok(false);
+        };
+        let meta: serde_json::Value = metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_default();
+        let Some(index) = meta["attachments"].as_array().and_then(|all| {
+            all.iter()
+                .position(|a| a["fileId"].as_str() == Some(file_id))
+        }) else {
+            return Ok(false);
+        };
+        self.set_chat_message_metadata(
+            &row_id,
+            &format!("$.attachments[{index}].keep"),
+            &serde_json::json!(keep),
+        )?;
+        Ok(true)
     }
 
     pub fn attach_artifacts_to_latest_assistant_message(
@@ -1379,6 +1566,11 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         linked_used_tokens: row.get("linked_used_tokens")?,
         linked_window_tokens: row.get("linked_window_tokens")?,
         linked_turn_at: row.get("linked_turn_at")?,
+        pinned_at: row.get("pinned_at")?,
+        permission_mode: row
+            .get::<_, Option<String>>("permission_mode")?
+            .as_deref()
+            .and_then(types::permissions::Mode::parse),
     })
 }
 
@@ -1531,7 +1723,71 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use super::{ConversationQuery, Conversations};
     use crate::Store;
+
+    /// The reads the apps poll — each conversation's newest reply (the unread
+    /// dots), each chat's last activity and newest rows (the roster) — seek
+    /// one chat's messages newest first and stop. Without
+    /// idx_chat_messages_chat_time each fetched and sorted every message of
+    /// every chat on every poll, holding SQLite's shared page cache until the
+    /// desktop server answered in seconds (2026-10-09).
+    #[test]
+    fn newest_first_reads_of_a_chat_seek_its_messages_in_order() {
+        let (_dir, store) = store();
+        let conn = store.conn().unwrap();
+        let reads = [
+            format!("SELECT {} FROM chats", super::latest_reply_sql("chats.id")),
+            format!("SELECT {} FROM chats", super::last_visible_message_sql("chats.id")),
+            "SELECT (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id) FROM chats".to_string(),
+            "SELECT *, rowid AS _rn FROM chat_messages WHERE chat_id = 'c' ORDER BY created_at DESC, _rn DESC LIMIT 6".to_string(),
+        ];
+        for sql in reads {
+            let plan: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan.iter().all(|step| !step.contains("TEMP B-TREE")), "{sql}: {plan:#?}");
+            assert!(plan.iter().any(|step| step.contains("idx_chat_messages_chat_time")), "{sql}: {plan:#?}");
+        }
+    }
+
+    /// A voice note starred on the phone is kept: the flag lands on that
+    /// file in the message's attachments, found by the id the phone sent the
+    /// message under, and nothing else in the metadata moves.
+    #[test]
+    fn a_kept_file_is_marked_on_its_message() {
+        let (_dir, store) = store();
+        store.create_chat("c", "Chat").unwrap();
+        let meta = serde_json::json!({
+            "messageId": "phone-1",
+            "attachments": [
+                {"fileId": "a", "filename": "photo.jpg"},
+                {"fileId": "b", "filename": "recording-20261010-090000.m4a"},
+            ],
+        });
+        store
+            .create_chat_message("row-1", "c", "user", "hello", Some(&meta.to_string()))
+            .unwrap();
+        assert!(store.set_chat_attachment_keep("phone-1", "b", true).unwrap());
+        let read = |id: &str| -> serde_json::Value {
+            let m = store.get_chat_message(id).unwrap().unwrap();
+            serde_json::from_str(m.metadata.as_deref().unwrap()).unwrap()
+        };
+        let m = read("row-1");
+        assert_eq!(m["attachments"][1]["keep"], true);
+        assert!(m["attachments"][0].get("keep").is_none());
+        assert_eq!(m["messageId"], "phone-1");
+        // By the row's own id too, and back off.
+        assert!(store.set_chat_attachment_keep("row-1", "b", false).unwrap());
+        assert_eq!(read("row-1")["attachments"][1]["keep"], false);
+        // A file the message does not carry, or no such message: nothing.
+        assert!(!store.set_chat_attachment_keep("row-1", "zzz", true).unwrap());
+        assert!(!store.set_chat_attachment_keep("nope", "b", true).unwrap());
+    }
 
     /// The owner's conversations with an employee are the only ones counted
     /// or chosen as its latest: its thread with a colleague and its seat for
@@ -1554,7 +1810,7 @@ mod tests {
         set_created_at(&store, "p1", 3_000);
 
         let mut listed: Vec<String> = store
-            .list_chats_by_session_enriched("agent:nm:")
+            .list_chats_by_session_enriched("agent:nm:", &ConversationQuery::default())
             .unwrap()
             .into_iter()
             .map(|(c, _, _)| c.id)
@@ -1977,6 +2233,40 @@ mod tests {
         assert_eq!(ids, vec!["a", "b", "c"]);
     }
 
+    /// The pages the chat view loads keep same-second rows in written order
+    /// too. Ordered by their random ids, a voice reply and the answer saved
+    /// with it flipped about half the time (2026-10-06).
+    #[test]
+    fn pages_keep_same_second_rows_in_written_order() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for id in ["z-question", "a-answer", "m-next"] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, 1000);
+        }
+        let ids = |msgs: Vec<crate::models::ChatMessage>| msgs.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let all = ["z-question", "a-answer", "m-next"];
+        assert_eq!(ids(store.get_chat_messages_budgeted("c1", 100_000, None).unwrap()), all);
+        assert_eq!(ids(store.get_chat_messages_paginated("c1", 10, None).unwrap()), all);
+        assert_eq!(ids(store.get_chat_messages_budgeted("c1", 100_000, Some("m-next")).unwrap()), ["z-question", "a-answer"]);
+        assert!(store.has_chat_messages_before("c1", "a-answer").unwrap());
+        assert!(!store.has_chat_messages_before("c1", "z-question").unwrap());
+    }
+
+    /// A row written after the fact keeps the time it was said.
+    #[test]
+    fn a_runner_row_can_carry_when_it_was_said() {
+        let (_dir, store) = store();
+        let m = store
+            .create_chat_message_for_runner("r1", "c1", "assistant", "said earlier", None, None, None, None, None, Some(1_700_000_000))
+            .unwrap();
+        assert_eq!(m.created_at, 1_700_000_000);
+        let now = store
+            .create_chat_message_for_runner("r2", "c1", "user", "now", None, None, None, None, None, None)
+            .unwrap();
+        assert!(now.created_at > 1_700_000_000);
+    }
+
     /// tool_calls / tool_results JSON survives the write/read round trip
     /// byte-comparable as JSON, and the runner write auto-creates the parent
     /// chat row carrying session_name (role/channel sessions never pre-create
@@ -1997,6 +2287,7 @@ mod tests {
                 Some(42),
                 Some(r#"{"k":"v"}"#),
                 Some("agent:emp:web"),
+                None,
             )
             .unwrap();
         assert_eq!(msg.token_estimate, Some(42));
@@ -2180,5 +2471,153 @@ mod tests {
         assert_eq!(s.model_override.as_deref(), Some("model-x"));
         // And the ONE chat-id derivation resolves to the new conversation.
         assert_eq!(store.resolve_session_chat_id("s1"), "chat-b");
+    }
+
+    fn set_updated_at(store: &Store, chat_id: &str, ts: i64) {
+        store
+            .conn()
+            .unwrap()
+            .execute("UPDATE chats SET updated_at = ?2 WHERE id = ?1", rusqlite::params![chat_id, ts])
+            .unwrap();
+    }
+
+    fn ids(rows: Vec<(crate::models::Chat, i64, String)>) -> Vec<String> {
+        rows.into_iter().map(|(c, _, _)| c.id).collect()
+    }
+
+    /// A pin is kept on the conversation's row: listed as pinned, kept
+    /// through a second pin at its first time, cleared by an unpin, and
+    /// never activity — the conversation keeps its place by time. A pin of
+    /// a conversation that does not exist pins nothing.
+    /// A conversation's permission mode is kept on its row: it survives the
+    /// bot reopening its database, is never activity, and clearing it hands
+    /// the conversation back to the employee's own mode. A workflow run's
+    /// carried mode is kept on its row the same way.
+    #[test]
+    fn a_conversations_mode_is_kept_on_its_row() {
+        use types::permissions::Mode;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db").to_string_lossy().into_owned();
+        {
+            let store = Store::new(&path).unwrap();
+            store.create_chat_for_session("t1", "agent:nm:thread:t1", "Lease", None).unwrap();
+            set_updated_at(&store, "t1", 1_000);
+            assert_eq!(store.get_chat("t1").unwrap().unwrap().permission_mode, None, "none picked: the employee's own");
+            let set = store.set_chat_permission_mode("t1", Some(Mode::Plan)).unwrap().expect("the row");
+            assert_eq!((set.permission_mode, set.updated_at), (Some(Mode::Plan), 1_000), "not activity");
+            assert!(store.set_chat_permission_mode("missing", Some(Mode::Ask)).unwrap().is_none());
+            store.create_workflow_run("run-1", "agent:nm", "agent", Some("w"), Some("{}"), None, None).unwrap();
+            assert_eq!(store.workflow_run_narrow("run-1").unwrap(), None);
+            store.set_workflow_run_narrow("run-1", Mode::Ask).unwrap();
+        }
+        let reopened = Store::new(&path).unwrap();
+        assert_eq!(reopened.get_chat("t1").unwrap().unwrap().permission_mode, Some(Mode::Plan), "kept across a reopen");
+        assert_eq!(reopened.workflow_run_narrow("run-1").unwrap(), Some(Mode::Ask));
+        let cleared = reopened.set_chat_permission_mode("t1", None).unwrap().unwrap();
+        assert_eq!(cleared.permission_mode, None);
+    }
+
+    #[test]
+    fn a_pin_is_kept_until_unpinned_and_is_never_activity() {
+        let (_dir, store) = store();
+        store.create_chat_for_session("t1", "agent:nm:thread:t1", "Lease", None).unwrap();
+        set_updated_at(&store, "t1", 1_000);
+
+        let pinned = store.set_chat_pinned("t1", true).unwrap().expect("the row");
+        let at = pinned.pinned_at.expect("pinned");
+        assert_eq!(pinned.updated_at, 1_000, "pinning is not activity");
+        store.conn().unwrap().execute("UPDATE chats SET pinned_at = 5 WHERE id = 't1'", []).unwrap();
+        let again = store.set_chat_pinned("t1", true).unwrap().unwrap();
+        assert_eq!(again.pinned_at, Some(5), "a second pin keeps its place (was {at})");
+        assert_eq!(store.get_chat("t1").unwrap().unwrap().pinned_at, Some(5), "stored on the row");
+
+        let owners = ConversationQuery { whose: Conversations::Owners, ..Default::default() };
+        let pins = ConversationQuery { pinned: true, ..owners };
+        assert_eq!(ids(store.list_chats_by_session_enriched("agent:nm:", &pins).unwrap()), vec!["t1"]);
+        assert_eq!(store.count_conversations("agent:nm:", &pins).unwrap(), 1);
+
+        let unpinned = store.set_chat_pinned("t1", false).unwrap().unwrap();
+        assert_eq!(unpinned.pinned_at, None);
+        assert_eq!(unpinned.updated_at, 1_000);
+        assert!(store.list_chats_by_session_enriched("agent:nm:", &pins).unwrap().is_empty());
+        assert_eq!(store.count_conversations("agent:nm:", &owners).unwrap(), 1, "still listed, by time");
+        assert!(store.set_chat_pinned("missing", true).unwrap().is_none());
+    }
+
+    /// The pinned conversations are listed most recently pinned first,
+    /// only the owner's, whatever their last activity.
+    #[test]
+    fn pinned_conversations_are_listed_newest_pin_first() {
+        let (_dir, store) = store();
+        for (id, at) in [("old", 100), ("mid", 200), ("new", 300)] {
+            store.create_chat_for_session(id, &format!("agent:nm:thread:{id}"), id, None).unwrap();
+            set_updated_at(&store, id, at);
+        }
+        store.create_chat_for_session("peer", "agent:nm:coworker:top-coder", "From Top Coder", None).unwrap();
+        for (id, pin) in [("old", 30), ("new", 10), ("peer", 40)] {
+            store.set_chat_pinned(id, true).unwrap();
+            store.conn().unwrap().execute("UPDATE chats SET pinned_at = ?2 WHERE id = ?1", rusqlite::params![id, pin]).unwrap();
+        }
+        let pins = ConversationQuery { whose: Conversations::Owners, pinned: true, ..Default::default() };
+        assert_eq!(ids(store.list_chats_by_session_enriched("agent:nm:", &pins).unwrap()), vec!["old", "new"]);
+    }
+
+    /// Pages walk the owner's conversations newest first, each starting
+    /// after the one the page before ended at, with no conversation twice
+    /// and none missed — two with the same last activity included — and
+    /// the threads with colleagues never among them.
+    #[test]
+    fn pages_walk_the_owners_conversations_newest_first_by_cursor() {
+        let (_dir, store) = store();
+        for (id, at) in [("a", 100), ("b", 500), ("c", 300), ("d", 300), ("e", 200), ("f", 400)] {
+            store.create_chat_for_session(id, &format!("agent:nm:thread:{id}"), id, None).unwrap();
+            set_updated_at(&store, id, at);
+        }
+        store.create_chat_for_session("peer", "agent:nm:coworker:top-coder", "From Top Coder", None).unwrap();
+        set_updated_at(&store, "peer", 900);
+        store.create_chat_for_session("other", "agent:xx:thread:other", "Someone else's", None).unwrap();
+
+        let owners = ConversationQuery { whose: Conversations::Owners, ..Default::default() };
+        assert_eq!(store.count_conversations("agent:nm:", &owners).unwrap(), 6);
+        let mut walked = Vec::new();
+        let mut before: Option<(i64, String)> = None;
+        loop {
+            let q = ConversationQuery {
+                before: before.as_ref().map(|(at, id)| (*at, id.as_str())),
+                limit: Some(4),
+                ..owners
+            };
+            let page = store.list_chats_by_session_enriched("agent:nm:", &q).unwrap();
+            assert!(page.len() <= 4);
+            let Some((last, _, _)) = page.last() else { break };
+            before = Some((last.updated_at, last.id.clone()));
+            walked.extend(ids(page));
+        }
+        assert_eq!(walked, vec!["b", "f", "d", "c", "e", "a"]);
+    }
+
+    /// A search narrows the list to the conversations whose title, or
+    /// anything said in them, matches — as words are typed — and counts
+    /// only those.
+    #[test]
+    fn a_search_finds_conversations_by_title_or_by_what_was_said() {
+        let (_dir, store) = store();
+        store.ensure_fts_healthy().unwrap();
+        store.create_chat_for_session("lease", "agent:nm:thread:lease", "Lease renewal 100%", None).unwrap();
+        store.create_chat_for_session("rates", "agent:nm:thread:rates", "Shipping", None).unwrap();
+        store.create_chat_message("r1", "rates", "user", "what are the USPS rates?", None).unwrap();
+        store.create_chat_for_session("other", "agent:nm:thread:other", "Groceries", None).unwrap();
+        set_updated_at(&store, "lease", 200);
+        set_updated_at(&store, "rates", 100);
+
+        let find = |q: &str| {
+            let query = ConversationQuery { whose: Conversations::Owners, search: Some(q), ..Default::default() };
+            (ids(store.list_chats_by_session_enriched("agent:nm:", &query).unwrap()), store.count_conversations("agent:nm:", &query).unwrap())
+        };
+        assert_eq!(find("lease"), (vec!["lease".to_string()], 1), "by title");
+        assert_eq!(find("usp"), (vec!["rates".to_string()], 1), "by a word said, as it is typed");
+        assert_eq!(find("usps rates"), (vec!["rates".to_string()], 1), "every word");
+        assert_eq!(find("100%"), (vec!["lease".to_string()], 1), "a title's own % is literal");
+        assert_eq!(find("nothing like it").1, 0);
     }
 }

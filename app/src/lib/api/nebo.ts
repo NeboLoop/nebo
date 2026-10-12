@@ -379,8 +379,8 @@ export function chatWithAgent(id: string, req: Record<string, unknown> = {}) {
 /**
  * @description "List agent chats"
  */
-export function listAgentChats(id: string) {
-	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`)
+export function listAgentChats(id: string, limit?: number, cursor?: string, q?: string) {
+	return webapi.get<components.ListAgentChatsResponse>(`/api/v1/agents/${id}/chats`, { limit, cursor, q })
 }
 
 /**
@@ -667,49 +667,77 @@ export function config() {
  * @description "Forgot password"
  */
 export function forgotPassword(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/forgot`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/forgot`, req)
 }
 
 /**
  * @description "Login"
  */
 export function login(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/login`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/login`, req)
 }
 
 /**
  * @description "Refresh"
  */
 export function refresh(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/refresh`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/refresh`, req)
 }
 
 /**
  * @description "Register"
  */
 export function register(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/register`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/register`, req)
 }
 
 /**
  * @description "Resend verification"
  */
 export function resendVerification(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/resend`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/resend`, req)
 }
 
 /**
  * @description "Reset password"
  */
 export function resetPassword(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/reset`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/reset`, req)
 }
 
 /**
  * @description "Verify email"
  */
 export function verifyEmail(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/auth/verify`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/verify`, req)
+}
+
+/**
+ * @description "List background"
+ */
+export function listBackground(agentId?: string) {
+	return webapi.get<components.BackgroundListResponse>(`/api/v1/background`, { agentId })
+}
+
+/**
+ * @description "Stop all background"
+ */
+export function stopAllBackground(req: Record<string, unknown> = {}) {
+	return webapi.post<components.StopEverythingResponse>(`/api/v1/background/stop-all`, req)
+}
+
+/**
+ * @description "Background output"
+ */
+export function backgroundOutput(id: string) {
+	return webapi.get<components.BackgroundOutputResponse>(`/api/v1/background/${id}/output`)
+}
+
+/**
+ * @description "Background action"
+ */
+export function backgroundAction(id: string, action: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.BackgroundActionResponse>(`/api/v1/background/${id}/${action}`, req)
 }
 
 /**
@@ -804,6 +832,13 @@ export function editMessage(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Keep message file"
+ */
+export function keepMessageFile(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.KeepMessageFileResponse>(`/api/v1/chats/messages/${id}/keep`, req)
+}
+
+/**
  * @description "Search messages"
  */
 export function searchMessages(q?: string, limit?: number, offset?: number, chat_id?: string) {
@@ -843,6 +878,27 @@ export function deleteChat(id: string) {
  */
 export function getChatMessages(id: string, max_chars?: number, before?: string) {
 	return webapi.get<components.ChatMessagesResponse>(`/api/v1/chats/${id}/messages`, { max_chars, before })
+}
+
+/**
+ * @description "Get chat permission mode"
+ */
+export function getChatPermissionMode(id: string) {
+	return webapi.get<components.ChatPermissionMode>(`/api/v1/chats/${id}/permission-mode`)
+}
+
+/**
+ * @description "Set chat permission mode"
+ */
+export function setChatPermissionMode(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.ChatPermissionMode>(`/api/v1/chats/${id}/permission-mode`, req)
+}
+
+/**
+ * @description "Pin chat"
+ */
+export function pinChat(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.PinChatResponse>(`/api/v1/chats/${id}/pin`, req)
 }
 
 /**
@@ -951,6 +1007,20 @@ export function teachStop(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Teach video"
+ */
+export function teachVideo(id: string) {
+	return webapi.get<unknown>(`/api/v1/desktop/teach/${id}/video`)
+}
+
+/**
+ * @description "Quit"
+ */
+export function quit(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/engine/quit`, req)
+}
+
+/**
  * @description "Get entity config"
  */
 export function getEntityConfig(entityType: string, entityId: string) {
@@ -1014,6 +1084,27 @@ export function serveFile(path: string) {
 }
 
 /**
+ * @description "List handoffs"
+ */
+export function listHandoffs(from?: string, into?: string, agent?: string, live?: boolean, limit?: number) {
+	return webapi.get<components.HandoffList>(`/api/v1/handoffs`, { from, into, agent, live, limit })
+}
+
+/**
+ * @description "Get handoff"
+ */
+export function getHandoff(id: string) {
+	return webapi.get<components.HandoffDetail>(`/api/v1/handoffs/${id}`)
+}
+
+/**
+ * @description "Stop handoff"
+ */
+export function stopHandoff(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.HandoffStopResponse>(`/api/v1/handoffs/${id}/stop`, req)
+}
+
+/**
  * @description "Apply install"
  */
 export function applyInstall(req: Record<string, unknown> = {}) {
@@ -1051,8 +1142,8 @@ export function createIntegration(req: Record<string, unknown> = {}) {
 /**
  * @description "Oauth callback"
  */
-export function oauthCallback() {
-	return webapi.get<unknown>(`/api/v1/integrations/oauth/callback`)
+export function oauthCallback(code?: string, state?: string, error?: string, error_description?: string) {
+	return webapi.get<unknown>(`/api/v1/integrations/oauth/callback`, { code, state, error, error_description })
 }
 
 /**
@@ -1116,6 +1207,55 @@ export function reauthenticateIntegration(id: string, req: Record<string, unknow
  */
 export function testIntegration(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.TestIntegrationResponse>(`/api/v1/integrations/${id}/test`, req)
+}
+
+/**
+ * @description "List integration tools"
+ */
+export function listIntegrationTools(id: string) {
+	return webapi.get<components.ConnectorToolsResponse>(`/api/v1/integrations/${id}/tools`)
+}
+
+/**
+ * @description "List packs"
+ */
+export function listPacks() {
+	return webapi.get<components.ListPacksResponse>(`/api/v1/intelligence-packs`)
+}
+
+/**
+ * @description "Create pack"
+ */
+export function createPack(req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreatePackResponse>(`/api/v1/intelligence-packs`, req)
+}
+
+/**
+ * @description "List pack choices"
+ */
+export function listPackChoices() {
+	return webapi.get<components.ListPackChoicesResponse>(`/api/v1/intelligence-packs/choices`)
+}
+
+/**
+ * @description "Set default pack"
+ */
+export function setDefaultPack(req: Record<string, unknown> = {}) {
+	return webapi.put<components.SetDefaultPackResponse>(`/api/v1/intelligence-packs/default`, req)
+}
+
+/**
+ * @description "Update pack"
+ */
+export function updatePack(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdatePackResponse>(`/api/v1/intelligence-packs/${id}`, req)
+}
+
+/**
+ * @description "Delete pack"
+ */
+export function deletePack(id: string) {
+	return webapi.delete<components.DeletePackResponse>(`/api/v1/intelligence-packs/${id}`)
 }
 
 /**
@@ -1819,6 +1959,41 @@ export function deleteProvider(id: string) {
 }
 
 /**
+ * @description "Browse connection catalog"
+ */
+export function browseConnectionCatalog(id: string, search?: string, kind?: string) {
+	return webapi.get<components.BrowseConnectionCatalogResponse>(`/api/v1/providers/${id}/catalog`, { search, kind })
+}
+
+/**
+ * @description "List connection models"
+ */
+export function listConnectionModels(id: string) {
+	return webapi.get<components.ListConnectionModelsResponse>(`/api/v1/providers/${id}/models`)
+}
+
+/**
+ * @description "Add connection model"
+ */
+export function addConnectionModel(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.AddConnectionModelResponse>(`/api/v1/providers/${id}/models`, req)
+}
+
+/**
+ * @description "Update connection model"
+ */
+export function updateConnectionModel(id: string, modelId: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdateConnectionModelResponse>(`/api/v1/providers/${id}/models/${modelId}`, req)
+}
+
+/**
+ * @description "Delete connection model"
+ */
+export function deleteConnectionModel(id: string, modelId: string) {
+	return webapi.delete<components.DeleteConnectionModelResponse>(`/api/v1/providers/${id}/models/${modelId}`)
+}
+
+/**
  * @description "Test provider"
  */
 export function testProvider(id: string, req: Record<string, unknown> = {}) {
@@ -2246,6 +2421,34 @@ export function readUpload(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Create upload"
+ */
+export function createUpload(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/uploads`, req)
+}
+
+/**
+ * @description "Upload status"
+ */
+export function uploadStatus(id: string) {
+	return webapi.get<unknown>(`/api/v1/uploads/${id}`)
+}
+
+/**
+ * @description "Upload chunk"
+ */
+export function uploadChunk(id: string, req: Record<string, unknown> = {}) {
+	return webapi.patch<unknown>(`/api/v1/uploads/${id}`, req)
+}
+
+/**
+ * @description "Complete upload"
+ */
+export function completeUpload(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/uploads/${id}/complete`, req)
+}
+
+/**
  * @description "User get current user"
  */
 export function userGetCurrentUser() {
@@ -2337,10 +2540,45 @@ export function listWorkDocuments() {
 }
 
 /**
+ * @description "File history"
+ */
+export function fileHistory(path: string) {
+	return webapi.get<components.FileHistoryResponse>(`/api/v1/work/history`, { path })
+}
+
+/**
+ * @description "Restore file history"
+ */
+export function restoreFileHistory(req: Record<string, unknown> = {}) {
+	return webapi.post<components.RestoreFileHistoryResponse>(`/api/v1/work/history/restore`, req)
+}
+
+/**
  * @description "Locate work file"
  */
 export function locateWorkFile(path: string) {
 	return webapi.get<components.LocatedFile>(`/api/v1/work/locate`, { path })
+}
+
+/**
+ * @description "Sheet view"
+ */
+export function sheetView(id: string, version?: number, rows?: string, sheet?: string, session?: string) {
+	return webapi.get<components.SheetResponse>(`/api/v1/work/${id}/sheet`, { version, rows, sheet, session })
+}
+
+/**
+ * @description "Sheet edit"
+ */
+export function sheetEdit(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.Edited>(`/api/v1/work/${id}/sheet/edit`, req)
+}
+
+/**
+ * @description "Sheet save"
+ */
+export function sheetSave(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.Saved>(`/api/v1/work/${id}/sheet/save`, req)
 }
 
 /**

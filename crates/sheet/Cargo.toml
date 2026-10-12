@@ -1,0 +1,22 @@
+[package]
+name = "nebo-sheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Pinned to an upstream commit: 0.8.3 on crates.io ships zip with its default
+# features, which compiles C compression code (bzip2-sys) xlsx never needs.
+# Move to the next crates.io release once it contains that fix. Pre-1.0, so
+# any move re-runs the spike's checks (values against the file's stored
+# results, recalc time).
+# roxmltree reads and patches the parts IronCalc does not model: it keeps byte
+# ranges for in-place patching, and Nebo already builds it (typst).
+ironcalc = { git = "https://github.com/ironcalc/IronCalc", rev = "09e81f53f4c021fc0ec212e95fb353a1c6c5c704" }
+roxmltree = "0.20"
+serde = { workspace = true }
+thiserror = { workspace = true }
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

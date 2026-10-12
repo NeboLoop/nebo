@@ -40,6 +40,8 @@ fixtures:
   - ../fixtures/permissions/clear-instruction-on-full-access-acts.yaml
   # ...but a run the owner didn't start never removes what it didn't make
   - ../fixtures/permissions/full-access-unattended-never-removes-others-work.yaml
+  # ...and what it made, its skills' data included, stays its own across runs (Vivid 2026-10)
+  - ../fixtures/permissions/full-access-own-work-across-runs.yaml
   # Limits: helpers, employee-made employees, coworkers (§4.6; #246)
   - ../fixtures/turn/helper-cannot-exceed-parent.yaml
   - ../fixtures/permissions/employee-made-employee-capped-one-card.yaml

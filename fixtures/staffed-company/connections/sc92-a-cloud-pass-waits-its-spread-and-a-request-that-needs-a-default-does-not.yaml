@@ -1,0 +1,8 @@
+id: sc92-a-cloud-pass-waits-its-spread-and-a-request-that-needs-a-default-does-not
+name: "SC92 — A cloud pass waits its spread and a request that needs a default does not"
+description: |
+  A cloud bot's pass waits out its random spread before it fetches anything;
+  a request that needs a default meanwhile installs it on the spot, once.
+target_component: staffed-company
+proof: staffed_proof::connections::a_cloud_pass_waits_its_spread_and_a_request_that_needs_a_default_does_not
+conversation: []

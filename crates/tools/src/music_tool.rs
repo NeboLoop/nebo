@@ -521,7 +521,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    run_command("powershell", &["-NoProfile", "-Command", script]).await
+    run_command("powershell", &["-NoProfile", "-Command", &format!("{}{script}", command::POWERSHELL_UTF8)]).await
 }
 
 #[cfg(target_os = "linux")]

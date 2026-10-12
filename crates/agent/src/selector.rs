@@ -34,6 +34,9 @@ const NOT_CHAT: &[&str] = &[
     "image_generation",
     "image-generation",
     "rerank",
+    // A decision model (Jev and other SystemOne-compatible ones) judges; it
+    // never answers a conversation.
+    "decision",
 ];
 
 /// The CLI providers: their models are the CLI's own names, not catalog rows.
@@ -86,8 +89,7 @@ fn chat_models(models: &HashMap<String, Vec<ModelInfo>>) -> HashMap<String, Vec<
 /// Model routing configuration.
 #[derive(Debug, Clone, Default)]
 pub struct ModelRoutingConfig {
-    /// The configured routes: "general" (a turn with no chosen model) and
-    /// "aux" (background work).
+    /// The configured route: "general" (a turn with no chosen model).
     pub task_routing: HashMap<String, String>,
     /// Default primary model.
     pub default_model: String,
@@ -141,14 +143,7 @@ impl ModelRoutingConfig {
             provider_models.insert(provider_name.clone(), infos);
         }
 
-        let mut task_routing = HashMap::new();
-        if let Some(tr) = models_cfg.task_routing.as_ref() {
-            for (route, model) in [("general", &tr.general), ("aux", &tr.aux)] {
-                if !model.is_empty() {
-                    task_routing.insert(route.to_string(), model.clone());
-                }
-            }
-        }
+        let task_routing = task_routes(models_cfg);
 
         // Default model from config
         let default_model = models_cfg
@@ -166,9 +161,24 @@ impl ModelRoutingConfig {
     }
 }
 
+/// The route a turn reads from `models.yaml`: "general" (the bot's
+/// default). The ONE mapping, read at startup and again whenever it is
+/// saved.
+pub fn task_routes(models_cfg: &ModelsConfig) -> HashMap<String, String> {
+    let mut routes = HashMap::new();
+    if let Some(general) = models_cfg.task_routing.as_ref().map(|tr| &tr.general).filter(|m| !m.is_empty()) {
+        routes.insert("general".to_string(), general.clone());
+    }
+    routes
+}
+
 /// Thread-safe model resolution.
 pub struct ModelSelector {
     config: ModelRoutingConfig,
+    /// The configured routes as they are now: seeded from `config` and
+    /// replaced when Routing is saved ([`ModelSelector::set_task_routing`]),
+    /// so a new default applies to the next turn, not after a restart.
+    task_routing: RwLock<HashMap<String, String>>,
     fuzzy: RwLock<Option<FuzzyMatcher>>,
     /// Provider IDs that are actually loaded (have running Provider instances).
     loaded_providers: RwLock<Vec<String>>,
@@ -184,6 +194,7 @@ impl ModelSelector {
             &config.provider_credentials,
         );
         Self {
+            task_routing: RwLock::new(config.task_routing.clone()),
             config,
             fuzzy: RwLock::new(Some(fuzzy)),
             loaded_providers: RwLock::new(Vec::new()),
@@ -241,14 +252,17 @@ impl ModelSelector {
         *lock = Some(new_fuzzy);
     }
 
-    /// Get model info by "provider/model" ID.
+    /// Get model info by "provider/model" ID. A connection's model
+    /// (`<kind>@<profile>/<model>`) is one of its own (typed or browsed),
+    /// else the vendor's catalog entry for that model.
     pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
         let (provider_id, model_name) = parse_model_id(model_id);
+        let kind = provider_id.split('@').next().unwrap_or(provider_id);
         let runtime = self.runtime_models.read().unwrap();
-        runtime
-            .get(provider_id)
-            .and_then(|models| models.iter().find(|m| m.id == model_name))
-            .or_else(|| self.config.provider_models.get(provider_id)?.iter().find(|m| m.id == model_name))
+        [provider_id, kind]
+            .into_iter()
+            .find_map(|p| runtime.get(p).and_then(|models| models.iter().find(|m| m.id == model_name)))
+            .or_else(|| self.config.provider_models.get(kind)?.iter().find(|m| m.id == model_name))
             .cloned()
     }
 
@@ -297,43 +311,51 @@ impl ModelSelector {
             warn!(chosen, resolved = %id, "the chosen model is not a chat model this bot can send to; sending {DEFAULT_CHAT_MODEL}");
             return DEFAULT_CHAT_MODEL.to_string();
         }
-        let configured = self
-            .config
-            .task_routing
-            .get("general")
-            .filter(|m| !m.is_empty())
-            .unwrap_or(&self.config.default_model);
-        if self.sendable(configured) {
-            return configured.clone();
+        let configured = self.configured();
+        if self.sendable(&configured) {
+            return configured;
         }
         DEFAULT_CHAT_MODEL.to_string()
     }
 
-    /// The model background work runs on (chat titles and the other chores
-    /// that don't fork a turn's request): the configured aux route when it
-    /// is a chat model this bot can send to, else [`DEFAULT_CHAT_MODEL`].
-    /// Never the cheapest row: the embedding models are the cheapest rows.
-    pub fn background_model(&self) -> String {
-        match self.config.task_routing.get("aux").filter(|m| self.sendable(m)) {
-            Some(aux) => aux.clone(),
-            None => DEFAULT_CHAT_MODEL.to_string(),
-        }
+    /// The bot's default as configured (Settings → Routing → General, else
+    /// the catalog's primary): a model, or an intelligence pack
+    /// (`types::packs::parse_ref`) the turn resolves through its pack.
+    pub fn configured(&self) -> String {
+        self.task_routing
+            .read()
+            .unwrap()
+            .get("general")
+            .filter(|m| !m.is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.config.default_model.clone())
+    }
+
+    /// Replace the configured routes ([`task_routes`]) when the default is
+    /// saved: the next turn and the next background chore read them.
+    pub fn set_task_routing(&self, routes: HashMap<String, String>) {
+        *self.task_routing.write().unwrap() = routes;
     }
 
     /// A model a turn may be sent to: its provider is loaded (when the
     /// loaded set is known) and it is a known chat model, or a model of a
     /// loaded CLI provider.
-    fn sendable(&self, model_id: &str) -> bool {
+    pub fn sendable(&self, model_id: &str) -> bool {
         let (provider_id, model_name) = parse_model_id(model_id);
-        if provider_id.is_empty() || model_name.is_empty() {
+        if provider_id.is_empty() {
             return false;
         }
         let loaded = self.loaded_providers.read().unwrap();
         if !loaded.is_empty() && !loaded.iter().any(|p| p == provider_id) {
             return false;
         }
-        if CLI_PROVIDERS.contains(&provider_id) {
+        // A coding tool on this computer: its own default model when the
+        // choice names none (`claude-code/`), else the one named.
+        if CLI_PROVIDERS.contains(&provider_id.split('@').next().unwrap_or(provider_id)) {
             return !loaded.is_empty();
+        }
+        if model_name.is_empty() {
+            return false;
         }
         self.get_model_info(model_id).is_some_and(|m| m.chats())
     }
@@ -390,6 +412,27 @@ mod tests {
         assert_eq!(selector.context_window("janus/nebo-1-pro"), 131_072);
         assert_eq!(selector.context_window("janus/nebo-1"), 200_000, "the synced row wins over the boot floor");
         assert_eq!(selector.context_window("anthropic/claude-opus-4-6"), 1_000_000, "a direct provider keeps its catalog value");
+    }
+
+    /// Saving the default reaches the running selector: the next turn's
+    /// default is the new route, with no restart — an intelligence pack as
+    /// the default included.
+    #[test]
+    fn a_saved_route_applies_without_a_restart() {
+        let mut config = ModelRoutingConfig::default();
+        config.provider_models.insert(
+            "janus".into(),
+            vec![info("nebo-1", 0), info("nebo-1-flash", 0), info("nebo-1-pro", 0)],
+        );
+        config.task_routing.insert("general".into(), "janus/nebo-1".into());
+        let selector = ModelSelector::new(config);
+        assert_eq!(selector.resolve(""), "janus/nebo-1");
+
+        selector.set_task_routing([("general".to_string(), "janus/nebo-1-pro".to_string())].into());
+        assert_eq!(selector.resolve(""), "janus/nebo-1-pro");
+
+        selector.set_task_routing([("general".to_string(), "pack/mine/high".to_string())].into());
+        assert_eq!(selector.configured(), "pack/mine/high", "the turn resolves it through the pack");
     }
 
     /// A model whose window nothing reported gets the 200k default.
@@ -449,7 +492,6 @@ mod tests {
         let misconfigured = ModelSelector::new(config);
         misconfigured.set_loaded_providers(vec!["janus".into()]);
         assert_eq!(misconfigured.resolve(""), DEFAULT_CHAT_MODEL, "an embedding model configured as the chat model");
-        assert_eq!(misconfigured.background_model(), DEFAULT_CHAT_MODEL, "background work never runs on an embedding model");
     }
 
     /// The speeds a helper or an employee may name are chat models only.
@@ -488,21 +530,6 @@ mod tests {
         assert_eq!(selector.resolve("nebo-2-ultra-bogus"), DEFAULT_CHAT_MODEL, "a bogus preference");
     }
 
-    /// Background work runs on the configured aux route when it is a chat
-    /// model, else the default chat model; never the cheapest row (the
-    /// embedding models are priced lowest).
-    #[test]
-    fn background_work_runs_on_a_chat_model() {
-        let selector = gateway();
-        assert_eq!(selector.background_model(), DEFAULT_CHAT_MODEL);
-        let mut config = ModelRoutingConfig {
-            task_routing: [("aux".to_string(), "janus/nebo-1-flash".to_string())].into(),
-            ..Default::default()
-        };
-        config.provider_models.insert("janus".into(), vec![ModelInfo { capabilities: vec!["tools".into()], ..info("nebo-1-flash", 200_000) }]);
-        assert_eq!(ModelSelector::new(config).background_model(), "janus/nebo-1-flash");
-    }
-
     /// A model's real window is used, however small: a 32k local model
     /// checkpoints at 32k.
     #[test]
@@ -534,13 +561,8 @@ mod tests {
         );
         let models_cfg = config::ModelsConfig {
             version: "1.0".into(),
-            defaults: Some(config::models::Defaults {
-                escalation: String::new(),
-                primary: "anthropic/claude-sonnet-4-20250514".into(),
-                fallbacks: vec![],
-            }),
+            defaults: Some(config::models::Defaults { primary: "anthropic/claude-sonnet-4-20250514".into() }),
             task_routing: None,
-            lane_routing: None,
             aliases: vec![],
             providers,
             cli_providers: vec![],
@@ -629,5 +651,18 @@ mod tests {
         let selector = ModelSelector::new(config);
         selector.set_loaded_providers(vec!["claude-code".into(), "janus".into()]);
         assert_eq!(selector.resolve(""), DEFAULT_CHAT_MODEL);
+    }
+
+    /// A coding tool on this computer runs its own default model when the
+    /// choice names none, and the one named when it does; any other
+    /// provider needs a model.
+    #[test]
+    fn a_coding_tool_runs_its_own_default_when_no_model_is_named() {
+        let selector = ModelSelector::new(ModelRoutingConfig::default());
+        selector.set_loaded_providers(vec!["claude-code".into(), "anthropic".into()]);
+        assert!(selector.sendable("claude-code/"));
+        assert!(selector.sendable("claude-code/model-x"));
+        assert!(!selector.sendable("anthropic/"));
+        assert!(!selector.sendable("codex-cli/"), "not loaded here");
     }
 }

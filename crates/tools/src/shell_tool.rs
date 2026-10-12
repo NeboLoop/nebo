@@ -212,6 +212,20 @@ impl ShellTool {
             ));
         }
 
+        // Browsing is the browser tools' work. On 2026-10-11 an employee
+        // told "use chrome" and "you can drive it with playwright" searched
+        // for npx and Playwright's caches, wrote a scraping script and ran
+        // it with node: slow, brittle, installing things on the owner's
+        // computer and pouring shell output into his chat. A workflow's
+        // command step and a hook run what their author wrote; a project
+        // that declares the library keeps its own test suite.
+        if !ctx.trusted_plugin_env && ctx.stdin.is_none() {
+            let run_cwd = if input.cwd.is_empty() { ctx.cwd.as_deref().unwrap_or("") } else { input.cwd.as_str() };
+            if browser_automation(&input.command, std::path::Path::new(run_cwd)).is_some() {
+                return ToolResult::error(BROWSER_AUTOMATION_REDIRECT);
+            }
+        }
+
         // A cloud bot's package installer, as a command of its own, is the
         // one command that runs through sudo (`system_packages`): it runs
         // outside the confinement (whose no-new-privileges would stop sudo),
@@ -1069,6 +1083,14 @@ fn missing_command_name(output: &str) -> Option<String> {
                 return Some(name.to_string());
             }
         }
+        // PowerShell: "foo : The term 'foo' is not recognized as the name of a cmdlet, …"
+        if let Some(rest) = l.split("The term '").nth(1)
+            && let Some((name, _)) = rest.split_once("' is not recognized as")
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
+        }
+        // cmd.exe: "'foo' is not recognized as an internal or external command, …"
         if let Some(idx) = l.find(" is not recognized as") {
             let name = l[..idx].trim().trim_matches(|c| c == '\'' || c == '"');
             if !name.is_empty() {
@@ -1093,6 +1115,36 @@ fn extract_base_command(command: &str) -> String {
         .next()
         .unwrap_or("")
         .to_string()
+}
+
+/// The program a shell call's exit code comes from, and the exit-code
+/// convention to read it by. The shell reports the status of the last
+/// command it ran (`policy::exit_command`): the last stage of a pipeline,
+/// the right side of the last `&&`/`||`, so `cat f | grep x` exiting 1 is
+/// grep's "no matches". After `&&` the code may be the step before it
+/// failing (`cd d && grep x` exits 1 when `d` is missing), so there the
+/// default applies: nonzero is an error. The convention is the program's
+/// name, `git diff` and `git grep` by their subcommand, or empty for the
+/// default. A script the reader can't parse falls back to the last stage
+/// split on `|`.
+fn exit_program(command: &str) -> (String, String) {
+    let Some((sub, operator)) = crate::policy::exit_command(command) else {
+        let base = extract_base_command(command);
+        return (base.clone(), base);
+    };
+    let words: Vec<&str> = sub.words().iter().map(|w| w.as_deref().unwrap_or("")).collect();
+    let program = words
+        .first()
+        .and_then(|w| std::path::Path::new(w).file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let convention = match (program.as_str(), words.get(1).copied()) {
+        _ if operator.as_deref() == Some("&&") => String::new(),
+        ("git", Some(sub @ ("diff" | "grep"))) => format!("git {sub}"),
+        _ => program.clone(),
+    };
+    (program, convention)
 }
 
 /// Interpret a command's exit code using command-specific semantics.
@@ -1127,6 +1179,87 @@ fn detect_unbounded_follow(command: &str) -> Option<&'static str> {
         return Some("tail -f");
     }
     None
+}
+
+/// What a command that drives a browser by script hears instead of running.
+pub const BROWSER_AUTOMATION_REDIRECT: &str = "Browsing, scraping and web automation go through your browser tools, not \
+     scripts: Playwright, Puppeteer and Selenium aren't run here, and no browser drivers are installed. Open the \
+     page with browser_open (chrome: true when the owner asked for their Chrome), work it with browser_act, \
+     browser_fill_form and browser_read, and script it with browser_run_js. When the owner mentions Playwright, \
+     these tools are what they mean: they do the same work.";
+
+/// The browser-automation libraries and drivers a command must not reach
+/// for in an employee's run.
+const BROWSER_AUTOMATION: &[&str] = &["playwright", "puppeteer", "selenium", "webdriver", "chromedriver", "geckodriver"];
+
+/// Programs that run a script file named after them (`node scrape.js`,
+/// `bun run scrape.ts`): the file is read for the libraries above.
+const SCRIPT_RUNNERS: &[&str] = &["node", "python", "python3", "deno", "bun", "tsx", "ts-node"];
+
+/// The files a project names the libraries it uses in.
+const PROJECT_MANIFESTS: &[&str] = &[
+    "package.json",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    "Pipfile",
+    "playwright.config.ts",
+    "playwright.config.js",
+    "playwright.config.mjs",
+];
+
+/// The browser-automation library a command drives a browser with, if it
+/// does: named in the command (`npx playwright install`, `pip install
+/// selenium`, `node -e "require('puppeteer')"`) or in a script it runs
+/// (`cd ~/scrape && node airbnb.js`). `None` for a command that only reads
+/// (`ls ~/Library/Caches/ms-playwright`), and for one in a project that
+/// declares the library itself: its own tests (`npx playwright test`) are
+/// the project's work.
+fn browser_automation(command: &str, cwd: &std::path::Path) -> Option<&'static str> {
+    if crate::policy::is_read_only(command) {
+        return None;
+    }
+    let lower = command.to_lowercase();
+    let mut named = BROWSER_AUTOMATION.iter().copied().find(|lib| lower.contains(lib));
+    // The folders the command works in: the call's, and each one it cds to.
+    let mut dirs = vec![cwd.to_path_buf()];
+    for sub in crate::policy::subcommands(command) {
+        let words: Vec<&str> = sub.words().iter().map(|w| w.as_deref().unwrap_or("")).collect();
+        let here = dirs.last().cloned().unwrap_or_default();
+        match words.as_slice() {
+            ["cd", dir, ..] => dirs.push(here.join(crate::file_tool::expand_path(dir))),
+            [program, rest @ ..] => {
+                let program = std::path::Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !SCRIPT_RUNNERS.contains(&program) {
+                    continue;
+                }
+                let Some(file) = rest.iter().find(|w| !w.is_empty() && !w.starts_with('-') && **w != "run") else {
+                    continue;
+                };
+                let path = here.join(crate::file_tool::expand_path(file));
+                if named.is_none()
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                {
+                    let text = text.to_lowercase();
+                    named = BROWSER_AUTOMATION.iter().copied().find(|lib| text.contains(lib));
+                }
+                if let Some(parent) = path.parent() {
+                    dirs.push(parent.to_path_buf());
+                }
+            }
+            _ => {}
+        }
+    }
+    let lib = named?;
+    let declares = |dir: &std::path::Path| {
+        dir.ancestors().any(|d| {
+            PROJECT_MANIFESTS.iter().any(|m| {
+                std::fs::read_to_string(d.join(m))
+                    .is_ok_and(|t| if m.starts_with("playwright.config") { lib == "playwright" } else { t.to_lowercase().contains(lib) })
+            })
+        })
+    };
+    (!dirs.iter().any(|d| !d.as_os_str().is_empty() && declares(d))).then_some(lib)
 }
 
 /// Programs whose empty output means "nothing matched" only when they had
@@ -1312,10 +1445,10 @@ fn holds_a_file(dir: &std::path::Path) -> bool {
 /// replaces grep's "no matches" and find's "inaccessible" (there was nothing
 /// to match against).
 fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_searched: Option<&str>) -> (bool, Option<String>) {
-    let base = extract_base_command(command);
-    match base.as_str() {
+    let (base, convention) = exit_program(command);
+    match convention.as_str() {
         // grep/rg: 0=matches found, 1=no matches, 2+=error
-        "grep" | "rg" | "egrep" | "fgrep" => {
+        "grep" | "rg" | "egrep" | "fgrep" | "git grep" => {
             if let (1, Some(note)) = (exit_code, nothing_searched) {
                 (false, Some(note.to_string()))
             } else if exit_code == 1 {
@@ -1325,7 +1458,7 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_sear
             }
         }
         // diff: 0=identical, 1=differences found, 2+=error
-        "diff" | "colordiff" => {
+        "diff" | "colordiff" | "git diff" => {
             if exit_code == 1 {
                 (false, Some("Files differ.".to_string()))
             } else {
@@ -1429,7 +1562,38 @@ mod tests {
         assert_eq!(missing_command_name("zsh: command not found: foo").as_deref(), Some("foo"));
         assert_eq!(missing_command_name("/bin/sh: 1: foo: not found").as_deref(), Some("foo"));
         assert_eq!(missing_command_name("'foo' is not recognized as an internal or external command").as_deref(), Some("foo"));
+        assert_eq!(
+            missing_command_name("foo-x : The term 'foo-x' is not recognized as the name of a cmdlet,\nfunction, script file, or operable program.").as_deref(),
+            Some("foo-x")
+        );
         assert_eq!(missing_command_name("grep: x: No such file"), None);
+    }
+
+    /// The exit code is read by the convention of the command it came from:
+    /// the last one run. A search's 1 is "no matches", not an error,
+    /// wherever the search stands in a pipeline or after `;`/`||`; after
+    /// `&&` it may be the step before failing, so it is an error.
+    #[test]
+    fn the_exit_code_is_read_by_the_last_command_run() {
+        use super::interpret_exit_code;
+        let error = |cmd: &str, code: i32| interpret_exit_code(cmd, code, "", None).0;
+        assert!(!error("cat f | grep x", 1), "a pipeline's code is its last stage's");
+        assert!(error("cd d && grep x", 1), "after && the step before may have failed");
+        assert!(!error("cd d; grep x f", 1));
+        assert!(!error("grep x f 2>/dev/null", 1));
+        assert!(!error("timeout 5 rg x", 1), "a wrapper runs the search");
+        assert!(!error("/usr/bin/grep x f", 1));
+        assert!(error("grep x f", 2), "2 is grep's error");
+        assert!(error("grep x f | wc -l", 1), "wc's 1 is an error");
+        assert!(!error("git diff --exit-code", 1), "files differ");
+        assert!(!error("ls && test -f x || [ -d y ]", 1), "condition is false");
+        assert!(!error("cat a | diff - b", 1));
+        assert!(error("cat f | sort", 1));
+        let (_, said) = interpret_exit_code("cat f | grep x", 1, "", None);
+        assert!(said.is_some_and(|s| s.starts_with("No matches found")));
+        let (failed, said) = interpret_exit_code("cd d && find x", 1, "", Some("Nothing was searched."));
+        assert!(failed, "after && the default applies");
+        assert_eq!(said.as_deref(), Some("Nothing was searched."), "the nothing-searched note stays");
     }
 
     use super::*;
@@ -1446,6 +1610,57 @@ mod tests {
 
     // Privilege escalation never executes — foreground or background — and the
     // refusal steers toward reporting to the user, not retrying.
+    /// 2026-10-11: an employee asked to use Chrome wrote a Playwright
+    /// script and ran it with node. Every way of driving a browser by
+    /// script is steered to the browser tools; a project's own tests and a
+    /// look around are not.
+    #[test]
+    fn browser_automation_is_steered_to_the_browser_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let scrape = dir.path().join("trip-scrape");
+        std::fs::create_dir(&scrape).unwrap();
+        std::fs::write(scrape.join("airbnb.js"), "const { chromium } = require('playwright');\n").unwrap();
+        std::fs::write(scrape.join("sum.js"), "console.log(1 + 1);\n").unwrap();
+        let home = dir.path();
+        for command in [
+            "npx playwright install chromium",
+            "npm install puppeteer",
+            "pip install selenium",
+            "brew install chromedriver",
+            "node -e \"require('playwright')\"",
+            "python3 -m playwright install",
+        ] {
+            assert!(browser_automation(command, home).is_some(), "{command}");
+        }
+        assert_eq!(browser_automation("cd trip-scrape && node airbnb.js", home), Some("playwright"));
+        assert_eq!(browser_automation("node trip-scrape/airbnb.js", home), Some("playwright"));
+        assert_eq!(browser_automation(&format!("node {}", scrape.join("airbnb.js").display()), home), Some("playwright"));
+        // Ordinary scripts and reads run.
+        assert_eq!(browser_automation("node trip-scrape/sum.js", home), None);
+        assert_eq!(browser_automation("which npx", home), None);
+        assert_eq!(browser_automation("ls ~/Library/Caches/ms-playwright", home), None);
+        // A project that declares the library runs its own tests.
+        let app = dir.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        std::fs::write(app.join("package.json"), r#"{"devDependencies": {"@playwright/test": "1.48.0"}}"#).unwrap();
+        assert_eq!(browser_automation("npx playwright test", &app), None);
+        assert_eq!(browser_automation("cd app && npx playwright test", home), None);
+    }
+
+    /// The steer refuses before anything runs, and names the tools to use.
+    #[tokio::test]
+    async fn a_playwright_command_is_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = tool()
+            .execute(&ctx(), json!({"action": "exec", "command": "npx playwright install chromium", "cwd": dir.path()}))
+            .await;
+        assert!(r.is_error);
+        assert_eq!(r.content, BROWSER_AUTOMATION_REDIRECT);
+        for tool in ["browser_open", "browser_act", "browser_run_js", "chrome: true"] {
+            assert!(BROWSER_AUTOMATION_REDIRECT.contains(tool), "{tool}");
+        }
+    }
+
     #[test]
     fn unbounded_follows_are_detected() {
         // The exact shape that parked a live run for 300s.

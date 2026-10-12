@@ -42,7 +42,7 @@ function Resolve-Path2($el, $path) {
   foreach ($i in $path.Split('.')) {
     $c = $walker.GetFirstChild($el); $n = [int]$i
     while ($n -gt 0 -and $null -ne $c) { $c = $walker.GetNextSibling($c); $n-- }
-    if ($null -eq $c) { Write-Error "path $path: no child $i (walk the tree again; the window changed)"; exit 4 }
+    if ($null -eq $c) { Write-Error "path ${path}: no child $i (walk the tree again; the window changed)"; exit 4 }
     $el = $c
   }
   return $el
@@ -130,6 +130,89 @@ if ($vp.Current.IsReadOnly) { Write-Error "'$($el.Current.Name)' is read-only"; 
 $vp.SetValue($value)
 "#;
 
+/// `wait` (the helper's command, `ax_native::run`): poll the app's windows
+/// until the condition holds or `$timeout` ms pass. `$for` is `text` (an
+/// element's name or a field's value contains `$text`), `appears`/`gone`
+/// (an element named `$label`), `menu`/`menu-closed` (a menu is open), or
+/// `window` (a window, titled containing `$title` when given). Prints
+/// `{"elapsed_ms": n}`; a timeout is `wait_timeout: waited …` on stderr.
+const WAIT: &str = r#"
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$A = [System.Windows.Automation.AutomationElement]; $T = [System.Windows.Automation.TreeScope]; $all = [System.Windows.Automation.Condition]::TrueCondition
+function Get-AppWindows {
+  $ids = @(Get-Process -Name $app -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+  $tops = @($A::RootElement.FindAll($T::Children, $all))
+  if (-not $ids) { $ids = @($tops | Where-Object { $_.Current.Name.IndexOf($app, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { $_.Current.ProcessId }) }
+  @($tops | Where-Object { $ids -contains $_.Current.ProcessId })
+}
+function Test-Named($el) {
+  $n = [string]$el.Current.Name
+  $n -ieq $label -or $n.Replace('&', '').Trim().TrimEnd(':').Trim() -ieq $label.Trim().TrimEnd(':').Trim()
+}
+function Test-Holds {
+  $wins = @(Get-AppWindows)
+  switch ($for) {
+    'window' { return [bool]($wins | Where-Object { $title -eq '' -or $_.Current.Name.IndexOf($title, [StringComparison]::OrdinalIgnoreCase) -ge 0 }) }
+    { $_ -in 'menu', 'menu-closed' } {
+      $isItem = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem)
+      $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker; $open = $false
+      foreach ($w in $wins) { foreach ($i in $w.FindAll($T::Descendants, $isItem)) { $p = $walker.GetParent($i); if ($p -and $p.Current.ControlType -ne [System.Windows.Automation.ControlType]::MenuBar) { $open = $true; break } }; if ($open) { break } }
+      return $(if ($for -eq 'menu') { $open } else { -not $open })
+    }
+  }
+  foreach ($w in $wins) {
+    foreach ($e in $w.FindAll($T::Descendants, $all)) {
+      if ($for -eq 'text') {
+        if (([string]$e.Current.Name).IndexOf($text, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+        $vp = $null; if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp) -and ([string]$vp.Current.Value).IndexOf($text, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+      } elseif (Test-Named $e) { return ($for -eq 'appears') }
+    }
+  }
+  return ($for -eq 'gone')
+}
+while ($true) {
+  if (Test-Holds) { Write-Output (@{ elapsed_ms = [int]$sw.ElapsedMilliseconds } | ConvertTo-Json -Compress); exit 0 }
+  if ($sw.ElapsedMilliseconds -ge $timeout) { [Console]::Error.WriteLine("wait_timeout: waited $timeout ms for $what in $app; it did not happen"); exit 1 }
+  Start-Sleep -Milliseconds 250
+}
+"#;
+
+/// The helper's `wait` command: `wait --app A --for KIND [--text T]
+/// [--label L] [--title T] --timeout-ms N`.
+pub(super) async fn wait_raw(args: &[String], deadline: Duration) -> Result<String, String> {
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+            .unwrap_or("")
+    };
+    let kind = flag("--for");
+    let timeout: u64 = flag("--timeout-ms").parse().unwrap_or(5_000);
+    let what = match kind {
+        "text" => format!("the text \"{}\"", flag("--text")),
+        "appears" => format!("\"{}\" to appear", flag("--label")),
+        "gone" => format!("\"{}\" to go", flag("--label")),
+        "menu" => "a menu to open".to_string(),
+        "menu-closed" => "the menu to close".to_string(),
+        "window" if !flag("--title").is_empty() => format!("a window titled \"{}\"", flag("--title")),
+        "window" => "a window".to_string(),
+        other => return Err(format!("wait: unknown condition '{other}'")),
+    };
+    let script = format!(
+        "$app = {}; $for = {}; $text = {}; $label = {}; $title = {}; $timeout = {timeout}; $what = {}\n{WAIT}",
+        ps_quote(flag("--app")),
+        ps_quote(kind),
+        ps_quote(flag("--text")),
+        ps_quote(flag("--label")),
+        ps_quote(flag("--title")),
+        ps_quote(&what)
+    );
+    run(&script, deadline + STARTUP_GRACE).await
+}
+
 /// Single-quoted PowerShell literal: the only escape is doubling the quote.
 /// Windows.Media.Ocr through WinRT: the OS's own recognizer, the user's
 /// profile languages. Boxes are the union of each line's word boxes.
@@ -141,7 +224,7 @@ $null = [Windows.Storage.Streams.IRandomAccessStream,Windows.Storage.Streams,Con
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
 function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(); $t.Result }
-$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('IMAGE_PATH')) ([Windows.Storage.StorageFile])
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync(IMAGE_PATH)) ([Windows.Storage.StorageFile])
 $stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
 $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
 $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
@@ -229,10 +312,23 @@ pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str, _
     run(&set_script(app, window, path, value), Duration::from_secs(5) + STARTUP_GRACE).await.map(|_| ())
 }
 
+/// Wraps every script: no progress records, and any error is written to
+/// stderr as its bare message. Unwrapped, `-EncodedCommand` with stderr
+/// redirected serializes both as CLIXML, and the reported error read
+/// `#< CLIXML`.
+const ERRORS_AS_TEXT: &str = "$ProgressPreference = 'SilentlyContinue'\n\
+     $ErrorActionPreference = 'Stop'\n\
+     trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }\n";
+
 /// What a failed run is reported as: PowerShell's own error line when there
-/// is one, the exit status when there is not.
+/// is one, the exit status when there is not. A CLIXML stream (a record the
+/// wrap could not keep out) is never the error line.
 fn failure_text(code: Option<i32>, stderr: &str) -> String {
-    let first = stderr.trim().lines().next().unwrap_or("").trim();
+    let first = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("#< CLIXML") && !l.starts_with("<Objs"))
+        .unwrap_or("");
     if first.is_empty() {
         format!("ax helper exited with status {}", code.map_or("unknown".to_string(), |c| c.to_string()))
     } else {
@@ -242,7 +338,8 @@ fn failure_text(code: Option<i32>, stderr: &str) -> String {
 
 async fn run(script: &str, timeout: Duration) -> Result<String, String> {
     let mut cmd = command::new::<tokio::process::Command>("powershell", command::Console::Hidden);
-    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded_command(script)])
+    let script = format!("{}{ERRORS_AS_TEXT}{script}", command::POWERSHELL_UTF8);
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded_command(&script)])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -302,5 +399,41 @@ mod tests {
     fn failure_text_prefers_powershells_first_error_line() {
         assert_eq!(failure_text(Some(3), "no window belongs to an application named 'x'\nAt line:1"), "no window belongs to an application named 'x'");
         assert_eq!(failure_text(Some(1), ""), "ax helper exited with status 1");
+        assert_eq!(failure_text(Some(1), "#< CLIXML\n<Objs Version=\"1.1.0.1\"></Objs>\nno OCR language pack"), "no OCR language pack");
+    }
+
+    /// Every script parses. One that does not never runs at all: the
+    /// prelude's `"path $path: …"` made every walk on Windows fail as
+    /// "ax helper exited with status 1".
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn every_script_parses() {
+        let opts = WalkOpts { window: 1, depth: 4, max: 30, timeout: Duration::from_millis(1500), root: None };
+        for (name, script) in [
+            ("tree", tree_script("X", &opts)),
+            ("act", act_script("X", 1, "0.1", "AXPress")),
+            ("set", set_script("X", 1, "0", "v")),
+            ("text", text_script("C:\\x.png")),
+            ("wait", format!("$app = 'X'; $for = 'text'; $text = 'a'; $label = ''; $title = ''; $timeout = 100; $what = 'x'\n{WAIT}")),
+        ] {
+            let check = format!(
+                "$e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput({}, [ref]$null, [ref]$e); \
+                 if ($e) {{ [Console]::Error.WriteLine($e[0].Message + ' at line ' + $e[0].Extent.StartLineNumber); exit 1 }}",
+                ps_quote(&format!("{}{ERRORS_AS_TEXT}{script}", command::POWERSHELL_UTF8))
+            );
+            if let Err(e) = run(&check, Duration::from_secs(30)).await {
+                panic!("the {name} script does not parse: {e}");
+            }
+        }
+    }
+
+    /// An error reaches the caller as its message, not as CLIXML.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn an_error_is_reported_as_its_message() {
+        let e = run("Write-Error \"no window belongs to an application named 'x'\"; exit 3", Duration::from_secs(30)).await.unwrap_err();
+        assert_eq!(e, "no window belongs to an application named 'x'");
+        let e = run("[void][System.IO.File]::ReadAllText('C:\\no\\such\\file.txt')", Duration::from_secs(30)).await.unwrap_err();
+        assert!(e.contains("C:\\no\\such\\file.txt") && !e.contains("CLIXML"), "{e}");
     }
 }

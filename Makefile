@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos cli-darwin app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -95,7 +95,9 @@ frontend:
 
 dev: stage-obscura stage-ripgrep frontend
 	@echo "Starting Nebo (Tauri + Vite)..."
-	@echo "  Vite HMR for frontend, Tauri watch for backend"
+	@echo "  Two processes: the app (window, tray) and its engine (nebo --engine, the server), its child"
+	@echo "  Vite HMR for frontend, Tauri watch for backend: a Rust change rebuilds both"
+	@echo "  Engine log: <Nebo folder>/logs/nebo.log; the app's: logs/nebo-shell.log"
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
 	@echo "  NOTE: File changes trigger restart — use 'make run' to test workflows."
 	@echo "  Ctrl-C to stop all processes."
@@ -264,14 +266,16 @@ OBSCURA_REPO ?= $(shell cd .. && pwd)/obscura
 # Target triple Tauri expects in the externalBin filename (host triple by default;
 # release-* targets that cross-build pass an explicit OBSCURA_TRIPLE).
 OBSCURA_TRIPLE ?= $(shell rustc -vV | sed -n 's/^host: //p')
+# A sidecar is an .exe on Windows, built and staged under that name (as release CI does).
+SIDECAR_EXT = $(if $(findstring windows,$(OBSCURA_TRIPLE)),.exe,)
 
 stage-obscura:
 	@echo "Staging Obscura sidecars for $(OBSCURA_TRIPLE)..."
 	@mkdir -p src-tauri/binaries
 	@for bin in obscura obscura-worker; do \
-		dst="src-tauri/binaries/$$bin-$(OBSCURA_TRIPLE)"; \
-		cross="$(OBSCURA_REPO)/target/$(OBSCURA_TRIPLE)/release/$$bin"; \
-		host="$(OBSCURA_REPO)/target/release/$$bin"; \
+		dst="src-tauri/binaries/$$bin-$(OBSCURA_TRIPLE)$(SIDECAR_EXT)"; \
+		cross="$(OBSCURA_REPO)/target/$(OBSCURA_TRIPLE)/release/$$bin$(SIDECAR_EXT)"; \
+		host="$(OBSCURA_REPO)/target/release/$$bin$(SIDECAR_EXT)"; \
 		if [ -f "$$cross" ]; then \
 			if cmp -s "$$cross" "$$dst"; then \
 				echo "  $$bin already staged (unchanged)"; \
@@ -329,12 +333,12 @@ release-darwin:
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=aarch64-apple-darwin
 	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=aarch64-apple-darwin
 	cargo tauri build --target aarch64-apple-darwin
-	cp $(TAURI_TARGET)/aarch64-apple-darwin/release/nebo dist/nebo-darwin-arm64
+	$(MAKE) cli-darwin MAC_TARGET=aarch64-apple-darwin CLI_ARCH=arm64
 	# amd64
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=x86_64-apple-darwin
 	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=x86_64-apple-darwin
 	cargo tauri build --target x86_64-apple-darwin
-	cp $(TAURI_TARGET)/x86_64-apple-darwin/release/nebo dist/nebo-darwin-amd64
+	$(MAKE) cli-darwin MAC_TARGET=x86_64-apple-darwin CLI_ARCH=amd64
 
 # Linux: Tauri desktop + headless CLI
 release-linux: stage-obscura stage-ripgrep
@@ -461,7 +465,7 @@ github-release:
 # macOS runners on GitHub Actions bill at ~10x Linux, so CI skips the mac jobs
 # (BUILD_MACOS_IN_CI unset) and we build the arm64 mac assets locally instead.
 # Produces, into dist/, names matching the CI/CDN convention:
-#   nebo-darwin-arm64                  (bare binary)
+#   nebo-darwin-arm64                  (bare binary: nebo-cli signed on its own, see cli-darwin)
 #   Nebo-$(RELEASE_VERSION)-arm64.dmg  (Developer ID signed + notarized + stapled)
 #   checksums-macos.txt                (sha256 of the two assets, for the merge)
 RELEASE_VERSION := $(shell grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
@@ -469,8 +473,7 @@ RELEASE_VERSION := $(shell grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)
 release-macos:
 	@echo "Building macOS arm64 release assets locally (v$(RELEASE_VERSION))..."
 	@$(MAKE) notarize VERSION=$(RELEASE_VERSION)
-	@cp "$(TAURI_RELEASE)/nebo" dist/nebo-darwin-arm64
-	@chmod +x dist/nebo-darwin-arm64
+	@$(MAKE) cli-darwin CLI_ARCH=arm64 CLI_NOTARIZE=1
 	@cd dist && shasum -a 256 nebo-darwin-arm64 "Nebo-$(RELEASE_VERSION)-arm64.dmg" > checksums-macos.txt
 	@echo "macOS assets ready in dist/:"
 	@ls -1 "dist/nebo-darwin-arm64" "dist/Nebo-$(RELEASE_VERSION)-arm64.dmg"
@@ -484,11 +487,22 @@ release-macos-amd64:
 	@echo "Building Obscura fork sidecars for x86_64-apple-darwin..."
 	@cd $(OBSCURA_REPO) && cargo build --release -p obscura-cli --target x86_64-apple-darwin
 	@$(MAKE) notarize VERSION=$(RELEASE_VERSION) MAC_TARGET=x86_64-apple-darwin
-	@cp "target/x86_64-apple-darwin/release/nebo" dist/nebo-darwin-amd64
-	@chmod +x dist/nebo-darwin-amd64
+	@$(MAKE) cli-darwin MAC_TARGET=x86_64-apple-darwin CLI_ARCH=amd64 CLI_NOTARIZE=1
 	@cd dist && shasum -a 256 nebo-darwin-amd64 "Nebo-$(RELEASE_VERSION)-amd64.dmg" >> checksums-macos.txt
 	@echo "macOS Intel assets ready in dist/:"
 	@ls -1 "dist/nebo-darwin-amd64" "dist/Nebo-$(RELEASE_VERSION)-amd64.dmg"
+
+# The bare darwin asset, dist/nebo-darwin-$(CLI_ARCH): the headless nebo-cli
+# signed on its own (dev.neboai.nebo.cli), never the app's executable copied out
+# of Nebo.app (its signature is bound to the bundle: the kernel kills it run on
+# its own). CLI_NOTARIZE=1 notarizes it; then it is run on its own (the gate).
+CLI_ARCH ?= $(DMG_ARCH)
+cli-darwin:
+	cargo build --release -p nebo-cli $(MAC_TARGET_FLAG)
+	@mkdir -p dist
+	SIGN_IDENTITY="$(SIGN_IDENTITY)" bash scripts/nebo-cli-darwin.sh sign "$(MAC_BIN_DIR)/nebo-cli" "dist/nebo-darwin-$(CLI_ARCH)"
+	@if [ -n "$(CLI_NOTARIZE)" ]; then bash scripts/nebo-cli-darwin.sh notarize "dist/nebo-darwin-$(CLI_ARCH)"; fi
+	bash scripts/nebo-cli-darwin.sh check "dist/nebo-darwin-$(CLI_ARCH)"
 
 # Attach locally-built mac assets to an existing GitHub release + CDN, merging
 # their checksums into the release's checksums.txt. Run after `make release-macos`
@@ -510,7 +524,7 @@ RIPGREP_VERSION ?= 14.1.1
 # BurntSushi ships musl for linux-amd64 (static, runs everywhere); tauri still
 # expects the -gnu host triple in the filename, so asset triple != file triple.
 RG_ASSET_TRIPLE = $(if $(filter x86_64-unknown-linux-gnu,$(OBSCURA_TRIPLE)),x86_64-unknown-linux-musl,$(OBSCURA_TRIPLE))
-RG_EXT = $(if $(findstring windows,$(OBSCURA_TRIPLE)),.exe,)
+RG_EXT = $(SIDECAR_EXT)
 
 stage-ripgrep:
 	@mkdir -p src-tauri/binaries
@@ -688,6 +702,23 @@ test-gate-nightly: $(NEBO_CLI)
 # --update.
 test-error-shapes:
 	python3 scripts/error-shapes.py /tmp/nebo-gate-traces --baseline suites/error-shapes.baseline.txt
+
+# ─── Authoring eval: which workflows Nebo's guidance produces, per model ─────
+# Owner requests (fixtures/authoring/requests.json) → each model, given the
+# create_workflow/create_employee definitions exactly as Nebo shows them →
+# every workflow validated and checked against the design rules
+# (crates/tools/src/workflows/authoring.rs) → report.md per model and
+# matrix.md (each model's pass rate per rule) in target/eval-authoring/<stamp>/.
+# TRACK=run (or both) adds the run track: can a model RUN a lean judge step
+# and a multi-round tool step (fixtures/authoring/steps.json). Billed.
+#   make eval-authoring                                  # MODELS=claude:haiku
+#   make eval-authoring MODELS=janus:nebo-1-flash,janus:nebo-1-medium,janus:nebo-1-pro TRACK=both
+#   make eval-authoring ONLY=crm-sync,invoice-run
+#   make eval-authoring SCORE=target/eval-authoring/latest   # re-score only
+# janus:<model> needs JANUS_TOKEN (JANUS_URL defaults to Janus); claude:<alias> needs the claude CLI.
+.PHONY: eval-authoring
+eval-authoring:
+	@python3 scripts/eval-authoring.py
 
 # ─── Public benchmark: SWE-bench Verified ────────────────────────────────────
 # Runs a seeded sample of SWE-bench Verified through the live agent (needs make

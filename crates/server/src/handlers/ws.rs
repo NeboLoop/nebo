@@ -178,6 +178,14 @@ pub(crate) fn from_its_desktop_window(headers: &axum::http::HeaderMap, agent_id:
         .is_some_and(|host| !agent_id.is_empty() && host.trim_end_matches('/').eq_ignore_ascii_case(agent_id))
 }
 
+/// How often a client socket hears from the bot when nothing else is
+/// happening: a `ping` frame, answered with `pong`. Through the tunnel a
+/// socket can die on the far side and leave its client open and silent
+/// (2026-10-08: a browser sat on a socket the bot had closed for ten
+/// minutes, its conversation frozen). A client that has heard the heartbeat
+/// treats three missed beats as a dead line, dials again and reloads.
+pub(crate) const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// GET /ws — Main client WebSocket endpoint.
 pub async fn client_ws_handler(
     State(state): State<AppState>,
@@ -406,6 +414,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     channel: "app".to_string(),
                     origin: Origin::User,
                     door: types::permissions::Door::Chat,
+                    narrow: None,
                     agent_id: agent_id.clone(),
                     cancel_token: CancellationToken::new(),
                     lane: lanes::EVENTS.to_string(),
@@ -565,6 +574,12 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
         }
     }
 
+    // The line's heartbeat (`HEARTBEAT`): a client that hears nothing for
+    // several beats knows its socket is dead and dials again, which reloads
+    // the conversation it shows.
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
             // Broadcast events to client
@@ -585,12 +600,28 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                         sent += 1;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Events this client never got are gone for good:
+                        // carrying on left its conversation showing a turn
+                        // with holes in it, and nothing ever told it. The
+                        // socket closes instead; the client dials again and
+                        // reads the conversation afresh, as after any drop.
                         lagged += n;
-                        warn!("ws client lagged by {} messages, continuing", n);
+                        warn!(lagged = n, ua = %ua, "ws client fell behind the broadcast; closing so it reloads");
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         break;
                     }
+                }
+            }
+            _ = heartbeat.tick() => {
+                let ping = serde_json::json!({"type": "ping"});
+                if socket
+                    .send(Message::Text(serde_json::to_string(&ping).unwrap().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
             // Handle incoming messages from client
@@ -636,11 +667,12 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     }));
                                 }
                                 "cancel_all" => {
-                                    let count = apply_cancel_all(&state.helpers, &state.run_registry).await;
+                                    // The one stop for everything: helpers, every turn,
+                                    // workflow runs (not in the run registry: 2026-10-08 an
+                                    // emergency stop counted 0 while a workflow step kept
+                                    // calling Odoo) and background commands.
+                                    let count = crate::background::stop_everything(&state).await;
                                     info!(count, "emergency cancel_all");
-                                    state.hub.broadcast("chat_cancelled", serde_json::json!({
-                                        "session_id": "all",
-                                    }));
                                 }
                                 "restore_version" => {
                                     // Restore an earlier version of a work document: append a
@@ -661,43 +693,17 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     {
                                         match state.store.restore_work_version(&document_id, version) {
                                             Ok(new_v) => {
-                                                let artifact = serde_json::json!({
-                                                    "documentId": doc.id,
-                                                    "filename": doc.filename,
-                                                    "kind": doc.kind,
-                                                    "version": new_v.version_number,
-                                                    "url": new_v.url,
-                                                });
                                                 let content = format!(
                                                     "Restored {} to version {}",
                                                     doc.filename, version
                                                 );
-                                                let msg_id = uuid::Uuid::new_v4().to_string();
-                                                let metadata = serde_json::json!({
-                                                    "artifacts": [artifact.clone()]
-                                                })
-                                                .to_string();
-                                                let created_at = state
-                                                    .store
-                                                    .create_chat_message(
-                                                        &msg_id,
-                                                        &doc.chat_id,
-                                                        "assistant",
-                                                        &content,
-                                                        Some(&metadata),
-                                                    )
-                                                    .map(|m| m.created_at)
-                                                    .unwrap_or(0);
-                                                state.hub.broadcast(
-                                                    "chat_message",
-                                                    serde_json::json!({
-                                                        "id": msg_id,
-                                                        "content": content,
-                                                        "createdAt": created_at * 1000,
-                                                        "agentId": agent_id,
-                                                        "session_id": session_id,
-                                                        "artifacts": [artifact],
-                                                    }),
+                                                crate::chat_dispatch::announce_work_version(
+                                                    &state,
+                                                    &doc,
+                                                    &new_v,
+                                                    &content,
+                                                    &agent_id,
+                                                    session_id.as_deref(),
                                                 );
                                             }
                                             Err(e) => warn!(
@@ -716,9 +722,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                     {
                                         client_id = named.to_string();
                                     }
-                                    let auth_ok = serde_json::json!({"type": "auth_ok"});
                                     match socket
-                                        .send(Message::Text(serde_json::to_string(&auth_ok).unwrap().into()))
+                                        .send(Message::Text(auth_ok().to_string().into()))
                                         .await
                                     {
                                         Ok(()) => info!("ws auth_ok sent successfully"),
@@ -728,6 +733,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                         }
                                     }
                                 }
+                                // A client's answer to the heartbeat.
+                                "pong" => {}
                                 "ping" => {
                                     let pong = serde_json::json!({"type": "pong"});
                                     if socket
@@ -980,6 +987,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                                             channel: "web".to_string(),
                                             origin: Origin::User,
                                             door: types::permissions::Door::Chat,
+                                            narrow: None,
                                             agent_id: agent_id.clone(),
                                             cancel_token: CancellationToken::new(),
                                             lane: types::constants::lanes::EVENTS.to_string(),
@@ -1433,7 +1441,7 @@ async fn apply_cancel(
 /// The owner's emergency stop — the `cancel_all` message, the ONE way to
 /// stop everything: every helper of every session, then every run on the
 /// bot. Returns how many runs were cancelled.
-async fn apply_cancel_all(
+pub(crate) async fn apply_cancel_all(
     helpers: &agent::harness::delegation::Helpers,
     registry: &crate::run_registry::RunRegistry,
 ) -> usize {
@@ -1532,6 +1540,18 @@ impl ChatPayload {
 
 /// How many chat `message_id`s the bot remembers for [`first_delivery`].
 const DELIVERIES_KEPT: usize = 4096;
+
+/// The oldest phone app this bot serves. A path an older phone needed is
+/// removed only by raising this: a phone older than it shows "Update Nebo
+/// to continue" instead of meeting a bot that no longer answers the way it
+/// expects.
+pub const MIN_MOBILE_VERSION: &str = "0.1.128";
+
+/// The answer to a client's `auth`: it may send now. It names the oldest
+/// phone app this bot serves (`min_mobile_version`), which the phone checks.
+fn auth_ok() -> serde_json::Value {
+    serde_json::json!({"type": "auth_ok", "data": {"min_mobile_version": MIN_MOBILE_VERSION}})
+}
 
 /// True the first time the bot sees this chat `message_id`, on any socket.
 ///
@@ -1945,6 +1965,7 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
             channel: channel.clone(),
             origin: Origin::User,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.clone(),
             cancel_token: CancellationToken::new(),
             lane: lanes::MAIN.to_string(),
@@ -2048,6 +2069,7 @@ async fn fork_mention_chat(
         channel: channel.to_string(),
         origin: Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: mentioned_id.to_string(),
         cancel_token: CancellationToken::new(),
         lane: lanes::MAIN.to_string(),
@@ -2286,8 +2308,14 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                 "extension_ws forwarding tool request"
             );
             let msg = if req.is_command {
-                // Fire-and-forget command (show_indicators, hide_indicators)
+                // Fire-and-forget command (show_indicators, teach_record_start, …);
+                // its args ride as fields of the message.
                 let mut m = serde_json::json!({ "type": req.tool });
+                if let Some(args) = req.args.as_object() {
+                    for (k, v) in args {
+                        m[k.as_str()] = v.clone();
+                    }
+                }
                 if let Some(ref sid) = req.session_id {
                     m["session_id"] = serde_json::Value::String(sid.clone());
                 }
@@ -2355,6 +2383,16 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     bridge_recv.deliver_result(conn_id, id, result).await;
                                 }
                             }
+                            // Teach recording: one thing the person did, with its crop.
+                            "teach_event" => {
+                                let session = parsed["session"].as_str().unwrap_or("").to_string();
+                                let crop = parsed["crop"].as_str().map(str::to_string);
+                                let event = parsed.get("event").cloned().unwrap_or_default();
+                                bridge_recv.teach_event(&session, event, crop.as_deref()).await;
+                            }
+                            "teach_flushed" => {
+                                bridge_recv.teach_flushed(parsed["session"].as_str().unwrap_or(""));
+                            }
                             "hello" | "connected" => {
                                 debug!("extension bridge handshake: {}", msg_type);
                             }
@@ -2393,6 +2431,10 @@ fn log_client_frame(text: &str) {
             .to_string()
     };
     let msg_type = field("type");
+    // The heartbeat's answer, every beat from every client: not news.
+    if msg_type == "pong" {
+        return;
+    }
     info!(
         msg_type = %msg_type,
         bytes = text.len(),
@@ -2853,7 +2895,6 @@ mod cancel_precedence_tests {
         Helpers::new(
             store,
             Arc::new(harness.sessions().clone()),
-            tools,
             Arc::new(harness.clone()),
             None,
             None,
@@ -3144,5 +3185,18 @@ mod delivery_tests {
             first_delivery(&format!("fill-{}", uuid::Uuid::new_v4()));
         }
         assert!(first_delivery(&id));
+    }
+}
+
+#[cfg(test)]
+mod auth_ok_tests {
+    /// A client that may send is told the oldest phone app this bot serves,
+    /// the version the phone checks itself against.
+    #[test]
+    fn auth_ok_names_the_oldest_phone_app_served() {
+        let frame = super::auth_ok();
+        assert_eq!(frame["type"], "auth_ok");
+        assert_eq!(frame["data"]["min_mobile_version"], super::MIN_MOBILE_VERSION);
+        assert_eq!(super::MIN_MOBILE_VERSION, "0.1.128");
     }
 }

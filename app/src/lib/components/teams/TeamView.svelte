@@ -33,6 +33,7 @@
   import ChatComposer from '$lib/components/chat/ChatComposer.svelte';
   import TeamWorkSheet from '$lib/components/teams/TeamWorkSheet.svelte';
   import { applyWorkEvent, stopBody, workKey, WORK_EVENTS, type WorkEntry } from '$lib/teams/teamWork';
+  import { callWords } from '$lib/chat/callLabel';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
 
   let {
@@ -385,7 +386,7 @@
                 >
                   <span class="w-1.5 h-1.5 rounded-full bg-success agent-working-dot shrink-0"></span>
                   <span class="text-xs font-medium shrink-0 max-w-[40%] truncate">{w.title}</span>
-                  <span class="text-xs text-base-content/55 truncate min-w-0">{w.activity || $t('sidebar.working')}</span>
+                  <span class="text-xs text-base-content/55 truncate min-w-0">{(w.call ? callWords(w.call, $t) : w.activity) || $t('sidebar.working')}</span>
                 </button>
               {/each}
             </div>

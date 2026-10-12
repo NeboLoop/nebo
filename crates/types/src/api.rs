@@ -83,10 +83,20 @@ pub struct MessageResponse {
     pub message: String,
 }
 
+/// `GET /health`: unauthenticated, so status and identity only, never a
+/// secret. The desktop shell attaches to an engine whose `role` is `engine`
+/// and whose `version` is its own.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
+    pub role: String,
+    pub pid: u32,
+    /// Something starts this engine again when it exits non-zero.
+    pub supervised: bool,
+    /// RFC 3339.
+    pub started_at: String,
 }
 
 /// The live counters of a turn running on a session, for a page that opens

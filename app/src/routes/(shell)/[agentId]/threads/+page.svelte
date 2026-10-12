@@ -13,6 +13,7 @@
   import { createChatController } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { threadIdFromKey, threadKey } from '$lib/chat/sessionKey';
+  import { takePending } from '$lib/chat/chatMode';
   import { uploadFailureMessage, uploadFiles } from '$lib/api/upload';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -65,6 +66,10 @@
         chat.isLoading = false;
         return;
       }
+      // A permission mode picked before the conversation existed is saved on
+      // it before its first message, so the first turn already runs in it.
+      const mode = takePending(agentId);
+      if (mode) await api.setChatPermissionMode(newChatId, { mode });
 
       // Files can't ride sessionStorage, so they upload here and the stash
       // carries what the upload returned. Dropping them sent the first message
@@ -94,6 +99,9 @@
       chat.isLoading = false;
     }
   }
+
+  // AGENT.md's `starters:` — tapping one sends it as the chat's first message.
+  const starters = $derived(agent?.starters ?? []);
 
   // ?ask= — a starter prompt from a pane CTA lands in the composer, then the
   // param is cleared so refresh doesn't re-insert it.
@@ -133,10 +141,23 @@
     if (chatId) goto(`/${agentId}/threads/${chatId}?active=1`);
   }}
   isLoading={chat.isLoading}
+  turnStartedAt={chat.turnStartedAt}
   quotaWarning={chat.quotaWarning}
   ondismisswarning={() => chat.dismissWarning()}
   chatError={chat.chatError}
   ondismisserror={() => chat.dismissError()}
 >
   {#snippet flowsPane()}<FlowsPane onask={ctx.askEmployee} />{/snippet}
+  {#snippet emptyActions()}
+    {#if starters.length}
+      <div class="flex flex-col items-center gap-2 w-full max-w-md">
+        <div class="text-xs text-base-content/60">{$t('chat.startersLabel')}</div>
+        <div class="flex flex-wrap justify-center gap-2">
+          {#each starters as ask (ask)}
+            <button type="button" class="btn btn-sm btn-outline rounded-full font-normal h-auto min-h-8 py-1.5 whitespace-normal text-left" disabled={chat.isLoading} onclick={() => handleSend(ask)}>{ask}</button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+  {/snippet}
 </ChatPane>

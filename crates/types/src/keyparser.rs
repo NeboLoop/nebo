@@ -266,6 +266,10 @@ pub fn conversation_of(key: &str) -> Option<Conversation> {
     }
 }
 
+/// The channel of an employee's workflow builder chat (the Architect):
+/// `agent:<id>:help:workflow`.
+pub const WORKFLOW_BUILDER: &str = "help:workflow";
+
 /// The workflow-id namespace for an agent's inline workflow bindings.
 /// DELIBERATELY a separate helper even though the literal shape (`agent:<id>`)
 /// collides with a channel-less agent session key: a workflow id is NOT a

@@ -22,6 +22,10 @@ pub enum McpError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolDef {
     pub name: String,
+    /// The server's own name for the tool in plain words ("Agent
+    /// Management"), when it gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(
@@ -42,6 +46,9 @@ pub struct McpToolDef {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolAnnotations {
+    /// The older place a server puts the tool's plain-words name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only_hint: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +56,17 @@ pub struct McpToolAnnotations {
 }
 
 impl McpToolDef {
+    /// The tool's plain-words name, when the server gives one: `title`, else
+    /// `annotations.title`.
+    pub fn display_title(&self) -> Option<String> {
+        self.title
+            .as_deref()
+            .or_else(|| self.annotations.as_ref()?.title.as_deref())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    }
+
     /// The server says the tool changes nothing.
     pub fn read_only(&self) -> bool {
         self.annotations.as_ref().and_then(|a| a.read_only_hint).unwrap_or(false)
@@ -127,4 +145,23 @@ pub struct OAuthMetadata {
     pub registration_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revocation_endpoint: Option<String>,
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::McpToolDef;
+
+    #[test]
+    fn a_tools_title_is_its_own_then_its_annotations() {
+        let own: McpToolDef = serde_json::from_value(serde_json::json!({
+            "name": "agent", "title": "Agent Management", "annotations": {"title": "Agents"}
+        }))
+        .unwrap();
+        assert_eq!(own.display_title().as_deref(), Some("Agent Management"));
+        let annotated: McpToolDef =
+            serde_json::from_value(serde_json::json!({"name": "agent", "annotations": {"title": "Agents"}})).unwrap();
+        assert_eq!(annotated.display_title().as_deref(), Some("Agents"));
+        let none: McpToolDef = serde_json::from_value(serde_json::json!({"name": "agent", "title": "  "})).unwrap();
+        assert_eq!(none.display_title(), None);
+    }
 }

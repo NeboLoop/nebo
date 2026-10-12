@@ -137,47 +137,62 @@ fn could_not_connect(selector: &ModelSelector, model: &str) -> String {
     }
 }
 
-/// Pick a non-gateway provider when available.  Falls back to the default
-/// provider (which may be Janus) only when no other option exists.  This
-/// prevents background operations (memory extraction, compaction,
-/// summarisation) from burning Janus credits when a CLI or direct-API
-/// provider is loaded. Never the linked provider (`ai::default_provider`).
-pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
-    providers
-        .iter()
-        .find(|p| p.retryable() && p.id() != "janus")
-        .cloned()
-        .or_else(|| ai::default_provider(providers))
+/// Where one piece of background work goes: the provider, the model name
+/// it is sent (empty: the provider's own default) and that model's window.
+#[derive(Clone)]
+pub struct Route {
+    pub provider: Arc<dyn Provider>,
+    pub model: String,
+    pub window_tokens: usize,
 }
 
-/// Resolve the (provider, model) for auxiliary side-tasks — chat title
-/// generation, memory extraction, tool-batch summaries, and the auto-continue
-/// judge.  Honors `task_routing.aux` ("provider/model") from models.yaml when
-/// set AND that provider is loaded; returns `None` otherwise so each caller
-/// silently keeps its existing selection.  Aux routing must never make a
-/// side-task fail that would have succeeded before.
-pub(crate) fn resolve_aux(
-    cfg: &config::ModelsConfig,
-    providers: &[Arc<dyn Provider>],
-) -> Option<(Arc<dyn Provider>, String)> {
-    let spec = cfg.task_routing.as_ref().map(|tr| tr.aux.as_str())?;
-    if spec.is_empty() {
-        return None;
+/// The ONE resolver for background work: chat titles, memory extraction
+/// and curation, tool summaries, permission and goal checks, a hire's
+/// capability read, the personality directive, a linked employee's handoff
+/// summary. Each runs on the intelligence pack of the work it serves (the
+/// turn's model reference; empty: the bot's default) at the pack's
+/// Housekeeping lane (its Instant level), resolved by the same
+/// `turn_model` turns use: an empty level is Nebo AI's, a pack that can't
+/// run falls back to Nebo AI when it is set to and is otherwise skipped,
+/// and a model of the owner's own (not a pack) is used as chosen. The call
+/// goes to that model's provider, or, when it isn't loaded, to the first
+/// provider that takes calls at its own default, as a turn's call does.
+#[derive(Clone)]
+pub struct Housekeeper {
+    store: Arc<db::Store>,
+    selector: Arc<ModelSelector>,
+    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+}
+
+impl Housekeeper {
+    pub fn new(
+        store: Arc<db::Store>,
+        selector: Arc<ModelSelector>,
+        providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    ) -> Self {
+        Self { store, selector, providers }
     }
-    let (provider_id, model) = spec.split_once('/')?;
-    // Background work runs on a chat model only: an embedding or audio
-    // model named as the aux route is passed over.
-    let (capabilities, kind) = cfg
-        .providers
-        .get(provider_id)
-        .and_then(|models| models.iter().find(|m| m.id == model))
-        .map(|m| (m.capabilities.clone(), m.kind.clone()))
-        .unwrap_or_default();
-    if !crate::selector::is_chat_model(model, &capabilities, &kind) {
-        return None;
+
+    /// Where background work for a turn on `chosen` goes. `None`: the pack
+    /// is set not to use Nebo AI and can't run, or no provider takes calls.
+    pub async fn route(&self, chosen: &str) -> Option<Route> {
+        // A linked agent answers only for its employee: background work
+        // for it runs on the bot's default.
+        let chosen = if ai::LinkedProvider::target(chosen).is_some() { "" } else { chosen };
+        let resolver = super::turn::Resolver { store: &self.store, selector: &self.selector };
+        let model = super::turn::turn_model(resolver, chosen, Some(types::packs::Lane::Housekeeping))
+            .map_err(|why| debug!(why, "background work skipped: the pack can't run it"))
+            .ok()?
+            .model;
+        let (provider_id, name) = crate::selector::parse_model_id(&model);
+        let providers = self.providers.read().await;
+        let (provider, name) = match providers.iter().find(|p| p.id() == provider_id && p.retryable()) {
+            Some(provider) => (provider.clone(), name.to_string()),
+            None => (ai::default_provider(&providers)?, String::new()),
+        };
+        let window_tokens = self.selector.context_window(&format!("{}/{}", provider.id(), name));
+        Some(Route { provider, model: name, window_tokens })
     }
-    let provider = providers.iter().find(|p| p.id() == provider_id)?.clone();
-    Some((provider, model.to_string()))
 }
 
 /// What the model call carries from one step of a turn to the next: the
@@ -421,7 +436,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
     // A CLI provider's tool calls come back over /agent/mcp carrying this
     // credential, and execute as this run until the call returns.
-    let _tool_credential = match tool_credential {
+    let run_credential = match tool_credential {
         Some(issue) if provider.handles_tools() => {
             let guard = issue();
             chat_req.tool_credential = Some(guard.token().to_string());
@@ -794,6 +809,19 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 // MCP and stream the results back; relay so chat_dispatch can
                 // broadcast tool_result. API providers never emit this event —
                 // the runner synthesizes it after executing tools itself.
+                // What the call handed the owner came back beside the CLI's
+                // text (`tool_credentials`): it rides the event as a
+                // runner-executed call's does.
+                let mut event = event;
+                if let (Some(guard), Some(tc)) = (run_credential.as_ref(), event.tool_call.as_ref())
+                    && let Some(handed) = guard.take_handed(&tc.id)
+                {
+                    event.image_url = handed.image_url;
+                    event.payload = handed.payload;
+                    if !handed.more_files.is_empty() {
+                        event.widgets = Some(serde_json::json!({ "more_files": handed.more_files }));
+                    }
+                }
                 let _ = tx.send(event).await;
             }
             StreamEventType::AskRequest => {
@@ -807,7 +835,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             StreamEventType::ApprovalRequest
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict
-            | StreamEventType::TakenIn => {
+            | StreamEventType::TakenIn
+            | StreamEventType::Notice => {
                 // Approval/ControlNotice: only sent by the runner, not
                 // received from a provider.
             }
@@ -1213,7 +1242,7 @@ mod tests {
         );
     }
 
-    /// Minimal provider stub for resolve_aux tests (only id() matters).
+    /// Minimal provider stub (only id() matters).
     struct StubProvider(&'static str);
 
     #[async_trait::async_trait]
@@ -1242,6 +1271,67 @@ mod tests {
         }
     }
 
+    /// Background work runs on the pack of the work it serves, at its
+    /// Instant level: Nebo AI's Fast, an owner's Janus pack's Instant, a
+    /// BYOK pack's own key; a model of the owner's own as chosen; a pack
+    /// that can't run and doesn't fall back runs nothing; a provider that
+    /// isn't loaded hands the call to the first that takes calls.
+    #[tokio::test]
+    async fn background_work_runs_on_the_packs_instant_level() {
+        use types::packs::{Pack, PackLevels};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("h.db").to_string_lossy()).unwrap());
+        let info = |id: &str| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 100_000,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: vec![],
+            kind: vec![],
+            preferred: false,
+            active: true,
+        };
+        let mut config = crate::selector::ModelRoutingConfig::default();
+        config.provider_models.insert("janus".into(), ["nebo-1", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro"].map(info).to_vec());
+        config.provider_models.insert("anthropic".into(), vec![info("claude-small"), info("claude-big")]);
+        config.task_routing.insert("general".into(), "pack/nebo-ai".into());
+        let selector = Arc::new(ModelSelector::new(config));
+        selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("janus")), Arc::new(StubProvider("anthropic"))];
+        let hk = Housekeeper::new(store.clone(), selector.clone(), Arc::new(RwLock::new(providers)));
+        let save = |id: &str, instant: Option<&str>, fallback: bool| {
+            store
+                .save_intelligence_pack(&Pack {
+                    id: id.into(),
+                    name: id.into(),
+                    levels: PackLevels { instant: instant.map(Into::into), high: Some("anthropic/claude-big".into()), ..Default::default() },
+                    fallback,
+                    built_in: false,
+                    ..types::packs::nebo_ai()
+                })
+                .unwrap()
+        };
+        save("janus", Some("janus/nebo-1-flash"), true);
+        save("byok", Some("anthropic/claude-small"), true);
+        save("empty", None, true);
+        save("strict", Some("openai/gpt-x"), false);
+        let to = |r: Option<Route>| r.map(|r| format!("{}/{}", r.provider.id(), r.model));
+        assert_eq!(to(hk.route("").await).as_deref(), Some("janus/nebo-1-flash"), "the bot default, Nebo AI: Fast");
+        assert_eq!(to(hk.route("pack/nebo-ai/high").await).as_deref(), Some("janus/nebo-1-flash"), "whatever level the turn runs at");
+        assert_eq!(to(hk.route("pack/janus/high").await).as_deref(), Some("janus/nebo-1-flash"));
+        assert_eq!(to(hk.route("pack/byok/high").await).as_deref(), Some("anthropic/claude-small"), "the owner's key");
+        assert_eq!(to(hk.route("pack/empty").await).as_deref(), Some("janus/nebo-1-flash"), "an empty level is Nebo AI's");
+        assert_eq!(to(hk.route("pack/strict").await), None, "set not to use Nebo AI");
+        assert_eq!(to(hk.route("anthropic/claude-big").await).as_deref(), Some("anthropic/claude-big"), "a model the owner chose");
+        assert_eq!(hk.route("").await.unwrap().window_tokens, 100_000);
+
+        let only_key: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed), Arc::new(StubProvider("anthropic"))];
+        let hk = Housekeeper::new(store, selector, Arc::new(RwLock::new(only_key)));
+        assert_eq!(to(hk.route("").await).as_deref(), Some("anthropic/"), "Janus not loaded: the first provider that takes calls, at its default");
+    }
+
     /// A call goes to the provider its model names. When that provider is
     /// not registered it goes to the first one that takes any call, never to
     /// the linked provider; with nowhere else to go it goes nowhere, and a
@@ -1263,85 +1353,6 @@ mod tests {
         assert_eq!(no_provider("janus"), "No AI provider is connected for janus.");
     }
 
-    /// A background call (summary, compaction, review) on a NeboAI-only bot
-    /// goes to Janus, never to the linked provider listed after it; with
-    /// only the linked provider there is nowhere to send it.
-    #[test]
-    fn a_background_call_never_goes_to_the_linked_provider() {
-        let janus_only: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("janus")), Arc::new(Addressed)];
-        assert_eq!(prefer_non_gateway(&janus_only).unwrap().id(), "janus");
-        let with_key: Vec<Arc<dyn Provider>> =
-            vec![Arc::new(Addressed), Arc::new(StubProvider("anthropic")), Arc::new(StubProvider("janus"))];
-        assert_eq!(prefer_non_gateway(&with_key).unwrap().id(), "anthropic");
-        assert_eq!(ai::default_provider(&with_key).unwrap().id(), "anthropic");
-        let only_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed)];
-        assert!(prefer_non_gateway(&only_linked).is_none());
-        assert!(ai::default_provider(&only_linked).is_none());
-    }
-
-    fn aux_config(aux: &str) -> config::ModelsConfig {
-        config::ModelsConfig {
-            version: "1.0".into(),
-            defaults: None,
-            task_routing: Some(config::models::TaskRouting {
-                vision: String::new(),
-                audio: String::new(),
-                reasoning: String::new(),
-                code: String::new(),
-                general: String::new(),
-                aux: aux.to_string(),
-                fallbacks: std::collections::HashMap::new(),
-            }),
-            lane_routing: None,
-            aliases: vec![],
-            providers: std::collections::HashMap::new(),
-            cli_providers: vec![],
-        }
-    }
-
-    #[test]
-    fn test_resolve_aux_unset_returns_none() {
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        // Empty aux field → fallback.
-        assert!(resolve_aux(&aux_config(""), &providers).is_none());
-        // No task_routing at all → fallback.
-        let mut cfg = aux_config("");
-        cfg.task_routing = None;
-        assert!(resolve_aux(&cfg, &providers).is_none());
-    }
-
-    #[test]
-    fn test_resolve_aux_provider_missing_returns_none() {
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        let cfg = aux_config("openai/gpt-4o-mini");
-        assert!(resolve_aux(&cfg, &providers).is_none());
-    }
-
-    #[test]
-    fn test_resolve_aux_malformed_spec_returns_none() {
-        // Bare model id without a provider prefix cannot be routed → fallback.
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        assert!(resolve_aux(&aux_config("gpt-4o-mini"), &providers).is_none());
-    }
-
-    /// An embedding model named as the aux route is never used.
-    #[test]
-    fn test_resolve_aux_never_an_embedding_model() {
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("janus"))];
-        assert!(resolve_aux(&aux_config("janus/nebo-embed-small"), &providers).is_none());
-    }
-
-    #[test]
-    fn test_resolve_aux_set_and_available_routes() {
-        let providers: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(StubProvider("anthropic")),
-            Arc::new(StubProvider("openai")),
-        ];
-        let cfg = aux_config("openai/gpt-4o-mini");
-        let (provider, model) = resolve_aux(&cfg, &providers).expect("aux route should resolve");
-        assert_eq!(provider.id(), "openai");
-        assert_eq!(model, "gpt-4o-mini");
-    }
 
     /// A provider whose cancel is a round trip to a runtime it does not
     /// control (`cancel_is_async`): it keeps streaming until it has heard

@@ -50,8 +50,8 @@ pub(crate) async fn announce_ask(state: &AppState, session_key: &str, event: &ai
 /// stops, whichever turn started it, then the running turn. The colleagues
 /// it asked and is still waiting on stop with it, and the ones they asked,
 /// down the chain: nobody waits for their answers any more, so none wakes
-/// the stopped conversation. Returns whether a turn was running in any of
-/// them.
+/// the stopped conversation. A hand-off worked in any of them is recorded
+/// stopped. Returns whether a turn was running in any of them.
 pub(crate) async fn stop_session(
     store: &db::Store,
     helpers: &agent::harness::delegation::Helpers,
@@ -71,6 +71,7 @@ pub(crate) async fn stop_session(
         }
         helpers.stop_session(Some(&key));
         running |= runs.cancel_by_session(&key).await;
+        crate::handoff::stopped_into(store, &key);
         stopped.push(key);
     }
     running
@@ -251,6 +252,20 @@ pub(crate) fn plan_usage_warning(store: &db::Store, rl: &ai::RateLimitMeta) -> O
     first.then_some((percent, reset_at))
 }
 
+/// The purchased-credit balance to keep after a completion's rate-limit
+/// headers. Janus reads the balance only when credit pays for the request
+/// (active pool "credits"); on a request the plan, the free grant or a gift
+/// pays for, its `X-Budget-Credits-Cents` is 0, which is not the balance.
+/// The balance last known (from `/v1/usage` or a credit-paid request) is
+/// kept then; before one is known, the header's value.
+fn credits_after(known: Option<u64>, header: Option<u64>, active_pool: Option<&str>) -> u64 {
+    match (active_pool, header, known) {
+        (Some("credits"), Some(cents), _) => cents,
+        (_, _, Some(cents)) => cents,
+        (_, header, None) => header.unwrap_or(0),
+    }
+}
+
 fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
     if error.is_empty() {
         return;
@@ -290,6 +305,10 @@ pub struct ChatConfig {
     /// The entry this run came through; recorded with every permission
     /// decision.
     pub door: types::permissions::Door,
+    /// The mode the work that started this run holds it to
+    /// (`SeatRequest::narrow`): a hand-off or team post from a conversation
+    /// in a stricter mode. Set by the coworker rail only; `None` otherwise.
+    pub narrow: Option<types::permissions::Mode>,
     pub agent_id: String,
     pub cancel_token: tokio_util::sync::CancellationToken,
     /// Which lane to enqueue on (e.g., lanes::MAIN, lanes::COMM).
@@ -386,6 +405,16 @@ fn chat_model_for_session(harness: &agent::Harness, session_key: &str) -> Option
         .flatten()?
         .model
         .filter(|m| !m.is_empty())
+}
+
+/// The mode the owner picked for one conversation (`chats.permission_mode`),
+/// if he picked one. Resolves the session key to its active chat, as
+/// [`chat_model_for_session`] does, and is read fresh every turn: a change
+/// applies to the conversation's next turn.
+fn chat_mode_for_session(harness: &agent::Harness, session_key: &str) -> Option<types::permissions::Mode> {
+    let session_id = harness.sessions().resolve_session_id_by_key(session_key).ok()?;
+    let chat_id = harness.sessions().active_chat_id(&session_id);
+    harness.store().get_chat(&chat_id).ok().flatten()?.permission_mode
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -537,7 +566,14 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             user_id: config.user_id.clone(),
             origin: config.origin,
             door: config.door.clone(),
-            mode: None,
+            // The owner's own conversation runs in the mode he picked for it
+            // (the employee's own when none). Nothing else reads it: a
+            // schedule, a heartbeat or a workflow comes through its own door.
+            mode: match config.door {
+                types::permissions::Door::Chat => chat_mode_for_session(&state.harness, &config.session_key),
+                _ => None,
+            },
+            narrow: config.narrow,
             ceiling: None,
             cwd: run_cwd(config.cwd.as_deref()),
             seed_taint: config.seed_taint.clone(),
@@ -841,7 +877,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             continue;
                         }
-                        next = agent::guardrails::next_event(&mut rx, last_event, &_run_handle.waiting) => match next {
+                        next = agent::guardrails::next_event(&mut rx, last_event, &_run_handle.waiting, agent::guardrails::RUN_IDLE_LIMIT) => match next {
                             agent::guardrails::Next::Event(e) => e,
                             agent::guardrails::Next::Closed => break,
                             // Nothing has moved for the idle limit and nothing is waited on:
@@ -1025,18 +1061,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 }
                             }
                             if let Some(ref tc) = event.tool_call {
-                                // Humanize once and feed every consumer: the desktop
-                                // broadcast (friendly label), the loop emission, and the
-                                // typing indicator — one tool-naming source of truth.
-                                let activity = spec_tools.labels(&tc.name, &tc.input).await.0;
-                                _run_handle.show_activity(&activity);
+                                // Every screen names the call by its structured name:
+                                // the desktop broadcast, the progress snapshot, the loop.
+                                let call = tools::humanize::call(&tc.name, &tc.input);
+                                _run_handle.show_call(&tc.name, &tc.input);
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
                                         "tool_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
-                                        "label": activity,
+                                        "call": call,
                                     ),
                                 );
                                 // Mirror the tool event to the loop so it shows live
@@ -1052,18 +1087,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "start",
                                         &tc.name,
                                         &tc.id,
-                                        activity.clone(),
+                                        String::new(),
                                         Some(request.as_str()),
                                         None,
-                                        None,
+                                        Some(&call),
                                     )
                                     .await;
                                 }
                                 if let Some(ref cm) = comm_manager {
                                     if let Some(ref cr) = comm_reply {
-                                        let _ = cm
-                                            .send_typing(&cr.conversation_id, true, Some(&activity))
-                                            .await;
+                                        let _ = cm.send_typing(&cr.conversation_id, true, None).await;
                                     }
                                 }
                             }
@@ -1079,11 +1112,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .as_ref()
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("");
-                            // Humanize once for both the desktop broadcast and the loop.
-                            let outcome = match event.tool_call.as_ref() {
-                                Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
-                                None => tools::humanize::raw_name(tool_name).1,
-                            };
+                            let call = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| tools::humanize::call(&tc.name, &tc.input));
+                            // The files this call hands the owner, as app URLs: on
+                            // the event so the chat shows each one under its row
+                            // the moment the call ends, mid-run.
+                            let files = owner_artifact_urls(&spec_tools, &event).await;
                             hub.broadcast(
                                 "tool_result",
                                 ws_payload!(
@@ -1091,9 +1127,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "tool_name": tool_name,
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
-                                    "outcome": outcome,
+                                    "call": call,
                                     "payload": event.payload,
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
+                                    "files": &files,
                                 ),
                             );
                             // A call parked on the owner, in a run from the
@@ -1142,14 +1179,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     response,
                                     None,
                                     Some(event.error.is_some()),
-                                    Some(outcome),
+                                    call.as_ref(),
                                 )
                                 .await;
                             }
                             // Run-produced media for the LOCAL app (always, rendered
                             // inline) and comm replies (when replying to a channel;
                             // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            for app_url in owner_artifact_urls(&spec_tools, &event).await {
+                            for app_url in files {
                                 if !app_file_artifacts.contains(&app_url) {
                                     app_file_artifacts.push(app_url.clone());
                                 }
@@ -1195,7 +1232,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
-                                let summary = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                let summary = spec_tools.describe(&tc.name, &tc.input).await;
                                 let request = approvals_origin.stamp(serde_json::json!({
                                     "request_id": tc.id,
                                     "tool": tc.name,
@@ -1319,12 +1356,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     // The header carries no "included" flag
                                     // (a plan with no work reads 0%): keep what
                                     // /v1/usage said, or infer it from use.
-                                    let plan_included = janus_usage
+                                    let (known_included, known_credits) = janus_usage
                                         .read()
                                         .await
                                         .as_ref()
-                                        .is_some_and(|u| u.plan_included)
-                                        || rl.plan_used_percent.unwrap_or(0) > 0;
+                                        .map_or((false, None), |u| (u.plan_included, Some(u.budget_credits_cents)));
+                                    let plan_included =
+                                        known_included || rl.plan_used_percent.unwrap_or(0) > 0;
                                     let usage = crate::state::JanusUsage {
                                         session_limit_credits: rl
                                             .session_limit_credits
@@ -1359,7 +1397,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         budget_gift_available: rl
                                             .budget_gift_available
                                             .unwrap_or(0),
-                                        budget_credits_cents: rl.budget_credits_cents.unwrap_or(0),
+                                        budget_credits_cents: credits_after(
+                                            known_credits,
+                                            rl.budget_credits_cents,
+                                            rl.budget_active_pool.as_deref(),
+                                        ),
                                         budget_active_pool: rl
                                             .budget_active_pool
                                             .clone()
@@ -1384,6 +1426,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     ),
                                 );
                             }
+                        }
+                        StreamEventType::Notice => {
+                            hub.broadcast("chat_notice", ws_payload!("text": &event.text,));
                         }
                         StreamEventType::SubagentStart => {
                             let mut payload = ws_payload!();
@@ -1795,6 +1840,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         cleanup_tools.close_browser_session(cleanup_id).await;
 
+        // A turn the owner stopped takes the schedules it made with it.
+        crate::background::turn_ended(&wake_state, &_run_handle, &cancel_token);
         // RunHandle unregisters from RunRegistry on drop (including panics)
         drop(_run_handle);
 
@@ -1832,6 +1879,7 @@ pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instru
         channel: "web".to_string(),
         origin: Origin::User,
         door: types::permissions::Door::Chat,
+        narrow: None,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -1877,6 +1925,7 @@ pub async fn run_chat_events(
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
     let harness = state.harness.clone();
     let cleanup_tools = state.tools.clone();
+    let end_state = state.clone();
 
     remember_input(state, &config);
     let sid = config.session_key.clone();
@@ -1898,7 +1947,7 @@ pub async fn run_chat_events(
                 loop {
                 let event = tokio::select! {
                     _ = cancel_token.cancelled() => break,
-                    next = agent::guardrails::next_event(&mut events, last_event, &_run_handle.waiting) => match next {
+                    next = agent::guardrails::next_event(&mut events, last_event, &_run_handle.waiting, agent::guardrails::RUN_IDLE_LIMIT) => match next {
                         agent::guardrails::Next::Event(e) => e,
                         agent::guardrails::Next::Closed => break,
                         agent::guardrails::Next::Stalled => {
@@ -1952,6 +2001,8 @@ pub async fn run_chat_events(
             .map(|s| s.id);
         let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
         cleanup_tools.close_browser_session(cleanup_id).await;
+        // A turn the owner stopped takes the schedules it made with it.
+        crate::background::turn_ended(&end_state, &_run_handle, &cancel_token);
         drop(_run_handle);
         Ok(())
     });
@@ -2180,7 +2231,12 @@ pub(crate) fn keep_turn_artifacts(
         .latest_assistant_message_id(&chat_id)
         .ok()
         .flatten();
-    let artifacts = version_app_artifacts(harness.store(), &chat_id, message_id.as_deref(), urls);
+    let artifacts = one_card_per_document(version_app_artifacts(
+        harness.store(),
+        &chat_id,
+        message_id.as_deref(),
+        urls,
+    ));
     if let Err(e) = harness
         .store()
         .attach_artifacts_to_latest_assistant_message(&chat_id, &artifacts)
@@ -2210,6 +2266,43 @@ pub(crate) fn keep_turn_artifacts(
         }
     }
     artifacts
+}
+
+/// A reply's cards: ONE per document, at the newest version the turn wrote,
+/// in the order the documents first appeared. A turn that writes the same
+/// file three times versions it three times (each write is its own `.shared`
+/// URL, so the run's URL list keeps all three), but the reply shows the
+/// document once, as it ended up — three identical "nebo-x-article.md" cards
+/// hung on one reply (2026-10-06). A versioned object is keyed by its
+/// `documentId`; a bare document URL (versioning failed) by its file name,
+/// the key its chain would have had; media by its URL.
+fn one_card_per_document(artifacts: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let key = |a: &serde_json::Value| -> String {
+        if let Some(id) = a.get("documentId").and_then(|v| v.as_str()) {
+            return format!("doc:{id}");
+        }
+        let url = a.as_str().unwrap_or_default();
+        if tools::file_tool::MEDIA_EXTS.contains(&artifact_ext(url).as_str()) {
+            format!("url:{url}")
+        } else {
+            format!("name:{}", url.rsplit('/').next().unwrap_or(url))
+        }
+    };
+    let version = |a: &serde_json::Value| a.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut out: Vec<(String, serde_json::Value)> = Vec::new();
+    for a in artifacts {
+        let k = key(&a);
+        match out.iter_mut().find(|(seen, _)| *seen == k) {
+            // Later writes win unless they name an older version.
+            Some((_, kept)) => {
+                if version(&a) >= version(kept) {
+                    *kept = a;
+                }
+            }
+            None => out.push((k, a)),
+        }
+    }
+    out.into_iter().map(|(_, a)| a).collect()
 }
 
 /// Map a run-produced `image_url` to a URL the LOCAL app can render and comm replies
@@ -2377,26 +2470,7 @@ fn version_app_artifacts(
                     }
                 }
 
-                // Content-addressed blob: store the bytes ONCE keyed by hash, so a
-                // revert or the same content across documents reuses one file. The
-                // ext keeps serve_file's content-type detection working.
-                let blob_name = if ext.is_empty() {
-                    hash.clone()
-                } else {
-                    format!("{}.{}", hash, ext)
-                };
-                let rel = format!("work/blobs/{}", blob_name);
-                let dest = files_dir.join(&rel);
-                if !dest.exists() {
-                    if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| types::NeboError::Internal(format!("mkdir blobs dir: {e}")))?;
-                    }
-                    std::fs::copy(&flat_path, &dest)
-                        .map_err(|e| types::NeboError::Internal(format!("copy blob: {e}")))?;
-                }
-                let _ = store.register_content_blob(&hash, &ext, bytes.len() as i64);
-                let versioned_url = format!("/api/v1/files/{}", rel);
+                let versioned_url = tools::workspace_history::put_work_blob(store, &files_dir, &hash, &ext, &bytes)?;
                 let parent_id = latest.as_ref().map(|v| v.id.as_str());
                 let version = store.add_work_version(
                     &doc.id,
@@ -2424,6 +2498,47 @@ fn version_app_artifacts(
             }
         })
         .collect()
+}
+
+/// Surface a work version made outside a turn (a restore, a save from the
+/// sheet view) as an assistant message carrying the artifact, so it joins the
+/// document's chain in the transcript and the open viewer moves to it.
+pub(crate) fn announce_work_version(
+    state: &AppState,
+    doc: &db::WorkDocument,
+    version: &db::WorkDocumentVersion,
+    content: &str,
+    agent_id: &str,
+    session_id: Option<&str>,
+) {
+    let artifact = serde_json::json!({
+        "documentId": doc.id,
+        "filename": doc.filename,
+        "kind": doc.kind,
+        "version": version.version_number,
+        "url": version.url,
+    });
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    let metadata = serde_json::json!({
+        "artifacts": [artifact.clone()]
+    })
+    .to_string();
+    let created_at = state
+        .store
+        .create_chat_message(&msg_id, &doc.chat_id, "assistant", content, Some(&metadata))
+        .map(|m| m.created_at)
+        .unwrap_or(0);
+    state.hub.broadcast(
+        "chat_message",
+        serde_json::json!({
+            "id": msg_id,
+            "content": content,
+            "createdAt": created_at * 1000,
+            "agentId": agent_id,
+            "session_id": session_id,
+            "artifacts": [artifact],
+        }),
+    );
 }
 
 /// Save a `data:` URI (base64 image) to `<data_dir>/files/` and return the
@@ -2660,7 +2775,7 @@ async fn send_comm_tool_activity(
     content: String,
     request: Option<&str>,
     is_error: Option<bool>,
-    outcome: Option<String>,
+    call: Option<&tools::humanize::Call>,
 ) {
     let mut metadata = HashMap::new();
     metadata.insert("phase".to_string(), phase.to_string());
@@ -2675,10 +2790,10 @@ async fn send_comm_tool_activity(
     if let Some(err) = is_error {
         metadata.insert("is_error".to_string(), err.to_string());
     }
-    // The result phase carries the past-tense outcome label — collapsed work
-    // lines report what WAS DONE ("Read a file"), not effort.
-    if let Some(outcome) = outcome {
-        metadata.insert("outcome".to_string(), outcome);
+    // Both phases carry the call's structured name (`tools::humanize::call`,
+    // as JSON in the string map): the loop words it as the local app does.
+    if let Some(call) = call {
+        metadata.insert("call".to_string(), serde_json::to_string(call).unwrap_or_default());
     }
     send_comm_msg(
         cfg,
@@ -2792,7 +2907,6 @@ mod tests {
         let helpers = agent::harness::delegation::Helpers::new(
             store.clone(),
             Arc::new(harness.sessions().clone()),
-            tools,
             Arc::new(harness.clone()),
             None,
             None,
@@ -2884,9 +2998,49 @@ mod tests {
 #[cfg(test)]
 mod media_tests {
     use super::{
-        artifact_ext, artifact_kind, mime_from_extension,
+        artifact_ext, artifact_kind, mime_from_extension, one_card_per_document,
         strip_local_image_markdown,
     };
+
+    /// One reply that wrote one file three times shows ONE card, at the
+    /// newest version, where the file first appeared; two files show two.
+    #[test]
+    fn a_reply_shows_one_card_per_document_at_its_latest_version() {
+        use serde_json::json;
+        let doc = |id: &str, name: &str, v: i64| {
+            json!({ "documentId": id, "filename": name, "kind": "document", "version": v,
+                    "url": format!("/api/v1/files/work/blobs/{id}{v}.md") })
+        };
+        // The live reply: edit_file then write_file twice → v2, v3, v4.
+        let kept = one_card_per_document(vec![
+            doc("f16e", "nebo-x-article.md", 2),
+            doc("f16e", "nebo-x-article.md", 3),
+            doc("f16e", "nebo-x-article.md", 4),
+        ]);
+        assert_eq!(kept, vec![doc("f16e", "nebo-x-article.md", 4)]);
+
+        // Two files, interleaved: two cards, first-seen order, each latest.
+        let kept = one_card_per_document(vec![
+            doc("a", "a.md", 1),
+            doc("b", "b.csv", 1),
+            doc("a", "a.md", 2),
+        ]);
+        assert_eq!(kept, vec![doc("a", "a.md", 2), doc("b", "b.csv", 1)]);
+
+        // Unversioned (bare) document URLs collapse by file name to the last
+        // write; distinct media stays distinct.
+        let kept = one_card_per_document(vec![
+            json!("/api/v1/files/.shared/1111/notes.md"),
+            json!("/api/v1/files/.shared/aaaa/shot.png"),
+            json!("/api/v1/files/.shared/2222/notes.md"),
+            json!("/api/v1/files/.shared/bbbb/shot.png"),
+        ]);
+        assert_eq!(kept, vec![
+            json!("/api/v1/files/.shared/2222/notes.md"),
+            json!("/api/v1/files/.shared/aaaa/shot.png"),
+            json!("/api/v1/files/.shared/bbbb/shot.png"),
+        ]);
+    }
 
     /// Extension→MIME is case-insensitive and unknown extensions fall back to
     /// octet-stream (never a wrong specific type).
@@ -3059,6 +3213,33 @@ mod session_key_contract_tests {
         assert_eq!(types::keyparser::agent_id_from_workflow_id(&wf), Some("a1"));
         assert_eq!(types::keyparser::agent_id_from_workflow_id("agent:"), None);
         assert_eq!(types::keyparser::agent_id_from_workflow_id("wf-123"), None);
+    }
+}
+
+#[cfg(test)]
+mod credits_after_tests {
+    use super::credits_after;
+
+    /// A plan-paid completion says 0 credits; the $100 bought is still
+    /// there (2026-10-09: the usage page showed $0 after a credit pack).
+    #[test]
+    fn a_plan_paid_request_keeps_the_known_balance() {
+        assert_eq!(credits_after(Some(10_000), Some(0), Some("plan")), 10_000);
+        assert_eq!(credits_after(Some(10_000), Some(0), Some("free")), 10_000);
+        assert_eq!(credits_after(Some(10_000), None, None), 10_000);
+    }
+
+    /// A credit-paid completion reads the balance: it is the news.
+    #[test]
+    fn a_credit_paid_request_sets_the_balance() {
+        assert_eq!(credits_after(Some(10_000), Some(8_120), Some("credits")), 8_120);
+        assert_eq!(credits_after(None, Some(8_120), Some("credits")), 8_120);
+    }
+
+    #[test]
+    fn with_no_balance_known_the_header_is_all_there_is() {
+        assert_eq!(credits_after(None, Some(0), Some("plan")), 0);
+        assert_eq!(credits_after(None, None, None), 0);
     }
 }
 

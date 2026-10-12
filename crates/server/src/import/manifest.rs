@@ -62,7 +62,7 @@ pub struct ImportItem {
     pub name: String,
     /// One-line specifics for the manifest. Never contains a secret *value*.
     pub detail: String,
-    /// What this becomes in Nebo, e.g. "MCP integration", "Nebo skill".
+    /// What this becomes in Nebo, e.g. "Connector", "Nebo skill".
     pub target: &'static str,
     /// Path relative to the install root, for provenance in the dry-run.
     pub source_path: String,

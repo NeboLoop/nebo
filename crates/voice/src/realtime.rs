@@ -98,7 +98,10 @@ impl AudioFormat {
 pub struct RealtimeConfig {
     /// `wss://.../v1/realtime` (Janus relay or xAI direct).
     pub endpoint: String,
-    /// Model, e.g. `grok-voice-latest`.
+    /// The model the endpoint is asked for: the call's intelligence pack's
+    /// Voice model (`agent::harness::turn::CallVoice`), `nebo-1-voice` on
+    /// Janus's relay or an xAI realtime model such as `grok-voice-latest`
+    /// direct. Always set by the caller: nothing here picks one.
     pub model: String,
     /// Bearer token: Janus JWT for the relay leg, xAI API key for direct.
     pub bearer: String,
@@ -129,7 +132,7 @@ impl Default for RealtimeConfig {
     fn default() -> Self {
         Self {
             endpoint: "wss://api.x.ai/v1/realtime".into(),
-            model: "grok-voice-latest".into(),
+            model: String::new(),
             bearer: String::new(),
             bot_id: None,
             conversation_id: None,
@@ -194,36 +197,55 @@ pub async fn connect(
     Ok((cmd_tx, event_rx))
 }
 
-type Socket = tokio_tungstenite::WebSocketStream<
+pub(crate) type Socket = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// Open the socket to the realtime endpoint.
-async fn dial(cfg: &RealtimeConfig) -> Result<Socket, VoiceError> {
+/// The URL a session dials: the endpoint, asked for the call's model, and
+/// the conversation it resumes, when it resumes one.
+fn realtime_url(cfg: &RealtimeConfig) -> String {
     let mut url = format!("{}?model={}", cfg.endpoint, cfg.model);
     if let Some(cid) = &cfg.conversation_id {
         url.push_str(&format!("&conversation_id={}", cid));
     }
+    url
+}
 
+/// Open the socket to the realtime endpoint.
+async fn dial(cfg: &RealtimeConfig) -> Result<Socket, VoiceError> {
+    // Janus groups usage by purpose; a realtime session is always voice.
+    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), "voice").await
+}
+
+/// Open a socket to a Janus (or direct) audio endpoint: the bearer, the bot
+/// it is for, and the purpose Janus groups the usage under. The voice call
+/// and dictation both dial through here.
+pub(crate) async fn open(
+    url: &str,
+    bearer: &str,
+    bot_id: Option<&str>,
+    purpose: &'static str,
+) -> Result<Socket, VoiceError> {
     let mut request = url
-        .clone()
         .into_client_request()
         .map_err(|e| VoiceError::Realtime(format!("bad realtime url: {e}")))?;
     request.headers_mut().insert(
         "Authorization",
-        format!("Bearer {}", cfg.bearer)
+        format!("Bearer {}", bearer)
             .parse()
             .map_err(|_| VoiceError::Realtime("invalid bearer token".into()))?,
     );
-    if let Some(bot_id) = &cfg.bot_id {
+    if let Some(bot_id) = bot_id {
         if let Ok(v) = bot_id.parse() {
             request.headers_mut().insert("X-Bot-ID", v);
         }
     }
-    // Janus groups usage by purpose; a realtime session is always voice.
     request
         .headers_mut()
-        .insert("X-Purpose", HeaderValue::from_static("voice"));
+        .insert("X-Purpose", HeaderValue::from_static(purpose));
+    request
+        .headers_mut()
+        .insert("User-Agent", HeaderValue::from_static(types::constants::USER_AGENT));
 
     let (ws, _resp) = tls::connect_ws(request)
         .await
@@ -1173,6 +1195,59 @@ async fn handle_server_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dial names this Nebo and its version (`User-Agent: nebo/<v>`):
+    /// Janus logs it per session, to count the clients still on old versions.
+    #[tokio::test]
+    async fn the_dial_names_nebo_and_its_version() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8_lossy(&got).to_ascii_lowercase()
+        });
+        let cfg = RealtimeConfig {
+            endpoint: format!("ws://127.0.0.1:{port}/v1/realtime"),
+            model: "nebo-1-voice".into(),
+            bearer: "jwt".into(),
+            ..Default::default()
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), dial(&cfg)).await;
+        let request = seen.await.unwrap();
+        let want = format!("user-agent: nebo/{}", env!("CARGO_PKG_VERSION"));
+        assert!(request.contains(&want), "the dial sent no {want}: {request}");
+        assert!(
+            request.starts_with("get /v1/realtime?model=nebo-1-voice http/1.1"),
+            "the dial asks the relay for the call's model: {request}"
+        );
+    }
+
+    /// The URL asks the endpoint for the call's model (the pack's Voice) and
+    /// carries the conversation a redial resumes; nothing here picks a model.
+    #[test]
+    fn the_realtime_url_carries_the_calls_model() {
+        let mut cfg = RealtimeConfig {
+            endpoint: "wss://janus.example/v1/realtime".into(),
+            model: "nebo-1-voice".into(),
+            ..Default::default()
+        };
+        assert_eq!(realtime_url(&cfg), "wss://janus.example/v1/realtime?model=nebo-1-voice");
+        cfg.endpoint = "wss://api.x.ai/v1/realtime".into();
+        cfg.model = "grok-voice-latest".into();
+        cfg.conversation_id = Some("c1".into());
+        assert_eq!(realtime_url(&cfg), "wss://api.x.ai/v1/realtime?model=grok-voice-latest&conversation_id=c1");
+        assert!(RealtimeConfig::default().model.is_empty(), "no model is hard-coded");
+    }
 
     /// The session.update frame must pin the invariants the relay depends on:
     /// binary transport + 24kHz PCM both directions, server VAD, resumption.

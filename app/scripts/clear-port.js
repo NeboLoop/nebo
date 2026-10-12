@@ -15,19 +15,25 @@ import { execSync } from 'node:child_process';
 const port = Number(process.argv[2] || 5173);
 const isWindows = process.platform === 'win32';
 
+// Only the process LISTENING on the port holds it. A process merely
+// connected to it is never killed: `cargo tauri dev` connects to :5173 while
+// it waits for vite, and killing every PID on a `:5173` line killed Tauri
+// itself on every Windows `make dev`.
 function findPids() {
 	try {
 		if (isWindows) {
-			const out = execSync(`netstat -ano | findstr :${port}`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+			const out = execSync('netstat -ano -p tcp', { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
 			const pids = new Set();
 			for (const line of out.split('\n')) {
-				const parts = line.trim().split(/\s+/);
-				const pid = parts[parts.length - 1];
-				if (/^\d+$/.test(pid) && pid !== '0') pids.add(pid);
+				// Proto  Local Address  Foreign Address  State  PID
+				const [proto, local, , state, pid] = line.trim().split(/\s+/);
+				if (proto === 'TCP' && state === 'LISTENING' && local?.endsWith(`:${port}`) && /^\d+$/.test(pid ?? '') && pid !== '0') {
+					pids.add(pid);
+				}
 			}
 			return [...pids];
 		}
-		const out = execSync(`lsof -ti :${port}`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+		const out = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
 		return out.trim().split('\n').filter(Boolean);
 	} catch {
 		// No process on the port — that's the happy path.

@@ -86,7 +86,20 @@ impl PluginCliTool {
             .map(|m| m.name.trim().to_string())
             .filter(|n| !n.is_empty() && n != slug)
             .unwrap_or_else(|| crate::humanize::service_name(slug));
-        let description = Self::describe(&runner, slug, &service, manifest.as_ref());
+        // A retired bundle gives up the words of the areas other plugins have
+        // taken over here: a trigger one of them also says ("google docs",
+        // and "google" within it) loads them, not the bundle (`superseded`).
+        let taken = runner.taken_over(slug);
+        let successor_triggers: Vec<String> = taken
+            .iter()
+            .filter_map(|t| runner.plugin_store().get_manifest(t.successor))
+            .flat_map(|m| m.triggers)
+            .collect();
+        let manifest = manifest.map(|mut m| {
+            m.triggers.retain(|t| !crate::superseded::said_within(t, &successor_triggers));
+            m
+        });
+        let description = Self::describe(&runner, slug, &service, manifest.as_ref(), &taken);
         let hint = search_hint(&service, manifest.as_ref());
         let mut triggers: Vec<String> = Vec::new();
         for t in manifest.iter().flat_map(|m| m.triggers.clone()).chain(runner.skill_triggers(slug)) {
@@ -121,12 +134,21 @@ impl PluginCliTool {
         slug: &str,
         service: &str,
         manifest: Option<&napp::plugin::PluginManifest>,
+        taken: &[crate::superseded::TakenOver],
     ) -> String {
         let blurb = manifest.map(|m| m.description.trim()).filter(|d| !d.is_empty());
         let mut out = match blurb {
             Some(b) => format!("Runs {service} commands. {b}\n"),
             None => format!("Runs {service} commands.\n"),
         };
+        if !taken.is_empty() {
+            let elsewhere: Vec<String> =
+                taken.iter().map(|t| format!("{} ({})", t.area, plugin_tool_name(t.successor))).collect();
+            out.push_str(&format!(
+                "- Not for {}: those have their own plugins here, which do them instead.\n",
+                elsewhere.join(", ")
+            ));
+        }
         let skills: Vec<String> = runner.list_services(slug).into_iter().map(|(name, _)| name).collect();
         if skills.is_empty() {
             out.push_str("- `command` is the subcommand and flags; `help` lists them.\n");
@@ -153,7 +175,10 @@ impl PluginCliTool {
                     entry.join(", ")
                 ));
             }
-            out.push_str("To survey many of them, delegate a helper to read them and report back.");
+            out.push_str(
+                "To survey many of them, delegate a helper to read them and report back. Skills you will follow, \
+                 load yourself: a helper receives only the skills you loaded.",
+            );
             match (entry.is_empty(), listed.is_empty()) {
                 (true, _) => out.push_str(&format!(" Its skills: {listed}.\n")),
                 (false, false) => out.push_str(&format!(" Its other skills: {listed}.\n")),
@@ -233,7 +258,7 @@ impl DynTool for PluginCliTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Seconds the command may take (default 120)."
+                    "description": "Seconds the command may take (default 120; a video render: 600)."
                 },
                 "display": {
                     "type": "string",
@@ -282,12 +307,51 @@ impl DynTool for PluginCliTool {
         input
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
+    /// A flag sent beside `command` instead of inside `args` (live
+    /// 2026-10-07: `explain` next to `args`), or a call whose JSON broke
+    /// around a large `args` value: the refusal shows where each part goes.
+    fn right_shape(&self, input: &serde_json::Value, stray: &[String]) -> Option<String> {
+        if stray.is_empty() {
+            return Some(
+                "A plugin call is one object: {\"command\": \"<subcommand>\", \"args\": {\"<flag>\": <value>, ...}}. \
+                 `command` stands beside `args`, never inside it; every flag goes inside `args`, a large object \
+                 (a whole timeline) included, written as an object and closed before `command`."
+                    .to_string(),
+            );
+        }
+        let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("<subcommand>");
+        let mut flags: Vec<String> = input
+            .get("args")
+            .and_then(|a| a.as_object())
+            .into_iter()
+            .flat_map(|a| a.keys())
+            .map(|k| format!("{}: ...", serde_json::Value::from(k.as_str())))
+            .collect();
+        for key in stray {
+            let value = match input.get(key) {
+                Some(v @ (serde_json::Value::Bool(_) | serde_json::Value::Number(_))) => v.to_string(),
+                Some(serde_json::Value::String(s)) if s.chars().count() <= 40 => serde_json::Value::from(s.as_str()).to_string(),
+                _ => "...".to_string(),
+            };
+            flags.push(format!("{}: {value}", serde_json::Value::from(key.as_str())));
+        }
+        let named = stray.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ");
+        Some(format!(
+            "A flag for the command goes inside `args`, so when {named} {} one, the call is: {{\"command\": {}, \"args\": {{{}}}}}.",
+            if stray.len() == 1 { "is" } else { "are" },
+            serde_json::Value::from(command),
+            flags.join(", ")
+        ))
+    }
+
+    fn describe(&self, input: &serde_json::Value) -> String {
         display(input).unwrap_or_else(|| format!("using {}", self.service))
     }
 
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        display(input).unwrap_or_else(|| format!("Used {}", self.service))
+    /// A file on this result is one the plugin made for the owner (its
+    /// `Result:` line or a fresh output arg), never the tool's eyes.
+    fn emits_image(&self, _input: &serde_json::Value) -> bool {
+        true
     }
 
     fn execute_dyn<'a>(
@@ -421,12 +485,8 @@ impl DynTool for FindPluginsTool {
         false
     }
 
-    fn activity(&self, _input: &serde_json::Value) -> String {
+    fn describe(&self, _input: &serde_json::Value) -> String {
         "browsing the marketplace".to_string()
-    }
-
-    fn outcome(&self, _input: &serde_json::Value) -> String {
-        "Browsed the marketplace".to_string()
     }
 
     fn execute_dyn<'a>(
@@ -736,13 +796,13 @@ triggers:
         // An explicit command wins; args stay flags.
         let kept = serde_json::json!({"command": "query run", "args": {"command": "x", "query": "SELECT 1"}});
         assert_eq!(tool.normalize_input(kept.clone()), kept);
-        // The owner reads the service's name, or the model's own sentence.
+        // The call reads as the service's name, or the model's own sentence.
         assert_eq!(
-            tool.activity(&serde_json::json!({"command": "doctor"})),
+            tool.describe(&serde_json::json!({"command": "doctor"})),
             "using Ledgerly"
         );
         assert_eq!(
-            tool.outcome(&serde_json::json!({"display": "Send invoice 1041"})),
+            tool.describe(&serde_json::json!({"display": "Send invoice 1041"})),
             "Send invoice 1041"
         );
         assert_eq!(tool.rule_key(&serde_json::json!({})), "plugin__ledgerly");
@@ -830,7 +890,8 @@ triggers:
         let line = "Start with ledgerly-query, ledgerly-reports, ledgerly-shared to find records, run \
                     reports and learn the commands; load the skill for the specific record before \
                     creating or changing one. To survey many of them, delegate a helper to read them \
-                    and report back. Its other skills: ledgerly-account, ledgerly-attachable, \
+                    and report back. Skills you will follow, load yourself: a helper receives only the \
+                    skills you loaded. Its other skills: ledgerly-account, ledgerly-attachable, \
                     ledgerly-batch, ledgerly-bill, ledgerly-billpayment, ledgerly-budget, \
                     ledgerly-changedata, ledgerly-class, ledgerly-companycurrency (and 34 more).";
         assert!(d.contains(line), "missing:\n{line}\nfrom:\n{d}");
@@ -888,5 +949,239 @@ triggers:
             "{}",
             r.content
         );
+    }
+
+    /// A flag beside `command` is refused, named, with the call written
+    /// the right way; JSON that broke around a big `args` value says where
+    /// and how, with the same shape. Live 2026-10-07 (Nebo Media): an
+    /// `explain` next to `args`, and two timelines nested one brace wrong.
+    #[tokio::test]
+    async fn a_misshapen_plugin_call_is_refused_with_the_right_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(tmp.path(), "nebo-media", serde_json::json!({"name": "Nebo Media"}), &["video"]);
+        let (registry, _store) = registry(tmp.path()).await;
+        let ctx = crate::origin::ToolContext::default();
+
+        let beside = serde_json::json!({
+            "command": "video compose",
+            "args": {"output": "/tmp/out", "timeline": {"version": 2}},
+            "explain": "true"
+        });
+        let r = registry.execute(&ctx, "plugin__nebo-media", beside).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("The parameter `explain` doesn't exist"), "{}", r.content);
+        assert!(
+            r.content.contains(r#"{"command": "video compose", "args": {"output": ..., "timeline": ..., "explain": "true"}}"#),
+            "{}",
+            r.content
+        );
+
+        let unclosed = r#"{"args": {"output": "/tmp/out", "timeline": {"version": 2, "layers": [{"id": "s1"}]}, "command": "video compose", "timeout": 180}"#;
+        let r = registry
+            .execute(&ctx, "plugin__nebo-media", serde_json::json!({"_raw": unclosed}))
+            .await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("1 `{` or `[` is never closed"), "{}", r.content);
+        assert!(r.content.contains(r#""timeout": 180}`"#), "quotes where it broke: {}", r.content);
+        assert!(r.content.contains("`command` stands beside `args`, never inside it"), "{}", r.content);
+
+        let closed_twice = r#"{"args": {"timeline": {"layers": []}}, "explain": true}, "command": "video compose"}"#;
+        let r = registry
+            .execute(&ctx, "plugin__nebo-media", serde_json::json!({"_raw": closed_twice}))
+            .await;
+        assert!(r.content.contains("1 `}` or `]` too many"), "{}", r.content);
+        assert!(r.content.contains(r#""explain": true}, "command"#), "{}", r.content);
+    }
+
+    /// The safety net: a call to the tool of a first-party default this bot
+    /// lacks installs it on the spot through the install door and the call
+    /// runs. The tool of any other missing plugin stays missing, and the
+    /// door is never knocked for it.
+    #[tokio::test]
+    async fn a_call_to_a_missing_defaults_tool_installs_it_and_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (registry, _store) = registry(tmp.path()).await;
+        let door = crate::default_artifacts::FakeDoor::new(&tmp.path().join("plugins"));
+        registry.set_code_installer(door.clone());
+        let ctx = crate::origin::ToolContext::default();
+
+        let r = registry
+            .execute(&ctx, "plugin__nebo-office", serde_json::json!({"command": "version"}))
+            .await;
+        assert!(!r.content.contains("There is no tool named"), "{}", r.content);
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("ok"), "the call ran: {}", r.content);
+        assert_eq!(door.calls(), ["PLUG-BHVY-A96N"]);
+
+        let other = registry
+            .execute(&ctx, "plugin__quickbooks", serde_json::json!({"command": "version"}))
+            .await;
+        assert!(other.is_error && other.content.contains("There is no tool named"), "{}", other.content);
+        assert_eq!(door.calls().len(), 1, "no install for a plugin that is not a default");
+    }
+
+    /// The retired Google Workspace bundle as installs still have it: one
+    /// account per employee, a trigger per Google service, a skill per area.
+    fn install_gws(root: &std::path::Path) {
+        install(
+            root,
+            "gws",
+            serde_json::json!({
+                "name": "Google Workspace",
+                "description": "Covers Gmail, Calendar, Drive, Sheets, Docs.",
+                "auth": {"type": "oauth_cli", "label": "Google Account", "profileDirEnv": "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"},
+                "triggers": ["gmail", "google calendar", "google drive", "google sheets", "google docs", "google", "workspace", "gws"]
+            }),
+            &["gws-docs", "gws-docs-write", "gws-drive", "gws-gmail", "gws-shared"],
+        );
+    }
+
+    fn install_google_docs(root: &std::path::Path) {
+        install(
+            root,
+            "google-docs",
+            serde_json::json!({
+                "name": "Google Docs",
+                "auth": {"type": "oauth_cli", "label": "Google Docs account", "profileDirEnv": "GOOGLE_DOCS_CONFIG_DIR"},
+                "triggers": ["google-docs", "google docs", "google-docs documents"]
+            }),
+            &["google-docs-documents", "google-docs-shared"],
+        );
+    }
+
+    /// What the model can see of gws, and what a call to it does.
+    struct GwsView {
+        description: String,
+        triggers: Vec<String>,
+        found_for_docs: Vec<String>,
+        listing: Vec<String>,
+        found_skills: Vec<String>,
+        replaced: Option<&'static str>,
+        docs_call: ToolResult,
+        drive_call: ToolResult,
+        asked: bool,
+    }
+
+    async fn gws_view(root: &std::path::Path, registry: &Registry, store: &Arc<db::Store>) -> GwsView {
+        registry.refresh_plugin_tools().await;
+        let tool = registry.get("plugin__gws").await.expect("gws stays installed");
+        let entries = registry.deferred_entries().await;
+        let entry = entries.iter().find(|e| e.definition.name == "plugin__gws").expect("gws is listed");
+        let found_for_docs = crate::find_tools::triggered(&entries, "Draft the plan in Google Docs", crate::find_tools::TRIGGERED_MAX)
+            .into_iter()
+            .map(|e| e.definition.name.clone())
+            .collect();
+        let loader = crate::skills::Loader::new(root.join("skills"), root.join("user_skills"))
+            .with_plugin_store(Arc::new(napp::plugin::PluginStore::new(
+                root.join("plugins"),
+                root.join("user_plugins"),
+                None,
+            )))
+            .with_db_store(store.clone());
+        loader.load_all().await;
+        let listing = loader.listing(None).await.into_keys().filter(|n| n.starts_with("gws")).collect();
+        let found_skills =
+            loader.discover_summaries("docs", None).await.into_iter().map(|s| s.name).collect();
+        // An owner chat that could show a card: nothing may be asked in it
+        // for a call refused because another plugin does the work.
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let mut chat = ToolContext::new(crate::origin::Origin::User);
+        chat.session_key = "agent:piper:main".into();
+        chat.stream_tx = Some(stream_tx);
+        chat.ask_channels = Some(Default::default());
+        let docs_call = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tool.execute_dyn(&chat, serde_json::json!({"command": "docs documents get --document d1"})),
+        )
+        .await
+        .unwrap_or_else(|_| ToolResult::error("parked on a card".to_string()));
+        let asked = stream_rx.try_recv().is_ok();
+        // Unattended, so an unconnected gws says so instead of carding.
+        let mut run = ToolContext::new(crate::origin::Origin::System);
+        run.session_key = "agent:piper:main".into();
+        let drive_call = tool.execute_dyn(&run, serde_json::json!({"command": "drive files list"})).await;
+        GwsView {
+            description: tool.description(),
+            triggers: entry.triggers.clone(),
+            found_for_docs,
+            listing,
+            found_skills,
+            replaced: loader.replaced_by("gws-docs-write").await,
+            docs_call,
+            drive_call,
+            asked,
+        }
+    }
+
+    /// The retired gws bundle steps aside for each Google service whose own
+    /// plugin is installed and connected here, and only for that service.
+    /// Live (cloud E2E, 2026-10-11): with gws and google-docs both
+    /// installed, a Google Docs request ran gws and parked on its "Google
+    /// Account" card.
+    #[tokio::test]
+    async fn a_connected_per_service_plugin_takes_its_service_from_gws() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_gws(tmp.path());
+        install_google_docs(tmp.path());
+        let (registry, store) = registry(tmp.path()).await;
+        store.upsert_plugin_account_profile("a1", "piper", "google-docs", "piper@acme.com", "/tmp/gd").unwrap();
+
+        let v = gws_view(tmp.path(), &registry, &store).await;
+        assert!(
+            !v.triggers.iter().any(|t| t == "google docs" || t == "google"),
+            "the words google-docs also says are its: {:?}",
+            v.triggers
+        );
+        assert!(v.triggers.iter().any(|t| t == "gmail") && v.triggers.iter().any(|t| t == "google drive"));
+        assert_eq!(v.found_for_docs, ["plugin__google-docs"], "a Docs request loads google-docs alone");
+        assert!(v.description.contains("Not for docs (plugin__google-docs)"), "{}", v.description);
+        assert!(!v.description.contains("gws-docs"), "{}", v.description);
+        assert!(v.description.contains("gws-drive") && v.description.contains("gws-gmail"), "{}", v.description);
+        assert_eq!(v.listing, ["gws-drive", "gws-gmail", "gws-shared"], "the docs skills leave the listing");
+        assert!(!v.found_skills.iter().any(|n| n.starts_with("gws-docs")), "{:?}", v.found_skills);
+        assert!(v.found_skills.iter().any(|n| n == "google-docs-documents"), "{:?}", v.found_skills);
+        assert_eq!(v.replaced, Some("google-docs"));
+        assert!(v.docs_call.is_error && v.docs_call.content.contains("Do it with plugin__google-docs"), "{}", v.docs_call.content);
+        assert!(!v.asked, "no card for a service another plugin does");
+        assert!(
+            v.drive_call.content.contains("No gws account is connected"),
+            "drive is still gws's: {}",
+            v.drive_call.content
+        );
+    }
+
+    /// gws alone, gws beside a plugin for other work, and gws beside a
+    /// Google Docs plugin nobody has connected: gws is exactly what it was.
+    #[tokio::test]
+    async fn gws_is_unchanged_until_a_replacement_is_connected() {
+        let alone = tempfile::tempdir().unwrap();
+        install_gws(alone.path());
+        let (reg, store) = registry(alone.path()).await;
+        let base = gws_view(alone.path(), &reg, &store).await;
+        assert!(base.triggers.iter().any(|t| t == "google docs"));
+        assert_eq!(base.found_for_docs, ["plugin__gws"]);
+        assert_eq!(base.listing, ["gws-docs", "gws-docs-write", "gws-drive", "gws-gmail", "gws-shared"]);
+        assert!(base.description.contains("gws-docs") && !base.description.contains("Not for"), "{}", base.description);
+        assert_eq!(base.replaced, None);
+        assert!(base.docs_call.content.contains("parked on a card"), "today's first-use card: {}", base.docs_call.content);
+        assert!(base.asked);
+
+        for other in ["ledgerly", "google-docs"] {
+            let tmp = tempfile::tempdir().unwrap();
+            install_gws(tmp.path());
+            if other == "google-docs" {
+                install_google_docs(tmp.path());
+            } else {
+                install(tmp.path(), other, serde_json::json!({"name": "Ledgerly", "triggers": ["invoice"]}), &["ledgerly-invoice"]);
+            }
+            let (reg, store) = registry(tmp.path()).await;
+            let v = gws_view(tmp.path(), &reg, &store).await;
+            assert_eq!(v.triggers, base.triggers, "{other}");
+            assert_eq!(v.description, base.description, "{other}");
+            assert_eq!(v.listing, base.listing, "{other}");
+            assert_eq!(v.replaced, None, "{other}");
+            assert!(v.asked && v.docs_call.content.contains("parked on a card"), "{other}: {}", v.docs_call.content);
+            assert_eq!(v.drive_call.content, base.drive_call.content, "{other}");
+        }
     }
 }

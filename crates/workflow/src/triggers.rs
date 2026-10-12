@@ -20,6 +20,10 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
         None,        // agent_id (workflow triggers aren't bound to a single agent)
         None,        // channel_ctx_json
         None,        // overlap policy: kept
+        &db::models::ScheduleProvenance::new(
+            db::models::ScheduleCreator::Workflow,
+            format!("the {workflow_id} workflow's schedule"),
+        ),
     ) {
         Ok(_) => info!(workflow = workflow_id, cron, "registered schedule trigger"),
         Err(e) => warn!(
@@ -58,6 +62,10 @@ pub fn register_agent_triggers(
                 Some(agent_id),
                 None,
                 None,
+                &db::models::ScheduleProvenance::new(
+                    db::models::ScheduleCreator::Workflow,
+                    format!("the {} workflow's schedule", binding.binding_name),
+                ),
             ) {
                 Ok(_) => info!(
                     agent = agent_id,

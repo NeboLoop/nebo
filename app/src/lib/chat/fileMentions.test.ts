@@ -12,6 +12,11 @@ const rows: Array<{ raw: string; path: string | null }> = [
 	{ raw: '/Users/al/.local/share/nebo/files/q3/summary.final.xlsx', path: '/Users/al/.local/share/nebo/files/q3/summary.final.xlsx' },
 	{ raw: 'file:///data/files/My%20Report.docx', path: '/data/files/My Report.docx' },
 	{ raw: '  /data/files/notes.txt  ', path: '/data/files/notes.txt' },
+	// The owner's workspace on a computer: ~/NeboAI, on every platform.
+	{ raw: '~/NeboAI/Media/outputs/demo/final.mp4', path: '~/NeboAI/Media/outputs/demo/final.mp4' },
+	{ raw: '/Users/al/NeboAI/report.md', path: '/Users/al/NeboAI/report.md' },
+	{ raw: 'C:\\Users\\al\\NeboAI\\Q3 plan.docx', path: 'C:\\Users\\al\\NeboAI\\Q3 plan.docx' },
+	{ raw: 'C:\\Windows\\win.ini', path: null },
 	// A folder, with or without its slash: no file name, no extension.
 	{ raw: '/data/files/BUG/', path: null },
 	{ raw: '/data/files/BUG', path: null },

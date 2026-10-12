@@ -1,0 +1,10 @@
+id: sc88-the-defaults-install-once-after-sign-in-and-an-installed-one-is-skipped
+name: "SC88 — The defaults install once after sign-in and an installed one is skipped"
+description: |
+  Signed in to NeboAI, a pass installs every first-party default plugin the
+  bot lacks, once each, through the one code door; a default already on the
+  bot is skipped and its .napp is never fetched. The next pass installs
+  nothing.
+target_component: staffed-company
+proof: staffed_proof::connections::the_defaults_install_once_after_sign_in_and_an_installed_one_is_skipped
+conversation: []

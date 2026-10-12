@@ -324,7 +324,6 @@ fn helper_door(harness: &agent::Harness) -> agent::harness::delegation::door::He
     let helpers = agent::harness::delegation::Helpers::new(
         harness.store().clone(),
         Arc::new(harness.sessions().clone()),
-        harness.tools().clone(),
         Arc::new(harness.clone()),
         None,
         None,

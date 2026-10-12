@@ -44,8 +44,8 @@ pub const CARD_FAILED_PREFIX: &str = "failed:";
 /// the service in the browser and do the job by hand.
 const NO_PLUGIN_NEXT: &str = "Tell the owner plainly what's missing: no plugin can do this here yet, so \
      you can't. Say what they can do instead: do it themselves, or ask again once a plugin for it is in \
-     the marketplace. Don't attempt it another way on their behalf, such as through their account in the \
-     browser, unless they ask you to.";
+     the marketplace. Don't name or recommend outside apps, websites or services for it. Don't attempt it \
+     another way on their behalf, such as through their account in the browser, unless they ask you to.";
 
 /// How a card (install, hire, connect) ended, read from the parked ask's
 /// answer. `done` is the value the card sends on success.
@@ -221,6 +221,10 @@ pub struct PluginRunner {
     plugin_store: Arc<napp::plugin::PluginStore>,
     db_store: Arc<db::Store>,
     broadcaster: Option<crate::web_tool::Broadcaster>,
+    /// The canonical marketplace-code installer cell (server-injected, shared
+    /// with the registry): a first-party default a search needs is installed
+    /// through it on the spot (`default_artifacts::install_on_request`).
+    code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
 
 /// `args` as the binary receives them: text as given, any other value
@@ -420,12 +424,44 @@ impl PluginRunner {
             plugin_store,
             db_store,
             broadcaster: None,
+            code_installer: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
     pub fn with_broadcaster(mut self, broadcaster: crate::web_tool::Broadcaster) -> Self {
         self.broadcaster = Some(broadcaster);
         self
+    }
+
+    /// Inject the shared canonical-installer cell (from the `Registry`).
+    pub fn with_code_installer(
+        mut self,
+        installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    ) -> Self {
+        self.code_installer = installer;
+        self
+    }
+
+    /// Install the first-party default plugin `slug` on the spot when it is
+    /// one and is missing: the safety net for a request that needs it
+    /// (`default_artifacts::install_on_request`). False for any other
+    /// plugin, which is offered as it always was, and when no installer is
+    /// wired or the install did not land.
+    pub(crate) async fn install_default_plugin(&self, ctx: &ToolContext, slug: &str) -> bool {
+        let Some(d) = crate::default_artifacts::default_artifact(slug).filter(|d| d.is_plugin()) else {
+            return false;
+        };
+        let Some(installer) = self.code_installer.read().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return false;
+        };
+        crate::default_artifacts::install_on_request(
+            installer.as_ref(),
+            d,
+            crate::InstalledBy::of(ctx),
+            ctx.platform.as_deref(),
+            || async { self.plugin_store.resolve(d.slug, "*").is_some() },
+        )
+        .await
     }
 
     pub(crate) fn plugin_store(&self) -> &napp::plugin::PluginStore {
@@ -440,6 +476,12 @@ impl PluginRunner {
     /// What exists — see `installed_plugin_slugs`.
     pub(crate) fn installed_slugs(&self) -> Vec<String> {
         installed_plugin_slugs(&self.plugin_store, &self.db_store)
+    }
+
+    /// The areas of a retired bundle that other plugins have taken over on
+    /// this bot (`superseded`); empty for every other plugin.
+    pub(crate) fn taken_over(&self, slug: &str) -> Vec<crate::superseded::TakenOver> {
+        crate::superseded::taken_over(&self.plugin_store, &self.db_store, slug)
     }
 
     /// The gated interface operation a raw exec command corresponds to, if any.
@@ -732,7 +774,11 @@ impl PluginRunner {
                         let top_slug = top.get("slug").and_then(|x| x.as_str()).unwrap_or("");
                         let already_installed =
                             !top_slug.is_empty() && self.plugin_store.resolve(top_slug, "*").is_some();
-                        if already_installed || (interactive && !top_code.is_empty()) {
+                        // A first-party default is installed on the spot, with
+                        // no card, in any run: the turn goes on with it.
+                        let installed_here =
+                            !already_installed && self.install_default_plugin(ctx, top_slug).await;
+                        if already_installed || installed_here || (interactive && !top_code.is_empty()) {
                             let top_name =
                                 top.get("name").and_then(|x| x.as_str()).unwrap_or("plugin");
                             let top_desc = top
@@ -740,7 +786,7 @@ impl PluginRunner {
                                 .and_then(|x| x.as_str())
                                 .unwrap_or("");
                             // Installed already: no card, the answer is known.
-                            let answer = if already_installed {
+                            let answer = if already_installed || installed_here {
                                 Some(INSTALL_CARD_INSTALLED.to_string())
                             } else {
                                 ctx.ask_user(
@@ -925,11 +971,13 @@ impl PluginRunner {
     }
 
     /// Each skill's name and `SKILL.md` in the plugin's `skills/` directory,
-    /// in name order.
+    /// in name order — less a retired bundle's skills for the areas another
+    /// plugin has taken over here (`superseded`).
     fn skill_files(&self, slug: &str) -> Vec<(String, PathBuf)> {
         let Some(entries) = self.skills_dir(slug).and_then(|d| std::fs::read_dir(d).ok()) else {
             return Vec::new();
         };
+        let taken = self.taken_over(slug);
         let mut files: Vec<(String, PathBuf)> = entries
             .flatten()
             .filter_map(|entry| {
@@ -938,6 +986,7 @@ impl PluginRunner {
                 let name = path.file_name()?.to_str()?.to_string();
                 (path.is_dir() && skill_md.exists()).then_some((name, skill_md))
             })
+            .filter(|(name, _)| crate::superseded::skill_area(slug, name, &taken).is_none())
             .collect();
         files.sort();
         files
@@ -1029,6 +1078,11 @@ impl PluginRunner {
         input: &serde_json::Value,
         client_key: Option<&str>,
     ) -> ToolResult {
+        // A help request sends nothing: the plugin prints its help, and no
+        // ledger row (so no "did it go out?" card) is made for it.
+        if crate::effects::is_help_request(input) {
+            return self.handle_exec(call, ctx).await.into_result();
+        }
         if crate::effects::is_customer_send(operation) {
             return crate::effects::guarded_send(
                 &self.db_store,
@@ -1058,10 +1112,24 @@ impl PluginRunner {
     /// operation tool: raw exec must not be a side door around the owner's
     /// rules for that operation.
     pub(crate) async fn run_command(&self, ctx: &ToolContext, call: &PluginCall) -> ToolResult {
+        // A retired bundle's command for an area another plugin has taken
+        // over here goes to that plugin: refused before it runs, so the
+        // bundle's connect card never stands in front of it (cloud E2E
+        // 2026-10-11: a Google Docs request ran gws and parked on its card).
+        let taken = self.taken_over(&call.slug);
+        if let Some(t) = crate::superseded::command_area(&call.slug, &call.command, &taken) {
+            return ToolResult::error(crate::superseded::refusal(
+                &call.slug,
+                &format!("`{} {}`", call.slug, call.command.trim()),
+                t,
+            ));
+        }
         // The refusal carries the binding: a gate run (2026-09-23) showed the
         // model retrying the identical exec three times because it had no
-        // field names to fill.
-        if let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
+        // field names to fill. A help request runs: it reads the flags and
+        // performs nothing.
+        if !asks_only_for_help(call)
+            && let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
             return ToolResult::error(format!(
                 "'{}' on {} is the operation {op}, which the owner's approval rules cover. \
                  Call {} instead (load it with find_tools) — do not retry it here. The \
@@ -1096,7 +1164,8 @@ impl PluginRunner {
                 result.push_str(&format!(
                     "\nAn employee can run on these through a watch trigger in its agent.json \
                      (create_employee with agent_json):\n  \
-                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}",
+                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}\n\
+                     Its activities follow create_workflow's design rules: a code check first, AI only when there is work.",
                     slug
                 ));
                 ToolResult::ok(result)
@@ -1944,9 +2013,14 @@ impl PluginRunner {
             Err(e @ napp::plugin_runtime::LaunchError::Spawn(_)) => {
                 Exec::NotReached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e)))
             }
+            // Not a failure of what it was given: a render that needs longer.
+            // Live 2026-10-07 the bare "timed out" read as a failure and the
+            // model remade the clips the render was built from.
             Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => Exec::Reached(ToolResult::error(format!(
-                "Plugin '{}' command timed out after {}s",
+                "Plugin '{}' command `{}` did not finish in its {}s and was stopped. Files made before it are \
+                 unchanged. Run the same command again with a larger `timeout` (a render: 600); don't remake its inputs.",
                 pi.slug,
+                Self::command_label(pi),
                 timeout.as_secs()
             ))),
             Err(e) => Exec::Reached(ToolResult::error(format!("Plugin '{}' command failed: {}", pi.slug, e))),
@@ -1954,6 +2028,8 @@ impl PluginRunner {
                 let mut text = String::new();
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                // Read before any cut below: the `Result:` line comes last.
+                let reported = reported_result_files(&stdout, started);
                 if !stdout.is_empty() {
                     text.push_str(&stdout);
                 }
@@ -2006,11 +2082,20 @@ impl PluginRunner {
                 // exactly like an `os` write does, or it never reaches the Work
                 // panel / chat cards. Same is_work_document gate; the mtime check
                 // keeps inputs the plugin only read (a spec, a template) out.
-                let result = ToolResult::ok(text);
-                Exec::Reached(match produced_work_document(&args, None, started) {
-                    Some(path) => result.with_image_url(path),
-                    None => result,
-                })
+                // A plugin names the file it made on a `Result: <path>` line
+                // (Nebo Media's contract), so the file reaches the owner
+                // without the model having to remember share_file.
+                // Only deliverables: a look frame, a preview or a file in a
+                // `work/` folder is a step on the way, named in the text alone.
+                let mut result = ToolResult::ok(text);
+                for path in reported
+                    .into_iter()
+                    .chain(produced_work_document(&args, None, started))
+                    .filter(|p| is_deliverable(p))
+                {
+                    result = result.with_image_url(path);
+                }
+                Exec::Reached(result)
             }
         }
     }
@@ -2255,6 +2340,55 @@ pub(crate) fn produced_work_document(
     })
 }
 
+/// The files a plugin reports on its `Result: <path>` lines (an optional
+/// ` (<detail>)` after the path), each an existing file written during this
+/// run. A `Result:` naming a folder, a missing file or an input the plugin
+/// only looked at (older than the run) is not a file it made.
+pub(crate) fn reported_result_files(stdout: &str, started: std::time::SystemTime) -> Vec<String> {
+    let cutoff = started - std::time::Duration::from_secs(1);
+    let made = |p: &str| {
+        std::fs::metadata(p)
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|m| m >= cutoff)
+    };
+    let mut out: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.trim().strip_prefix("Result: ") else { continue };
+        let rest = rest.trim();
+        // Paths may hold spaces and parentheses, and so may the detail
+        // (`… LUFS (target -14); …`): try the bare path, then the text
+        // before each ` (`, longest first. Splitting only at the last one
+        // lost every rendered reel whose detail named its loudness target
+        // (2026-10-09).
+        let path = std::iter::once(rest)
+            .chain(rest.rmatch_indices(" (").map(|(at, _)| &rest[..at]))
+            .find(|p| std::path::Path::new(p).is_absolute() && made(p));
+        if let Some(p) = path {
+            if !out.iter().any(|o| o == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether a file a plugin made is one for the owner, not a step on the
+/// way: Nebo Media names its look frames `*-look.png` and its previews
+/// `*-preview.mp4`, and keeps in-between files in the project's `work/`
+/// folder. Those stay on disk, named in the result's text, and never reach
+/// the owner as a card.
+pub(crate) fn is_deliverable(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let step = name.ends_with("-look.png") || name.ends_with("-preview.mp4");
+    let in_work = path
+        .parent()
+        .is_some_and(|dir| dir.components().any(|c| c.as_os_str().eq_ignore_ascii_case("work")));
+    !step && !in_work
+}
+
 /// Fire the one-time "reconnect this account" notification (bell + toast) and
 /// broadcast it, mirroring the canonical proactive-notification pathway. This
 /// is the ONE pathway for plugin-account reauth notifications — used by the
@@ -2435,6 +2569,26 @@ fn take_client_key(input: &mut serde_json::Value) -> Option<String> {
 /// A template binding ("bill create --vendor-ref {vendorId}") is matched on its
 /// leading plain words ("bill create"): the flags are the call's shape, not
 /// part of what names the operation.
+/// Whether a raw command asks only for help: a help flag (`--help`, `-h`,
+/// or a `help` arg) and no other flag, so it performs nothing.
+fn asks_only_for_help(call: &PluginCall) -> bool {
+    let mut help = false;
+    for word in call.command.split_whitespace() {
+        if word == "--help" || word == "-h" {
+            help = true;
+        } else if word.starts_with('-') {
+            return false;
+        }
+    }
+    for (k, v) in &call.args {
+        if !crate::effects::is_help_flag(k) || !(v.trim().is_empty() || v.trim() == "true") {
+            return false;
+        }
+        help = true;
+    }
+    help
+}
+
 fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
     let bound_cmd = if bound_cmd.contains('{') {
         let words: Vec<&str> = bound_cmd
@@ -2889,6 +3043,84 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Nebo Media's `Result: <path> (<detail>)` line is the file the owner
+    /// gets: a fresh file attaches (a path with spaces and parentheses
+    /// too); a folder, a missing path or a file older than the run doesn't.
+    #[test]
+    fn test_reported_result_files() {
+        let dir = std::env::temp_dir().join(format!("nebo-result-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("input.mp4");
+        std::fs::write(&old, "old").unwrap();
+        let started = std::time::SystemTime::now();
+        let cut = dir.join("demo (final) v3.mp4");
+        std::fs::write(&cut, "mp4").unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let out = format!(
+            "Checked: opens\nResult: {} (1920×1080, 15.00 s, 13.4 MB)\nResult: {}\nResult: {} — 2 files\nResult: /nope/x.mp4 (1 MB)\nResult: relative.mp4\n",
+            s(&cut), s(&cut), s(&dir)
+        );
+        assert_eq!(reported_result_files(&out, started), vec![s(&cut)]);
+        let looked = format!("Result: {} (0.5 s)\n", s(&old));
+        let later = started + std::time::Duration::from_secs(5);
+        assert!(reported_result_files(&looked, later).is_empty(), "an input the plugin only read is not its output");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A detail that holds its own ` (` still names the file: live
+    /// 2026-10-09 every rendered reel (`… LUFS (target -14); …`) was
+    /// dropped, so a turn that rendered a reel and then its cover ended
+    /// with only the cover, and a turn that rendered only the reel ended
+    /// with no card at all. Each call's file is reported, in order.
+    #[test]
+    fn test_reported_result_files_detail_with_parentheses() {
+        let dir = std::env::temp_dir().join(format!("nebo-result-paren-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("deliver")).unwrap();
+        let started = std::time::SystemTime::now();
+        let reel = dir.join("deliver/jos-jon-v2-reel.mp4");
+        let cover = dir.join("deliver/jos-jon-v2-cover.jpg");
+        let named = dir.join("deliver/cut (final).mp4");
+        for f in [&reel, &cover, &named] {
+            std::fs::write(f, "made").unwrap();
+        }
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let render = format!(
+            "Checked: opens · 1080×1920\nResult: {} (1080×1920, 30.00 s, 27.9 MB; 7 layers; sound soundtrack -14.0 LUFS (target -14); fades out over 1.2 s)\n",
+            s(&reel)
+        );
+        let thumbnail = format!("Checked: opens · 1080×1920 · JPEG · 109.6 KB\nResult: {} (1080×1920, 109.6 KB)\n", s(&cover));
+        let calls: Vec<String> = [render, thumbnail]
+            .iter()
+            .flat_map(|out| reported_result_files(out, started))
+            .collect();
+        assert_eq!(calls, vec![s(&reel), s(&cover)]);
+        let both = format!("Result: {} (2.00 s (trimmed), 1 MB)\n", s(&named));
+        assert_eq!(reported_result_files(&both, started), vec![s(&named)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A plugin's in-between files never reach the owner as cards: look
+    /// frames, previews and anything in a `work/` folder; the cut does.
+    #[test]
+    fn test_is_deliverable() {
+        for made in [
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/nebo-wingsuit-v7.mp4",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/thumbnails/thumb-landscape.jpg",
+            "/Users/a/NeboAI/Media/outputs/teamwork/cut.mp4",
+            "/Users/a/work-notes/cut-look.png.mp4",
+        ] {
+            assert!(is_deliverable(made), "{made}");
+        }
+        for step in [
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/nebo-wingsuit-v7-look.png",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/nebo-wingsuit-v7-Preview.MP4",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/work/scene1-trim.mp4",
+            "/Users/a/NeboAI/Media/outputs/wingsuit-demo/Work/thumb/intro.png",
+        ] {
+            assert!(!is_deliverable(step), "{step}");
+        }
+    }
+
     /// An exec that writes a picture hands the picture back: the raster a
     /// `screencapture` or `sips` run produced is detected like any document,
     /// and a path `image_url` is read from disk by every provider.
@@ -3106,6 +3338,46 @@ mod budget_and_install_tests {
         assert_eq!(invocations(), 4, "no key: every call runs, as before");
     }
 
+    /// Live 2026-10-12: gmail refused `send --help` as a bound operation,
+    /// the model called `mail_message_send {help: true}`, the plugin printed
+    /// its help, and the send ledger held it as an unknown send, so the
+    /// owner was asked whether an email that never existed went out. A help
+    /// request reads the plugin's help on either path and leaves no ledger
+    /// row; a real send is still recorded.
+    #[tokio::test]
+    async fn a_help_request_reads_the_help_and_records_no_send() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_port_plugin(
+            tmp.path(),
+            "gmail",
+            serde_json::json!({"mail.message.send": "send"}),
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --help ] && { echo 'usage: gmail send --to --subject --text'; exit 0; }; done\necho '{\"outcome\":\"unknown_outcome\",\"message\":\"no answer\"}'\n",
+        );
+        let runner = Arc::new(PluginRunner::new(plugin_store.clone(), db_store.clone()));
+        let cli = crate::plugin_tools::PluginCliTool::new(runner, "gmail");
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send --help"})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "help runs through the plugin tool: {}", r.content);
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send", "args": {"help": true}})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "{}", r.content);
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send --to a@x.com --help"})).await;
+        assert!(r.is_error && r.content.contains("Call mail_message_send"), "a send with flags is still refused: {}", r.content);
+
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"help": true})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "{}", r.content);
+        assert!(db_store.engine_effects_for_run("run-1").unwrap().is_empty(), "no ledger row, so no card");
+        assert!(db_store.engine_pending_effects().unwrap().is_empty());
+
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"to": "lead@example.com", "subject": "Hi", "text": "hello"})).await;
+        assert!(r.is_error && r.content.contains("outcome is unknown"), "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "a real send is recorded: {rows:?}");
+        assert_eq!((rows[0].state.as_str(), rows[0].attempts), ("pending", 1), "and held for the owner");
+    }
+
     /// Seen live: an employee with gmail connected called google-workspace
     /// first (nothing connected there), the terminal error ended the turn,
     /// and the lead was never answered. Unattended, the error now steers to
@@ -3272,6 +3544,82 @@ mod budget_and_install_tests {
             assert!(!r.is_error, "{}", r.content);
             assert!(r.content.ends_with(NO_PLUGIN_NEXT), "{matched} matched: {}", r.content);
         }
+    }
+
+    /// An interactive chat's context: a card raised in it arrives on the
+    /// returned stream.
+    fn chat_with_cards() -> (ToolContext, tokio::sync::mpsc::Receiver<ai::StreamEvent>, crate::origin::AskChannels) {
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = "agent:defaults:main".into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        (ctx, stream_rx, channels)
+    }
+
+    /// The safety net: a search whose best match is a first-party default
+    /// this bot lacks installs it on the spot, through the install door, with
+    /// no card, and the same call goes on with the plugin's tool. Asked again,
+    /// it is already installed and the door is not knocked twice.
+    #[tokio::test]
+    async fn a_search_that_needs_a_missing_default_installs_it_and_goes_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let door = crate::default_artifacts::FakeDoor::new(&tmp.path().join("plugins"));
+        let cell: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>> =
+            Arc::new(std::sync::RwLock::new(Some(door.clone())));
+        let tool = PluginRunner::new(plugin_store.clone(), db_store).with_code_installer(cell);
+        let (ctx, mut cards, _channels) = chat_with_cards();
+        let products = vec![serde_json::json!({
+            "name": "Nebo Office", "slug": "nebo-office", "code": "PLUG-BHVY-A96N",
+            "description": "Documents", "type": "plugin"
+        })];
+
+        let r = tool.offer("powerpoint", &ctx, &products, 1).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("Nebo Office is installed"), "{}", r.content);
+        assert!(r.content.contains("plugin__nebo-office"), "{}", r.content);
+        assert!(cards.try_recv().is_err(), "no install card for a default");
+        assert_eq!(door.calls(), ["PLUG-BHVY-A96N"]);
+        assert!(plugin_store.resolve("nebo-office", "*").is_some());
+
+        let again = tool.offer("powerpoint", &ctx, &products, 1).await;
+        assert!(again.content.contains("was already installed"), "{}", again.content);
+        assert_eq!(door.calls().len(), 1, "an installed default is not installed again");
+    }
+
+    /// Anything that is not a first-party default is never installed
+    /// unasked: unattended it is recommended, in a chat it is the card.
+    #[tokio::test]
+    async fn a_missing_third_party_plugin_is_never_installed_unasked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let door = crate::default_artifacts::FakeDoor::new(&tmp.path().join("plugins"));
+        let cell: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>> =
+            Arc::new(std::sync::RwLock::new(Some(door.clone())));
+        let tool = Arc::new(PluginRunner::new(plugin_store.clone(), db_store).with_code_installer(cell));
+        let products = vec![serde_json::json!({
+            "name": "QuickBooks Online", "slug": "quickbooks", "code": "PLUG-ABCD-1234",
+            "description": "Books", "type": "plugin"
+        })];
+
+        let unattended = tool.offer("quickbooks", &ToolContext::default(), &products, 1).await;
+        assert!(unattended.content.contains("Installing needs the owner's approval"), "{}", unattended.content);
+
+        let (ctx, mut cards, _channels) = chat_with_cards();
+        let cancel = ctx.cancel_token.clone();
+        let offering = {
+            let tool = tool.clone();
+            let products = products.clone();
+            tokio::spawn(async move { tool.offer("quickbooks", &ctx, &products, 1).await })
+        };
+        cards.recv().await.expect("the install card is shown");
+        cancel.cancel();
+        offering.await.unwrap();
+
+        assert!(door.calls().is_empty(), "the door was never knocked: {:?}", door.calls());
+        assert!(plugin_store.resolve("quickbooks", "*").is_none());
     }
 
     /// Offer an install card in an interactive chat and end it the given

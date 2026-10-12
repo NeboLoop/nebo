@@ -59,7 +59,7 @@ pub fn scan(root: &Path) -> ImportManifest {
                 tier,
                 name: s.name,
                 detail,
-                target: "MCP integration",
+                target: "Connector",
                 source_path: "openclaw.json".into(),
             });
         }
@@ -209,7 +209,7 @@ pub(super) fn mcp_block(
     for (name, entry) in servers {
         if entry.get("enabled").and_then(|e| e.as_bool()) == Some(false) {
             out.skipped
-                .push(format!("MCP server {name}: disabled in OpenClaw, not imported"));
+                .push(format!("Connector {name}: disabled in OpenClaw, not imported"));
             continue;
         }
         let mut e = entry.clone();

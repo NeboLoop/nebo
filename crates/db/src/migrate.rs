@@ -983,6 +983,71 @@ Date
         assert_eq!(before.0, 2, "only the conversations with someone else stay sealed");
     }
 
+    /// Memories stored under a date join the `project` layer, keyed with
+    /// that date; one that would collide also keys with its id. Nothing is
+    /// lost, and every other memory stays where it was.
+    #[test]
+    fn dated_memories_join_the_project_layer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("daily.db")).unwrap();
+        run_migrations_to(&conn, 210).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO memories (id, namespace, key, value, user_id) VALUES
+                (1, 'daily/2026-04-14', 'invoice-status', 'sent', 'o'),
+                (2, 'daily/2026-04-15', 'invoice-status', 'paid', 'o'),
+                (3, 'project', 'lease-2026-04-14', 'taken', 'o'),
+                (4, 'daily/2026-04-14', 'lease', 'signed', 'o'),
+                (5, 'tacit/preferences', 'tone', 'brief', 'o');"#,
+        )
+        .unwrap();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0211_daily_memories_join_project.sql"))).unwrap();
+        let row = |id: i64| -> (String, String, String) {
+            conn.query_row("SELECT namespace, key, value FROM memories WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+        };
+        let own = |ns: &str, key: &str, value: &str| (ns.to_string(), key.to_string(), value.to_string());
+        assert_eq!(row(1), own("project", "invoice-status-2026-04-14", "sent"));
+        assert_eq!(row(2), own("project", "invoice-status-2026-04-15", "paid"));
+        assert_eq!(row(3), own("project", "lease-2026-04-14", "taken"));
+        assert_eq!(row(4), own("project", "lease-2026-04-14-4", "signed"));
+        assert_eq!(row(5), own("tacit/preferences", "tone", "brief"));
+        let dated: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE namespace LIKE 'daily/%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(dated, 0);
+    }
+
+    /// A web conversation's messages with no chats row get one, under the
+    /// session that has them open or their own session key; a conversation
+    /// with its row keeps it as it was.
+    #[test]
+    fn web_conversations_without_a_row_get_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("web.db")).unwrap();
+        run_migrations_to(&conn, 211).unwrap();
+        // Messages from before the chats foreign key held.
+        conn.execute_batch(
+            r#"PRAGMA foreign_keys = OFF;
+               INSERT INTO sessions (id, name, scope, scope_id, active_chat_id, created_at, updated_at) VALUES
+                ('s1', 'agent:a:web', 'agent', 'a', 'c-open', 0, 0);
+               INSERT INTO chats (id, title, session_name, created_at, updated_at) VALUES ('kept', 'Mine', 'agent:k:web', 5, 6);
+               INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES
+                ('m1', 'c-open', 'user', 'hi', 10),
+                ('m2', 'c-open', 'assistant', 'hello', 20),
+                ('m3', 'agent:b:web', 'user', 'old', 30),
+                ('m4', 'kept', 'user', 'kept', 40);"#,
+        )
+        .unwrap();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0212_web_chat_rows.sql"))).unwrap();
+        let row = |id: &str| -> (String, String, i64, i64) {
+            conn.query_row("SELECT session_name, title, created_at, updated_at FROM chats WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(row("c-open"), ("agent:a:web".to_string(), "Chat 1".to_string(), 10, 20));
+        assert_eq!(row("agent:b:web"), ("agent:b:web".to_string(), "Chat 1".to_string(), 30, 30));
+        assert_eq!(row("kept"), ("agent:k:web".to_string(), "Mine".to_string(), 5, 6));
+    }
+
     /// The automation notices stored before 0196 carry the automation marker,
     /// and nothing else does: the employee's own words that merely mention
     /// an automation, and a row with metadata of its own, keep theirs.
@@ -1139,5 +1204,98 @@ Two leads.', NULL, 3),
         let timers = store.engine_pending_timers("wait").unwrap();
         assert_eq!(timers.iter().filter(|e| e.target_id == wait.id.to_string()).count(), 1, "the reminder is the wait's timer");
         assert!(store.engine_get_run("old-1").unwrap().is_none(), "a settled ask waits on nothing");
+    }
+
+    /// Every stored choice of a Nebo AI speed becomes the Nebo AI pack at
+    /// its level; a pack level, any other model and a run's record stay as
+    /// they were.
+    #[test]
+    fn stored_speed_choices_become_nebo_ai_pack_refs() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 230).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title, model) VALUES ('a', 'A', 'janus/nebo-1-flash'), ('b', 'B', 'nebo-1'), ('c', 'C', 'openai/gpt-5.4'), ('d', 'D', NULL);
+               INSERT INTO sessions (id, created_at, updated_at, model_override) VALUES ('s', 1, 1, 'nebo-1-pro');
+               INSERT INTO entity_config (entity_type, entity_id, model_preference) VALUES ('agent', 'e1', 'janus/nebo-1-medium'), ('agent', 'e2', 'pack/mine/high');
+               INSERT INTO workflows (id, name, definition) VALUES ('w', 'W', '{"version":"1","activities":[{"id":"a1","model":"nebo-1"},{"id":"a2","model":"janus/nebo-1-pro"},{"id":"a3"}]}');
+               INSERT INTO agents (id, name, description, agent_md, frontmatter) VALUES ('g', 'G', '', '', '{"pricing":{"model":"monthly_fixed"},"workflows":{"brief":{"description":"x","activities":[{"id":"t","model":"nebo-1"},{"id":"u","model":"sonnet"}]},"watch":{"trigger":{"type":"watch"}}}}');"#,
+        )
+        .unwrap();
+        run_migrations_to(&conn, 231).unwrap();
+        let text = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, Option<String>>(0)).unwrap();
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'a'").as_deref(), Some("pack/nebo-ai/instant"));
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'b'").as_deref(), Some("pack/nebo-ai"));
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'c'").as_deref(), Some("openai/gpt-5.4"), "another model stays");
+        assert_eq!(text("SELECT model FROM chats WHERE id = 'd'"), None);
+        assert_eq!(text("SELECT model_override FROM sessions WHERE id = 's'").as_deref(), Some("pack/nebo-ai/high"));
+        assert_eq!(text("SELECT model_preference FROM entity_config WHERE entity_id = 'e1'").as_deref(), Some("pack/nebo-ai/medium"));
+        assert_eq!(text("SELECT model_preference FROM entity_config WHERE entity_id = 'e2'").as_deref(), Some("pack/mine/high"));
+        let def: serde_json::Value = serde_json::from_str(&text("SELECT definition FROM workflows WHERE id = 'w'").unwrap()).unwrap();
+        let models: Vec<Option<&str>> = def["activities"].as_array().unwrap().iter().map(|a| a["model"].as_str()).collect();
+        assert_eq!(models, [Some("pack/nebo-ai"), Some("pack/nebo-ai/high"), None], "in order, untouched beside them");
+        assert_eq!(def["activities"][0]["id"], "a1");
+        let fm: serde_json::Value = serde_json::from_str(&text("SELECT frontmatter FROM agents WHERE id = 'g'").unwrap()).unwrap();
+        assert_eq!(fm["workflows"]["brief"]["activities"][0]["model"], "pack/nebo-ai");
+        assert_eq!(fm["workflows"]["brief"]["activities"][1]["model"], "sonnet");
+        assert_eq!(fm["workflows"]["brief"]["description"], "x");
+        assert_eq!(fm["workflows"]["watch"]["trigger"]["type"], "watch", "a workflow without activities stays");
+        assert_eq!(fm["pricing"]["model"], "monthly_fixed", "a pricing model is not a choice of AI");
+    }
+
+    /// Every stored reply with calls leaves 0220 in the one shape the
+    /// thread reads: calls kept only in metadata move to `tool_calls` with
+    /// their outputs on a `tool` row; a reply with no block order gets one
+    /// (text, a note, then the calls); a text block beside calls with no
+    /// verdict reads as the note it was. A reply already in shape is left
+    /// as it is.
+    #[test]
+    fn stored_calls_take_one_shape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("calls.db")).unwrap();
+        run_migrations_to(&conn, 219).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title) VALUES ('c', 'C');
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
+                ('old', 'c', 'assistant', 'Reading it.', '{"toolCalls":[{"id":"t1","name":"read_file","input":"{\"path\":\"/a/b.txt\"}","status":"error","output":"no such file"}],"artifacts":["x"]}', 1);
+             INSERT INTO chat_messages (id, chat_id, role, content, tool_calls, created_at) VALUES
+                ('bare', 'c', 'assistant', 'Two things.', '[{"id":"t2","name":"a","input":{}},{"id":"t3","name":"b","input":{}}]', 2),
+                ('quiet', 'c', 'assistant', '', '[{"id":"t4","name":"a","input":{}}]', 3);
+             INSERT INTO chat_messages (id, chat_id, role, content, tool_calls, metadata, created_at) VALUES
+                ('early', 'c', 'assistant', 'Checking.', '[{"id":"t5","name":"a","input":{}}]', '{"contentBlocks":[{"type":"text"},{"type":"tool","toolCallIndex":0}],"heardThrough":"m1"}', 4),
+                ('now', 'c', 'assistant', 'Again.', '[{"id":"t6","name":"a","input":{}}]', '{"contentBlocks":[{"type":"tool","toolCallIndex":0},{"type":"text","fold":"folded"}]}', 5);"#,
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let get = |id: &str, col: &str| -> serde_json::Value {
+            let raw: Option<String> = conn
+                .query_row(&format!("SELECT {col} FROM chat_messages WHERE id = ?1"), [id], |r| r.get(0))
+                .unwrap();
+            serde_json::from_str(raw.as_deref().unwrap_or("null")).unwrap()
+        };
+        assert_eq!(get("old", "tool_calls"), serde_json::json!([{"id": "t1", "name": "read_file", "input": {"path": "/a/b.txt"}}]));
+        assert_eq!(
+            get("old", "metadata"),
+            serde_json::json!({"artifacts": ["x"], "contentBlocks": [{"type": "text", "fold": "shown"}, {"type": "tool", "toolCallIndex": 0}]})
+        );
+        assert_eq!(
+            get("old:results", "tool_results"),
+            serde_json::json!([{"tool_call_id": "t1", "content": "no such file", "is_error": true}])
+        );
+        assert_eq!(
+            get("bare", "metadata")["contentBlocks"],
+            serde_json::json!([{"type": "text", "fold": "shown"}, {"type": "tool", "toolCallIndex": 0}, {"type": "tool", "toolCallIndex": 1}])
+        );
+        assert_eq!(get("quiet", "metadata")["contentBlocks"], serde_json::json!([{"type": "tool", "toolCallIndex": 0}]));
+        assert_eq!(
+            get("early", "metadata"),
+            serde_json::json!({"contentBlocks": [{"type": "text", "fold": "shown"}, {"type": "tool", "toolCallIndex": 0}], "heardThrough": "m1"})
+        );
+        assert_eq!(
+            get("now", "metadata"),
+            serde_json::json!({"contentBlocks": [{"type": "tool", "toolCallIndex": 0}, {"type": "text", "fold": "folded"}]})
+        );
     }
 }

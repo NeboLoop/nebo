@@ -28,7 +28,9 @@ use db;
 /// owner-authenticated it, so an app UI opened at /t/<botID>/apps/… may invoke
 /// without holding the sidecar's NEBO_APP_TOKEN. A drive-by page can't forge
 /// the stamp — the secret never leaves this process, and the tunnel strips
-/// inbound copies.
+/// inbound copies. On this computer the owner's browser proves itself the
+/// same way, with its session (`signed_in_app_page`): the app's own page in
+/// a browser window opened from Nebo's web UI.
 /// Returns 401 if the token is missing/invalid, or if the app has no running lifecycle.
 async fn validate_app_token(
     state: &AppState,
@@ -38,7 +40,11 @@ async fn validate_app_token(
     if crate::middleware::came_through_tunnel(headers) {
         return Ok(());
     }
-    if desktop_window_reaches(headers, agent_id, config::read_install_key().as_deref()) {
+    let install_key = config::read_install_key();
+    if desktop_window_reaches(headers, agent_id, install_key.as_deref()) {
+        return Ok(());
+    }
+    if signed_in_app_page(headers, agent_id, install_key.as_deref()) {
         return Ok(());
     }
     // The app's page as Nebo's headless browser opened it for a screenshot:
@@ -82,6 +88,33 @@ async fn validate_app_token(
 /// (`ws::from_its_desktop_window`). A window reaches only its own app.
 fn desktop_window_reaches(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
     bearer_is(headers, install_key) && crate::handlers::ws::from_its_desktop_window(headers, agent_id)
+}
+
+/// The app's own page in the owner's signed-in browser reaching its own
+/// app's routes: Nebo's web UI opens an app in a browser window at
+/// `/apps/<id>/ui/` on this server (`launcher.ts`), and that page holds the
+/// owner's session cookie (`local_access`), as a page through the tunnel
+/// holds the hub's sign-in. The request must carry the session, be
+/// same-origin (`Sec-Fetch-Site`, so no other site on this computer rides
+/// the cookie), and come from this app's page (its Referer, at
+/// `/apps/<id>/ui/`): one app's page never reaches another app's data, and
+/// a request naming no app page gets nothing.
+fn signed_in_app_page(headers: &axum::http::HeaderMap, agent_id: &str, install_key: Option<&str>) -> bool {
+    let Some(key) = install_key.filter(|k| !k.is_empty()) else { return false };
+    if agent_id.is_empty() || !crate::middleware::carries_session(headers, &crate::local_access::session_for(key)) {
+        return false;
+    }
+    let same_origin = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("same-origin");
+    let page_app = headers
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|r| url::Url::parse(r).ok())
+        .and_then(|u| {
+            let rest = u.path().strip_prefix("/apps/")?;
+            let (id, ui) = rest.split_once('/')?;
+            (ui == "ui" || ui.starts_with("ui/")).then(|| urlencoding::decode(id).map(|c| c.into_owned()).unwrap_or_else(|_| id.to_string()))
+        });
+    same_origin && page_app.as_deref() == Some(agent_id)
 }
 
 /// Check that the app has `network:{domain}` permission for the target URL.
@@ -368,44 +401,54 @@ struct DesktopPage<'a> {
 /// stays open between reloads; each load gets a new one.
 const DESKTOP_PASS_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
-/// The store and port the desktop's `neboapp://` handler answers from. It
-/// runs in this process, outside the router, so `run` hands it them here.
-static DESKTOP: std::sync::OnceLock<(std::sync::Arc<db::Store>, u16)> = std::sync::OnceLock::new();
-
-/// Called once by `run`: the desktop's app windows read this store.
-pub(crate) fn serve_desktop_from(store: std::sync::Arc<db::Store>, port: u16) {
-    let _ = DESKTOP.set((store, port));
+/// What the desktop shell's window for one app needs from this server
+/// (`GET /api/v1/apps/{id}/desktop`), read by its `neboapp://` handler and
+/// its app-window menu. The shell is another process: it asks.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopApp {
+    /// Whether the app window offers "Publish This App…": only one of the
+    /// owner's own apps (the only ones built and published from here), and
+    /// only under App Developer mode, which counts while Developer mode is
+    /// on: the same gate as the chat's Publish button.
+    offers_publish: bool,
+    /// What the app's entry page carries after the desktop bridge, by the
+    /// one rule the HTTP path follows (`serve_app_ui_inner`): the owner's own
+    /// app gets the developer script (console capture and the reload
+    /// listener, the floating console with App Developer mode on); an app
+    /// installed from the marketplace gets nothing.
+    developer_script: String,
+    /// The app's served `ui/` as the database records it, the server's own
+    /// fallback (`resolve_app_ui`). An app the owner made lives in a folder
+    /// named for the employee ("Design Studio"), not its id, so the window's
+    /// folder scan alone never finds it (live 2026-10-05: "App not found"
+    /// for Design Studio on the desktop).
+    ui_dir: Option<PathBuf>,
 }
 
-/// For the desktop's `neboapp://` handler: what an app's entry page carries
-/// after the desktop bridge, by the one rule the HTTP path follows
-/// (`serve_app_ui_inner`): the owner's own app gets the developer script
-/// (console capture and the reload listener, the floating console with App
-/// Developer mode on); an app installed from the marketplace gets nothing.
-pub fn desktop_developer_script(agent_id: &str) -> String {
-    DESKTOP.get().map(|(store, port)| desktop_script(store, *port, agent_id)).unwrap_or_default()
-}
-
-/// For the desktop's app-window menu: whether "Publish This App…" is offered
-/// for `agent_id`. Only one of the owner's own apps (the only ones built and
-/// published from here), and only under App Developer mode, which counts
-/// while Developer mode is on: the same gate as the chat's Publish button.
-pub fn desktop_offers_publish(agent_id: &str) -> bool {
-    DESKTOP.get().is_some_and(|(store, _)| {
-        let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
-        developer && store.app_developer_mode() && own_app(store, agent_id).is_some()
+/// GET /api/v1/apps/{agent_id}/desktop: [`DesktopApp`], for the desktop
+/// shell's own call only (`process::from_the_shell`).
+pub async fn desktop_app(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !crate::process::from_the_shell(&headers) {
+        return (StatusCode::UNAUTHORIZED, "the install key is required").into_response();
+    }
+    let store = &state.store;
+    let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
+    axum::Json(DesktopApp {
+        offers_publish: developer && store.app_developer_mode() && own_app(store, &agent_id).is_some(),
+        developer_script: desktop_script(store, state.config.port, &agent_id),
+        ui_dir: store
+            .get_agent(&agent_id)
+            .ok()
+            .flatten()
+            .and_then(|a| a.app_ui_path)
+            .and_then(|recorded| served_ui_dir(PathBuf::from(recorded))),
     })
-}
-
-/// For the desktop's `neboapp://` window: the app's served `ui/` as the
-/// database records it, the server's own fallback (`resolve_app_ui`). An
-/// app the owner made lives in a folder named for the employee ("Design
-/// Studio"), not its id, so the window's folder scan alone never finds it
-/// (live 2026-10-05: "App not found" for Design Studio on the desktop).
-pub fn desktop_app_ui_dir(agent_id: &str) -> Option<PathBuf> {
-    let (store, _) = DESKTOP.get()?;
-    let recorded = store.get_agent(agent_id).ok()??.app_ui_path?;
-    served_ui_dir(PathBuf::from(recorded))
+    .into_response()
 }
 
 fn desktop_script(store: &db::Store, port: u16, agent_id: &str) -> String {
@@ -847,12 +890,11 @@ fn app_employee_name(state: &AppState, agent_id: &str) -> String {
 
 /// GET /sdk/nebo.global.js — serve the app SDK IIFE build for vanilla/HTMX apps.
 pub async fn serve_sdk_iife() -> Response {
-    // Dev freshness first (live node_modules on a source checkout), then the
-    // copy embedded with the SPA (app/static/sdk/ → build/sdk/) — the ONLY
-    // form that exists in the shipped image; the node_modules path 404'd on
-    // every cloud bot.
-    let path =
-        StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/node_modules/@neboai/app-sdk/dist/nebo.global.js");
+    // The one copy, app/static/sdk/ (the app-sdk dist build): read live on a
+    // source checkout so an edit shows at once, else embedded with the SPA
+    // (build/sdk/) — the ONLY form in the shipped image. Never node_modules:
+    // that is the npm release, which lagged it (no decide, no share).
+    let path = StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/static/sdk/nebo.global.js");
     let contents: Option<Vec<u8>> = match fs::read(&path).await {
         Ok(c) => Some(c),
         Err(_) => crate::spa::embedded_asset("sdk/nebo.global.js").map(|f| f.data.into_owned()),
@@ -957,12 +999,30 @@ pub async fn list_storage(
         return r;
     }
     match tools::app_data::list(&state.store, &agent_id) {
-        Ok(items) => axum::Json(serde_json::json!({ "items": items })).into_response(),
+        Ok(items) => axum::Json(storage_listing(items)).into_response(),
         Err(e) => {
             warn!(error = %e, "app storage list failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// The body of `GET /apps/{id}/storage`: `items`, each `[key, stored
+/// text]` as always, and `updatedAt`, each key's last write (RFC 3339, UTC,
+/// the store's own clock), so a page can tell when a key was saved without a
+/// time anyone wrote into the value.
+fn storage_listing(items: Vec<(String, String, i64)>) -> serde_json::Value {
+    let mut updated_at = serde_json::Map::new();
+    let pairs: Vec<(String, String)> = items
+        .into_iter()
+        .map(|(key, raw, at)| {
+            if let Some(t) = chrono::DateTime::from_timestamp(at, 0) {
+                updated_at.insert(key.clone(), serde_json::Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)));
+            }
+            (key, raw)
+        })
+        .collect();
+    serde_json::json!({ "items": pairs, "updatedAt": updated_at })
 }
 
 /// The longest batch one devlog POST keeps.
@@ -1587,6 +1647,7 @@ async fn start_app_agent_run(
             channel: "app".to_string(),
             origin: tools::Origin::App,
             door: types::permissions::Door::Chat,
+            narrow: None,
             agent_id: agent_id.to_string(),
             cancel_token,
             lane: types::constants::lanes::EVENTS.to_string(),
@@ -1691,6 +1752,7 @@ async fn start_janus_stream(
         system: body.system.unwrap_or_default(),
         model: body.model.unwrap_or_default(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: Some(CancellationToken::new()),
@@ -1787,6 +1849,97 @@ pub async fn http_proxy(
         }
         Err(e) => (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
     }
+}
+
+/// The WS event that asks the owner's open chat to show the Share dialog on
+/// a file an app put into Work (`nebo.share`).
+pub const SHARE_REQUESTED_EVENT: &str = "app_share_requested";
+
+#[derive(Deserialize)]
+pub struct ShareRequest {
+    pub name: String,
+    pub content: String,
+    /// The chat the app is open on (`?thread=`); empty when none.
+    #[serde(default)]
+    pub thread: String,
+    /// The client that opened the app's page (`?client=`): the desktop
+    /// window, the web app or the phone app. Empty when the page names none.
+    #[serde(default)]
+    pub client: String,
+}
+
+/// The `app_share_requested` event for a file the page handed over, stamped
+/// with who asked ([`EventOrigin`](crate::handlers::ws::EventOrigin)): the
+/// Share dialog is an interactive surface, so it opens only on the client
+/// whose page asked. A share started on the phone never pops it on the
+/// desktop. A page that names no client claims no device, and the dialog
+/// opens nowhere (the file is in Work all the same).
+fn share_requested_event(agent_id: &str, req: &ShareRequest, artifact: &str, title: &str) -> serde_json::Value {
+    let client = req.client.trim();
+    let origin = crate::handlers::ws::EventOrigin {
+        client_id: (!client.is_empty()).then(|| client.to_string()),
+        session_id: req.thread.clone(),
+        platform: None,
+    };
+    origin.stamp(serde_json::json!({ "agentId": agent_id, "chatId": req.thread, "artifact": artifact, "title": title }))
+}
+
+/// A file or folder name an app may write into Work: one plain segment,
+/// no separators, not hidden, at most 120 characters. The file needs an
+/// extension so it opens in the right viewer.
+fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
+    let name = name.trim();
+    let ok = !name.is_empty()
+        && name.chars().count() <= 120
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', '\0'])
+        && (!needs_ext || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty()));
+    ok.then(|| name.to_string())
+}
+
+/// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
+/// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
+/// replaced when shared again), and the owner's open chat shows the one
+/// Share dialog on it. The page never calls the share API: who can open the
+/// link, and until when, is his choice there.
+pub async fn share_file(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<ShareRequest>,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, &headers).await {
+        return r;
+    }
+    let app_name = match validate_app_agent(&state.store, &agent_id, None) {
+        Ok((_, name)) => name,
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    let Some(name) = work_segment(&body.name, true) else {
+        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({
+            "error": "name must be a file name with an extension, like \"Launch deck.html\""
+        }))).into_response();
+    };
+    if body.content.is_empty() {
+        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "content is empty" }))).into_response();
+    }
+    let folder = work_segment(&app_name, false).unwrap_or_else(|| agent_id.clone());
+    let dir = match config::files_dir() {
+        Ok(d) => d.join(&folder),
+        Err(e) => return to_error_response(e).into_response(),
+    };
+    if let Err(e) = fs::create_dir_all(&dir).await {
+        warn!(error = %e, "app share: cannot make the Work folder");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if let Err(e) = fs::write(dir.join(&name), body.content.as_bytes()).await {
+        warn!(error = %e, "app share: cannot write the file");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    // The same unencoded reference a run's own Work files carry.
+    let artifact = format!("/api/v1/files/{folder}/{name}");
+    state.hub.broadcast(SHARE_REQUESTED_EVENT, share_requested_event(&agent_id, &body, &artifact, &name));
+    axum::Json(serde_json::json!({ "artifact": artifact })).into_response()
 }
 
 /// GET /apps/{agent_id}/identity — expose agent context for the app SDK.
@@ -2128,6 +2281,88 @@ mod developer_mode_tests {
         let raw = tools::app_data::read(&store, "crm", "contact:john").unwrap().unwrap();
         assert_eq!(tools::app_data::decode(&raw), contact);
         assert_eq!(tools::app_data::read(&store, "notes", "contact:john").unwrap(), None);
+    }
+
+    /// The storage listing keeps `items` exactly as before (what the SDK's
+    /// `keys()` reads) and adds each key's last write time from the store.
+    #[test]
+    fn the_storage_listing_says_when_each_key_was_saved() {
+        let (_d, store) = store();
+        let before = chrono::Utc::now().timestamp();
+        tools::app_data::write(&store, "crm", "b", "\"two\"").unwrap();
+        tools::app_data::write(&store, "crm", "a", "\"one\"").unwrap();
+        let after = chrono::Utc::now().timestamp();
+        let body = storage_listing(tools::app_data::list(&store, "crm").unwrap());
+        assert_eq!(body["items"], serde_json::json!([["a", "\"one\""], ["b", "\"two\""]]), "items unchanged");
+        for key in ["a", "b"] {
+            let at = body["updatedAt"][key].as_str().unwrap_or_else(|| panic!("a time for {key}: {body}"));
+            let at = chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp();
+            assert!((before..=after).contains(&at), "{key} saved at {at}, not in {before}..={after}");
+        }
+
+        // A later write moves its key's time; the other key's stays
+        let time = |key: &str| {
+            let body = storage_listing(tools::app_data::list(&store, "crm").unwrap());
+            chrono::DateTime::parse_from_rfc3339(body["updatedAt"][key].as_str().unwrap()).unwrap().timestamp()
+        };
+        let (a0, b0) = (time("a"), time("b"));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        tools::app_data::write(&store, "crm", "b", "\"three\"").unwrap();
+        assert_eq!(time("a"), a0, "an untouched key keeps its time");
+        assert!(time("b") > b0, "a rewritten key gets the new time");
+    }
+
+    /// The app's page in the owner's signed-in browser (Open App from the
+    /// web UI on this computer) reaches its own app's store with the session
+    /// cookie; another app's page, a page that is not an app's, another
+    /// site, a wrong or missing session, and no install key are refused.
+    #[test]
+    fn a_signed_in_browser_reaches_only_the_app_whose_page_it_is() {
+        let session = crate::local_access::session_for("key-1");
+        let page = |cookie: Option<&str>, site: Option<&str>, referer: Option<&str>| {
+            let mut h = axum::http::HeaderMap::new();
+            if let Some(c) = cookie {
+                h.insert(header::COOKIE, c.parse().unwrap());
+            }
+            if let Some(s) = site {
+                h.insert("sec-fetch-site", s.parse().unwrap());
+            }
+            if let Some(r) = referer {
+                h.insert(header::REFERER, r.parse().unwrap());
+            }
+            h
+        };
+        let cookie = format!("theme=dark; nebo_session={session}");
+        let own = "http://localhost:27895/apps/crm/ui/index.html?thread=t1&client=c1";
+        let h = page(Some(&cookie), Some("same-origin"), Some(own));
+        assert!(signed_in_app_page(&h, "crm", Some("key-1")));
+        assert!(
+            signed_in_app_page(&page(Some(&cookie), Some("same-origin"), Some("http://localhost:27895/apps/crm/ui/")), "crm", Some("key-1")),
+            "the page's root"
+        );
+        assert!(!signed_in_app_page(&h, "notes", Some("key-1")), "another app's routes");
+        assert!(!signed_in_app_page(&h, "crm", Some("key-2")), "a session from another key");
+        assert!(!signed_in_app_page(&h, "crm", None), "no key on this install");
+        assert!(!signed_in_app_page(&h, "", Some("key-1")));
+        assert!(!signed_in_app_page(&page(None, Some("same-origin"), Some(own)), "crm", Some("key-1")), "no session");
+        assert!(
+            !signed_in_app_page(&page(Some("nebo_session=forged"), Some("same-origin"), Some(own)), "crm", Some("key-1")),
+            "a forged session"
+        );
+        for site in [Some("same-site"), Some("cross-site"), Some("none"), None] {
+            assert!(!signed_in_app_page(&page(Some(&cookie), site, Some(own)), "crm", Some("key-1")), "{site:?}");
+        }
+        for referer in [
+            None,
+            Some("http://localhost:27895/"),
+            Some("http://localhost:27895/agents/crm/chat"),
+            Some("http://localhost:27895/apps/notes/ui/index.html"),
+            Some("http://localhost:27895/apps/crm/api/x"),
+            Some("http://localhost:27895/apps/crmx/ui/index.html"),
+            Some("http://localhost:27895/files/apps/crm/ui/index.html"),
+        ] {
+            assert!(!signed_in_app_page(&page(Some(&cookie), Some("same-origin"), referer), "crm", Some("key-1")), "{referer:?}");
+        }
     }
 
     /// `nebo.decide` (POST /apps/{id}/janus/decide) is admitted like
@@ -2956,5 +3191,54 @@ mod developer_console_tests {
             r.contains("<canvas id=\"minimap\"> drawn at 150\u{d7}150 is stretched to ") && r.contains("over the canvas under it")
         });
         assert!(named, "{shown}");
+    }
+}
+
+#[cfg(test)]
+mod share_tests {
+    use super::*;
+
+    /// `nebo.share` writes one plain file into the app's Work folder:
+    /// nothing that climbs out of it, hides, or has no extension.
+    #[test]
+    fn a_shared_file_is_one_plain_named_file() {
+        assert_eq!(work_segment("  Launch deck.html ", true).as_deref(), Some("Launch deck.html"));
+        assert_eq!(work_segment("Design Studio", false).as_deref(), Some("Design Studio"));
+        for bad in ["", "   ", "../x.html", "a/b.html", "a\\b.html", ".env", "deck", "deck.", ".html", "x\0.html"] {
+            assert_eq!(work_segment(bad, true), None, "{bad:?}");
+        }
+        assert_eq!(work_segment(&format!("{}.html", "a".repeat(120)), true), None);
+    }
+
+    fn asked(client: &str) -> ShareRequest {
+        ShareRequest { name: "Deck.html".into(), content: "<h1>x</h1>".into(), thread: "chat-1".into(), client: client.into() }
+    }
+
+    /// The Share dialog opens only where the page that asked is open: the
+    /// event names that client, so the phone's share never opens on the
+    /// desktop and the desktop's never on the phone.
+    #[test]
+    fn a_share_names_the_client_whose_page_asked() {
+        let from_phone = share_requested_event("app-1", &asked("phone-b"), "/api/v1/files/App/Deck.html", "Deck.html");
+        assert_eq!(from_phone["client_id"], "phone-b");
+        assert_eq!(from_phone["session_id"], "chat-1");
+        assert_eq!(from_phone["agentId"], "app-1");
+        assert_eq!(from_phone["chatId"], "chat-1");
+        assert_eq!(from_phone["artifact"], "/api/v1/files/App/Deck.html");
+        assert_eq!(from_phone["title"], "Deck.html");
+        let from_desktop = share_requested_event("app-1", &asked(" desktop-a "), "/api/v1/files/App/Deck.html", "Deck.html");
+        assert_eq!(from_desktop["client_id"], "desktop-a");
+    }
+
+    /// A page that names no client (an SDK copy from before `?client=`)
+    /// claims no device: `client_id` is null, so no client opens a dialog.
+    #[test]
+    fn a_share_naming_no_client_is_unclaimed() {
+        for client in ["", "   "] {
+            let ev = share_requested_event("app-1", &asked(client), "/api/v1/files/App/Deck.html", "Deck.html");
+            assert!(ev.get("client_id").is_some_and(|c| c.is_null()), "{ev}");
+        }
+        let old_page: ShareRequest = serde_json::from_str(r#"{"name":"Deck.html","content":"x","thread":"chat-1"}"#).unwrap();
+        assert!(old_page.client.is_empty());
     }
 }

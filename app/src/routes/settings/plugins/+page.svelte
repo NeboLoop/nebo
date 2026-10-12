@@ -3,6 +3,7 @@
   import { t } from 'svelte-i18n';
   import { setPluginConfig } from '$lib/api/index';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { openSignInLink } from '$lib/utils/pluginSignIn';
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import StatCard from '$lib/components/settings/StatCard.svelte';
@@ -173,7 +174,7 @@
     authStatuses[id] = 'connecting';
     try {
       const api = await import('$lib/api/nebo');
-      await api.authLogin(id);
+      openSignInLink(await api.authLogin(id));
     } catch {
       authStatuses[id] = 'disconnected';
     }

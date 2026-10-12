@@ -255,6 +255,21 @@ export interface AuthProfile {
 	authType?: string
 }
 
+export interface BackgroundActionResponse {
+	id: string
+	action: string
+}
+
+export interface BackgroundListResponse {
+	tasks: BackgroundTask[]
+	finished: FinishedTask[]
+}
+
+export interface BackgroundOutputResponse {
+	output: string
+	truncated: boolean
+}
+
 export interface Backup {
 	id: string
 	path: string
@@ -295,6 +310,18 @@ export interface BillingSubscription {
 	plan?: string
 	status?: string
 	currentPeriodEnd?: string
+}
+
+export interface BorderSide {
+	style: string
+	color?: string
+}
+
+export interface Borders {
+	top?: BorderSide
+	right?: BorderSide
+	bottom?: BorderSide
+	left?: BorderSide
 }
 
 export interface BotEmailResponse {
@@ -387,6 +414,35 @@ export interface CasesList {
 	cases: CaseSummary[]
 }
 
+export interface CatalogModel {
+	modelId: string
+	displayName: string
+	family: string
+	kind: string
+	contextWindow?: number
+	capabilities: string[]
+	pricing?: Pricing
+	created?: number
+	added: boolean
+}
+
+export interface CellView {
+	r: number
+	c: number
+	display: string
+	value: unknown
+	formula?: string
+	style: number
+	editable: boolean
+}
+
+export interface Changed {
+	sheet: string
+	cell: string
+	display: string
+	value: unknown
+}
+
 export interface Channel {
 	id: string
 	name: string
@@ -400,6 +456,13 @@ export interface Channel {
 	updatedAt: number
 }
 
+export interface Chart {
+	type: string
+	title?: string
+	anchor: string
+	series: Series[]
+}
+
 export interface Chat {
 	id: string
 	title: string
@@ -409,6 +472,8 @@ export interface Chat {
 	sessionName?: string
 	model?: string
 	folder?: string
+	pinnedAt?: number
+	permissionMode?: Mode
 }
 
 export interface ChatMessage {
@@ -431,6 +496,14 @@ export interface ChatMessagesResponse {
 	hasMore: boolean
 	activeRun?: ActiveTurnStatus
 	pendingAsk?: PendingAsk
+}
+
+export interface ChatPermissionMode {
+	chatId: string
+	sessionKey?: string
+	agentId?: string
+	mode?: Mode
+	employeeMode: Mode
 }
 
 export interface ChatStreamResponse {
@@ -469,6 +542,41 @@ export interface CommanderTeamMember {
 	agentId: string
 }
 
+export interface ConnectionModel {
+	modelId: string
+	displayName: string
+	kind: string
+	contextWindow?: number
+	capabilities: string[]
+	source: string
+	isActive: boolean
+}
+
+export interface ConnectorTool {
+	name: string
+	key: string
+	title: string
+	description: string
+	setting: PermissionSwitch
+}
+
+export interface ConnectorToolsResponse {
+	family: string
+	default: PermissionSwitch
+	tools: ConnectorTool[]
+}
+
+export interface Context {
+	appVersion: string
+	os: string
+	osVersion: string
+	cpus: number
+	load: number
+	windowState: string
+	appNapOptOut: boolean
+	supervisor: string
+}
+
 export interface CronHistory {
 	id: string
 	jobId: number
@@ -496,6 +604,10 @@ export interface CronJob {
 	agentId?: string
 	channelCtxJson?: string
 	overlapPolicy: string
+	createdBy: string
+	createdByRun?: string
+	createdIn?: string
+	reason: string
 }
 
 export interface DashboardApproval {
@@ -598,8 +710,24 @@ export interface DetectedInstall {
 	importable: boolean
 }
 
+export interface Dims {
+	rows: number
+	cols: number
+}
+
 export interface DisconnectResponse {
 	message: string
+}
+
+export interface EditError {
+	sheet: string
+	cell: string
+	error: string
+}
+
+export interface Edited {
+	changed: Changed[]
+	errors: EditError[]
 }
 
 export interface EmbeddingCache {
@@ -664,13 +792,84 @@ export interface ExtensionInfo {
 	needsConfiguration: boolean
 }
 
+export interface FileHistoryEntry {
+	id: number
+	path: string
+	hash: string
+	ext: string
+	sizeBytes: number
+	reason: string
+	chatId?: string
+	capturedAt: number
+}
+
 export interface HandleAvailableResponse {
 	available: boolean
+}
+
+export interface Handoff {
+	id: string
+	parentId?: string
+	kind: string
+	fromAgentId: string
+	toAgentId: string
+	teamId: string
+	senderSession: string
+	senderRunId?: string
+	receiverSession: string
+	receiverRunId?: string
+	ask: string
+	status: string
+	result: string
+	error: string
+	createdAt: number
+	startedAt?: number
+	finishedAt?: number
+}
+
+export interface HandoffDetail {
+	handoff: HandoffView
+	descendants: HandoffView[]
+}
+
+export interface HandoffList {
+	handoffs: HandoffView[]
+}
+
+export interface HandoffStopResponse {
+	stopped: boolean
+}
+
+export interface HandoffView {
+	id: string
+	parentId?: string
+	kind: string
+	fromAgentId: string
+	fromName: string
+	toAgentId: string
+	toName: string
+	teamId: string
+	senderSession: string
+	senderRunId?: string
+	senderLink: string
+	receiverSession: string
+	receiverLink: string
+	ask: string
+	status: string
+	result: string
+	error: string
+	createdAt: number
+	startedAt?: number
+	finishedAt?: number
 }
 
 export interface HealthResponse {
 	status: string
 	version: string
+	role: string
+	pid: number
+	supervised: boolean
+	startedAt: string
 }
 
 export interface InvoiceInfo {
@@ -682,6 +881,11 @@ export interface InvoiceInfo {
 	createdAt?: string
 	hostedUrl?: string
 	pdfUrl?: string
+}
+
+export interface InvokeResponse {
+	text: string
+	tools?: unknown[]
 }
 
 export interface LayerApplyResponse {
@@ -770,6 +974,14 @@ export interface Lead {
 	status: string
 	metadata?: string
 	created_at: number
+}
+
+export interface LevelEffort {
+	instant?: ProviderEffort
+	low?: ProviderEffort
+	medium?: ProviderEffort
+	high?: ProviderEffort
+	max?: ProviderEffort
 }
 
 export interface ListExtensionsResponse {
@@ -903,6 +1115,38 @@ export interface OutcomeCount {
 	outcome: string
 	count: number
 	costMicrocents: number
+}
+
+export interface Pack {
+	id: string
+	name: string
+	levels: PackLevels
+	fallback: boolean
+	builtIn: boolean
+	routeThroughJanus?: boolean
+	lanes?: PackLanes
+	levelEffort?: LevelEffort
+}
+
+export interface PackLanes {
+	heartbeat?: Effort
+	scheduled?: Effort
+	communication?: Effort
+	helpers?: Effort
+	build?: Effort
+	workflow?: Effort
+}
+
+export interface PackLevels {
+	auto?: string
+	instant?: string
+	low?: string
+	medium?: string
+	high?: string
+	max?: string
+	vision?: string
+	voice?: string
+	decisions?: string
 }
 
 export interface PaymentMethodInfo {
@@ -1089,6 +1333,11 @@ export interface PluginSetting {
 	updatedAt: number
 }
 
+export interface Pricing {
+	input: number
+	output: number
+}
+
 export interface ProviderModel {
 	id: string
 	provider: string
@@ -1104,6 +1353,9 @@ export interface ProviderModel {
 	kind?: string
 	preferred?: boolean
 	seededVersion?: string
+	modelKind: string
+	source: string
+	rank?: number
 	createdAt: number
 	updatedAt: number
 }
@@ -1114,6 +1366,20 @@ export interface RefreshToken {
 	tokenHash: string
 	expiresAt: number
 	createdAt: number
+}
+
+export interface Report extends Context {
+	kind: string
+	at: number
+	durationSecs?: number
+	heartbeat?: string
+	runtimeSilentSecs?: number
+	dbSilentSecs?: number
+	poolConnections?: number
+	poolIdle?: number
+	runtime?: RuntimeState
+	unrecovered?: boolean
+	suppressed?: number
 }
 
 export interface RunExit {
@@ -1140,6 +1406,16 @@ export interface RunUsage {
 	createdAt: number
 }
 
+export interface RuntimeState {
+	workers: number
+	aliveTasks: number
+	globalQueueDepth: number
+}
+
+export interface Saved {
+	version: number
+}
+
 export interface ScanInstallResponse {
 	manifest: ImportManifest
 	needsConfirmation: boolean
@@ -1147,6 +1423,12 @@ export interface ScanInstallResponse {
 
 export interface SendFeedbackResponse {
 	status: string
+}
+
+export interface Series {
+	name?: string
+	ref: string
+	categories?: string
 }
 
 export interface Session {
@@ -1214,6 +1496,27 @@ export interface Setting {
 
 export interface ShareLinkResponse {
 	share?: FileShare
+	outdated: boolean
+}
+
+export interface SheetResponse extends View {
+	documentId: string
+	version: number
+	session: string
+}
+
+export interface SheetView {
+	name: string
+	tabColor?: string
+	hidden: boolean
+	protected: boolean
+	dims: Dims
+	freeze: Dims
+	colWidths: Record<string, number>
+	rowHeights: Record<string, number>
+	merges: string[]
+	cells: CellView[]
+	charts: Chart[]
 }
 
 export interface SkillSecretInfo {
@@ -1222,6 +1525,24 @@ export interface SkillSecretInfo {
 	hint: string
 	required: boolean
 	configured: boolean
+}
+
+export interface StopEverythingResponse {
+	stopped: number
+}
+
+export interface Style {
+	bold?: boolean
+	italic?: boolean
+	underline?: boolean
+	wrap?: boolean
+	fill?: string
+	color?: string
+	size?: number
+	align?: string
+	valign?: string
+	numFmt?: string
+	border?: Borders
 }
 
 export interface Team {
@@ -1249,6 +1570,21 @@ export interface TeamMessage {
 	attachments: unknown[]
 	createdAt: number
 	cleared?: boolean
+}
+
+export interface UploadStatus {
+	uploadId: string
+	offset: number
+	size: number
+	chunkSize: number
+	complete: boolean
+	attachment?: Attachment
+	sync?: UploadSync
+}
+
+export interface UploadSync {
+	state: SyncState
+	error?: string
 }
 
 export interface User {
@@ -1298,6 +1634,12 @@ export interface UserProfile {
 	termsAcceptedAt?: number
 	accountType?: string
 	approvedCommands?: string
+}
+
+export interface View {
+	sheets: SheetView[]
+	styles: Style[]
+	names: Record<string, string>
 }
 
 export interface WaitingAsk {
@@ -1414,6 +1756,14 @@ export interface WorkflowToolBinding {
 	tool: string
 }
 
+// ── Rust Enums ─────────────────────────────────────────────────────
+
+export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
+
+export type Mode = 'automatic' | 'ask' | 'plan' | 'full_access'
+
+export type ProviderEffort = 'low' | 'medium' | 'high'
+
 // ── API Response Types (inferred from handlers) ────────────────────
 
 export interface ActivateAgentChatResponse {
@@ -1433,6 +1783,10 @@ export interface ActivateAgentResponse {
 export interface AddCollectionItemResponse {
 	collection: unknown
 	added: unknown
+}
+
+export interface AddConnectionModelResponse {
+	model: ConnectionModel
 }
 
 export interface AgentMcpHandlerResponse {
@@ -1465,6 +1819,13 @@ export interface AuthLogoutResponse {
 
 export interface AuthStatusResponse {
 	authenticated: boolean
+}
+
+export interface BrowseConnectionCatalogResponse {
+	browsable: boolean
+	total: number
+	refreshedAt: number | null
+	models: CatalogModel[]
 }
 
 export interface BrowseResponse {
@@ -1519,6 +1880,9 @@ export interface ConfigResponse {
 export interface ConnectIntegrationResponse {
 	success: boolean
 	message: string
+	toolCount: number
+	toolsUpdated: number
+	tools: string[]
 }
 
 export interface CreateAdminResponse {
@@ -1528,7 +1892,7 @@ export interface CreateAdminResponse {
 
 export interface CreateAgentApiKeyResponse {
 	key: ApiKey
-	secret: unknown
+	secret: string
 }
 
 export interface CreateAgentResponse {
@@ -1566,6 +1930,10 @@ export interface CreateNewAgentChatResponse {
 	sessionKey: string
 }
 
+export interface CreatePackResponse {
+	pack: Pack
+}
+
 export interface CreateSkillResponse {
 	name: string
 	path: string
@@ -1577,7 +1945,7 @@ export interface CreateStoreCollectionResponse {
 
 export interface CreateTeamResponse {
 	team: CommanderTeam
-	memberIds: string
+	memberIds: string[]
 }
 
 export interface CreateWorkflowResponse {
@@ -1611,6 +1979,10 @@ export interface DeleteChatResponse {
 	success: boolean
 }
 
+export interface DeleteConnectionModelResponse {
+	deleted: string
+}
+
 export interface DeleteEdgeResponse {
 	ok: boolean
 }
@@ -1629,6 +2001,10 @@ export interface DeleteMemoryResponse {
 
 export interface DeleteNotificationResponse {
 	success: boolean
+}
+
+export interface DeletePackResponse {
+	deleted: unknown
 }
 
 export interface DeleteProviderResponse {
@@ -1692,6 +2068,11 @@ export interface EnableAgentChannelResponse {
 	ok: boolean
 }
 
+export interface FileHistoryResponse {
+	path: string
+	entries: unknown[]
+}
+
 export interface GetAgentOperationsResponse {
 	default: unknown
 	configured: unknown
@@ -1707,14 +2088,14 @@ export interface GetAgentResponse {
 	version: string
 	inputFields: unknown[]
 	inputValues: unknown
-	personaProperties: unknown
+	personaProperties: unknown[]
 	persona: unknown
 	model: unknown
 	skills: string[]
 	interfaces: unknown
 	subscribes: unknown
 	ceiling: unknown
-	pluginsNeedingAuth: unknown
+	pluginsNeedingAuth: unknown[]
 	needsSetup: unknown
 	memoryMode: unknown
 }
@@ -1894,6 +2275,11 @@ export interface JanusCompleteResponse {
 	usage: unknown
 }
 
+export interface KeepMessageFileResponse {
+	success: boolean
+	keep: boolean
+}
+
 export interface ListActiveAgentsResponse {
 	agents: unknown[]
 	count: number
@@ -1918,9 +2304,11 @@ export interface ListAgentChannelsResponse {
 
 export interface ListAgentChatsResponse {
 	chats: EnrichedChat[]
+	pinned: EnrichedChat[]
 	teammates: EnrichedChat[]
 	activeChatId: string
 	total: number
+	nextCursor: string | null
 }
 
 export interface ListAgentRunsResponse {
@@ -1963,6 +2351,10 @@ export interface ListChatsResponse {
 	total: number
 }
 
+export interface ListConnectionModelsResponse {
+	models: ConnectionModel[]
+}
+
 export interface ListDependentsResponse {
 	skills: unknown[]
 	agents: unknown[]
@@ -1990,7 +2382,6 @@ export interface ListMemoriesResponse {
 export interface ListModelsResponse {
 	models: Record<string, unknown[]>
 	taskRouting: unknown
-	laneRouting: unknown
 	aliases: unknown[]
 	availableCLIs: unknown
 	cliStatuses: unknown
@@ -1999,6 +2390,17 @@ export interface ListModelsResponse {
 
 export interface ListNotificationsResponse {
 	notifications: Notification[]
+}
+
+export interface ListPackChoicesResponse {
+	chat: PackChoice[]
+	decision: PackChoice[]
+	voice: PackChoice[]
+}
+
+export interface ListPacksResponse {
+	packs: Pack[]
+	default: string
 }
 
 export interface ListPersonalityPresetsResponse {
@@ -2039,10 +2441,6 @@ export interface ListSessionsResponse {
 
 export interface ListSkillSecretsResponse {
 	secrets: unknown[]
-}
-
-export interface ListStorageResponse {
-	items: unknown[]
 }
 
 export interface ListTaskHistoryResponse {
@@ -2146,6 +2544,7 @@ export interface NeboAIForceReconnectResponse {
 export interface NeboAIJanusUsageResponse {
 	session: unknown
 	weekly: unknown
+	plan: string
 	budget: unknown
 }
 
@@ -2185,6 +2584,12 @@ export interface PickFilesResponse {
 
 export interface PickFolderResponse {
 	path: string
+}
+
+export interface PinChatResponse {
+	success: boolean
+	pinned: boolean
+	pinnedAt: number | null
 }
 
 export interface PluginProxyResponse {
@@ -2249,6 +2654,12 @@ export interface ResolveLearningResponse {
 	status: string
 }
 
+export interface RestoreFileHistoryResponse {
+	path: string
+	restored: unknown
+	saved: unknown
+}
+
 export interface RevertLearningResponse {
 	status: string
 }
@@ -2285,7 +2696,9 @@ export interface SearchMessagesResponse {
 }
 
 export interface SendDevlogResponse {
-	prompt: unknown
+	sessionId: string
+	agentId: string
+	status: string
 }
 
 export interface SendTeamMessageResponse {
@@ -2303,6 +2716,10 @@ export interface SetArtifactAutoUpdateResponse {
 	ok: boolean
 }
 
+export interface SetDefaultPackResponse {
+	default: string
+}
+
 export interface SetPluginConfigResponse {
 	success: boolean
 }
@@ -2314,6 +2731,10 @@ export interface SetSkillSecretResponse {
 
 export interface SetUpdateSettingsResponse {
 	ok: boolean
+}
+
+export interface ShareFileResponse {
+	artifact: string
 }
 
 export interface SidecarStateResponse {
@@ -2343,14 +2764,17 @@ export interface TeachStartResponse {
 	sessionId: string
 	dir: unknown
 	where: unknown
+	capSeconds: number
 }
 
 export interface TeachStopResponse {
 	sessionId: string
-	dir: unknown
-	keyframes: unknown
+	dir: string
+	keyframes: number
 	message: string
 	sessionKey: string
+	narrated: boolean
+	capped: boolean
 }
 
 export interface TeamWorkingResponse {
@@ -2433,6 +2857,10 @@ export interface UpdateCliProviderResponse {
 	message: string
 }
 
+export interface UpdateConnectionModelResponse {
+	model: ConnectionModel
+}
+
 export interface UpdateEntityConfigResponse {
 	config: unknown
 }
@@ -2452,6 +2880,10 @@ export interface UpdateModelConfigResponse {
 
 export interface UpdateModelResponse {
 	message: string
+}
+
+export interface UpdatePackResponse {
+	pack: Pack
 }
 
 export interface UpdateResponse {
@@ -2585,6 +3017,8 @@ export interface AgentListEntry {
 	source: string
 	version?: string
 	isApp: boolean
+	/** AGENT.md's starters: asks an empty chat offers to tap (at most 4). */
+	starters: string[]
 	isEnabled: boolean
 	inputValues: string
 	installedAt?: number
@@ -2668,8 +3102,8 @@ export interface AppWindow {
 	openOnWork: boolean
 	/** window.isolated: the page is served cross-origin isolated (SharedArrayBuffer for threaded engine exports). */
 	isolated: boolean
-	/** window.share_menu: the header's Share button entries, each say sent into the app's chat. */
-	shareMenu: { label: string; say: string }[]
+	/** window.share_menu: the header's Share button entries, each say sent into the app's chat; share: the answer's file opens in the Share dialog. */
+	shareMenu: { label: string; say: string; share?: boolean }[]
 }
 
 export interface AppWindowConfig {
@@ -2681,6 +3115,56 @@ export interface AppWindowConfig {
 	fullscreen?: boolean
 	/** Unset = portrait. */
 	orientation?: 'portrait' | 'landscape' | 'any'
+}
+
+export interface Attachment {
+	fileId: string
+	filename: string
+	mimeType: string
+	size: number
+	url: string
+	thumbnailUrl?: string
+	width?: number
+	height?: number
+	duration?: number
+}
+
+export type BackgroundKind = 'agent' | 'shell' | 'workflow' | 'monitor' | 'loop'
+
+export type BackgroundSource = 'helper' | 'turn' | 'workflow' | 'timer' | 'watch' | 'heartbeat' | 'shell' | 'handoff'
+
+export type BackgroundStatus = 'running' | 'waiting' | 'scheduled' | 'watching' | 'degraded'
+
+export type BackgroundAction = 'stop' | 'cancel' | 'approve' | 'pause' | 'delete' | 'off'
+
+export interface BackgroundTask {
+	id: string
+	kind: BackgroundKind
+	source: BackgroundSource
+	agentId: string
+	employee: string
+	title: string
+	detail: string
+	call: CallName | null
+	status: BackgroundStatus
+	wait: string | null
+	trigger: string | null
+	startedAt: number | null
+	lastActivityAt: number | null
+	nextRunAt: number | null
+	createdBy: string
+	sourceRunId: string | null
+	sessionKey: string | null
+	fromAgentId: string | null
+	fromSessionKey: string | null
+	turnsUsed: number | null
+	turnsCap: number | null
+	actions: BackgroundAction[]
+}
+
+export interface CallName {
+	kind: string
+	params?: Record<string, string>
 }
 
 export interface Capability {
@@ -2712,6 +3196,10 @@ export interface EnrichedChat {
 	createdAt: number
 	updatedAtEpoch: number
 	sessionName: string
+	/** Whether the owner pinned it to the top of the employee's list. */
+	pinned: boolean
+	/** When he pinned it (unix seconds); null when not pinned. */
+	pinnedAt: number | null
 }
 
 export interface EventSourceOption {
@@ -2735,6 +3223,20 @@ export interface FileShare {
 	/** RFC 3339; empty = never. */
 	expiresAt: string
 	createdAt: string
+	/** The Work-panel reference of the file. */
+	source: string
+	/** The link follows its file; otherwise it keeps the version it has. */
+	live: boolean
+	contentHash: string
+	/** Published as a site: its address and https://<address>.nebo.page. */
+	address?: string
+	siteUrl?: string
+}
+
+export interface FinishedTask {
+	task: BackgroundTask
+	outcome: 'done' | 'failed' | 'stopped' | 'removed'
+	endedAt: number
 }
 
 export interface ImportItem {
@@ -2796,6 +3298,15 @@ export interface LinkedComputerEntry {
 	agents: LinkedAgentEntry[]
 }
 
+export interface PackChoice {
+	value: string
+	provider: string
+	connection: string
+	modelId: string
+	capabilities?: string[]
+	local: boolean
+}
+
 export interface RunDisplayFact {
 	key: string
 	value: string
@@ -2812,12 +3323,15 @@ export interface RunDisplay {
 	activities: Record<string, RunDisplayEntry>
 }
 
+export type SyncState = 'pending' | 'synced' | 'failed' | 'refused'
+
 export interface TeamWorkEntry {
 	kind: 'member' | 'helper'
 	agentId: string
 	member: string
 	title: string
 	taskId: string
+	call: CallName | null
 	activity: string
 	sessionKey: string
 	chatId: string
@@ -2855,13 +3369,14 @@ export interface UserProfileFull {
 export type WSServerEventType =
 	| "app_action"
 	| "app_ping"
+	| "chat_ack"
 	| "chat_cancelled"
-	| "chat_message"
+	| "chat_withdrawn"
 	| "session_reset"
 	| "chat_complete"
-	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "chat_user_message"
 	| "session_compact"
 
 export interface AppActionEvent {
@@ -2878,23 +3393,15 @@ export interface ChatCancelledEvent {
 	session_id: string
 }
 
-export interface ChatMessageEvent {
-	id: string
-	content: unknown
-	createdAt: unknown
-	agentId: string
+export interface ChatWithdrawnEvent {
 	session_id: string
-	artifacts: unknown
+	message_id: string
+	withdrawn: unknown
 }
 
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
-}
-
-export interface ChatAckEvent {
-	session_id: string
-	status: string
 }
 
 export interface ChatStreamEvent {
@@ -2905,6 +3412,16 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface ChatUserMessageEvent {
+	session_id: string
+	agentId: string
+	id: unknown
+	content: unknown
+	createdAt: unknown
+	client_id: string
+	message_id: string
 }
 
 /** Client → Server WebSocket message types */

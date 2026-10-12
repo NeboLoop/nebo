@@ -262,8 +262,11 @@ pub async fn upload_file(
         duration: None,
     };
 
-    // Best-effort loop copy. Failing here costs sharing with other bots, not the
-    // attachment itself, so it is logged rather than returned as an error.
+    // Loop copy. Failing here costs sharing with other bots, not the
+    // attachment itself, so it is not returned as an error: the copy is owed
+    // instead, and made in the background (`hub_sync`), whose record is what
+    // `GET /api/v1/uploads/{id}` reports.
+    let mut owed = true;
     match crate::codes::build_api_client(&state) {
         Ok(api) => match api.upload_file(&filename, &mime_type, data, &[]).await {
             Ok(mut attachment) => {
@@ -275,6 +278,7 @@ pub async fn upload_file(
                     tracing::warn!(error = %e, "could not re-key local attachment copy");
                 }
                 landed = attachment;
+                owed = false;
             }
             Err(e) => {
                 // A full account is the one refusal the upload itself fails
@@ -283,10 +287,17 @@ pub async fn upload_file(
                     let _ = std::fs::remove_file(&path);
                     return Ok(refusal);
                 }
-                tracing::warn!(error = %e, "loop upload failed; attachment is local-only")
+                tracing::warn!(error = %e, "loop upload failed; the copy is owed")
             }
         },
-        Err(e) => tracing::debug!(error = %e, "not signed in; attachment is local-only"),
+        Err(e) => tracing::debug!(error = %e, "not signed in; the copy is owed"),
+    }
+    if owed {
+        match crate::hub_sync::Records::open().map(|r| r.owe(&landed)) {
+            Some(Ok(_)) => {}
+            Some(Err(e)) => tracing::warn!(error = %e, "hub copy not recorded"),
+            None => tracing::warn!("hub copy not recorded: no data directory"),
+        }
     }
 
     // The file is on this machine and named: announce the arrival so a flow
@@ -314,6 +325,7 @@ pub async fn serve_comm_file(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    request: axum::extract::Request,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     // The id is interpolated into the loop URL — restrict to uuid characters
     // so it can't traverse into other loop endpoints.
@@ -328,15 +340,7 @@ pub async fn serve_comm_file(
     }
     // Local copy first — an attachment uploaded on this machine renders while
     // signed out, and never costs a round trip to fetch what is already here.
-    let bytes = match agent::uploads::by_id(&file_id) {
-        Some(path) => std::fs::read(&path)
-            .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?,
-        None => {
-            let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
-            api.download_file(&file_id).await.map_err(hub_file_error)?
-        }
-    };
-
+    let local = agent::uploads::by_id(&file_id);
     let mime = params
         .get("mime")
         .filter(|m| {
@@ -346,6 +350,22 @@ pub async fn serve_comm_file(
         })
         .cloned()
         .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    // A local copy streams from disk and answers ranges: a 2 GB video is
+    // never read whole into memory, and the player can seek.
+    if let Some(path) = local {
+        let mut response = stream_file(&path, "application/octet-stream", request).await;
+        if response.status().is_success() {
+            let headers = response.headers_mut();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&mime) {
+                headers.insert(axum::http::header::CONTENT_TYPE, v);
+            }
+            headers.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("private, max-age=3600"));
+        }
+        return Ok(response);
+    }
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    let bytes = api.download_file(&file_id).await.map_err(hub_file_error)?;
 
     Ok(axum::response::Response::builder()
         .header("Content-Type", mime)
@@ -403,8 +423,7 @@ pub async fn serve_file(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
-    let data_dir = config::data_dir().map_err(to_error_response)?;
-    let files_root = data_dir.join("files");
+    let files_root = served_root(&file_path).map_err(to_error_response)?;
     let (canonical, canonical_root) = within_files_root(&files_root, &files_root.join(&file_path))
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
@@ -419,6 +438,30 @@ pub async fn serve_file(
     }
 
     Ok(stream_file(&canonical, content_type_for(&canonical), request).await)
+}
+
+/// Where `/api/v1/files/<rel>` is on disk. Nebo's own entries (`.shared`,
+/// `work/blobs`, uploads, previews: `workspace_history::store_own`) are in the
+/// file store; the owner's files are in his workspace (`~/NeboAI`) when the
+/// file is there, else in the store, where every older link points. Hidden
+/// files and the coding agents' own folders in the workspace are never served.
+pub fn served_root(rel: &str) -> Result<std::path::PathBuf, types::NeboError> {
+    let files = config::files_dir()?;
+    let workspace = config::workspace_dir()?;
+    if workspace == files || workspace_private(rel) {
+        return Ok(files);
+    }
+    Ok(if workspace.join(rel).exists() { workspace } else { files })
+}
+
+/// A workspace path that is never served or located: Nebo's own names, a
+/// hidden part, or a coding agent's folder.
+fn workspace_private(rel: &str) -> bool {
+    let mut parts = rel.split(['/', '\\']).filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else { return true };
+    tools::workspace_history::store_own(first)
+        || tools::workspace_history::agent_folder(first)
+        || parts.any(|p| p.starts_with('.'))
 }
 
 /// The ONE containment check for anything read out of `<data_dir>/files`:
@@ -502,11 +545,93 @@ pub struct LocateQuery {
 pub async fn locate_work_file(
     axum::extract::Query(q): axum::extract::Query<LocateQuery>,
 ) -> HandlerResult<LocatedFile> {
-    let files_root = config::data_dir().map_err(to_error_response)?.join("files");
-    let found = locate_mention(&files_root, dirs::home_dir().as_deref(), &q.path)
+    let home = dirs::home_dir();
+    // The owner's workspace first, then the file store; a found workspace
+    // file is only answered when `served_root` serves it from there.
+    let workspace = config::workspace_dir().map_err(to_error_response)?;
+    if let Some(found) = locate_mention(&workspace, home.as_deref(), &q.path).await
+        && let Some(rel) = found.url.strip_prefix("/api/v1/files/")
+        && let Ok(rel) = urlencoding::decode(rel)
+        && (found.directory || served_root(&rel).is_ok_and(|r| r == workspace))
+    {
+        return Ok(Json(found));
+    }
+    let files_root = config::files_dir().map_err(to_error_response)?;
+    let found = locate_mention(&files_root, home.as_deref(), &q.path)
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     Ok(Json(found))
+}
+
+#[derive(serde::Deserialize)]
+pub struct HistoryQuery {
+    /// The file's place in the workspace (`reports/q3.xlsx`), or its
+    /// absolute path inside it.
+    pub path: String,
+}
+
+/// An earlier content as the app reads it: the entry, with the URL its kept
+/// bytes are served at.
+fn history_json(e: &db::FileHistoryEntry) -> serde_json::Value {
+    let mut v = serde_json::to_value(e).unwrap_or_default();
+    v["url"] = serde_json::Value::String(tools::workspace_history::blob_url(&e.hash, &e.ext));
+    v
+}
+
+/// GET /api/v1/work/history?path= — a workspace file's earlier contents,
+/// newest first (`tools::workspace_history`). A path outside the workspace
+/// is 404.
+pub async fn file_history(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<HistoryQuery>,
+) -> HandlerResult<serde_json::Value> {
+    let workspace = config::workspace_dir().map_err(to_error_response)?;
+    let rel = tools::workspace_history::workspace_path(&workspace, &q.path)
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let entries = tools::workspace_history::history(&state.store, &rel)
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    let entries: Vec<serde_json::Value> = entries.iter().map(history_json).collect();
+    Ok(Json(serde_json::json!({ "path": rel, "entries": entries })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreHistoryRequest {
+    /// The earlier content to put back.
+    pub id: i64,
+    /// Who the "Restored …" message is from, and the conversation it lands
+    /// in, when the file is a work document there (as `restore_version`
+    /// takes them).
+    #[serde(default)]
+    pub agent_id: String,
+    pub session_id: Option<String>,
+}
+
+/// POST /api/v1/work/history/restore — put an earlier content back. The
+/// file's current content is kept as history first, so the restore can be
+/// undone the same way. A file that is a work document of the conversation
+/// that changed it gets the restored content as its next version.
+pub async fn restore_file_history(
+    State(state): State<AppState>,
+    Json(req): Json<RestoreHistoryRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let workspace = config::workspace_dir().map_err(to_error_response)?;
+    let files_root = config::files_dir().map_err(to_error_response)?;
+    let store = state.store.clone();
+    let id = req.id;
+    let restored = tokio::task::spawn_blocking(move || tools::workspace_history::restore(&store, &workspace, &files_root, id, None))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("restore task: {e}"))))?
+        .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
+    if let Some((doc, version)) = &restored.work {
+        let content = format!("Restored {} to its earlier content", doc.filename);
+        crate::chat_dispatch::announce_work_version(&state, doc, version, &content, &req.agent_id, req.session_id.as_deref());
+    }
+    Ok(Json(serde_json::json!({
+        "path": restored.to.path,
+        "restored": history_json(&restored.to),
+        "saved": restored.saved.as_ref().map(history_json),
+    })))
 }
 
 /// The Content-Type a served file goes out with, by extension.
@@ -605,7 +730,12 @@ pub(crate) async fn ensure_pdf_preview(
         .strip_prefix(files_root)
         .map(|r| r.to_string_lossy().into_owned())
         .unwrap_or_else(|_| name.to_string());
-    let cache = files_root.join(".previews").join(format!("{rel}.pdf"));
+    // Previews are Nebo's own: a workspace file's goes in the file store too
+    // (`.previews/workspace/…`), never into the owner's folder.
+    let cache = match config::files_dir() {
+        Ok(store) if store != files_root => store.join(".previews").join("workspace").join(format!("{rel}.pdf")),
+        _ => files_root.join(".previews").join(format!("{rel}.pdf")),
+    };
     let previews_dir = cache.parent().unwrap_or(files_root).to_path_buf();
 
     let src_mtime = tokio::fs::metadata(source)
@@ -1013,5 +1143,46 @@ mod locate_tests {
             locate_mention(&files, None, &abs(&files.join("up/settings.json"))).await,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use serde_json::json;
+
+    /// Through the real server: a workspace file a command overwrote lists
+    /// its earlier content, and the restore puts it back while keeping what
+    /// it replaced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_app_lists_and_restores_a_files_earlier_content() {
+        let nebo = crate::staffed_proof::session().await;
+        let files = nebo.home.join("files");
+        let dir = files.join(format!("history-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rel = format!("{}/growth model.xlsx", dir.file_name().unwrap().to_string_lossy());
+        std::fs::write(files.join(&rel), "nine sheets").unwrap();
+        tools::workspace_history::look(nebo.store(), &files, &files, Some("c1")).unwrap();
+        std::fs::write(files.join(&rel), "partial").unwrap();
+        tools::workspace_history::look(nebo.store(), &files, &files, Some("c1")).unwrap();
+
+        let path = urlencoding::encode(&rel).into_owned();
+        let listed = nebo.get_ok(&format!("/work/history?path={path}")).await;
+        assert_eq!(listed["path"], rel);
+        let entries = listed["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let url = entries[0]["url"].as_str().unwrap().to_string();
+        assert!(url.starts_with("/api/v1/files/work/blobs/") && url.ends_with(".xlsx"), "{url}");
+
+        let restored = nebo.post_ok("/work/history/restore", &json!({ "id": entries[0]["id"] })).await;
+        assert_eq!(restored["path"], rel);
+        assert_eq!(std::fs::read_to_string(files.join(&rel)).unwrap(), "nine sheets");
+        let saved_url = restored["saved"]["url"].as_str().unwrap();
+        let saved = saved_url.strip_prefix("/api/v1/files/").unwrap();
+        assert_eq!(std::fs::read_to_string(files.join(saved)).unwrap(), "partial");
+
+        let (status, _) = nebo.get("/work/history?path=..%2Fsettings.json").await;
+        assert_eq!(status, 404);
+        let (status, _) = nebo.post("/work/history/restore", &json!({ "id": 999_999 })).await;
+        assert_eq!(status, 400);
     }
 }

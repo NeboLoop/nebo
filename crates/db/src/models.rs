@@ -10,6 +10,31 @@ fn opt_i64_as_bool<S: Serializer>(val: &Option<i64>, s: S) -> Result<S::Ok, S::E
     s.serialize_bool(val.unwrap_or(0) != 0)
 }
 
+/// A metadata key whose value is a credential: a token, a secret, a
+/// password or a key.
+fn is_secret_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["token", "secret", "password", "api_key", "apikey"].iter().any(|s| k.contains(s))
+}
+
+/// Serialize an auth profile's metadata (a JSON object string) without its
+/// credentials: a refresh token never leaves through the API, to this
+/// computer's own app or to anyone on the tunnel. Metadata that isn't a JSON
+/// object can't be told apart from a secret, so it is left out whole.
+fn metadata_without_secrets<S: Serializer>(val: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    let public = val
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).ok())
+        .map(|mut meta| {
+            meta.retain(|k, _| !is_secret_key(k));
+            serde_json::Value::Object(meta).to_string()
+        });
+    match public {
+        Some(m) => s.serialize_some(&m),
+        None => s.serialize_none(),
+    }
+}
+
 /// Serialize an Option<String> that contains a JSON array string as a proper JSON array.
 /// Falls back to null if the string isn't valid JSON array.
 fn json_string_as_array<S: Serializer>(val: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
@@ -139,6 +164,7 @@ pub struct AuthProfile {
     pub last_used_at: Option<i64>,
     pub usage_count: Option<i64>,
     pub error_count: Option<i64>,
+    #[serde(serialize_with = "metadata_without_secrets")]
     pub metadata: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -207,6 +233,14 @@ pub struct Chat {
     /// When that session last had a turn (unix seconds). Internal.
     #[serde(default, skip_serializing)]
     pub linked_turn_at: Option<i64>,
+    /// When the owner pinned this conversation (unix seconds): it stays at
+    /// the top of the employee's list until he unpins it. None = not pinned.
+    #[serde(default)]
+    pub pinned_at: Option<i64>,
+    /// The permission mode the owner picked for this conversation: its
+    /// turns run in it. None = the employee's own mode.
+    #[serde(default)]
+    pub permission_mode: Option<types::permissions::Mode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +334,15 @@ pub struct CronJob {
     /// What a fire does while the last one is still going: `skip`,
     /// `buffer_one` or `allow_all` ([`OverlapPolicy`]).
     pub overlap_policy: String,
+    /// Who made it ([`ScheduleCreator`]); `unknown` for a schedule made
+    /// before this was kept.
+    pub created_by: String,
+    /// The run that made it, when a run did (a turn's run id).
+    pub created_by_run: Option<String>,
+    /// The conversation (session key) it was made in, when it was.
+    pub created_in: Option<String>,
+    /// Why it exists, in a few words.
+    pub reason: String,
 }
 
 impl CronJob {
@@ -307,6 +350,58 @@ impl CronJob {
     /// values, so a row always reads as one of them.
     pub fn overlap(&self) -> OverlapPolicy {
         OverlapPolicy::parse(&self.overlap_policy).unwrap_or(OverlapPolicy::Skip)
+    }
+}
+
+/// Who made a schedule: the `created_by` a schedule row carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleCreator {
+    /// The owner, in the app or over the API.
+    Owner,
+    /// An employee, in a conversation.
+    Chat,
+    /// A workflow binding's schedule trigger.
+    Workflow,
+    /// A scheduled turn.
+    Schedule,
+    /// Nebo itself (housekeeping it sets up).
+    System,
+}
+
+impl ScheduleCreator {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScheduleCreator::Owner => "owner",
+            ScheduleCreator::Chat => "chat",
+            ScheduleCreator::Workflow => "workflow",
+            ScheduleCreator::Schedule => "schedule",
+            ScheduleCreator::System => "system",
+        }
+    }
+}
+
+/// Who made a schedule, from which run and conversation, and why. Every
+/// schedule is created with one; re-registering an existing schedule keeps
+/// the provenance it was made with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleProvenance {
+    pub created_by: ScheduleCreator,
+    pub run_id: Option<String>,
+    pub session_key: Option<String>,
+    pub reason: String,
+}
+
+impl ScheduleProvenance {
+    /// Made by `created_by` for `reason`, outside any run.
+    pub fn new(created_by: ScheduleCreator, reason: impl Into<String>) -> Self {
+        Self { created_by, run_id: None, session_key: None, reason: reason.into() }
+    }
+
+    /// Made by the run `run_id` in the conversation `session_key`.
+    pub fn in_run(mut self, run_id: Option<&str>, session_key: &str) -> Self {
+        self.run_id = run_id.filter(|r| !r.is_empty()).map(str::to_string);
+        self.session_key = Some(session_key).filter(|k| !k.is_empty()).map(str::to_string);
+        self
     }
 }
 
@@ -650,6 +745,14 @@ pub struct ProviderModel {
     #[serde(serialize_with = "opt_i64_as_bool")]
     pub preferred: Option<i64>,
     pub seeded_version: Option<String>,
+    /// `chat` or `decision` (a SystemOne-compatible decision model).
+    pub model_kind: String,
+    /// `catalog`, `added` (typed by hand) or `browsed` (picked from the
+    /// provider's list).
+    pub source: String,
+    /// A synced Janus speed's place on its ladder (lowest = fastest);
+    /// None for every other row.
+    pub rank: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -739,6 +842,24 @@ pub struct WorkflowRun {
     pub output: Option<String>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
+}
+
+/// A workflow run that is still going (queued, running, interrupted or
+/// waiting), with what it last did and, when it waits, on what.
+#[derive(Debug, Clone)]
+pub struct LiveWorkflowRun {
+    pub run: WorkflowRun,
+    /// The engine's state: queued | running | waiting | interrupted.
+    pub state: String,
+    /// When a step of it last started or ended (unix seconds).
+    pub last_activity: Option<i64>,
+    /// The kind of event its live wait is woken by (`approval`,
+    /// `expert_reply`, `answer`, `signal`), when it waits.
+    pub wait_kind: Option<String>,
+    /// Why it waits, as the wait recorded it.
+    pub wait_reason: Option<String>,
+    /// When the wait gives up (unix seconds), if it does.
+    pub wait_deadline: Option<i64>,
 }
 
 /// A run stranded by process death, as returned by the boot sweep (WS4).
@@ -1145,4 +1266,49 @@ pub struct OutcomeCount {
     pub outcome: String,
     pub count: i64,
     pub cost_microcents: i64,
+}
+
+#[cfg(test)]
+mod auth_profile_serialize_tests {
+    /// A sentinel no hub issues; any appearance in a response is a leak.
+    const REFRESH: &str = "rt-SENTINEL-refresh-0000000000";
+    const ACCESS: &str = "at-SENTINEL-access-0000000000";
+
+    /// Every API response that carries a profile is this struct serialized
+    /// (`GET /api/v1/providers`, get, create, update): the NeboAI refresh
+    /// token, the key and any other credential in the metadata stay home;
+    /// the account facts the app shows still go.
+    #[test]
+    fn a_serialized_profile_carries_no_credential() {
+        let store = crate::Store::new(":memory:").unwrap();
+        let meta = serde_json::json!({
+            "owner_id": "owner-1",
+            "email": "owner@example.com",
+            "janus_provider": "true",
+            "refresh_token": REFRESH,
+            "access_token": ACCESS,
+            "client_secret": REFRESH,
+        })
+        .to_string();
+        store
+            .create_auth_profile("n", "NeboAI", "neboai", ACCESS, None, None, 0, 1, Some("oauth"), Some(&meta))
+            .unwrap();
+        store
+            .create_auth_profile("raw", "Odd", "search-google", "k", None, None, 0, 1, None, Some(REFRESH))
+            .unwrap();
+        let list = serde_json::json!({ "profiles": store.list_auth_profiles().unwrap() }).to_string();
+        let one = serde_json::to_string(&store.get_auth_profile("n").unwrap()).unwrap();
+        for out in [&list, &one] {
+            assert!(!out.contains(REFRESH), "a refresh token reached an API response: {out}");
+            assert!(!out.contains(ACCESS), "a token reached an API response: {out}");
+            assert!(!out.contains("refresh_token"), "{out}");
+        }
+        let profile: serde_json::Value = serde_json::from_str(&one).unwrap();
+        let shown: serde_json::Value = serde_json::from_str(profile["metadata"].as_str().unwrap()).unwrap();
+        assert_eq!(shown["janus_provider"], "true", "what the app reads still goes");
+        assert_eq!(shown["email"], "owner@example.com");
+        // Stored as it was: only the response leaves the secret out.
+        let stored = store.get_auth_profile("n").unwrap().unwrap().metadata.unwrap();
+        assert!(stored.contains(REFRESH));
+    }
 }

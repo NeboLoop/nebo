@@ -92,6 +92,34 @@ pub fn data_dir_overridden() -> bool {
     data_dir_override().is_some()
 }
 
+/// Nebo's own file store, `<data_dir>/files`: what `/api/v1/files/` serves —
+/// the copies a reply shares (`.shared`), file-history blobs (`work/blobs`),
+/// uploads, previews. Internal: the owner's work lives in `workspace_dir`.
+pub fn files_dir() -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?.join("files"))
+}
+
+/// The owner's workspace: where the work Nebo makes for him goes, in a folder
+/// he can see — `~/NeboAI`. A relocated root (`NEBO_HOME`: a cloud pod, a
+/// development copy, a test) keeps its workspace in its own `files_dir`, so it
+/// never writes into the owner's `~/NeboAI` (on a cloud pod that folder sits
+/// outside the backed-up trees). A `~/NeboAI` that is a file, not a folder,
+/// is never touched: the workspace stays in `files_dir`.
+/// ponytail: one fixed location; a "change location" setting reads here.
+pub fn workspace_dir() -> Result<PathBuf, NeboError> {
+    if data_dir_overridden() {
+        return files_dir();
+    }
+    let Some(home) = dirs::home_dir() else {
+        return files_dir();
+    };
+    let ws = home.join("NeboAI");
+    if ws.exists() && !ws.is_dir() {
+        return files_dir();
+    }
+    Ok(ws)
+}
+
 /// Industry, franchise, and company packs installed on this Nebo:
 /// `<data_dir>/packs/<slug>/` with `INDUSTRY.md`, `FRANCHISE.md`, or
 /// `COMPANY.md` and the typed folders beside it.

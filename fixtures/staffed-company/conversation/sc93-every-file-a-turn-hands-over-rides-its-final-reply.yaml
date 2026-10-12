@@ -1,0 +1,8 @@
+id: sc93-every-file-a-turn-hands-over-rides-its-final-reply
+name: "SC93 — Every file a turn hands over rides its final reply"
+description: |
+  A turn hands the owner a reel in its first step and the reel's cover in a later one, after text
+  of its own. The reply that ends the turn carries both cards, in order.
+target_component: staffed-company
+proof: staffed_proof::conversation::every_file_a_turn_hands_over_rides_its_final_reply
+conversation: []

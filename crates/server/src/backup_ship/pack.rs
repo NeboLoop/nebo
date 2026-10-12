@@ -52,6 +52,15 @@ const DURABLE_TREES: &[&str] = &[
     CHROMIUM_PROFILE,
 ];
 
+/// Where marketplace plugins are installed, inside the `nebo` tree. Their
+/// packages are not state: the marketplace sends them again, and after a
+/// restore the bot fetches what it had (the server's `default_artifacts`
+/// pass). Each is tens of megabytes; every cloud bot carrying them made
+/// every restore download them from Spaces at once. A plugin's own data —
+/// `appdata/plugins/<slug>/`, and anything it wrote beside its versions —
+/// is state, and stays (`napp::plugin::package_entries`).
+const PLUGINS_DIR: &str = "nebo/plugins";
+
 /// The built-in browser's profile. Durable only while no Chromium holds it:
 /// a live profile is being written as it is read.
 const CHROMIUM_PROFILE: &str = "chromium-profile";
@@ -205,9 +214,32 @@ fn chromium_excludes() -> Vec<String> {
     CHROMIUM_LOCKS.iter().map(|f| format!("{CHROMIUM_PROFILE}/{f}")).collect()
 }
 
+/// What a state commit of the `nebo` tree leaves out: every installed
+/// plugin's package, as paths relative to the data directory.
+fn plugin_packages(data_dir: &Path) -> Vec<String> {
+    let mut slugs: Vec<String> = fs::read_dir(data_dir.join(PLUGINS_DIR))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    slugs.sort();
+    slugs
+        .iter()
+        .flat_map(|slug| {
+            napp::plugin::package_entries(&data_dir.join(PLUGINS_DIR).join(slug))
+                .into_iter()
+                .map(move |name| format!("{PLUGINS_DIR}/{slug}/{name}"))
+        })
+        .collect()
+}
+
 /// The objects of a commit. `archive` is the whole data directory (the
-/// one-shot copy taken before a disk is retired); otherwise the durable set.
-/// The Chromium profile is left out while a Chromium holds it.
+/// one-shot copy taken before a disk is retired); otherwise the durable set,
+/// without the installed plugins' packages. The Chromium profile is left out
+/// while a Chromium holds it.
 pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
     let browser_busy = chromium_running(data_dir);
     let database = Source {
@@ -256,7 +288,11 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
                     role: "tree".into(),
                     root: tree.to_string(),
                     members: vec![tree.to_string()],
-                    exclude: if *tree == CHROMIUM_PROFILE { chromium_excludes() } else { vec![] },
+                    exclude: match *tree {
+                        CHROMIUM_PROFILE => chromium_excludes(),
+                        "nebo" => plugin_packages(data_dir),
+                        _ => vec![],
+                    },
                 });
             }
         }
@@ -1045,6 +1081,79 @@ pub(super) mod tests {
         assert_ne!(f2, f1);
         fs::remove_file(src.path().join("files/new.txt")).unwrap();
         assert_ne!(fingerprint(src.path(), &s).unwrap(), f2);
+    }
+
+    /// A state commit's `nebo` tree leaves every installed plugin's package
+    /// out — version dirs, `.napp`s, install copies — and keeps all its data:
+    /// a database beside the versions, `appdata/plugins/<slug>/`, a revoked
+    /// (quarantined) version, the owner's own plugins under `user/`. An
+    /// archive still holds everything.
+    #[test]
+    fn a_state_commit_leaves_plugin_packages_out_and_keeps_their_data() {
+        let d = tempfile::tempdir().unwrap();
+        for dir in [
+            "nebo/plugins/ballast/0.2.0/skills/kb",
+            "nebo/plugins/ballast/0.1.0.staging",
+            "nebo/plugins/ballast/cache",
+            "nebo/plugins/nebo-office/0.4.1",
+            "nebo/plugins/revoked/1.0.0",
+            "nebo/skills/notes",
+            "appdata/plugins/ballast",
+            "user/plugins/mine/0.1.0",
+        ] {
+            fs::create_dir_all(d.path().join(dir)).unwrap();
+        }
+        for (f, body) in [
+            ("nebo/plugins/ballast/0.2.0/ballast", "binary"),
+            ("nebo/plugins/ballast/0.2.0/plugin.json", "{}"),
+            ("nebo/plugins/ballast/0.2.0/skills/kb/SKILL.md", "# kb"),
+            ("nebo/plugins/ballast/0.2.0.napp", "napp"),
+            ("nebo/plugins/ballast/0.1.0.staging/ballast", "binary"),
+            ("nebo/plugins/ballast/ballast.db", "the customer's whole index"),
+            ("nebo/plugins/ballast/cache/token.json", "{\"refresh\":\"r\"}"),
+            ("nebo/plugins/nebo-office/0.4.1/nebo-office", "binary"),
+            ("nebo/plugins/nebo-office/0.4.1.napp", "napp"),
+            ("nebo/plugins/revoked/1.0.0/.quarantined", "revoked by NeboAI"),
+            ("nebo/plugins/revoked/1.0.0/plugin.json", "{}"),
+            ("nebo/skills/notes/SKILL.md", "# notes"),
+            ("appdata/plugins/ballast/ballast.db", "the index, where NEBO_DATA_DIR points"),
+            ("user/plugins/mine/0.1.0/mine", "the owner's own binary"),
+        ] {
+            fs::write(d.path().join(f), body).unwrap();
+        }
+        let state = sources(d.path(), false);
+        let nebo = state.iter().find(|s| s.root == "nebo").unwrap();
+        assert_eq!(
+            nebo.exclude,
+            vec![
+                "nebo/plugins/ballast/0.1.0.staging",
+                "nebo/plugins/ballast/0.2.0",
+                "nebo/plugins/ballast/0.2.0.napp",
+                "nebo/plugins/nebo-office/0.4.1",
+                "nebo/plugins/nebo-office/0.4.1.napp",
+            ]
+        );
+        let packed = |root: &str| -> Vec<String> {
+            let s = state.iter().find(|s| s.root == root).unwrap();
+            walk(d.path(), s).unwrap().into_iter().filter(|e| e.meta.is_file()).map(|e| e.rel).collect()
+        };
+        assert_eq!(
+            packed("nebo"),
+            vec![
+                "nebo/plugins/ballast/ballast.db",
+                "nebo/plugins/ballast/cache/token.json",
+                "nebo/plugins/revoked/1.0.0/.quarantined",
+                "nebo/plugins/revoked/1.0.0/plugin.json",
+                "nebo/skills/notes/SKILL.md",
+            ]
+        );
+        assert_eq!(packed("appdata"), vec!["appdata/plugins/ballast/ballast.db"]);
+        assert_eq!(packed("user"), vec!["user/plugins/mine/0.1.0/mine"]);
+
+        let archive = sources(d.path(), true);
+        let nebo = archive.iter().find(|s| s.root == "nebo").unwrap();
+        assert!(nebo.exclude.is_empty(), "an archive is the whole data directory");
+        assert!(walk(d.path(), nebo).unwrap().iter().any(|e| e.rel == "nebo/plugins/nebo-office/0.4.1.napp"));
     }
 
     /// The durable set is exactly the spec's; the browser profile only while

@@ -55,6 +55,27 @@ impl McpProxyTool {
     }
 }
 
+impl McpProxyTool {
+    /// This tool is shared memory's (see [`is_shared_memory`]).
+    fn is_shared_memory(&self) -> bool {
+        self.store
+            .get_mcp_integration(&self.integration_id)
+            .ok()
+            .flatten()
+            .is_some_and(|i| is_shared_memory(&i))
+    }
+}
+
+/// The integration is the account's shared memory, the Nebo KB: the server
+/// at the platform memory URL, matched exactly (a customer's own KB at
+/// another host is an ordinary connector). It is wired automatically and
+/// managed on the website, so it is never listed as a connector. The ONE
+/// predicate for "is this shared memory".
+pub fn is_shared_memory(integration: &db::models::McpIntegration) -> bool {
+    let memory_url = config::memory_url();
+    !memory_url.is_empty() && integration.server_url.as_deref() == Some(memory_url.as_str())
+}
+
 /// An MCP description as the model gets it: at most
 /// [`MAX_DESCRIPTION_CHARS`], and marked when cut.
 fn cut_description(description: &str) -> String {
@@ -123,8 +144,9 @@ impl DynTool for McpProxyTool {
         // The run's confidentiality scope rides along as a header, so a sealed
         // employee reaches only its own matter on the server side.
         let matter = ctx.memory_matter.clone();
+        let domain = input["domain"].as_str().map(str::to_string);
         Box::pin(async move {
-            call_mcp_tool_scoped(
+            let mut result = call_mcp_tool_scoped(
                 &self.store,
                 &self.bridge,
                 &self.integration_id,
@@ -132,7 +154,17 @@ impl DynTool for McpProxyTool {
                 input,
                 matter.as_deref(),
             )
-            .await
+            .await;
+            // Shared memory's answers say where they came from, so the model
+            // never mistakes them for this Nebo's own memory.
+            if !result.is_error && self.is_shared_memory() {
+                result.content = format!(
+                    "[{}] {}",
+                    crate::memory_tools::shared_source(matter.as_deref(), domain.as_deref()),
+                    result.content
+                );
+            }
+            result
         })
     }
 }
@@ -455,8 +487,49 @@ pub async fn call_mcp_tool(
     call_mcp_tool_scoped(store, bridge, integration_id, tool_name, input, None).await
 }
 
-/// As `call_mcp_tool`, carrying the run's confidentiality scope.
+/// As `call_mcp_tool`, carrying the run's confidentiality scope. A call the
+/// server refuses for its arguments (invalid params, an unknown field) may
+/// have been made against a stale definition: the server's tools are listed
+/// again and, when this tool's definition changed, the call is tried once
+/// more against its new schema.
 pub async fn call_mcp_tool_scoped(
+    store: &db::Store,
+    bridge: &mcp::Bridge,
+    integration_id: &str,
+    tool_name: &str,
+    input: serde_json::Value,
+    matter: Option<&str>,
+) -> ToolResult {
+    let first = call_once(store, bridge, integration_id, tool_name, input.clone(), matter).await;
+    if !first.is_error || !mcp::client::is_schema_error(&first.content) {
+        return first;
+    }
+    let relisted = match bridge.refresh(integration_id).await {
+        Ok(relisted) => relisted,
+        Err(e) => {
+            warn!(integration = %integration_id, tool = tool_name, error = %e, "connector tools could not be listed again");
+            return first;
+        }
+    };
+    if !relisted.changed.iter().any(|n| n == tool_name) {
+        return first;
+    }
+    let Some(def) = relisted.tools.iter().find(|d| d.name == tool_name) else {
+        return ToolResult::error(format!(
+            "{}\nThis connector no longer offers {tool_name}.",
+            first.content
+        ));
+    };
+    info!(integration = %integration_id, tool = tool_name, "connector tool changed; trying the call again");
+    let mut input = input;
+    if let Some(schema) = &def.input_schema {
+        coerce_schema_types(&mut input, schema);
+    }
+    call_once(store, bridge, integration_id, tool_name, input, matter).await
+}
+
+/// One call: proactive token refresh, the call, and one retry on a 401.
+async fn call_once(
     store: &db::Store,
     bridge: &mcp::Bridge,
     integration_id: &str,
@@ -490,21 +563,33 @@ pub async fn call_mcp_tool_scoped(
                             }
                         }
                         Err(retry_err) => ToolResult::error(format!(
-                            "MCP {}/{} failed after token refresh: {}",
+                            "Connector {}/{} failed after token refresh: {}",
                             integration_id, tool_name, retry_err
                         )),
                     },
                     Err(refresh_err) => {
                         let _ =
                             store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
+                        // Shared memory has no Connectors entry to send the
+                        // owner to: the website manages it.
+                        let shared = store
+                            .get_mcp_integration(integration_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|i| is_shared_memory(&i));
+                        if shared {
+                            return ToolResult::error(
+                                "Shared memory isn't available to this Nebo right now. Carry on without it.",
+                            );
+                        }
                         ToolResult::error(format!(
-                            "MCP {}/{}: authentication expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
+                            "Connector {}/{}: sign-in expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
                             integration_id, tool_name, refresh_err
                         ))
                     }
                 }
             } else {
-                ToolResult::error(format!("MCP {}/{} failed: {}", integration_id, tool_name, e))
+                ToolResult::error(format!("Connector {}/{} failed: {}", integration_id, tool_name, e))
             }
         }
     }
@@ -677,5 +762,206 @@ mod proxy_tests {
 
         let destructive = proxy(&def(serde_json::json!({"name": "drop", "annotations": {"destructiveHint": true}})));
         assert_eq!(destructive.effects(&serde_json::json!({})).deletes, vec!["mcp__docs__search".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use crate::origin::{Origin, ToolContext};
+
+    /// A remote MCP server whose tool list the test changes under it, as
+    /// Janus added `display_names` to `prices`. A call with a field its
+    /// current schema lacks is refused as invalid params; `notify` streams
+    /// `notifications/tools/list_changed` ahead of the next call's answer.
+    #[derive(Default)]
+    struct Server {
+        tools: Value,
+        calls: Vec<Value>,
+        notify: bool,
+    }
+
+    fn prices(fields: &[&str]) -> Value {
+        let props: serde_json::Map<String, Value> =
+            fields.iter().map(|f| (f.to_string(), json!({"type": "string"}))).collect();
+        json!([{"name": "prices", "description": "Prices.", "inputSchema": {
+            "type": "object", "properties": props, "additionalProperties": false
+        }}])
+    }
+
+    fn answer(server: &Mutex<Server>, req: &Value) -> (String, &'static str) {
+        let mut s = server.lock().unwrap();
+        let id = req["id"].clone();
+        let body = match req["method"].as_str() {
+            Some("tools/list") => json!({"jsonrpc": "2.0", "id": id, "result": {"tools": s.tools}}),
+            Some("tools/call") => {
+                let args = req["params"]["arguments"].clone();
+                s.calls.push(args.clone());
+                let known = s.tools[0]["inputSchema"]["properties"].clone();
+                match args.as_object().into_iter().flatten().find(|(k, _)| known.get(k.as_str()).is_none()) {
+                    Some((k, _)) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": format!("unknown field `{k}`")}}),
+                    None => json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": "priced"}]}}),
+                }
+            }
+            _ => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
+        };
+        if std::mem::take(&mut s.notify) {
+            let note = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+            return (format!("event: message\ndata: {note}\n\nevent: message\ndata: {body}\n\n"), "text/event-stream");
+        }
+        (body.to_string(), "application/json")
+    }
+
+    async fn serve(server: Arc<Mutex<Server>>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let server = server.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        if buf.len() < end + 4 + len {
+                            continue;
+                        }
+                        let req: Value = serde_json::from_slice(&buf[end + 4..end + 4 + len]).unwrap_or_default();
+                        let (body, kind) = answer(&server, &req);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/mcp")
+    }
+
+    struct World {
+        server: Arc<Mutex<Server>>,
+        registry: Arc<crate::registry::Registry>,
+        bridge: Arc<mcp::Bridge>,
+        store: Arc<db::Store>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A registry with the server connected as integration `int-1`, its
+    /// tools under `mcp__janus__*`.
+    async fn world(fields: &[&str]) -> World {
+        let server = Arc::new(Mutex::new(Server { tools: prices(fields), ..Default::default() }));
+        let url = serve(server.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
+        store.create_mcp_integration("int-1", "janus", "http", Some(&url), "none", None, None).unwrap();
+        let registry = Arc::new(crate::registry::Registry::new(crate::gate::test_gate()));
+        let client = Arc::new(mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate())));
+        let bridge = Arc::new(mcp::Bridge::new(client, registry.clone()));
+        registry.set_bridge(bridge.clone());
+        registry.set_store(store.clone());
+        bridge.watch_tool_changes();
+        bridge.connect("int-1", "janus", &url, None, None).await.unwrap();
+        World { server, registry, bridge, store, _dir: dir }
+    }
+
+    fn props(def: &ai::ToolDefinition) -> Vec<String> {
+        def.input_schema["properties"].as_object().unwrap().keys().cloned().collect()
+    }
+
+    /// Refresh lists the server's tools again on the live connection and
+    /// re-registers what changed; listing an unchanged server changes
+    /// nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_registers_the_servers_new_schema() {
+        let w = world(&["ids"]).await;
+        let unchanged = w.bridge.refresh("int-1").await.unwrap();
+        assert!(unchanged.changed.is_empty());
+        w.server.lock().unwrap().tools = prices(&["ids", "display_names"]);
+        let relisted = w.bridge.refresh("int-1").await.unwrap();
+        assert_eq!(relisted.changed, vec!["prices"]);
+        let def = w.registry.definition("mcp__janus__prices").await.unwrap();
+        assert_eq!(props(&def), vec!["display_names", "ids"]);
+    }
+
+    /// The Janus case: the server added `display_names`, the registry still
+    /// held the old schema and refused the field as unknown. The refusal
+    /// lists the tools again and the call runs with the field.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_call_refused_by_a_stale_schema_runs_after_the_tools_are_listed_again() {
+        let w = world(&["ids"]).await;
+        w.server.lock().unwrap().tools = prices(&["ids", "display_names"]);
+        let ctx = ToolContext::new(Origin::User);
+        let result = w
+            .registry
+            .execute(&ctx, "mcp__janus__prices", json!({"ids": "a", "display_names": "yes"}))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.content, "priced");
+        assert_eq!(w.server.lock().unwrap().calls, vec![json!({"ids": "a", "display_names": "yes"})]);
+    }
+
+    /// A field the server refuses as invalid params (-32602) while the
+    /// local schema allowed it: the tools are listed again, and the call is
+    /// tried once more only when the tool's definition changed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_schema_error_lists_the_tools_again_and_retries_once() {
+        let w = world(&["ids", "currency"]).await;
+        let store = w.store.clone();
+        // The server dropped `currency` and added `display_names`; the call
+        // passes the old schema locally and the server refuses it.
+        w.server.lock().unwrap().tools = prices(&["ids", "display_names"]);
+        let result =
+            super::call_mcp_tool(&store, &w.bridge, "int-1", "prices", json!({"ids": "a", "currency": "usd"})).await;
+        assert!(result.is_error, "the field is gone, so the retry is refused too");
+        assert_eq!(w.server.lock().unwrap().calls.len(), 2, "one call, one retry");
+        let def = w.registry.definition("mcp__janus__prices").await.unwrap();
+        assert_eq!(props(&def), vec!["display_names", "ids"]);
+
+        // Unchanged definitions: no retry.
+        let again =
+            super::call_mcp_tool(&store, &w.bridge, "int-1", "prices", json!({"ids": "a", "currency": "usd"})).await;
+        assert!(again.is_error);
+        assert_eq!(w.server.lock().unwrap().calls.len(), 3);
+    }
+
+    /// `notifications/tools/list_changed` from the server lists its tools
+    /// again without anyone asking.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_changed_from_the_server_lists_the_tools_again() {
+        let w = world(&["ids"]).await;
+        {
+            let mut s = w.server.lock().unwrap();
+            s.tools = prices(&["ids", "display_names"]);
+            s.notify = true;
+        }
+        let store = w.store.clone();
+        let result = super::call_mcp_tool(&store, &w.bridge, "int-1", "prices", json!({"ids": "a"})).await;
+        assert!(!result.is_error, "{}", result.content);
+        for _ in 0..100 {
+            let def = w.registry.definition("mcp__janus__prices").await.unwrap();
+            if props(&def).len() == 2 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the tools were not listed again after list_changed");
     }
 }

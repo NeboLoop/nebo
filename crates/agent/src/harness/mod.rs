@@ -13,6 +13,7 @@ pub mod linked_handoff;
 pub mod memory_context;
 pub mod memory_save;
 pub mod model_call;
+pub mod named_pictures;
 pub mod opening;
 pub mod owner_command;
 pub mod owner_intent;
@@ -30,7 +31,7 @@ pub mod turn_end;
 pub mod usage;
 pub mod workflow_turn;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use tokio::sync::{RwLock, mpsc};
@@ -58,7 +59,14 @@ pub struct Outlets {
     /// stopped turn never answered. A stopped turn's stream has ended, so
     /// its answer needs a turn of its own the app runs.
     pub answer_thread: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// The note a turn of an employee reads about its own background work,
+    /// for (employee id, the turn's session key); empty when none runs.
+    pub background_note: Option<BackgroundNote>,
 }
+
+/// Reads an employee's background note (see [`Outlets::background_note`]).
+pub type BackgroundNote =
+    Arc<dyn Fn(String, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> + Send + Sync>;
 
 /// The facade every caller starts a turn through: the services a turn runs
 /// against. Cheap to clone; a running turn owns a clone.
@@ -90,6 +98,14 @@ pub struct Harness {
     /// decide (PRD-Permissions §4.7); `None` goes straight to the aux
     /// classifier.
     pub(crate) decide: Option<Arc<ai::DecideClient>>,
+    /// The owner's workspace (`config::workspace_dir`) whose files keep their
+    /// history around every turn (`tools::workspace_history`), and the file
+    /// store its blobs go in; `None` keeps none.
+    pub(crate) workspace: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// Sessions whose turns build from their first step until the time
+    /// held (`Harness::build_session`): a taught task's learning run and
+    /// the turns that follow it.
+    pub(crate) build_sessions: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
 }
 
 impl Harness {
@@ -126,7 +142,28 @@ impl Harness {
             active_turns: Default::default(),
             phone_locations: Default::default(),
             decide: None,
+            workspace: None,
+            build_sessions: Default::default(),
         }
+    }
+
+    /// The turns of `session_key` build from their first step for the next
+    /// `window`: they run on the build lane of the employee's intelligence
+    /// pack (Nebo AI's: Deep, sent as the `build` purpose), the way the
+    /// workflow builder's do, without touching the model the owner chose.
+    /// For a taught task: its learning run and the turns that make a
+    /// workflow or a task from it.
+    pub fn build_session(&self, session_key: &str, window: std::time::Duration) {
+        let mut held = self.build_sessions.lock().unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+        held.retain(|_, until| *until > now);
+        held.insert(session_key.to_string(), now + window);
+    }
+
+    /// Whether `session_key`'s turns build from their first step now.
+    pub(crate) fn builds_session(&self, session_key: &str) -> bool {
+        let held = self.build_sessions.lock().unwrap_or_else(|p| p.into_inner());
+        held.get(session_key).is_some_and(|until| *until > std::time::Instant::now())
     }
 
     /// The owner's answers to a question (a tool's, or a linked runtime's
@@ -139,6 +176,13 @@ impl Harness {
     /// Jev: the permission judge's first reader.
     pub fn with_decide(mut self, decide: Arc<ai::DecideClient>) -> Self {
         self.decide = Some(decide);
+        self
+    }
+
+    /// The owner's workspace: every turn keeps the history of its files,
+    /// their blobs in the file store `files_dir`.
+    pub fn with_workspace_history(mut self, workspace: std::path::PathBuf, files_dir: std::path::PathBuf) -> Self {
+        self.workspace = Some((workspace, files_dir));
         self
     }
 
@@ -171,6 +215,10 @@ impl Harness {
 
     pub(crate) fn answer_thread(&self) -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
         self.outlets.get().and_then(|o| o.answer_thread.clone())
+    }
+
+    pub(crate) fn background_note(&self) -> Option<BackgroundNote> {
+        self.outlets.get().and_then(|o| o.background_note.clone())
     }
 
     pub fn sessions(&self) -> &SessionManager {
@@ -257,7 +305,7 @@ impl Harness {
         &self.tools
     }
 
-    pub fn selector(&self) -> &ModelSelector {
+    pub fn selector(&self) -> &Arc<ModelSelector> {
         &self.selector
     }
 
@@ -285,15 +333,22 @@ impl Harness {
         info!(count, "reloaded AI providers");
     }
 
+    /// The ONE resolver for background work (`model_call::Housekeeper`).
+    pub fn housekeeper(&self) -> model_call::Housekeeper {
+        model_call::Housekeeper::new(self.store.clone(), self.selector.clone(), self.providers.clone())
+    }
+
     /// Title a chat whose turns were stored outside a turn (the voice loop
     /// writes its own rows): the same generator and sink a turn uses.
     pub fn spawn_title_generation(&self, session_id: &str, chat_id: &str) {
+        // The chat's own model, else the bot's default.
+        let chosen = self.store.get_chat(chat_id).ok().flatten().and_then(|c| c.model).unwrap_or_default();
         after_turn::spawn_chat_title_generation(
-            self.providers.clone(),
+            self.housekeeper(),
+            chosen,
             self.store.clone(),
             chat_id.to_string(),
             session_id.to_string(),
-            self.selector.background_model(),
             self.title_sink(),
         );
     }
@@ -462,7 +517,13 @@ pub struct SeatRequest {
     /// Which entry started this run.
     pub door: types::permissions::Door,
     /// A run override of the employee's mode (e.g. Plan); `None` = its own.
+    /// An owner's conversation runs in the mode picked for it.
     pub mode: Option<types::permissions::Mode>,
+    /// The mode what started this run holds it to (`Grant::narrow`): a
+    /// workflow run or a hand-off started from a conversation the owner put
+    /// in a stricter mode. The run's mode is never looser, and it carries
+    /// it on. `None` = nothing carried.
+    pub narrow: Option<types::permissions::Mode>,
     /// The parent's grant (a helper) or the creator's (a created employee):
     /// the run can only narrow it.
     pub ceiling: Option<types::permissions::Ceiling>,

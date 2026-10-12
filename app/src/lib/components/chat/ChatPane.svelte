@@ -6,10 +6,14 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop, getToolOutput, locateWorkFile } from '$lib/api/nebo';
-  import { kindForExt } from '$lib/chat/controller.svelte';
+  import { teachStart, getToolOutput, locateWorkFile, fileHistory, restoreFileHistory } from '$lib/api/nebo';
+  import { historyItems, workspacePathOf, type FileHistoryItem } from '$lib/chat/fileHistory';
+  import { kindForExt, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import { locateFileMention } from '$lib/chat/fileMentions';
-  import { watchesComputer, offersVirtualComputer, teachFailure, SCREEN_RECORDING_SETTINGS } from '$lib/chat/teach';
+  import { watchesComputer, offersComputer, teachFailure, SCREEN_RECORDING_SETTINGS, teachEndingSoon, teachAtCap, postTeachStop } from '$lib/chat/teach';
+  import { createClipRecorder, type ClipRecorder, type ClipState } from '$lib/chat/clipRecorder';
+  import Mic from 'lucide-svelte/icons/mic';
+  import MicOff from 'lucide-svelte/icons/mic-off';
   import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
@@ -17,9 +21,11 @@
   import AppListingCard from './AppListingCard.svelte';
   import type { AppListingPayload } from './AppListingCard.svelte';
   import type { EmployeeConsentPayload } from './ConsentChip.svelte';
-  import type { AskWidgetDef } from './AskWidget.svelte';
+  import { SKIP_VALUE, type AskWidgetDef } from './AskWidget.svelte';
+  import { isOpenQuestion, takesWords } from '$lib/chat/ask';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
+  import { flushPendingSave, hasPendingSave, viewerKey } from '$lib/sheet/pending';
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
   import { parseMarkdown } from '$lib/markdown';
@@ -31,7 +37,7 @@
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
   import type { SessionGoalStatus } from '$lib/api/neboComponents';
-  import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
+  import { attSrc, firstFrame, stripAttachmentNotes } from '$lib/types/attachment';
   import { flushSync, tick } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
@@ -41,13 +47,17 @@
   import { approvals, chatApprovalsOf } from '$lib/stores/approvals';
   import ApprovalAskCard from '$lib/components/chat/ApprovalAskCard.svelte';
   import { publishRequest } from '$lib/stores/appPublish';
-  import { shareEntries } from '$lib/apps/shareMenu';
+  import { shareRequest, answersShareRequest } from '$lib/stores/appShare';
+  import { shareEntries, linkFile, type ShareEntry, type LinkAsk } from '$lib/apps/shareMenu';
   import type { AppWindow } from '$lib/api/neboComponents';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
-  import { stepMeta } from '$lib/chat/stepMeta';
-  import { turnBlocks, turnProse, noteLabel, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
+  import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
+  import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
+  import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
+  import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
+  import { backgroundNotices, belongsTo } from '$lib/stores/background';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -83,8 +93,8 @@
     request: Record<string, unknown>;
     response: string;
     statusText?: string;
-    label?: string;     // human activity label (gerund), from the start phase
-    outcome?: string;   // past-tense outcome, from the result phase
+    /** The call's structured name: its kind worded here, its values verbatim. */
+    call?: CallName;
     durationMs?: number;
     /** Structured rendering payload (ToolResult.payload) — known kinds render
      *  as rich cards; unknown kinds are ignored. */
@@ -96,6 +106,8 @@
     /** The stored result was cut to a preview; opening the row fetches the
      *  rest instead of every transcript page carrying every byte. */
     truncated?: boolean;
+    /** The files the call handed the owner (app URLs), from its live result. */
+    files?: string[];
   }
 
   type TeamPost = { teamId: string; teamName: string; from: string; fromOwner?: boolean; text: string };
@@ -104,11 +116,12 @@
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
-    | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
+    | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean }
+    | { type: 'runError'; content: string; time?: string; id?: string };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -148,8 +161,12 @@
     emptyIcon?: string;
     emptyTitle?: string;
     emptyDesc?: string;
+    /** Shown under the empty chat's greeting: the employee's starter asks. */
+    emptyActions?: Snippet;
     allAgents?: AgentInfo[];
     activityStatus?: string;
+    /** When the running turn started (ms); 0 while none runs. */
+    turnStartedAt?: number;
     /** Helpers started from this conversation that are still working. */
     helpers?: HelperLine[];
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
@@ -180,6 +197,13 @@
     readOnly?: boolean;
   } = $props();
 
+  // The employee's background work told while this conversation is open:
+  // what finished, failed or stopped, and the timers it made.
+  const openedAt = Date.now();
+  /** Background notices shown at once, newest last. */
+  const NOTICES_SHOWN = 3;
+  const chatNotices = $derived($backgroundNotices.filter((n) => n.at >= openedAt && belongsTo(n.task, agentId)).slice(-NOTICES_SHOWN));
+
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
   // The bot's computer takes over the work panel while open.
@@ -204,10 +228,73 @@
   let teachNeedsPermission = $state(false);
   let teachSeconds = $state(0);
   let teachTimer: ReturnType<typeof setInterval> | null = null;
-  /** On a host bot in Developer mode the icon also offers the virtual computer. */
-  const teachChoice = $derived(offersVirtualComputer($ownScreen, $devMode));
+  /** The icon also offers to just open the computer, in plain view mode:
+   *  always on a cloud bot, and on a host bot in Developer mode. */
+  const teachChoice = $derived(offersComputer($ownScreen, $devMode));
   /** The recording under way is of this computer's own screen. */
   let teachLocal = $state(false);
+  /** The recording's cap in seconds (teach/start's `capSeconds`). */
+  let teachCap = $state(0);
+  /** The recording under way, by its session id. */
+  let teachSessionId = '';
+  /** A line about the last recording: it reached its cap. */
+  let teachNotice = $state('');
+  // The owner's narration: his microphone records only while the
+  // demonstration does, with the same cap, through the clip recorder.
+  let narrator: ClipRecorder | null = null;
+  let narratorState = $state<ClipState | null>(null);
+  let narratorUnsub: (() => void) | null = null;
+  let narrationFile: File | null = null;
+  let narrationWaiter: ((f: File | null) => void) | null = null;
+  let narrationOffsetMs = 0;
+
+  function startNarration(recordingStartedAt: number) {
+    narrationFile = null;
+    narrator = createClipRecorder({
+      capMs: teachCap > 0 ? teachCap * 1000 : undefined,
+      onClip: (f) => {
+        narrationFile = f;
+        narrationWaiter?.(f);
+      }
+    });
+    narratorUnsub = narrator.subscribe((st) => (narratorState = st));
+    void narrator.start().then(() => {
+      narrationOffsetMs = Date.now() - recordingStartedAt;
+    });
+  }
+
+  /** Stop the microphone and hand over what it recorded (null: none). */
+  function finishNarration(): Promise<File | null> {
+    const n = narrator;
+    if (!n) return Promise.resolve(null);
+    return new Promise<File | null>((resolve) => {
+      const done = (f: File | null) => {
+        clearTimeout(timer);
+        narrationWaiter = null;
+        resolve(f);
+      };
+      const timer = setTimeout(() => done(narrationFile), 3000);
+      if (narrationFile) return done(narrationFile);
+      narrationWaiter = done;
+      if (narratorState?.stage === 'recording') n.stop();
+      else {
+        n.cancel();
+        done(narrationFile);
+      }
+    }).finally(() => {
+      narratorUnsub?.();
+      narratorUnsub = null;
+      narrator = null;
+      narratorState = null;
+      narrationFile = null;
+    });
+  }
+
+  // Leaving the chat never leaves the microphone open.
+  $effect(() => () => {
+    narrator?.cancel();
+    narratorUnsub?.();
+  });
 
   /** Start, or stop the recording under way. */
   function teach() {
@@ -220,11 +307,16 @@
   async function startTeach(where?: 'local' | 'computer') {
     if (teachStarting || teachActive) return;
     teachError = '';
+    teachNotice = '';
     teachNeedsPermission = false;
     teachStarting = true;
     let res;
     try {
-      res = await teachStart(where ? { where } : {});
+      res = await teachStart({
+        ...(where ? { where } : {}),
+        agentId,
+        sessionKey: sessionId || (threadId ? threadKey(agentId, threadId) : '')
+      });
     } catch (e) {
       const failure = teachFailure(e);
       teachError = failure.needsScreenPermission ? $t('chat.teachNeedsScreenPermission') : failure.message;
@@ -235,24 +327,41 @@
     }
     teachLocal = !watchesComputer(res?.where);
     if (!teachLocal) computerFull = true;
+    teachSessionId = String(res?.sessionId ?? '');
+    teachCap = Number(res?.capSeconds) || 0;
     teachActive = true;
     teachSeconds = 0;
-    teachTimer = setInterval(() => (teachSeconds += 1), 1000);
+    const recordingStartedAt = Date.now();
+    teachTimer = setInterval(() => {
+      teachSeconds += 1;
+      // At the cap it stops and is learned from like any other recording.
+      if (teachAtCap(teachSeconds, teachCap)) void stopTeach(true);
+    }, 1000);
+    startNarration(recordingStartedAt);
   }
 
-  async function stopTeach() {
+  async function stopTeach(capped = false) {
+    if (!teachActive) return;
     if (teachTimer) { clearInterval(teachTimer); teachTimer = null; }
     teachActive = false;
+    const narration = await finishNarration();
     try {
-      // The display layer only reports the event (who + where). The backend
-      // owns the visible message AND the steering briefing (mention_context
-      // system-reminder) and dispatches the learning run itself; it returns
-      // the persisted message text so we can echo it without a second copy.
-      const res = await teachStop({
+      // The display layer only reports the event (who + where) and carries
+      // the owner's narration. The backend owns the visible message AND the
+      // steering briefing (mention_context system-reminder) and dispatches
+      // the learning run itself; it returns the persisted message text so we
+      // can echo it without a second copy.
+      const res = await postTeachStop({
         agentId,
         sessionKey: sessionId || (threadId ? threadKey(agentId, threadId) : ''),
+        sessionId: teachSessionId,
+        narration,
+        narrationOffsetMs
       });
       onteachsent?.(res.message ?? '', res.sessionKey ?? '');
+      if (capped || res.capped) {
+        teachNotice = $t('chat.teachCapReached', { values: { cap: fmtTeach(teachCap) } });
+      }
     } catch (e) {
       teachError = e instanceof Error ? e.message : String(e);
     }
@@ -268,6 +377,12 @@
   let activeArtifactId = $state<string | null>(null);
   // Pinned version of the active document; null = follow the latest version.
   let activeVersion = $state<number | null>(null);
+  // A file opened by its path: its earlier versions (`fileHistory`), the one
+  // shown instead of the file (null = the file as it is now), and a count of
+  // restores so the viewer reloads the file after one.
+  let pathHistory = $state<{ id: string; items: FileHistoryItem[] }>({ id: '', items: [] });
+  let activeHistoryId = $state<number | null>(null);
+  let historyRestores = $state(0);
 
   // Render assistant message content with basic markdown + mention chips.
   // Code blocks get a copy affordance: each <pre> is wrapped with a positioned
@@ -345,6 +460,72 @@
     }
     return activeVersionList[activeVersionList.length - 1];
   });
+
+  // A file opened by its path keeps its earlier versions: listed under
+  // History, one shown in place of the file, and put back with Restore.
+  const activePathUrl = $derived(activeArtifact?.documentId.startsWith('path:') ? (activeArtifact.url ?? '') : '');
+  const pathHistoryItems = $derived(activeArtifact && pathHistory.id === activeArtifact.documentId ? pathHistory.items : []);
+  const activeHistory = $derived(pathHistoryItems.find((h) => h.id === activeHistoryId));
+  // The URL the viewer shows: an earlier version of a path file, or the file.
+  const shownUrl = $derived(activeHistory?.url ?? activeArtifact?.url ?? '');
+
+  async function loadPathHistory(id: string, url: string) {
+    const path = workspacePathOf(url);
+    if (!path) return;
+    try {
+      const items = historyItems(await fileHistory(path));
+      if (activeArtifact?.documentId === id) pathHistory = { id, items };
+    } catch {
+      if (activeArtifact?.documentId === id) pathHistory = { id, items: [] };
+    }
+  }
+
+  $effect(() => {
+    const a = activeArtifact;
+    if (a && activePathUrl && pathHistory.id !== a.documentId) void loadPathHistory(a.documentId, activePathUrl);
+  });
+
+  async function restoreHistory(item: FileHistoryItem) {
+    const a = activeArtifact;
+    if (!a) return;
+    try {
+      await restoreFileHistory({ id: item.id, agentId, sessionId: chatSessionKey || undefined });
+      addToast($t('chat.restoredFile', { values: { title: a.title } }), 'success');
+    } catch {
+      addToast($t('chat.restoreFailed', { values: { title: a.title } }), 'error');
+      return;
+    }
+    activeHistoryId = null;
+    historyRestores += 1;
+    await loadPathHistory(a.documentId, a.url ?? '');
+  }
+
+  // The viewer remounts per document:version (a new version refreshes it in
+  // place, and the version-specific URL defeats the browser cache) — except a
+  // version a spreadsheet viewer just saved itself, which it already shows. A
+  // path file's earlier version, or the file after a restore, remounts it too.
+  let lastViewerKey = '';
+  const workViewerKey = $derived.by(() => {
+    const a = activeArtifact;
+    if (!a) return '';
+    const shown = `${viewSource}:${activeHistoryId ?? 'now'}:${historyRestores}`;
+    lastViewerKey = viewerKey(lastViewerKey, a.documentId, a.version, shown);
+    return lastViewerKey;
+  });
+
+  /** Download the open file. A spreadsheet with unsaved edits saves first, so
+   *  the download carries them. */
+  async function downloadActive(e: MouseEvent) {
+    const a = activeArtifact;
+    if (!a?.url) return;
+    if (!hasPendingSave(a.documentId)) {
+      await downloadArtifact(e, a.url, a.title);
+      return;
+    }
+    e.preventDefault();
+    const url = (await flushPendingSave(a.documentId)) ?? a.url;
+    await downloadArtifact(null, url, a.title);
+  }
 
   // Turn an inline `filename` mention (rendered as <code>filename</code>) into a clickable
   // chip when that filename is one of the message's produced Work items.
@@ -450,10 +631,15 @@
     if (target.kind === 'gone') addToast($t('chat.fileGone'), 'error');
     if (target.kind === 'failed') addToast($t('chat.failedToLoadStatus', { values: { status: target.status } }), 'error');
     if (target.kind !== 'file') return;
-    const id = `path:${target.url}`;
+    openWorkFile(target.url, target.filename);
+  }
+
+  /** Open a Work file by its `/api/v1/files/` URL in this thread's Work panel. */
+  function openWorkFile(url: string, filename: string) {
+    const id = `path:${url}`;
     if (!openedPathFiles.some((a) => a.id === id)) {
-      const ext = (target.filename.split('.').pop() || '').toLowerCase();
-      const item: Artifact = { id, documentId: id, version: 1, title: target.filename, kind: kindForExt(ext), url: target.url };
+      const ext = (filename.split('.').pop() || '').toLowerCase();
+      const item: Artifact = { id, documentId: id, version: 1, title: filename, kind: kindForExt(ext), url };
       pathFiles = { chat: threadId || sessionId, items: [...openedPathFiles, item] };
     }
     openArtifact(id);
@@ -465,6 +651,7 @@
     openPane('work');
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
+    activeHistoryId = null;
     viewSource = false;
     const a = artifacts.find(x => x.documentId === id);
     if (a) creationsTitle = a.title;
@@ -722,14 +909,16 @@
       : null;
   }
 
-  // Coworker sends are events the owner reads ("Messaged Search Analyst"),
-  // never plumbing inside the collapsed tool group.
+  // Hand-offs to another employee are lines the owner reads ("→ Search
+  // Analyst: …" with its status beneath), never plumbing inside the
+  // collapsed tool group: a failure stays in sight.
   interface CoworkerEventPayload {
     kind: 'coworker_message';
     to?: string;
     toAgentId?: string;
     threadKey?: string;
     text?: string;
+    handoffId?: string;
     [k: string]: unknown;
   }
   function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {
@@ -1135,10 +1324,38 @@
   // any app, installed or the owner's own: an entry says its words in this
   // chat the way Publish says its starter.
   const shareMenu = $derived(shareEntries(isApp ? appWindow : null, !readOnly && !!onsend));
-  function shareVia(say: string) {
+  // A link entry (`share: true`) asked here: the Share dialog opens on the
+  // file its answer hands over, once the answer is done.
+  let linkAsk = $state<LinkAsk | null>(null);
+  function shareVia(entry: ShareEntry) {
     (document.activeElement as HTMLElement)?.blur();
-    handleSend(say, []);
+    linkAsk = entry.share ? { chat: threadId || sessionId, from: messages.length } : null;
+    handleSend(entry.say, []);
   }
+  $effect(() => {
+    const ask = linkAsk;
+    if (!ask) return;
+    if (ask.chat !== (threadId || sessionId)) {
+      linkAsk = null;
+      return;
+    }
+    if (isLoading) return;
+    const file = linkFile(messages, ask.from);
+    if (!file) return;
+    linkAsk = null;
+    openWorkFile(file.url, file.title);
+    shareOpen = true;
+  });
+  // A file this app's page handed the owner to share (`nebo.share`): open
+  // it in Work and show the one Share dialog on it.
+  $effect(() => {
+    const req = $shareRequest;
+    if (!answersShareRequest(req, agentId, threadId) || !req) return;
+    shareRequest.set(null);
+    linkAsk = null;
+    openWorkFile(req.artifact, req.title);
+    shareOpen = true;
+  });
   $effect(() => {
     if (canPublish && agentId && $publishRequest === agentId) {
       publishRequest.set(null);
@@ -1160,20 +1377,49 @@
   let isDragging = $state(false);
   let dragCounter = $state(0);
 
-  // Tool timeline collapse state, keyed by the owning reply's id (stable across
-  // re-renders — index keys would drift as new messages stream in).
   // ── Activity groups: the work inside an assistant turn ──────────────────
-  // A turn is every assistant segment between two user messages. Its text
-  // segments read as prose or fold into the work as notes — the server's
-  // verdict (`turnBlocks`) — and each run of notes and tool calls between two
-  // paragraphs is one group under a summary line ("Searched the web, read a
-  // page, ran a command"). Rows open on click.
+  // A turn is every assistant segment between two user messages. The text
+  // the employee wrote between its calls reads as compact notes, always in
+  // view; its calls sit between them in groups, each under one summary line
+  // ("Read ×3 · Run"), folded until it is clicked. The last text, the
+  // answer, reads as prose (`turnBlocks`). Each call is one line — its kind
+  // and its own value — with what came back on a line under it.
   type AssistantMsg = Extract<Message, { type: 'assistant' }>;
   type ActivityStep = TurnStep<ToolMsg>;
 
   /** Open state per group; unset means folded — live or not. A long turn is
-   *  one shimmering summary line, not a card of every call it made. */
+   *  one summary line, not a card of every call it made. */
   let activityOpen = $state<Record<string, boolean>>({});
+  /** The notes the reader saw stream in. They stay open once the turn ends,
+   *  so words being read never fold away mid-sentence; a thread opened
+   *  later shows its notes compact. Not state: rendering records it. */
+  const notesSeenLive = new Set<string>();
+  function noteOpen(key: string, live: boolean): boolean {
+    if (live) notesSeenLive.add(key);
+    return expandedResults[key] ?? notesSeenLive.has(key);
+  }
+  /** Notes cut off by the width of the thread, by key: those get a chevron
+   *  to open them. Measured, so a note that fits shows no control. */
+  let notesCut = $state<Record<string, boolean>>({});
+  function measureCut(el: HTMLElement, key: string) {
+    let current = key;
+    const measure = () => {
+      const cut = el.scrollWidth > el.clientWidth + 1;
+      if (notesCut[current] !== cut) notesCut[current] = cut;
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return {
+      update(next: string) {
+        current = next;
+        measure();
+      },
+      destroy() {
+        ro.disconnect();
+      },
+    };
+  }
 
   function turnSegments(idx: number): AssistantMsg[] {
     const out: AssistantMsg[] = [];
@@ -1184,22 +1430,16 @@
     }
     return out;
   }
-  /** The turn's prose and activity groups, in order. */
-  function blocksOf(segs: AssistantMsg[], keyId: string): TurnBlock<ToolMsg>[] {
-    return turnBlocks(segs, keyId, shownTools, (tools) => nonCoworkerTools(tools).length > 0);
+  /** The turn's notes, prose and activity groups, in order. */
+  function blocksOf(segs: AssistantMsg[], keyId: string, ended: boolean): TurnBlock<ToolMsg>[] {
+    return turnBlocks(segs, keyId, shownTools, ended);
   }
-  /** The calls a user should see. A call that failed and was retried is the
-   *  employee's business — nothing the user can act on — so it is left out,
-   *  except in developer mode, where someone is debugging. */
+  /** The calls a user sees: every one, failed ones too — a failure is one
+   *  red line the reader can open, never a gap in the work. */
   function shownTools(tools: ToolMsg[] | undefined): ToolMsg[] {
-    const all = nonCoworkerTools(tools);
-    return $devMode ? all : all.filter((t) => t.status !== 'error');
+    return nonCoworkerTools(tools);
   }
-  /** A note's row shows plain words; markdown marks are for the answer. */
-  function plainNote(line: string): string {
-    return line.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
-  }
-  /** The command a call ran, shown as code under its row. */
+  /** The command a call ran, shown as code when its row opens. */
   function shellCommand(tool: ToolMsg): string {
     const r = (tool.request ?? {}) as Record<string, unknown>;
     return typeof r.command === 'string' ? r.command : '';
@@ -1242,9 +1482,7 @@
     return (tool.toolId && fullOutputs[tool.toolId]) || tool.response;
   }
 
-  // Friendly tool-use display (mirrors the NeboLoop web timeline). The backend
-  // (chat_dispatch.rs humanize_tool_call) supplies `label` (gerund) + `outcome`
-  // (past-tense); these helpers turn them into a doer-flavored work line.
+  // A group's work line: how long its calls took.
   function fmtDuration(ms: number): string {
     return ms < 1000 ? '<1s' : `${Math.round(ms / 1000)}s`;
   }
@@ -1252,33 +1490,24 @@
     const total = tools.reduce((s, t) => s + (t.durationMs ?? 0), 0);
     return total > 0 ? fmtDuration(total) : '';
   }
-  /** What a step did, in the past tense — the same words for a step that
-   *  failed, so the summary line groups it with its siblings; the row and
-   *  the summary mark the failure separately. */
-  function stepOutcome(tool: ToolMsg): string {
-    const resource = (tool.request as { resource?: string } | undefined)?.resource;
-    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: resource || tool.name } });
-  }
-  function workLineLabel(tools: ToolMsg[]): string {
-    const running = tools.filter((t) => t.status === 'running');
-    if (running.length) {
-      const cur = running[running.length - 1];
-      return `${cur.label ?? $t('chat.workingWithTool', { values: { name: cur.name } })}…`;
+  /** The call running now in the live turn, for the working line: the
+   *  same words its row says. */
+  const runningCall = $derived.by(() => {
+    if (!isLoading) return null;
+    for (let i = groupedMessages.length - 1; i >= 0; i--) {
+      const m = groupedMessages[i];
+      if (m.type === 'user') return null;
+      if (m.type !== 'assistant') continue;
+      const tools = nonCoworkerTools(m.tools);
+      for (let j = tools.length - 1; j >= 0; j--) if (tools[j].status === 'running') return callLine(tools[j], $t);
     }
-    // Group completed steps by outcome, preserving first-seen order.
-    const groups = new Map<string, number>();
-    for (const t of tools) groups.set(stepOutcome(t), (groups.get(stepOutcome(t)) ?? 0) + 1);
-    const parts = [...groups.entries()].map(([label, n], i) => {
-      let s = label;
-      if (n > 1) {
-        const m = label.match(/^(\w+) an? (.+)$/);
-        s = m ? `${m[1]} ${n} ${m[2]}${m[2].endsWith('s') ? '' : 's'}` : `${label} ×${n}`;
-      }
-      return i === 0 ? s : s.charAt(0).toLowerCase() + s.slice(1);
-    });
-    const line = parts.slice(0, 3).join(', ');
-    return groups.size > 3 ? `${line}, ${$t('chat.moreCount', { values: { count: groups.size - 3 } })}` : line;
-  }
+    return null;
+  });
+  // A question waits on the owner's words: the composer is where he
+  // answers it.
+  const answering = $derived(isLoading && messages.some((m) => m.type === 'ask' && m.response == null && !m.cancelled && takesWords(m.widgets)));
+  /** The working line's words: the running call's, else the turn's status. */
+  const workingLine = $derived(runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working'));
 
   // Tools now live on the assistant message that ran them (msg.tools[]), so there
   // are no sibling tool messages to collapse — the rendered list IS the message
@@ -1358,7 +1587,7 @@
         {#snippet shareList()}
           <ul class="dropdown-content menu z-[55] mt-1 w-56 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
             {#each shareMenu as entry, i (i)}
-              <li><button onclick={() => shareVia(entry.say)}>{entry.label}</button></li>
+              <li><button onclick={() => shareVia(entry)}>{entry.label}</button></li>
             {/each}
           </ul>
         {/snippet}
@@ -1423,8 +1652,9 @@
 
 
         <!-- ONE monitor icon: Teach a task. The bot records where it can,
-             its host's own screen or its computer. On a host bot in
-             Developer mode the same icon also offers the virtual computer. -->
+             its host's own screen or its computer. On a cloud bot (and a host
+             bot in Developer mode) the same icon also opens the computer just
+             to look at it: opening never records. -->
         {#if teachChoice && !teachActive}
           <div class="dropdown dropdown-end" data-teach-icon>
             <div
@@ -1438,7 +1668,7 @@
             >{@render computerIcon()}</div>
             <ul class="dropdown-content menu z-[55] mt-1 w-56 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
               <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); teach(); }}>{$t('chatInput.teachTask')}</button></li>
-              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{$t('chat.openVirtualComputer')}</button></li>
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{$ownScreen ? $t('chat.openVirtualComputer') : $t('chat.openComputer')}</button></li>
             </ul>
           </div>
         {:else}
@@ -1551,6 +1781,7 @@
       {#if emptyDesc}
         <div class="text-sm text-base-content/70 text-center max-w-[320px] leading-relaxed">{emptyDesc}</div>
       {/if}
+      {#if emptyActions}{@render emptyActions()}{/if}
     </div>
   {:else}
   <div class="flex-1 relative min-h-0">
@@ -1575,80 +1806,127 @@
       </div>
     {/if}
 
+    <!-- A note: text the employee wrote between its calls. One line, cut
+         with an ellipsis, the whole of it in the tooltip; opened, every
+         word of it. A note being read as it streams stays open. -->
+    {#snippet noteLine(key: string, text: string, live: boolean)}
+      {@const open = noteOpen(key, live)}
+      {@const cut = !!notesCut[key] || text.includes('\n')}
+      <div class="chat-note">
+        {#if open}
+          <p dir="auto" class="chat-note-full">{noteText(text, false)}</p>
+        {:else}
+          <p dir="auto" class="chat-note-line" title={noteText(text)} use:measureCut={key}>{noteText(text)}</p>
+        {/if}
+        {#if open || cut}
+          <button
+            type="button"
+            class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/60 hover:text-base-content transition-transform {open ? 'rotate-90' : ''}"
+            aria-expanded={open}
+            aria-label={open ? $t('chat.noteLess') : $t('chat.noteMore')}
+            title={open ? $t('chat.noteLess') : $t('chat.noteMore')}
+            onclick={() => (expandedResults[key] = !open)}
+          >&rsaquo;</button>
+        {/if}
+      </div>
+    {/snippet}
+
     <!-- One activity group: notes and tool calls in order, folded under a
          summary line until it is clicked, live or not. Rows open on click;
          a page's address is a link. -->
-    {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
+    {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean, unkept: boolean)}
       {@const open = activityOpen[keyId] ?? false}
       {@const rows = open ? steps : []}
-      <div class="max-w-[640px] my-1.5">
+      <!-- What the run has made so far, shown the moment each call ends,
+           until the turn's own attachments carry it at the run's end. -->
+      {@const made = unkept ? artifactsToAttachments(tools.flatMap((tl) => (tl.status === 'success' ? (tl.files ?? []) : []))) : []}
+      {@const failedCount = tools.filter((tl) => tl.status === 'error').length}
+      <div class="chat-activity max-w-[640px]">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-xs text-base-content/70 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/90 transition-colors"
+          class="flex max-w-full min-w-0 items-center gap-1.5 whitespace-nowrap text-xs text-base-content/70 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/90 transition-colors"
           aria-expanded={open}
           onclick={() => (activityOpen[keyId] = !open)}
         >
-          <span class="truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
+          <span class="min-w-0 truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? groupSummary(tools, $t) : $t('chat.working')}</span>
+          {#if failedCount}<span class="shrink-0 text-error">· {$t('chat.call.failedCount', { values: { count: failedCount } })}</span>{/if}
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
+
+        {#if made.length}
+          <div class="flex flex-wrap items-center gap-2 mt-1.5">
+            {#each made as att (att.url)}
+              {@const attType = getAttachmentType(att.mimeType)}
+              {#if attType === 'image'}
+                <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
+                  <img src={attSrc(att)} alt={att.filename} class="h-20 w-20 rounded-lg border border-base-content/15 object-cover" loading="lazy" />
+                </button>
+              {:else if attType === 'video'}
+                <video src={firstFrame(attSrc(att))} controls preload="metadata" class="block w-auto h-auto max-w-full max-h-[60vh] rounded-lg border border-base-content/15 bg-base-200">
+                  <track kind="captions" />
+                </video>
+              {:else if attType === 'audio'}
+                <audio src={attSrc(att)} controls preload="metadata" class="h-10 max-w-[240px]"></audio>
+              {/if}
+            {/each}
+          </div>
+        {/if}
 
         {#if rows.length}
           <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
             {#each rows as step (step.key)}
               {#if step.kind === 'note'}
-                {@const latest = step.lines[step.lines.length - 1]}
-                {@const label = noteLabel(latest)}
-                {@const expandable = step.lines.length > 1 || label !== latest.trim()}
-                {@const isExpanded = !!expandedResults[step.key]}
                 <div class="px-3 py-2 text-xs">
-                  <button
-                    type="button"
-                    class="flex w-full items-center gap-1.5 text-start bg-transparent border-none p-0 text-base-content/70 {expandable ? 'cursor-pointer hover:text-base-content/90' : 'cursor-default'}"
-                    disabled={!expandable}
-                    aria-expanded={expandable ? isExpanded : undefined}
-                    onclick={() => toggleResult(step.key)}
-                  >
-                    <span class="truncate flex-1">{plainNote(label)}</span>
-                    {#if expandable}<span class="shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
-                  </button>
-                  {#if expandable && isExpanded}
-                    <div class="mt-1.5 flex flex-col gap-1 text-base-content/70">
-                      {#each step.lines as line}<p class="m-0">{plainNote(line)}</p>{/each}
-                    </div>
-                  {/if}
+                  {@render noteLine(step.key, step.lines.join('\n\n'), false)}
                 </div>
               {:else}
                 {@const tool = step.tool}
-                {@const meta = stepMeta(tool.request)}
+                {@const line = callLine(tool, $t)}
+                {@const result = resultLine(tool, $t)}
                 {@const expandable = canExpand(tool)}
                 {@const isExpanded = !!expandedResults[step.key]}
                 {@const cmd = shellCommand(tool)}
+                {@const failed = tool.status === 'error'}
                 <div class="px-3 py-2 text-xs">
                   <div class="flex items-center gap-2 min-w-0">
                     {#if tool.status === 'running'}
                       <svg width="12" height="12" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
+                    {:else if failed}
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="text-error shrink-0" aria-label={$t('chat.failed')}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     {/if}
                     <button
                       type="button"
-                      class="flex min-w-0 items-center gap-2 text-start bg-transparent border-none p-0 {expandable ? 'cursor-pointer' : 'cursor-default'} {meta?.href ? 'shrink-0' : 'flex-1'}"
+                      class="call-row-label {failed ? 'text-error' : 'text-base-content/80'} {expandable ? 'cursor-pointer' : 'cursor-default'}"
                       disabled={!expandable}
-                      aria-expanded={expandable ? isExpanded : undefined}
+                      title={line.label}
                       onclick={() => toggleResult(step.key, tool)}
-                    >
-                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ms-1">{tool.statusText}</span>{/if}</span>
-                      {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
-                      {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
-                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{tool.name}</span>{/if}
-                      {#if tool.durationMs}<span class="text-base-content/70 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
-                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
-                    </button>
-                    {#if meta?.href}
-                      <a href={meta.href} target="_blank" rel="noopener noreferrer" class="truncate text-primary underline flex-1" title={meta.href}>{meta.text}</a>
-                      {#if expandable}
-                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key, tool)}>&rsaquo;</button>
-                      {/if}
+                    >{line.label}</button>
+                    {#if line.href}
+                      <a href={line.href} target="_blank" rel="noopener noreferrer" class="call-row-subject text-primary underline" title={line.title}>{line.subject}</a>
+                    {:else}
+                      <button
+                        type="button"
+                        class="call-row-subject font-mono text-base-content/70 {expandable ? 'cursor-pointer' : 'cursor-default'}"
+                        disabled={!expandable}
+                        title={line.title || undefined}
+                        onclick={() => toggleResult(step.key, tool)}
+                      >{line.subject}</button>
+                    {/if}
+                    {#if $devMode}<span class="font-mono text-base-content/50 shrink-0">{tool.name}</span>{/if}
+                    {#if tool.durationMs}<span class="text-base-content/60 shrink-0 tabular-nums">{fmtDuration(tool.durationMs)}</span>{/if}
+                    {#if expandable}
+                      <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key, tool)}>&rsaquo;</button>
                     {/if}
                   </div>
+                  {#if result}
+                    <button
+                      type="button"
+                      class="call-row-result {failed ? 'text-error' : 'text-base-content/60'} {expandable ? 'cursor-pointer' : 'cursor-default'}"
+                      disabled={!expandable}
+                      title={result}
+                      onclick={() => toggleResult(step.key, tool)}
+                    ><span class="shrink-0" aria-hidden="true">⎿</span><span class="min-w-0 truncate">{result}</span></button>
+                  {/if}
                   {#if isExpanded}
                     <div class="mt-2 flex flex-col gap-2">
                   {#if researchState(tool)}
@@ -1746,29 +2024,16 @@
                       </div>
                     {/each}
                   {/if}
-                      {#if cmd}
-                        <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
-                          <div class="text-[11px] font-mono text-base-content/50 mb-1">bash</div>
-                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{cmd}</pre>
+                      {#if !searchPayload(tool) && !researchState(tool) && !runReceipt(tool)}
+                        <div class="call-detail">
+                          <div class="call-detail-head">{$t('chat.request')}</div>
+                          <pre class="call-detail-body">{cmd || JSON.stringify(tool.request, null, 2)}</pre>
                         </div>
-                        {#if tool.response}
-                          <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
-                            <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{toolResponse(tool)}</pre>
-                          </div>
-                        {/if}
-                      {:else if !searchPayload(tool) && !researchState(tool) && !runReceipt(tool)}
-                        <div class="rounded-lg border border-base-300 bg-base-100 overflow-y-auto max-h-[200px]">
-                          <div class="px-3 pt-2 pb-1.5">
-                            <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.request')}</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{JSON.stringify(tool.request, null, 2)}</pre>
-                          </div>
-                          {#if tool.response}
-                            <div class="px-3 pt-1.5 pb-2 border-t border-base-300">
-                              <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
-                              <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{toolResponse(tool)}</pre>
-                            </div>
-                          {/if}
+                      {/if}
+                      {#if tool.response && !searchPayload(tool)}
+                        <div class="call-detail {failed ? 'call-detail-error' : ''}">
+                          <div class="call-detail-head">{$t('chat.output')}</div>
+                          <pre class="call-detail-body">{toolResponse(tool)}</pre>
                         </div>
                       {/if}
                     </div>
@@ -1851,10 +2116,10 @@
                       </button>
                     {:else if attType === 'video'}
                       <video
-                        src={attSrc(att)}
+                        src={firstFrame(attSrc(att))}
                         controls
                         preload="metadata"
-                        class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
+                        class="block w-auto h-auto max-w-full max-h-[60vh] rounded-lg border border-base-content/15 bg-base-200"
                       >
                         <track kind="captions" />
                       </video>
@@ -1913,6 +2178,21 @@
           <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-s-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
         </details>
 
+      {:else if msg.type === 'ask' && isOpenQuestion(msg.widgets)}
+        <!-- An open question is the employee's message: the owner answers
+             it in the composer, like any reply. Skip lets the work go on
+             without an answer. -->
+        <div class="max-w-[640px] mt-3">
+          <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none">
+            {@html renderMarkdown(msg.prompt)}
+          </div>
+          {#if msg.response === SKIP_VALUE}
+            <p class="mt-1 text-xs text-base-content/50">{$t('common.skipped')}</p>
+          {:else if msg.response == null && !msg.cancelled && isLoading}
+            <button type="button" class="mt-1 text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => onasksubmit?.(msg.requestId, SKIP_VALUE)}>{$t('common.skip')}</button>
+          {/if}
+        </div>
+
       {:else if msg.type === 'ask'}
         <div class="max-w-[640px] mt-3">
           <AskWidget
@@ -1927,6 +2207,26 @@
           {#if !msg.response && askQueueLength > 0}
             <p class="mt-1.5 text-xs text-base-content/50">{$t('chat.moreQuestionsWaiting', { values: { count: askQueueLength } })}</p>
           {/if}
+        </div>
+
+      {:else if msg.type === 'runError'}
+        <!-- Where a run stopped on an error: it stays in the thread. -->
+        {@const link = trailingLink(msg.content)}
+        <div class="chat-run-error" role="note">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 mt-0.5 text-error" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div class="min-w-0">
+            <div class="font-medium text-error">{$t('chat.runStopped')}</div>
+            <div class="chat-run-error-text">
+              {#if msg.content.includes('USAGE_LIMIT_EXCEEDED')}
+                {$t('chat.outOfBalance')}
+              {:else if link}
+                {link.text} <a class="link" href={link.url} target="_blank" rel="noopener noreferrer">{link.label}</a>
+              {:else}
+                {msg.content}
+              {/if}
+            </div>
+          </div>
+          {#if msg.time}<span class="ms-auto shrink-0 text-base-content/50 font-mono">{msg.time}</span>{/if}
         </div>
 
       {:else if msg.type === 'compactBoundary'}
@@ -1945,10 +2245,10 @@
           {@const lastIdx = idx + segs.length - 1}
           {@const lastOrigIdx = originalIndices[lastIdx]}
           {@const nextGroup = groupedMessages[lastIdx + 1]}
-          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary') : !isLoading}
+          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary' || nextGroup.type === 'runError') : !isLoading}
           {@const keyId = msg.id ?? `m${origIdx}`}
-          {@const blocks = blocksOf(segs, keyId)}
-          {@const answer = turnProse(blocks)}
+          {@const blocks = blocksOf(segs, keyId, isTurnEnd)}
+          {@const answer = turnText(blocks)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
           <div class="max-w-[640px] mt-3">
             {#if msg.delegateAgentName}
@@ -1960,7 +2260,9 @@
             {/if}
             {#each blocks as block, bi (block.key)}
               {#if block.kind === 'group'}
-                {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1)}
+                {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1, !turnAttachments.length)}
+              {:else if block.kind === 'note'}
+                {@render noteLine(block.key, block.text, !isTurnEnd)}
               {:else}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
@@ -1969,15 +2271,12 @@
               {/if}
             {/each}
             {#each segs.flatMap((sg) => coworkerEvents(sg.tools)) as ev, evIdx (evIdx)}
-              <a
-                href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
-                class="flex items-center justify-center gap-1.5 my-2.5 text-xs text-base-content/60 no-underline {ev.threadKey ? 'hover:text-base-content transition-colors' : ''}"
-                title={ev.threadKey ? $t('coworkerThread.open') : undefined}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
-                <span>{$t('chat.messagedCoworker')}</span>
-                <span class="font-medium text-base-content/80">{ev.to}</span>
-              </a>
+              <HandoffLine
+                to={ev.to ?? ''}
+                ask={ev.text ?? ''}
+                handoffId={ev.handoffId ?? ''}
+                fallbackHref={ev.threadKey ? cwHref(ev.threadKey) : undefined}
+              />
             {/each}
             {#each segs.flatMap((sg) => consentLines(sg.tools)) as consent, cIdx (cIdx)}
               <ConsentChip {consent} />
@@ -2000,10 +2299,10 @@
                   </button>
                 {:else if attType === 'video'}
                   <video
-                    src={attSrc(att)}
+                    src={firstFrame(attSrc(att))}
                     controls
                     preload="metadata"
-                    class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
+                    class="block w-auto h-auto max-w-full max-h-[60vh] rounded-lg border border-base-content/15 bg-base-200"
                   >
                     <track kind="captions" />
                   </video>
@@ -2085,17 +2384,24 @@
     <!-- Live working indicator: shown for the WHOLE run,
          including while the reply text is streaming or a tool grinds after the
          last text chunk — not only before the first assistant message. -->
-    {#if isLoading && groupedMessages.length > 0}
-      <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
-        <span class="loading loading-spinner loading-xs text-primary"></span>
-        <span class="text-sm text-base-content/70 animate-pulse">{activityStatus || $t('chat.working')}</span>
+    {#each chatNotices as n (n.key)}
+      <div class="bg-notice {n.kind === 'failed' ? 'bg-notice-failed' : ''}">
+        {$t(`background.notice.${n.kind}`, { values: { what: n.task.title || $t('background.heartbeat') } })}
+      </div>
+    {/each}
+    <!-- A conversation with a composer shows its working line above the
+         composer (BackgroundStatus); one watched from outside shows it here. -->
+    {#if readOnly && isLoading && groupedMessages.length > 0}
+      <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2 min-w-0">
+        <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
+        <span class="min-w-0 truncate text-sm text-base-content/70 animate-pulse" title={workingLine}>{workingLine}</span>
       </div>
     {/if}
-    {#if !isLoading && helpers.length > 0}
+    {#if readOnly && !isLoading && helpers.length > 0}
       <div class="helper-status">
         <span class="loading loading-dots loading-xs"></span>
         <span>{helpers.length === 1
-          ? $t('chat.helperWorking', { values: { what: helpers[0].activity || helpers[0].description } })
+          ? $t('chat.helperWorking', { values: { what: (helpers[0].call ? callWords(helpers[0].call, $t) : helpers[0].activity) || helpers[0].description } })
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
       </div>
     {/if}
@@ -2164,22 +2470,45 @@
   {/if}
 
   <!-- Teach-a-task record bar -->
-  {#if teachActive || teachStarting || teachError}
+  {#if teachActive || teachStarting || teachError || teachNotice}
     <div class="max-w-3xl mx-auto w-full shrink-0 mb-2">
-      <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : 'bg-error/10'}">
+      <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : teachActive || teachStarting ? 'bg-error/10' : 'bg-base-200'}">
         {#if teachStarting}
           <span class="loading loading-spinner loading-xs"></span>
           <span class="text-sm">{$t('chat.teachStarting')}</span>
         {:else if teachActive}
           <span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
+          <!-- The owner's narration: on only while this records. -->
+          {#if narratorState?.stage === 'recording'}
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs btn-square"
+              title={narratorState.muted ? $t('chat.teachUnmute') : $t('chat.teachMute')}
+              aria-label={narratorState.muted ? $t('chat.teachUnmute') : $t('chat.teachMute')}
+              aria-pressed={narratorState.muted}
+              onclick={() => narrator?.mute(!narratorState?.muted)}
+              data-teach-mic
+            >
+              {#if narratorState.muted}<MicOff class="w-3.5 h-3.5 text-base-content/50" />{:else}<Mic class="w-3.5 h-3.5 text-error" />{/if}
+            </button>
+            <progress class="progress progress-error w-10" value={Math.round(narratorState.level * 100)} max="100" aria-label={$t('chatInput.clipLevel')}></progress>
+          {:else if narratorState?.notice}
+            <span class="inline-flex items-center gap-1 text-xs text-base-content/60 shrink-0" title={$t('chat.teachNoMic')}><MicOff class="w-3.5 h-3.5" /><span class="max-md:hidden">{$t('chat.teachNoMic')}</span></span>
+          {/if}
           <span class="text-sm">{$t('chat.watchingAndLearning', { values: { name: agentName } })}</span>
-          <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}</span>
+          <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}{#if teachCap} / {fmtTeach(teachCap)}{/if}</span>
+          {#if teachEndingSoon(teachSeconds, teachCap)}
+            <span class="text-xs text-warning truncate" role="status" data-teach-ending>{$t('chat.teachEndingSoon', { values: { left: fmtTeach(Math.max(0, teachCap - teachSeconds)) } })}</span>
+          {/if}
           {#if teachLocal}
             <span class="text-xs text-base-content/60 truncate max-md:hidden">{$t('chat.teachLocalHint')}</span>
           {/if}
-          <button type="button" class="btn btn-error btn-xs ms-auto normal-case" onclick={stopTeach}>
+          <button type="button" class="btn btn-error btn-xs ms-auto normal-case" onclick={() => stopTeach()}>
             {$t('chat.stopRecording')}
           </button>
+        {:else if teachNotice && !teachError}
+          <span class="text-sm">{teachNotice}</span>
+          <button type="button" class="btn btn-ghost btn-xs ms-auto" onclick={() => (teachNotice = '')}>✕</button>
         {:else}
           <span class="text-sm">{teachError}</span>
           {#if teachNeedsPermission}
@@ -2195,12 +2524,13 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
+    <BackgroundStatus {agentId} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} />
     <ChatComposer
       {agentName}
       {agentId}
       {threadId}
       {sessionId}
-      {placeholder}
+      placeholder={answering ? $t('chat.typeYourAnswer') : placeholder}
       {allAgents}
       onsend={handleSend}
       {onstop}
@@ -2305,6 +2635,31 @@
                 </li>
               {/each}
             {/if}
+            {#if pathHistoryItems.length > 0}
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('chat.fileHistory')}</span></li>
+              <li>
+                <button
+                  class="flex items-center justify-between gap-2 {activeHistoryId == null ? 'bg-base-200 font-medium' : ''}"
+                  onclick={() => { activeHistoryId = null; (document.activeElement as HTMLElement | null)?.blur(); }}
+                >
+                  <span class="text-xs">{$t('chat.fileNow')}</span>
+                </button>
+              </li>
+              {#each pathHistoryItems as h (h.id)}
+                <li>
+                  <button
+                    class="flex items-center justify-between gap-2 {activeHistoryId === h.id ? 'bg-base-200 font-medium' : ''}"
+                    onclick={() => { activeHistoryId = h.id; (document.activeElement as HTMLElement | null)?.blur(); }}
+                  >
+                    <span class="flex flex-col items-start min-w-0">
+                      <span class="text-xs font-mono">{new Date(h.capturedAt * 1000).toLocaleString()}</span>
+                      {#if h.reason === 'deleted'}<span class="text-xs text-base-content/70">{$t('chat.beforeDeleted')}</span>{/if}
+                    </span>
+                    <span class="text-xs text-base-content/50 font-mono shrink-0">{formatFileSize(h.sizeBytes)}</span>
+                  </button>
+                </li>
+              {/each}
+            {/if}
           </ul>
         </div>
       {:else}
@@ -2333,6 +2688,13 @@
           title={$t('chat.makeVersionCurrent')}
         >{$t('chat.restore')}</button>
       {/if}
+      {#if activeHistory}
+        <button
+          class="py-1 px-2 rounded-md text-xs font-medium cursor-pointer bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 border-none"
+          onclick={() => { if (activeHistory) void restoreHistory(activeHistory); }}
+          title={$t('chat.restoreEarlierVersion')}
+        >{$t('chat.restore')}</button>
+      {/if}
       {#if activeArtifact?.url}
         <div class="dropdown dropdown-end shrink-0">
           <button
@@ -2347,7 +2709,7 @@
               <a
                 href={backendUrl(activeArtifact.url)}
                 download={activeArtifact.title}
-                onclick={(e) => { downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title); (document.activeElement as HTMLElement | null)?.blur(); }}
+                onclick={(e) => { void downloadActive(e); (document.activeElement as HTMLElement | null)?.blur(); }}
                 class="text-xs"
               >{$t('common.download')}</a>
             </li>
@@ -2384,12 +2746,15 @@
       {#if paneView === 'flows'}
         {#if flowsPane}{@render flowsPane()}{/if}
       {:else if activeArtifact?.url}
-        <!-- Key on documentId:version so a new version re-mounts the viewer in
-             place (and the version-specific URL also defeats the browser cache). -->
-        {#key `${activeArtifact.documentId}:${activeArtifact.version}:${viewSource}`}
+        <!-- Keyed per document:version (see workViewerKey). -->
+        {#key workViewerKey}
           <WorkViewer
-            url={activeArtifact.url}
+            url={shownUrl}
             title={activeArtifact.title}
+            documentId={activeArtifact.documentId}
+            version={activeArtifact.version}
+            {agentId}
+            sessionKey={chatSessionKey || undefined}
             renderHtml={renderMarkdown}
             oncontentclick={handleWorkMentionClick}
             sourceView={viewSource}

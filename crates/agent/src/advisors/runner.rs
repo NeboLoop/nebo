@@ -152,6 +152,7 @@ async fn run_single_advisor(
         system: system_prompt,
         model: String::new(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,

@@ -207,6 +207,7 @@ impl EventDispatcher {
                                 detail,
                                 &sub.agent_source,
                                 sub.emit_sources.clone(),
+                                None,
                             )
                             .await
                         {

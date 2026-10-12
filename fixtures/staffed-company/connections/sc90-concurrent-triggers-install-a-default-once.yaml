@@ -1,0 +1,9 @@
+id: sc90-concurrent-triggers-install-a-default-once
+name: "SC90 — Concurrent triggers install a default once"
+description: |
+  A second pass asked for while one runs starts nothing, a code door is
+  refused while the pass holds the code, and a request that needs the
+  default waits for that install and then has it; the .napp is fetched once.
+target_component: staffed-company
+proof: staffed_proof::connections::concurrent_triggers_install_a_default_once
+conversation: []

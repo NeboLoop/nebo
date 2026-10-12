@@ -48,6 +48,9 @@ async fn say(ws: &mut Socket, prompt: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn setting_a_goal_starts_a_turn_and_showing_it_does_not() {
+    if !common::in_own_process().await {
+        return;
+    }
     let server = TestServer::boot().await;
     let (mut ws, _) = connect_async(server.ws_url())
         .await

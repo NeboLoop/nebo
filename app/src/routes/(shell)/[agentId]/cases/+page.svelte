@@ -9,6 +9,9 @@
   import { t } from 'svelte-i18n';
   import { listCases, getCase } from '$lib/api/nebo';
   import type { CaseSummary, CaseDetail } from '$lib/api/neboComponents';
+  import HandoffHeader from '$lib/components/handoffs/HandoffHeader.svelte';
+  import { caseKey } from '$lib/chat/sessionKey';
+  import { loadIntelligence, modelName, type PackRow } from '$lib/models/speeds';
 
   let cases = $state<CaseSummary[]>([]);
   let detail = $state<CaseDetail | null>(null);
@@ -30,6 +33,10 @@
             ? 'badge-error'
             : 'badge-ghost';
   const receiptClass = (s: string) => (s === 'completed' ? 'badge-success' : s === 'pending' ? 'badge-warning' : 'badge-error');
+
+  // Packs name the model a turn ran on; a model string never shows raw.
+  let packs = $state<PackRow[]>([]);
+  loadIntelligence().then((i) => { packs = i?.packs ?? []; });
 
   async function load() {
     loading = true;
@@ -53,6 +60,12 @@
 
   $effect(() => {
     if (agentId) void load();
+  });
+
+  // A link to one case (`?case=<id>`, a hand-off's assignment) opens it.
+  const linkedCase = $derived($page.url.searchParams.get('case') ?? '');
+  $effect(() => {
+    if (linkedCase) void open(linkedCase);
   });
 </script>
 
@@ -114,6 +127,7 @@
   {#if detail}
     {@const c = detail.case}
     <div class="card bg-base-100 shadow-sm">
+      <HandoffHeader sessionKey={caseKey(agentId, c.id)} />
       <div class="card-body gap-3 p-4">
         <h2 class="card-title text-base">
           <span class="font-mono">{c.id}</span>
@@ -153,7 +167,7 @@
                 <span class="font-mono">{turn.id.slice(0, 8)}</span>
                 <span class="badge badge-sm {stateClass(turn.state)}">{turn.state}</span>
                 <span class="text-base-content/60">{when(turn.started_at)} → {when(turn.ended_at)}</span>
-                {#if turn.model}<span class="badge badge-sm badge-ghost">{$t('cases.model')}: {turn.model}</span>{/if}
+                {#if turn.model}<span class="badge badge-sm badge-ghost">{$t('cases.model')}: {modelName(turn.model, packs, $t)}</span>{/if}
               </div>
               {#if turn.output}
                 <pre class="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-base-content/80">{turn.output}</pre>

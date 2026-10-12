@@ -39,7 +39,7 @@ impl HelperDoor {
         for name in names {
             match loader.get(name, scope).await {
                 Some(skill) if skill.enabled => {
-                    let content = loader.expand_template(&skill, Some(&self.harness.store));
+                    let content = loader.expand_template(&skill, Some(&self.harness.store), agent_id);
                     if !content.is_empty() {
                         out.push((name.clone(), content));
                     }
@@ -131,6 +131,7 @@ fn parent_turn(req: &SpawnRequest) -> TurnRequest {
             origin: req.seat.origin,
             door: types::permissions::Door::Chat,
             mode: None,
+            narrow: None,
             ceiling: None,
             cwd,
             seed_taint: req.seat.taint.clone(),
@@ -203,7 +204,7 @@ impl SubAgentOrchestrator for HelperDoor {
             let turn = parent_turn(&parent);
             let running = self
                 .helpers
-                .list(&turn.session_key)
+                .list(Some(&turn.session_key))
                 .iter()
                 .any(|h| h.task_id == task_id && h.running);
             let said = self
@@ -227,7 +228,7 @@ impl SubAgentOrchestrator for HelperDoor {
     fn list_active(&self, caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
         let listed = self
             .helpers
-            .list(caller)
+            .list(Some(caller))
             .into_iter()
             .map(|h| (h.task_id, h.description, if h.running { "running" } else { "finished" }.to_string()))
             .collect();
@@ -486,6 +487,7 @@ mod tests {
                 agent_id: &child.seat.agent_id,
                 origin: child.seat.origin,
                 mode: child.seat.mode,
+                narrow: child.seat.narrow,
                 ceiling: child.seat.ceiling.as_ref(),
                 cwd: child.seat.cwd.as_deref(),
             },

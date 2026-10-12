@@ -75,6 +75,8 @@ pub fn child_request(
         // The parent's mode, including a run override such as Plan; the
         // ceiling carries the rest of its grant.
         mode: parent.grant.map(|g| g.mode).or(p.mode),
+        // What the parent carries to what it starts (also on the ceiling).
+        narrow: parent.grant.and_then(|g| g.narrow).or(p.narrow),
         ceiling,
         cwd,
         seed_taint,
@@ -108,7 +110,9 @@ pub fn child_request(
             mention_briefing: None,
         },
         cancel: parent.cancel.clone(),
-        progress: None,
+        // Its own progress, so its calls' waits are the ones its collector
+        // reads (`collect::collect`).
+        progress: Some(crate::RunProgress::fresh()),
     }
 }
 
@@ -125,6 +129,7 @@ pub(crate) mod tests {
             origin: tools::Origin::User,
             door: Door::Chat,
             mode: None,
+            narrow: None,
             ceiling: None,
             cwd: Some("/work/books".into()),
             seed_taint: vec![ProvenanceClass::Web],
@@ -147,6 +152,7 @@ pub(crate) mod tests {
             ceiling: None,
             run_folders: vec!["/work/books".into()],
             fence: Some(vec!["/work/books".into()]),
+            narrow: None,
         }
     }
 
@@ -235,6 +241,27 @@ pub(crate) mod tests {
         };
         let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
         assert_eq!(req.seat.mode, Some(Mode::Plan));
+    }
+
+    /// A helper started in a conversation runs in that conversation's mode,
+    /// never looser, and carries what the conversation carries to what it
+    /// starts in turn (a workflow run, a hand-off).
+    #[test]
+    fn a_child_carries_what_its_conversation_carries() {
+        let seat = parent_seat();
+        let grant = Grant { narrow: Some(Mode::Plan), ..parent_grant(Mode::Plan) };
+        let parent = Parent {
+            session_key: "agent:bookkeeper:web",
+            seat: &seat,
+            grant: Some(&grant),
+            run_taint: &[],
+            cancel: CancellationToken::new(),
+            platform: None,
+        };
+        let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
+        assert_eq!(req.seat.mode, Some(Mode::Plan));
+        assert_eq!(req.seat.narrow, Some(Mode::Plan));
+        assert_eq!(ceiling_of(&req).narrow, Some(Mode::Plan), "its ceiling carries it too");
     }
 
     /// A helper works at its parent's speed unless it was given its own

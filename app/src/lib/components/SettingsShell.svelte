@@ -11,7 +11,7 @@
   import Zap from 'lucide-svelte/icons/zap';
   import Puzzle from 'lucide-svelte/icons/puzzle';
   import Key from 'lucide-svelte/icons/key';
-  import Cpu from 'lucide-svelte/icons/cpu';
+  import Boxes from 'lucide-svelte/icons/boxes';
   import Lock from 'lucide-svelte/icons/lock';
   import Cable from 'lucide-svelte/icons/cable';
   import Import from 'lucide-svelte/icons/import';
@@ -58,7 +58,7 @@
     { id: 'updates', path: '/settings/updates', label: 'settings.navItems.updates', icon: RefreshCw },
     null,
     { id: 'providers', path: '/settings/providers', label: 'settings.navItems.providers', icon: Key, devOnly: true },
-    { id: 'routing', path: '/settings/routing', label: 'settings.navItems.routing', icon: Cpu, devOnly: true },
+    { id: 'intelligence-packs', path: '/settings/intelligence-packs', label: 'settings.navItems.intelligencePacks', icon: Boxes, devOnly: true },
     { id: 'secrets', path: '/settings/secrets', label: 'settings.navItems.secrets', icon: Lock, devOnly: true },
     { id: 'events', path: '/settings/events', label: 'settings.navItems.systemEvents', icon: Radio, devOnly: true },
     null,

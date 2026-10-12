@@ -572,6 +572,7 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     let bot_id = config::read_bot_id().unwrap_or_default();
 
     let resp = tls::http_client()
+        .user_agent(types::constants::USER_AGENT)
         .build()
         .map_err(|e| NeboError::Internal(format!("janus usage fetch: {e}")))?
         .get(format!("{janus_url}/v1/usage"))
@@ -716,19 +717,17 @@ pub(crate) fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::
 }
 
 /// GET /api/v1/neboai/janus/usage — Janus usage stats.
-/// Returns cached data if available, otherwise fetches directly from Janus.
+/// Read from Janus (which reads the credit balance from NeboAI), so the page
+/// shows a plan or credit bought since the last request; the cache, which
+/// only completions update, answers when Janus cannot be reached.
 pub async fn janus_usage(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    // Try in-memory cache first
-    let cached = state.janus_usage.read().await.clone();
-    if let Some(ref u) = cached {
-        return Ok(Json(janus_usage_response(u)));
-    }
-
-    // No cache — fetch from Janus directly
     match fetch_janus_usage(&state).await {
         Ok(u) => Ok(Json(janus_usage_response(&u))),
         Err(e) => {
             warn!("failed to fetch janus usage: {e}");
+            if let Some(ref u) = *state.janus_usage.read().await {
+                return Ok(Json(janus_usage_response(u)));
+            }
             // Return zeros rather than error so the page still renders
             Ok(Json(serde_json::json!({
                 "session": { "limitCredits": 0, "remainingCredits": 0, "usedCredits": 0, "percentUsed": 0 },
@@ -1352,7 +1351,7 @@ pub(crate) fn store_neboai_profile(
             .update_auth_profile(
                 &existing.id,
                 email,
-                token,
+                &auth::credential::encrypt(token)?,
                 None,
                 Some(api_url),
                 0,
@@ -1374,7 +1373,7 @@ pub(crate) fn store_neboai_profile(
                 &id,
                 email,
                 "neboai",
-                token,
+                &auth::credential::encrypt(token)?,
                 None,
                 Some(api_url),
                 0,
@@ -1429,6 +1428,9 @@ pub struct ShareLinkQuery {
 pub struct ShareLinkResponse {
     /// The file's live link; none when it has no link (or it was turned off).
     pub share: Option<comm::api_types::FileShare>,
+    /// The file changed since the version its link opens (a link that
+    /// keeps its version; a live one catches up by itself).
+    pub outdated: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1444,6 +1446,16 @@ pub struct SetShareLinkRequest {
     /// RFC 3339; empty = never.
     #[serde(default)]
     pub expires_at: String,
+    /// The link follows the file (each new version goes behind it) or keeps
+    /// this version. Absent keeps the link's; a new link is live.
+    #[serde(default)]
+    pub live: Option<bool>,
+    /// Put the file as it is now behind the link, live or not.
+    #[serde(default)]
+    pub new_version: bool,
+    /// Publish as a site at <address>.nebo.page; "" stops; absent keeps.
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 /// Only files in this bot's Work panel can be shared: a link makes a file
@@ -1479,6 +1491,24 @@ fn share_error(e: comm::CommError) -> (axum::http::StatusCode, Json<ErrorRespons
     }
 }
 
+/// The Work-panel file behind a reference.
+fn work_file(artifact: &str) -> Result<std::path::PathBuf, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let files_dir = config::files_dir().map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
+    crate::chat_dispatch::artifact_local_path(&files_dir, artifact).ok_or_else(|| to_error_response(NeboError::NotFound))
+}
+
+/// The link as the dialog shows it: and whether the file moved on from it.
+async fn share_response(artifact: &str, share: Option<comm::api_types::FileShare>) -> ShareLinkResponse {
+    crate::live_shares::remember(artifact, share.as_ref()).await;
+    let mut outdated = false;
+    if let Some(s) = share.as_ref().filter(|s| !s.live)
+        && let Ok(path) = work_file(artifact)
+    {
+        outdated = crate::live_shares::file_hash(&path).await.is_some_and(|h| h != s.content_hash);
+    }
+    ShareLinkResponse { share, outdated }
+}
+
 /// GET /api/v1/neboai/share?artifact= — the file's live link, if it has one.
 pub async fn share_link(
     State(state): State<AppState>,
@@ -1487,11 +1517,12 @@ pub async fn share_link(
     let artifact = shareable_artifact(&q.artifact)?;
     let api = build_api_client(&state).map_err(to_error_response)?;
     let share = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next();
-    Ok(Json(ShareLinkResponse { share }))
+    Ok(Json(share_response(artifact, share).await))
 }
 
 /// PUT /api/v1/neboai/share — give the file a link with these settings: the
-/// link it has is changed; a file with none is uploaded and gets one.
+/// link it has is changed; a file with none is uploaded and gets one. A
+/// live link (and `newVersion`) gets the file as it is now.
 pub async fn set_share_link(
     State(state): State<AppState>,
     Json(body): Json<SetShareLinkRequest>,
@@ -1502,10 +1533,20 @@ pub async fn set_share_link(
         access: body.access.clone(),
         password: body.password.clone(),
         expires_at: body.expires_at.clone(),
+        live: body.live,
+        address: body.address.clone(),
+        ..Default::default()
     };
     if let Some(existing) = api.file_shares(artifact).await.map_err(share_error)?.into_iter().next() {
-        let share = api.update_file_share(&existing.id, &settings).await.map_err(share_error)?;
-        return Ok(Json(ShareLinkResponse { share: Some(share) }));
+        let mut share = api.update_file_share(&existing.id, &settings).await.map_err(share_error)?;
+        if share.live || body.new_version {
+            let path = work_file(artifact)?;
+            share = crate::live_shares::push_version(&state, &api, &share, &path).await.map_err(|e| {
+                warn!(error = %e, "share link: new version failed");
+                to_error_response(NeboError::Internal("Could not upload this file. Try again.".into()))
+            })?;
+        }
+        return Ok(Json(share_response(artifact, Some(share)).await));
     }
 
     if !state.comm_manager.is_connected().await {
@@ -1513,22 +1554,20 @@ pub async fn set_share_link(
             "Connect to NeboAI to share.".into(),
         )));
     }
-    let files_dir = config::data_dir()
-        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?
-        .join("files");
-    let path = crate::chat_dispatch::artifact_local_path(&files_dir, artifact)
-        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+    let path = work_file(artifact)?;
+    let hash = crate::live_shares::file_hash(&path).await.ok_or_else(|| to_error_response(NeboError::NotFound))?;
     let uploaded = crate::chat_dispatch::upload_local_file(&state.comm_manager, &path)
         .await
         .map_err(|e| {
             warn!(error = %e, "share link: upload failed");
             to_error_response(NeboError::Internal("Could not upload this file. Try again.".into()))
         })?;
+    let settings = comm::api_types::FileShareSettings { content_hash: hash, ..settings };
     let share = api
         .create_file_share(&uploaded.file_id, artifact, &settings)
         .await
         .map_err(share_error)?;
-    Ok(Json(ShareLinkResponse { share: Some(share) }))
+    Ok(Json(share_response(artifact, Some(share)).await))
 }
 
 /// DELETE /api/v1/neboai/share?artifact= — turn the file's link off. The
@@ -1542,7 +1581,7 @@ pub async fn turn_off_share_link(
     for share in api.file_shares(artifact).await.map_err(share_error)? {
         api.revoke_file_share(&share.id).await.map_err(share_error)?;
     }
-    Ok(Json(ShareLinkResponse { share: None }))
+    Ok(Json(share_response(artifact, None).await))
 }
 
 fn callback_html(_email: &str, err_msg: &str) -> Html<String> {
@@ -1568,10 +1607,10 @@ pub async fn force_reconnect(State(state): State<AppState>) -> HandlerResult<ser
 
     match crate::codes::activate_neboai(&state).await {
         Ok(()) => {
-            if let Some(new_token) = state.comm_manager.take_rotated_token().await {
-                let _ = state
-                    .store
-                    .update_auth_profile_token_by_provider("neboai", &new_token);
+            if let Some(new_token) = state.comm_manager.take_rotated_token().await
+                && let Ok(sealed) = auth::credential::encrypt(&new_token)
+            {
+                let _ = state.store.update_auth_profile_token_by_provider("neboai", &sealed);
             }
             Ok(Json(serde_json::json!({"reconnected": true})))
         }

@@ -52,6 +52,12 @@ pub const FOREGROUND_BUDGET: Duration = Duration::from_secs(120);
 /// had as partial.
 pub const INACTIVITY_LIMIT: Duration = Duration::from_secs(10 * 60);
 
+/// A helper turn's waits, as its calls enter them (`ToolContext::waiting`,
+/// the request's progress) and its collector reads them.
+fn waits_of(req: &TurnRequest) -> Arc<tools::Waiting> {
+    req.progress.as_ref().map(|p| p.waiting.clone()).unwrap_or_default()
+}
+
 /// The rule key of the helper tool: what Explore and Plan helpers, and a
 /// helper at the depth cap, can never call.
 pub const HELPER_TOOL: &str = "delegate";
@@ -331,9 +337,19 @@ pub struct HelperStatus {
     pub running: bool,
     /// The helper's own session, where its steps are kept.
     pub session_key: String,
-    /// What it is doing now: its latest progress line (its current tool
-    /// step), empty before its first.
+    /// The call it is making now, by its structured name
+    /// (`tools::humanize::call`); none before its first step.
+    pub call: Option<tools::humanize::Call>,
+    /// Background work's own progress line ("Searching 4 angles"); empty
+    /// for a helper that works by calls.
     pub activity: String,
+    /// The session that started it, where it reports.
+    pub parent_key: String,
+    /// The employee it works for (its parent's seat); empty for the main
+    /// bot.
+    pub agent_id: String,
+    /// When its current run started (unix seconds).
+    pub started_at: i64,
 }
 
 /// A helper this process started.
@@ -361,8 +377,13 @@ struct Helper {
     /// Reports of earlier turns of this run, when input reached it as a
     /// turn ended; they lead the run's final result.
     earlier_reports: Vec<String>,
-    /// Its latest progress line, as the owner's screen was sent it.
+    /// The call it is making now, as the owner's screen was sent it.
+    call: Option<tools::humanize::Call>,
+    /// Background work's latest progress line, as the owner's screen was
+    /// sent it.
     activity: String,
+    /// When its current run started (unix seconds).
+    started_at: i64,
 }
 
 /// The `helper_kind` a background work run is stored under: it runs code,
@@ -447,11 +468,19 @@ impl State {
     }
 }
 
+/// What a crashed helper's panic said.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "it stopped unexpectedly".to_string())
+}
+
 /// The helper registry.
 pub struct Helpers {
     store: Arc<db::Store>,
     sessions: Arc<SessionManager>,
-    registry: Arc<tools::Registry>,
     starter: Arc<dyn TurnStarter>,
     /// The server's wake rail: an owner session with a new notification
     /// row on the wake table is sent here to be delivered.
@@ -466,7 +495,6 @@ impl Helpers {
     pub fn new(
         store: Arc<db::Store>,
         sessions: Arc<SessionManager>,
-        registry: Arc<tools::Registry>,
         starter: Arc<dyn TurnStarter>,
         wake: Option<mpsc::UnboundedSender<String>>,
         ui: Option<mpsc::UnboundedSender<HelperEvent>>,
@@ -474,7 +502,6 @@ impl Helpers {
         Arc::new(Self {
             store,
             sessions,
-            registry,
             starter,
             wake,
             ui,
@@ -663,7 +690,9 @@ impl Helpers {
                     waiter: (!spec.background).then_some(tx),
                     held: None,
                     earlier_reports: Vec::new(),
+                    call: None,
                     activity: String::new(),
+                    started_at: chrono::Utc::now().timestamp(),
                 },
             );
             req
@@ -719,7 +748,9 @@ impl Helpers {
                     waiter: None,
                     held: None,
                     earlier_reports: Vec::new(),
+                    call: None,
                     activity: String::new(),
+                    started_at: chrono::Utc::now().timestamp(),
                 },
             );
             cancel
@@ -728,7 +759,11 @@ impl Helpers {
         let this = Arc::clone(self);
         let (id, description) = (task_id.clone(), description.to_string());
         tokio::spawn(async move {
-            let completion = this.run_work(&id, &parent_key, &description, cancel, work).await;
+            let run = std::panic::AssertUnwindSafe(this.run_work(&id, &parent_key, &description, cancel, work));
+            let completion = match futures::FutureExt::catch_unwind(run).await {
+                Ok(completion) => completion,
+                Err(panic) => this.crashed(&id, &panic_text(&*panic)),
+            };
             this.finish(&id, completion);
         });
         let receipt = launch_result(&task_id);
@@ -787,9 +822,10 @@ impl Helpers {
         if let TurnMode::Helper { answer, .. } = &mut req.mode {
             *answer = Some(Arc::new(schema.clone()));
         }
+        let waiting = waits_of(&req);
         let collected = match self.starter.start_turn(req).await {
             Ok(handle) => {
-                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, |_| {
+                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, &waiting, |_| {
                     if let Some(a) = &activity {
                         a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -959,9 +995,12 @@ impl Helpers {
                 waiter: None,
                 held: None,
                 earlier_reports: Vec::new(),
+                call: None,
                 activity: String::new(),
+                started_at: chrono::Utc::now().timestamp(),
             });
             helper.running = true;
+            helper.started_at = chrono::Utc::now().timestamp();
             helper.cancel = cancel;
             helper.parent_seat = turn.seat.clone();
             helper.parent_grant = grant.cloned();
@@ -1055,19 +1094,24 @@ impl Helpers {
     }
 
     /// The caller's own helpers still in hand: running, or finished and
-    /// waiting on helpers of their own. Running first.
-    pub fn list(&self, caller: &str) -> Vec<HelperStatus> {
+    /// waiting on helpers of their own; every session's with `None`.
+    /// Running first.
+    pub fn list(&self, caller: Option<&str>) -> Vec<HelperStatus> {
         let mut out: Vec<HelperStatus> = self
             .state()
             .helpers
             .iter()
-            .filter(|(_, h)| h.parent_key == caller)
+            .filter(|(_, h)| caller.is_none_or(|c| h.parent_key == c))
             .map(|(id, h)| HelperStatus {
                 task_id: id.clone(),
                 description: h.description.clone(),
                 running: h.running,
                 session_key: h.session_key.clone(),
+                call: h.call.clone(),
                 activity: h.activity.clone(),
+                parent_key: h.parent_key.clone(),
+                agent_id: h.parent_seat.agent_id.clone(),
+                started_at: h.started_at,
             })
             .collect();
         out.sort_by(|a, b| b.running.cmp(&a.running).then_with(|| a.task_id.cmp(&b.task_id)));
@@ -1089,16 +1133,46 @@ impl Helpers {
     }
 
     /// Run one turn of helper `task_id` in the background and finish it.
+    /// A turn that crashes still ends the helper as failed and tells its
+    /// parent: no helper ends without a word.
     fn spawn_turn(self: &Arc<Self>, task_id: String, req: TurnRequest, isolation: Option<crate::worktree::Isolation>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let mut next = Some(req);
             let mut isolation = isolation;
             while let Some(req) = next.take() {
-                let completion = this.run_turn(&task_id, req, isolation.take()).await;
+                let turn = std::panic::AssertUnwindSafe(this.run_turn(&task_id, req, isolation.take()));
+                let completion = match futures::FutureExt::catch_unwind(turn).await {
+                    Ok(completion) => completion,
+                    Err(panic) => this.crashed(&task_id, &panic_text(&*panic)),
+                };
                 next = this.finish(&task_id, completion);
             }
         });
+    }
+
+    /// Helper `task_id` crashed mid-run: its row fails with why, the owner's
+    /// screen hears it ended, and the completion its parent is told says so.
+    fn crashed(&self, task_id: &str, why: &str) -> Completion {
+        let (parent_key, description) = {
+            let state = self.state();
+            let h = state.helpers.get(task_id);
+            (h.map(|h| h.parent_key.clone()).unwrap_or_default(), h.map(|h| h.description.clone()).unwrap_or_default())
+        };
+        let error = format!("the helper crashed: {why}");
+        warn!(task_id = %task_id, parent = %parent_key, error = %error, "helper crashed");
+        if let Err(e) = self.store.engine_set_run_state(task_id, "failed", chrono::Utc::now().timestamp(), Some(&error)) {
+            warn!(task_id = %task_id, error = %e, "a crashed helper could not be marked failed");
+        }
+        self.emit(&parent_key, ai::StreamEvent::subagent_complete(task_id, description.as_str(), false));
+        Completion {
+            task_id: task_id.to_string(),
+            description,
+            status: CompletionStatus::Failed { error },
+            result: String::new(),
+            usage: ai::UsageInfo::default(),
+            taint: Vec::new(),
+        }
     }
 
     async fn run_turn(
@@ -1119,9 +1193,10 @@ impl Helpers {
         self.emit(&parent_key, ai::StreamEvent::subagent_start(task_id, description.as_str()));
 
         let progress = self.progress_forwarder(&parent_key, task_id);
+        let waiting = waits_of(&req);
         let collected = match self.starter.start_turn(req).await {
             Ok(handle) => {
-                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, |e| {
+                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, &waiting, |e| {
                     if let Some(tx) = &progress
                         && let Some(tc) = &e.tool_call
                     {
@@ -1161,8 +1236,8 @@ impl Helpers {
         completion
     }
 
-    /// Progress lines for the owner's screen: each tool call the helper
-    /// makes becomes its activity line. `None` without a screen to show it.
+    /// Progress for the owner's screen: each tool call the helper makes is
+    /// named by its structured name. `None` without a screen to show it.
     fn progress_forwarder(self: &Arc<Self>, parent_key: &str, task_id: &str) -> Option<mpsc::UnboundedSender<ai::ToolCall>> {
         self.ui.as_ref()?;
         let (tx, mut rx) = mpsc::unbounded_channel::<ai::ToolCall>();
@@ -1173,13 +1248,17 @@ impl Helpers {
             let mut steps = 0usize;
             while let Some(tc) = rx.recv().await {
                 steps += 1;
-                let (activity, _) = this.registry.labels(&tc.name, &tc.input).await;
-                let mut ev = ai::StreamEvent::subagent_start(task_id.as_str(), activity.as_str());
+                let call = tools::humanize::call(&tc.name, &tc.input);
+                if let Some(helper) = this.state().helpers.get_mut(task_id.as_str()) {
+                    helper.call = Some(call.clone());
+                    helper.activity.clear();
+                }
+                let mut ev = ai::StreamEvent::subagent_start(task_id.as_str(), "");
                 ev.event_type = ai::StreamEventType::SubagentProgress;
                 ev.widgets = Some(serde_json::json!({
                     "task_id": task_id,
                     "tool_count": steps,
-                    "current_operation": activity,
+                    "call": call,
                 }));
                 this.emit(&parent_key, ev);
             }
@@ -1188,14 +1267,15 @@ impl Helpers {
     }
 
     fn emit(&self, parent_key: &str, event: ai::StreamEvent) {
-        // The helper's latest progress line is kept with it, so a screen
-        // that opens after the event still reads what it is doing.
+        // Background work's latest progress line is kept with it, so a
+        // screen that opens after the event still reads what it is doing.
         if event.event_type == ai::StreamEventType::SubagentProgress
             && let Some(widgets) = event.widgets.as_ref()
             && let (Some(task_id), Some(activity)) = (widgets["task_id"].as_str(), widgets["current_operation"].as_str())
             && let Some(helper) = self.state().helpers.get_mut(task_id)
         {
             helper.activity = activity.to_string();
+            helper.call = None;
         }
         if let Some(ui) = &self.ui {
             let _ = ui.send(HelperEvent { parent_session_key: parent_key.to_string(), event });
@@ -1517,6 +1597,16 @@ mod tests {
         }
     }
 
+    /// A turn that crashes as it starts.
+    struct Crashes;
+
+    #[async_trait::async_trait]
+    impl TurnStarter for Crashes {
+        async fn start_turn(&self, _request: TurnRequest) -> Result<TurnHandle, HarnessError> {
+            panic!("the model client fell over")
+        }
+    }
+
     struct Rig {
         helpers: Arc<Helpers>,
         store: Arc<db::Store>,
@@ -1536,6 +1626,12 @@ mod tests {
 
         /// A fresh registry on an existing store: a restart.
         fn on(store: Arc<db::Store>, dir: tempfile::TempDir, budget: Duration) -> Self {
+            Self::starting_with(store, dir, budget, None)
+        }
+
+        /// A registry whose turns `starter` starts (the scripted one when
+        /// `None`).
+        fn starting_with(store: Arc<db::Store>, dir: tempfile::TempDir, budget: Duration, starter: Option<Arc<dyn TurnStarter>>) -> Self {
             let sessions = Arc::new(SessionManager::new(store.clone()));
             let (started_tx, started) = mpsc::unbounded_channel();
             let (wake_tx, wake) = mpsc::unbounded_channel();
@@ -1543,8 +1639,7 @@ mod tests {
             let helpers = Arc::new(Helpers {
                 store: store.clone(),
                 sessions: sessions.clone(),
-                registry: Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone())))),
-                starter: Arc::new(Scripted { started: started_tx }),
+                starter: starter.unwrap_or_else(|| Arc::new(Scripted { started: started_tx })),
                 wake: Some(wake_tx),
                 ui: Some(ui_tx),
                 foreground_budget: budget,
@@ -1669,6 +1764,26 @@ mod tests {
             Launch::Finished(c) => assert_eq!(c.taint, vec![ProvenanceClass::Web], "a foreground result"),
             Launch::Background { .. } => panic!("it finished inside the budget"),
         }
+    }
+
+    /// A helper whose turn crashes still ends: its row fails with why, and
+    /// its parent is told it failed. No helper ends without a word.
+    #[tokio::test]
+    async fn a_crashed_helper_reports_its_failure_to_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let mut rig = Rig::starting_with(store, dir, FOREGROUND_BUDGET, Some(Arc::new(Crashes)));
+        let owner = rig.owner_turn("agent:bookkeeper:web");
+        let text = rig.helpers.delegate(&owner, None, &[], &call("Find the invoice.", None)).await.unwrap();
+        let id = task_id_of(&text);
+        assert_eq!(rig.next_wake().await, "agent:bookkeeper:web");
+        let pending = rig.pending_notifications("agent:bookkeeper:web");
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].contains(&format!("helper {id} \"read the ledger\": failed")), "{}", pending[0]);
+        assert!(pending[0].contains("the model client fell over"), "{}", pending[0]);
+        let row = rig.store.get_pending_task(&id).unwrap().unwrap();
+        assert_eq!(row.status, "failed");
+        assert!(!rig.helpers.list(None).iter().any(|h| h.task_id == id && h.running), "it is not left running");
     }
 
     #[tokio::test]
@@ -1935,7 +2050,7 @@ mod tests {
         let (work, go, _stopped) = gated_work("# Research: rents\nRents rose 4%.");
         let (id, receipt) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
         assert_eq!(receipt, launch_result(&id), "the receipt, while the work still runs");
-        assert!(rig.helpers.list(key).iter().any(|h| h.task_id == id && h.running));
+        assert!(rig.helpers.list(Some(key)).iter().any(|h| h.task_id == id && h.running));
 
         let mut activity = None;
         for _ in 0..3 {
@@ -1987,7 +2102,9 @@ mod tests {
         let id = task_id_of(&text);
         let _child = rig.next_turn().await;
 
-        let list = rig.helpers.list("agent:bookkeeper:web");
+        let list = rig.helpers.list(Some("agent:bookkeeper:web"));
+        let started_at = list.first().map(|h| h.started_at).unwrap_or_default();
+        assert!(started_at > 0, "the start is kept");
         assert_eq!(
             list,
             vec![HelperStatus {
@@ -1995,10 +2112,16 @@ mod tests {
                 description: "read the ledger".into(),
                 running: true,
                 session_key: helper_key("agent:bookkeeper:web", &id),
+                call: None,
                 activity: String::new(),
+                parent_key: "agent:bookkeeper:web".into(),
+                agent_id: list[0].agent_id.clone(),
+                started_at,
             }]
         );
-        assert!(rig.helpers.list("agent:ceo:web").is_empty());
+        // Every session's helpers, for the owner's list of background work.
+        assert!(rig.helpers.list(None).iter().any(|h| h.task_id == id));
+        assert!(rig.helpers.list(Some("agent:ceo:web")).is_empty());
         assert!(rig.helpers.read_output("agent:ceo:web", &id).is_err());
         assert!(rig.helpers.stop("agent:ceo:web", &id).is_err());
         assert!(!_child.request.cancel.is_cancelled());
@@ -2040,7 +2163,7 @@ mod tests {
         }
         let rows = rig.notification_rows(key);
         assert!(rows.len() == 1 && rows[0].contains(&format!("helper {id} \"read the ledger\": stopped")), "{rows:?}");
-        assert!(!rig.helpers.list(key).iter().any(|h| h.running));
+        assert!(!rig.helpers.list(Some(key)).iter().any(|h| h.running));
         assert!(rig.wake.try_recv().is_err(), "a stopped helper starts no turn");
     }
 

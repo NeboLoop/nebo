@@ -108,7 +108,7 @@
 	// Status display text
 	let statusText = $derived(
 		status === 'connecting' ? $t('settingsPlugins.connecting')
-		: status === 'reconnecting' ? $t('voice.reconnecting')
+		: status === 'reconnecting' ? $t('common.couldNotConnect', { values: { name: agentName } })
 		: status === 'listening' ? (isMuted ? $t('chatInput.muted') : $t('chatInput.listening'))
 		: status === 'processing' ? $t('chatInput.thinking')
 		: status === 'speaking' ? $t('chatInput.speaking')
@@ -136,6 +136,8 @@
 			<div class="text-xs text-base-content/50 mt-0.5 h-4">
 				{#if status === 'error' && errorMessage}
 					<span class="text-error">{errorMessage}</span>
+				{:else if status === 'reconnecting'}
+					<span class="text-error">{statusText}</span>
 				{:else}
 					{statusText}
 				{/if}
@@ -196,14 +198,14 @@
 
 			<!-- Inner circle -->
 			<div class="relative w-24 h-24 rounded-full grid place-items-center {
-				status === 'connecting' || status === 'reconnecting' ? 'bg-base-300' :
+				status === 'connecting' ? 'bg-base-300' :
 				status === 'listening' ? (isMuted ? 'bg-base-300' : 'bg-primary/20') :
 				status === 'processing' ? 'bg-warning/20' :
 				status === 'speaking' ? 'bg-primary/30' :
-				status === 'error' ? 'bg-error/20' :
+				status === 'error' || status === 'reconnecting' ? 'bg-error/20' :
 				'bg-base-300'
 			}">
-				{#if status === 'connecting' || status === 'reconnecting'}
+				{#if status === 'connecting'}
 					<div class="loading loading-spinner loading-lg text-base-content/40"></div>
 				{:else if status === 'listening'}
 					{#if isMuted}
@@ -221,7 +223,7 @@
 						<div class="w-1.5 bg-primary rounded-full voice-pulse h-8"></div>
 						<div class="w-1.5 bg-primary rounded-full voice-pulse h-3"></div>
 					</div>
-				{:else if status === 'error'}
+				{:else if status === 'error' || status === 'reconnecting'}
 					<span class="text-2xl text-error">!</span>
 				{/if}
 			</div>
@@ -233,6 +235,10 @@
 				onclick={handleInterrupt}
 			>
 				{$t('chatInput.tapToInterrupt')}
+			</button>
+		{:else if status === 'reconnecting'}
+			<button class="btn btn-primary btn-sm" onclick={() => voiceSession.retry()}>
+				{$t('voice.tryAgain')}
 			</button>
 		{/if}
 	</div>

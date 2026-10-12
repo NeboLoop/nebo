@@ -863,6 +863,24 @@ pub fn rerender(state: &crate::state::AppState, applied: &std::collections::Hash
 mod tests {
     use super::*;
 
+    /// A user's own provider key written into a rule is withheld from the
+    /// export, whichever provider issued it. Fake keys in each vendor's shape.
+    #[test]
+    fn a_provider_key_in_a_rule_is_withheld() {
+        for key in [
+            "sk-ant-api03-Fake0SENTINEL0aBcDeFgHiJkLmNoPq",
+            "sk-proj-Fake0SENTINEL0aBcDeFgHiJkLmNoPq",
+            "sk-or-v1-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "AIzaSyFake0SENTINEL0aBcDeFgHiJkLmN",
+            "xai-Fake0SENTINEL0aBcDeFgHiJkLmNoPqRsTu",
+            "gsk_Fake0SENTINEL0aBcDeFgHiJkLmNoPq",
+        ] {
+            for line in [format!("Use {key} for the research employee."), format!("api key: {key}")] {
+                assert!(withhold_reason(&line).is_some(), "exported: {line}");
+            }
+        }
+    }
+
     fn write(dir: &Path, rel: &str, body: &str) {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

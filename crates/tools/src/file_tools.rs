@@ -42,6 +42,55 @@ impl Machine {
         self
     }
 
+    /// A workspace file's earlier versions (`workspace_history`).
+    fn file_history(&self, ctx: &ToolContext, path: &str) -> ToolResult {
+        let Some(store) = self.store.as_ref() else {
+            return ToolResult::error("File history isn't available here.");
+        };
+        let files = config::workspace_dir().unwrap_or_else(|_| crate::checkpoint::data_dir().join("files"));
+        let path = match ctx.cwd.as_deref() {
+            Some(cwd) if std::path::Path::new(path).is_relative() => std::path::Path::new(cwd).join(path),
+            _ => types::pathres::expand(path),
+        };
+        let Some(rel) = crate::workspace_history::workspace_path(&files, &path.to_string_lossy()) else {
+            return ToolResult::error(format!(
+                "{} is not in the workspace ({}): only its files keep earlier versions.",
+                path.display(),
+                files.display()
+            ));
+        };
+        match crate::workspace_history::history(store, &rel) {
+            Ok(entries) => ToolResult::ok(crate::workspace_history::describe(&rel, &entries)),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
+    /// Put a workspace file's earlier version back; the read ledger learns
+    /// the file, so the next edit is not warned about a change it made.
+    fn restore_file_history(&self, ctx: &ToolContext, id: i64) -> ToolResult {
+        let Some(store) = self.store.as_ref() else {
+            return ToolResult::error("File history isn't available here.");
+        };
+        let workspace = config::workspace_dir().unwrap_or_else(|_| crate::checkpoint::data_dir().join("files"));
+        let files = config::files_dir().unwrap_or_else(|_| crate::checkpoint::data_dir().join("files"));
+        let target = match store.get_file_history(id) {
+            Ok(Some(e)) => workspace.join(&e.path),
+            Ok(None) => return ToolResult::error(format!("No earlier version {}{id} is kept.", crate::workspace_history::ID_PREFIX)),
+            Err(e) => return ToolResult::error(e.to_string()),
+        };
+        let target = target.to_string_lossy().into_owned();
+        if let Some(blocked) = ctx.outside_folders("restore", std::slice::from_ref(&target)) {
+            return ToolResult::error(blocked);
+        }
+        match crate::workspace_history::restore(store, &workspace, &files, id, None) {
+            Ok(restored) => {
+                self.file.note_shell_write(ctx.session_key.as_str(), &target);
+                ToolResult::ok(crate::workspace_history::describe_restore(&restored))
+            }
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
     /// A written file's result, with the app location note when the file is
     /// a web file for an app but outside the folder the app is served from.
     fn with_app_note(&self, ctx: &ToolContext, input: &Value, result: ToolResult) -> ToolResult {
@@ -373,12 +422,8 @@ impl DynTool for ReadFileTool {
         None
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("reading {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Read {}", file_name(input))
     }
 
     /// A file the run pulled in (the attachment root), not one the owner placed.
@@ -482,12 +527,8 @@ impl DynTool for EditFileTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("editing {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Edited {}", file_name(input))
     }
 
     fn clearable(&self, _input: &Value) -> bool {
@@ -583,12 +624,8 @@ impl DynTool for WriteFileTool {
         }
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("writing {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Wrote {}", file_name(input))
     }
 
     fn clearable(&self, _input: &Value) -> bool {
@@ -665,7 +702,8 @@ impl DynTool for ShareFileTool {
          - `paths` lists every file to show, in one call: {\"paths\": [\"/a.png\", \"/b.png\"]}. One file is a list of one. \
            Never one call per file.\n\
          - Use it for a finished deck, PDF, spreadsheet or any file already on disk.\n\
-         - Files you write or convert this turn already show as cards; don't share them again or copy a file to make one."
+         - Files you write or convert, generate_media files and plugin `Result:` files already show as cards; don't share \
+           or copy them."
             .to_string()
     }
 
@@ -743,12 +781,8 @@ impl DynTool for ShareFileTool {
         Ok(())
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("sharing {}", shared_names(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Shared {}", shared_names(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -829,12 +863,8 @@ impl DynTool for ConvertFileTool {
         Some("file")
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("converting {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Converted {}", file_name(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -890,12 +920,8 @@ impl DynTool for CheckpointFilesTool {
         Some("file")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "saving a restore point".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Saved a restore point".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -915,15 +941,23 @@ impl DynTool for ListCheckpointsTool {
     }
 
     fn description(&self) -> String {
-        "Lists the restore points saved in this conversation, newest first, with their ids and files.".to_string()
+        "Lists the restore points saved in this conversation, newest first, with their ids and files.\n\
+         - With `path`, lists that workspace file's earlier versions instead: every file in the workspace keeps \
+         what it was before any change or delete (by a tool, a command or a script), with ids like fh-12."
+            .to_string()
     }
 
     fn schema(&self) -> Value {
-        json!({ "type": "object", "properties": {} })
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "A workspace file whose earlier versions to list." }
+            }
+        })
     }
 
     fn search_hint(&self) -> &str {
-        "list saved file restore points"
+        "list restore points or a file's earlier versions"
     }
 
     fn read_only(&self, _input: &Value) -> bool {
@@ -934,16 +968,17 @@ impl DynTool for ListCheckpointsTool {
         Some("file")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "listing restore points".to_string()
     }
 
-    fn outcome(&self, _input: &Value) -> String {
-        "Listed restore points".to_string()
-    }
-
-    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, _input: Value) -> Fut<'a> {
-        Box::pin(async move { self.0.file.execute(ctx, json!({"action": "checkpoints"})) })
+    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
+        Box::pin(async move {
+            match input.get("path").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) {
+                Some(path) => self.0.file_history(ctx, path),
+                None => self.0.file.execute(ctx, json!({"action": "checkpoints"})),
+            }
+        })
     }
 }
 
@@ -956,7 +991,9 @@ impl DynTool for RestoreCheckpointTool {
 
     fn description(&self) -> String {
         "Puts files back as they were at a restore point from checkpoint_files.\n\
-         - Leave out `paths` to restore every file the checkpoint saved."
+         - Leave out `paths` to restore every file the checkpoint saved.\n\
+         - An fh-… id from list_checkpoints(path) puts that workspace file's earlier version back; what it is \
+         now is kept first."
             .to_string()
     }
 
@@ -964,7 +1001,7 @@ impl DynTool for RestoreCheckpointTool {
         json!({
             "type": "object",
             "properties": {
-                "checkpoint": { "type": "string", "description": "The checkpoint id (cp-…) from checkpoint_files or list_checkpoints." },
+                "checkpoint": { "type": "string", "description": "The checkpoint id (cp-…) from checkpoint_files or list_checkpoints, or a file's earlier version (fh-…) from list_checkpoints(path)." },
                 "paths": { "type": "array", "items": { "type": "string" }, "description": "Only these of the checkpoint's files." }
             },
             "required": ["checkpoint"]
@@ -972,23 +1009,23 @@ impl DynTool for RestoreCheckpointTool {
     }
 
     fn search_hint(&self) -> &str {
-        "undo file changes from restore point"
+        "undo changes, restore a file's previous version"
     }
 
     fn capability(&self, _input: &Value) -> Option<&'static str> {
         Some("file")
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "restoring files".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Restored files".to_string()
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
+            let named = input.get("checkpoint").and_then(Value::as_str).unwrap_or_default();
+            if let Some(id) = crate::workspace_history::parse_id(named) {
+                return self.0.restore_file_history(ctx, id);
+            }
             let mut call = input;
             call["action"] = json!("restore");
             self.0.file.execute(ctx, call)
@@ -1051,12 +1088,8 @@ impl DynTool for WritePlanTool {
         overwrites(input)
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("writing plan {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Wrote plan {}", file_name(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -1131,14 +1164,10 @@ impl DynTool for ExitPlanModeTool {
         input
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         let plan = str_arg(input, "plan").unwrap_or("").trim();
         let plan = types::strutil::safe_prefix(plan, Self::CARD_PLAN_CHARS);
         format!("leave plan mode and carry out the plan in {}:\n{plan}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("The owner approved the plan in {}", file_name(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -1227,12 +1256,8 @@ impl DynTool for CheckPlanTool {
         Some("file")
     }
 
-    fn activity(&self, input: &Value) -> String {
+    fn describe(&self, input: &Value) -> String {
         format!("checking plan {}", file_name(input))
-    }
-
-    fn outcome(&self, input: &Value) -> String {
-        format!("Checked plan {}", file_name(input))
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -1304,7 +1329,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.files().collect::<Vec<_>>(), vec![a.as_str(), b.as_str()]);
         assert!(r.content.contains("cover.png") && r.content.contains("thumb.txt"), "{}", r.content);
-        assert_eq!(share.activity(&json!({"paths": [a, b]})), "sharing 2 files");
+        assert_eq!(share.describe(&json!({"paths": [a, b]})), "sharing 2 files");
 
         // The old shapes: `path` as a list and as one string.
         assert_eq!(share.normalize_input(json!({"path": [a, b]})), json!({"paths": [a, b]}));
@@ -1319,7 +1344,6 @@ mod tests {
         let one = share.execute_dyn(&ctx(), json!({"path": a})).await;
         assert!(!one.is_error, "{}", one.content);
         assert_eq!(one.files().collect::<Vec<_>>(), vec![a.as_str()]);
-        assert_eq!(share.outcome(&json!({"path": a})), "Shared cover.png");
         assert!(share.validate_input(&json!({"paths": []})).unwrap_err().contains("`paths`"));
     }
 

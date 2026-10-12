@@ -193,11 +193,17 @@ pub struct AppWindowConfig {
 }
 
 /// One entry of `window.share_menu`: the label the menu shows and what
-/// picking it sends into the app's chat, as the owner's words.
+/// picking it sends into the app's chat, as the owner's words. `share: true`
+/// asks for a link: the app answers with a file (its reply hands one over,
+/// or its page through `nebo.share`), and the device it was picked on opens
+/// the one Share dialog on that file, where the owner chooses who can open
+/// it. The app never makes the link.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ShareMenuItem {
     pub label: String,
     pub say: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub share: bool,
 }
 
 /// At most this many entries in `window.share_menu`.
@@ -205,7 +211,7 @@ pub const SHARE_MENU_MAX: usize = 6;
 
 impl ShareMenuItem {
     /// One entry as written: `label` 1 to 40 characters, `say` 1 to 500,
-    /// both trimmed.
+    /// both trimmed; `share` true or absent.
     pub fn read(entry: &serde_json::Value) -> Result<Self, String> {
         let field = |key: &str, max: usize| {
             let text = entry.get(key).and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
@@ -216,7 +222,12 @@ impl ShareMenuItem {
                 Ok(text.to_string())
             }
         };
-        Ok(Self { label: field("label", 40)?, say: field("say", 500)? })
+        let share = match entry.get("share") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(_) => return Err("window.share_menu `share` is true or left out".to_string()),
+        };
+        Ok(Self { label: field("label", 40)?, say: field("say", 500)?, share })
     }
 }
 
@@ -557,7 +568,7 @@ mod tests {
         assert!(menu.validate().is_err());
         assert_eq!(
             AppWindow::from_manifest(Some(&menu), &[]).share_menu,
-            vec![ShareMenuItem { label: "Make it an app".into(), say: "Make this design a Nebo app.".into() }]
+            vec![ShareMenuItem { label: "Make it an app".into(), say: "Make this design a Nebo app.".into(), share: false }]
         );
         let good: AppWindowConfig = serde_json::from_str(r#"{"shareMenu":[{"label":"Export","say":"Export it as a PDF."}]}"#).unwrap();
         good.validate().unwrap();
@@ -568,6 +579,26 @@ mod tests {
         assert_eq!(AppWindow::from_manifest(Some(&seven), &[]).share_menu.len(), SHARE_MENU_MAX);
         let long = serde_json::json!({ "share_menu": [{"label": "x".repeat(41), "say": "y"}] });
         assert!(serde_json::from_value::<AppWindowConfig>(long).unwrap().validate().is_err());
+
+        // A link entry: `share: true` with its say, sent to every client as
+        // `share: true`; a plain entry carries no `share` at all, so a
+        // client that predates it reads the same shape.
+        let link: AppWindowConfig = serde_json::from_str(
+            r#"{"share_menu":[{"label":"Share a link","say":"Share this design as a link.","share":true},{"label":"Export","say":"Export it as a PDF."}]}"#,
+        )
+        .unwrap();
+        link.validate().unwrap();
+        let read = AppWindow::from_manifest(Some(&link), &[]).share_menu;
+        assert!(read[0].share && !read[1].share);
+        let sent = serde_json::to_value(&read).unwrap();
+        assert_eq!(sent[0], serde_json::json!({"label": "Share a link", "say": "Share this design as a link.", "share": true}));
+        assert_eq!(sent[1], serde_json::json!({"label": "Export", "say": "Export it as a PDF."}));
+        // A link entry still says what to make, and `share` is a yes or nothing.
+        for bad in [r#"{"label":"Share a link","share":true}"#, r#"{"label":"Share","say":"x","share":"yes"}"#] {
+            let w: AppWindowConfig = serde_json::from_str(&format!(r#"{{"share_menu":[{bad}]}}"#)).unwrap();
+            assert!(w.validate().is_err(), "{bad}");
+            assert!(AppWindow::from_manifest(Some(&w), &[]).share_menu.is_empty(), "{bad}");
+        }
 
         // A window written back keeps its old shape when the new keys are unset.
         assert_eq!(

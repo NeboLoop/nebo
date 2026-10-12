@@ -128,7 +128,7 @@ pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, Nebo
         Ok(None) => {}
         Err(e) => out
             .skipped
-            .push(format!("MCP servers: config.yaml unparseable ({e})")),
+            .push(format!("Connectors: couldn't read config.yaml ({e})")),
     }
 
     let mut skill_dirs = Vec::new();
@@ -220,7 +220,7 @@ fn import_mcp_block(
     for s in crate::handlers::integrations::parse_mcp_servers_block(block) {
         if existing.contains(&s.name) {
             out.skipped
-                .push(format!("MCP server {}: already configured", s.name));
+                .push(format!("Connector {}: already added", s.name));
             continue;
         }
         let id = uuid::Uuid::new_v4().to_string();
@@ -547,18 +547,35 @@ fn insert_messages(
             continue;
         }
         let ts = msg.timestamp.unwrap_or(created + i as i64);
+        let metadata = block_order(&msg.content, msg.tool_calls.as_deref());
         t.store.create_chat_message_imported(
             &format!("{chat_id}-m{i}"),
             chat_id,
             &msg.role,
             &msg.content,
             msg.tool_calls.as_deref(),
-            None,
+            metadata.as_deref(),
             ts,
         )?;
         inserted += 1;
     }
     Ok(inserted)
+}
+
+/// The block order a reply with calls is stored with, as the runner stores
+/// its own (`metadata.contentBlocks`): its text first, a note before the
+/// calls (`shown`), then each call. None for a row without calls.
+fn block_order(content: &str, tool_calls: Option<&str>) -> Option<String> {
+    let calls = tool_calls
+        .and_then(|raw| serde_json::from_str::<Vec<serde_json::Value>>(raw).ok())
+        .map(|calls| calls.len())
+        .filter(|n| *n > 0)?;
+    let text = (!content.is_empty()).then(|| serde_json::json!({"type": "text", "fold": "shown"}));
+    let blocks: Vec<serde_json::Value> = text
+        .into_iter()
+        .chain((0..calls).map(|i| serde_json::json!({"type": "tool", "toolCallIndex": i})))
+        .collect();
+    Some(serde_json::json!({ "contentBlocks": blocks }).to_string())
 }
 
 /// Known LLM provider keys from dotenv-style text → `auth_profiles`, matching
@@ -603,7 +620,7 @@ fn import_provider_env(
                     &id,
                     &format!("Imported from {source_label} ({provider})"),
                     provider,
-                    value,
+                    &auth::credential::encrypt(value).map_err(NeboError::Internal)?,
                     None,
                     None,
                     50,
@@ -724,6 +741,8 @@ mod tests {
     }
 
     fn setup_with(source: tempfile::TempDir) -> Fixture {
+        // Imported keys are stored encrypted, as the running server does.
+        auth::credential::init(mcp::crypto::Encryptor::generate());
         let nebo = tempdir().unwrap();
         let store = db::Store::new(nebo.path().join("nebo.db").to_str().unwrap()).unwrap();
         let agents_dir = nebo.path().join("user/agents");
@@ -828,6 +847,13 @@ mod tests {
         assert_eq!(msgs[0].created_at, 1700000000);
         let sess2 = f.store.get_chat_messages("hermes-sess-2").unwrap();
         assert!(sess2.iter().any(|m| m.tool_calls.is_some()));
+        // A reply with calls is stored with its block order, as the
+        // runner's own are: the thread reads it one way.
+        for m in sess2.iter().filter(|m| m.tool_calls.is_some()) {
+            let meta: serde_json::Value = serde_json::from_str(m.metadata.as_deref().unwrap()).unwrap();
+            let blocks = meta["contentBlocks"].as_array().unwrap();
+            assert_eq!(blocks.last().unwrap()["type"], "tool", "{meta}");
+        }
         assert!(out
             .skipped
             .iter()
@@ -836,7 +862,8 @@ mod tests {
         // Provider key imported to the matching profile; channel token deferred.
         let profiles = f.store.list_auth_profiles().unwrap();
         let anthropic = profiles.iter().find(|p| p.provider == "anthropic").unwrap();
-        assert_eq!(anthropic.api_key, "sk-secretxxx");
+        assert!(auth::credential::is_encrypted(&anthropic.api_key), "an imported key is stored encrypted");
+        assert_eq!(auth::credential::profile_key(anthropic), "sk-secretxxx");
         assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
 
         // Deferred slices are named, not silently dropped — including auth.json.

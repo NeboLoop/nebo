@@ -171,6 +171,16 @@ mod tests {
         assert!(text.contains("the permission mode a reminder names"));
     }
 
+    /// Live 2026-10-08: after a checkpoint the model told the owner "The
+    /// owner wants a 'sexy woman's voice…'". The prompt has him spoken to
+    /// as "you", and says how to read a summary's "you" and "I".
+    #[test]
+    fn the_owner_is_spoken_to_as_you() {
+        let text = system_prompt();
+        assert!(text.contains("- In what the owner reads, call them \"you\", never \"the owner\" or \"the user\"."), "{text}");
+        assert!(text.contains("In a summary, \"you\" is them and \"I\" is you."));
+    }
+
     #[test]
     fn no_objective_or_topic_text_anywhere() {
         let lower = system_prompt().to_lowercase();
@@ -259,6 +269,26 @@ mod tests {
         ] {
             assert!(text.contains(line), "{line:?} missing from:\n{text}");
         }
+    }
+
+    /// Browsing is the browser tools' alone, and "use Chrome" is the
+    /// owner's own Chrome through the extension, or a plain "not connected"
+    /// (2026-10-11: told "use chrome", an employee wrote a Playwright
+    /// script and ran it with node).
+    #[test]
+    fn browsing_is_the_browser_tools_and_chrome_is_the_owners() {
+        let text = system_prompt();
+        for line in [
+            "- Browsing, scraping and web automation are done only with the browser tools (browser_run_js scripts a \
+             page). Never write or run Playwright, Puppeteer or Selenium scripts or install browser drivers, even when \
+             the owner mentions Playwright.\n",
+            "- Chrome, their Chrome or their browser is the owner's own Chrome through the NeboAI extension: \
+             browser_open with chrome: true. If it isn't connected, say \"Chrome isn't connected to Nebo. Open Chrome \
+             and turn on the NeboAI extension, or I can use my own browser.\" and wait for their answer.\n",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from:\n{text}");
+        }
+        assert!(text.contains(tools::web_tool::CHROME_NOT_CONNECTED), "one wording for the owner");
     }
 
     /// A command the owner gives is the first call, as given, and never
@@ -355,13 +385,16 @@ mod tests {
 
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
-    /// it replaced.
+    /// it replaced. (8,000 until 2026-10-08, when the owner was first to be
+    /// called "you" in a line of its own; 8,200 until 2026-10-11, when an
+    /// employee told "use chrome" wrote a Playwright script: browsing is the
+    /// browser tools' alone and "Chrome" is the owner's own, +531.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 8_000);
+        assert!(chars < 8_700);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 7_889;
+    const SYSTEM_PROMPT_CHARS: usize = 8_643;
 }

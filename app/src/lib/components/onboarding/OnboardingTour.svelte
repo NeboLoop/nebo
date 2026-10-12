@@ -2,24 +2,20 @@
   import { t } from 'svelte-i18n';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import { onMount, onDestroy } from 'svelte';
-  import { dispatchInstallStart } from '$lib/marketplace/installCodes';
   import { storage } from '$lib/storage';
 
   // Proactive first-run onboarding: account-type question → scripted welcome →
-  // spotlight tour → one-tap setup. Deterministic (no LLM). Runs ONLY on the
+  // spotlight tour. Deterministic (no LLM). Runs ONLY on the
   // one-shot handoff flag the onboarding wizard sets when it completes — never
   // on "flag missing in this browser", which re-showed the tour on every new
   // browser (and, tunnel-served, whenever ANOTHER bot cleared shared storage).
   const PENDING_KEY = 'nebo:tour-pending';
 
-  type Phase = 'hidden' | 'account' | 'welcome' | 'tour' | 'finale';
+  type Phase = 'hidden' | 'account' | 'welcome' | 'tour';
   let phase = $state<Phase>('hidden');
   let stepIndex = $state(0);
   let accountType = $state<'personal' | 'business'>('personal');
   let rect = $state<{ top: number; left: number; width: number; height: number } | null>(null);
-
-  // First-run capabilities to install in one tap (canonical handle_code pathway).
-  const SETUP_CODES = ['PLUG-BHVY-A96N', 'SKIL-VQTF-WV8E', 'SKIL-TV64-VHQ4']; // Office, Design, NeboAI
 
   // Step titles/bodies are i18n key strings, resolved lazily with $t at render time.
   type Step = { target: string; title: string; body: { personal: string; business: string } };
@@ -114,7 +110,7 @@
   function startTour() {
     activeSteps = STEPS.filter((s) => document.querySelector(s.target));
     if (activeSteps.length === 0) {
-      phase = 'finale';
+      finish();
       return;
     }
     phase = 'tour';
@@ -127,7 +123,7 @@
       stepIndex += 1;
       queueMicrotask(updateRect);
     } else {
-      phase = 'finale';
+      finish();
     }
   }
 
@@ -141,11 +137,6 @@
   function finish() {
     storage.remove(PENDING_KEY);
     phase = 'hidden';
-  }
-
-  function runSetup() {
-    for (const code of SETUP_CODES) dispatchInstallStart(code);
-    finish();
   }
 
   onMount(() => {
@@ -196,7 +187,7 @@
         {$t('onboardingTour.welcomeBody', { values: { noun: welcomeNoun } })}
       </p>
       <div class="flex items-center justify-center gap-2">
-        <button onclick={() => (phase = 'finale')} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('onboardingTour.skipTour')}</button>
+        <button onclick={finish} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('onboardingTour.skipTour')}</button>
         <button onclick={startTour} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">{$t('onboardingTour.startTour')}</button>
       </div>
     </div>
@@ -223,7 +214,7 @@
       <div class="flex items-center justify-between">
         <span class="text-xs text-base-content/50 font-mono">{stepIndex + 1} / {activeSteps.length}</span>
         <div class="flex items-center gap-1.5">
-          <button onclick={() => (phase = 'finale')} class="px-2.5 py-1 rounded-md text-xs font-medium text-base-content/60 hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none">{$t('onboardingTour.skip')}</button>
+          <button onclick={finish} class="px-2.5 py-1 rounded-md text-xs font-medium text-base-content/60 hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none">{$t('onboardingTour.skip')}</button>
           {#if stepIndex > 0}
             <button onclick={back} class="px-2.5 py-1 rounded-md text-xs font-medium border border-base-300 hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('common.back')}</button>
           {/if}
@@ -231,20 +222,6 @@
             {stepIndex === activeSteps.length - 1 ? $t('onboardingTour.finish') : $t('common.next')}
           </button>
         </div>
-      </div>
-    </div>
-  </div>
-{:else if phase === 'finale'}
-  <div class="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md rounded-2xl bg-base-100 border border-base-300 shadow-2xl p-7 text-center">
-      <div class="w-12 h-12 rounded-xl bg-primary text-primary-content flex items-center justify-center text-xl mx-auto mb-4">✨</div>
-      <h2 class="text-xl font-bold mb-2">{$t('onboardingTour.finaleTitle')}</h2>
-      <p class="text-sm text-base-content/80 mb-6 leading-relaxed">
-        {$t('onboardingTour.finaleBody')}
-      </p>
-      <div class="flex items-center justify-center gap-2">
-        <button onclick={finish} class="px-4 py-2 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors cursor-pointer bg-transparent">{$t('onboardingTour.maybeLater')}</button>
-        <button onclick={runSetup} class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all cursor-pointer border-none">{$t('onboardingTour.setMeUp')}</button>
       </div>
     </div>
   </div>

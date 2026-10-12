@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use super::authoring::{AUTHORING_RULES, WORKED_EXAMPLE};
 use super::manager::{Lifetime, SaveOptions, WorkflowManager};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -38,6 +39,7 @@ const KINDS: &[Kind] = &[
 
 /// Workflows belong to an employee; this is how every workflow tool says so.
 const EMPLOYEE_NOTE: &str = "Workflows belong to an employee: yours by default; `employee` names another's (when the owner changes an employee's duties, the workflow goes on that employee, never on you).";
+
 
 impl Kind {
     fn name(self) -> &'static str {
@@ -81,8 +83,12 @@ impl Kind {
                 "Creates a workflow: work the engine carries until it has an outcome, through waits, answers and restarts.\n\
                 When to use: the owner gives a direction that spans employees, teams or days (\"have marketing work with sales and bring me a recommendation\"). Make it temporary: its activities ask each employee or team, wait for the results, follow up on a stated day, and bring one outcome back. You hear the outcome; don't track it by hand.\n\
                 When not to use: a quick question you can answer from a coworker or two in this conversation (send_message, or a helper with delegate), or a single step you can take yourself.\n\
-                - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"run\", \"intent\": \"what this accomplishes\", \"steps\": [\"concrete step\"]}}]}}. Leave out the trigger for a workflow run by hand.\n\
-                - Activities are the only executable unit; each runs its intent and steps on its own. A top-level `steps` array is one activity.\n\
+                - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"read\", \"type\": \"command\", \"params\": {{\"skill\": \"<slug>\", \"command\": \"${{plugin.<SLUG>_BIN}} <command> --json\"}}}}, {{\"id\": \"write-up\", \"tools\": [], \"intent\": \"what this accomplishes from {{{{nodes.read.items}}}}\", \"steps\": [\"concrete step\"]}}], \"connections\": [{{\"from\": \"__trigger__\", \"to\": \"read\"}}, {{\"from\": \"read\", \"to\": \"write-up\"}}]}}. Leave out the trigger for a workflow run by hand.\n\
+                - Activities (actions) are the only executable unit; each runs its intent and steps on its own. Each activity's `tools` lists every tool it calls, by exact name (`plugin__<slug>` for a plugin, `send_message` to ask a coworker). It runs with only those, plus exit, emit_event and message_owner, its memory (recall and remember, to keep state between runs) and any tool its steps name: a tool it doesn't list is refused. A call written in a step uses the tool's own parameters. A scheduling tool is refused in every workflow. An activity whose job is to deliver (a report the owner always gets) sets `requires_tools` (e.g. [\"message_owner\"]) so it can't finish without the send; leave it out when sending depends on what it finds.\n\
+                - Each step (an activity without steps is one step) gets up to 50 model turns, and a run up to 150 in all: split a long job into steps, each one thing to do with its result.\n\
+                - Design them by these rules before you write the JSON:\n\
+                {AUTHORING_RULES}\n\
+                {WORKED_EXAMPLE}\n\
                 - The name goes in `name`, or as \"name\" inside the definition.\n\
                 - `lifetime: \"temporary\"` makes it for one piece of work: it runs once (at once when it has no trigger; on its first fire otherwise), and after it ends and its outcome reaches the owner it is deleted. Its runs, receipts and cost stay, and you hear the outcome. Left out, it is saved and runs on its trigger until deleted.\n\
                 - \"Tell me when the order ships\": a temporary workflow with {{\"trigger\": {{\"type\": \"event\", \"sources\": [\"<the event>\"]}}}}. It fires once, reports and disappears; nothing polls.\n\
@@ -93,7 +99,7 @@ impl Kind {
                 Example: owner, after that outcome: \"Give me this report every Monday at 8.\" → create_workflow(name: \"Weekly marketing budget\", from_run: \"<its run id>\", definition: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 8 * * MON\"}}}}). Nothing is rebuilt."
             ),
             Kind::Update => format!(
-                "Replaces an existing workflow's definition (same shape as create_workflow; not a partial patch). Its run history stays attached. `lifetime: \"saved\"` keeps a temporary workflow for good. {EMPLOYEE_NOTE}"
+                "Replaces an existing workflow's definition (same shape and design rules as create_workflow; not a partial patch). Its run history stays attached. `lifetime: \"saved\"` keeps a temporary workflow for good. {EMPLOYEE_NOTE}"
             ),
             Kind::Delete => format!("Deletes a workflow by name, with its trigger. {EMPLOYEE_NOTE}"),
             Kind::Run => format!(
@@ -194,20 +200,20 @@ impl Kind {
         matches!(self, Kind::List | Kind::Status | Kind::Runs)
     }
 
-    fn labels(self, input: &serde_json::Value) -> (String, String) {
+    fn sentence(self, input: &serde_json::Value) -> String {
         let named = |key: &str| str_field(input, key).to_string();
         let on = input["enabled"].as_bool().unwrap_or(true);
         match self {
-            Kind::List => ("checking workflows".into(), "Checked workflows".into()),
-            Kind::Install => ("installing a workflow".into(), "Installed a workflow".into()),
-            Kind::Uninstall => ("uninstalling a workflow".into(), "Uninstalled a workflow".into()),
-            Kind::Create => (format!("creating the {} workflow", named("name")), format!("Created the {} workflow", named("name"))),
-            Kind::Update => (format!("updating the {} workflow", named("name")), format!("Updated the {} workflow", named("name"))),
-            Kind::Delete => (format!("deleting the {} workflow", named("name")), format!("Deleted the {} workflow", named("name"))),
-            Kind::Run => (format!("starting {}", named("workflow")), format!("Started {}", named("workflow"))),
-            Kind::Status | Kind::Runs => (format!("checking {}", named("workflow")), format!("Checked {}", named("workflow"))),
-            Kind::SetEnabled if on => (format!("turning on {}", named("workflow")), format!("Turned on {}", named("workflow"))),
-            Kind::SetEnabled => (format!("turning off {}", named("workflow")), format!("Turned off {}", named("workflow"))),
+            Kind::List => "checking workflows".into(),
+            Kind::Install => "installing a workflow".into(),
+            Kind::Uninstall => "uninstalling a workflow".into(),
+            Kind::Create => format!("creating the {} workflow", named("name")),
+            Kind::Update => format!("updating the {} workflow", named("name")),
+            Kind::Delete => format!("deleting the {} workflow", named("name")),
+            Kind::Run => format!("starting {}", named("workflow")),
+            Kind::Status | Kind::Runs => format!("checking {}", named("workflow")),
+            Kind::SetEnabled if on => format!("turning on {}", named("workflow")),
+            Kind::SetEnabled => format!("turning off {}", named("workflow")),
         }
     }
 }
@@ -249,6 +255,26 @@ fn workflow_ref(input: &serde_json::Value) -> String {
 /// deleting removes one. Each names the workflow the same way, so a delete
 /// of a workflow the employee created is its own work.
 fn workflow_effects(kind: Kind, input: &serde_json::Value) -> types::permissions::CallEffects {
+    let mut effects = workflow_change(kind, input);
+    effects.arms_schedule = arms_schedule(kind, input);
+    effects
+}
+
+/// Whether the call creates, re-arms or installs a trigger: a new or
+/// installed workflow (a temporary one with no trigger runs at once), an
+/// update that sets a trigger, turning one on. Only an attended run may
+/// (`types::permissions::CallEffects::arms_schedule`).
+fn arms_schedule(kind: Kind, input: &serde_json::Value) -> bool {
+    match kind {
+        Kind::Create | Kind::Install => true,
+        Kind::Update => serde_json::from_str::<serde_json::Value>(str_field(input, "definition"))
+            .map_or(true, |d| d.get("trigger").is_some()),
+        Kind::SetEnabled => input["enabled"].as_bool().unwrap_or(true),
+        _ => false,
+    }
+}
+
+fn workflow_change(kind: Kind, input: &serde_json::Value) -> types::permissions::CallEffects {
     use types::permissions::{CallEffects, Knowable};
     if kind.read_only() {
         return CallEffects::none();
@@ -354,6 +380,7 @@ impl WorkflowTool {
                         }
                     },
                     from_run: (!from_run.is_empty()).then(|| from_run.to_string()),
+                    narrow: ctx.narrow(),
                 };
                 let definition = if definition.is_empty() { "{}" } else { definition };
                 match self.kind {
@@ -371,13 +398,13 @@ impl WorkflowTool {
                     },
                 }
             }
-            _ => self.on_workflow(employee, &input).await,
+            _ => self.on_workflow(ctx, employee, &input).await,
         }
     }
 
     /// The calls on one workflow, resolved by name or id — the employee's
     /// own workflows first, so anything list_workflows shows is reachable.
-    async fn on_workflow(&self, employee: &str, input: &serde_json::Value) -> ToolResult {
+    async fn on_workflow(&self, ctx: &ToolContext, employee: &str, input: &serde_json::Value) -> ToolResult {
         let info = match self.manager.resolve(employee, str_field(input, "workflow")).await {
             Ok(i) => i,
             Err(e) => return ToolResult::error(format!("workflow not found: {e}")),
@@ -385,7 +412,9 @@ impl WorkflowTool {
         match self.kind {
             Kind::Run => {
                 let inputs = input.get("inputs").filter(|v| !v.is_null()).cloned().unwrap_or_else(|| serde_json::json!({}));
-                match self.manager.run(&info.id, inputs, "agent").await {
+                // Held to the mode this run carries (a conversation's
+                // stricter pick); otherwise the employee's own.
+                match self.manager.run(&info.id, inputs, "agent", ctx.narrow()).await {
                     Ok(run_id) => json_result(serde_json::json!({
                         "started": true,
                         "runId": run_id,
@@ -484,12 +513,8 @@ impl DynTool for WorkflowTool {
         false
     }
 
-    fn activity(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).0
-    }
-
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        self.kind.labels(input).1
+    fn describe(&self, input: &serde_json::Value) -> String {
+        self.kind.sentence(input)
     }
 
     fn execute_dyn<'a>(
@@ -565,6 +590,9 @@ pub(crate) mod tests {
         if let Some(run) = &o.from_run {
             note.push_str(&format!(" from {run}"));
         }
+        if let Some(mode) = o.narrow {
+            note.push_str(&format!(" narrow={}", mode.as_str()));
+        }
         note
     }
 
@@ -596,8 +624,17 @@ pub(crate) mod tests {
             let found = agent_ref == "Content Creator";
             Box::pin(async move { if found { Ok("cc".to_string()) } else { Err("no employee named that".to_string()) } })
         }
-        fn run<'a>(&'a self, id: &'a str, inputs: serde_json::Value, _trigger: &'a str) -> Fut<'a, Result<String, String>> {
-            self.log(format!("run {id} {inputs}"));
+        fn run<'a>(
+            &'a self,
+            id: &'a str,
+            inputs: serde_json::Value,
+            _trigger: &'a str,
+            narrow: Option<types::permissions::Mode>,
+        ) -> Fut<'a, Result<String, String>> {
+            match narrow {
+                Some(mode) => self.log(format!("run {id} {inputs} narrow={}", mode.as_str())),
+                None => self.log(format!("run {id} {inputs}")),
+            }
             Box::pin(async { Ok("run-1".to_string()) })
         }
         fn run_status<'a>(&'a self, _run_id: &'a str) -> Fut<'a, Result<WorkflowRunInfo, String>> {
@@ -645,6 +682,7 @@ pub(crate) mod tests {
             _trigger_detail: Option<String>,
             _agent_id: &'a str,
             _emit_sources: Vec<String>,
+            _narrow: Option<types::permissions::Mode>,
         ) -> Fut<'a, Result<String, String>> {
             Box::pin(async { Err("unused".to_string()) })
         }
@@ -666,11 +704,30 @@ pub(crate) mod tests {
         }
         async fn call(&self, name: &str, input: serde_json::Value) -> ToolResult {
             let ctx = ToolContext { session_key: "agent:ops:web".into(), ..ToolContext::default() };
-            self.tools.iter().find(|t| t.name() == name).unwrap().execute_dyn(&ctx, input).await
+            self.call_in(&ctx, name, input).await
+        }
+        async fn call_in(&self, ctx: &ToolContext, name: &str, input: serde_json::Value) -> ToolResult {
+            self.tools.iter().find(|t| t.name() == name).unwrap().execute_dyn(ctx, input).await
         }
         fn calls(&self) -> Vec<String> {
             std::mem::take(&mut *self.manager.calls.lock().unwrap())
         }
+    }
+
+    /// A new, installed or switched-on workflow, or one given a trigger,
+    /// arms scheduled work; editing steps, deleting and reading don't.
+    #[test]
+    fn triggers_arm_scheduled_work() {
+        let arms = |k: Kind, input: serde_json::Value| workflow_effects(k, &input).arms_schedule;
+        assert!(arms(Kind::Create, json!({"name": "retry", "definition": "{}"})));
+        assert!(arms(Kind::Install, json!({"code": "WORK-XXXX-XXXX"})));
+        assert!(arms(Kind::SetEnabled, json!({"workflow": "w", "enabled": true})));
+        assert!(arms(Kind::Update, json!({"name": "w", "definition": r#"{"trigger":{"type":"schedule","cron":"* * * * *"}}"#})));
+        assert!(!arms(Kind::Update, json!({"name": "w", "definition": r#"{"activities":[]}"#})));
+        assert!(!arms(Kind::SetEnabled, json!({"workflow": "w", "enabled": false})));
+        assert!(!arms(Kind::Delete, json!({"name": "w"})));
+        assert!(!arms(Kind::Run, json!({"workflow": "w"})));
+        assert!(workflow_effects(Kind::Create, &json!({"name": "retry"})).creates == ["workflow:retry"], "the rest stays");
     }
 
     #[test]
@@ -725,6 +782,30 @@ pub(crate) mod tests {
         assert!(empty.is_error && empty.content.contains("from_run") && rig.calls().is_empty(), "{}", empty.content);
     }
 
+    /// A workflow run started from a conversation carries the mode the
+    /// conversation holds what it starts to (`ToolContext::narrow`), and so
+    /// does temporary work that starts as it is made. A run with nothing
+    /// carried, a conversation in the employee's own mode, passes nothing.
+    #[tokio::test]
+    async fn a_run_started_from_a_conversation_carries_its_mode() {
+        let rig = Rig::new();
+        let mut grant = types::permissions::Grant::new("ops", types::permissions::Mode::Plan);
+        grant.narrow = Some(types::permissions::Mode::Plan);
+        let ctx = ToolContext { session_key: "agent:ops:web".into(), grant: Some(Arc::new(grant)), ..ToolContext::default() };
+        rig.call_in(&ctx, "run_workflow", json!({"workflow": "Weekly Report"})).await;
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {} narrow=plan"]);
+        let def = r#"{"name":"Budget check","activities":[{"id":"a","intent":"x"}]}"#;
+        rig.call_in(&ctx, "create_workflow", json!({"definition": def, "lifetime": "temporary"})).await;
+        assert_eq!(rig.calls(), ["create ops Budget check temporary→agent:ops:web narrow=plan"]);
+        let own = ToolContext {
+            session_key: "agent:ops:web".into(),
+            grant: Some(Arc::new(types::permissions::Grant::new("ops", types::permissions::Mode::FullAccess))),
+            ..ToolContext::default()
+        };
+        rig.call_in(&own, "run_workflow", json!({"workflow": "Weekly Report"})).await;
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {}"]);
+    }
+
     /// The guidance for long-running work sits where the model decides: in
     /// the deferred listing's hint and in create_workflow's own text. A
     /// direction that spans employees, teams or days becomes a temporary
@@ -748,6 +829,32 @@ pub(crate) mod tests {
         ] {
             assert!(d.contains(words), "missing {words:?} in: {d}");
         }
+    }
+
+    /// The authoring eval's input (`make eval-authoring`): these tools'
+    /// definitions exactly as the model is shown them, one file each in the
+    /// `AUTHORING_EXPORT` folder.
+    #[test]
+    #[ignore = "writes the authoring surfaces for make eval-authoring"]
+    fn export_authoring_surfaces() {
+        let dir = std::path::PathBuf::from(std::env::var("AUTHORING_EXPORT").expect("AUTHORING_EXPORT names the folder"));
+        for kind in [Kind::Create, Kind::Update] {
+            let def = serde_json::json!({"name": kind.name(), "description": kind.description(), "input_schema": kind.schema()});
+            std::fs::write(dir.join(format!("{}.json", kind.name())), serde_json::to_string_pretty(&def).unwrap()).unwrap();
+        }
+    }
+
+    /// create_workflow carries the one design rule set and its worked
+    /// example; the example is a definition (the authoring eval validates
+    /// and scores it, `make eval-authoring`).
+    #[test]
+    fn create_workflow_carries_the_design_rules_and_example() {
+        let d = Kind::Create.description();
+        assert!(d.contains(AUTHORING_RULES) && d.contains(WORKED_EXAMPLE), "{d}");
+        let json = &WORKED_EXAMPLE[WORKED_EXAMPLE.find('{').unwrap()..];
+        let def: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert!(def["activities"].as_array().unwrap().len() >= 5 && def["connections"].is_array());
+        assert!(Kind::Update.description().contains("design rules"));
     }
 
     /// A status answer for a run in flight says checking again is useless,

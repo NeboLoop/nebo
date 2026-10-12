@@ -25,6 +25,7 @@ pub(crate) async fn reload_providers(
     // Refresh the DB-held models in the selector (they're not in yaml)
     crate::inject_db_models(store, harness.selector(), "ollama");
     crate::inject_db_models(store, harness.selector(), "janus");
+    crate::inject_connection_models(store, harness.selector());
 }
 
 /// GET /api/v1/providers
@@ -33,7 +34,7 @@ pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serd
         .store
         .list_auth_profiles()
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"profiles": profiles})))
+    Ok(Json(serde_json::json!({ "profiles": profiles })))
 }
 
 /// POST /api/v1/providers
@@ -47,9 +48,16 @@ pub async fn create_provider(
     let provider = body["provider"].as_str().ok_or_else(|| {
         to_error_response(types::NeboError::Validation("provider required".into()))
     })?;
-    let api_key = body["apiKey"].as_str().unwrap_or("");
+    let api_key = auth::credential::encrypt(body["apiKey"].as_str().unwrap_or(""))
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
     let model = body["model"].as_str();
     let base_url = body["baseUrl"].as_str();
+    // A compatible URL is the whole point of those two kinds.
+    if matches!(provider, "openai_compatible" | "systemone_compatible")
+        && base_url.map(str::trim).is_none_or(str::is_empty)
+    {
+        return Err(to_error_response(types::NeboError::Validation("This provider needs its base URL.".into())));
+    }
     let priority = body["priority"].as_i64().unwrap_or(50);
     let auth_type = body["authType"].as_str();
     let metadata = body.get("metadata").map(|v| v.to_string());
@@ -61,7 +69,7 @@ pub async fn create_provider(
             &id,
             name,
             provider,
-            api_key,
+            &api_key,
             model,
             base_url,
             priority,
@@ -103,7 +111,8 @@ pub async fn update_provider(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     let name = body["name"].as_str().unwrap_or(&existing.name);
-    let api_key = body["apiKey"].as_str().unwrap_or(&existing.api_key);
+    let api_key = auth::credential::encrypt(body["apiKey"].as_str().unwrap_or(&existing.api_key))
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
     // Absent key = keep the stored value; explicit null or "" = CLEAR the
     // model pin (writes NULL). Before this, a model could be set but never
     // unset — a bot-profile pin would shadow account-level routing policy
@@ -141,7 +150,7 @@ pub async fn update_provider(
         .update_auth_profile(
             &id,
             name,
-            api_key,
+            &api_key,
             model,
             base_url,
             priority,
@@ -194,7 +203,8 @@ pub async fn test_provider(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
     // Basic validation first
-    if profile.api_key.is_empty() && profile.auth_type.as_deref() != Some("local") {
+    let api_key = auth::credential::profile_key(&profile);
+    if api_key.is_empty() && profile.auth_type.as_deref() != Some("local") && profile.provider != "openai_compatible" {
         return Ok(Json(serde_json::json!({
             "success": false,
             "provider": profile.provider,
@@ -202,15 +212,24 @@ pub async fn test_provider(
         })));
     }
 
-    // Build a temporary provider and try a minimal API call
-    let model = profile.model.clone().unwrap_or_default();
+    // Build a temporary provider and try a minimal API call.
+    let model = test_model(&state.store, &profile);
+    // A compatible server with no model yet: its own model list, read with
+    // the key, is the check.
+    if model.is_empty() && profile.provider == "openai_compatible" {
+        let (success, message) = match super::connections::fetch_catalog(&profile).await {
+            Some(list) => (true, format!("Connection successful — the server lists {} models", list.len())),
+            None => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
+        };
+        return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
+    }
     let test_result: Result<String, String> = match profile.provider.as_str() {
         "anthropic" => {
-            let provider = ai::AnthropicProvider::new(profile.api_key.clone(), model);
+            let provider = ai::AnthropicProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
         }
         "openai" => {
-            let provider = ai::OpenAIProvider::new(profile.api_key.clone(), model);
+            let provider = ai::OpenAIProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
         }
         "deepseek" => {
@@ -219,12 +238,28 @@ pub async fn test_provider(
                 .clone()
                 .unwrap_or_else(|| "https://api.deepseek.com/v1".into());
             let provider =
-                ai::OpenAIProvider::with_base_url(profile.api_key.clone(), model, base_url);
+                ai::OpenAIProvider::with_base_url(api_key.clone(), model, base_url);
             test_provider_connection(&provider).await
         }
         "google" => {
-            let provider = ai::GeminiProvider::new(profile.api_key.clone(), model);
+            let provider = ai::GeminiProvider::new(api_key.clone(), model);
             test_provider_connection(&provider).await
+        }
+        // The OpenAI format at OpenRouter's fixed URL, or at the owner's.
+        "openrouter" | "openai_compatible" => {
+            let base_url = if profile.provider == "openrouter" {
+                Some("https://openrouter.ai/api/v1".to_string())
+            } else {
+                profile.base_url.clone().filter(|u| !u.trim().is_empty())
+            };
+            match base_url {
+                Some(url) => {
+                    let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
+                    provider.set_provider_id(&profile.provider);
+                    test_provider_connection(&provider).await
+                }
+                None => Err("This provider needs its base URL.".to_string()),
+            }
         }
         "ollama" => {
             let base_url = profile
@@ -265,6 +300,18 @@ pub async fn test_provider(
     }
 }
 
+/// The model a provider test asks: the one the connection pins, else the
+/// first chat model it has on. Empty when it has none.
+fn test_model(store: &db::Store, profile: &db::models::AuthProfile) -> String {
+    profile.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| {
+        super::connections::connection_models(store, profile)
+            .into_iter()
+            .find(|m| m.is_active && m.kind == "chat")
+            .map(|m| m.model_id)
+            .unwrap_or_default()
+    })
+}
+
 /// Test a provider by sending a minimal chat request.
 async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String, String> {
     let req = ai::ChatRequest {
@@ -285,6 +332,7 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
         system: String::new(),
         model: String::new(),
         enable_thinking: false,
+        effort: None,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
@@ -347,6 +395,7 @@ fn picker_models(
             "kind": kind,
             "preferred": m.preferred.unwrap_or(0) == 1,
             "isActive": m.is_active.unwrap_or(0) == 1,
+            "rank": m.rank,
         });
 
         // Add pricing if available
@@ -386,44 +435,11 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
         cfg.aliases.iter().map(|a| (a.alias.clone(), a.model_id.clone())).collect();
     state.harness.selector().rebuild_fuzzy(&user_aliases);
 
-    // Task routing
+    // The bot's routes
     let task_routing = cfg.task_routing.as_ref().map(|tr| {
         serde_json::json!({
-            "vision": tr.vision,
-            "audio": tr.audio,
-            "reasoning": tr.reasoning,
-            "code": tr.code,
             "general": tr.general,
-            "aux": tr.aux,
-            "fallbacks": tr.fallbacks,
         })
-    });
-
-    // Lane routing
-    let lane_routing = cfg.lane_routing.as_ref().map(|lr| {
-        let mut m = serde_json::Map::new();
-        if !lr.heartbeat.is_empty() {
-            m.insert(
-                "heartbeat".into(),
-                serde_json::Value::String(lr.heartbeat.clone()),
-            );
-        }
-        if !lr.events.is_empty() {
-            m.insert(
-                "events".into(),
-                serde_json::Value::String(lr.events.clone()),
-            );
-        }
-        if !lr.comm.is_empty() {
-            m.insert("comm".into(), serde_json::Value::String(lr.comm.clone()));
-        }
-        if !lr.subagent.is_empty() {
-            m.insert(
-                "subagent".into(),
-                serde_json::Value::String(lr.subagent.clone()),
-            );
-        }
-        serde_json::Value::Object(m)
     });
 
     // Aliases
@@ -470,8 +486,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
                 "displayName": cp.display_name,
                 "command": cp.command,
                 "installHint": cp.install_hint,
-                "models": cp.models,
-                "defaultModel": cp.default_model,
                 "active": cp.is_active(),
             })
         })
@@ -480,7 +494,6 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
     Ok(Json(serde_json::json!({
         "models": models,
         "taskRouting": task_routing,
-        "laneRouting": lane_routing,
         "aliases": aliases,
         "availableCLIs": available_clis,
         "cliStatuses": cli_statuses,
@@ -591,26 +604,9 @@ pub async fn update_model_config(
 ) -> HandlerResult<serde_json::Value> {
     let mut cfg = config::ModelsConfig::load();
 
-    if cfg.defaults.is_none() {
-        cfg.defaults = Some(config::models::Defaults {
-            // Routing settings do not edit the escalation model; keep what the file says.
-            escalation: cfg.defaults.as_ref().map(|d| d.escalation.clone()).unwrap_or_default(),
-            primary: String::new(),
-            fallbacks: Vec::new(),
-        });
-    }
-
-    if let Some(primary) = body.get("primary").and_then(|v| v.as_str()) {
-        if !primary.is_empty() {
-            cfg.defaults.as_mut().unwrap().primary = primary.to_string();
-        }
-    }
-
-    if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_array()) {
-        cfg.defaults.as_mut().unwrap().fallbacks = fallbacks
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
+    if let Some(primary) = body.get("primary").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+        cfg.defaults.get_or_insert_with(|| config::models::Defaults { primary: String::new() }).primary =
+            primary.to_string();
     }
 
     cfg.save()
@@ -630,7 +626,7 @@ pub async fn update_model_config(
 
 /// PUT /api/v1/models/task-routing — update routing config in YAML.
 pub async fn update_task_routing(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     let mut cfg = config::ModelsConfig::load();
@@ -638,72 +634,10 @@ pub async fn update_task_routing(
     // Update task routing
     let tr = cfg
         .task_routing
-        .get_or_insert_with(|| config::models::TaskRouting {
-            vision: String::new(),
-            audio: String::new(),
-            reasoning: String::new(),
-            code: String::new(),
-            general: String::new(),
-            aux: String::new(),
-            fallbacks: std::collections::HashMap::new(),
-        });
-    if let Some(v) = body.get("vision").and_then(|v| v.as_str()) {
-        tr.vision = v.to_string();
-    }
-    if let Some(v) = body.get("audio").and_then(|v| v.as_str()) {
-        tr.audio = v.to_string();
-    }
-    if let Some(v) = body.get("reasoning").and_then(|v| v.as_str()) {
-        tr.reasoning = v.to_string();
-    }
-    if let Some(v) = body.get("code").and_then(|v| v.as_str()) {
-        tr.code = v.to_string();
-    }
+        .get_or_insert_with(Default::default);
     if let Some(v) = body.get("general").and_then(|v| v.as_str()) {
         tr.general = v.to_string();
     }
-    if let Some(v) = body.get("aux").and_then(|v| v.as_str()) {
-        tr.aux = v.to_string();
-    }
-    if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_object()) {
-        let mut fb = std::collections::HashMap::new();
-        for (k, v) in fallbacks {
-            if let Some(arr) = v.as_array() {
-                fb.insert(
-                    k.clone(),
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect(),
-                );
-            }
-        }
-        tr.fallbacks = fb;
-    }
-
-    // Update lane routing
-    if let Some(lr_val) = body.get("laneRouting").and_then(|v| v.as_object()) {
-        let lr = cfg
-            .lane_routing
-            .get_or_insert_with(|| config::models::LaneRouting {
-                heartbeat: String::new(),
-                events: String::new(),
-                comm: String::new(),
-                subagent: String::new(),
-            });
-        if let Some(v) = lr_val.get("heartbeat").and_then(|v| v.as_str()) {
-            lr.heartbeat = v.to_string();
-        }
-        if let Some(v) = lr_val.get("events").and_then(|v| v.as_str()) {
-            lr.events = v.to_string();
-        }
-        if let Some(v) = lr_val.get("comm").and_then(|v| v.as_str()) {
-            lr.comm = v.to_string();
-        }
-        if let Some(v) = lr_val.get("subagent").and_then(|v| v.as_str()) {
-            lr.subagent = v.to_string();
-        }
-    }
-
     // Update aliases
     if let Some(aliases) = body.get("aliases").and_then(|v| v.as_array()) {
         cfg.aliases = aliases
@@ -718,6 +652,9 @@ pub async fn update_task_routing(
 
     cfg.save()
         .map_err(|e| to_error_response(types::NeboError::Server(e)))?;
+    // The running bot takes the new routes now: the next turn runs on the
+    // new default (a model or an intelligence pack), with no restart.
+    state.harness.selector().set_task_routing(agent::selector::task_routes(&cfg));
 
     Ok(Json(serde_json::json!({
         "message": "Task routing updated successfully",
@@ -824,6 +761,9 @@ mod picker_tests {
             kind: None,
             preferred: None,
             seeded_version: None,
+            model_kind: "chat".into(),
+            source: "catalog".into(),
+            rank: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -891,5 +831,349 @@ mod reload_tests {
         let ids: Vec<String> = harness.providers().read().await.iter().map(|p| p.id().to_string()).collect();
         assert!(ids.iter().any(|id| id == "janus"), "Janus is live after a code pairing: {ids:?}");
         assert!(ids.iter().any(|id| id == ai::providers::linked::ID), "the reload keeps the linked provider: {ids:?}");
+    }
+}
+
+// ── Intelligence packs (`types::packs`) ─────────────────────────────
+
+/// What the app sends to make or change a pack.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackBody {
+    pub name: String,
+    #[serde(default)]
+    pub levels: types::packs::PackLevels,
+    #[serde(default = "fallback_on")]
+    pub fallback: bool,
+    #[serde(default)]
+    pub route_through_janus: bool,
+    #[serde(default)]
+    pub lanes: types::packs::PackLanes,
+    #[serde(default)]
+    pub level_effort: types::packs::LevelEffort,
+}
+
+fn fallback_on() -> bool {
+    true
+}
+
+/// The pack a body describes, or why it can't be one: a name, and every
+/// level a `provider/model` (never another pack).
+fn pack_of(id: String, body: PackBody) -> Result<types::packs::Pack, types::NeboError> {
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return Err(types::NeboError::Validation("A pack needs a name.".into()));
+    }
+    let l = &body.levels;
+    for model in [&l.instant, &l.low, &l.medium, &l.high, &l.max, &l.vision, &l.voice, &l.decisions].into_iter().flatten() {
+        let model = model.trim();
+        let well_formed = model.split_once('/').is_some_and(|(p, m)| !p.is_empty() && !m.is_empty());
+        if !model.is_empty() && (!well_formed || types::packs::parse_ref(model).is_some()) {
+            return Err(types::NeboError::Validation(format!("{model} isn't a model (provider/model).")));
+        }
+    }
+    // Auto is Janus's alone: a pack the owner makes runs at the level he set.
+    let levels = types::packs::PackLevels { auto: None, ..body.levels };
+    Ok(types::packs::Pack {
+        id,
+        name,
+        levels,
+        fallback: body.fallback,
+        built_in: false,
+        route_through_janus: body.route_through_janus,
+        lanes: body.lanes,
+        level_effort: body.level_effort,
+    })
+}
+
+/// GET /api/v1/intelligence-packs — every pack, Nebo AI first.
+pub async fn list_packs(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let packs = state.store.list_intelligence_packs().map_err(to_error_response)?;
+    let default = state.harness.selector().configured();
+    Ok(Json(serde_json::json!({ "packs": packs, "default": default })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct DefaultBody {
+    pub value: String,
+}
+
+/// PUT /api/v1/intelligence-packs/default — the bot's default (a pack ref
+/// `pack/<id>[/<level>]` or a model). Applies to the next turn.
+pub async fn set_default_pack(
+    State(state): State<AppState>,
+    Json(body): Json<DefaultBody>,
+) -> HandlerResult<serde_json::Value> {
+    let value = body.value.trim().to_string();
+    let known_pack = |id: &str| state.store.get_intelligence_pack(id).ok().flatten().is_some();
+    let valid = match types::packs::parse_ref(&value) {
+        Some((id, _)) => known_pack(id),
+        None => value.split_once('/').is_some_and(|(p, m)| !p.is_empty() && !m.is_empty()),
+    };
+    if !valid {
+        return Err(to_error_response(types::NeboError::Validation(format!("{value} isn't a pack or a model."))));
+    }
+    let mut cfg = config::ModelsConfig::load();
+    cfg.task_routing
+        .get_or_insert_with(Default::default)
+        .general = value.clone();
+    cfg.save().map_err(|e| to_error_response(types::NeboError::Server(e)))?;
+    state.harness.selector().set_task_routing(agent::selector::task_routes(&cfg));
+    Ok(Json(serde_json::json!({ "default": value })))
+}
+
+/// The label a provider kind reads as.
+fn kind_label(kind: &str) -> &str {
+    match kind {
+        "anthropic" => "Anthropic",
+        "openai" => "OpenAI",
+        "google" => "Google",
+        "openrouter" => "OpenRouter",
+        "deepseek" => "DeepSeek",
+        "openai_compatible" => "OpenAI-compatible",
+        "systemone_compatible" => "SystemOne-compatible",
+        other => other,
+    }
+}
+
+/// GET /api/v1/intelligence-packs/choices — every active model a pack slot
+/// may name, grouped by kind: Nebo AI's speeds, each connection's models,
+/// Ollama and the agents on this computer (`local`). Decisions always offers
+/// Nebo AI's Jev first. Voice offers only what calls speak through today,
+/// xAI's realtime protocol (`Harness::call_voice`): Nebo AI's Voice first,
+/// then each xAI connection's realtime models.
+pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    use types::packs::{NEBO_AI_VOICE, XAI_VOICE_MODEL, is_xai_connection, is_xai_voice_model};
+    let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
+        serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
+    };
+    let mut chat = Vec::new();
+    let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
+    let nebo_voice = NEBO_AI_VOICE.split_once('/').map_or(NEBO_AI_VOICE, |(_, m)| m);
+    let mut voice = vec![choice(NEBO_AI_VOICE.into(), "Nebo AI", "", nebo_voice, &[], false)];
+    for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
+        let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+        if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
+            chat.push(choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &[], false));
+        }
+    }
+    let catalog = config::ModelsConfig::load();
+    for p in state.store.list_auth_profiles().unwrap_or_default() {
+        if p.is_active.unwrap_or(0) == 0 || matches!(p.provider.as_str(), "neboai" | "ollama") {
+            continue;
+        }
+        let key = super::connections::connection_key(&p);
+        let models: Vec<_> = super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active).collect();
+        if is_xai_connection(&p.provider, p.base_url.as_deref()) {
+            let mut names = vec![XAI_VOICE_MODEL];
+            for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
+                if !names.contains(&m) {
+                    names.push(m);
+                }
+            }
+            for m in names {
+                voice.push(choice(format!("{key}/{m}"), kind_label(&p.provider), &p.name, m, &[], false));
+            }
+        }
+        for m in models {
+            let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
+            if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
+        }
+    }
+    for m in state.store.list_active_provider_models("ollama").unwrap_or_default() {
+        chat.push(choice(format!("ollama/{}", m.model_id), "Ollama", "", &m.model_id, &[], true));
+    }
+    let clis = config::detect_all_clis();
+    for cp in catalog.cli_providers.iter().filter(|c| c.is_active()) {
+        let installed = match cp.command.as_str() {
+            "claude" => clis.claude.installed,
+            "codex" => clis.codex.installed,
+            "gemini" => clis.gemini.installed,
+            _ => false,
+        };
+        // The tool runs its own default model: Nebo names none.
+        if installed {
+            chat.push(choice(format!("{}/", cp.id), &cp.display_name, "", "", &[], true));
+        }
+    }
+    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision, "voice": voice })))
+}
+
+/// POST /api/v1/intelligence-packs — make a pack.
+pub async fn create_pack(
+    State(state): State<AppState>,
+    Json(body): Json<PackBody>,
+) -> HandlerResult<serde_json::Value> {
+    let pack = pack_of(uuid::Uuid::new_v4().to_string(), body).map_err(to_error_response)?;
+    state.store.save_intelligence_pack(&pack).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "pack": pack })))
+}
+
+/// PUT /api/v1/intelligence-packs/{id} — change one of the owner's packs.
+/// Nebo AI is built in: refused.
+pub async fn update_pack(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PackBody>,
+) -> HandlerResult<serde_json::Value> {
+    if state.store.get_intelligence_pack(&id).map_err(to_error_response)?.is_none() {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    let pack = pack_of(id, body).map_err(to_error_response)?;
+    state.store.save_intelligence_pack(&pack).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "pack": pack })))
+}
+
+/// DELETE /api/v1/intelligence-packs/{id} — remove one of the owner's packs.
+/// An employee still on it runs on Nebo AI, and is told so.
+pub async fn delete_pack(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    if !state.store.delete_intelligence_pack(&id).map_err(to_error_response)? {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[cfg(test)]
+mod test_model_tests {
+    /// A connection added with no model pinned is tested on a chat model it
+    /// has on, never on an empty model id.
+    #[test]
+    fn a_test_asks_the_pinned_model_else_a_chat_model_the_connection_has_on() {
+        let store = db::Store::new(":memory:").unwrap();
+        store.create_auth_profile("x", "xAI", "openai_compatible", "", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
+        let p = store.get_auth_profile("x").unwrap().unwrap();
+        assert_eq!(super::test_model(&store, &p), "", "nothing to ask yet");
+        let key = super::super::connections::connection_key(&p);
+        store.put_connection_model(&key, "jev", "Jev", "decision", None, "[]", "added", true).unwrap();
+        store.put_connection_model(&key, "grok-off", "Grok off", "chat", None, "[]", "added", false).unwrap();
+        store.put_connection_model(&key, "grok-5", "Grok 5", "chat", None, "[]", "added", true).unwrap();
+        assert_eq!(super::test_model(&store, &p), "grok-5");
+        store.create_auth_profile("y", "Pinned", "openai_compatible", "", Some("pinned-1"), Some("https://x/v1"), 0, 1, None, None).unwrap();
+        let pinned = store.get_auth_profile("y").unwrap().unwrap();
+        assert_eq!(super::test_model(&store, &pinned), "pinned-1");
+    }
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::{PackBody, pack_of};
+    use types::packs::PackLevels;
+
+    fn body(name: &str, medium: &str) -> PackBody {
+        PackBody {
+            name: name.into(),
+            levels: PackLevels { medium: Some(medium.into()), auto: Some("janus/nebo-1".into()), ..Default::default() },
+            fallback: true,
+            route_through_janus: false,
+            lanes: Default::default(),
+            level_effort: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_pack_needs_a_name_and_real_models_and_never_gets_auto() {
+        let pack = pack_of("p".into(), body(" Mine ", "anthropic/claude-x")).unwrap();
+        assert_eq!(pack.name, "Mine");
+        assert_eq!(pack.levels.auto, None, "Auto is Janus's alone");
+        assert!(!pack.built_in);
+        assert!(pack_of("p".into(), body("  ", "anthropic/claude-x")).is_err());
+        assert!(pack_of("p".into(), body("Mine", "claude-x")).is_err(), "provider/model");
+        assert!(pack_of("p".into(), body("Mine", "pack/other")).is_err(), "never another pack");
+        assert!(pack_of("p".into(), body("Mine", "")).is_ok(), "an empty level is empty");
+    }
+}
+
+/// A user's own provider key is taken from the owner's apps (the phone
+/// through the tunnel included) and goes from this computer to its provider:
+/// never back out of the API.
+#[cfg(test)]
+mod key_egress_tests {
+    /// A sentinel no real provider issues; any appearance is a leak.
+    const SENTINEL: &str = "sk-SENTINEL-byo-key-0000000000000000";
+
+    /// `GET /api/v1/providers` answers the phone over the tunnel too: the
+    /// NeboAI account's refresh token (and its access token) never go with it.
+    #[test]
+    fn no_profile_response_carries_the_neboai_refresh_token() {
+        const REFRESH: &str = "rt-SENTINEL-neboai-refresh-0000";
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let store = db::Store::new(":memory:").unwrap();
+        super::super::neboai::store_neboai_profile(
+            &store, "https://api.example.com", "owner-1", "owner@example.com", "Owner", SENTINEL, REFRESH, true,
+        )
+        .unwrap();
+        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap()}).to_string();
+        assert!(!list.contains(REFRESH), "the refresh token reached an API response: {list}");
+        assert!(!list.contains(SENTINEL), "the access token reached an API response: {list}");
+        assert!(list.contains("janus_provider"), "what the app reads still goes: {list}");
+    }
+
+    /// Every response that carries a profile (list, get, create, update) is
+    /// this struct serialized: the key is left out, not masked.
+    #[test]
+    fn no_profile_response_carries_the_key() {
+        let store = db::Store::new(":memory:").unwrap();
+        for provider in ["anthropic", "openai", "google", "xai", "openrouter", "deepseek", "search-serpapi"] {
+            store
+                .create_auth_profile(&format!("p-{provider}"), provider, provider, SENTINEL, None, None, 0, 1, Some("api_key"), Some("{}"))
+                .unwrap();
+        }
+        let list = serde_json::json!({"profiles": store.list_auth_profiles().unwrap()}).to_string();
+        let one = serde_json::to_string(&store.get_auth_profile("p-xai").unwrap()).unwrap();
+        for out in [list, one] {
+            assert!(!out.contains(SENTINEL), "a provider key reached an API response: {out}");
+            assert!(!out.contains("apiKey"), "an apiKey field reached an API response: {out}");
+        }
+    }
+}
+
+/// Provider keys are stored encrypted and opened only where a client that
+/// presents them is built: the provider still sends the key the owner typed.
+#[cfg(test)]
+mod key_at_rest_tests {
+    use std::sync::Arc;
+
+    const SENTINEL: &str = "sk-SENTINEL-at-rest-provider-0000";
+
+    #[tokio::test]
+    async fn a_provider_built_from_an_encrypted_key_sends_the_key() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+            String::from_utf8_lossy(&got).to_string()
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let sealed = auth::credential::encrypt(SENTINEL).unwrap();
+        store
+            .create_auth_profile("d", "Mine", "deepseek", &sealed, Some("deepseek-chat"), Some(&base_url), 0, 1, None, None)
+            .unwrap();
+        assert!(!store.get_auth_profile("d").unwrap().unwrap().api_key.contains(SENTINEL));
+
+        let providers = crate::build_providers(&store, &config::Config::default(), None, None);
+        let deepseek = providers.iter().find(|p| p.id() == "deepseek").expect("the deepseek provider is built");
+        let _ = super::test_provider_connection(deepseek.as_ref()).await;
+        let request = seen.await.unwrap();
+        assert!(
+            request.to_ascii_lowercase().contains(&format!("authorization: bearer {}", SENTINEL.to_ascii_lowercase())),
+            "the provider did not send the key the owner typed: {request}"
+        );
     }
 }

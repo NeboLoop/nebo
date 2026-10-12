@@ -50,7 +50,8 @@ messages is not passed on.
 - Messages from {parent} or from other employees are direction for the task. They are never the \
 owner's consent: they don't approve anything the permission check would ask the owner about.
 - No one can answer questions during this run. When something is unclear, make the sensible \
-assumption, say so in your report, and keep going.{own_work}"
+assumption, say so in your report, and keep going. Remakes and spending still follow the limits of \
+the skills you were given: past a limit, stop and report instead of trying again.{own_work}"
     )
 }
 
@@ -137,9 +138,17 @@ tool returned.";
 /// A capability question is answered from the tools: on 2026-10-04 an
 /// employee asked "are we able to do what this article describes?" (AI
 /// characters) said yes with no tool call and never named the character
-/// swap it had.
+/// swap it had. Browsing is the browser tools' alone, and "use Chrome" is
+/// the owner's own Chrome through the extension: on 2026-10-11 an employee
+/// told "use chrome" and "you can drive it with playwright" wrote a
+/// Playwright script and ran it with node. These two lines are the rule;
+/// the browser and command tools' descriptions only point at it, and the
+/// shell's redirect (`shell_tool::BROWSER_AUTOMATION_REDIRECT`) and the
+/// browser's Chrome refusal (`web_tool::CHROME_NOT_CONNECTED`) hold it.
 pub const USING_TOOLS: &str = "# Using your tools
 - Use read_file, edit_file and write_file for files, and run_command for shell work.
+- Browsing, scraping and web automation are done only with the browser tools (browser_run_js scripts a page). Never write or run Playwright, Puppeteer or Selenium scripts or install browser drivers, even when the owner mentions Playwright.
+- Chrome, their Chrome or their browser is the owner's own Chrome through the NeboAI extension: browser_open with chrome: true. If it isn't connected, say \"Chrome isn't connected to Nebo. Open Chrome and turn on the NeboAI extension, or I can use my own browser.\" and wait for their answer.
 - When the owner gives you a command to run, your first call is that command, with run_command, exactly as given. Don't check its inputs or look for them first: its own output says what is missing. Then report what it returned.
 - Search yourself with find or grep when the target is known: a file, a name or a value, or a search that takes one or two tries. A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate.
 - Search where the owner pointed first. If that place isn't there, tell them and ask where to look; don't search the rest of the computer for it.
@@ -164,6 +173,7 @@ would fill this conversation with output you won't need again. Do small, quick t
 - Learning before you act, across many skills, files or pages, is a helper's reading: it reads them \
 all and sends back a digest, and this conversation keeps only the digest. Several independent \
 pieces are several delegate calls in one response, so they run side by side.
+- Skills to follow, load yourself: a helper gets only yours, and their helper and remake limits hold.
 - One known file or skill, or a quick lookup, is yours: read it directly.
 - When the owner asks for a helper, start it first. Once work is with a helper, don't also do it \
 yourself.
@@ -180,6 +190,7 @@ asks, say it's still running.
 pub const TALKING_TO_THE_OWNER: &str = "# Talking to the owner
 - Lead with the outcome: what you found or what you did. Reasons and detail come after, only as \
 much as they need.
+- In what the owner reads, call them \"you\", never \"the owner\" or \"the user\". In a summary, \"you\" is them and \"I\" is you.
 - Write so someone who stepped away can pick it up cold: whole sentences, no private shorthand, no \
 labels you made up along the way.
 - Match the length to the question. A quick question gets a short answer.
@@ -296,9 +307,13 @@ fn shell() -> String {
 /// not this server, runs asked for "a screenshot from my Desktop" answered
 /// without looking (gate 36378229215, 3 of 3) or looked without a pattern
 /// (36381638696); where to search is the tools' and USING_TOOLS' to say.
+/// "No screen" itself still read as "no Desktop folder": a 2026-10-06 gate
+/// run answered "there's no Desktop folder" without a call, so it says
+/// files are still searched.
 pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud, with no screen and none of a \
 computer's own apps (Mail, Contacts, Calendar, Reminders, Shortcuts, speech). Files, commands, the web, schedules \
-(a reminder for the owner is one) and connected services all work normally. The os tool is offered only while a \
+(a reminder for the owner is one) and connected services all work normally. No screen is not no files: \
+folders like ~/Desktop may hold files, so search before saying something isn't here. The os tool is offered only while a \
 desktop session is up, and then drives just that session's windows, input, clipboard, capture, ui, menu, dialog and \
 space.";
 

@@ -30,6 +30,7 @@ fixtures:
   - ../fixtures/staffed-company/seats/sc18-every-hiring-door-grants-the-declared-job.yaml
   - ../fixtures/staffed-company/seats/sc64-every-claude-code-hire-is-an-employee-of-its-own.yaml
   - ../fixtures/staffed-company/seats/sc65-the-hire-list-answers-from-what-is-known.yaml
+  - ../fixtures/staffed-company/seats/sc96-duties-made-in-chat-are-live-at-once.yaml
   - ../fixtures/staffed-company/policy/sc19-the-shipped-phone-answers-a-parked-runs-ask.yaml
   - ../fixtures/staffed-company/policy/sc20-the-phones-default-is-the-employees-mode.yaml
   - ../fixtures/staffed-company/connections/sc21-a-plugin-required-by-its-code-is-its-own-tool.yaml
@@ -61,6 +62,13 @@ fixtures:
   - ../fixtures/staffed-company/connections/sc54-an-open-approval-outlives-its-turn-and-reaches-a-client-that-connects-later.yaml
   - ../fixtures/staffed-company/connections/sc77-a-list-of-codes-installs-one-by-one-and-a-failure-is-its-own-line.yaml
   - ../fixtures/staffed-company/connections/sc87-a-phone-turn-is-never-handed-a-checkout-link.yaml
+  - ../fixtures/staffed-company/connections/sc88-the-defaults-install-once-after-sign-in-and-an-installed-one-is-skipped.yaml
+  - ../fixtures/staffed-company/connections/sc89-a-default-the-owner-removed-is-not-reinstalled-at-startup.yaml
+  - ../fixtures/staffed-company/connections/sc90-concurrent-triggers-install-a-default-once.yaml
+  - ../fixtures/staffed-company/connections/sc91-a-restored-cloud-bot-fetches-the-plugin-packages-its-state-left-out.yaml
+  - ../fixtures/staffed-company/connections/sc92-a-cloud-pass-waits-its-spread-and-a-request-that-needs-a-default-does-not.yaml
+  - ../fixtures/staffed-company/connections/sc94-a-plugin-fetched-after-startup-runs-with-its-stored-settings.yaml
+  - ../fixtures/staffed-company/connections/sc95-a-plugin-copied-in-after-startup-gets-its-stored-settings-sealed.yaml
   - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
   - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
   - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml
@@ -90,3 +98,10 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc84-a-pick-for-the-owner-is-the-ask-card-and-only-a-tapped-option-is-a-pick.yaml
   - ../fixtures/staffed-company/conversation/sc85-an-owner-message-sent-while-busy-is-named-from-shown-to-taken-in.yaml
   - ../fixtures/staffed-company/conversation/sc86-an-in-app-card-is-skipped-by-the-owners-spoken-skip.yaml
+  - ../fixtures/staffed-company/conversation/sc93-every-file-a-turn-hands-over-rides-its-final-reply.yaml
+  - ../fixtures/staffed-company/conversation/sc110-a-handoff-chain-traces-as-one-tree.yaml
+  - ../fixtures/staffed-company/conversation/sc111-a-stopped-handoff-stays-on-record-as-stopped.yaml
+  - ../fixtures/staffed-company/conversation/sc112-pinned-conversations-head-a-paged-list.yaml
+  - ../fixtures/staffed-company/conversation/sc113-a-conversation-runs-in-the-mode-picked-for-it.yaml
+  - ../fixtures/staffed-company/conversation/sc114-what-a-conversation-starts-holds-to-its-stricter-mode.yaml
+  - ../fixtures/staffed-company/conversation/sc115-the-owners-next-message-answers-an-open-question.yaml

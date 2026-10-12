@@ -9,14 +9,17 @@
    * Security model: HTML artifacts run in a sandboxed
    * iframe WITHOUT allow-same-origin (opaque origin — scripts may run but
    * can't reach the app, its API, or its storage). DOCX renders via
-   * docx-preview to styled DOM (no scripts/macros execute). Spreadsheet
-   * formulas are never evaluated — values only.
+   * docx-preview to styled DOM (no scripts/macros execute). Spreadsheets
+   * (xlsx/xls) render in SheetView from the sheet engine's view model — the
+   * browser never evaluates a formula.
    */
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { backendUrl } from '$lib/api/base';
   import { UPLOAD_KEEP_DAYS } from '$lib/api/upload';
+  import { firstFrame } from '$lib/types/attachment';
   import { downloadArtifact } from '$lib/chat/download';
+  import SheetView from '$lib/components/sheet/SheetView.svelte';
 
   let {
     url,
@@ -25,9 +28,22 @@
     oncontentclick,
     sourceView = false,
     codeUrl,
+    documentId,
+    version,
+    onsaved,
+    agentId,
+    sessionKey,
   }: {
     url: string;
     title: string;
+    /** The work document behind the file (`path:<url>` for a file opened by its path). Spreadsheets edit through it. */
+    documentId?: string;
+    version?: number;
+    /** A spreadsheet's edits were saved as a new version. */
+    onsaved?: (version: number) => void;
+    /** The chat a spreadsheet's "Saved …" message lands in (its agent and session key). */
+    agentId?: string;
+    sessionKey?: string;
     /** Markdown → HTML renderer shared with the chat (mention chips + code-copy buttons). */
     renderHtml: (md: string) => string;
     oncontentclick?: (e: MouseEvent) => void;
@@ -93,7 +109,7 @@
     }
     return { meta, body: text.slice(m[0].length) };
   }
-  /** Parsed sheet data: per sheet, name + rows. */
+  /** Parsed CSV/TSV data: name + rows. */
   let sheets = $state<{ name: string; rows: string[][]; total: number }[]>([]);
   let pdfContainer = $state<HTMLDivElement | null>(null);
   let docxContainer = $state<HTMLDivElement | null>(null);
@@ -210,18 +226,9 @@
           sheets = [{ name: title, rows: rows.slice(0, SHEET_ROW_CAP + 1), total: rows.length }];
           break;
         }
-        case 'sheet': {
-          const data = await fetchBinary();
-          const XLSX = await import('xlsx');
-          const wb = XLSX.read(data, { type: 'array' });
-          sheets = wb.SheetNames.map((name) => {
-            const rows = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[name], {
-              header: 1, raw: false, defval: '',
-            }) as unknown as string[][];
-            return { name, rows: rows.slice(0, SHEET_ROW_CAP + 1), total: rows.length };
-          });
+        case 'sheet':
+          // SheetView fetches the engine's view model itself.
           break;
-        }
         case 'docx': {
           const data = await fetchBinary();
           const { renderAsync } = await import('docx-preview');
@@ -326,7 +333,7 @@
 
 <!-- html previews fill the panel edge-to-edge (the page scrolls inside the
      iframe); every other mode scrolls as padded content. -->
-<div class={mode === 'html' && !sourceView ? 'h-full' : 'p-4'}>
+<div class={(mode === 'html' || mode === 'sheet') && !sourceView ? 'h-full' : 'p-4'}>
   {#if loading}
     <div class="text-xs text-base-content/50 py-8 text-center">{$t('common.loading')}</div>
   {:else if error}
@@ -365,7 +372,9 @@
     ></iframe>
   {:else if mode === 'pdf' || mode === 'pptx'}
     <div bind:this={pdfContainer}></div>
-  {:else if mode === 'csv' || mode === 'sheet'}
+  {:else if mode === 'sheet'}
+    <SheetView {documentId} {version} {src} {onsaved} {agentId} {sessionKey} />
+  {:else if mode === 'csv'}
     {#each sheets as sheet}
       {#if sheets.length > 1}
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mt-4 mb-2 first:mt-0">{sheet.name}</div>
@@ -398,7 +407,7 @@
     <img src={src} alt={title} class="max-w-full h-auto rounded-lg border border-base-300" />
   {:else if mode === 'video'}
     <!-- svelte-ignore a11y_media_has_caption -->
-    <video src={src} controls class="max-w-full rounded-lg border border-base-300"></video>
+    <video src={firstFrame(src)} controls preload="metadata" class="max-w-full rounded-lg border border-base-300"></video>
   {:else if mode === 'audio'}
     <audio src={src} controls preload="metadata" class="w-full"></audio>
   {:else}

@@ -21,7 +21,10 @@ mod embeddings;
 mod employee_drafts;
 mod engine;
 mod event_dedup;
+mod file_history;
+mod handoffs;
 mod inbound_mail;
+mod intelligence_packs;
 mod entity_config;
 mod license_keys;
 mod mcp_integrations;
@@ -52,9 +55,10 @@ pub use app_listings::AppListing;
 pub use agents::agent_slug;
 pub use inbound_mail::InboundMailRow;
 pub use assignments::{Assignment, NewAssignment};
-pub use cron_jobs::cron_ref;
+pub use cron_jobs::{cron_ref, is_one_shot};
+pub use handoffs::{HANDOFF_ASK_CAP, HANDOFF_LIVE, HANDOFF_RESULT_CAP, Handoff, HandoffQuery, NewHandoff};
 pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
-pub use chats::{AUTOMATION_KEY, is_automation_notice};
+pub use chats::{AUTOMATION_KEY, ConversationQuery, Conversations, is_automation_notice};
 pub use engine::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
@@ -66,6 +70,7 @@ pub use session_goals::SessionGoal;
 pub use owner_needs::{OwnerNeedRow, ToldNeed};
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use upgrade::{ToolNamingCell, tool_naming_places};
-pub use work::WorkDocumentListing;
+pub use file_history::{FileHistoryEntry, NewFileHistory, WorkspaceIndexRow};
+pub use work::{WorkDocument, WorkDocumentListing, WorkDocumentVersion};
 pub use teams::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
 pub use temporary_work::{TemporaryClaim, TemporaryKind, TemporaryWork};

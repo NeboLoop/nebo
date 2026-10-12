@@ -165,9 +165,13 @@ impl NeboFiles {
         out
     }
 
-    /// The workspace, where the employee's own documents go.
+    /// The workspace, where the employee's own documents go: the owner's
+    /// (`config::workspace_dir`) for this Nebo's root, `files` under any other.
     pub fn workspace(&self) -> PathBuf {
-        self.root.join("files")
+        match config::data_dir() {
+            Ok(live) if live == self.root => config::workspace_dir().unwrap_or_else(|_| self.root.join("files")),
+            _ => self.root.join("files"),
+        }
     }
 
     /// Whether `path` (relative ones against `cwd`), reached for `access`,

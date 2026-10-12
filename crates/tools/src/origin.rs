@@ -192,9 +192,10 @@ pub struct ChannelContext {
 }
 
 /// How many of a run's calls are waiting on someone other than the run
-/// itself: the owner answering a question. A run that is waiting is not
-/// stalled, however long the answer takes; the dispatcher's idle bound
-/// counts only time when nothing is waited on (`agent::guardrails`).
+/// itself: the owner answering a question, or NeboAI rendering a video. A
+/// run that is waiting is not stalled, however long the answer takes; the
+/// dispatcher's idle bound, and a helper's collector, count only time when
+/// nothing is waited on (`agent::guardrails`).
 #[derive(Debug, Default)]
 pub struct Waiting {
     count: std::sync::atomic::AtomicUsize,
@@ -348,8 +349,8 @@ pub struct ToolContext {
     /// reporting it as "timed out after 300s" sent a live run off to blame
     /// the marketplace (2026-09-05).
     pub parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The run's count of calls waiting on the owner, shared by every call
-    /// of the run and read by its dispatcher.
+    /// The run's count of calls waiting on the owner or on a render, shared
+    /// by every call of the run and read by its dispatcher.
     pub waiting: std::sync::Arc<Waiting>,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
@@ -482,6 +483,13 @@ impl ToolContext {
         self.session_key = key.into();
         self.session_id = id.into();
         self
+    }
+
+    /// The mode what this run starts is held to (`Grant::narrow`): a
+    /// workflow run, a hand-off or a team post it starts runs no looser.
+    /// `None` = nothing carried.
+    pub fn narrow(&self) -> Option<types::permissions::Mode> {
+        self.grant.as_ref().and_then(|g| g.narrow)
     }
 
     /// Whether the run's tool allowlist admits this call. `None` =

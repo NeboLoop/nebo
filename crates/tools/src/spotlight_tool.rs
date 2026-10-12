@@ -400,15 +400,16 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
     #[cfg(target_os = "windows")]
     {
         let escaped_root = root.to_string_lossy().replace('\'', "''");
+        // `-Force`: AppData, where app data lives, is a hidden folder, and
+        // without it the walk never enters one (macOS's walks ~/Library).
         let script = format!(
-            "Get-ChildItem -Path '{}' -Recurse -Depth {} -Filter '{}' -ErrorAction SilentlyContinue | Select-Object -First {} -ExpandProperty FullName",
+            "Get-ChildItem -Path '{}' -Recurse -Depth {} -Force -Filter '{}' -ErrorAction SilentlyContinue | Select-Object -First {} -ExpandProperty FullName",
             escaped_root,
             MAX_DEPTH,
             name_pattern(query).replace('\'', "''"),
             limit
         );
-        let mut cmd = command::new::<tokio::process::Command>("powershell", command::Console::Hidden);
-        cmd.args(["-NoProfile", "-Command", &script]);
+        let cmd = command::powershell::<tokio::process::Command>(&script);
         let walked = run_search(cmd, limit, deadline).await;
 
         if let Some(e) = &walked.spawn_error {
@@ -653,6 +654,31 @@ mod tests {
             "{}",
             result.content
         );
+    }
+
+    /// A file in a hidden folder is found: on Windows that is AppData, where
+    /// every app keeps its data.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn a_search_enters_hidden_folders() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let hidden = tmp.path().join("AppData").join("Roaming");
+        std::fs::create_dir_all(&hidden).expect("fixture tree");
+        std::fs::write(hidden.join("retest-scratch.txt"), "x").expect("fixture file");
+        let made_hidden = command::new::<std::process::Command>("attrib", command::Console::Hidden)
+            .arg("+h")
+            .arg(tmp.path().join("AppData"))
+            .status()
+            .expect("attrib runs");
+        assert!(made_hidden.success());
+
+        let result = SpotlightTool::new()
+            .execute_dyn(
+                &ToolContext::default(),
+                serde_json::json!({ "action": "search", "query": "retest-scratch", "dir": tmp.path().to_string_lossy() }),
+            )
+            .await;
+        assert!(result.content.contains("retest-scratch.txt"), "{}", result.content);
     }
 
     /// A command that would run for half a minute is killed at the deadline,

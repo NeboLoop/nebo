@@ -170,11 +170,18 @@ mod bundled_skill_tests {
     }
 
     /// The character-swap skill fires on the words an owner uses for AI
-    /// characters, not only on "character swap"; ordinary chat doesn't
-    /// fire it. Live 2026-10-04: asked about an article on AI creators with
-    /// the same face across clips, the employee never named the swap.
+    /// creators and for a swap, not only on "character swap"; ordinary chat
+    /// doesn't fire it. Live 2026-10-04: asked about an article on AI
+    /// creators with the same face across clips, the employee never named
+    /// the swap. Audit 2026-10-07: "the same character across shots" is not
+    /// a swap but approved start frames, and the skill fired on it and
+    /// steered a film to the cast, so "consistent character", "same face",
+    /// "ai character" and "reference photo" no longer fire it. 2026-10-09: a
+    /// film's own characters (a project's `cast/`, a portrait and a voice
+    /// each) are not the swap cast, so "cast member" and "add to the cast"
+    /// no longer fire it either.
     #[test]
-    fn the_character_swap_skill_fires_on_ai_character_talk_only() {
+    fn the_character_swap_skill_fires_on_ai_creator_and_swap_talk_only() {
         let (_, content) = BUNDLED_SKILLS
             .iter()
             .find(|(k, _)| *k == "character-swap")
@@ -183,14 +190,18 @@ mod bundled_skill_tests {
         for request in [
             "Are we able to do this? Five AI creators, the same face across hundreds of clips, built from \
              reference photos, image-to-video and voice.",
-            "Can we make a consistent character for our ads?",
             "I want an AI influencer for the brand.",
+            "Swap the person in this clip for Maya.",
         ] {
             assert!(skill.matches_trigger(request), "{request}");
         }
         for request in [
             "Put together a summary of this week's sales calls for the team.",
             "Find the reference books for the tax filing and face the deadline head on.",
+            "Can we make a consistent character for our ads?",
+            "Keep the same face for Mara in every shot; here is a reference photo.",
+            "Make a portrait and a voice description for each cast member of the film.",
+            "Add Mara to the cast with her portrait.",
         ] {
             assert!(!skill.matches_trigger(request), "{request}");
         }
@@ -239,7 +250,7 @@ mod bundled_skill_tests {
         let bundle = std::fs::read_to_string(&bundle)
             .unwrap_or_else(|e| panic!("the served SDK bundle must be readable at {}: {e}", bundle.display()));
         for name in [
-            "nebo", "identity", "storage", "agents", "janus", "decide", "surfaces", "chat", "a2ui",
+            "nebo", "identity", "storage", "agents", "janus", "decide", "share", "surfaces", "chat", "a2ui",
             "neboFetch", "NeboWebSocket", "NeboSDK", "NeboSurfaces", "NeboA2UI", "getAppId",
             "getBaseUrl", "setAppId", "setBaseUrl",
         ] {
@@ -265,6 +276,14 @@ mod bundled_skill_tests {
         assert!(content.contains("`decide({state, questions})"), "the skill names decide");
         assert!(content.contains("decide(state:"), "the skill shows the employee's decide tool");
         assert!(bundle.contains("/janus/decide"), "the bundle must post decisions to the app's janus/decide route");
+        // Sharing: the page hands a file to the one Share dialog through the
+        // app's share route; it never makes a link itself.
+        let more = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/skills/bundled/app-studio/references/sdk-more.md"),
+        )
+        .expect("sdk-more.md");
+        assert!(more.contains("`share({name, content})"), "the SDK reference names share");
+        assert!(bundle.contains("/share`"), "the bundle must post to the app's share route");
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");

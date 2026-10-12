@@ -11,7 +11,6 @@
 
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
 use tools::needs::{CapabilityTerm, DescriptionReader, Granted, JobConsent, JobGrant, Needs};
 use tools::ToolContext;
 use types::permissions::{
@@ -273,12 +272,14 @@ impl JobConsent for Consent {
 }
 
 /// Reads a job description onto the capability vocabulary with one call on
-/// the aux route (the cheapest model when none is set). It has no tools and
+/// the background route of the employee's own model (`model_call::
+/// Housekeeper`; its preference, else the bot's default). It has no tools and
 /// answers JSON; anything outside the vocabulary is dropped by the caller.
 /// A failed or late call reads nothing: the job then asks when it first
 /// needs a capability (outside its job), never less.
 pub struct AuxReader {
-    providers: Arc<RwLock<Vec<Arc<dyn ai::Provider>>>>,
+    housekeeper: crate::harness::model_call::Housekeeper,
+    store: Arc<db::Store>,
 }
 
 impl AuxReader {
@@ -288,18 +289,19 @@ impl AuxReader {
         does that work; never add one because it might be useful. Answer with JSON only: \
         {\"capabilities\": [\"key\", ...]}.";
 
-    pub fn new(providers: Arc<RwLock<Vec<Arc<dyn ai::Provider>>>>) -> Self {
-        Self { providers }
+    pub fn new(housekeeper: crate::harness::model_call::Housekeeper, store: Arc<db::Store>) -> Self {
+        Self { housekeeper, store }
     }
 
     async fn ask(&self, prompt: String, agent_id: &str) -> Option<String> {
-        let (provider, model) = {
-            let providers = self.providers.read().await;
-            match crate::harness::model_call::resolve_aux(&config::ModelsConfig::load(), &providers) {
-                Some(routed) => routed,
-                None => (crate::harness::model_call::prefer_non_gateway(&providers)?, String::new()),
-            }
-        };
+        let chosen = self
+            .store
+            .get_entity_config("agent", agent_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.model_preference)
+            .unwrap_or_default();
+        let crate::harness::model_call::Route { provider, model, .. } = self.housekeeper.route(&chosen).await?;
         let req = ai::ChatRequest {
             tool_credential: None,
             chat_id: String::new(),
@@ -314,6 +316,7 @@ impl AuxReader {
             system: Self::SYSTEM.to_string(),
             model,
             enable_thinking: false,
+            effort: None,
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,

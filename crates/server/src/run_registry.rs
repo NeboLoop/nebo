@@ -20,6 +20,9 @@ use crate::handlers::chat::PendingAsk;
 /// (Done, error, cancel, stale cleanup) takes its question with it.
 type ParkedAsk = Arc<std::sync::Mutex<Option<PendingAsk>>>;
 
+/// The call a run is making now: its name and input.
+type CurrentCall = Arc<std::sync::Mutex<Option<(String, serde_json::Value)>>>;
+
 /// A live run entry in the registry. Contains both identity info and live counters.
 pub struct RunEntry {
     pub run_id: String,
@@ -34,9 +37,8 @@ pub struct RunEntry {
     pub iteration_count: Arc<AtomicU32>,
     pub tool_call_count: Arc<AtomicU32>,
     pub current_tool: Arc<std::sync::Mutex<String>>,
-    /// The owner-facing label of the call running now, as `tool_start`
-    /// sent it.
-    activity: Arc<std::sync::Mutex<String>>,
+    /// The call running now, as `tool_start` sent it: its name and input.
+    call: CurrentCall,
     pub parent_run_id: Option<String>,
     pending_ask: ParkedAsk,
 }
@@ -54,9 +56,14 @@ pub struct RunSnapshot {
     pub iteration_count: u32,
     pub tool_call_count: u32,
     pub current_tool: String,
-    /// Owner-facing phrase for the call running now ("Reading notes.md"):
-    /// the label its `tool_start` event carried; empty when idle.
-    pub activity: String,
+    /// The call running now, by its structured name
+    /// (`tools::humanize::call`, the one its `tool_start` event carried);
+    /// none when idle.
+    pub call: Option<tools::humanize::Call>,
+    /// The running call's name and input, for what the model is told the
+    /// run is doing (`Registry::describe`). Never sent to a screen.
+    #[serde(skip)]
+    pub call_input: Option<(String, serde_json::Value)>,
     pub elapsed_secs: u64,
     /// Seconds since the run last showed activity (a stream event, a tool).
     pub idle_secs: u64,
@@ -71,6 +78,11 @@ impl RunEntry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let call_input = if current_tool.is_empty() {
+            None
+        } else {
+            self.call.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
         RunSnapshot {
             run_id: self.run_id.clone(),
             session_key: self.session_key.clone(),
@@ -81,11 +93,8 @@ impl RunEntry {
             iteration_count: self.iteration_count.load(Ordering::Relaxed),
             tool_call_count: self.tool_call_count.load(Ordering::Relaxed),
             current_tool: current_tool.clone(),
-            activity: if current_tool.is_empty() {
-                String::new()
-            } else {
-                self.activity.lock().unwrap_or_else(|e| e.into_inner()).clone()
-            },
+            call: call_input.as_ref().map(|(name, input)| tools::humanize::call(name, input)),
+            call_input,
             elapsed_secs: self.started_at.elapsed().as_secs(),
             idle_secs: self.idle_secs(),
             parent_run_id: self.parent_run_id.clone(),
@@ -132,7 +141,7 @@ pub struct RunHandle {
     pub iteration_count: Arc<AtomicU32>,
     pub tool_call_count: Arc<AtomicU32>,
     pub current_tool: Arc<std::sync::Mutex<String>>,
-    activity: Arc<std::sync::Mutex<String>>,
+    call: CurrentCall,
     pub cancel_token: CancellationToken,
     pending_ask: ParkedAsk,
     /// The run's calls waiting on the owner: its drain loop never ends it as
@@ -178,12 +187,10 @@ impl RunHandle {
         self.touch();
     }
 
-    /// The owner-facing label of the call that just started: the one its
-    /// `tool_start` event carries, so the progress snapshot reads the same.
-    pub fn show_activity(&self, label: &str) {
-        let mut activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
-        activity.clear();
-        activity.push_str(label);
+    /// The call that just started, as its `tool_start` event names it, so
+    /// the progress snapshot names it the same.
+    pub fn show_call(&self, name: &str, input: &serde_json::Value) {
+        *self.call.lock().unwrap_or_else(|e| e.into_inner()) = Some((name.to_string(), input.clone()));
     }
 
     /// Clear the current tool (call after tool completes).
@@ -248,7 +255,7 @@ impl RunRegistry {
         let iteration_count = Arc::new(AtomicU32::new(0));
         let tool_call_count = Arc::new(AtomicU32::new(0));
         let current_tool = Arc::new(std::sync::Mutex::new(String::new()));
-        let activity = Arc::new(std::sync::Mutex::new(String::new()));
+        let call: CurrentCall = Arc::new(std::sync::Mutex::new(None));
         let pending_ask: ParkedAsk = Arc::new(std::sync::Mutex::new(None));
 
         let entry = RunEntry {
@@ -264,7 +271,7 @@ impl RunRegistry {
             iteration_count: iteration_count.clone(),
             tool_call_count: tool_call_count.clone(),
             current_tool: current_tool.clone(),
-            activity: activity.clone(),
+            call: call.clone(),
             parent_run_id: params.parent_run_id,
             pending_ask: pending_ask.clone(),
         };
@@ -278,7 +285,7 @@ impl RunRegistry {
             iteration_count,
             tool_call_count,
             current_tool,
-            activity,
+            call,
             cancel_token: params.cancel_token,
             pending_ask,
             waiting: Default::default(),
@@ -923,7 +930,7 @@ mod tests {
     /// The progress snapshot labels the running call with the words its
     /// `tool_start` carried, never the raw tool name; idle, no label.
     #[tokio::test]
-    async fn progress_carries_the_tool_start_label() {
+    async fn progress_names_the_call_tool_start_named() {
         let registry = RunRegistry::new();
         let handle = registry
             .register(RegisterParams {
@@ -936,15 +943,14 @@ mod tests {
                 parent_run_id: None,
             })
             .await;
+        let read = serde_json::json!({"path": "/a/notes.md"});
         handle.start_tool("read_file");
-        handle.show_activity("Reading notes.md");
+        handle.show_call("read_file", &read);
         let snap = registry.get(&handle.run_id).await.unwrap();
-        assert_eq!(snap.activity, "Reading notes.md");
-        handle.start_tool("plugin__gmail");
-        handle.show_activity("using Gmail");
-        assert_eq!(registry.get(&handle.run_id).await.unwrap().activity, "using Gmail");
+        assert_eq!(snap.call, Some(tools::humanize::call("read_file", &read)));
+        assert_eq!(snap.call_input, Some(("read_file".to_string(), read)));
         handle.finish_tool();
-        assert_eq!(registry.get(&handle.run_id).await.unwrap().activity, "", "idle");
+        assert_eq!(registry.get(&handle.run_id).await.unwrap().call, None, "idle");
     }
 
     #[tokio::test]

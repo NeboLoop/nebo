@@ -113,12 +113,8 @@ impl DynTool for SuggestGoalTool {
         Ok(())
     }
 
-    fn activity(&self, _input: &Value) -> String {
+    fn describe(&self, _input: &Value) -> String {
         "suggesting a goal".to_string()
-    }
-
-    fn outcome(&self, _input: &Value) -> String {
-        "Suggested a goal".to_string()
     }
 
     fn execute_dyn<'a>(

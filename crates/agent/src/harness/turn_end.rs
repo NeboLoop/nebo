@@ -68,6 +68,20 @@ impl EndCheck for WorkflowContractCheck {
                 contract.min_iterations, end.step
             ));
         }
+        // A delivery that didn't go through is said plainly, once: runs
+        // reported "sent" after send_message was refused (bake-off
+        // 2026-10-10, 7 runs). The step's output carries the fact either
+        // way (`workflow_turn`).
+        if end.checks_this_turn == 0 {
+            let failed = failed_deliveries(end.transcript.iter().map(|m| (m.tool_calls.as_ref(), m.tool_results.as_ref())));
+            if !failed.is_empty() {
+                return continue_with(format!(
+                    "{} Say plainly in your answer that it was not sent; never say it was. Try again only if the \
+                     reason allows it.",
+                    failed.iter().map(FailedDelivery::line).collect::<Vec<_>>().join(" ")
+                ));
+            }
+        }
         let landed = succeeded_tools(end.transcript);
         let missing: Vec<&str> = contract
             .requires_tools
@@ -83,6 +97,75 @@ impl EndCheck for WorkflowContractCheck {
             missing.join(" and ")
         ))
     }
+}
+
+/// The tools that deliver a step's result to someone: a coworker, or the
+/// owner.
+pub const DELIVERY_TOOLS: [&str; 3] = ["send_message", "message_owner", "push_notification"];
+
+/// A delivery call that failed, with no later call of the same tool to the
+/// same recipient that went through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedDelivery {
+    pub tool: String,
+    /// Who it was for: the coworker or team named, else the owner.
+    pub to: String,
+    /// The first line of what the tool said.
+    pub reason: String,
+}
+
+impl FailedDelivery {
+    /// "Not sent: send_message to Sales Floor Manager — <reason>"
+    pub fn line(&self) -> String {
+        format!("Not sent: {} to {} — {}", self.tool, self.to, self.reason)
+    }
+}
+
+/// The deliveries that failed and were never made good, in the order they
+/// were first refused. Each item is one message's tool calls and tool
+/// results (JSON arrays as the transcript stores them), oldest first.
+pub fn failed_deliveries<'a>(
+    messages: impl IntoIterator<Item = (Option<&'a serde_json::Value>, Option<&'a serde_json::Value>)>,
+) -> Vec<FailedDelivery> {
+    let mut calls: HashMap<String, (String, String)> = HashMap::new();
+    let mut failed: Vec<FailedDelivery> = Vec::new();
+    for (tool_calls, tool_results) in messages {
+        for call in tool_calls.and_then(|c| c.as_array()).into_iter().flatten() {
+            let (Some(id), Some(name)) = (call.get("id").and_then(|v| v.as_str()), call.get("name").and_then(|v| v.as_str())) else {
+                continue;
+            };
+            if !DELIVERY_TOOLS.contains(&name) {
+                continue;
+            }
+            let to = match name {
+                "send_message" => call
+                    .get("input")
+                    .and_then(|i| i.get("to"))
+                    .and_then(|v| v.as_str())
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or("a coworker")
+                    .to_string(),
+                _ => "the owner".to_string(),
+            };
+            calls.insert(id.to_string(), (name.to_string(), to));
+        }
+        for result in tool_results.and_then(|r| r.as_array()).into_iter().flatten() {
+            let Some((tool, to)) = result.get("tool_call_id").and_then(|v| v.as_str()).and_then(|id| calls.get(id)) else {
+                continue;
+            };
+            failed.retain(|f| !(f.tool == *tool && f.to == *to));
+            if result.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let reason = result
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .and_then(|c| c.lines().map(str::trim).find(|l| !l.is_empty()))
+                    .unwrap_or("it failed")
+                    .to_string();
+                failed.push(FailedDelivery { tool: tool.clone(), to: to.clone(), reason });
+            }
+        }
+    }
+    failed
 }
 
 /// Times the answer check sends a helper back before the turn ends as it
@@ -356,6 +439,54 @@ mod tests {
             check.check(&end(&landed, 3)).await,
             EndVerdict::Stop
         ));
+    }
+
+    fn send(id: &str, to: &str) -> ai::Message {
+        ai::Message {
+            role: "assistant".into(),
+            tool_calls: Some(serde_json::json!([{"id": id, "name": "send_message", "input": {"to": to, "message": "forecast"}}])),
+            ..Default::default()
+        }
+    }
+
+    fn said_back(id: &str, content: &str, is_error: bool) -> ai::Message {
+        ai::Message {
+            role: "tool".into(),
+            tool_results: Some(serde_json::json!([{"tool_call_id": id, "content": content, "is_error": is_error}])),
+            ..Default::default()
+        }
+    }
+
+    /// Bake-off 2026-10-10: a run's send_message was refused ("Not sent:
+    /// you have messaged sales_floor_manager 6 times…") and the run ended
+    /// "The forecast has been sent to the Sales Floor Manager." The step is
+    /// sent back once to say it was not sent; a send that later went
+    /// through clears it.
+    #[tokio::test]
+    async fn a_refused_send_cannot_end_the_step_as_sent() {
+        let checks = registry(&workflow_mode(), EndChecks { workflow_contract: Some(WorkflowContract::default()), ..Default::default() });
+        let refused = [
+            send("c1", "Sales Floor Manager"),
+            said_back("c1", "Not sent: you have messaged Sales Floor Manager 6 times in the last five minutes.", true),
+            said("The forecast has been sent to the Sales Floor Manager."),
+        ];
+        let EndVerdict::Continue(ev) = checks[0].check(&end(&refused, 2)).await else { panic!("sent back") };
+        let text = attachment_for(&ev).unwrap().text;
+        assert!(
+            text.contains("Not sent: send_message to Sales Floor Manager — Not sent: you have messaged") && text.contains("never say it was"),
+            "{text}"
+        );
+        let again = TurnEnd { transcript: &refused, step: 3, checks_this_turn: 1 };
+        assert!(matches!(checks[0].check(&again).await, EndVerdict::Stop), "once");
+
+        let retried = [
+            send("c1", "Sales Floor Manager"),
+            said_back("c1", "Not sent: rate limit", true),
+            send("c2", "Sales Floor Manager"),
+            said_back("c2", "Delivered.", false),
+        ];
+        assert!(failed_deliveries(retried.iter().map(|m| (m.tool_calls.as_ref(), m.tool_results.as_ref()))).is_empty());
+        assert!(matches!(checks[0].check(&end(&retried, 3)).await, EndVerdict::Stop));
     }
 
     #[test]

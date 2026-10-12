@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use ai::ToolDefinition;
 
@@ -296,13 +296,12 @@ pub trait DynTool: Send + Sync {
     fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
         Some(DEFAULT_MAX_RESULT_CHARS)
     }
-    /// The owner-facing line while the call runs ("reading notes.md").
-    fn activity(&self, input: &serde_json::Value) -> String {
-        crate::humanize::call_labels(self.name(), input).0
-    }
-    /// The owner-facing line once it ran ("Read notes.md").
-    fn outcome(&self, input: &serde_json::Value) -> String {
-        crate::humanize::call_labels(self.name(), input).1
+    /// What the call does, as a sentence ("reading notes.md"): the model
+    /// reads it when a call is refused or parked, and the owner's approval
+    /// card states it. The owner's screens name a call by
+    /// [`crate::humanize::call`], never by this.
+    fn describe(&self, input: &serde_json::Value) -> String {
+        crate::humanize::sentence(self.name(), input)
     }
     /// The untrusted-content class the call's result brings into the run.
     fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
@@ -327,6 +326,13 @@ pub trait DynTool: Send + Sync {
     /// Default: the input unchanged.
     fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
         input
+    }
+    /// The call written the right way, added to the refusal of one the
+    /// model shaped wrong: arguments that never parsed (`input` is null,
+    /// `stray` empty), or top-level parameters the tool doesn't have
+    /// (`stray`, as sent). `None`: the refusal says enough.
+    fn right_shape(&self, _input: &serde_json::Value, _stray: &[String]) -> Option<String> {
+        None
     }
     /// Declare which physical resource this tool call needs exclusive access to.
     ///
@@ -369,12 +375,17 @@ pub trait DynTool: Send + Sync {
 
 /// Why a call can't run as written.
 enum Invalid {
-    Unparsed(String),
+    Unparsed { raw: String, shape: Option<String> },
     Schema { input: serde_json::Value, issues: Vec<String> },
     Tool(String),
 }
 
 /// Registry manages available tools.
+/// Every registered tool's definition by name, shared with what reads them
+/// outside the registry (the employee tools check a builder's workflow
+/// steps against them).
+pub type ToolDefinitions = Arc<RwLock<HashMap<String, ToolDefinition>>>;
+
 pub struct Registry {
     // Arc, not Box: execute() clones the handle and drops the map lock BEFORE
     // awaiting the tool (snapshot-then-release). A Box'd map forced holding
@@ -384,7 +395,7 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn DynTool>>>>,
     /// Cached tool definitions (description + schema) computed at registration time.
     /// Avoids regenerating descriptions and JSON schemas on every LLM iteration.
-    def_cache: Arc<RwLock<HashMap<String, ToolDefinition>>>,
+    def_cache: ToolDefinitions,
     /// Each tool's compiled input schema, built with its definition.
     validators: Arc<RwLock<HashMap<String, Arc<jsonschema::Validator>>>>,
     /// Deferred tools (`DynTool::should_defer`): listed by name until
@@ -428,6 +439,9 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The server's worker restart, shared with `PersonaTool` and filled LATE
+    /// like `code_installer`: duties made or changed in chat go live at once.
+    live_triggers: crate::agent_tool::LiveTriggersCell,
     /// The workflow manager, filled when the workflow tools register
     /// ([`Registry::register_workflows`]); `stop_task` shares the cell to
     /// stop workflow runs.
@@ -465,6 +479,7 @@ impl Registry {
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            live_triggers: Arc::new(std::sync::RwLock::new(None)),
             workflows: Default::default(),
             goals: crate::goal_tool::new_handle(),
             resource_permits: ResourcePermits::new(),
@@ -520,6 +535,12 @@ impl Registry {
     /// jobs through it from then on.
     pub fn set_job_consent(&self, consent: Arc<dyn crate::needs::JobConsent>) {
         *self.job_consent.write().unwrap() = Some(consent);
+    }
+
+    /// Set the server's worker restart. Called LATE by the server (the
+    /// workers are built with `AppState`); `PersonaTool` shares the cell.
+    pub fn set_live_triggers(&self, live: Arc<dyn crate::agent_tool::LiveTriggers>) {
+        *self.live_triggers.write().unwrap() = Some(live);
     }
 
     /// Set the broadcast callback (wired to ClientHub). Called LATE by the server
@@ -897,7 +918,8 @@ impl Registry {
         // Arguments that never parsed arrive as `{"_raw": "..."}` (the
         // provider's salvage of a cut or malformed stream).
         if let Some(raw) = unparsed_arguments(&input) {
-            return Err(Invalid::Unparsed(raw.to_string()));
+            let shape = tool.right_shape(&serde_json::Value::Null, &[]);
+            return Err(Invalid::Unparsed { raw: raw.to_string(), shape });
         }
         let def = self.definition(name).await;
         if let Some(def) = &def {
@@ -926,6 +948,17 @@ impl Registry {
             }
             issues.extend(crate::input_schema::unknown_parameters(&def.input_schema, &as_sent));
             issues.extend(crate::input_schema::echoed_descriptions(&def.input_schema, &input));
+            let known = def.input_schema.get("properties").and_then(|p| p.as_object());
+            let stray: Vec<String> = as_sent
+                .as_object()
+                .into_iter()
+                .flat_map(|o| o.keys())
+                .filter(|k| known.is_some_and(|p| !p.contains_key(*k)))
+                .cloned()
+                .collect();
+            if !stray.is_empty() {
+                issues.extend(tool.right_shape(&as_sent, &stray));
+            }
         }
         if !issues.is_empty() {
             return Err(Invalid::Schema { input, issues });
@@ -952,13 +985,13 @@ impl Registry {
         Some(target_of(tool.as_ref(), input))
     }
 
-    /// The owner-facing (activity, outcome) lines for a call. A name no
-    /// tool is registered under (a CLI provider's own tools) gets the
-    /// generic wording.
-    pub async fn labels(&self, tool_name: &str, input: &serde_json::Value) -> (String, String) {
+    /// What a call does, as a sentence (see [`DynTool::describe`]). A name
+    /// no tool is registered under (a CLI provider's own tools) gets the
+    /// generic one.
+    pub async fn describe(&self, tool_name: &str, input: &serde_json::Value) -> String {
         match self.get(tool_name).await {
-            Some(tool) => (tool.activity(input), tool.outcome(input)),
-            None => crate::humanize::call_labels(tool_name, input),
+            Some(tool) => tool.describe(input),
+            None => crate::humanize::sentence(tool_name, input),
         }
     }
 
@@ -982,6 +1015,28 @@ impl Registry {
         !self.read_only(tool_name, input).await
     }
 
+    /// The tool `name`, or, when it is the `plugin__<slug>` tool of a
+    /// first-party default this bot lacks, that tool once the default is
+    /// installed on the spot (the safety net, `default_artifacts`): the call
+    /// that needed it runs. Any other missing tool stays missing.
+    async fn tool_or_default(&self, ctx: &ToolContext, name: &str) -> Option<Arc<dyn DynTool>> {
+        if let Some(tool) = self.get(name).await {
+            return Some(tool);
+        }
+        let slug = crate::plugin_tools::plugin_slug(name)?;
+        // Not while another running copy may be this bot (the lease gate).
+        if self.lease.frozen() {
+            return None;
+        }
+        let runner = self.plugin_runner.read().unwrap_or_else(|e| e.into_inner()).clone()?;
+        if !runner.install_default_plugin(ctx, slug).await {
+            return None;
+        }
+        // The install re-registers the plugin tools; this makes sure.
+        self.refresh_plugin_tools().await;
+        self.get(name).await
+    }
+
     /// Execute a tool and return the result, shaped for the model.
     ///
     /// The one door every call goes through, in order: resolve the tool,
@@ -999,13 +1054,24 @@ impl Registry {
 
         let name = tool_name;
 
-        let Some(tool) = self.get(name).await else {
+        let Some(tool) = self.tool_or_default(ctx, name).await else {
             warn!(tool = %name, "unknown tool");
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
 
-        let input = match self.settle(tool.as_ref(), name, input, ctx.answered_ask.is_some()).await {
-            Ok(input) => input,
+        let replayed = ctx.answered_ask.is_some();
+        let (tool, input) = match self.settle(tool.as_ref(), name, input.clone(), replayed).await {
+            Ok(settled) => (tool, settled),
+            // A connector tool's schema may be stale (its server added a
+            // field since it was listed): list the server's tools again and,
+            // when this tool changed, settle the call against the new one.
+            Err(invalid @ Invalid::Schema { .. }) => match self.relisted(tool.as_ref(), name).await {
+                Some(fresh) => match self.settle(fresh.as_ref(), name, input, replayed).await {
+                    Ok(settled) => (fresh, settled),
+                    Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
+                },
+                None => return self.invalid_call(ctx, name, invalid).await,
+            },
             Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
         };
 
@@ -1079,6 +1145,25 @@ impl Registry {
         result
     }
 
+    /// An MCP proxy tool as registered after its server's tools were listed
+    /// again, when its definition changed; `None` for any other tool, or
+    /// when nothing about it changed.
+    async fn relisted(&self, tool: &dyn DynTool, name: &str) -> Option<Arc<dyn DynTool>> {
+        let (integration_id, original) = tool.mcp_proxy_info()?;
+        let bridge = self.bridge.read().ok()?.clone()?;
+        match bridge.refresh(&integration_id).await {
+            Ok(relisted) if relisted.changed.contains(&original) => {
+                info!(tool = %name, "connector tool changed; settling the call against its new definition");
+                self.get(name).await
+            }
+            Ok(_) => None,
+            Err(e) => {
+                warn!(tool = %name, error = %e, "connector tools could not be listed again");
+                None
+            }
+        }
+    }
+
     /// The error for a call that won't run as written: what is wrong with
     /// it (the smallest valid call when nothing was sent), with the
     /// definition of a tool the model was never sent (see
@@ -1086,7 +1171,7 @@ impl Registry {
     async fn invalid_call(&self, ctx: &ToolContext, name: &str, invalid: Invalid) -> ToolResult {
         let definition = self.definition(name).await;
         let mut result = ToolResult::error(match invalid {
-            Invalid::Unparsed(raw) => bad_json_error(name, &raw),
+            Invalid::Unparsed { raw, shape } => bad_json_error(name, &raw, shape),
             Invalid::Schema { input, mut issues } => {
                 if input.as_object().is_some_and(|o| o.is_empty())
                     && let Some(minimal) = definition.as_ref().and_then(|d| crate::input_schema::minimal_call(&d.input_schema))
@@ -1318,8 +1403,11 @@ impl Registry {
                 config::read_bot_id().unwrap_or_default(),
                 Some(store.clone()),
             );
-            self.register(Box::new(crate::media_tool::GenerateMediaTool::new(media, store.clone())))
-                .await;
+            let mut tool = crate::media_tool::GenerateMediaTool::new(media, store.clone());
+            if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+                tool = tool.with_plugin_store(ps);
+            }
+            self.register(Box::new(tool)).await;
         }
 
         // The packs this company works by (R8): create, add, list, show, remove.
@@ -1387,7 +1475,9 @@ impl Registry {
                     .with_job_consent(self.job_consent.clone())
                     .with_coworker_rail(self.coworker_rail.clone())
                     .with_notify_fn(self.notify_fn.clone())
-                    .with_plugin_runner(self.plugin_runner.clone());
+                    .with_plugin_runner(self.plugin_runner.clone())
+                    .with_live_triggers(self.live_triggers.clone())
+                    .with_tool_definitions(self.def_cache.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }
@@ -1475,7 +1565,8 @@ impl Registry {
         // tool per installed plugin and per operation a connected one binds.
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
-            let mut runner = crate::plugin_tool::PluginRunner::new(ps, store.clone());
+            let mut runner = crate::plugin_tool::PluginRunner::new(ps, store.clone())
+                .with_code_installer(self.code_installer.clone());
             if let Some(ref bc) = broadcaster {
                 runner = runner.with_broadcaster(bc.clone());
             }
@@ -1633,19 +1724,14 @@ fn unparsed_arguments(input: &serde_json::Value) -> Option<&str> {
     obj.get("_raw")?.as_str()
 }
 
-/// The input error for arguments that are not JSON, quoting their
-/// first bytes. Past 4 KB they were cut off at the output limit, and the
-/// same call will be cut off again.
-fn bad_json_error(tool: &str, raw: &str) -> String {
-    let issue = if raw.len() < 4096 {
-        format!(
-            "The arguments are not valid JSON ({} bytes): `{}`. A value is missing or \
-             malformed. Resend the same call with every field filled; leave a field out \
-             rather than empty.",
-            raw.len(),
-            crate::truncate_str(raw, 200)
-        )
-    } else {
+/// The input error for arguments that are not JSON: where they break, the
+/// text around it, and the braces left open or closed twice (a structured
+/// value nested one level wrong is the common fault), with the tool's
+/// right shape when it has one. Arguments that end early past 4 KB were cut
+/// off at the output limit, and the same call will be cut off again.
+fn bad_json_error(tool: &str, raw: &str, shape: Option<String>) -> String {
+    let err = serde_json::from_str::<serde_json::Value>(raw).err();
+    let issue = if err.as_ref().is_some_and(|e| e.is_eof()) && raw.len() >= 4096 {
         format!(
             "The arguments were cut off at the output limit ({} bytes arrived; the JSON is \
              incomplete), starting `{}`. Do not resend the same call: it will be cut off \
@@ -1653,8 +1739,67 @@ fn bad_json_error(tool: &str, raw: &str) -> String {
             raw.len(),
             crate::truncate_str(raw, 200)
         )
+    } else {
+        let at = err.map_or(raw.len(), |e| byte_at(raw, e.line(), e.column()));
+        let fault = match open_brackets(raw) {
+            0 => "A value is missing or malformed. Resend the same call with every field filled; leave a \
+                  field out rather than empty."
+                .to_string(),
+            n if n > 0 => format!(
+                "{n} `{{` or `[` {} never closed: a structured value is nested wrong. Check where each \
+                 object ends, then resend the whole call.",
+                if n == 1 { "is" } else { "are" }
+            ),
+            n => format!(
+                "{} `}}` or `]` too many close what was never opened: a structured value is nested \
+                 wrong. Check where each object ends, then resend the whole call.",
+                -n
+            ),
+        };
+        format!(
+            "The arguments are not valid JSON ({} bytes): they break at byte {at}, at `{}`. {fault}",
+            raw.len(),
+            around(raw, at)
+        )
     };
-    crate::result_shape::input_validation(tool, &[issue])
+    let mut issues = vec![issue];
+    issues.extend(shape);
+    crate::result_shape::input_validation(tool, &issues)
+}
+
+/// The byte offset of serde_json's 1-based line and column in `s`.
+fn byte_at(s: &str, line: usize, column: usize) -> usize {
+    let start: usize = s.split_inclusive('\n').take(line.saturating_sub(1)).map(str::len).sum();
+    (start + column.saturating_sub(1)).min(s.len())
+}
+
+/// Up to 120 bytes of `s` before `at` and 40 after, on char boundaries.
+fn around(s: &str, at: usize) -> &str {
+    let mut from = at.saturating_sub(120);
+    while !s.is_char_boundary(from) {
+        from += 1;
+    }
+    let mut to = (at + 40).min(s.len());
+    while !s.is_char_boundary(to) {
+        to -= 1;
+    }
+    &s[from..to.max(from)]
+}
+
+/// Opening `{`/`[` minus closing `}`/`]` outside strings.
+fn open_brackets(s: &str) -> i64 {
+    let (mut depth, mut in_str, mut escaped) = (0i64, false, false);
+    for c in s.chars() {
+        match (in_str, escaped, c) {
+            (true, true, _) => escaped = false,
+            (true, false, '\\') => escaped = true,
+            (true, false, '"') | (false, _, '"') => in_str = !in_str,
+            (false, _, '{' | '[') => depth += 1,
+            (false, _, '}' | ']') => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
 }
 
 /// Tool names follow `^[a-z][a-z0-9_]*$`; external families keep their
@@ -2677,8 +2822,16 @@ pub(crate) mod tests {
     /// failed; it moved into the core (share_file 588): 17,194. The owner,
     /// 2026-10-05: our app is "the mobile app", never "phone", so
     /// ask_owner's buttons are in his chat on desktop and in the mobile app
-    /// (ask_owner 865, +12): 17,206.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_206;
+    /// (ask_owner 865, +12): 17,206. The owner, 2026-10-09: a long list of
+    /// options (a dozen brand kits) is a dropdown, not a wall of buttons;
+    /// ask_owner's `style: "select"` (ask_owner 980, +115): 17,321. The
+    /// owner, 2026-10-10: every schedule says who made it and why, so a run
+    /// can't leave timers nobody can account for; create_schedule takes a
+    /// required `reason` (create_schedule 1,526, +93): 17,414. The owner,
+    /// 2026-10-11, after an employee told "use chrome" wrote a Playwright
+    /// script and ran it with node: run_command says it is never the
+    /// browser (run_command 1,151, +95): 17,509.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_509;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2768,7 +2921,6 @@ pub(crate) mod tests {
         }
     }
 
-
     /// Which results context pressure clears, and the taint a result brings
     /// in, are each tool's own answers: file reads and changes, commands,
     /// web searches and fetches are cleared (each can be run again); memory,
@@ -2809,7 +2961,5 @@ pub(crate) mod tests {
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
         assert_eq!(taint("read_file", json!({"path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
     }
-
-
 
 }

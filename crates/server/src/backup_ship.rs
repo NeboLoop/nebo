@@ -948,6 +948,92 @@ mod tests {
         assert_eq!(rows, 500);
     }
 
+    /// A bot with an installed plugin: its package (version dir and `.napp`)
+    /// and its data (a database beside the versions, its `appdata/` dir).
+    fn with_plugin(dir: &Path) {
+        for d in ["nebo/plugins/ballast/0.2.0", "appdata/plugins/ballast"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join("nebo/plugins/ballast/0.2.0/ballast"), vec![7u8; 256 << 10]).unwrap();
+        std::fs::write(dir.join("nebo/plugins/ballast/0.2.0/plugin.json"), b"{}").unwrap();
+        std::fs::write(dir.join("nebo/plugins/ballast/0.2.0.napp"), vec![8u8; 256 << 10]).unwrap();
+        std::fs::write(dir.join("nebo/plugins/ballast/ballast.db"), b"the customer's whole index").unwrap();
+        std::fs::write(dir.join("appdata/plugins/ballast/ballast.db"), b"the index NEBO_DATA_DIR holds").unwrap();
+    }
+
+    /// The state a bot commits now leaves its plugin packages out: the
+    /// restored bot has the plugin's data and no package (its default pass
+    /// fetches that), and the commit is smaller by the package.
+    #[tokio::test]
+    async fn a_restore_brings_back_plugin_data_and_not_the_package() {
+        let (url, _hub) = fake_hub().await;
+        let api = NeboAIApi::new(url, BOT.into(), "test-token".into());
+        let src = bot_dir();
+        with_plugin(src.path());
+        let m = commit_as(&api, src.path(), Role::State).await.unwrap();
+        let nebo = m.objects.iter().find(|o| o.root == "nebo").unwrap();
+        assert!(nebo.bytes < 64 << 10, "the package is not in the state: {} bytes", nebo.bytes);
+
+        let dst = tempfile::tempdir().unwrap();
+        restore(&api, None, dst.path(), Some(KEY)).await.unwrap();
+        for f in ["nebo/plugins/ballast/ballast.db", "appdata/plugins/ballast/ballast.db", "nebo/plugin-profiles/gws/creds.json"] {
+            assert_eq!(read(&dst.path().join(f)), read(&src.path().join(f)), "{f}");
+        }
+        assert!(!dst.path().join("nebo/plugins/ballast/0.2.0").exists(), "the package is fetched, not restored");
+        assert!(!dst.path().join("nebo/plugins/ballast/0.2.0.napp").exists());
+    }
+
+    /// A generation committed before packages were left out still restores,
+    /// packages and all: a restore unpacks whatever its manifest names.
+    #[tokio::test]
+    async fn an_old_state_that_holds_plugin_packages_still_restores() {
+        let (url, _hub) = fake_hub().await;
+        let api = NeboAIApi::new(url, BOT.into(), "test-token".into());
+        let src = bot_dir();
+        with_plugin(src.path());
+        let last = load_committed(&api).await.unwrap();
+        // The durable set as it was: the `nebo` tree whole.
+        let mut sources = pack::sources(src.path(), false);
+        for s in sources.iter_mut().filter(|s| s.root == "nebo") {
+            s.exclude.clear();
+        }
+        let prints = fingerprints(src.path(), &sources).unwrap();
+        commit(&CommitRequest {
+            api: &api,
+            key: &KEY,
+            bot_id: BOT,
+            role: Role::State,
+            data_dir: src.path(),
+            db: DbSource::File(src.path().join(pack::DATABASE_PATH)),
+            sources,
+            prints,
+            last: &last,
+            lease_epoch: 7,
+            next_wake: None,
+            residency: None,
+        })
+        .await
+        .unwrap();
+
+        let dst = tempfile::tempdir().unwrap();
+        assert_eq!(restore(&api, None, dst.path(), Some(KEY)).await.unwrap(), Some(1));
+        for f in [
+            "nebo/plugins/ballast/0.2.0/ballast",
+            "nebo/plugins/ballast/0.2.0/plugin.json",
+            "nebo/plugins/ballast/0.2.0.napp",
+            "nebo/plugins/ballast/ballast.db",
+            "appdata/plugins/ballast/ballast.db",
+        ] {
+            assert_eq!(read(&dst.path().join(f)), read(&src.path().join(f)), "{f}");
+        }
+        assert_eq!(db::backup::integrity_of(&dst.path().join(pack::DATABASE_PATH)).unwrap(), "ok");
+
+        // The next commit from the restored bot leaves the package out.
+        let next = commit_as(&api, dst.path(), Role::State).await.unwrap();
+        let nebo = next.objects.iter().find(|o| o.root == "nebo").unwrap();
+        assert!(nebo.bytes < 64 << 10, "{} bytes", nebo.bytes);
+    }
+
     /// Two writers from the same head: the second is refused and the head
     /// stays where the first put it.
     #[tokio::test]

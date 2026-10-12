@@ -1,6 +1,7 @@
 //! What a checkpoint re-attaches after its boundary: the files read most
 //! recently (re-read fresh from disk), the skills loaded with their
-//! instructions, the agreed goal, the work still running and plan mode. Each
+//! instructions, the files tool results reported making (their lines word
+//! for word), the agreed goal, the work still running and plan mode. Each
 //! is a turn event, so it reaches the conversation the one way every
 //! attachment does (`events::attachment_for`, `Reminders::write`). The
 //! conversation before the boundary is where the files and skills are
@@ -23,6 +24,8 @@ pub const FILES_TOKENS: usize = 50_000;
 pub const SKILL_TOKENS: usize = 5_000;
 /// Most tokens of every re-attached skill together.
 pub const SKILLS_TOKENS: usize = 25_000;
+/// Most made files re-attached: the newest.
+pub const MAX_FILES_MADE: usize = 40;
 
 const CUT_NOTE: &str = "\n…(cut to fit after the checkpoint; read it again for the rest)";
 /// Closes a skill cut to fit: the top of a skill is what matters most, and
@@ -90,8 +93,8 @@ pub struct RestoreState<'a> {
     pub plan_mode: bool,
 }
 
-/// The restore list, in order: files newest first, skills, the goal, running
-/// work, plan mode. `before` is the conversation the checkpoint summarized,
+/// The restore list, in order: files newest first, skills, files made, the
+/// goal, running work, plan mode. `before` is the conversation the checkpoint summarized,
 /// as stored.
 pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEvent> {
     let mut events = Vec::new();
@@ -125,6 +128,11 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEven
     }
     if !skills.is_empty() {
         events.push(TurnEvent::InvokedSkills(skills));
+    }
+
+    let made = files_made(before);
+    if !made.is_empty() {
+        events.push(TurnEvent::FilesMade(made));
     }
 
     if let Some(goal) = state.goal.filter(|g| g.status == GoalStatus::Active) {
@@ -225,6 +233,78 @@ fn loaded_skills(messages: &[ChatMessage]) -> Vec<(String, String)> {
         }
     }
     skills
+}
+
+/// The files tool results reported making, oldest first: each the result's
+/// own line, word for word, for a file still on disk; the newest
+/// [`MAX_FILES_MADE`], each path once (its newest line). A plugin names what
+/// it made on a `Result: <path> (<detail>)` line, generate_media on a
+/// `… at <path>` line. The lines an earlier checkpoint restored come first,
+/// so they outlast every later checkpoint. Live 2026-10-07: a summary
+/// called a render "complete" that had only been planned, and the files
+/// that were made could not be found after it.
+fn files_made(messages: &[ChatMessage]) -> Vec<String> {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    let mut add = |line: &str, path: &str| {
+        lines.retain(|(p, _)| p != path);
+        lines.push((path.to_string(), line.to_string()));
+    };
+    for msg in messages {
+        let Some(fields) = crate::harness::reminders::attachment_fields(msg) else { continue };
+        if fields.get("kind").and_then(|k| k.as_str()) != Some("files_made") {
+            continue;
+        }
+        let carried = fields.get(crate::harness::events::FILES_MADE_KEY).and_then(|f| f.as_array());
+        for line in carried.into_iter().flatten().filter_map(|l| l.as_str()) {
+            if let Some(path) = made_path(line, true) {
+                add(line, &path);
+            }
+        }
+    }
+    let tool_of: std::collections::HashMap<String, String> =
+        calls_newest_first(messages).into_iter().map(|(id, name, _)| (id, name)).collect();
+    for msg in messages {
+        let Some(rows) = msg
+            .tool_results
+            .as_deref()
+            .and_then(|tr| serde_json::from_str::<Vec<serde_json::Value>>(tr).ok())
+        else {
+            continue;
+        };
+        for row in rows {
+            if row.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            let id = row.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+            let media = tool_of.get(id).is_some_and(|n| n == tools::media_tool::GENERATE_MEDIA);
+            let content = row.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            for line in content.lines().map(str::trim) {
+                if let Some(path) = made_path(line, media) {
+                    add(line, &path);
+                }
+            }
+        }
+    }
+    let skip = lines.len().saturating_sub(MAX_FILES_MADE);
+    lines.into_iter().skip(skip).map(|(_, line)| line).collect()
+}
+
+/// The file a result line says was made, when it is on disk: a `Result:
+/// <path>` line (an optional ` (<detail>)` after it), or with `at`, a
+/// generate_media `… at <path>` line. A path may hold spaces and
+/// parentheses, so the bare rest is tried before the part ahead of ` (`.
+fn made_path(line: &str, at: bool) -> Option<String> {
+    let rest = match line.strip_prefix("Result: ") {
+        Some(rest) => rest.trim(),
+        None if at => line.rsplit_once(" at ").map(|(_, p)| p.trim())?,
+        None => return None,
+    };
+    let cuts = rest.rmatch_indices(" (").map(|(i, _)| i);
+    std::iter::once(rest.len())
+        .chain(cuts)
+        .map(|end| &rest[..end])
+        .find(|p| std::path::Path::new(p).is_absolute() && std::path::Path::new(p).is_file())
+        .map(str::to_string)
 }
 
 /// Each tool result in `messages` by the call it answers: (content, is_error).
