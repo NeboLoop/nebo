@@ -1078,6 +1078,11 @@ impl PluginRunner {
         input: &serde_json::Value,
         client_key: Option<&str>,
     ) -> ToolResult {
+        // A help request sends nothing: the plugin prints its help, and no
+        // ledger row (so no "did it go out?" card) is made for it.
+        if crate::effects::is_help_request(input) {
+            return self.handle_exec(call, ctx).await.into_result();
+        }
         if crate::effects::is_customer_send(operation) {
             return crate::effects::guarded_send(
                 &self.db_store,
@@ -1121,8 +1126,10 @@ impl PluginRunner {
         }
         // The refusal carries the binding: a gate run (2026-09-23) showed the
         // model retrying the identical exec three times because it had no
-        // field names to fill.
-        if let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
+        // field names to fill. A help request runs: it reads the flags and
+        // performs nothing.
+        if !asks_only_for_help(call)
+            && let Some((op, template)) = self.gated_operation_for_command(&call.slug, &call.command) {
             return ToolResult::error(format!(
                 "'{}' on {} is the operation {op}, which the owner's approval rules cover. \
                  Call {} instead (load it with find_tools) — do not retry it here. The \
@@ -2562,6 +2569,26 @@ fn take_client_key(input: &mut serde_json::Value) -> Option<String> {
 /// A template binding ("bill create --vendor-ref {vendorId}") is matched on its
 /// leading plain words ("bill create"): the flags are the call's shape, not
 /// part of what names the operation.
+/// Whether a raw command asks only for help: a help flag (`--help`, `-h`,
+/// or a `help` arg) and no other flag, so it performs nothing.
+fn asks_only_for_help(call: &PluginCall) -> bool {
+    let mut help = false;
+    for word in call.command.split_whitespace() {
+        if word == "--help" || word == "-h" {
+            help = true;
+        } else if word.starts_with('-') {
+            return false;
+        }
+    }
+    for (k, v) in &call.args {
+        if !crate::effects::is_help_flag(k) || !(v.trim().is_empty() || v.trim() == "true") {
+            return false;
+        }
+        help = true;
+    }
+    help
+}
+
 fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
     let bound_cmd = if bound_cmd.contains('{') {
         let words: Vec<&str> = bound_cmd
@@ -3309,6 +3336,46 @@ mod budget_and_install_tests {
         let r = tool.execute_dyn(&ctx, bare).await;
         assert!(!r.is_error && !r.content.contains("Already performed"), "{}", r.content);
         assert_eq!(invocations(), 4, "no key: every call runs, as before");
+    }
+
+    /// Live 2026-10-12: gmail refused `send --help` as a bound operation,
+    /// the model called `mail_message_send {help: true}`, the plugin printed
+    /// its help, and the send ledger held it as an unknown send, so the
+    /// owner was asked whether an email that never existed went out. A help
+    /// request reads the plugin's help on either path and leaves no ledger
+    /// row; a real send is still recorded.
+    #[tokio::test]
+    async fn a_help_request_reads_the_help_and_records_no_send() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_port_plugin(
+            tmp.path(),
+            "gmail",
+            serde_json::json!({"mail.message.send": "send"}),
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --help ] && { echo 'usage: gmail send --to --subject --text'; exit 0; }; done\necho '{\"outcome\":\"unknown_outcome\",\"message\":\"no answer\"}'\n",
+        );
+        let runner = Arc::new(PluginRunner::new(plugin_store.clone(), db_store.clone()));
+        let cli = crate::plugin_tools::PluginCliTool::new(runner, "gmail");
+        let tool = operation_tool(plugin_store, db_store.clone(), "gmail", "mail_message_send");
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send --help"})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "help runs through the plugin tool: {}", r.content);
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send", "args": {"help": true}})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "{}", r.content);
+        let r = cli.execute_dyn(&ctx, serde_json::json!({"command": "send --to a@x.com --help"})).await;
+        assert!(r.is_error && r.content.contains("Call mail_message_send"), "a send with flags is still refused: {}", r.content);
+
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"help": true})).await;
+        assert!(!r.is_error && r.content.contains("usage: gmail send"), "{}", r.content);
+        assert!(db_store.engine_effects_for_run("run-1").unwrap().is_empty(), "no ledger row, so no card");
+        assert!(db_store.engine_pending_effects().unwrap().is_empty());
+
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"to": "lead@example.com", "subject": "Hi", "text": "hello"})).await;
+        assert!(r.is_error && r.content.contains("outcome is unknown"), "{}", r.content);
+        let rows = db_store.engine_effects_for_run("run-1").unwrap();
+        assert_eq!(rows.len(), 1, "a real send is recorded: {rows:?}");
+        assert_eq!((rows[0].state.as_str(), rows[0].attempts), ("pending", 1), "and held for the owner");
     }
 
     /// Seen live: an employee with gmail connected called google-workspace
