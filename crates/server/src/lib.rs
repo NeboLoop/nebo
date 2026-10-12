@@ -3573,6 +3573,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
         .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
+        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
         .route("/ws/desktop", axum::routing::get(handlers::desktop::desktop_ws_handler))
         // Root + wildcard forms. The slashless /apps/x/ui is the matchable
         // root — a TRAILING-slash route ("…/ui/") never matches in axum's

@@ -15,9 +15,9 @@ use crate::run_registry::{RegisterParams, RunHandle};
 use crate::state::AppState;
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
-/// (Janus metered relay or BYOK direct). Dictation was removed: the OS does
-/// it natively (macOS dictation, Win+H) straight into the composer, on
-/// device — a local whisper pathway was a worse competing implementation.
+/// (Janus metered relay or BYOK direct). Desktop dictation is the OS's own
+/// (macOS dictation, Win+H) straight into the composer; the phone app's
+/// dictation is [`dictation_ws_handler`], on the same leg.
 ///
 /// Voice is a MODALITY of the chat, not a separate surface: the session binds
 /// to `agent_id` + `chat_id`, every finished turn persists as a normal chat
@@ -103,16 +103,17 @@ pub async fn conversation_ws_handler(
     })
 }
 
-/// Resolve the realtime upstream leg — the same direct-vs-Janus split as text
+/// Resolve the realtime upstream leg for `path` (`/v1/realtime` for a voice
+/// call, `/v1/stt` for dictation) — the same direct-vs-Janus split as text
 /// providers: a user-owned xAI key dials api.x.ai directly (no Janus, no
 /// metering — their key); otherwise the NeboAI account rides Janus's metered
 /// relay with the user's Janus JWT.
-fn resolve_realtime_leg(state: &AppState) -> Option<(String, String)> {
+fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String)> {
     if let Ok(Some(profile)) = state.store.get_best_auth_profile("xai")
         && let key = auth::credential::profile_key(&profile)
         && !key.is_empty()
     {
-        return Some(("wss://api.x.ai/v1/realtime".into(), key));
+        return Some((format!("wss://api.x.ai{path}"), key));
     }
     let token = crate::codes::neboai_token(state)?;
     let url = state
@@ -121,7 +122,112 @@ fn resolve_realtime_leg(state: &AppState) -> Option<(String, String)> {
         .janus_url
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
-    Some((format!("{}/v1/realtime", url.trim_end_matches('/')), token))
+    Some((format!("{}{path}", url.trim_end_matches('/')), token))
+}
+
+/// Dictation from the phone app: `/ws/voice/dictation`.
+#[derive(Debug, Deserialize)]
+pub struct DictationQuery {
+    /// The speaker's language (BCP-47, `en`, `pt-BR`); none = the
+    /// recognizer's choice.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// The microphone's PCM16 mono rate; none = 16 kHz.
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+}
+
+/// A dictation whose phone has sent nothing for this long is over: the phone
+/// streams its microphone continuously (silence included) until it stops.
+const DICTATION_CLIENT_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// GET /ws/voice/dictation — the phone's microphone in, text out.
+///
+/// The phone sends PCM16 LE mono binary frames (at `sample_rate`) from the
+/// moment the owner taps the mic, and `{"type":"stop"}` when he stops. It
+/// gets `{"type":"ready"}`, then `{"type":"text","text","start","end","final"}`
+/// for each span heard (a partial replaced by the next event for its span; a
+/// final, punctuated, stays), then `{"type":"done","text"}` once every word
+/// said before the stop has come back, or `{"type":"error","message"}`.
+/// The phone holds the time limit and the silence stop; this relays.
+///
+/// Same leg as a voice call: Janus's metered `/v1/stt` on the owner's NeboAI
+/// account (billed as `stt_minute`), or the provider direct on an owner-held
+/// key.
+pub async fn dictation_ws_handler(
+    State(state): State<AppState>,
+    Query(q): Query<DictationQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let span = tracing::info_span!("dictation", id = %id);
+    span.in_scope(|| info!(language = ?q.language, sample_rate = ?q.sample_rate, "dictation WebSocket upgrade requested"));
+    ws.on_upgrade(move |socket| tracing::Instrument::instrument(handle_dictation_ws(socket, state, q), span))
+}
+
+async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: DictationQuery) {
+    use voice::dictation::{DictationConfig, DictationEvent, DictationInput};
+    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/stt") else {
+        let msg = DictationEvent::Error("dictation needs a NeboAI account or an xAI API key".into()).to_json();
+        let _ = socket.send(Message::Text(msg.to_string().into())).await;
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    };
+    let cfg = DictationConfig {
+        endpoint,
+        bearer,
+        bot_id: config::read_bot_id(),
+        sample_rate: q.sample_rate.filter(|r| (8_000..=48_000).contains(r)).unwrap_or(voice::dictation::DEFAULT_SAMPLE_RATE),
+        language: q.language,
+    };
+    let (in_tx, in_rx) = mpsc::channel::<DictationInput>(256);
+    let (ev_tx, mut ev_rx) = mpsc::channel::<DictationEvent>(64);
+    let line = tokio::spawn(voice::dictation::run(cfg, in_rx, ev_tx));
+    let mut heard = tokio::time::Instant::now();
+    let mut stopped = false;
+    loop {
+        tokio::select! {
+            ev = ev_rx.recv() => match ev {
+                Some(ev) => {
+                    let last = matches!(ev, DictationEvent::Done { .. } | DictationEvent::Error(_));
+                    if socket.send(Message::Text(ev.to_json().to_string().into())).await.is_err() || last {
+                        break;
+                    }
+                }
+                None => break,
+            },
+            msg = socket.recv(), if !stopped => {
+                heard = tokio::time::Instant::now();
+                match msg {
+                    Some(Ok(Message::Binary(data))) => {
+                        if in_tx.send(DictationInput::Audio(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        let kind = serde_json::from_str::<serde_json::Value>(&text)
+                            .ok()
+                            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string));
+                        if kind.as_deref() == Some("stop") {
+                            stopped = true;
+                            let _ = in_tx.send(DictationInput::Stop).await;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+            _ = tokio::time::sleep_until(heard + DICTATION_CLIENT_GONE_AFTER), if !stopped => {
+                info!("dictation phone silent too long; ending");
+                break;
+            }
+        }
+    }
+    // Dropping the input ends the line; the upstream minutes stop with it.
+    drop(in_tx);
+    let _ = line.await;
+    let _ = socket.send(Message::Close(None)).await;
+    info!("dictation ended");
 }
 
 /// The xAI voices offered in the Identity tab (brand display names live in
@@ -152,7 +258,7 @@ pub async fn voice_sample(
         return Ok(wav_response(bytes));
     }
 
-    let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
+    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/realtime") else {
         return Err(to_error_response(types::NeboError::Validation(
             "Voice needs a NeboAI account or an xAI API key (Settings → Providers).".into(),
         )));
@@ -1907,7 +2013,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         q.chat_id = Some(resolve_voice_chat(&state, agent_id, q.telephony.is_some()).await);
     }
 
-    let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
+    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/realtime") else {
         let msg = serde_json::json!({
             "type": "Error",
             "message": "Voice conversation needs a NeboAI account or an xAI API key (Settings → Providers).",
