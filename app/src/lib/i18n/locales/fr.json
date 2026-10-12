@@ -276,7 +276,6 @@
 		"goalLastCheck": "dernière vérification : {reason}",
 		"goalPaused": "En pause. Votre prochain message le relance.",
 		"goalStopped": "Objectif en pause. Dites-le quand vous voulez le reprendre.",
-		"resumedActivity": "Toujours au travail : {tool}",
 		"waitingForYou": "Vous attend",
 		"waitingOnYou": "{name} vous attend",
 		"seeConversation": "Voir la conversation",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Connectez-vous et je reprendrai où je m'étais arrêté.",
 		"connectAccountFor": "{label} pour {employee}",
 		"submit": "Envoyer",
-		"other": "Autre…",
 		"askedReceipt": "Demandé",
 		"copyCode": "Copier le code",
 		"copied": "Copié !",
@@ -495,6 +493,7 @@
 		"fileGone": "Ce fichier n’est plus disponible.",
 		"notDelivered": "Message non distribué. La connexion a été coupée, renvoyez-le.",
 		"call": {
+			"ask": "En attente de votre réponse",
 			"read": "Lire",
 			"write": "Écrire",
 			"edit": "Modifier",

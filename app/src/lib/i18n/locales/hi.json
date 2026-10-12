@@ -276,7 +276,6 @@
 		"goalLastCheck": "पिछली जाँच: {reason}",
 		"goalPaused": "रुका हुआ है। आपका अगला संदेश इसे फिर शुरू करेगा।",
 		"goalStopped": "लक्ष्य रोका गया। फिर से शुरू करना हो तो बताइए।",
-		"resumedActivity": "अब भी काम पर: {tool}",
 		"waitingForYou": "आपकी प्रतीक्षा में",
 		"waitingOnYou": "{name} आपका इंतज़ार कर रहा है",
 		"seeConversation": "बातचीत देखें",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "कनेक्ट करें और मैं वहीं से आगे बढ़ूँगा जहाँ रुका था।",
 		"connectAccountFor": "{employee} के लिए {label}",
 		"submit": "सबमिट करें",
-		"other": "अन्य…",
 		"askedReceipt": "पूछा गया",
 		"copyCode": "कोड कॉपी करें",
 		"copied": "कॉपी हो गया!",
@@ -495,6 +493,7 @@
 		"fileGone": "यह फ़ाइल अब उपलब्ध नहीं है।",
 		"notDelivered": "संदेश नहीं पहुंचा। कनेक्शन टूट गया, इसलिए इसे फिर से भेजें।",
 		"call": {
+			"ask": "आपके जवाब का इंतज़ार",
 			"read": "पढ़ें",
 			"write": "लिखें",
 			"edit": "संपादित करें",

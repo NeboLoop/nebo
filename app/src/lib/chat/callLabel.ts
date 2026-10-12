@@ -65,6 +65,14 @@ export function callLine(tool: CallTool, tr: Tr): CallLine {
   const p = call?.params ?? {};
   const kind = call?.kind ?? '';
   const http = (u: string | undefined) => (u && /^https?:\/\//i.test(u) ? u : undefined);
+  // A question to the owner: waiting on him while it runs, then what was
+  // asked. Never the tool's name.
+  if (kind === 'ask') {
+    const question = oneLine(p.question ?? '');
+    return tool.status === 'running'
+      ? { label: tr('chat.call.ask'), subject: '', title: question }
+      : { label: tr('chat.askedReceipt'), subject: question, title: question };
+  }
   if (call && WORDED.has(kind)) {
     const label = tr(`chat.call.${kind}`);
     if (FILE_KINDS.has(kind) || (kind === 'share' && p.path)) {
@@ -148,6 +156,7 @@ export function resultLine(tool: CallTool, tr: Tr): string {
   if (tool.status === 'running') return oneLine(tool.statusText ?? '');
   const response = tool.response ?? '';
   if (tool.status === 'error') return firstLine(response.replace(/^\s*error:\s*/i, '')) || tr('common.failed');
+  if (tool.call?.kind === 'ask') return askAnswer(tool, tr);
   const groups = tool.payload?.kind === 'search_results' ? (tool.payload.groups as { results?: unknown[] }[] | undefined) : undefined;
   if (Array.isArray(groups)) {
     const count = groups.reduce((n, g) => n + (Array.isArray(g.results) ? g.results.length : 0), 0);
@@ -173,4 +182,19 @@ export function groupSummary(tools: CallTool[], tr: Tr): string {
   const parts = [...counts.entries()].map(([label, n]) => (n > 1 ? `${label} ×${n}` : label));
   const line = parts.slice(0, 3).join(' · ');
   return parts.length > 3 ? `${line} ${tr('chat.moreCount', { values: { count: parts.length - 3 } })}` : line;
+}
+
+/** The owner's answer to a question, as its row reads it: the option he
+ *  picked, or his own words; "Skipped" when he skipped it. A question that
+ *  went up the reporting line instead says so in its own first line. */
+function askAnswer(tool: CallTool, tr: Tr): string {
+  const response = tool.response ?? '';
+  try {
+    const v = JSON.parse(response) as { picked?: string | string[]; own_words?: string; response?: string };
+    const picked = Array.isArray(v.picked) ? v.picked.join(', ') : v.picked;
+    return oneLine(picked ?? v.own_words ?? v.response ?? '');
+  } catch {
+    if (tool.payload) return firstLine(response);
+    return response.trim() ? tr('common.skipped') : '';
+  }
 }

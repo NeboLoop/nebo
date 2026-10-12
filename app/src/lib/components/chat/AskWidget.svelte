@@ -194,8 +194,6 @@
 	const isMulti = $derived(widget?.multiSelect === true || widget?.type === 'checkbox');
 
 	let selected = $state(new Set<string>());
-	let showOther = $state(false);
-	let otherText = $state('');
 
 	const answered = $derived(response != null);
 	/** The question on one line, for the receipt: its first line, markdown marks dropped. */
@@ -205,7 +203,7 @@
 			.map((l) => l.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`#>]/g, '').trim())
 			.find(Boolean) ?? ''
 	);
-	/** What the owner chose, as the receipt marks it: the options picked, and any typed "Other" answer. */
+	/** What the owner chose, as the receipt marks it: the options picked, and any answer typed in his own words. */
 	const chosen = $derived(answered && response !== SKIP_VALUE && !response?.startsWith(FAILED_PREFIX) ? (response ?? '').split(', ') : []);
 	const typedAnswers = $derived(options.length > 0 ? chosen.filter((c) => !options.some((o) => o.label === c)) : []);
 	const wasSkipped = $derived(response === SKIP_VALUE);
@@ -227,11 +225,6 @@
 		if (next.has(label)) next.delete(label);
 		else next.add(label);
 		selected = next;
-	}
-
-	function submitOther() {
-		const v = otherText.trim();
-		if (v) submit(v);
 	}
 
 	function onKeydown(e: KeyboardEvent) {
@@ -392,21 +385,9 @@
 			</div>
 		{/if}
 
-		<!-- Free-text escape + dismiss -->
+		<!-- An answer in his own words is typed in the composer, the one place
+		     he writes: the conversation reads it against this card. -->
 		<div class="mt-2 flex flex-col gap-2">
-			{#if showOther}
-				<div class="flex gap-2 items-center">
-					<input
-						type="text"
-						class="input input-bordered input-sm flex-1"
-						placeholder={$t('chat.typeYourAnswer')}
-						bind:value={otherText}
-						onkeydown={(e) => e.key === 'Enter' && submitOther()}
-					/>
-					<button type="button" class="btn btn-sm btn-primary" disabled={!otherText.trim()} onclick={submitOther}>{$t('common.ok')}</button>
-				</div>
-			{/if}
-
 			<div class="flex items-center gap-3">
 				{#if isMulti}
 					<button
@@ -417,9 +398,6 @@
 					>
 						{$t('chat.submit')}{selected.size > 0 ? ` (${selected.size})` : ''}
 					</button>
-				{/if}
-				{#if !showOther}
-					<button type="button" class="text-xs text-base-content/80 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>{$t('chat.other')}</button>
 				{/if}
 				<button type="button" class="text-xs text-base-content/70 hover:text-base-content cursor-pointer bg-transparent border-none px-0 ms-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			</div>

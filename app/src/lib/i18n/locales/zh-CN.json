@@ -276,7 +276,6 @@
 		"goalLastCheck": "上次检查：{reason}",
 		"goalPaused": "已暂停。你的下一条消息会恢复它。",
 		"goalStopped": "目标已暂停。需要继续时告诉我。",
-		"resumedActivity": "仍在处理：{tool}",
 		"waitingForYou": "等待你处理",
 		"waitingOnYou": "{name} 正在等你处理",
 		"seeConversation": "查看对话",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "登录后，我会从中断的地方继续。",
 		"connectAccountFor": "{employee} 的{label}",
 		"submit": "提交",
-		"other": "其他…",
 		"askedReceipt": "已提问",
 		"copyCode": "复制代码",
 		"copied": "已复制！",
@@ -495,6 +493,7 @@
 		"fileGone": "此文件已不可用。",
 		"notDelivered": "消息未送达。连接中断了，请重新发送。",
 		"call": {
+			"ask": "等待你的回答",
 			"read": "读取",
 			"write": "写入",
 			"edit": "编辑",

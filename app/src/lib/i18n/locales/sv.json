@@ -276,7 +276,6 @@
 		"goalLastCheck": "senaste kontroll: {reason}",
 		"goalPaused": "Pausad. Ditt nästa meddelande återupptar den.",
 		"goalStopped": "Målet är pausat. Säg till när du vill fortsätta.",
-		"resumedActivity": "Arbetar fortfarande: {tool}",
 		"waitingForYou": "Väntar på dig",
 		"waitingOnYou": "{name} väntar på dig",
 		"seeConversation": "Visa samtalet",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Logga in så fortsätter jag där jag slutade.",
 		"connectAccountFor": "{label} för {employee}",
 		"submit": "Skicka",
-		"other": "Annat…",
 		"askedReceipt": "Frågade",
 		"copyCode": "Kopiera kod",
 		"copied": "Kopierat!",
@@ -495,6 +493,7 @@
 		"fileGone": "Den här filen är inte längre tillgänglig.",
 		"notDelivered": "Meddelandet levererades inte. Anslutningen bröts, så skicka det igen.",
 		"call": {
+			"ask": "Väntar på ditt svar",
 			"read": "Läs",
 			"write": "Skriv",
 			"edit": "Redigera",

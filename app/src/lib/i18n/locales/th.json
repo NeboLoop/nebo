@@ -276,7 +276,6 @@
 		"goalLastCheck": "ตรวจล่าสุด: {reason}",
 		"goalPaused": "หยุดชั่วคราว ข้อความถัดไปของคุณจะทำต่อ",
 		"goalStopped": "หยุดเป้าหมายไว้ชั่วคราว บอกได้เลยเมื่ออยากทำต่อ",
-		"resumedActivity": "ยังทำอยู่: {tool}",
 		"waitingForYou": "รอคุณอยู่",
 		"waitingOnYou": "{name} กำลังรอคุณอยู่",
 		"seeConversation": "ดูการสนทนา",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "เข้าสู่ระบบแล้วฉันจะทำต่อจากจุดที่ค้างไว้",
 		"connectAccountFor": "{label} สำหรับ {employee}",
 		"submit": "ส่ง",
-		"other": "อื่นๆ…",
 		"askedReceipt": "ถามแล้ว",
 		"copyCode": "คัดลอกโค้ด",
 		"copied": "คัดลอกแล้ว!",
@@ -495,6 +493,7 @@
 		"fileGone": "ไฟล์นี้ไม่พร้อมใช้งานแล้ว",
 		"notDelivered": "ส่งข้อความไม่ถึง การเชื่อมต่อขาดหาย โปรดส่งอีกครั้ง",
 		"call": {
+			"ask": "กำลังรอคำตอบของคุณ",
 			"read": "อ่าน",
 			"write": "เขียน",
 			"edit": "แก้ไข",

@@ -141,14 +141,22 @@ fn listed_choices(question: &str) -> usize {
         .count()
 }
 
+/// What the employee is told beside the answer to an open question.
+const OPEN_ANSWER_NOTE: &str = "His reply to your question. If it doesn't answer it, it is still what he said: act on it, and ask again only if you still need to know.";
+
 /// The owner's answer as the employee reads it. On a card with options,
 /// only an answer that is one of them (on a multi-select card, several
 /// joined by ", ") is a pick; anything else is his own words and picks
 /// nothing. Live 2026-10-02: the owner typed "k" while a choice waited, and
 /// the employee told him "you picked option A".
 fn answer(options: &[String], multi_select: bool, response: &str) -> Value {
+    // An open question is answered by his next message in the
+    // conversation, whatever it says: it may be something else he wants.
     if options.is_empty() {
-        return json!({ "response": response });
+        return json!({
+            "response": response,
+            "note": OPEN_ANSWER_NOTE,
+        });
     }
     let is_option = |p: &str| options.iter().any(|o| o == p.trim());
     if is_option(response) {
@@ -346,9 +354,14 @@ mod tests {
             assert_eq!(v["own_words"], words);
             assert!(v["note"].as_str().unwrap().contains("nothing was picked"), "{v}");
         }
-        // A free question has no options to pick from: the answer is the answer.
+        // A free question has no options to pick from: the answer is the
+        // answer. His next message answers it whatever it says, so the
+        // employee is told it may be something else he wants.
         let (_, r) = asked(json!({"question": "What's the client's name?"}), "Acme").await;
-        assert_eq!(serde_json::from_str::<Value>(&r.content).unwrap(), json!({"response": "Acme"}));
+        let v = serde_json::from_str::<Value>(&r.content).unwrap();
+        assert_eq!(v["response"], "Acme");
+        assert!(v.get("picked").is_none());
+        assert!(v["note"].as_str().unwrap().contains("still what he said"), "{v}");
     }
 
     /// Live 2026-10-08: three video lengths written as a bullet list in the

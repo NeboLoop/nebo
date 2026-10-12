@@ -1501,6 +1501,55 @@ async fn the_owners_answer_answers_the_open_question_and_a_new_message_is_new() 
     assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the card is closed");
 }
 
+/// Live 2026-10-11, on his phone: an open question ("Are you flying from
+/// Salt Lake City, and on what dates?") came as a card with only "Other…"
+/// and Skip, the composer below it unused. An open question is a question
+/// in the conversation: the owner's next message there answers it, with no
+/// decision to read it, and the turn goes on with his words; the message
+/// starts no turn of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_next_message_answers_an_open_question() {
+    let nebo = session().await;
+    const OWNER: &str = "agent:proof-open-q:web";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("OWNER-OPEN") {
+            return None;
+        }
+        if t.has_tool_results() {
+            let answer = t
+                .since_last_answer()
+                .iter()
+                .filter_map(|m| m.tool_results.as_ref())
+                .map(|r| r.to_string())
+                .collect::<String>();
+            let heard = if answer.contains("Oct 20 to 25") { "Oct 20 to 25" } else { "nothing" };
+            return Some(Step::say(format!("ANSWER-OPEN heard {heard}.")));
+        }
+        t.new_text().contains("OWNER-OPEN").then(|| {
+            Step::call(vec![(
+                "ask_owner",
+                json!({"question": "Are you flying from Salt Lake City, and on what dates?"}),
+            )])
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(OWNER, "", None, "OWNER-OPEN find me flights to Tokyo").await;
+    rig.until(20, "the question is open on the conversation", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
+    })
+    .await;
+
+    rig.owner_writes(OWNER, "", None, "Yes, Oct 20 to 25").await;
+    rig.until(20, "the turn goes on with his words", || {
+        rig.thread(OWNER).iter().any(|m| m.role == "assistant" && m.content.contains("ANSWER-OPEN"))
+    })
+    .await;
+    let said: Vec<String> = rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect();
+    assert!(said.iter().any(|c| c.contains("ANSWER-OPEN heard Oct 20 to 25.")), "{said:?}");
+    assert_eq!(said.iter().filter(|c| c.contains("ANSWER-OPEN")).count(), 1, "his answer started no turn of its own: {said:?}");
+    assert!(nebo.state.run_registry.pending_ask_for_session(OWNER).await.is_none(), "the question is closed");
+}
+
 /// Live 2026-10-02, on his phone: asked "can you use the cards?", Chief
 /// drew an A2UI panel no app shows, said "a card panel on the side", took
 /// the owner's "k" as "you picked option A", and drew the next question the

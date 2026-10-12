@@ -276,7 +276,6 @@
 		"goalLastCheck": "ostatnie sprawdzenie: {reason}",
 		"goalPaused": "Wstrzymano. Twoja następna wiadomość to wznowi.",
 		"goalStopped": "Cel wstrzymany. Daj znać, gdy mam go wznowić.",
-		"resumedActivity": "Wciąż pracuje: {tool}",
 		"waitingForYou": "Czeka na Ciebie",
 		"waitingOnYou": "{name} czeka na Ciebie",
 		"seeConversation": "Zobacz rozmowę",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "Zaloguj się, a podejmę pracę tam, gdzie skończyłem.",
 		"connectAccountFor": "{label} dla: {employee}",
 		"submit": "Wyślij",
-		"other": "Inne…",
 		"askedReceipt": "Zapytano",
 		"copyCode": "Kopiuj kod",
 		"copied": "Skopiowano!",
@@ -495,6 +493,7 @@
 		"fileGone": "Ten plik nie jest już dostępny.",
 		"notDelivered": "Wiadomość nie została dostarczona. Połączenie zostało przerwane, wyślij ją ponownie.",
 		"call": {
+			"ask": "Czeka na Twoją odpowiedź",
 			"read": "Odczyt",
 			"write": "Zapis",
 			"edit": "Edycja",

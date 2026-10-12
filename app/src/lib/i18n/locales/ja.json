@@ -276,7 +276,6 @@
 		"goalLastCheck": "前回の確認: {reason}",
 		"goalPaused": "一時停止中。次のメッセージで再開します。",
 		"goalStopped": "ゴールを一時停止しました。再開するときはお知らせください。",
-		"resumedActivity": "作業中：{tool}",
 		"waitingForYou": "あなた待ち",
 		"waitingOnYou": "{name}があなたを待っています",
 		"seeConversation": "会話を見る",
@@ -377,7 +376,6 @@
 		"connectAccountHint": "サインインしてください。中断したところから続けます。",
 		"connectAccountFor": "{employee} の{label}",
 		"submit": "送信",
-		"other": "その他…",
 		"askedReceipt": "質問済み",
 		"copyCode": "コードをコピー",
 		"copied": "コピーしました!",
@@ -495,6 +493,7 @@
 		"fileGone": "このファイルはもう利用できません。",
 		"notDelivered": "メッセージを配信できませんでした。接続が切れたため、もう一度送信してください。",
 		"call": {
+			"ask": "あなたの回答を待っています",
 			"read": "読み取り",
 			"write": "書き込み",
 			"edit": "編集",
