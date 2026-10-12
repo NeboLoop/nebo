@@ -180,7 +180,7 @@ enum TestCommands {
         #[arg(long)]
         traces: String,
         /// Judge model for the claude CLI: an alias (sonnet, opus) or a full name
-        #[arg(long, default_value = "claude-opus-5")]
+        #[arg(long)]
         grader: String,
         /// The checkout the run was dispatched from, holding its suites/ and fixtures/
         #[arg(long, default_value = ".")]

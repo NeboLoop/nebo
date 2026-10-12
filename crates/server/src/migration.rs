@@ -48,7 +48,7 @@ pub fn migrate_models_yaml() {
         return;
     }
     if let Some(mut cfg) = config::ModelsConfig::load_owned() {
-        if cfg.upgrade(&old_fallbacks()) {
+        if cfg.upgrade() {
             if let Err(e) = cfg.save() {
                 warn!(error = %e, "models.yaml could not be rewritten; it is tried again at the next start");
                 return;
@@ -59,25 +59,6 @@ pub fn migrate_models_yaml() {
     if let Err(e) = std::fs::write(&marker, "migrated") {
         warn!(error = %e, "failed to write the models.yaml migration marker");
     }
-}
-
-/// The owner's file's `defaults.fallbacks`, which Nebo no longer reads:
-/// what [`config::ModelsConfig::upgrade`] keeps of it is each provider's
-/// default model.
-fn old_fallbacks() -> Vec<String> {
-    let Some(text) = config::data_dir()
-        .ok()
-        .and_then(|dir| std::fs::read_to_string(dir.join(types::constants::files::MODELS_YAML)).ok())
-    else {
-        return Vec::new();
-    };
-    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
-        return Vec::new();
-    };
-    yaml["defaults"]["fallbacks"]
-        .as_sequence()
-        .map(|list| list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default()
 }
 
 /// Move skills from `<data_dir>/skills/` → `<data_dir>/user/skills/`

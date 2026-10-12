@@ -213,7 +213,7 @@ pub async fn test_provider(
     }
 
     // Build a temporary provider and try a minimal API call.
-    let model = test_model(&state.store, &config::ModelsConfig::load(), &profile);
+    let model = test_model(&state.store, &profile);
     // A compatible server with no model yet: its own model list, read with
     // the key, is the check.
     if model.is_empty() && profile.provider == "openai_compatible" {
@@ -302,9 +302,9 @@ pub async fn test_provider(
 
 /// The model a provider test asks: the one the connection pins, else the
 /// first chat model it has on. Empty when it has none.
-fn test_model(store: &db::Store, catalog: &config::ModelsConfig, profile: &db::models::AuthProfile) -> String {
+fn test_model(store: &db::Store, profile: &db::models::AuthProfile) -> String {
     profile.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| {
-        super::connections::connection_models(store, catalog, profile)
+        super::connections::connection_models(store, profile)
             .into_iter()
             .find(|m| m.is_active && m.kind == "chat")
             .map(|m| m.model_id)
@@ -960,7 +960,7 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
             continue;
         }
         let key = super::connections::connection_key(&p);
-        for m in super::connections::connection_models(&state.store, &catalog, &p).into_iter().filter(|m| m.is_active) {
+        for m in super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active) {
             let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
             if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
         }
@@ -1029,18 +1029,17 @@ mod test_model_tests {
     #[test]
     fn a_test_asks_the_pinned_model_else_a_chat_model_the_connection_has_on() {
         let store = db::Store::new(":memory:").unwrap();
-        let catalog = config::ModelsConfig::load();
         store.create_auth_profile("x", "xAI", "openai_compatible", "", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
         let p = store.get_auth_profile("x").unwrap().unwrap();
-        assert_eq!(super::test_model(&store, &catalog, &p), "", "nothing to ask yet");
+        assert_eq!(super::test_model(&store, &p), "", "nothing to ask yet");
         let key = super::super::connections::connection_key(&p);
         store.put_connection_model(&key, "jev", "Jev", "decision", None, "[]", "added", true).unwrap();
         store.put_connection_model(&key, "grok-off", "Grok off", "chat", None, "[]", "added", false).unwrap();
         store.put_connection_model(&key, "grok-5", "Grok 5", "chat", None, "[]", "added", true).unwrap();
-        assert_eq!(super::test_model(&store, &catalog, &p), "grok-5");
+        assert_eq!(super::test_model(&store, &p), "grok-5");
         store.create_auth_profile("y", "Pinned", "openai_compatible", "", Some("pinned-1"), Some("https://x/v1"), 0, 1, None, None).unwrap();
         let pinned = store.get_auth_profile("y").unwrap().unwrap();
-        assert_eq!(super::test_model(&store, &catalog, &pinned), "pinned-1");
+        assert_eq!(super::test_model(&store, &pinned), "pinned-1");
     }
 }
 

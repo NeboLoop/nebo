@@ -177,6 +177,17 @@ impl Store {
         Ok(())
     }
 
+    /// Set the model a connection runs when a request names none.
+    pub fn set_auth_profile_model(&self, id: &str, model: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE auth_profiles SET model = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, model],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_auth_profile(
         &self,
         id: &str,
