@@ -189,7 +189,7 @@ async fn read(
 /// What the conversation holds for one image: its reference and size, the
 /// helper's reading, and how to look again. With no reading, it says an
 /// image is there and could not be read, so the model never claims there
-/// was none.
+/// was none or guesses at what it shows.
 pub fn note(reference: &str, size: Option<(u32, u32)>, reading: Option<&str>) -> String {
     let size = size.map(|(w, h)| format!(", {w}×{h} px")).unwrap_or_default();
     match reading {
@@ -198,8 +198,9 @@ pub fn note(reference: &str, size: Option<(u32, u32)>, reading: Option<&str>) ->
              it. To check a detail, look again with read_file(path, question: \"...\").]\n{reading}"
         ),
         None => format!(
-            "[Image: {reference}{size}. The vision helper could not read it this time. Say so plainly if the \
-             work depends on it; don't claim there was no image.]"
+            "[Image: {reference}{size}. The vision helper could not read it, so you do not know what it shows. \
+             Do not guess or describe what it might be. Tell the owner once that you could not read it and ask \
+             them to send it again or paste its text; don't claim there was no image.]"
         ),
     }
 }
@@ -255,6 +256,8 @@ mod tests {
         assert!(n.contains("/plans/site.png, 4000×3000 px") && n.contains("DECK 12'x16'") && n.contains("question"));
         let blind = note("/plans/site.png", None, None);
         assert!(blind.contains("could not read it") && blind.contains("don't claim there was no image"));
+        assert!(blind.contains("you do not know what it shows") && blind.contains("Do not guess"));
+        assert!(blind.contains("send it again or paste its text"));
     }
 
     /// A vision model that takes the request and never answers.
