@@ -94,7 +94,7 @@ fn workflow_runs_show_their_step_turns_and_wait() {
 
     let live = s.list_live_workflow_runs().unwrap();
     assert_eq!(live.len(), 2, "an ended run is not background work");
-    let tasks = workflows(live, |id| (id == "r-run").then_some((42, 150)), &|_| None);
+    let tasks = workflows(live, |id| (id == "r-run").then_some((42, 150)), |id| (id == "r-wait").then(|| "agent:ava:web".to_string()), &|_| None);
     let run = tasks.iter().find(|t| t.id == "workflow:r-run").unwrap();
     assert_eq!((run.kind, run.status), (Kind::Workflow, Status::Running));
     assert_eq!((run.agent_id.as_str(), run.title.as_str(), run.detail.as_str()), ("ava", "sweep", "read-inbox"));
@@ -109,7 +109,8 @@ fn workflow_runs_show_their_step_turns_and_wait() {
     assert_eq!(wait.next_run_at, Some(4_000_000_000), "when the wait gives up");
     assert_eq!(wait.created_by, "chat");
     assert_eq!(wait.actions, vec![Action::Cancel]);
-    assert!(tasks.iter().all(|t| t.launched_from.is_none()), "a workflow run keeps no record of a chat that started it");
+    assert_eq!(wait.launched_from.as_deref(), Some("agent:ava:web"), "a run a chat started is that chat's");
+    assert_eq!(run.launched_from, None, "a scheduled run is no chat's");
 }
 
 fn snapshot(run_id: &str, session_key: &str, entity_id: &str, origin: &str) -> crate::run_registry::RunSnapshot {
@@ -495,4 +496,16 @@ fn only_what_a_chat_launched_names_the_chat() {
     let turn_rows = turns(vec![scheduled, triggered], &HashSet::new(), 1_000, &|_| None);
     assert_eq!(turn_rows.len(), 2);
     assert!(turn_rows.iter().all(|t| t.launched_from.is_none()), "a scheduled or triggered turn is no chat's launch");
+}
+
+/// A workflow run records the conversation that started it, and only a run
+/// a chat started has one: a scheduled or triggered run records none.
+#[test]
+fn a_workflow_run_records_the_chat_that_started_it() {
+    let (s, _d) = store();
+    s.create_workflow_run("r-chat", "wf-1", "agent", None, None, Some("workflow-wf-1-r-chat"), None).unwrap();
+    s.create_workflow_run("r-cron", "wf-1", "schedule", None, None, Some("workflow-wf-1-r-cron"), None).unwrap();
+    s.set_workflow_run_launched_from("r-chat", "agent:ava:thread:t-1").unwrap();
+    assert_eq!(s.workflow_run_launched_from("r-chat").unwrap().as_deref(), Some("agent:ava:thread:t-1"));
+    assert_eq!(s.workflow_run_launched_from("r-cron").unwrap(), None);
 }

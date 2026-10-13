@@ -4299,7 +4299,7 @@ pub async fn create_agent_workflow(
         Some(
             state
                 .workflow_manager
-                .run(&binding_id, serde_json::json!({}), "manual", None)
+                .run(&binding_id, serde_json::json!({}), "manual", None, None)
                 .await
                 .map_err(|e| to_error_response(types::NeboError::Validation(format!("made, but it did not start: {e}"))))?,
         )

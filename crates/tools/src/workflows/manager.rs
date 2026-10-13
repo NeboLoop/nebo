@@ -121,13 +121,16 @@ pub trait WorkflowManager: Send + Sync {
     /// (`agent:{agent_id}:{binding_name}`) as returned by `resolve` for agent
     /// bindings — those fire through `run_inline`. `narrow`: the mode the
     /// run that starts it carries (`ToolContext::narrow`); the run's every
-    /// turn is held to it.
+    /// turn is held to it. `launched_from`: the conversation whose turn
+    /// starts it, recorded on the run so that chat lists it among its
+    /// running tasks; None for a run nothing in a chat started.
     fn run<'a>(
         &'a self,
         id: &'a str,
         inputs: serde_json::Value,
         trigger_type: &'a str,
         narrow: Option<types::permissions::Mode>,
+        launched_from: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Get the status of a workflow run.

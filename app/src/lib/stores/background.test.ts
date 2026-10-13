@@ -73,6 +73,16 @@ describe('background work', () => {
     expect([...ids].sort()).toEqual(['handoff:a', 'helper:c', 'helper:h', 'helper:n']);
   });
 
+  it('a workflow run the chat started and a coding agent session it opened are its; a scheduled run is not', () => {
+    const chat = 'agent:main:thread:t-1';
+    const run = task({ id: 'workflow:r-chat', source: 'workflow', kind: 'workflow', launchedFrom: chat, transcript: { sessionKey: 'workflow-wf-1-r-chat', chatId: 'c-run' } });
+    const scheduled = task({ id: 'workflow:r-cron', source: 'workflow', kind: 'workflow', createdBy: 'schedule', launchedFrom: null });
+    const codingAgent = task({ id: 'handoff:cc', source: 'handoff', employee: 'Claude Code', launchedFrom: chat, transcript: { sessionKey: 'agent:cc:thread:s-1', chatId: 's-1' } });
+    expect([...launchedIn([run, scheduled, codingAgent], chat)].sort()).toEqual(['handoff:cc', 'workflow:r-chat']);
+    expect(kindLabel(codingAgent, (k) => k)).toBe('Claude Code');
+    expect(kindLabel(run, (k) => k)).toBe('background.label.workflow');
+  });
+
   it('lists what fires next first, soonest first, then running work oldest first', () => {
     const sorted = sortForPanel([
       task({ id: 'helper:new', startedAt: 300 }),

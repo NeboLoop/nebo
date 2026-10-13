@@ -236,7 +236,7 @@ pub async fn run_workflow(
 
     let run_id = state
         .workflow_manager
-        .run(&id, inputs, "manual", None)
+        .run(&id, inputs, "manual", None, None)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
