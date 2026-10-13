@@ -709,12 +709,13 @@ fn fake_tool_agent() {
                 reply(json!({ "sessionId": "s-1" }));
             }
             Some("session/prompt") => {
+                let (notified, _) = mcp(&server, json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
                 let (listed, tools) = mcp(&server, json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
                 let count = tools["result"]["tools"].as_array().map_or(0, Vec::len);
                 let (called, answer) = mcp(&server, json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
                     "params": { "name": "no_such_tool", "arguments": {} } }));
                 let text = answer["result"]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
-                note(json!({ "listed": listed, "tools": count, "called": called, "answer": text }));
+                note(json!({ "notified": notified, "listed": listed, "tools": count, "called": called, "answer": text }));
                 send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s-1", "update": {
                     "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": format!("Listed {count} tools.") } } } }));
                 reply(json!({ "stopReason": "end_turn" }));
@@ -789,6 +790,7 @@ async fn a_linked_agent_calls_nebos_tools_as_each_turn() {
     let turns: Vec<&Value> = told.iter().filter(|t| t.get("listed").is_some()).collect();
     assert_eq!(turns.len(), 2, "{told:?}");
     for (n, turn) in turns.iter().enumerate() {
+        assert_eq!(turn["notified"], 202, "turn {}: a notification is accepted with no reply, as MCP says: {turn}", n + 1);
         assert_eq!(turn["listed"], 200, "turn {}: the credential it was given is live: {turn}", n + 1);
         assert!(turn["tools"].as_u64().unwrap() > 0, "turn {}: Nebo's tools are listed: {turn}", n + 1);
         assert_eq!(turn["called"], 200, "turn {}: {turn}", n + 1);
@@ -983,3 +985,4 @@ async fn a_coworker_ask_never_lands_in_the_chat_the_owner_is_in() {
     owner.chats_untouched(&nebo);
     drop(handle);
 }
+

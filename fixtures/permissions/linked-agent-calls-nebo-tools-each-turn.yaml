@@ -13,7 +13,9 @@ description: |
   coding agent process: over two turns in one session it asserts the agent
   was given nebo-agent once, on 127.0.0.1 with the header, that its
   tools/list and tools/call are let in and run as the turn both times, and
-  that between turns the credential executes nothing. Deterministic, no
+  that between turns the credential executes nothing. A notification is
+  answered 202 with no body, as MCP says (Codex drops a server that
+  answers one). Deterministic, no
   model.
 target_component: permissions
 proof: harness::permissions::proof::a_linked_agent_calls_nebos_tools_as_each_turn
