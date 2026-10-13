@@ -2064,17 +2064,25 @@ impl PluginRunner {
                 // a transient failure: a store manager re-ran the same 98 KB
                 // schema dump eight times (2026-09-16), getting the same half a
                 // JSON document each time, until the spiral guard stopped it.
-                if text.len() > crate::MAX_SUBPROCESS_OUTPUT {
+                // In a workflow nothing is cut: a long output is saved whole
+                // by the registry's one spill path and read in pages
+                // (`step_data`), or returned whole to a step that parses it.
+                // The cut, footer included, stays within the tool's inline
+                // threshold, so a chat's cut output is never also saved.
+                if text.len() > crate::MAX_SUBPROCESS_OUTPUT && ctx.door != types::permissions::Door::Workflow {
                     let total = text.len();
-                    types::strutil::safe_truncate(&mut text, crate::MAX_SUBPROCESS_OUTPUT);
-                    text.push_str(&format!(
-                        "\n\n[Cut off: this is the first {} bytes of {}. The rest is gone, so any \
-                         JSON here ends mid-structure and cannot be parsed. Running it again returns \
-                         the same first {} bytes — ask a narrower question instead: one record \
-                         rather than a list, one type rather than a whole schema, a smaller page \
-                         size, or a filter.]",
-                        crate::MAX_SUBPROCESS_OUTPUT, total, crate::MAX_SUBPROCESS_OUTPUT
-                    ));
+                    let footer = |kept: usize| {
+                        format!(
+                            "\n\n[Cut off: this is the first {kept} bytes of {total}. The rest is gone, so any \
+                             JSON here ends mid-structure and cannot be parsed. Running it again returns \
+                             the same first {kept} bytes — ask a narrower question instead: one record \
+                             rather than a list, one type rather than a whole schema, a smaller page \
+                             size, or a filter.]"
+                        )
+                    };
+                    let kept = crate::MAX_SUBPROCESS_OUTPUT - footer(crate::MAX_SUBPROCESS_OUTPUT).len();
+                    types::strutil::safe_truncate(&mut text, kept);
+                    text.push_str(&footer(text.len()));
                 }
 
                 // A plugin that produced a user-facing document (e.g. a deck via

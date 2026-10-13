@@ -3684,6 +3684,9 @@ mod list_tests {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
         }
         fn cleanup(&self, _run_id: &str) {}
+        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+            800_000
+        }
     }
 
     fn manager(store: Arc<db::Store>) -> super::WorkflowManagerImpl {

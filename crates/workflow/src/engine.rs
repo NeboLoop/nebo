@@ -446,11 +446,26 @@ pub async fn execute_workflow(
             warn!(run_id = %run_id, error = %e, "failed to update workflow run status");
         }
 
+        // What the step is handed of the run, fitted to its model.
+        let parents: Vec<String> = idx.checked_sub(1).map(|p| def.activities[p].id.clone()).into_iter().collect();
+        let step = crate::graph::step_context(
+            activity,
+            &parents,
+            crate::graph::StepData {
+                outputs: &outputs,
+                inputs: &inputs,
+                item: None,
+                item_source: None,
+                at: "",
+                budget: crate::graph::data_budget(loop_impl.context_chars(agent_id, &activity.model)),
+            },
+        );
+
         // Scope the toolset to what the activity actually uses (see
         // scoped_activity_tools) — the full registry went out with EVERY LLM
         // turn (~21k tokens of schemas) and invited small models to wander.
         let mut activity_tools: Vec<&Box<dyn DynTool>> =
-            scoped_activity_tools(activity, resolved_tools);
+            scoped_activity_tools(&step.activity, resolved_tools);
 
         // Inject emit tool if event bus is available (always available, no declaration needed)
         let emit_tool_box: Option<Box<dyn DynTool>> = event_bus.map(|bus| {
@@ -473,14 +488,12 @@ pub async fn execute_workflow(
         // Output tokens only — the unit token budgets are enforced in.
         let mut activity_spent_output: u32 = 0;
 
-        let parents: Vec<String> = idx.checked_sub(1).map(|p| def.activities[p].id.clone()).into_iter().collect();
-        let (resolved, step_prior) = crate::graph::step_context(activity, &parents, &outputs, &inputs, None);
         match execute_activity_with_retry(
-            &resolved,
-            &step_prior,
+            &step.activity,
+            &step.prior,
             memory_user_id,
             memory_writes_disabled,
-            &inputs,
+            &step.inputs,
             decide,
             loop_impl,
             &activity_tools,
@@ -2133,6 +2146,9 @@ mod engine_tests {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
         }
         fn cleanup(&self, _run_id: &str) {}
+        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+            800_000
+        }
     }
 
     fn turn_store() -> Arc<Store> {

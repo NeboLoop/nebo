@@ -198,6 +198,9 @@ pub(crate) struct RunToolScope<'a> {
     pub withheld_tools: &'a Arc<HashSet<String>>,
     /// What this step's model was given (`ToolContext::given_text`).
     pub given_text: &'a Arc<str>,
+    /// Tokens the model has left for this round's results
+    /// (`ToolContext::context_room`).
+    pub context_room: Option<usize>,
 }
 
 impl RunToolScope<'_> {
@@ -234,6 +237,7 @@ impl RunToolScope<'_> {
             declared_tools,
             withheld_tools,
             given_text,
+            context_room,
         } = *self;
         let resolved_key = sessions
             .resolve_session_key(session_id)
@@ -245,6 +249,7 @@ impl RunToolScope<'_> {
             user_id: memory_user_id.clone(),
             trusted_plugin_env: false,
             whole_result: false,
+            context_room,
             handoff_depth,
             grant: Some(grant.clone()),
             door: door.clone(),
@@ -399,6 +404,7 @@ pub(crate) async fn run_tool_round(
         origin,
         cancel_token,
         progress,
+        door,
         ..
     } = *scope;
     let RoundState {
@@ -523,7 +529,7 @@ pub(crate) async fn run_tool_round(
     // Each result was shaped by the registry (its tool's threshold, the one
     // spill path); across the message, the largest go to disk first once
     // their total passes the per-message budget.
-    apply_message_budget(&mut results, &tools::result_shape::results_dir(session_id));
+    apply_message_budget(&mut results, &tools::result_shape::results_dir(session_id), tools::result_shape::Reader::of(door));
 
     // The parked call's result is not saved: the resumed run executes the
     // call itself once the owner answers.
@@ -682,7 +688,7 @@ pub(crate) async fn run_tool_round(
 /// Hold one message's results to [`tools::result_shape::MESSAGE_RESULT_BUDGET`]
 /// characters: while their total is over it, the largest result not yet
 /// persisted (and carrying no image) is saved under `dir` and previewed.
-fn apply_message_budget(results: &mut [Option<(ai::ToolCall, ToolResult)>], dir: &std::path::Path) {
+fn apply_message_budget(results: &mut [Option<(ai::ToolCall, ToolResult)>], dir: &std::path::Path, reader: tools::result_shape::Reader) {
     let persisted = |r: &ToolResult| r.content.starts_with(tools::result_shape::SAVED_OUTPUT);
     loop {
         let total: usize = results.iter().flatten().map(|(_, r)| r.content.chars().count()).sum();
@@ -695,7 +701,7 @@ fn apply_message_budget(results: &mut [Option<(ai::ToolCall, ToolResult)>], dir:
             .filter(|(_, r)| !r.is_error && r.image_url.is_none() && !persisted(r))
             .max_by_key(|(_, r)| r.content.len());
         let Some((_, r)) = largest else { return };
-        r.content = tools::result_shape::persist(dir, &r.content);
+        r.content = tools::result_shape::persist(dir, &r.content, reader);
     }
 }
 
@@ -1312,7 +1318,7 @@ mod tests {
             Some((call("run_command", serde_json::json!({})), ToolResult::error("e".repeat(1_000)))),
             None,
         ];
-        apply_message_budget(&mut results, dir.path());
+        apply_message_budget(&mut results, dir.path(), tools::result_shape::Reader::File);
         let content = |i: usize| results[i].as_ref().unwrap().1.content.clone();
         assert!(content(1).starts_with(tools::result_shape::SAVED_OUTPUT), "the largest goes first");
         assert_eq!(content(0), mid, "under budget after one: the rest stay inline");

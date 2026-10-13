@@ -99,4 +99,10 @@ pub trait ActivityLoop: Send + Sync {
     /// on every run exit EXCEPT AwaitingApproval — the parked transcript is
     /// part of the resume state.
     fn cleanup(&self, run_id: &str);
+
+    /// Characters of input the model of `agent_id`'s step takes (`model`,
+    /// its own, or "" for the workflow default): the engine hands a step
+    /// its data whole within it, and a summary plus `read_step_data` for
+    /// what does not fit.
+    fn context_chars(&self, agent_id: &str, model: &str) -> usize;
 }
