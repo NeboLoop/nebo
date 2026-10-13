@@ -31,15 +31,16 @@
 //!
 //! Nebo keeps the conversation; the agent keeps one working stretch of it.
 //! A fresh session's first prompt starts with a briefing of who the employee
-//! is here ([`ai::LinkedContext`], built by the harness). A healthy session
-//! carries on from message to message; the conversation continues in a fresh
-//! one, whose first prompt also carries the conversation so far (Nebo's
-//! checkpoint summary) and the latest exchanges word for word, when the
-//! session stops answering mid-turn ([`Stall`]: its host says the prompt is
-//! open and nothing works, held for [`STALL_WINDOW`], never silence alone),
-//! when it has used most of its context window as its agent reports, or
-//! when it sat idle for [`IDLE_ROTATION`]. The owner reads one plain line
-//! when that happens. A cleared conversation starts fresh with no handoff.
+//! is here ([`ai::LinkedContext`], built by the harness). A session carries
+//! on from message to message however long it sat idle and however long it
+//! got: the agent manages its own context. The conversation continues in a
+//! fresh one, whose first prompt also carries the conversation so far
+//! (Nebo's checkpoint summary) and the latest exchanges word for word, only
+//! when the session stops answering mid-turn ([`Stall`]: its host says the
+//! prompt is open and nothing works, held for [`STALL_WINDOW`], never
+//! silence alone), or when its agent can't reopen it and has no other to
+//! carry on in. The owner reads one plain line when it continues fresh. A
+//! cleared conversation starts fresh with no handoff.
 //!
 //! The owner's `/compact` compacts the agent's own session: it is sent as
 //! his message where the agent offers the command (its
@@ -114,12 +115,6 @@ const STALL_WINDOW: Duration = Duration::from_secs(10 * 60);
 /// test's own quiet turn.
 #[cfg(test)]
 const STALL_WINDOW: Duration = Duration::from_secs(3);
-/// A session with no turn for this long continues fresh at the next message.
-const IDLE_ROTATION: Duration = Duration::from_secs(8 * 3600);
-/// The share of its context window (percent), as its agent reports it, a
-/// session may use before the conversation continues in a fresh one: ahead
-/// of the agent's own compaction, while it still works well.
-const LONG_PERCENT: i64 = 60;
 /// The most of Nebo's summary a handoff carries.
 const SUMMARY_CHARS: usize = 6_000;
 /// The latest exchanges a handoff carries word for word, and the most of
@@ -495,10 +490,7 @@ impl Driver<'_> {
         self.locate().await?;
         let capabilities = self.initialize().await?;
         self.mcp = self.mcp_servers(&capabilities);
-        // The owner's `/compact` works on the session as it is: it never
-        // rotates it.
         let compact = is_command(&self.prompt, COMPACT);
-        let due = chat.as_ref().filter(|_| !compact).and_then(|c| rotation_due(c, now_secs()));
         let recorded = chat.and_then(|c| {
             let session = c.linked_chat_id.filter(|id| !id.is_empty())?;
             // A session recorded before its agent was is the employee's.
@@ -506,11 +498,8 @@ impl Driver<'_> {
             let agent = c.linked_agent_id.unwrap_or_else(|| self.agent_id.clone());
             (agent == self.agent_id).then_some((session, unrecorded))
         });
-        let opened = match (recorded, due) {
-            // A session that got long or sat idle: the conversation continues
-            // in a fresh one, with the handoff.
-            (Some(_), Some(why)) => return self.rotate(why).await,
-            (Some((session, unrecorded)), None) => {
+        let opened = match recorded {
+            Some((session, unrecorded)) => {
                 // `/compact` loads the session: its record says what
                 // commands it offers.
                 let resume = capabilities["sessionCapabilities"]["resume"].is_object() && !compact;
@@ -549,10 +538,10 @@ impl Driver<'_> {
                 }
                 opened
             }
-            (None, _) if compact => return Err(format!("{} has nothing to compact yet.", self.runtime)),
+            None if compact => return Err(format!("{} has nothing to compact yet.", self.runtime)),
             // The chat's first turn, or a cleared conversation: a fresh
             // session with its briefing and no handoff.
-            (None, _) => {
+            None => {
                 let lead = self.lead(false).await;
                 self.new_session(lead).await?
             }
@@ -1426,10 +1415,6 @@ fn this_turns(record: &[Value], latest: bool) -> &[Value] {
 enum Rotation {
     /// Its turn stopped answering ([`Stall`]).
     Stalled,
-    /// It has used most of its context window ([`LONG_PERCENT`]).
-    Long,
-    /// It had no turn for [`IDLE_ROTATION`].
-    Idle,
     /// Its agent could not reopen it: the session is not on this computer
     /// (a file gone), or the agent reopens none ([`unloadable`]).
     Unloadable,
@@ -1443,18 +1428,6 @@ fn unloadable(e: &link_core::model::ErrorObject) -> bool {
     !matches!(e.code, code::AUTH_REQUIRED | code::AGENT_UNAVAILABLE | code::TURN_IN_PROGRESS)
 }
 
-/// Whether the session recorded on `chat` should continue fresh at this
-/// message (`now`, unix seconds): it sat idle, or it got long.
-fn rotation_due(chat: &db::models::Chat, now: i64) -> Option<Rotation> {
-    let idle = IDLE_ROTATION.as_secs() as i64;
-    if chat.linked_turn_at.is_some_and(|at| now.saturating_sub(at) >= idle) {
-        return Some(Rotation::Idle);
-    }
-    match (chat.linked_used_tokens, chat.linked_window_tokens) {
-        (Some(used), Some(window)) if window > 0 && used.saturating_mul(100) >= window.saturating_mul(LONG_PERCENT) => Some(Rotation::Long),
-        _ => None,
-    }
-}
 
 /// Watches one turn for a stall, a heartbeat at a time: its agent's host
 /// says the prompt is open and nothing else works in it (no call running,
@@ -3003,19 +2976,20 @@ mod tests {
     }
 
     /// A session that has used most of its context window, as its agent
-    /// reported, continues fresh at the next message, with the handoff.
+    /// reported, carries on in the same session at the next message: the
+    /// agent manages its own context, and Nebo sends no compact.
     #[tokio::test]
-    async fn a_session_that_got_long_continues_fresh_with_a_handoff() {
+    async fn a_long_session_keeps_its_session_and_is_not_compacted() {
         let r = remote("rotate").await;
         collect(r.provider.stream(&briefed(request("a long one", "chat-1", &remote_model()))).await.unwrap()).await;
-        let next = collect(r.provider.stream(&briefed(request("next", "chat-1", &remote_model()))).await.unwrap()).await;
-        assert_eq!(texts(&next), format!("{}\n\nIn s-2.", NOTICE));
-        let prompts = prompt_texts(&told(&r.told));
-        assert_eq!(prompts.len(), 2);
-        assert_eq!(prompts[1][1], "next");
-        assert_handoff(&prompts[1][0]);
         let chat = r.store.get_chat("chat-1").unwrap().unwrap();
-        assert_eq!((chat.linked_chat_id.as_deref(), chat.linked_used_tokens), (Some("s-2"), Some(1_000)), "the fresh session's own activity");
+        assert_eq!((chat.linked_used_tokens, chat.linked_window_tokens), (Some(150_000), Some(200_000)));
+        let next = collect(r.provider.stream(&briefed(request("next", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(texts(&next), "In s-1.", "the same session, and no notice");
+        let told_now = told(&r.told);
+        assert_eq!(news(&told_now), 1);
+        assert_eq!(prompt_texts(&told_now), vec![vec!["BRIEFING", "a long one"], vec!["next"]], "no compact sent");
+        assert_eq!(r.store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(), Some("s-1"));
     }
 
     /// A conversation whose session was made before, by another host of
@@ -3074,18 +3048,21 @@ mod tests {
         assert_eq!(texts(&again), "In s-1.", "said once");
     }
 
-    /// A session with no turn for a long time continues fresh at the next
-    /// message, with the handoff.
+    /// A session with no turn for more than eight hours is resumed at the
+    /// next message: its stored session, sent only the owner's message, with
+    /// no notice and no new session.
     #[tokio::test]
-    async fn a_session_idle_for_hours_continues_fresh_with_a_handoff() {
-        let r = remote("rotate").await;
-        collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
-        r.store.set_chat_linked_activity("chat-1", now_secs() - 9 * 3600, None).unwrap();
+    async fn a_session_idle_for_hours_resumes_its_stored_session() {
+        let r = remote("resume").await;
+        r.store.set_chat_linked_session("chat-1", "claude-code", "kept").unwrap();
+        r.store.set_chat_linked_activity("chat-1", now_secs() - 9 * 3600, Some((1_000, 200_000))).unwrap();
         let next = collect(r.provider.stream(&briefed(request("morning", "chat-1", &remote_model()))).await.unwrap()).await;
-        assert_eq!(texts(&next), format!("{}\n\nIn s-2.", NOTICE));
-        let prompts = prompt_texts(&told(&r.told));
-        assert_handoff(&prompts[1][0]);
-        assert_eq!(prompts[1][1], "morning");
+        assert_eq!(texts(&next), "In kept.", "{:?}", next.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>());
+        let told_now = told(&r.told);
+        assert!(told_now.iter().any(|t| t["load"] == "kept"), "{told_now:?}");
+        assert_eq!(news(&told_now), 0, "no new session");
+        assert_eq!(prompt_texts(&told_now), vec![vec!["morning"]]);
+        assert_eq!(r.store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(), Some("kept"));
     }
 
     /// `/clear` resets the agent's context: the conversation's session is
@@ -3191,29 +3168,6 @@ mod tests {
         assert!(!stall.look(Some(&paused), "s", t0 + w * 3, w));
         assert!(!stall.look(Some(&quiet), "other", t0 + w * 4, w));
         assert!(!stall.look(Some(&quiet), "s", t0 + w * 5 - Duration::from_secs(1), w));
-    }
-
-    /// When a recorded session continues fresh at the next message: idle for
-    /// hours, or most of its context window used; never otherwise.
-    #[test]
-    fn a_session_continues_fresh_when_it_sat_idle_or_got_long() {
-        let dir = tempfile::tempdir().unwrap();
-        let (store, _) = store_in(dir.path());
-        store.set_chat_linked_session("chat-1", "claude-code", "s-1").unwrap();
-        let now = 1_000_000;
-        let due = |at: i64, context: Option<(i64, i64)>| {
-            store.set_chat_linked_session("chat-1", "claude-code", "").unwrap();
-            store.set_chat_linked_session("chat-1", "claude-code", "s-1").unwrap();
-            store.set_chat_linked_activity("chat-1", at, context).unwrap();
-            rotation_due(&store.get_chat("chat-1").unwrap().unwrap(), now)
-        };
-        assert_eq!(due(now - 60, Some((10_000, 200_000))), None);
-        assert_eq!(due(now - 60, None), None, "a session whose agent reports no usage");
-        assert_eq!(due(now - 60, Some((119_999, 200_000))), None);
-        assert_eq!(due(now - 60, Some((120_000, 200_000))), Some(Rotation::Long));
-        assert_eq!(due(now - 8 * 3600 + 1, Some((1, 200_000))), None);
-        assert_eq!(due(now - 8 * 3600, Some((1, 200_000))), Some(Rotation::Idle));
-        assert_eq!(rotation_due(&store.get_chat("chat-1").unwrap().unwrap(), now - 8 * 3600), None);
     }
 
     /// The Mac-mini incident, precisely: the agent's own process dies
