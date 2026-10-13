@@ -128,6 +128,7 @@
     tool?: string;
     input?: Record<string, unknown>;
     batch?: { id: string; tool: string; input?: Record<string, unknown> }[] | null;
+    relayed?: boolean;
   }>('approval_request', async (d) => {
     if (!d?.request_id) return;
     // Several gated calls in one step: one card listing each action, one decision.
@@ -147,7 +148,7 @@
       d.agentName ??
       (await resolveAgentName(d.session_id)) ??
       $t('components.approvalGate.yourAgent');
-    approvalRaised({ requestId: d.request_id, sessionId: d.session_id ?? '', agent, ...described });
+    approvalRaised({ requestId: d.request_id, sessionId: d.session_id ?? '', agent, relayed: d.relayed === true, ...described });
   });
 
   // Answered anywhere (here, another client, a loop reply): the card settles.

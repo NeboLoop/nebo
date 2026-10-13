@@ -279,6 +279,8 @@
 		"waitingForYou": "ממתין לך",
 		"waitingOnYou": "{name} ממתין לך",
 		"seeConversation": "הצג את השיחה",
+		"relayWantsToConnect": "{name} רוצה לחבר את {plugin}",
+		"relayViewIn": "הצגה אצל {name}",
 		"waitingOnYourAnswer": "{name} מחכה לתשובה שלך:",
 		"waitingOpen": "פתיחה",
 		"waitingAsksLabel": "ממתין לתשובה שלך",

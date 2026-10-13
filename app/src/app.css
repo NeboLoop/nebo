@@ -764,6 +764,18 @@
   }
 }
 
+/* An item relayed to the assistant's chat from work the owner is not in:
+   who asked, that employee's own card, and the way to the employee. */
+.relay-item {
+  @apply mt-3 flex max-w-[640px] flex-col gap-1.5;
+}
+.relay-item-head {
+  @apply text-sm font-semibold text-base-content;
+}
+.relay-item-link {
+  @apply self-start cursor-pointer border-none bg-transparent p-0 text-xs font-medium text-primary hover:underline;
+}
+
 /* The consent line: what an employee will be able to do, in plain words,
    above Hire and Create and inline in the chat. The owner consents to jobs,
    not actions; each builder item is removable before Create. */

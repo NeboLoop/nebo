@@ -601,7 +601,7 @@ pub(crate) async fn run_in_thread(
         origin,
         // The target acts with its own grant; the requester's is never read,
         // save the mode the request carries, which only narrows it.
-        door,
+        door: door.clone(),
         narrow: route.narrow,
         agent_id: route.to_agent_id.clone(),
         cancel_token: cancel_token.clone(),
@@ -648,6 +648,7 @@ pub(crate) async fn run_in_thread(
             from_name: &route.from_name,
             session_key: &thread_key,
             team_id: route.team.as_ref().filter(|_| acknowledge).map(|leg| leg.team_id.as_str()),
+            door: &door,
         };
         let reply = crate::channel_dispatch::collect_channel_reply(
             rx,
@@ -729,6 +730,8 @@ pub(crate) struct OwnerForward<'a> {
     pub session_key: &'a str,
     /// The team whose post this run picked up; `None` for every other run.
     pub team_id: Option<&'a str>,
+    /// The entry the run came through.
+    pub door: &'a types::permissions::Door,
 }
 
 impl OwnerForward<'_> {
@@ -739,6 +742,7 @@ impl OwnerForward<'_> {
             "request_id": tc.id,
             "tool": tc.name,
             "input": tc.input,
+            "relayed": crate::handlers::asks::relayed(self.door, self.session_key),
         }));
         crate::chat_dispatch::record_approval_card(
             &self.state.approval_channels,
@@ -765,7 +769,7 @@ impl OwnerForward<'_> {
     }
 
     pub(crate) async fn forward_ask(&self, event: &ai::StreamEvent) {
-        let ask = crate::chat_dispatch::announce_ask(self.state, self.session_key, event).await;
+        let ask = crate::chat_dispatch::announce_ask(self.state, self.session_key, self.door, event).await;
         self.notify_owner(
             &format!("coworker-ask:{}", ask.request_id),
             "info",
@@ -818,8 +822,13 @@ impl OwnerForward<'_> {
     /// isn't looking at the target agent's thread — same Inbox pathway as
     /// workflow approval notifications.
     fn notify_owner(&self, id: &str, kind: &str, title: &str, body: &str) {
-        // The conversation the parked work is in, where its card waits.
-        let action_url = tools::owner_notify::link::session_chat(&self.state.store, self.agent_id, self.session_key);
+        // Work the owner is not in opens the assistant's chat, where its card
+        // is relayed; else the conversation the parked work is in.
+        let action_url = if crate::handlers::asks::relayed(self.door, self.session_key) {
+            tools::owner_notify::link::assistant()
+        } else {
+            tools::owner_notify::link::session_chat(&self.state.store, self.agent_id, self.session_key)
+        };
         tools::owner_notify::emit(
             &self.state.store,
             Some(&|ev, payload| self.state.hub.broadcast(ev, payload)),

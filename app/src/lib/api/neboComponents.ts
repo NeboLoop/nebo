@@ -1164,6 +1164,7 @@ export interface PendingAsk {
 	prompt: string
 	widgets?: unknown
 	createdAt: number
+	relayed?: boolean
 }
 
 export interface PendingLayerEntry {
@@ -1656,6 +1657,8 @@ export interface WaitingAsk {
 	answerable: boolean
 	blocking: boolean
 	createdAt: number
+	relayed: boolean
+	widgets?: unknown
 }
 
 export interface WaitingAsksResponse {

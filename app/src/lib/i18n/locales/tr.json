@@ -279,6 +279,8 @@
 		"waitingForYou": "Sizi bekliyor",
 		"waitingOnYou": "{name} sizi bekliyor",
 		"seeConversation": "Konuşmayı gör",
+		"relayWantsToConnect": "{name}, {plugin} bağlamak istiyor",
+		"relayViewIn": "{name} içinde görüntüle",
 		"waitingOnYourAnswer": "{name} yanıtınızı bekliyor:",
 		"waitingOpen": "Aç",
 		"waitingAsksLabel": "Yanıtınız bekleniyor",

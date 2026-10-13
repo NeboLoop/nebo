@@ -12,7 +12,7 @@ vi.mock('./permissionAsks', () => ({
 	}
 }));
 
-import { waitingAsks, setWaitingAsks, answerWaiting, askPath } from './waitingAsks';
+import { waitingAsks, setWaitingAsks, answerWaiting, askPath, relayedAsks } from './waitingAsks';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 
 const question: WaitingAsk = {
@@ -28,7 +28,8 @@ const question: WaitingAsk = {
 	freeText: true,
 	answerable: true,
 	blocking: true,
-	createdAt: 1
+	createdAt: 1,
+	relayed: false
 };
 const permission: WaitingAsk = {
 	...question,
@@ -69,5 +70,12 @@ describe('waitingAsks', () => {
 	it('opens the conversation the ask waits in', () => {
 		expect(askPath(question)).toBe('/nanna/threads/t1');
 		expect(askPath({ ...question, chatId: '' })).toBe('/nanna');
+	});
+});
+
+describe('relayed asks', () => {
+	it("only what work the owner is not in raised comes to the assistant's chat; a card from a chat he asked in stays there", () => {
+		const relayed = { ...permission, id: 'ask-relayed', chatId: '', relayed: true };
+		expect(relayedAsks([question, permission, relayed]).map((a) => a.id)).toEqual(['ask-relayed']);
 	});
 });

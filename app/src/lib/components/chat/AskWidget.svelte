@@ -38,6 +38,14 @@
 		hires?: { code: string; name: string; plugin?: string; description?: string }[];
 	}
 
+	/** What a connect card's Connect signs in: the card's own plugin, for the
+	 *  employee the card names (`agentId`), wherever the card is shown (the
+	 *  employee's chat, or the assistant's chat it is relayed to). Never the
+	 *  employee of the chat it happens to sit in. */
+	export function connectTarget(w: AskWidgetDef): { plugin: string; agentId: string } | null {
+		return w.type === 'connect_account' && w.plugin && w.agentId ? { plugin: w.plugin, agentId: w.agentId } : null;
+	}
+
 	interface NormalizedOption {
 		label: string;
 		description?: string;
@@ -126,12 +134,13 @@
 	}
 
 	async function startConnect(w: AskWidgetDef) {
-		if (connecting || !w.plugin || !w.agentId || !credentialsComplete(credFields, creds)) return;
+		const target = connectTarget(w);
+		if (connecting || !target || !credentialsComplete(credFields, creds)) return;
 		connecting = true;
 		connectError = null;
 		try {
-			const resp = await authLoginAccount(w.plugin, {
-				agentId: w.agentId,
+			const resp = await authLoginAccount(target.plugin, {
+				agentId: target.agentId,
 				accountLabel: accountLabel.trim() || 'Primary',
 				accountNumber: '',
 				...(credFields.length ? { credentials: creds } : {})

@@ -279,6 +279,8 @@
 		"waitingForYou": "당신을 기다리는 중",
 		"waitingOnYou": "{name}이(가) 당신을 기다리고 있습니다",
 		"seeConversation": "대화 보기",
+		"relayWantsToConnect": "{name}이(가) {plugin} 연결을 요청합니다",
+		"relayViewIn": "{name}에서 보기",
 		"waitingOnYourAnswer": "{name}이(가) 답변을 기다리고 있습니다:",
 		"waitingOpen": "열기",
 		"waitingAsksLabel": "답변 대기 중",

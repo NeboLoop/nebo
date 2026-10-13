@@ -24,6 +24,8 @@ export interface Approval {
   detailRows?: ApprovalRow[];
   /** once | always | deny, once decided anywhere. */
   decision?: string;
+  /** Raised by work the owner is not in: shown in the assistant's chat. */
+  relayed?: boolean;
 }
 
 /** Oldest first. */
@@ -58,4 +60,10 @@ export function answerApproval(requestId: string, decision: 'once' | 'always' | 
 /** The approvals the chat on `sessionKey` raised. */
 export function chatApprovalsOf(list: Approval[], sessionKey: string): Approval[] {
   return sessionKey ? list.filter((a) => a.sessionId === sessionKey) : [];
+}
+
+/** The approvals relayed to the assistant's chat: raised by work the owner
+ *  is not in (a colleague's hand-off, a schedule, a background run). */
+export function relayedApprovalsOf(list: Approval[]): Approval[] {
+  return list.filter((a) => a.relayed);
 }

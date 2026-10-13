@@ -17,6 +17,7 @@
   import { ownScreen } from '$lib/stores/ownScreen';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
+  import RelayedAsks from './RelayedAsks.svelte';
   import ConsentChip from './ConsentChip.svelte';
   import AppListingCard from './AppListingCard.svelte';
   import type { AppListingPayload } from './AppListingCard.svelte';
@@ -2380,6 +2381,11 @@
         <ApprovalAskCard {approval} />
       </div>
     {/each}
+    <!-- The assistant's chat is the owner's front door: what waits on him
+         from work he is not in is relayed here, each its employee's own card. -->
+    {#if agentId === 'assistant'}
+      <RelayedAsks />
+    {/if}
 
     <!-- Live working indicator: shown for the WHOLE run,
          including while the reply text is streaming or a tool grinds after the

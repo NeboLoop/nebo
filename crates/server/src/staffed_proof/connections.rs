@@ -217,7 +217,7 @@ async fn an_install_by_another_door_answers_the_install_card() {
                 ctx.ask_user("Install it on the card.", install_card_widget("PLUG-ANY", slug, slug, "")).await
             });
             let event = stream_rx.recv().await.expect("the card was asked");
-            crate::chat_dispatch::announce_ask(&state, session_key, &event).await;
+            crate::chat_dispatch::announce_ask(&state, session_key, &types::permissions::Door::Chat, &event).await;
             (run, asking)
         }
     };

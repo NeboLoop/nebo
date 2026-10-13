@@ -279,6 +279,8 @@
 		"waitingForYou": "Đang chờ bạn",
 		"waitingOnYou": "{name} đang chờ bạn",
 		"seeConversation": "Xem cuộc trò chuyện",
+		"relayWantsToConnect": "{name} muốn kết nối {plugin}",
+		"relayViewIn": "Xem trong {name}",
 		"waitingOnYourAnswer": "{name} đang chờ câu trả lời của bạn:",
 		"waitingOpen": "Mở",
 		"waitingAsksLabel": "Đang chờ câu trả lời của bạn",
