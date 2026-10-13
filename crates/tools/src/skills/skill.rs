@@ -3,6 +3,21 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// A field the Agent Skills format allows as either a space-separated string
+/// or a list of strings, read as one space-separated string.
+fn string_or_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrList {
+        String(String),
+        List(Vec<String>),
+    }
+    Ok(match StringOrList::deserialize(d)? {
+        StringOrList::String(s) => s,
+        StringOrList::List(items) => items.join(" "),
+    })
+}
+
 /// A secret declared in a skill's metadata.secrets array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretDeclaration {
@@ -110,7 +125,9 @@ pub struct Skill {
     #[serde(default)]
     pub compatibility: String,
     /// Pre-approved tools the skill may use (space-delimited). Experimental.
-    #[serde(default, alias = "allowed-tools")]
+    /// The frontmatter may give them as a space-separated string or a list;
+    /// a list is joined with spaces.
+    #[serde(default, alias = "allowed-tools", deserialize_with = "string_or_list")]
     pub allowed_tools: String,
     /// Arbitrary key-value metadata.
     #[serde(default)]
@@ -764,6 +781,22 @@ Process PDFs here.
             skill.metadata.get("author").and_then(|v| v.as_str()),
             Some("example-org")
         );
+    }
+
+    #[test]
+    fn test_allowed_tools_list_form() {
+        let md = r#"---
+name: github-code-review
+description: Review a pull request.
+allowed-tools:
+  - Bash(gh:*)
+  - Read
+---
+
+Review it.
+"#;
+        let skill = parse_skill_md(md.as_bytes()).unwrap();
+        assert_eq!(skill.allowed_tools, "Bash(gh:*) Read");
     }
 
     #[test]
