@@ -2045,14 +2045,6 @@ async fn run_llm_activity<'a>(
     }
 }
 
-/// Most chars of one parent's result that reach a step's Prior Results,
-/// about 2k tokens. Within it a result goes whole — a rendered report, a
-/// verdict, a short list — so a step that reads its parent's work keeps
-/// reading all of it. Past it the step gets the result's `summary`
-/// when it is JSON that carries one (a loop's does), then as much of the
-/// result as fits, and a note naming the reference that carries all of it.
-const PRIOR_RESULT_CAP: usize = 8_000;
-
 /// What an AI activity's model reads of earlier steps, in both executors:
 /// the activity with its references resolved, and its Prior Results.
 ///
@@ -2060,11 +2052,12 @@ const PRIOR_RESULT_CAP: usize = 8_000;
 ///   `{{inputs.x}}` in its intent and steps resolve the way a command
 ///   step's do ([`interpolate_context`]), from ANY earlier step. This is how
 ///   full data reaches a step.
-/// - Prior Results: one entry per parent that has run, each within
-///   [`PRIOR_RESULT_CAP`] ([`prior_result`]), then the loop item. Nothing
-///   from further back — a step that needs it names it. A parent the step
-///   references is left out: the reference already put what the step needs
-///   into its text.
+/// - Prior Results: one entry per parent that has run, each whole (a
+///   workflow never silently loses data: a result too large for the model's
+///   context window fails the step loudly when it is sent), then the loop
+///   item. Nothing from further back — a step that needs it names it. A
+///   parent the step references is left out: the reference already put what
+///   the step needs into its text.
 ///
 /// `parents` are the graph's result parents ([`result_parents`]), or the
 /// previous activity on the sequential path; `outputs` every result this
@@ -2087,7 +2080,7 @@ pub(crate) fn step_context(
     let mut prior = String::new();
     for id in parents {
         if let Some(result) = outputs.get(id).filter(|_| !referenced(id)) {
-            prior.push_str(&prior_result(id, result));
+            prior.push_str(&format!("\n[Activity '{id}' result]: {result}\n"));
         }
     }
     if let Some(item) = item {
@@ -2103,27 +2096,6 @@ pub(crate) fn step_context(
         }
     }
     (resolved, prior)
-}
-
-/// One parent's entry in a step's Prior Results (see [`PRIOR_RESULT_CAP`]).
-fn prior_result(id: &str, result: &str) -> String {
-    if result.len() <= PRIOR_RESULT_CAP {
-        return format!("\n[Activity '{id}' result]: {result}\n");
-    }
-    let summary = serde_json::from_str::<serde_json::Value>(result)
-        .ok()
-        .and_then(|v| v.get("summary")?.as_str().map(str::to_string));
-    let mut text = match summary {
-        Some(s) => format!("summary: {s}\n"),
-        None => String::new(),
-    };
-    let room = PRIOR_RESULT_CAP.saturating_sub(text.len());
-    text.push_str(&result[..types::strutil::floor_char_boundary(result, room)]);
-    text.truncate(types::strutil::floor_char_boundary(&text, PRIOR_RESULT_CAP));
-    format!(
-        "\n[Activity '{id}' result — clipped; the whole of it is {} chars, and a step that needs all of it says {{{{nodes.{id}}}}}]: {text}…\n",
-        result.len()
-    )
 }
 
 /// The text a `contains` / `regex` condition matches: every executed static
@@ -4397,28 +4369,32 @@ mod walk_tests {
         assert!(all.contains("Compare A-OUT with what came before"), "{all}");
     }
 
-    /// A result within the cap goes whole; past it, a JSON result's
-    /// `summary` leads, then as much of the result as fits, and the note
-    /// names the reference that carries all of it.
-    #[test]
-    fn prior_result_clips_past_the_cap() {
-        assert_eq!(prior_result("a", "short"), "\n[Activity 'a' result]: short\n");
-        let at_cap = "x".repeat(PRIOR_RESULT_CAP);
-        assert!(prior_result("a", &at_cap).contains(&at_cap));
-
-        let long = "y".repeat(PRIOR_RESULT_CAP * 3);
-        let entry = prior_result("big", &long);
-        assert!(entry.contains("{{nodes.big}}"), "{entry}");
-        assert!(entry.contains(&format!("{} chars", long.len())), "{entry}");
-        assert!(entry.len() < PRIOR_RESULT_CAP + 300, "clipped to the cap: {}", entry.len());
-
-        let rows: Vec<String> = (0..2_000).map(|i| format!("row-{i}")).collect();
-        let loop_out = serde_json::json!({ "summary": "2000 items processed", "results": rows }).to_string();
-        let entry = prior_result("each", &loop_out);
-        assert!(entry.contains("summary: 2000 items processed\n"), "{entry}");
-        assert!(entry.contains("row-0"), "the head of the results follows: {entry}");
-        assert!(!entry.contains("row-1999"), "{entry}");
-        assert!(entry.len() < PRIOR_RESULT_CAP + 300, "{}", entry.len());
+    /// A parent's result reaches the next AI step whole, however large: a
+    /// 200k-char JSON list arrives intact in its Prior Results, last row
+    /// included.
+    #[tokio::test]
+    async fn a_large_parent_result_reaches_the_next_step_whole() {
+        let rows: Vec<serde_json::Value> =
+            (0..4_000).map(|i| serde_json::json!({"id": i, "name": format!("customer-{i:05}"), "note": "x".repeat(20)})).collect();
+        let big = serde_json::json!({"summary": "4000 rows", "rows": rows}).to_string();
+        assert!(big.len() >= 200_000, "{}", big.len());
+        let provider = MockProvider::new(&[("task-a", big.as_str()), ("task-b", "B-OUT")]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"b","intent":"task-b"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},
+                {"from":"a","to":"b"},
+                {"from":"b","to":"__emit__"}]
+        }"#;
+        let (result, _, _) = run_graph(def, serde_json::json!({}), &provider).await;
+        result.expect("run ok");
+        let b = system_of(&provider, "task-b");
+        assert!(b.contains(&format!("[Activity 'a' result]: {big}\n")), "the whole result, {} chars", big.len());
+        assert!(b.contains("customer-03999"), "the last row");
+        assert!(!b.contains("clipped"), "nothing clipped");
     }
 
     // ── expert nodes ────────────────────────────────────────────────────
