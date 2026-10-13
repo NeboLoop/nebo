@@ -1128,7 +1128,7 @@ impl Registry {
             }
         }
 
-        let threshold = crate::result_shape::threshold(tool.max_result_chars(&input));
+        let threshold = if ctx.whole_result { None } else { crate::result_shape::threshold(tool.max_result_chars(&input)) };
         let mut result = tool.execute_dyn(ctx, input.clone()).await;
         if !result.is_error {
             self.gate.ran(ctx, &call, &result).await;
@@ -2570,6 +2570,22 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
         let short = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi"})).await;
         assert_eq!(short.content, "hi");
+    }
+
+    /// A result a program reads (a workflow's command, http or operation
+    /// step) comes back whole, however long: never saved and previewed.
+    #[tokio::test]
+    async fn a_result_a_program_reads_comes_back_whole() {
+        let r = echo_registry().await;
+        let ctx = ToolContext {
+            session_id: format!("wp0-whole-{}", uuid::Uuid::new_v4()),
+            whole_result: true,
+            ..Default::default()
+        };
+        let out = r.execute(&ctx, "echo_text", serde_json::json!({"text": "row-0123456789,", "times": 20_000})).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "row-0123456789,".repeat(20_000), "all 300k chars");
+        assert!(!crate::result_shape::results_dir(&ctx.session_id).exists(), "nothing saved");
     }
 
     /// Deferral comes from the spec; the search sees name, description and

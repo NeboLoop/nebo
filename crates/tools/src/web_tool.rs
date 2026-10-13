@@ -356,7 +356,9 @@ impl WebCore {
 
     /// One HTTP request to a model-supplied URL. HTML comes back as its
     /// visible text; any other body as-is, windowed by `offset` past 50 KB.
-    async fn handle_http(&self, method: reqwest::Method, input: &serde_json::Value) -> ToolResult {
+    /// `whole`: a program reads the answer (`ToolContext::whole_result`), so
+    /// a long non-HTML body comes back whole instead of a 20 KB window.
+    async fn handle_http(&self, method: reqwest::Method, input: &serde_json::Value, whole: bool) -> ToolResult {
         let url = input.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let method_str = method.as_str().to_string();
 
@@ -414,7 +416,7 @@ impl WebCore {
                             } else {
                                 sanitize_html(&body)
                             }
-                        } else if body.len() > 50_000 {
+                        } else if body.len() > 50_000 && !whole {
                             // Non-HTML (e.g. JSON/API) — keep RAW so it stays parseable,
                             // paginated by `offset` for very large responses.
                             let raw_offset =
@@ -2629,7 +2631,7 @@ impl DynTool for WebTool {
             }
             match self.kind {
                 Kind::SearchWeb => self.core.handle_search(&input, session_id, &group_key).await,
-                Kind::FetchUrl => self.core.handle_http(reqwest::Method::GET, &input).await,
+                Kind::FetchUrl => self.core.handle_http(reqwest::Method::GET, &input, ctx.whole_result).await,
                 Kind::HttpRequest => {
                     let method = str_field(&input, "method").unwrap_or("GET");
                     let m = match method {
@@ -2641,7 +2643,7 @@ impl DynTool for WebTool {
                         "DELETE" => reqwest::Method::DELETE,
                         other => return ToolResult::error(format!("Unsupported HTTP method: {other}")),
                     };
-                    self.core.handle_http(m, &input).await
+                    self.core.handle_http(m, &input, ctx.whole_result).await
                 }
                 Kind::BrowserExpect => self.core.handle_expect(&input, session_id, &group_key).await,
                 kind => match kind.browser_step(&input) {

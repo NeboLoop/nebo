@@ -1828,6 +1828,20 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 }
             };
         }
+        // A workflow step's first request is the data its workflow handed it
+        // (its activity row: inputs, Prior Results, references; and the
+        // engine's seed). None of it may be summarized away: when it can't
+        // fit the model's window the step fails, saying how big it is and
+        // what the model takes. Never a silent cut.
+        if let Some(m) = cx.workflow().filter(|_| !cx.linked && st.step == 1) {
+            let limit = compact::checkpoint::Trigger::threshold(context_window, max_output);
+            if request_tokens >= limit {
+                let message = workflow_overflow(&m.trace.step_id, Some(request_tokens), &selected, limit, context_window);
+                warn!(session_id = sid, request_tokens, limit, context_window, model = %selected, "workflow step over the context window");
+                let _ = cx.tx.send(StreamEvent::error(message.clone())).await;
+                return TurnExit::ProviderFailed(message);
+            }
+        }
         // A linked employee's runtime keeps its own transcript and is sent
         // only the newest message: there is nothing here to checkpoint, and a
         // checkpoint forks the turn's provider.
@@ -2010,6 +2024,14 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let reply = match outcome {
             CallOutcome::Reply(reply) => reply,
             CallOutcome::Retry(RetryWhy::Overflow) => {
+                // A workflow step's first request is its workflow's data:
+                // refused as too large, the step fails, never compacted.
+                if let Some(m) = cx.workflow().filter(|_| st.step == 1) {
+                    let limit = compact::checkpoint::Trigger::threshold(context_window, max_output);
+                    let message = workflow_overflow(&m.trace.step_id, None, &selected, limit, context_window);
+                    let _ = cx.tx.send(StreamEvent::error(message.clone())).await;
+                    return TurnExit::ProviderFailed(message);
+                }
                 // The provider refused the window: clear old results when
                 // that saves enough, the cheapest way to fit the window;
                 // else checkpoint, unless the breaker
@@ -2423,6 +2445,25 @@ fn overhead_tokens(declared: &[ai::ToolDefinition]) -> usize {
 
 /// The per-step trim: every frozen rendering applied, all but the newest
 /// screenshots dropped.
+/// Why a workflow step whose data can't fit its model's context window
+/// failed: the step, the request's size, the model and its limit.
+/// `step_id` is the step's 0-based index ("" for an activity without
+/// steps); the run's error names the activity. `estimate` is the request's
+/// estimated size when that is what found it too large, `None` when the
+/// provider refused it although the estimate fit.
+fn workflow_overflow(step_id: &str, estimate: Option<usize>, model: &str, limit: usize, window: usize) -> String {
+    let data = step_id.parse::<usize>().map_or_else(|_| "The step's data".to_string(), |i| format!("Step {}'s data", i + 1));
+    let size = match estimate {
+        Some(tokens) => format!("about {tokens} tokens, and {model} takes at most {limit}"),
+        None => format!("{model} refused it as over its window, which takes at most {limit}"),
+    };
+    format!(
+        "{data} is too large for its model: {size} (a {window}-token context window, less room for its reply). \
+         Nothing was cut and the step did not run. Hand it less at once: loop over the items (with batchSize), \
+         or reference only the part it needs ({{{{nodes.<id>.<field>}}}})."
+    )
+}
+
 fn trim(st: &TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
     compact::trim::trim(conversation, &st.frozen_renderings).0
 }
@@ -6673,6 +6714,68 @@ mod tests {
             "{err:?}"
         );
         assert!(err.to_string().starts_with("Stopped: Step 2/2 of \"run\" used its 2 model turns"), "{err}");
+    }
+
+    /// A workflow step's data goes to the model whole, and data too large
+    /// for the model's context window fails the step loudly, naming the
+    /// step, the size and the limit, with no call made and nothing cut.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_workflow_steps_data_goes_whole_or_fails_loudly() {
+        use workflow::ActivityLoop;
+        let activity: workflow::parser::Activity =
+            serde_json::from_value(serde_json::json!({"id": "digest", "intent": "digest the rows", "steps": ["a", "b"]})).unwrap();
+        let turn = |instructions: String| workflow::LoopTurn {
+            activity: &activity,
+            instructions,
+            seed_messages: vec![ai::Message { role: "user".into(), content: "Step 2/2: b".into(), ..Default::default() }],
+            workflow_name: "Rows",
+            advertised_tools: Vec::new(),
+            agent_id: "",
+            user_id: "",
+            memory_writes_disabled: false,
+            trace: RequestTrace { step_id: "1".into(), ..RequestTrace::new("agent_turn") },
+            checkpoint: None,
+            pending: None,
+            iteration: "",
+            step_index: Some(1),
+            max_iterations: 5,
+            min_iterations: 0,
+            requires_tools: Vec::new(),
+            spend_cap_microcents: 0,
+            model: String::new(),
+            cancel: None,
+            turn_key: format!("digest::{}", uuid::Uuid::new_v4()),
+        };
+        let rows: String = (0..10_000).map(|i| format!("row-{i:05},")).collect();
+        let big = format!("## Prior Results\n{}", rows.repeat(2));
+        assert!(big.len() >= 200_000, "{}", big.len());
+
+        let model = Scripted::new(vec![Step::Say("digested")]);
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        looper.run_turn(turn(big.clone())).await.expect("fits");
+        let sent: String = model.calls()[0].messages.iter().map(|m| m.content.as_str()).collect();
+        assert!(sent.contains(&big), "the step's data reached the model whole");
+
+        let model = Scripted::new(vec![Step::Say("never")]);
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        let huge = "y".repeat(4 * crate::selector::DEFAULT_CONTEXT_WINDOW);
+        let Err(err) = looper.run_turn(turn(huge)).await else { panic!("too large for the window") };
+        let workflow::WorkflowError::ActivityFailed(id, why) = &err else { panic!("{err:?}") };
+        assert_eq!(id, "digest");
+        assert!(why.starts_with("Step 2's data is too large for its model: about "), "{why}");
+        assert!(why.contains(&format!("{}-token context window", crate::selector::DEFAULT_CONTEXT_WINDOW)), "{why}");
+        assert!(why.contains("Nothing was cut"), "{why}");
+        assert!(model.calls().is_empty(), "no call was made");
+
+        // The estimate fit, the provider refused it: the same loud failure,
+        // never a compaction of the step's data.
+        let model = Scripted::new(vec![Step::Overflow, Step::Say("never")]);
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        let Err(err) = looper.run_turn(turn(big)).await else { panic!("refused by the provider") };
+        let workflow::WorkflowError::ActivityFailed(_, why) = &err else { panic!("{err:?}") };
+        assert!(why.starts_with("Step 2's data is too large for its model: "), "{why}");
+        assert!(why.contains("refused it as over its window"), "{why}");
+        assert!(model.side.lock().unwrap().iter().all(|r| r.trace.purpose != "checkpoint"), "nothing was compacted");
     }
 
     /// The owner's spending limit ends the turn before the next step, with
