@@ -577,6 +577,7 @@ async fn every_claude_code_hire_is_an_employee_of_its_own() {
         nebo.store().clone(),
         Some(host.clone()),
         "Nebo proof",
+        0,
     );
     for (employee, agent) in [(&front, &front_agent), (&back, &back_agent)] {
         let chat = uuid::Uuid::new_v4().to_string();

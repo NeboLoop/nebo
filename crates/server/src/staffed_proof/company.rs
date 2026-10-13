@@ -116,6 +116,7 @@ impl Linked {
             nebo.store().clone(),
             Some(host.clone()),
             "Nebo proof",
+            0,
         );
         nebo.state
             .harness

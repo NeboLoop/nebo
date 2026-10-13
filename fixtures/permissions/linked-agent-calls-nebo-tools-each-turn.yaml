@@ -1,0 +1,22 @@
+id: linked-agent-calls-nebo-tools-each-turn
+name: "A coding agent Nebo hosts calls Nebo's tools as each turn, on every turn"
+description: |
+  Customers asked for it many times: a coding agent Nebo hosts on its own
+  computer (Claude Code, Codex, Gemini CLI, OpenCode) must get Nebo's tools,
+  so it acts on NeboAI correctly. Every session such an agent opens is given
+  Nebo's /agent/mcp as the HTTP MCP server nebo-agent, with the linked
+  chat's one tool credential as its X-Nebo-Run-Credential header. The agent
+  keeps that server for the life of the session, so each turn grants the
+  credential that turn's run, with that turn's permissions, and the grant
+  ends with the turn.
+  This proof runs the real server, the real linked provider and host, and a
+  coding agent process: over two turns in one session it asserts the agent
+  was given nebo-agent once, on 127.0.0.1 with the header, that its
+  tools/list and tools/call are let in and run as the turn both times, and
+  that between turns the credential executes nothing. A notification is
+  answered 202 with no body, as MCP says (Codex drops a server that
+  answers one). Deterministic, no
+  model.
+target_component: permissions
+proof: harness::permissions::proof::a_linked_agent_calls_nebos_tools_as_each_turn
+conversation: []

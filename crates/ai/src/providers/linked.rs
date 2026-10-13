@@ -171,15 +171,19 @@ pub struct LinkedProvider {
     local: Option<Arc<LocalHost>>,
     /// What a linked bot calls Nebo once they are paired.
     device_name: String,
+    /// The Nebo server port whose `/agent/mcp` gives the coding agents Nebo
+    /// hosts Nebo's tools.
+    tools_port: u16,
 }
 
 impl LinkedProvider {
-    pub fn new(relay: Relay, store: Arc<db::Store>, local: Option<Arc<LocalHost>>, device_name: &str) -> Self {
+    pub fn new(relay: Relay, store: Arc<db::Store>, local: Option<Arc<LocalHost>>, device_name: &str, tools_port: u16) -> Self {
         Self {
             relay,
             store,
             local,
             device_name: device_name.to_owned(),
+            tools_port,
         }
     }
 
@@ -275,6 +279,7 @@ impl LinkedProvider {
             stall: Stall::default(),
             rotated: false,
             context: None,
+            mcp: json!([]),
         };
         driver.begin(chat).await?;
         let ended = driver.run().await;
@@ -475,6 +480,8 @@ struct Driver<'a> {
     /// How much of its context window the session has used, and the
     /// window, as the agent last reported this turn (`usage_update`).
     context: Option<(i64, i64)>,
+    /// The MCP servers its sessions are opened with ([`Driver::mcp_servers`]).
+    mcp: Value,
 }
 
 impl Driver<'_> {
@@ -487,6 +494,7 @@ impl Driver<'_> {
     async fn begin(&mut self, chat: Option<db::models::Chat>) -> Result<(), String> {
         self.locate().await?;
         let capabilities = self.initialize().await?;
+        self.mcp = self.mcp_servers(&capabilities);
         // The owner's `/compact` works on the session as it is: it never
         // rotates it.
         let compact = is_command(&self.prompt, COMPACT);
@@ -507,7 +515,7 @@ impl Driver<'_> {
                 // commands it offers.
                 let resume = capabilities["sessionCapabilities"]["resume"].is_object() && !compact;
                 let method = if resume { "session/resume" } else { "session/load" };
-                let params = json!({ "sessionId": session, "cwd": self.cwd(), "mcpServers": [] });
+                let params = json!({ "sessionId": session, "cwd": self.cwd(), "mcpServers": self.mcp });
                 let agent = self.agent.clone();
                 let (answer, replay) = self.conn.call(Some(&agent), method, params).await.ok_or_else(|| self.offline())?;
                 let opened = answer.map_err(|e| turn::plain(&self.name, &e))?;
@@ -541,7 +549,7 @@ impl Driver<'_> {
     /// A fresh session of the agent for this conversation, recorded on the
     /// chat, its first prompt to start with `lead`.
     async fn new_session(&mut self, lead: Option<String>) -> Result<Value, String> {
-        let params = json!({ "cwd": self.cwd(), "mcpServers": [] });
+        let params = json!({ "cwd": self.cwd(), "mcpServers": self.mcp });
         let agent = self.agent.clone();
         let (answer, _) = self.conn.call(Some(&agent), "session/new", params).await.ok_or_else(|| self.offline())?;
         let created = answer.map_err(|e| turn::plain(&self.name, &e))?;
@@ -675,6 +683,22 @@ impl Driver<'_> {
         let agent = self.agent.clone();
         let (answer, _) = self.conn.call(Some(&agent), "initialize", params).await.ok_or_else(|| self.offline())?;
         Ok(answer.map_err(|e| turn::plain(&self.name, &e))?["agentCapabilities"].clone())
+    }
+
+    /// Nebo's tools for an agent Nebo hosts on this computer: its
+    /// `/agent/mcp` as `nebo-agent`, carrying the chat's tool credential, so
+    /// every call executes as the turn being run. An agent hosted elsewhere
+    /// gets none (its host passes no client's servers), nor one that can't
+    /// take an HTTP MCP server (`mcpCapabilities.http`).
+    fn mcp_servers(&self, capabilities: &Value) -> Value {
+        let (Route::Local(_), Some(credential)) = (&self.route, self.req.tool_credential.as_deref()) else {
+            return json!([]);
+        };
+        if capabilities["mcpCapabilities"]["http"].as_bool() != Some(true) {
+            info!(agent = %self.agent, runtime = %self.runtime, "linked: the agent takes no HTTP MCP server, so it has no Nebo tools");
+            return json!([]);
+        }
+        super::cli::mcp_config(self.provider.tools_port, Some(credential), super::cli::McpFor::Acp)
     }
 
     fn cwd(&self) -> String {
@@ -1249,7 +1273,7 @@ impl Driver<'_> {
         let params = json!({ "protocolVersion": 1, "clientCapabilities": {} });
         let (answer, _) = self.conn.call(Some(&agent), "initialize", params).await.ok_or(None)?;
         answer.map_err(|e| Some(turn::plain(&self.name, &e)))?;
-        let params = json!({ "sessionId": self.session, "cwd": self.cwd(), "mcpServers": [] });
+        let params = json!({ "sessionId": self.session, "cwd": self.cwd(), "mcpServers": self.mcp });
         let (answer, replay) = self.conn.call(Some(&agent), "session/load", params).await.ok_or(None)?;
         answer.map_err(|e| Some(turn::plain(&self.name, &e)))?;
         let mut record: Vec<Value> = Vec::new();
@@ -2120,7 +2144,7 @@ mod tests {
             api_url: url,
             token: Arc::new(|| Some("bot-jwt".to_owned())),
         };
-        let provider = LinkedProvider::new(relay, store.clone(), Some(nebo), "Nebo on test");
+        let provider = LinkedProvider::new(relay, store.clone(), Some(nebo), "Nebo on test", 0);
         Remote {
             _root: root,
             bot,
@@ -3095,7 +3119,7 @@ mod tests {
             api_url: url,
             token: Arc::new(|| Some("bot-jwt".to_owned())),
         };
-        let p = LinkedProvider::new(relay, store, Some(local_host(root.path())), "Nebo on test");
+        let p = LinkedProvider::new(relay, store, Some(local_host(root.path())), "Nebo on test", 0);
         assert!(!p.retryable());
 
         let events = collect(p.stream(&request("hello", "chat-1", &remote_model())).await.unwrap()).await;
@@ -3268,7 +3292,7 @@ mod tests {
             api_url: hub,
             token: Arc::new(|| None),
         };
-        let p = LinkedProvider::new(relay, store.clone(), Some(local.clone()), "Nebo on test");
+        let p = LinkedProvider::new(relay, store.clone(), Some(local.clone()), "Nebo on test", 0);
         let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let mut req = request("check the repo", "chat-1", &format!("{SELF}/{}", hosted.id));
         req.permission_mode = Some(types::permissions::Mode::Automatic);
@@ -3355,7 +3379,7 @@ mod tests {
         assert_eq!(hosted.acp.workdir, folder, "a folder of its own, asked of nobody");
         let (store, _) = store_in(root.path());
         let relay = Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) };
-        let p = LinkedProvider::new(relay, store.clone(), Some(local.clone()), "Nebo on test");
+        let p = LinkedProvider::new(relay, store.clone(), Some(local.clone()), "Nebo on test", 0);
         let model = format!("{SELF}/{}", hosted.id);
 
         let (text, _) = said(&p, "where", &model).await;
@@ -3406,7 +3430,7 @@ mod tests {
             api_url: "http://127.0.0.1:9".into(),
             token: Arc::new(|| None),
         };
-        let p = LinkedProvider::new(relay, store, Some(local), "Nebo on test");
+        let p = LinkedProvider::new(relay, store, Some(local), "Nebo on test", 0);
         let req = request("hello", "chat-1", &format!("{SELF}/claude-code"));
         let events = collect(p.stream(&req).await.unwrap()).await;
         assert_eq!(kinds(&events), vec![StreamEventType::Error, StreamEventType::Done]);

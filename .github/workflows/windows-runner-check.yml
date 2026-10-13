@@ -186,3 +186,14 @@ jobs:
       - name: Engine service on Windows
         shell: bash
         run: cargo test -p nebo --test engine_service_windows -- --nocapture
+
+      # A coding agent Nebo hosts gets Nebo's tools: its session is given
+      # /agent/mcp on 127.0.0.1 with the chat's credential, and its calls
+      # run as each turn. Run for real on Windows: the agent is a child
+      # process, the server a real one on loopback.
+      - name: Linked agents get Nebo's tools on Windows
+        shell: bash
+        run: |
+          cargo test -p nebo-agent tool_credentials
+          cargo test -p nebo-ai providers::cli
+          cargo test -p nebo-server --lib harness::permissions::proof::a_linked_agent_calls_nebos_tools_as_each_turn -- --exact --nocapture

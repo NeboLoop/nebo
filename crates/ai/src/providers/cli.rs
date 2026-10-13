@@ -87,18 +87,37 @@ impl CLIProvider {
     }
 }
 
-/// The MCP config that points the CLI at Nebo's `/agent/mcp`. With the run's
-/// tool credential, every tool call the CLI makes carries it, so the server
-/// executes it as that run; without one it is an outside MCP client.
-fn mcp_config(port: u16, credential: Option<&str>) -> String {
-    let mut server = serde_json::json!({
-        "type": "http",
-        "url": format!("http://localhost:{port}/agent/mcp"),
-    });
-    if let Some(credential) = credential {
-        server["headers"] = serde_json::json!({ "X-Nebo-Run-Credential": credential });
+/// Who reads [`mcp_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpFor {
+    /// The `claude` CLI's `--mcp-config`.
+    ClaudeCli,
+    /// ACP's `mcpServers` in `session/new`, `session/load` and
+    /// `session/resume`, for a linked coding agent Nebo hosts.
+    Acp,
+}
+
+/// The MCP config that points an agent at Nebo's `/agent/mcp` as the server
+/// `nebo-agent`, in the form `reader` takes. With the run's tool credential,
+/// every tool call the agent makes carries it, so the server executes it as
+/// that run; without one it is an outside MCP client.
+pub(crate) fn mcp_config(port: u16, credential: Option<&str>, reader: McpFor) -> serde_json::Value {
+    const NAME: &str = "nebo-agent";
+    const HEADER: &str = "X-Nebo-Run-Credential";
+    let url = format!("http://127.0.0.1:{port}/agent/mcp");
+    match reader {
+        McpFor::ClaudeCli => {
+            let mut server = serde_json::json!({ "type": "http", "url": url });
+            if let Some(credential) = credential {
+                server["headers"] = serde_json::json!({ HEADER: credential });
+            }
+            serde_json::json!({ "mcpServers": { NAME: server } })
+        }
+        McpFor::Acp => {
+            let headers: Vec<_> = credential.map(|c| serde_json::json!({ "name": HEADER, "value": c })).into_iter().collect();
+            serde_json::json!([{ "type": "http", "name": NAME, "url": url, "headers": headers }])
+        }
     }
-    serde_json::json!({ "mcpServers": { "nebo-agent": server } }).to_string()
 }
 
 #[async_trait]
@@ -117,7 +136,7 @@ impl Provider for CLIProvider {
         let mut args = self.args.clone();
         if let Some(port) = self.mcp_port {
             args.push("--mcp-config".to_string());
-            args.push(mcp_config(port, req.tool_credential.as_deref()));
+            args.push(mcp_config(port, req.tool_credential.as_deref(), McpFor::ClaudeCli).to_string());
         }
 
         // Add model flag if specified
@@ -610,11 +629,11 @@ mod tests {
     // CLI reaches /agent/mcp as an outside client.
     #[test]
     fn mcp_config_carries_the_runs_credential() {
-        let with: serde_json::Value = serde_json::from_str(&super::mcp_config(27895, Some("c-1"))).unwrap();
+        let with = super::mcp_config(27895, Some("c-1"), super::McpFor::ClaudeCli);
         let server = &with["mcpServers"]["nebo-agent"];
-        assert_eq!(server["url"], "http://localhost:27895/agent/mcp");
+        assert_eq!(server["url"], "http://127.0.0.1:27895/agent/mcp");
         assert_eq!(server["headers"]["X-Nebo-Run-Credential"], "c-1");
-        let without: serde_json::Value = serde_json::from_str(&super::mcp_config(1, None)).unwrap();
+        let without = super::mcp_config(1, None, super::McpFor::ClaudeCli);
         assert!(without["mcpServers"]["nebo-agent"].get("headers").is_none());
     }
 
