@@ -1,0 +1,12 @@
+id: sc116-an-employee-whose-agent-works-here-is-hosted-here
+name: "SC116 — An employee whose coding agent works on this computer is hosted here"
+description: |
+  An employee whose coding agent (Claude Code, Codex, Gemini CLI, OpenCode) works on this computer
+  under another bot, such as a nebo-link of this computer's that was unlinked, is hosted by Nebo
+  itself at the next look. It stays the same employee with the same name and chats; its agent keeps
+  its id, kind and folder, and its chat stays bound to the same session, which its next message
+  reopens through Nebo's host. An employee whose bot is online elsewhere, or whose folder is not on
+  this computer, is left as it is.
+target_component: staffed-company
+proof: staffed_proof::seats::an_employee_whose_agent_works_here_is_hosted_here
+conversation: []
