@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 /// and words said, until it is cancelled. One that says BRIEF is answered
 /// "BRIEF-DONE." three seconds later. Any other prompt is answered at
 /// once with "ANSWER: 3 files left." Each `session/new` is a session of its
-/// own, `s-1`, `s-2`, ..., noted with the folder it was opened in.
+/// own, `s-1`, `s-2`, ..., noted with the folder it was opened in; a
+/// `session/load` reopens the session it names, noted the same way.
 #[test]
 fn fake_company_agent() {
     use std::io::{BufRead, Write};
@@ -65,6 +66,10 @@ fn fake_company_agent() {
                 let session = format!("s-{sessions}");
                 note(json!({ "new": session, "cwd": message["params"]["cwd"] }));
                 reply(json!({ "sessionId": session }));
+            }
+            Some("session/load") => {
+                note(json!({ "load": session, "cwd": message["params"]["cwd"] }));
+                reply(json!({}));
             }
             Some("session/prompt") => {
                 // The whole prompt, every block (a turn's briefing rides

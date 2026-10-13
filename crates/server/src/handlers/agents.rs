@@ -2085,7 +2085,7 @@ async fn create_linked_agent(
     if let Some(local) = state.local_host.clone().filter(|l| l.bot_id().as_deref() == Some(bot_id)) {
         let runtime = agent_id.strip_prefix(NEW).unwrap_or(agent_id);
         let hosted = local
-            .hire(runtime, name)
+            .hire(runtime, name, None)
             .await
             .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
         let description = format!("Works in {}", hosted.acp.workdir.display());
@@ -2537,7 +2537,7 @@ fn linked_offline(
 }
 
 /// The roster's linked employees and the linked agent each one runs as.
-fn linked_employees(state: &AppState, rows: &[db::models::Agent]) -> Vec<(String, String)> {
+pub(crate) fn linked_employees(state: &AppState, rows: &[db::models::Agent]) -> Vec<(String, String)> {
     rows.iter()
         .filter(|r| r.kind.as_deref() == Some("linked"))
         .filter_map(|r| {

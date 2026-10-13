@@ -70,6 +70,8 @@ pub struct LocalHost {
     dir: PathBuf,
     /// Where this OS user's nebo-link daemon would keep its state.
     daemon_home: Option<PathBuf>,
+    /// This OS user's home, where agents' own folders are made.
+    home: PathBuf,
     host: Arc<Host>,
     /// Nebo's key and pairings.
     keys: KeyStore,
@@ -206,6 +208,7 @@ impl LocalHost {
             bot_id,
             dir,
             daemon_home,
+            home,
             host,
             keys,
             direct,
@@ -281,6 +284,12 @@ impl LocalHost {
         }
     }
 
+    /// The folder of its own an agent hosted as `id` works in when nobody
+    /// names one: `~/NeboAI/<id>`.
+    pub fn own_folder(&self, id: &str) -> PathBuf {
+        link_core::keep::default_folder(&self.home, id)
+    }
+
     /// Every agent Nebo hosts.
     pub fn agents(&self) -> Vec<LocalAgent> {
         self.record.agents()
@@ -293,10 +302,13 @@ impl LocalHost {
     }
 
     /// Hosts one more of the coding agent `key` (`claude-code`, `codex`,
-    /// ...), in a folder of its own, once it has started and answered in ACP.
-    /// `label` is the name the owner gave it, which its id and folder are
-    /// made from; `None` is the agent's own ("Claude Code", "Claude Code 2").
-    pub async fn hire(&self, key: &str, label: Option<&str>) -> Result<LocalAgent, String> {
+    /// ...), once it has started and answered in ACP. `label` is the name the
+    /// owner gave it, which its id (and its folder, when it gets one of its
+    /// own) is made from; `None` is the agent's own ("Claude Code", "Claude
+    /// Code 2"). `folder` is where it works: `None` is a folder of its own,
+    /// `~/NeboAI/<id>`; an agent taken over from this computer's nebo-link
+    /// keeps the folder it worked in there, and with it its sessions.
+    pub async fn hire(&self, key: &str, label: Option<&str>, folder: Option<&Path>) -> Result<LocalAgent, String> {
         if let Some(daemon) = self.hosted_by_daemon() {
             let name = AcpAgent::KNOWN.into_iter().find(|a| a.key() == key).map(|a| a.name()).unwrap_or(key);
             return Err(format!(
@@ -305,7 +317,12 @@ impl LocalHost {
         }
         let added = self
             .host
-            .add_agent(Add { runtime: key.to_owned(), label: label.map(str::to_owned), ..Add::default() })
+            .add_agent(Add {
+                runtime: key.to_owned(),
+                label: label.map(str::to_owned),
+                folder: folder.map(Path::to_path_buf),
+                ..Add::default()
+            })
             .await
             .map_err(|e| e.message)?;
         self.agents()
@@ -321,7 +338,7 @@ impl LocalHost {
     #[cfg(any(test, feature = "test-agents"))]
     pub async fn host(&self, agent: AcpAgent, command: nebo_runtimes::RuntimeCommand) -> Result<LocalAgent, String> {
         self.tell(agent, command);
-        self.hire(agent.key(), None).await
+        self.hire(agent.key(), None, None).await
     }
 
     /// Makes the ACP agent `agent`, as `command` starts it, one this host

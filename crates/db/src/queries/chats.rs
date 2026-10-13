@@ -266,6 +266,32 @@ impl Store {
         Ok(())
     }
 
+    /// The employee `employee`'s conversations with the linked agent `from`
+    /// go on with the agent `to` instead: the same sessions, each still
+    /// bound to its chat. For an agent another host now runs under another
+    /// id.
+    pub fn relink_agent_chats(&self, employee: &str, from: &str, to: &str) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chats SET linked_agent_id = ?3
+             WHERE session_name LIKE 'agent:' || ?1 || ':%' AND linked_agent_id = ?2",
+            params![employee, from, to],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Whether a chat other than `except` is bound to the linked session
+    /// `session`.
+    pub fn linked_session_held(&self, session: &str, except: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chats WHERE linked_chat_id = ?1 AND id != ?2)",
+            params![session, except],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn get_chat(&self, id: &str) -> Result<Option<Chat>, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT * FROM chats WHERE id = ?1", params![id], |row| {
