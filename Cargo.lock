@@ -5225,12 +5225,12 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 [[package]]
 name = "link-command"
 version = "0.1.2"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=e013a2cdc969d3bcdff69b3bace1df96d05fd0d8#e013a2cdc969d3bcdff69b3bace1df96d05fd0d8"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=50c5d647b5e75f3879f97ac6204556da52ceb3fe#50c5d647b5e75f3879f97ac6204556da52ceb3fe"
 
 [[package]]
 name = "link-core"
 version = "0.1.2"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=e013a2cdc969d3bcdff69b3bace1df96d05fd0d8#e013a2cdc969d3bcdff69b3bace1df96d05fd0d8"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=50c5d647b5e75f3879f97ac6204556da52ceb3fe#50c5d647b5e75f3879f97ac6204556da52ceb3fe"
 dependencies = [
  "bytes",
  "dirs",
@@ -6151,7 +6151,7 @@ dependencies = [
 [[package]]
 name = "nebo-runtimes"
 version = "0.1.2"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=e013a2cdc969d3bcdff69b3bace1df96d05fd0d8#e013a2cdc969d3bcdff69b3bace1df96d05fd0d8"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=50c5d647b5e75f3879f97ac6204556da52ceb3fe#50c5d647b5e75f3879f97ac6204556da52ceb3fe"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6748,7 +6748,7 @@ dependencies = [
 [[package]]
 name = "oal-host"
 version = "0.1.2"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=e013a2cdc969d3bcdff69b3bace1df96d05fd0d8#e013a2cdc969d3bcdff69b3bace1df96d05fd0d8"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=50c5d647b5e75f3879f97ac6204556da52ceb3fe#50c5d647b5e75f3879f97ac6204556da52ceb3fe"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -6772,7 +6772,7 @@ dependencies = [
 [[package]]
 name = "oal-relay"
 version = "0.1.2"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=e013a2cdc969d3bcdff69b3bace1df96d05fd0d8#e013a2cdc969d3bcdff69b3bace1df96d05fd0d8"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=50c5d647b5e75f3879f97ac6204556da52ceb3fe#50c5d647b5e75f3879f97ac6204556da52ceb3fe"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6795,7 +6795,7 @@ dependencies = [
 [[package]]
 name = "oal-secure"
 version = "0.1.2"
-source = "git+https://github.com/NeboLoop/nebo-link?rev=e013a2cdc969d3bcdff69b3bace1df96d05fd0d8#e013a2cdc969d3bcdff69b3bace1df96d05fd0d8"
+source = "git+https://github.com/NeboLoop/nebo-link?rev=50c5d647b5e75f3879f97ac6204556da52ceb3fe#50c5d647b5e75f3879f97ac6204556da52ceb3fe"
 dependencies = [
  "base64 0.22.1",
  "bytes",
