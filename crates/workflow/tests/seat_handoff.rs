@@ -64,7 +64,7 @@ impl WorkflowManager for RecordingManager {
     fn resolve_agent<'a>(&'a self, _: &'a str) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         unreachable_fut("resolve_agent")
     }
-    fn run<'a>(&'a self, _: &'a str, _: serde_json::Value, _: &'a str, _: Option<types::permissions::Mode>) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+    fn run<'a>(&'a self, _: &'a str, _: serde_json::Value, _: &'a str, _: Option<types::permissions::Mode>, _: Option<&'a str>) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         unreachable_fut("run")
     }
     fn run_status<'a>(&'a self, _: &'a str) -> Pin<Box<dyn Future<Output = Result<WorkflowRunInfo, String>> + Send + 'a>> {

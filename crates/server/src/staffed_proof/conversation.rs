@@ -4470,6 +4470,9 @@ async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
     assert!(!started.is_error, "{}", started.content);
     let run_id = serde_json::from_str::<Value>(&started.content).unwrap()["runId"].as_str().unwrap().to_string();
     assert_eq!(nebo.store().workflow_run_narrow(&run_id).unwrap(), Some(Mode::Ask), "the run is held to it");
+    // It records the conversation that started it, so that chat lists it
+    // among its running tasks.
+    assert_eq!(nebo.store().workflow_run_launched_from(&run_id).unwrap().as_deref(), Some(ctx.session_key.as_str()));
     assert_eq!(mode_seen(&rig, &seen, "MARK-CMW1", "Proof CMS Runner").await, "Ask", "its step runs in Ask");
 
     // The same workflow fired by its schedule carries nothing: the
@@ -4480,8 +4483,10 @@ async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
         json!({}),
         "cron",
         None,
+        None,
     )
     .await
     .expect("the scheduled run starts");
     assert_eq!(nebo.store().workflow_run_narrow(&scheduled).unwrap(), None, "nothing scheduled is affected");
+    assert_eq!(nebo.store().workflow_run_launched_from(&scheduled).unwrap(), None, "a scheduled run is no chat's");
 }

@@ -288,6 +288,26 @@ impl Store {
         Ok(())
     }
 
+    /// Record the conversation whose turn started workflow run `id`: that
+    /// chat lists it among its running tasks.
+    pub fn set_workflow_run_launched_from(&self, id: &str, session_key: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE workflow_runs SET launched_from = ?2 WHERE id = ?1", params![id, session_key])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The conversation whose turn started workflow run `id`; None for a
+    /// run that started on its own (a schedule, a watch, a trigger).
+    pub fn workflow_run_launched_from(&self, id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        let from: Option<Option<String>> = conn
+            .query_row("SELECT launched_from FROM workflow_runs WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(from.flatten().filter(|s| !s.is_empty()))
+    }
+
     /// The mode a workflow run is held to, if what started it carried one.
     pub fn workflow_run_narrow(&self, id: &str) -> Result<Option<types::permissions::Mode>, NeboError> {
         let conn = self.conn()?;

@@ -489,7 +489,7 @@ async fn execute_workflow_task(
     workflow_id: &str,
 ) -> (bool, String, Option<String>) {
     match manager
-        .run(workflow_id, serde_json::Value::Null, "cron", None)
+        .run(workflow_id, serde_json::Value::Null, "cron", None, None)
         .await
     {
         Ok(run_id) => (true, format!("workflow run started: {}", run_id), None),

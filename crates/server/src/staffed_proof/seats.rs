@@ -579,8 +579,10 @@ async fn every_claude_code_hire_is_an_employee_of_its_own() {
         "Nebo proof",
         0,
     );
+    let mut sessions = Vec::new();
     for (employee, agent) in [(&front, &front_agent), (&back, &back_agent)] {
         let chat = uuid::Uuid::new_v4().to_string();
+        sessions.push((format!("agent:{employee}:thread:{chat}"), chat.clone()));
         nebo.store()
             .create_chat_for_session(&chat, &format!("agent:{employee}:thread:{chat}"), "Proof", None)
             .unwrap();
@@ -605,6 +607,34 @@ async fn every_claude_code_hire_is_an_employee_of_its_own() {
         .map(|t| PathBuf::from(t["cwd"].as_str().unwrap()))
         .collect();
     assert_eq!(opened, [folder(&front_agent), folder(&back_agent)], "one session per employee, each in its own folder");
+
+    // The owner's chat opens a session with the coding agent (a message on
+    // the coworker rail, the one way a named employee is reached): until it
+    // answers, that chat lists it among its running tasks, and View
+    // transcript opens the session's own chat.
+    const OWNER_CHAT: &str = "agent:main:thread:proof-running-tasks";
+    let (front_session, front_chat) = &sessions[0];
+    // The session its turn keeps, as the turn on it opens it.
+    state.harness.sessions().get_or_create(front_session, "").unwrap();
+    let handoff = crate::handoff::queued(
+        &state,
+        &crate::handoff::Delivery {
+            from_agent_id: "",
+            to_agent_id: &front,
+            team_id: "",
+            sender_session: OWNER_CHAT,
+            sender_run_id: None,
+            receiver_session: front_session,
+            ask: "Fix the failing build",
+        },
+    )
+    .expect("the hand-off is recorded");
+    let listed = crate::background::collect(&state, None).await;
+    let row = listed.iter().find(|t| t.id == format!("handoff:{handoff}")).expect("the coding agent's session is listed");
+    assert_eq!((row.employee.as_str(), row.launched_from.as_deref()), ("Proof Frontend", Some(OWNER_CHAT)));
+    let steps = row.transcript.as_ref().expect("its transcript");
+    assert_eq!((steps.session_key.as_str(), steps.chat_id.as_str()), (front_session.as_str(), front_chat.as_str()));
+    nebo.store().finish_handoff(&handoff, "done", "fixed", "", 0).unwrap();
 
     // The hire list: Claude Code once, to start new; both on the team.
     let listing = crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone())).await.unwrap().0;
