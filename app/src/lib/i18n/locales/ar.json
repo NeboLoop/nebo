@@ -4124,8 +4124,6 @@
 			"off": "إطفاء"
 		},
 		"wait": {
-			"approval": "بانتظار موافقتك",
-			"answer": "بانتظار إجابتك",
 			"expert": "بانتظار خبير",
 			"reply": "بانتظار رد"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "يعمل",
 			"scheduled": "المؤقتات",
 			"watching": "المراقبات"
-		}
+		},
+		"label": {
+			"helper": "مساعد",
+			"shell": "أمر",
+			"workflow": "سير عمل",
+			"timer": "مؤقّت",
+			"watch": "مراقبة",
+			"heartbeat": "نبض"
+		},
+		"viewTranscript": "عرض السجل",
+		"section": {
+			"running": "قيد التشغيل"
+		},
+		"waitingOnYou": "بانتظارك",
+		"waitingOnYouN": "{n, plural, other {# بانتظارك}}"
 	},
 	"handoff": {
 		"fromAsk": "من {name}: {ask}",

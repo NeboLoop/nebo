@@ -8,6 +8,8 @@
   import { t } from 'svelte-i18n';
   import { backgroundTasks, backgroundFinished, isRunning, stopEverything } from '$lib/stores/background';
   import BackgroundPanel from './BackgroundPanel.svelte';
+  import BackgroundTranscript from './BackgroundTranscript.svelte';
+  import type { BackgroundTask } from '$lib/api/neboComponents';
 
   let { colors = {} }: { colors?: Record<string, string> } = $props();
 
@@ -18,6 +20,7 @@
   let confirming = $state(false);
   let stopping = $state(false);
   let result = $state('');
+  let transcript = $state<BackgroundTask | null>(null);
 
   const working = $derived($backgroundTasks.filter(isRunning));
   const timers = $derived($backgroundTasks.filter((task) => !isRunning(task) && task.kind === 'loop'));
@@ -63,9 +66,15 @@
     <div class="bg-panel bg-panel-empty">{$t('background.nothingRunning')}</div>
   {:else}
     <div class="grid gap-3 md:grid-cols-3 min-w-0">
-      <BackgroundPanel tasks={working} finished={$backgroundFinished} {now} title={$t('background.group.running')} showEmployee {colors} />
-      <BackgroundPanel tasks={timers} {now} title={$t('background.group.scheduled')} showEmployee {colors} />
+      <BackgroundPanel tasks={working} finished={$backgroundFinished} {now} title={$t('background.group.running')} showEmployee {colors} ontranscript={(task) => (transcript = task)} />
+      <BackgroundPanel tasks={timers} {now} title={$t('background.group.scheduled')} showEmployee {colors} ontranscript={(task) => (transcript = task)} />
       <BackgroundPanel tasks={watches} {now} title={$t('background.group.watching')} showEmployee {colors} />
     </div>
   {/if}
 </section>
+
+{#if transcript}
+  {#key transcript.id}
+    <BackgroundTranscript task={transcript} onclose={() => (transcript = null)} />
+  {/key}
+{/if}

@@ -4124,8 +4124,6 @@
 			"off": "Désactiver"
 		},
 		"wait": {
-			"approval": "Attend votre accord",
-			"answer": "Attend votre réponse",
 			"expert": "Attend un expert",
 			"reply": "Attend une réponse"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "En cours",
 			"scheduled": "Minuteurs",
 			"watching": "Surveillances"
-		}
+		},
+		"label": {
+			"helper": "Assistant",
+			"shell": "Commande",
+			"workflow": "Workflow",
+			"timer": "Minuteur",
+			"watch": "Surveillance",
+			"heartbeat": "Pulsation"
+		},
+		"viewTranscript": "Voir la transcription",
+		"section": {
+			"running": "En cours"
+		},
+		"waitingOnYou": "Vous attend",
+		"waitingOnYouN": "{n, plural, other {# vous attendent}}"
 	},
 	"handoff": {
 		"fromAsk": "De {name} : {ask}",

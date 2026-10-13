@@ -4124,8 +4124,6 @@
 			"off": "Stäng av"
 		},
 		"wait": {
-			"approval": "Behöver ditt godkännande",
-			"answer": "Behöver ditt svar",
 			"expert": "Väntar på en expert",
 			"reply": "Väntar på ett svar"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Arbetar",
 			"scheduled": "Timrar",
 			"watching": "Bevakningar"
-		}
+		},
+		"label": {
+			"helper": "Hjälpare",
+			"shell": "Kommando",
+			"workflow": "Arbetsflöde",
+			"timer": "Timer",
+			"watch": "Bevakning",
+			"heartbeat": "Puls"
+		},
+		"viewTranscript": "Visa logg",
+		"section": {
+			"running": "Pågår"
+		},
+		"waitingOnYou": "Väntar på dig",
+		"waitingOnYouN": "{n, plural, other {# väntar på dig}}"
 	},
 	"handoff": {
 		"fromAsk": "Från {name}: {ask}",

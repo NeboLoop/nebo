@@ -4124,8 +4124,6 @@
 			"off": "Вимкнути"
 		},
 		"wait": {
-			"approval": "Чекає на ваше схвалення",
-			"answer": "Чекає на вашу відповідь",
 			"expert": "Чекає на експерта",
 			"reply": "Чекає на відповідь"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "У роботі",
 			"scheduled": "Таймери",
 			"watching": "Спостереження"
-		}
+		},
+		"label": {
+			"helper": "Помічник",
+			"shell": "Команда",
+			"workflow": "Процес",
+			"timer": "Таймер",
+			"watch": "Спостереження",
+			"heartbeat": "Пульс"
+		},
+		"viewTranscript": "Відкрити запис",
+		"section": {
+			"running": "Виконується"
+		},
+		"waitingOnYou": "Чекає на вас",
+		"waitingOnYouN": "{n, plural, other {Чекають на вас: #}}"
 	},
 	"handoff": {
 		"fromAsk": "Від {name}: {ask}",

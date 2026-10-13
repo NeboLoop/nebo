@@ -4124,8 +4124,6 @@
 			"off": "Desactivar"
 		},
 		"wait": {
-			"approval": "Necesita tu aprobación",
-			"answer": "Necesita tu respuesta",
 			"expert": "Esperando a un experto",
 			"reply": "Esperando una respuesta"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Trabajando",
 			"scheduled": "Temporizadores",
 			"watching": "Vigilancias"
-		}
+		},
+		"label": {
+			"helper": "Ayudante",
+			"shell": "Comando",
+			"workflow": "Flujo de trabajo",
+			"timer": "Temporizador",
+			"watch": "Vigilancia",
+			"heartbeat": "Latido"
+		},
+		"viewTranscript": "Ver transcripción",
+		"section": {
+			"running": "En curso"
+		},
+		"waitingOnYou": "Te espera",
+		"waitingOnYouN": "{n, plural, other {# te esperan}}"
 	},
 	"handoff": {
 		"fromAsk": "De {name}: {ask}",

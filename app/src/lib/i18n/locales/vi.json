@@ -4124,8 +4124,6 @@
 			"off": "Tắt"
 		},
 		"wait": {
-			"approval": "Cần bạn duyệt",
-			"answer": "Cần bạn trả lời",
 			"expert": "Đang chờ chuyên gia",
 			"reply": "Đang chờ phản hồi"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Đang làm",
 			"scheduled": "Hẹn giờ",
 			"watching": "Theo dõi"
-		}
+		},
+		"label": {
+			"helper": "Trợ lý",
+			"shell": "Lệnh",
+			"workflow": "Quy trình",
+			"timer": "Hẹn giờ",
+			"watch": "Theo dõi",
+			"heartbeat": "Nhịp"
+		},
+		"viewTranscript": "Xem bản ghi",
+		"section": {
+			"running": "Đang chạy"
+		},
+		"waitingOnYou": "Đang chờ bạn",
+		"waitingOnYouN": "{n, plural, other {# đang chờ bạn}}"
 	},
 	"handoff": {
 		"fromAsk": "Từ {name}: {ask}",

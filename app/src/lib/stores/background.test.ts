@@ -7,7 +7,10 @@ import {
   backgroundEnded,
   belongsTo,
   clock,
-  inStrip,
+  launchedIn,
+  kindLabel,
+  rollUp,
+  waitsOnOwner,
   shortClock,
   sortForPanel,
   timerCreated,
@@ -34,6 +37,8 @@ function task(over: Partial<BackgroundTask>): BackgroundTask {
     sessionKey: 'agent:ava:web',
     fromAgentId: null,
     fromSessionKey: null,
+    launchedFrom: null,
+    transcript: null,
     turnsUsed: null,
     turnsCap: null,
     actions: ['stop'],
@@ -54,12 +59,18 @@ describe('background work', () => {
     expect(belongsTo(task({ agentId: '' }), 'main')).toBe(true);
   });
 
-  it("a chat's strip shows running work and timers made in a chat, not standing setup", () => {
-    expect(inStrip(task({}))).toBe(true);
-    expect(inStrip(task({ status: 'waiting' }))).toBe(true);
-    expect(inStrip(task({ source: 'timer', kind: 'loop', status: 'scheduled', createdBy: 'chat' }))).toBe(true);
-    expect(inStrip(task({ source: 'timer', kind: 'loop', status: 'scheduled', createdBy: 'workflow' }))).toBe(false);
-    expect(inStrip(task({ source: 'watch', kind: 'monitor', status: 'watching', createdBy: 'workflow' }))).toBe(false);
+  it("a chat lists what its own turns launched, and what that launched; never what fires on its own", () => {
+    const chat = 'agent:main:web';
+    const helper = task({ id: 'helper:h', launchedFrom: chat, transcript: { sessionKey: 'subagent:agent:main:web:h', chatId: 'c-h' } });
+    const nested = task({ id: 'helper:n', launchedFrom: 'subagent:agent:main:web:h' });
+    const handoff = task({ id: 'handoff:a', source: 'handoff', launchedFrom: chat, transcript: { sessionKey: 'agent:ann:coworker:main', chatId: 'c-a' } });
+    const coworkerHelper = task({ id: 'helper:c', agentId: 'ann', launchedFrom: 'agent:ann:coworker:main' });
+    const otherChat = task({ id: 'helper:o', launchedFrom: 'agent:main:thread:other' });
+    const scheduled = task({ id: 'turn:cron', source: 'turn', createdBy: 'schedule', launchedFrom: null, sessionKey: chat });
+    const triggered = task({ id: 'workflow:r', source: 'workflow', kind: 'workflow', createdBy: 'watch', launchedFrom: null, sessionKey: chat });
+    const timer = task({ id: 'timer:1', source: 'timer', kind: 'loop', status: 'scheduled', createdBy: 'chat', launchedFrom: null, sessionKey: chat });
+    const ids = launchedIn([nested, scheduled, helper, triggered, coworkerHelper, handoff, otherChat, timer], chat);
+    expect([...ids].sort()).toEqual(['handoff:a', 'helper:c', 'helper:h', 'helper:n']);
   });
 
   it('lists what fires next first, soonest first, then running work oldest first', () => {
@@ -91,5 +102,36 @@ describe('background work', () => {
     const notices = get(backgroundNotices);
     expect(notices.map((n) => n.kind)).toEqual(['failed', 'timer']);
     expect(notices[0].at).toBe(50_000);
+  });
+});
+
+describe('a row in a word', () => {
+  const t = (key: string) => key;
+  it('names the employee for a hand-off or a turn, else the kind of work', () => {
+    expect(kindLabel(task({ source: 'handoff', employee: 'Ben' }), t)).toBe('Ben');
+    expect(kindLabel(task({ source: 'turn', employee: 'Nebo' }), t)).toBe('Nebo');
+    expect(kindLabel(task({ source: 'helper' }), t)).toBe('background.label.helper');
+    expect(kindLabel(task({ source: 'shell', kind: 'shell' }), t)).toBe('background.label.shell');
+  });
+  it('waits on the owner for an approval or an answer, not for a reply', () => {
+    expect(waitsOnOwner(task({ status: 'waiting', wait: 'answer' }))).toBe(true);
+    expect(waitsOnOwner(task({ status: 'waiting', wait: 'approval' }))).toBe(true);
+    expect(waitsOnOwner(task({ status: 'waiting', wait: 'reply' }))).toBe(false);
+    expect(waitsOnOwner(task({ status: 'running' }))).toBe(false);
+  });
+});
+
+describe('rolled up', () => {
+  it('puts a helper a helper started under its parent, a level deeper', () => {
+    const parent = task({ id: 'helper:p', transcript: { sessionKey: 'subagent:agent:ava:web:p', chatId: 'c-p' } });
+    const other = task({ id: 'shell:s', source: 'shell', kind: 'shell' });
+    const child = task({ id: 'helper:c', launchedFrom: 'subagent:agent:ava:web:p', transcript: { sessionKey: 'subagent:subagent:agent:ava:web:p:c', chatId: 'c-c' } });
+    const grandchild = task({ id: 'helper:g', launchedFrom: 'subagent:subagent:agent:ava:web:p:c' });
+    expect(rollUp([parent, other, grandchild, child]).map((r) => [r.task.id, r.depth])).toEqual([
+      ['helper:p', 0],
+      ['helper:c', 1],
+      ['helper:g', 2],
+      ['shell:s', 0],
+    ]);
   });
 });

@@ -2524,7 +2524,7 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
-    <BackgroundStatus {agentId} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} />
+    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} />
     <ChatComposer
       {agentName}
       {agentId}

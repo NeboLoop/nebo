@@ -4124,8 +4124,6 @@
 			"off": "Wyłącz"
 		},
 		"wait": {
-			"approval": "Czeka na Twoją zgodę",
-			"answer": "Czeka na Twoją odpowiedź",
 			"expert": "Czeka na eksperta",
 			"reply": "Czeka na odpowiedź"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Pracuje",
 			"scheduled": "Minutniki",
 			"watching": "Obserwacje"
-		}
+		},
+		"label": {
+			"helper": "Pomocnik",
+			"shell": "Polecenie",
+			"workflow": "Przepływ pracy",
+			"timer": "Minutnik",
+			"watch": "Obserwacja",
+			"heartbeat": "Puls"
+		},
+		"viewTranscript": "Zobacz zapis",
+		"section": {
+			"running": "W toku"
+		},
+		"waitingOnYou": "Czeka na ciebie",
+		"waitingOnYouN": "{n, plural, other {Czeka na ciebie: #}}"
 	},
 	"handoff": {
 		"fromAsk": "Od {name}: {ask}",

@@ -4124,8 +4124,6 @@
 			"off": "關閉"
 		},
 		"wait": {
-			"approval": "等待你的核准",
-			"answer": "等待你的回答",
 			"expert": "等待專家",
 			"reply": "等待回覆"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "工作中",
 			"scheduled": "計時器",
 			"watching": "監看"
-		}
+		},
+		"label": {
+			"helper": "助手",
+			"shell": "指令",
+			"workflow": "工作流程",
+			"timer": "計時器",
+			"watch": "監看",
+			"heartbeat": "心跳"
+		},
+		"viewTranscript": "查看紀錄",
+		"section": {
+			"running": "執行中"
+		},
+		"waitingOnYou": "等你處理",
+		"waitingOnYouN": "{n, plural, other {# 項等你處理}}"
 	},
 	"handoff": {
 		"fromAsk": "來自 {name}：{ask}",
