@@ -27,7 +27,7 @@
   // Named agents' crons get migrated into workflows at startup; what remains
   // here are the primary employee's own reminders, matched by agentId.
   import * as api from '$lib/api/nebo';
-  import type { CronJob } from '$lib/api/neboComponents';
+  import type { CronJob, WorkflowAudit } from '$lib/api/neboComponents';
   import { describeSchedule, parseSimple, buildSimple, type SimpleSchedule } from '$lib/utils/schedule';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
@@ -164,6 +164,27 @@
     return $t('flows.triggerManual');
   }
 
+  /** What the workflow audit still finds wrong, one line each. */
+  function auditWrong(a: WorkflowAudit): string[] {
+    return [
+      ...a.issues.map((i) => (i.step ? `${i.step}: ${i.message}` : i.message)),
+      ...a.unresolved.map((step) => $t('flows.auditUnresolved', { values: { step } })),
+      ...a.disconnected.map((tool) => $t('flows.auditNotHere', { values: { tool } })),
+    ];
+  }
+
+  function auditSummary(a: WorkflowAudit): string {
+    const added = a.steps.reduce((n, s) => n + s.added.length, 0);
+    const wrong = auditWrong(a).length;
+    return [
+      added ? $t('flows.auditAdded', { values: { count: added } }) : '',
+      a.fixes.length ? $t('flows.auditFixed', { values: { count: a.fixes.length } }) : '',
+      wrong ? $t('flows.auditWrong', { values: { count: wrong } }) : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
   function formatLastFired(iso: string): string {
     const d = new Date(iso);
     return isNaN(d.getTime())
@@ -182,6 +203,31 @@
       </div>
     </div>
   </div>
+
+  <!-- The workflow audit: what Nebo added and fixed so the workflow runs
+       unattended, and what is still wrong. -->
+  {#snippet flowAudit(a: WorkflowAudit)}
+    {@const summary = auditSummary(a)}
+    {#if summary || a.healed.length}
+      <details class="flow-audit">
+        <summary class="flow-audit-summary">{summary || $t('flows.auditUsed', { values: { step: a.healed[0].step, tool: a.healed[0].tool } })}</summary>
+        <ul class="flow-audit-list">
+          {#each a.steps.filter((s) => s.added.length) as s (s.step)}
+            <li>{s.step}: {s.added.map((x) => x.tool).join(', ')}</li>
+          {/each}
+          {#each a.fixes as f, i (i)}
+            <li>{f.step}: {f.message}</li>
+          {/each}
+          {#each a.healed as h, i (i)}
+            <li>{$t('flows.auditUsed', { values: { step: h.step, tool: h.tool } })}</li>
+          {/each}
+          {#each auditWrong(a) as w, i (i)}
+            <li class="flow-audit-wrong">{w}</li>
+          {/each}
+        </ul>
+      </details>
+    {/if}
+  {/snippet}
 
   {#snippet flowSummary(name: string, wf: WorkflowConfig, purchased: boolean)}
     <div class="flex items-center gap-1.5 flex-wrap">
@@ -273,6 +319,7 @@
               onchange={() => ctx.toggleWorkflow(name)}
             />
           </div>
+          {#if wf.audit}{@render flowAudit(wf.audit)}{/if}
         </div>
       {/each}
     {/if}

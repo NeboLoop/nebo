@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "هذه الجدولة أدق مما يستطيع المحرر البسيط استيعابه",
 		"askSetupPrompt": "أنشئ لي مسارًا جديدًا: ",
 		"everyNHours": "كل N ساعة",
-		"everyNMinutes": "كل N دقيقة"
+		"everyNMinutes": "كل N دقيقة",
+		"auditAdded": "{count, plural, one {أُضيفت أداة واحدة} other {أُضيفت # أدوات}}",
+		"auditFixed": "{count, plural, one {إصلاح واحد} other {# إصلاحات}}",
+		"auditWrong": "{count, plural, one {مشكلة واحدة باقية} other {# مشكلات باقية}}",
+		"auditUnresolved": "{step}: لم يتمكن Nebo من تحديد أدواتها",
+		"auditNotHere": "{tool} غير متصل",
+		"auditUsed": "استخدمت {step} الأداة {tool} وهي ليست في قائمتها"
 	},
 	"christen": {
 		"title": "سمِّ موظفك الأول",

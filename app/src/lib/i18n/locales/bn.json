@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "এই সময়সূচি সাধারণ এডিটরে ধরার চেয়ে বেশি নির্দিষ্ট",
 		"askSetupPrompt": "আমার জন্য একটি নতুন ফ্লো সেট আপ করুন: ",
 		"everyNHours": "প্রতি N ঘণ্টায়",
-		"everyNMinutes": "প্রতি N মিনিটে"
+		"everyNMinutes": "প্রতি N মিনিটে",
+		"auditAdded": "{count, plural, one {# টুল যোগ করা হয়েছে} other {# টুল যোগ করা হয়েছে}}",
+		"auditFixed": "{count, plural, one {# সংশোধন} other {# সংশোধন}}",
+		"auditWrong": "{count, plural, one {# সমস্যা বাকি} other {# সমস্যা বাকি}}",
+		"auditUnresolved": "{step}: Nebo এর টুলগুলো ঠিক করতে পারেনি",
+		"auditNotHere": "{tool} সংযুক্ত নয়",
+		"auditUsed": "{step} {tool} ব্যবহার করেছে, যা তার তালিকায় ছিল না"
 	},
 	"christen": {
 		"title": "আপনার প্রথম কর্মীর নাম দিন",

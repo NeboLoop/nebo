@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "לוח הזמנים הזה מפורט יותר ממה שהעורך הפשוט יכול להציג",
 		"askSetupPrompt": "הגדר לי זרימה חדשה: ",
 		"everyNHours": "כל N שעות",
-		"everyNMinutes": "כל N דקות"
+		"everyNMinutes": "כל N דקות",
+		"auditAdded": "{count, plural, one {נוסף כלי אחד} other {נוספו # כלים}}",
+		"auditFixed": "{count, plural, one {תיקון אחד} other {# תיקונים}}",
+		"auditWrong": "{count, plural, one {בעיה אחת נותרה} other {נותרו # בעיות}}",
+		"auditUnresolved": "{step}: ‏Nebo לא הצליח לקבוע את הכלים שלו",
+		"auditNotHere": "{tool} לא מחובר",
+		"auditUsed": "{step} השתמש ב-{tool}, שלא היה ברשימה שלו"
 	},
 	"christen": {
 		"title": "תן שם לעובד הראשון שלך",

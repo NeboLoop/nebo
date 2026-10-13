@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Bu zamanlama, basit düzenleyicinin gösterebileceğinden daha ayrıntılı",
 		"askSetupPrompt": "Benim için yeni bir akış kur: ",
 		"everyNHours": "Her N saatte bir",
-		"everyNMinutes": "Her N dakikada bir"
+		"everyNMinutes": "Her N dakikada bir",
+		"auditAdded": "{count, plural, one {# araç eklendi} other {# araç eklendi}}",
+		"auditFixed": "{count, plural, one {# düzeltme} other {# düzeltme}}",
+		"auditWrong": "{count, plural, one {# sorun kaldı} other {# sorun kaldı}}",
+		"auditUnresolved": "{step}: Nebo araçlarını belirleyemedi",
+		"auditNotHere": "{tool} bağlı değil",
+		"auditUsed": "{step}, listesinde olmayan {tool} aracını kullandı"
 	},
 	"christen": {
 		"title": "İlk çalışanınıza bir ad verin",

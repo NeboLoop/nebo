@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "ตารางเวลานี้ละเอียดเกินกว่าที่ตัวแก้ไขแบบง่ายจะรองรับได้",
 		"askSetupPrompt": "ตั้งค่าโฟลว์ใหม่ให้ฉัน: ",
 		"everyNHours": "ทุก N ชั่วโมง",
-		"everyNMinutes": "ทุก N นาที"
+		"everyNMinutes": "ทุก N นาที",
+		"auditAdded": "{count, plural, other {เพิ่มเครื่องมือ # รายการ}}",
+		"auditFixed": "{count, plural, other {แก้ไข # รายการ}}",
+		"auditWrong": "{count, plural, other {ยังมีปัญหา # รายการ}}",
+		"auditUnresolved": "{step}: Nebo ระบุเครื่องมือของขั้นตอนนี้ไม่ได้",
+		"auditNotHere": "{tool} ยังไม่ได้เชื่อมต่อ",
+		"auditUsed": "{step} ใช้ {tool} ซึ่งไม่อยู่ในรายการ"
 	},
 	"christen": {
 		"title": "ตั้งชื่อพนักงานคนแรกของคุณ",

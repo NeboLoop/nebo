@@ -1,11 +1,11 @@
 //! The tools a workflow step a builder writes is given. A declared step
-//! (`tools` present) runs with only its tools (`workflow::engine::enforced_tools`),
-//! and a call outside them pauses the run for the owner. So when an
-//! employee or a workflow is saved from a conversation, Nebo completes each
-//! declared step from what it already knows: the tools the step's own words
-//! name, and the employee's memory, which is how a run keeps state for the
-//! next one. A call the step's words write with a parameter its tool
-//! doesn't take is refused before anything is saved.
+//! (`tools` present) runs with its tools (`workflow::engine::enforced_tools`)
+//! and the set every step has ([`ALWAYS_ALLOWED`]). So when an employee or
+//! a workflow is saved from a conversation, Nebo completes each declared
+//! step from the tools the step's own words name
+//! (`napp::workflow_check::named_tools`, the audit's reading of them). A
+//! call the step's words write with a parameter its tool doesn't take is
+//! refused before anything is saved.
 //!
 //! Bake-off 2026-10-10: 66 of 69 runs of employees built in chat paused for
 //! the owner on a tool the builder left out (find_tools, recall, remember);
@@ -16,29 +16,30 @@
 use std::collections::HashMap;
 
 use ai::ToolDefinition;
+use napp::workflow_check::{name_words, named_tools, names_tool};
 use serde_json::Value;
 
-/// What every declared step a builder writes is given beyond its list: the
-/// employee's own memory, to keep what later runs need.
-pub const STATE_TOOLS: [&str; 2] = ["recall", "remember"];
-
-/// Whether a `tools` entry names tool `n`: its exact name, a dotted prefix
-/// (`"odoo"` covers every `odoo.*` tool) or a `prefix*` family
-/// (`"mcp__github__*"` covers that server's tools).
-pub fn names_tool(entry: &str, n: &str) -> bool {
-    n == entry
-        || n.strip_prefix(entry).is_some_and(|r| r.starts_with('.'))
-        || entry.strip_suffix('*').is_some_and(|p| !p.is_empty() && n.starts_with(p))
-}
+/// What every workflow step may call without declaring it: looking tools
+/// up, the employee's memory, and Nebo's own read tools. A run never pauses
+/// for one of these, and the audit never needs to add them.
+pub const ALWAYS_ALLOWED: [&str; 8] = [
+    "find_tools",
+    "recall",
+    "remember",
+    "read_file",
+    "read_session",
+    "search_history",
+    "read_skill_file",
+    "use_skill",
+];
 
 /// Complete a declared activity's `tools` and check the calls its words
 /// write. An activity without `tools` is left as it is: it isn't limited;
 /// nor is one with `tools: []`, a judging step that calls nothing.
 ///
-/// Added, unless an entry already names them: [`STATE_TOOLS`], and every
-/// tool in `defs` the activity's intent or steps name, as a call
-/// (`name(`) or, for a name no prose word could be (one with an
-/// underscore), as a word. Returns the names added, in order.
+/// Added, unless an entry already names them: every tool in `defs` the
+/// activity's intent or steps name (`napp::workflow_check::named_tools`).
+/// Returns the names added, in order.
 ///
 /// Refused: a call in the words, `name(param: …)`, whose parameter tool
 /// `name` doesn't take. The error says the step, the call and the
@@ -57,15 +58,14 @@ pub fn complete(activity: &mut Value, defs: &HashMap<String, ToolDefinition>) ->
     if entries.is_empty() {
         return Ok(Vec::new());
     }
-    let mut wanted: Vec<&str> = STATE_TOOLS.to_vec();
+    let known = |n: &str| defs.contains_key(n);
+    let mut added: Vec<String> = Vec::new();
     for (_, text) in &words {
-        wanted.extend(named_tools(text, defs));
-    }
-    let mut added = Vec::new();
-    for name in wanted {
-        if !entries.iter().any(|e| names_tool(e, name)) {
-            entries.push(name.to_string());
-            added.push(name.to_string());
+        for name in named_tools(text, &known) {
+            if !entries.iter().any(|e| names_tool(e, &name)) {
+                entries.push(name.clone());
+                added.push(name);
+            }
         }
     }
     activity["tools"] = Value::from(entries);
@@ -87,48 +87,12 @@ fn activity_words(activity: &Value) -> Vec<(String, String)> {
     out
 }
 
-/// The tools in `defs` that `text` names: as a call, or as a word when the
-/// name has an underscore.
-fn named_tools<'d>(text: &str, defs: &'d HashMap<String, ToolDefinition>) -> Vec<&'d str> {
-    let mut out: Vec<&'d str> = Vec::new();
-    for (at, word) in words_of(text) {
-        let Some((name, _)) = defs.get_key_value(word) else { continue };
-        let called = text[at + word.len()..].starts_with('(');
-        if (called || word.contains('_')) && !out.contains(&name.as_str()) {
-            out.push(name.as_str());
-        }
-    }
-    out
-}
-
-/// Each run of tool-name characters (lowercase letters, digits, `_`) in
-/// `text`, with where it starts.
-fn words_of(text: &str) -> impl Iterator<Item = (usize, &str)> {
-    let is_name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_';
-    let mut out = Vec::new();
-    let mut start: Option<usize> = None;
-    for (i, c) in text.char_indices() {
-        match (is_name(c), start) {
-            (true, None) => start = Some(i),
-            (false, Some(s)) => {
-                out.push((s, &text[s..i]));
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(s) = start {
-        out.push((s, &text[s..]));
-    }
-    out.into_iter()
-}
-
 /// Refuse a call in `text` to a tool in `defs` with a parameter it doesn't
 /// take. A call's parameters are the words before `:`, `=` or a quote at
 /// the start of each of its arguments (`recall(key: "x")`,
 /// `recall(key 'x')`); prose inside the parentheses names none.
 fn check_calls(place: &str, text: &str, defs: &HashMap<String, ToolDefinition>) -> Result<(), String> {
-    for (at, word) in words_of(text) {
+    for (at, word) in name_words(text) {
         let Some(def) = defs.get(word) else { continue };
         let Some(args) = text[at + word.len()..].strip_prefix('(') else { continue };
         let Some(params) = def.input_schema.get("properties").and_then(Value::as_object) else { continue };
@@ -187,21 +151,18 @@ mod tests {
     }
 
     /// Bake-off 2026-10-10: the builders wrote steps without the memory
-    /// tools, and runs paused for the owner on recall and remember.
+    /// tools, and runs paused for the owner on recall and remember. Memory
+    /// is always allowed now, so a declaration gains nothing for it.
     #[test]
-    fn a_declared_step_gets_its_memory() {
+    fn memory_is_always_allowed_not_declared() {
         let mut activity = json!({
             "id": "run",
             "intent": "Evening wrap",
             "steps": ["Pull today's deals with mcp__hubspot__hubspot_search_deals.", "Send the wrap with message_owner."],
             "tools": ["mcp__hubspot__hubspot_search_deals", "message_owner"]
         });
-        let added = complete(&mut activity, &defs()).unwrap();
-        assert_eq!(added, ["recall", "remember"]);
-        assert_eq!(
-            activity["tools"],
-            json!(["mcp__hubspot__hubspot_search_deals", "message_owner", "recall", "remember"])
-        );
+        assert!(complete(&mut activity, &defs()).unwrap().is_empty());
+        assert!(ALWAYS_ALLOWED.contains(&"recall") && ALWAYS_ALLOWED.contains(&"remember") && ALWAYS_ALLOWED.contains(&"find_tools"));
     }
 
     /// The tools a step's words name are its tools: as a call, or as a word
@@ -218,7 +179,7 @@ mod tests {
             "tools": ["mcp__hubspot__*"]
         });
         let added = complete(&mut activity, &defs()).unwrap();
-        assert_eq!(added, ["recall", "remember", "write_file", "message_owner"], "the family covers the HubSpot call; prose `message` adds nothing");
+        assert_eq!(added, ["write_file", "message_owner"], "the family covers the HubSpot call; prose `message` adds nothing");
     }
 
     /// An entry that already names a tool (exactly, dotted or a family) is

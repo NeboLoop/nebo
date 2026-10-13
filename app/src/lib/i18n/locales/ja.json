@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "このスケジュールはシンプルエディターでは表せないほど細かく設定されています",
 		"askSetupPrompt": "新しいフローを設定してください: ",
 		"everyNHours": "N時間ごと",
-		"everyNMinutes": "N分ごと"
+		"everyNMinutes": "N分ごと",
+		"auditAdded": "{count, plural, other {ツールを#件追加}}",
+		"auditFixed": "{count, plural, other {#件を修正}}",
+		"auditWrong": "{count, plural, other {未解決の問題が#件}}",
+		"auditUnresolved": "{step}: Nebo はこのステップのツールを特定できませんでした",
+		"auditNotHere": "{tool} は接続されていません",
+		"auditUsed": "{step} はリストにない {tool} を使いました"
 	},
 	"christen": {
 		"title": "最初の社員に名前をつけましょう",

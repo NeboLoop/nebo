@@ -283,6 +283,16 @@ pub fn agent_id_from_workflow_id(workflow_id: &str) -> Option<&str> {
     workflow_id.strip_prefix("agent:").filter(|s| !s.is_empty())
 }
 
+/// The run and the activity a workflow step's session belongs to:
+/// `[agent:<id>:]workflow:<run>:<activity>:<iteration>…`.
+pub fn workflow_step(session_key: &str) -> Option<(&str, &str)> {
+    let parts: Vec<&str> = session_key.split(':').collect();
+    let at = parts.iter().position(|p| *p == "workflow")?;
+    let run = parts.get(at + 1).copied().filter(|r| !r.is_empty())?;
+    let activity = parts.get(at + 2).copied().filter(|a| !a.is_empty())?;
+    Some((run, activity))
+}
+
 /// Build a subagent session key.
 pub fn build_subagent_session_key(parent_id: &str, subagent_id: &str) -> String {
     if parent_id.is_empty() {
@@ -332,6 +342,15 @@ pub fn agent_id_from_surface_id(surface_id: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_steps_run_and_activity_are_read_from_its_session() {
+        use super::workflow_step;
+        assert_eq!(workflow_step("agent:emp:workflow:run-1:resolve-and-record:3:0"), Some(("run-1", "resolve-and-record")));
+        assert_eq!(workflow_step("agent:emp:workflow:run-1:find-unbilled::0"), Some(("run-1", "find-unbilled")));
+        assert_eq!(workflow_step("workflow:run-1:digest:0"), Some(("run-1", "digest")));
+        assert_eq!(workflow_step("agent:emp:web"), None);
+    }
+
     use super::*;
 
     /// Subagent keys must resolve to the PARENT's agent id, however deeply

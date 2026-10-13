@@ -84,6 +84,26 @@ enum Commands {
         #[command(subcommand)]
         command: StateCommands,
     },
+    /// Employees' workflows
+    Workflows {
+        #[command(subcommand)]
+        command: WorkflowsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowsCommands {
+    /// Report what the workflow audit would change, read-only: every installed
+    /// employee's workflows, or published employees' agent.json files
+    Audit {
+        /// A folder of published employees' agent.json files (one `*.json`
+        /// each) to audit instead of the installed employees
+        #[arg(long)]
+        manifests: Option<std::path::PathBuf>,
+        /// Print the reports as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -577,6 +597,11 @@ async fn run() -> anyhow::Result<()> {
         Some(Commands::Test { command }) => {
             run_test_command(&cfg, command).await?;
         }
+        Some(Commands::Workflows { command }) => match command {
+            WorkflowsCommands::Audit { manifests, json } => {
+                run_workflows_audit(&cfg, manifests.as_deref(), json).await?;
+            }
+        },
         Some(Commands::State { command }) => match command {
             StateCommands::Archive => {
                 let m = server::backup_ship::archive(&cfg.neboai.api_url).await.map_err(anyhow::Error::msg)?;
@@ -592,6 +617,70 @@ async fn run() -> anyhow::Result<()> {
         },
     }
 
+    Ok(())
+}
+
+/// `nebo workflows audit`: the workflow audit, read-only. Nothing is
+/// written, no model is asked and nothing is published; a step that would
+/// need the model is reported unresolved.
+async fn run_workflows_audit(cfg: &config::Config, manifests: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
+    use server::workflow_audit;
+    let store = std::sync::Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    let catalog = workflow_audit::offline_catalog(store.clone(), &config::data_dir()?).await;
+    let audits = match manifests {
+        Some(dir) => workflow_audit::audit_manifests(&store, dir, &catalog).map_err(anyhow::Error::msg)?,
+        None => {
+            let data_dir = config::data_dir()?;
+            let loader = tools::skills::Loader::new(data_dir.join("nebo").join("skills"), data_dir.join("user").join("skills"))
+                .with_agent_dirs(vec![data_dir.join("nebo").join("agents"), data_dir.join("user").join("agents")]);
+            loader.load_all().await;
+            workflow_audit::dry_run(&store, &catalog, Some(&loader)).await
+        }
+    };
+    if json {
+        let out: Vec<serde_json::Value> = audits
+            .iter()
+            .map(|e| serde_json::json!({"agentId": e.agent_id, "name": e.name, "workflows": e.workflows.iter().map(|(n, r)| serde_json::json!({"workflow": n, "report": r})).collect::<Vec<_>>()}))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    let mut by: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for employee in &audits {
+        println!("{}", employee.name);
+        for (workflow, report) in &employee.workflows {
+            println!("  {workflow}");
+            for step in &report.steps {
+                let source = step.resolved_by.map(|s| format!("{s:?}").to_lowercase()).unwrap_or_else(|| "unresolved".into());
+                *by.entry(match source.as_str() {
+                    "history" => "history",
+                    "named" => "named",
+                    "declared" => "declared",
+                    "model" => "model",
+                    _ => "needs the model",
+                })
+                .or_default() += 1;
+                let added: Vec<String> = step.added.iter().map(|a| format!("{} ({:?})", a.tool, a.source).to_lowercase()).collect();
+                if added.is_empty() {
+                    println!("    {}: {source}, nothing to add", step.step);
+                } else {
+                    println!("    {}: {source}, adds {}", step.step, added.join(", "));
+                }
+            }
+            for fix in &report.fixes {
+                println!("    fix {}: {}", fix.step, fix.message);
+            }
+            for issue in &report.issues {
+                println!("    still wrong: {issue}");
+            }
+            for tool in &report.disconnected {
+                println!("    not here: {tool}");
+            }
+        }
+    }
+    println!();
+    println!("AI steps by what resolved them: {}", by.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", "));
+    println!("Model calls: 0 (read-only)");
     Ok(())
 }
 

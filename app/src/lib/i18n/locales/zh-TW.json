@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "這個排程比簡易編輯器能表示的更細",
 		"askSetupPrompt": "幫我設定一個新流程：",
 		"everyNHours": "每 N 小時",
-		"everyNMinutes": "每 N 分鐘"
+		"everyNMinutes": "每 N 分鐘",
+		"auditAdded": "{count, plural, other {已新增 # 個工具}}",
+		"auditFixed": "{count, plural, other {# 處修正}}",
+		"auditWrong": "{count, plural, other {仍有 # 個問題}}",
+		"auditUnresolved": "{step}：Nebo 無法確定它需要的工具",
+		"auditNotHere": "{tool} 未連線",
+		"auditUsed": "{step} 使用了不在其清單中的 {tool}"
 	},
 	"christen": {
 		"title": "為你的第一位員工取個名字",

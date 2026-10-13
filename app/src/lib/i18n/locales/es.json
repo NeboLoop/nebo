@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Esta programación es más específica de lo que admite el editor simple",
 		"askSetupPrompt": "Configúrame un flujo nuevo: ",
 		"everyNHours": "Cada N horas",
-		"everyNMinutes": "Cada N minutos"
+		"everyNMinutes": "Cada N minutos",
+		"auditAdded": "{count, plural, one {# herramienta añadida} other {# herramientas añadidas}}",
+		"auditFixed": "{count, plural, one {# corrección} other {# correcciones}}",
+		"auditWrong": "{count, plural, one {# problema pendiente} other {# problemas pendientes}}",
+		"auditUnresolved": "{step}: Nebo no pudo determinar sus herramientas",
+		"auditNotHere": "{tool} no está conectado",
+		"auditUsed": "{step} usó {tool}, que no tenía en su lista"
 	},
 	"christen": {
 		"title": "Ponle nombre a tu primer empleado",

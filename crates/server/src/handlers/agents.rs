@@ -1509,6 +1509,7 @@ pub async fn update_agent(
         "agent_updated",
         serde_json::json!({ "agentId": id, "name": updated.name, "description": updated.description }),
     );
+    state.workflow_manager.audit_in_background(Some(&id));
 
     // When loop exposure changed, sync this agent's loop presence live.
     // The primary ("assistant") is always present on the loop and is managed by
@@ -1950,6 +1951,9 @@ pub async fn process_agent_bindings(
         bindings = config.workflows.len(),
         "processed agent bindings"
     );
+    // Installed, upgraded or activated: the workflow audit fixes what the
+    // engine would break, on this Nebo.
+    state.workflow_manager.audit_in_background(Some(agent_id));
     report
 }
 
@@ -2792,6 +2796,16 @@ pub async fn list_agent_workflows(
     let fm: serde_json::Value =
         serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
 
+    // Each workflow's audit: what it added and fixed, what is still wrong,
+    // and the tools its steps called without declaring them.
+    let audits: std::collections::HashMap<String, db::WorkflowAuditRow> = state
+        .store
+        .workflow_audits(&id)
+        .map_err(to_error_response)?
+        .into_iter()
+        .map(|a| (a.binding_name.clone(), a))
+        .collect();
+
     // Build a map keyed by binding_name with structured trigger
     let mut wf_map = serde_json::Map::new();
     for wf in &workflows {
@@ -2823,6 +2837,12 @@ pub async fn list_agent_workflows(
             if let Ok(inputs) = serde_json::from_str::<serde_json::Value>(inputs_str) {
                 entry["inputs"] = inputs;
             }
+        }
+        if let Some(a) = audits.get(&wf.binding_name) {
+            let mut audit: serde_json::Value = serde_json::from_str(&a.report).unwrap_or_else(|_| serde_json::json!({}));
+            audit["healed"] = serde_json::from_str(&a.healed).unwrap_or_else(|_| serde_json::json!([]));
+            audit["auditedAt"] = serde_json::json!(a.audited_at);
+            entry["audit"] = audit;
         }
         wf_map.insert(wf.binding_name.clone(), entry);
     }
@@ -4308,6 +4328,9 @@ pub async fn create_agent_workflow(
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
+    // The saved workflow is audited in the background: its steps get their
+    // tools, and the report shows with the workflow.
+    state.workflow_manager.audit_in_background(Some(&id));
 
     // Temporary work with no trigger is for now: it starts as it is made.
     let run_id = if temporary && trigger_type == "manual" {
@@ -4508,6 +4531,9 @@ pub async fn update_agent_workflow(
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
+    // The saved workflow is audited in the background: its steps get their
+    // tools, and the report shows with the workflow.
+    state.workflow_manager.audit_in_background(Some(&id));
 
     let workflows = state
         .store
@@ -5809,7 +5835,7 @@ pub async fn resolve_learning(
             .and_then(|c| serde_json::from_str(c).ok())
             .ok_or_else(|| to_error_response(types::NeboError::Validation(
                 "The proposed workflow is not valid JSON, so it cannot be applied.".into())))?;
-        crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &binding_val)
+        crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &binding_val, true)
             .map_err(|e| to_error_response(types::NeboError::Internal(format!("apply failed: {}", e))))?;
         restart_agent_worker_if_active(&state, &row.agent_id).await;
         state
@@ -5954,7 +5980,7 @@ pub async fn revert_learning(
         };
         let prior_val: serde_json::Value = serde_json::from_str(prior_raw)
             .map_err(|_| to_error_response(types::NeboError::Internal("restore point unparseable".into())))?;
-        crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &prior_val)
+        crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &prior_val, true)
             .map_err(|e| to_error_response(types::NeboError::Internal(format!("revert failed: {}", e))))?;
         restart_agent_worker_if_active(&state, &row.agent_id).await;
         state.store.revert_pending_write(&id).map_err(to_error_response)?;

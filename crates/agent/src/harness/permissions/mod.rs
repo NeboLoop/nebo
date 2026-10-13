@@ -150,6 +150,25 @@ impl PermissionGate for Check {
                 why: Why::CannotWait { case: case.clone() },
             };
         }
+        // A workflow step called a tool it doesn't declare. It never pauses
+        // for that: the employee's mode decided it, as for any call. The
+        // audit hears of it, and adds the tool to the step's declaration
+        // from the run's history before the next run.
+        if matches!(ctx.door, types::permissions::Door::Workflow)
+            && !ctx.whitelist_allows(t)
+            && let Some((run, step)) = types::keyparser::workflow_step(&ctx.session_key)
+        {
+            let outcome = match &decision {
+                Decision::Allow { .. } => Some("ran"),
+                Decision::Ask { .. } => Some("asked"),
+                Decision::Deny { .. } => None,
+            };
+            if let Some(outcome) = outcome
+                && let Err(e) = self.store.record_step_heal(run, step, &t.tool, t.read_only, outcome)
+            {
+                tracing::warn!(tool = %t.tool, error = %e, "the step's undeclared tool was not recorded");
+            }
+        }
         let ask_id = match &decision {
             Decision::Ask { case } => Some(self.asks.park(&cx, call, case)),
             _ => None,

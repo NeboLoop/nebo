@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "यह शेड्यूल सरल एडिटर की क्षमता से ज़्यादा विस्तृत है",
 		"askSetupPrompt": "मेरे लिए एक नया फ़्लो सेट करें: ",
 		"everyNHours": "हर N घंटे",
-		"everyNMinutes": "हर N मिनट"
+		"everyNMinutes": "हर N मिनट",
+		"auditAdded": "{count, plural, one {# टूल जोड़ा गया} other {# टूल जोड़े गए}}",
+		"auditFixed": "{count, plural, one {# सुधार} other {# सुधार}}",
+		"auditWrong": "{count, plural, one {# समस्या बाकी} other {# समस्याएँ बाकी}}",
+		"auditUnresolved": "{step}: Nebo इसके टूल तय नहीं कर सका",
+		"auditNotHere": "{tool} कनेक्ट नहीं है",
+		"auditUsed": "{step} ने {tool} का उपयोग किया, जो उसकी सूची में नहीं था"
 	},
 	"christen": {
 		"title": "अपने पहले कर्मचारी का नाम रखें",

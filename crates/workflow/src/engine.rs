@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use db::Store;
 use tools::registry::DynTool;
-use tools::workflows::step_tools::names_tool;
+use napp::workflow_check::names_tool;
 
 use crate::WorkflowError;
 use crate::parser::{Activity, WorkflowDef};
@@ -168,11 +168,18 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 ///   it, so a step without it could only fail silently.
 pub const RUNTIME_TOOLS: [&str; 3] = ["exit", "emit_event", "message_owner"];
 
-/// The tool allowlist for an activity's turns: its scoped toolset and the
-/// runtime set. A call outside it pauses the run for the owner
-/// (`AskCase::StepTool`), whose allow adds the tool to the activity.
+/// The tools an activity's turns hold as declared: its scoped toolset, the
+/// runtime set, and what every step may call without declaring it
+/// (`tools::workflows::step_tools::ALWAYS_ALLOWED`). A call outside it never
+/// pauses the run: it is decided like any call under the employee's mode,
+/// and the audit records it (`agent::harness::permissions`).
 pub fn enforced_tools(scoped: &[String]) -> HashSet<String> {
-    scoped.iter().cloned().chain(RUNTIME_TOOLS.iter().map(|t| t.to_string())).collect()
+    scoped
+        .iter()
+        .cloned()
+        .chain(RUNTIME_TOOLS.iter().map(|t| t.to_string()))
+        .chain(tools::workflows::step_tools::ALWAYS_ALLOWED.iter().map(|t| t.to_string()))
+        .collect()
 }
 
 /// Declared `mcps` → proxy-name prefixes (server keys normalized the same
@@ -1841,7 +1848,8 @@ mod engine_tests {
     }
 
     /// An activity that declares nothing — `tools` absent or `[]` — gets
-    /// only the runtime set, whatever its words name.
+    /// only the runtime set and what every step may call without declaring
+    /// it, whatever its words name.
     #[test]
     fn an_activity_that_declares_nothing_gets_only_the_runtime_set() {
         for activity in [
@@ -1855,7 +1863,13 @@ mod engine_tests {
             assert_eq!(scoped, ["message_owner"]);
             let mut got: Vec<String> = enforced_tools(&scoped).into_iter().collect();
             got.sort();
-            assert_eq!(got, ["emit_event", "exit", "message_owner"]);
+            let mut want: Vec<String> = ["emit_event", "exit", "message_owner"]
+                .into_iter()
+                .chain(tools::workflows::step_tools::ALWAYS_ALLOWED)
+                .map(str::to_string)
+                .collect();
+            want.sort();
+            assert_eq!(got, want, "the runtime set and what every step may call without declaring it");
         }
     }
 

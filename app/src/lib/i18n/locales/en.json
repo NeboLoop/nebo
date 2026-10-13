@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "This schedule is more specific than the simple editor can hold",
 		"askSetupPrompt": "Set up a new flow for me: ",
 		"everyNHours": "Every N hours",
-		"everyNMinutes": "Every N minutes"
+		"everyNMinutes": "Every N minutes",
+		"auditAdded": "{count, plural, one {# tool added} other {# tools added}}",
+		"auditFixed": "{count, plural, one {# fix} other {# fixes}}",
+		"auditWrong": "{count, plural, one {# thing still wrong} other {# things still wrong}}",
+		"auditUnresolved": "{step}: Nebo couldn't work out its tools",
+		"auditNotHere": "{tool} isn't connected",
+		"auditUsed": "{step} used {tool}, which it didn't list"
 	},
 	"christen": {
 		"title": "Name your first employee",

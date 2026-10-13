@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Ten harmonogram jest bardziej szczegółowy, niż obsłuży prosty edytor",
 		"askSetupPrompt": "Skonfiguruj dla mnie nowy scenariusz: ",
 		"everyNHours": "Co N godzin",
-		"everyNMinutes": "Co N minut"
+		"everyNMinutes": "Co N minut",
+		"auditAdded": "{count, plural, one {Dodano # narzędzie} few {Dodano # narzędzia} many {Dodano # narzędzi} other {Dodano # narzędzia}}",
+		"auditFixed": "{count, plural, one {# poprawka} few {# poprawki} many {# poprawek} other {# poprawki}}",
+		"auditWrong": "{count, plural, one {# problem do rozwiązania} few {# problemy do rozwiązania} many {# problemów do rozwiązania} other {# problemu do rozwiązania}}",
+		"auditUnresolved": "{step}: Nebo nie ustalił jego narzędzi",
+		"auditNotHere": "{tool} nie jest połączone",
+		"auditUsed": "{step} użył {tool}, którego nie miał na liście"
 	},
 	"christen": {
 		"title": "Nadaj imię swojemu pierwszemu pracownikowi",

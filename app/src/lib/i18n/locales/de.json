@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Dieser Zeitplan ist genauer, als der einfache Editor abbilden kann",
 		"askSetupPrompt": "Richte einen neuen Ablauf für mich ein: ",
 		"everyNHours": "Alle N Stunden",
-		"everyNMinutes": "Alle N Minuten"
+		"everyNMinutes": "Alle N Minuten",
+		"auditAdded": "{count, plural, one {# Werkzeug hinzugefügt} other {# Werkzeuge hinzugefügt}}",
+		"auditFixed": "{count, plural, one {# Korrektur} other {# Korrekturen}}",
+		"auditWrong": "{count, plural, one {# Problem offen} other {# Probleme offen}}",
+		"auditUnresolved": "{step}: Nebo konnte die Werkzeuge nicht bestimmen",
+		"auditNotHere": "{tool} ist nicht verbunden",
+		"auditUsed": "{step} hat {tool} benutzt, ohne es aufzuführen"
 	},
 	"christen": {
 		"title": "Gib deinem ersten Mitarbeiter einen Namen",

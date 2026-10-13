@@ -924,36 +924,88 @@ async fn an_unattended_run_never_schedules_work() {
     assert!(!r.is_error, "deleting is always allowed: {}", r.content);
 }
 
-/// Rule 1 at dispatch: a workflow step whose activity declares its tools
-/// runs those; a call to another tool pauses the run for the owner, naming
-/// the step and the tool, with one allow (no "this once"). A scheduling
-/// tool stays refused, whatever the declaration (Rule 2). Other restricted
-/// runs (a phone caller's allowlist) are still refused, not asked.
+/// A probe the permission check reads as a read.
+fn reading(name: &'static str, capability: Option<&'static str>) -> (Probe, Arc<AtomicUsize>) {
+    let (mut p, ran) = Probe::new(name, name, capability);
+    p.read_only = true;
+    (p, ran)
+}
+
+/// A workflow step's context: its run's session and its declared tools as
+/// the engine holds them (`workflow::engine::enforced_tools`).
+fn step_ctx(store: &db::Store, mode: Mode, declared: &[&str]) -> ToolContext {
+    let mut c = with_mode(ctx(store, "emp", Origin::Workflow), mode);
+    c.door = Door::Workflow;
+    c.session_key = "agent:emp:workflow:run-1:resolve-and-record:0:0".into();
+    let declared: Vec<String> = declared.iter().map(|t| t.to_string()).collect();
+    c.tool_whitelist = Some(workflow::engine::enforced_tools(&declared));
+    c
+}
+
+fn step_run(store: &db::Store) {
+    store.create_workflow_run("run-1", "agent:emp", "watch", Some("order-intake"), None, None, Some("{}")).unwrap();
+}
+
+fn healed(store: &db::Store) -> Vec<serde_json::Value> {
+    store
+        .workflow_audit("emp", "order-intake")
+        .unwrap()
+        .map(|row| serde_json::from_str(&row.healed).unwrap())
+        .unwrap_or_default()
+}
+
+/// A run never pauses because a tool is missing from a step's list
+/// (2026-10-13: the Invoice Sender's "find-unbilled" paused on find_tools).
+/// Looking tools up and memory are always allowed; an undeclared read
+/// runs, in Ask mode too, is recorded for the audit, and its step's run
+/// history declares it at the next audit. A scheduling tool stays refused,
+/// and another restricted run's allowlist (a phone caller's) still refuses.
 #[tokio::test]
-async fn a_declared_workflow_step_pauses_on_a_tool_it_wasnt_given() {
+async fn an_undeclared_tool_never_pauses_a_workflow_step() {
     let (_d, store) = store();
+    step_run(&store);
     let (odoo, odoo_ran) = Probe::new("plugin__odoo", "plugin__odoo", None);
-    let (fetch, fetch_ran) = Probe::new("fetch_url", "fetch_url", Some("web"));
+    let (find, find_ran) = reading("find_tools", None);
+    let (recall, _) = reading("recall", None);
+    let (fetch, fetch_ran) = reading("fetch_url", Some("web"));
     put(&store, rule(Scope::Company, cap("web"), None, Effect::Allow));
-    let reg = registry(&store, vec![odoo, fetch]).await;
+    let reg = registry(&store, vec![odoo, find, recall, fetch]).await;
     for tool in tools::event_tool::tools(store.clone()) {
         reg.register(Box::new(tool)).await;
     }
-    let mut c = with_mode(ctx(&store, "emp", Origin::Workflow), Mode::FullAccess);
-    c.door = Door::Workflow;
-    c.session_key = "agent:emp:workflow:run-1:resolve-and-record:0:0".into();
-    c.tool_whitelist = Some(["plugin__odoo".to_string(), "message_owner".to_string(), "exit".to_string()].into());
-    assert_eq!(reg.execute(&c, "plugin__odoo", json!({})).await.content, "RAN");
-    let parked = reg.execute(&c, "fetch_url", json!({})).await;
-    let ask_id = parked.parked_ask.clone().expect("the run pauses for the owner");
-    assert!(parked.content.contains("isn't one of the tools this workflow step was given"), "{}", parked.content);
-    let ask = Check::new(store.clone()).asks().get(&ask_id).unwrap().unwrap();
-    assert_eq!(ask.case, AskCase::StepTool { step: "resolve-and-record".into(), tool: "fetch_url".into() });
-    assert!(!ask.this_once_offered(), "one allow");
-    assert!(ask.reason_text().contains("resolve-and-record") && ask.reason_text().contains("fetch_url"), "{}", ask.reason_text());
+    let c = step_ctx(&store, Mode::Ask, &["plugin__odoo"]);
+    for tool in ["find_tools", "recall", "fetch_url"] {
+        let r = reg.execute(&c, tool, json!({})).await;
+        assert!(r.parked_ask.is_none(), "{tool} never pauses the run: {}", r.content);
+        assert_eq!(r.content, "RAN", "{tool}");
+    }
+    assert_eq!((find_ran.load(Ordering::SeqCst), fetch_ran.load(Ordering::SeqCst)), (1, 1));
+    let h = healed(&store);
+    assert_eq!(h.len(), 1, "only the undeclared read is recorded, not what is always allowed: {h:?}");
+    assert_eq!((h[0]["step"].as_str(), h[0]["tool"].as_str(), h[0]["readOnly"].as_bool()), (Some("resolve-and-record"), Some("fetch_url"), Some(true)));
+    assert_eq!(store.workflow_audit("emp", "order-intake").unwrap().unwrap().definition_hash, "", "the next run's check audits it again");
+
+    // The self-healing: the step's run history declares the read.
+    let history = store.workflow_step_history("emp", "order-intake").unwrap();
+    let catalog: std::collections::BTreeSet<String> = ["plugin__odoo", "fetch_url"].iter().map(|s| s.to_string()).collect();
+    let def = json!({"activities": [{"id": "resolve-and-record", "intent": "Record the orders.", "tools": ["plugin__odoo"]}]});
+    let audit = napp::workflow_check::audit_workflow(
+        "order-intake",
+        &def,
+        &napp::workflow_check::Signals {
+            catalog: &catalog,
+            history: &history,
+            skill_tools: &Default::default(),
+            plugins: &[],
+            picked: &Default::default(),
+        },
+    );
+    assert_eq!(audit.definition["activities"][0]["tools"], json!(["plugin__odoo", "fetch_url"]));
+
+    // Scheduling stays refused, whatever the step declares.
     let r = reg.execute(&c, "create_schedule", json!({ "name": "retry", "reason": "retry", "at": "in 30 seconds", "prompt": "x" })).await;
     assert!(r.is_error && r.parked_ask.is_none() && r.content.contains("can't create, turn on or start"), "{}", r.content);
-    assert_eq!((odoo_ran.load(Ordering::SeqCst), fetch_ran.load(Ordering::SeqCst)), (1, 0));
+    assert_eq!(odoo_ran.load(Ordering::SeqCst), 0);
 
     // A phone caller's allowlist is refused outright, never asked.
     let mut caller = with_mode(ctx(&store, "emp", Origin::User), Mode::FullAccess);
@@ -962,36 +1014,79 @@ async fn a_declared_workflow_step_pauses_on_a_tool_it_wasnt_given() {
     assert!(r.is_error && r.parked_ask.is_none(), "{}", r.content);
 }
 
-/// The owner's allow on a step's missing tool adds the tool to that step's
-/// declaration (the run's definition and the employee's workflow) and
-/// releases the run to continue at the call.
+/// An undeclared call that changes things follows the employee's mode, the
+/// owner's setting: Automatic runs it and logs it; Ask asks, as for any
+/// change in Ask mode. Either way the audit hears of it.
 #[tokio::test]
-async fn allowing_a_steps_missing_tool_adds_it_to_the_step() {
+async fn an_undeclared_write_follows_the_employees_mode() {
     let (_d, store) = store();
-    store.create_agent("emp", None, "Inventory", "x", "x", "{}", None, None).unwrap();
-    let activities = r#"[{"id":"resolve-and-record","intent":"x","tools":["plugin__odoo"]}]"#;
-    store.upsert_agent_workflow("emp", "order-intake", "manual", "{}", None, None, None, Some(activities), None, false).unwrap();
-    let def = format!(r#"{{"id":"wf","name":"wf","activities":{activities}}}"#);
-    store.create_workflow_run("run-1", "agent:emp", "watch", None, None, None, Some(&def)).unwrap();
-    let (fetch, _) = Probe::new("fetch_url", "fetch_url", Some("web"));
-    let reg = Arc::new(registry(&store, vec![fetch]).await);
-    let check = Check::new(store.clone());
-    let asks = check.asks();
-    let mut c = with_mode(ctx(&store, "emp", Origin::Workflow), Mode::FullAccess);
-    c.door = Door::Workflow;
-    c.session_key = "agent:emp:workflow:run-1:resolve-and-record:0:0".into();
-    c.tool_whitelist = Some(["plugin__odoo".to_string()].into());
-    let parked = reg.execute(&c, "fetch_url", json!({ "url": "https://example.com" })).await;
-    let ask_id = parked.parked_ask.expect("parked");
-    store
-        .create_workflow_suspension("run-1", "emp", "order-intake", "resolve-and-record", "", None, "[]", r#"{"name":"fetch_url"}"#, "", "fetch")
-        .unwrap();
-    store.link_permission_ask_run(&ask_id, "run-1").unwrap();
-    asks.answer(&ask_id, Answer::AllowAlways, AnsweredVia::Inbox).unwrap();
-    asks.resume(&reg, &ask_id, chrono::Utc::now().timestamp()).unwrap();
-    let run_def = store.engine_get_run("run-1").unwrap().unwrap().definition.unwrap();
-    assert!(run_def.contains(r#""tools":["plugin__odoo","fetch_url"]"#), "{run_def}");
-    let row = store.list_agent_workflows("emp").unwrap().into_iter().find(|w| w.binding_name == "order-intake").unwrap();
-    assert!(row.activities.unwrap().to_string().contains("fetch_url"));
-    assert!(store.permission_rules("emp").unwrap().is_empty(), "no permission rule is written");
+    step_run(&store);
+    let (send, sent) = Probe::new("ledger_invoice_send", "ledger_invoice_send", None);
+    let reg = registry(&store, vec![send]).await;
+
+    let auto = step_ctx(&store, Mode::Automatic, &["plugin__odoo"]);
+    let r = reg.execute(&auto, "ledger_invoice_send", json!({})).await;
+    assert_eq!(r.content, "RAN");
+    assert!(r.parked_ask.is_none());
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    let rows = store.permission_activity(&activity_of("emp")).unwrap().0;
+    assert!(rows.iter().any(|r| r.tool == "ledger_invoice_send" && r.decision == "allow"), "logged");
+
+    let ask = step_ctx(&store, Mode::Ask, &["plugin__odoo"]);
+    let r = reg.execute(&ask, "ledger_invoice_send", json!({})).await;
+    let ask_id = r.parked_ask.clone().expect("Ask mode asks");
+    assert_eq!(Check::new(store.clone()).asks().get(&ask_id).unwrap().unwrap().case, AskCase::AskMode);
+    assert_eq!(sent.load(Ordering::SeqCst), 1, "not until the owner answers");
+
+    let outcomes: Vec<(String, String)> = healed(&store)
+        .iter()
+        .map(|h| (h["tool"].as_str().unwrap().to_string(), h["outcome"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(outcomes, [("ledger_invoice_send".to_string(), "ran".to_string()), ("ledger_invoice_send".to_string(), "asked".to_string())]);
+    assert!(healed(&store).iter().all(|h| h["readOnly"] == false));
+}
+
+/// The Invoice Sender's "find-unbilled" as it paused the owner's run on
+/// 2026-10-13: no declared tools, then find_tools. After the audit it is
+/// declared from its words, and every call its run makes (looking tools
+/// up, the declared operation, an undeclared read) runs; none pauses.
+#[tokio::test]
+async fn the_invoice_senders_step_completes_after_the_audit() {
+    let (_d, store) = store();
+    step_run(&store);
+    let def = json!({
+        "activities": [{"id": "find-unbilled", "skills": ["unbilled-sweep"],
+            "intent": "Look for work that became billable and never turned into an invoice. Check accepted estimates with no invoice against them via accounting.invoice-sender.ledger.estimate.list.",
+            "steps": ["accounting.invoice-sender.ledger.estimate.list for accepted estimates with no invoice", "Each with value and age"]}],
+        "connections": [{"from": "__trigger__", "to": "find-unbilled"}]
+    });
+    let catalog: std::collections::BTreeSet<String> =
+        ["find_tools", "ledger_estimate_list", "ledger_invoice_search"].iter().map(|s| s.to_string()).collect();
+    let audit = napp::workflow_check::audit_workflow(
+        "unbilled-sweep",
+        &def,
+        &napp::workflow_check::Signals {
+            catalog: &catalog,
+            history: &Default::default(),
+            skill_tools: &Default::default(),
+            plugins: &[],
+            picked: &Default::default(),
+        },
+    );
+    let declared: Vec<String> =
+        serde_json::from_value(audit.definition["activities"][0]["tools"].clone()).unwrap();
+    assert_eq!(declared, ["ledger_estimate_list"]);
+
+    let (find, _) = reading("find_tools", None);
+    let (estimates, _) = reading("ledger_estimate_list", None);
+    let (invoices, _) = reading("ledger_invoice_search", None);
+    let reg = registry(&store, vec![find, estimates, invoices]).await;
+    let mut c = step_ctx(&store, Mode::Automatic, &[]);
+    c.session_key = "agent:emp:workflow:run-1:find-unbilled::0".into();
+    c.tool_whitelist = Some(workflow::engine::enforced_tools(&declared));
+    for tool in ["find_tools", "ledger_estimate_list", "ledger_invoice_search"] {
+        let r = reg.execute(&c, tool, json!({})).await;
+        assert!(r.parked_ask.is_none() && r.content == "RAN", "{tool}: {}", r.content);
+    }
+    assert!(store.open_permission_asks(None).unwrap().is_empty(), "nothing waits for the owner");
 }

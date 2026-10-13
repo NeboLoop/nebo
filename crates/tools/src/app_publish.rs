@@ -1850,6 +1850,9 @@ impl Publisher {
                 if !sent.message.is_empty() {
                     text.push_str(&format!("\n{}", sent.message));
                 }
+                for note in audit_notes(&self.store, &app.id) {
+                    text.push_str(&format!("\n{note}"));
+                }
                 ToolResult::ok(text).with_payload(listing_payload(
                     &app.id,
                     &row.artifact_id,
@@ -1861,6 +1864,35 @@ impl Publisher {
             Err(e) => ToolResult::error(e),
         }
     }
+}
+
+/// The workflow audit's findings for an app's workflows, one line each:
+/// what it added and fixed, and what is still wrong.
+fn audit_notes(store: &db::Store, app_id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for row in store.workflow_audits(app_id).unwrap_or_default() {
+        let report: Value = serde_json::from_str(&row.report).unwrap_or(Value::Null);
+        let added: usize = report["steps"].as_array().into_iter().flatten().map(|s| s["added"].as_array().map_or(0, Vec::len)).sum();
+        let fixed = report["fixes"].as_array().map_or(0, Vec::len);
+        let mut wrong: Vec<String> = report["issues"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| Some(format!("{}: {}", i["step"].as_str().unwrap_or("the workflow"), i["message"].as_str()?)))
+            .collect();
+        wrong.extend(report["unresolved"].as_array().into_iter().flatten().filter_map(|s| {
+            Some(format!("{}: its tools could not be worked out", s.as_str()?))
+        }));
+        if added + fixed == 0 && wrong.is_empty() {
+            continue;
+        }
+        let mut line = format!("Workflow audit, {}: {added} tools declared, {fixed} fixes.", row.binding_name);
+        if !wrong.is_empty() {
+            line.push_str(&format!(" Still wrong: {}.", wrong.join("; ")));
+        }
+        out.push(line);
+    }
+    out
 }
 
 /// `app_listing`: draft an app's marketplace listing, change it as the

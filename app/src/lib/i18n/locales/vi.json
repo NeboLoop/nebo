@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Lịch trình này chi tiết hơn mức trình soạn thảo đơn giản có thể hiển thị",
 		"askSetupPrompt": "Thiết lập một luồng mới cho tôi: ",
 		"everyNHours": "Mỗi N giờ",
-		"everyNMinutes": "Mỗi N phút"
+		"everyNMinutes": "Mỗi N phút",
+		"auditAdded": "{count, plural, other {Đã thêm # công cụ}}",
+		"auditFixed": "{count, plural, other {# sửa lỗi}}",
+		"auditWrong": "{count, plural, other {Còn # vấn đề}}",
+		"auditUnresolved": "{step}: Nebo không xác định được công cụ của bước này",
+		"auditNotHere": "{tool} chưa được kết nối",
+		"auditUsed": "{step} đã dùng {tool}, vốn không có trong danh sách"
 	},
 	"christen": {
 		"title": "Đặt tên cho nhân viên đầu tiên của bạn",

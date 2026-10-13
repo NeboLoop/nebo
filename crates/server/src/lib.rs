@@ -63,6 +63,7 @@ mod spa;
 mod app_listing;
 mod state;
 pub mod workflow_manager;
+pub mod workflow_audit;
 mod old_profile;
 mod ask_push;
 mod permission_asks;
@@ -3317,6 +3318,18 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // on, made in the background (`hub_sync`); idle upload sessions swept.
     hub_sync::spawn(state.clone());
 
+    // The workflow audit of every installed employee whose workflow changed
+    // since its last audit (an upgrade, a package update), once per
+    // definition: after plugins and MCP servers have come up, so the
+    // catalog it declares from is whole.
+    {
+        let mgr = state.workflow_manager.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            mgr.audit_in_background(None);
+        });
+    }
+
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
         tracing::debug!("skipping background update checker in dev build");
@@ -3864,6 +3877,7 @@ struct LiveTriggersImpl(AppState);
 impl tools::agent_tool::LiveTriggers for LiveTriggersImpl {
     async fn resync(&self, agent_id: &str) {
         handlers::agents::restart_agent_worker_if_active(&self.0, agent_id).await;
+        self.0.workflow_manager.audit_in_background(Some(agent_id));
     }
 }
 

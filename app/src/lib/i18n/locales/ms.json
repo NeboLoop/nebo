@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Jadual ini lebih terperinci daripada yang boleh dipegang oleh editor ringkas",
 		"askSetupPrompt": "Sediakan aliran baharu untuk saya: ",
 		"everyNHours": "Setiap N jam",
-		"everyNMinutes": "Setiap N minit"
+		"everyNMinutes": "Setiap N minit",
+		"auditAdded": "{count, plural, other {# alat ditambah}}",
+		"auditFixed": "{count, plural, other {# pembetulan}}",
+		"auditWrong": "{count, plural, other {# masalah masih ada}}",
+		"auditUnresolved": "{step}: Nebo tidak dapat menentukan alatnya",
+		"auditNotHere": "{tool} tidak disambungkan",
+		"auditUsed": "{step} menggunakan {tool}, yang tiada dalam senarainya"
 	},
 	"christen": {
 		"title": "Namakan pekerja pertama anda",

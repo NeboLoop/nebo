@@ -192,6 +192,11 @@ impl Harness {
         self
     }
 
+    /// Nebo's embedding client, when this Nebo has one.
+    pub fn embedding_provider(&self) -> Option<Arc<dyn ai::EmbeddingProvider>> {
+        self.embedding_provider.clone()
+    }
+
     /// The memory tool's own search: the turn's recall shares its index.
     pub fn with_hybrid_searcher(mut self, searcher: Arc<dyn tools::HybridSearcher>) -> Self {
         self.hybrid_searcher = Some(searcher);

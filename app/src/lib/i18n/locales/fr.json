@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Cette planification est trop précise pour l’éditeur simple",
 		"askSetupPrompt": "Crée-moi un nouveau flux : ",
 		"everyNHours": "Toutes les N heures",
-		"everyNMinutes": "Toutes les N minutes"
+		"everyNMinutes": "Toutes les N minutes",
+		"auditAdded": "{count, plural, one {# outil ajouté} other {# outils ajoutés}}",
+		"auditFixed": "{count, plural, one {# correction} other {# corrections}}",
+		"auditWrong": "{count, plural, one {# problème restant} other {# problèmes restants}}",
+		"auditUnresolved": "{step} : Nebo n'a pas pu déterminer ses outils",
+		"auditNotHere": "{tool} n'est pas connecté",
+		"auditUsed": "{step} a utilisé {tool}, qui n'était pas dans sa liste"
 	},
 	"christen": {
 		"title": "Donnez un nom à votre premier employé",

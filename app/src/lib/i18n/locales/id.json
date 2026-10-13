@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Jadwal ini lebih spesifik daripada yang bisa ditampung editor sederhana",
 		"askSetupPrompt": "Siapkan alur baru untuk saya: ",
 		"everyNHours": "Setiap N jam",
-		"everyNMinutes": "Setiap N menit"
+		"everyNMinutes": "Setiap N menit",
+		"auditAdded": "{count, plural, other {# alat ditambahkan}}",
+		"auditFixed": "{count, plural, other {# perbaikan}}",
+		"auditWrong": "{count, plural, other {# masalah tersisa}}",
+		"auditUnresolved": "{step}: Nebo tidak dapat menentukan alatnya",
+		"auditNotHere": "{tool} tidak terhubung",
+		"auditUsed": "{step} memakai {tool}, yang tidak ada di daftarnya"
 	},
 	"christen": {
 		"title": "Beri nama karyawan pertama Anda",
