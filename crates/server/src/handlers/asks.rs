@@ -783,6 +783,50 @@ pub(crate) async fn question_raised(state: &AppState, session_key: &str, ask: &P
     changed(state).await;
 }
 
+/// The hub Inbox id a relayed approval is pushed to the phone under.
+pub(crate) fn approval_push_id(request_id: &str) -> String {
+    format!("approval:{request_id}")
+}
+
+/// Whether an approval card was raised by work the owner is not in (the
+/// `relayed` its `approval_request` carries).
+pub(crate) fn approval_is_relayed(card: &tools::ApprovalCard) -> bool {
+    card.event["relayed"] == serde_json::Value::Bool(true)
+}
+
+/// An approval card announced: one raised by work the owner is not in is
+/// pushed to his phone, opening the assistant's chat, where it is relayed.
+/// One from a chat he is in is that chat's card only, as before.
+pub(crate) fn approval_raised(state: &AppState, request_id: &str, card: &tools::ApprovalCard) {
+    let employee = crate::handlers::permissions::employee_name(state, &card.agent_id);
+    if let Some(item) = approval_push_item(request_id, card, &employee) {
+        crate::codes::push_inbox(state, item);
+    }
+}
+
+/// A relayed approval as the owner's hub item: who is waiting, on what, and
+/// a link to the assistant's chat. None for one from a chat he is in.
+pub(crate) fn approval_push_item(request_id: &str, card: &tools::ApprovalCard, employee: &str) -> Option<serde_json::Value> {
+    if !approval_is_relayed(card) {
+        return None;
+    }
+    let id = approval_push_id(request_id);
+    let title = waiting_on_you(employee);
+    let link = tools::owner_notify::link::assistant();
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "approval",
+        title: &title,
+        body: Some(card.summary.trim()),
+        action_url: Some(&link),
+        agent_id: (!card.agent_id.is_empty()).then_some(card.agent_id.as_str()),
+        loud: true,
+    };
+    let mut extra = blocking_fields();
+    extra["approvalId"] = serde_json::json!(request_id);
+    Some(n.hub_item(extra))
+}
+
 /// A parked question was answered, or the run it held ended: its push is
 /// resolved and every pinned bar updated.
 pub(crate) async fn question_settled(state: &AppState, request_id: &str) {
@@ -829,6 +873,27 @@ pub(crate) async fn changed(state: &AppState) {
 pub(crate) mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// A tool approval raised by work the owner is not in is pushed to his
+    /// phone and opens the assistant's chat; one from a chat he is in is
+    /// not pushed, its card is in that chat.
+    #[test]
+    fn a_relayed_approval_is_pushed_and_opens_the_assistants_chat() {
+        let card = |relayed: bool| tools::ApprovalCard {
+            event: serde_json::json!({ "request_id": "t1", "tool": "shell", "relayed": relayed }),
+            session_key: "agent:bk:coworker:assistant".into(),
+            agent_id: "bk".into(),
+            summary: "Bookkeeper wants to run `shell`".into(),
+            since: 1,
+        };
+        let item = approval_push_item("t1", &card(true), "Bookkeeper").expect("pushed");
+        assert_eq!(item["id"], "approval:t1");
+        assert_eq!(item["link"], "/assistant");
+        assert_eq!(item["title"], "Bookkeeper is waiting on you");
+        assert_eq!(item["blocking"], true);
+        assert_eq!(item["approvalId"], "t1");
+        assert!(approval_push_item("t1", &card(false), "Bookkeeper").is_none(), "a direct chat's card stays there");
+    }
 
     pub(crate) fn question(id: &str, prompt: &str, options: &[&str]) -> Waiting {
         let ask = PendingAsk {

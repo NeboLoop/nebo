@@ -121,6 +121,13 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
 /// false when nothing was waiting on that request id.
 pub(crate) async fn answer_approval(state: &AppState, request_id: &str, decision: &str) -> bool {
     let pending = state.approval_channels.lock().await.remove(request_id);
+    // A relayed approval's push is resolved with it.
+    if pending.as_ref().and_then(|p| p.card.as_ref()).is_some_and(crate::handlers::asks::approval_is_relayed) {
+        crate::codes::push_inbox(
+            state,
+            serde_json::json!({ "id": crate::handlers::asks::approval_push_id(request_id), "resolved": true }),
+        );
+    }
     state.hub.broadcast(
         "approval_resolved",
         serde_json::json!({ "request_id": request_id, "decision": decision }),
@@ -1253,18 +1260,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     // assistant's chat (`handlers::asks::relayed`).
                                     "relayed": crate::handlers::asks::relayed(&ask_door, &sid),
                                 }));
-                                record_approval_card(
-                                    &approval_channels,
-                                    &tc.id,
-                                    tools::ApprovalCard {
-                                        event: request.clone(),
-                                        session_key: sid.to_string(),
-                                        agent_id: approvals_agent_id.clone(),
-                                        summary,
-                                        since: chrono::Utc::now().timestamp(),
-                                    },
-                                )
-                                .await;
+                                let card = tools::ApprovalCard {
+                                    event: request.clone(),
+                                    session_key: sid.to_string(),
+                                    agent_id: approvals_agent_id.clone(),
+                                    summary,
+                                    since: chrono::Utc::now().timestamp(),
+                                };
+                                crate::handlers::asks::approval_raised(&ask_state, &tc.id, &card);
+                                record_approval_card(&approval_channels, &tc.id, card).await;
                                 hub.broadcast("approval_request", request);
                                 // Relay the approval into the loop conversation
                                 // (personal contexts only) — otherwise the run

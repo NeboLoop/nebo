@@ -744,18 +744,15 @@ impl OwnerForward<'_> {
             "input": tc.input,
             "relayed": crate::handlers::asks::relayed(self.door, self.session_key),
         }));
-        crate::chat_dispatch::record_approval_card(
-            &self.state.approval_channels,
-            &tc.id,
-            tools::ApprovalCard {
-                event: request.clone(),
-                session_key: self.session_key.to_string(),
-                agent_id: self.agent_id.to_string(),
-                summary: format!("{} wants to run `{}`", self.agent_name, tc.name),
-                since: chrono::Utc::now().timestamp(),
-            },
-        )
-        .await;
+        let card = tools::ApprovalCard {
+            event: request.clone(),
+            session_key: self.session_key.to_string(),
+            agent_id: self.agent_id.to_string(),
+            summary: format!("{} wants to run `{}`", self.agent_name, tc.name),
+            since: chrono::Utc::now().timestamp(),
+        };
+        crate::handlers::asks::approval_raised(self.state, &tc.id, &card);
+        crate::chat_dispatch::record_approval_card(&self.state.approval_channels, &tc.id, card).await;
         self.state.hub.broadcast("approval_request", request);
         self.notify_owner(
             &format!("coworker-approval:{}", tc.id),
