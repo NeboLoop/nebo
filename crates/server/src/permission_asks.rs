@@ -137,11 +137,12 @@ fn with_item<R>(
         .collect();
     // The conversation whose own flow raised the ask: where its card sits,
     // and where a tap on the item opens. An ask no chat raised (a schedule,
-    // a workflow, another employee's run) opens in the Inbox.
+    // a workflow, another employee's run) is relayed to the assistant's
+    // chat, and opens there.
     let (id, title, body) = (inbox_id(&c.id), title(c), body(c));
     let chat_id = c.chat_id.clone();
     let link = if chat_id.is_empty() {
-        tools::owner_notify::link::inbox_item(&id)
+        tools::owner_notify::link::assistant()
     } else {
         tools::owner_notify::link::chat(&c.agent_id, &chat_id)
     };
@@ -315,13 +316,14 @@ mod tests {
 
     /// A tap on an ask, anywhere — the Inbox row here, the hub row, the
     /// phone's push — opens the conversation whose own flow raised it, where
-    /// its card waits; an ask no chat raised opens in the Inbox, never in a
-    /// chat. One link, carried by the row and the hub copy alike.
+    /// its card waits; an ask no chat raised is relayed to the assistant's
+    /// chat and opens there. One link, carried by the row and the hub copy
+    /// alike.
     #[test]
-    fn an_ask_opens_the_chat_that_raised_it_or_the_inbox() {
+    fn an_ask_opens_the_chat_that_raised_it_or_the_assistants() {
         let mut c = card(true, true);
         let (link, item) = with_item(&c, |n, extra| (n.link(), n.hub_item(extra)));
-        assert_eq!(link, "/inbox?m=permission-ask%3Aa1");
+        assert_eq!(link, "/assistant");
         assert_eq!(item["link"], link);
         assert_eq!(item["chatId"], "", "no chat to open");
 
@@ -340,7 +342,8 @@ mod tests {
     /// while he was in Flip-Flap's chat. A blocking ask's item says who is
     /// waiting on him and the short question, carries its three answers for
     /// the lock screen, asks for the time-sensitive level, and opens the
-    /// Inbox item (no chat raised it), never the chat he is in.
+    /// assistant's chat, where it is relayed (no chat raised it), never
+    /// Flip-Flap's chat.
     #[test]
     fn a_blocking_ask_says_who_is_waiting_and_answers_from_the_notification() {
         let mut c = card(true, true);
@@ -358,7 +361,7 @@ mod tests {
         let labels: Vec<&str> =
             item["actions"]["buttons"].as_array().unwrap().iter().map(|b| b["label"].as_str().unwrap()).collect();
         assert_eq!(labels, ["Allow always", "This once", "No"]);
-        assert_eq!(link, "/inbox?m=permission-ask%3Aa1");
+        assert_eq!(link, "/assistant");
 
         // One nothing is parked on keeps its card's words and its burst.
         let (_, quiet) = with_item(&card(true, true), |n, extra| (n.link(), n.hub_item(extra)));

@@ -70,6 +70,27 @@ pub struct WaitingAsk {
     pub blocking: bool,
     /// Unix seconds when it started waiting.
     pub created_at: i64,
+    /// The owner is not in the conversation that raised it: it is relayed
+    /// to the assistant's chat, where its card is shown and answered, and
+    /// where its notification opens ([`relayed`]).
+    pub relayed: bool,
+    /// A parked question's card, exactly as its own conversation shows it
+    /// (a connect card names the employee it connects): the assistant's
+    /// chat shows the same card and answers it on the same path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widgets: Option<serde_json::Value>,
+}
+
+/// Whether something raised through `door` in `session_key` is relayed to
+/// the assistant's chat. A card shows where the owner asked: one raised by
+/// the owner's own conversation (typed or spoken) stays in that
+/// conversation, with nothing relayed and no notice pulling him away.
+/// Anything else (a colleague's hand-off, a schedule, a background run, a
+/// request the owner passed on through the assistant) comes to the
+/// assistant. The same rule decides where a permission ask's card sits
+/// (`originating_chat`). The assistant only relays: it never answers.
+pub(crate) fn relayed(door: &types::permissions::Door, session_key: &str) -> bool {
+    agent::harness::permissions::ask::originating_chat(door, session_key).is_none()
 }
 
 /// The waiting asks, oldest first.
@@ -170,6 +191,8 @@ fn from_parked(state: &AppState, session_key: &str, ask: &PendingAsk) -> Waiting
             answerable: shape.answerable,
             blocking: true,
             created_at: ask.created_at,
+            relayed: ask.relayed,
+            widgets: ask.widgets.clone(),
         },
         answers: Answers::Question,
     }
@@ -280,6 +303,10 @@ fn permission_waiting(c: &PermissionAskCard) -> Waiting {
             answerable: true,
             blocking: c.blocking,
             created_at: c.created_at,
+            // A permission ask's card sits in the conversation that raised
+            // it; none raised it when it has no chat.
+            relayed: c.chat_id.is_empty(),
+            widgets: None,
         },
         answers: Answers::Permission(offered.into_iter().map(|(_, a)| a).collect()),
     }
@@ -720,13 +747,18 @@ pub(crate) fn blocking_fields() -> serde_json::Value {
 }
 
 /// A parked question as the owner's hub item, which pushes it to his phone:
-/// who is waiting, on what, and a link into the conversation where it waits
-/// (the pinned bar there answers it). `askId` names the ask. A parked
-/// question always blocks its run.
+/// who is waiting, on what, and a link to where its card is: the
+/// conversation where the owner asked, or the assistant's chat for one
+/// relayed there. `askId` names the ask. A parked question always blocks
+/// its run.
 pub(crate) fn push_item(w: &WaitingAsk) -> serde_json::Value {
     let id = push_id(&w.id);
     let title = waiting_on_you(&w.employee);
-    let link = tools::owner_notify::link::chat(&w.agent_id, &w.chat_id);
+    let link = if w.relayed {
+        tools::owner_notify::link::assistant()
+    } else {
+        tools::owner_notify::link::chat(&w.agent_id, &w.chat_id)
+    };
     let n = tools::owner_notify::OwnerNotification {
         id: &id,
         kind: "question_ask",
@@ -806,6 +838,7 @@ pub(crate) mod tests {
                 serde_json::json!([{ "type": "options", "multiSelect": false, "options": options }]),
             ),
             created_at: 100,
+            relayed: false,
         };
         let shape = parked_shape(&ask);
         Waiting {
@@ -823,6 +856,7 @@ pub(crate) mod tests {
                 answerable: shape.answerable,
                 blocking: true,
                 created_at: 100,
+                relayed: false, widgets: None,
             },
             answers: Answers::Question,
         }
@@ -1001,6 +1035,7 @@ pub(crate) mod tests {
                 answerable: true,
                 blocking: false,
                 created_at: 0,
+                relayed: false, widgets: None,
             },
             answers: Answers::Permission(vec![Answer::AllowAlways, Answer::ThisOnce, Answer::No]),
         };
@@ -1074,7 +1109,7 @@ pub(crate) mod tests {
 
     fn from_parked_shape_test_card(widgets: serde_json::Value) -> Waiting {
         let mut w = question("q2", "Install Shopify?", &[]);
-        let shape = parked_shape(&PendingAsk { request_id: "q2".into(), prompt: "Install Shopify?".into(), widgets: Some(widgets), created_at: 100 });
+        let shape = parked_shape(&PendingAsk { request_id: "q2".into(), prompt: "Install Shopify?".into(), widgets: Some(widgets), created_at: 100, relayed: false });
         w.card.options = shape.options;
         w.card.free_text = shape.free_text;
         w.card.answerable = shape.answerable;
@@ -1139,6 +1174,7 @@ pub(crate) mod tests {
                 "answers": ["this_once", "allow_always", "no"] }]),
             ),
             created_at: 1,
+            relayed: false,
         };
         let shape = parked_shape(&linked);
         assert_eq!(shape.options, ["Allow once", "Always allow", "Deny"]);
@@ -1149,6 +1185,7 @@ pub(crate) mod tests {
             prompt: "Install QuickBooks".into(),
             widgets: Some(serde_json::json!([{ "type": "install_plugin", "name": "QuickBooks" }])),
             created_at: 1,
+            relayed: false,
         };
         let shape = parked_shape(&install);
         assert!(!shape.answerable && shape.options.is_empty());

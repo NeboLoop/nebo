@@ -41,3 +41,20 @@ export async function answerWaiting(ask: WaitingAsk, i: number): Promise<void> {
 export function askPath(ask: WaitingAsk): string {
   return ask.chatId ? `/${ask.agentId}/threads/${encodeURIComponent(ask.chatId)}` : `/${ask.agentId}`;
 }
+
+/** The assistant's chat: the owner's front door. What waits on him from
+ *  work he is not in (a colleague's hand-off, a schedule, a background run)
+ *  is relayed there, and its notice opens there. The server's
+ *  `owner_notify::link::assistant`. */
+export const ASSISTANT_PATH = '/assistant';
+
+/** Whether `pathname` is the assistant's chat. */
+export function inAssistantChat(pathname: string): boolean {
+  return pathname === ASSISTANT_PATH || pathname.startsWith(ASSISTANT_PATH + '/');
+}
+
+/** The asks relayed to the assistant's chat, oldest first: those raised by
+ *  work the owner is not in. A card from a chat he is in stays there. */
+export function relayedAsks(asks: WaitingAsk[]): WaitingAsk[] {
+  return asks.filter((a) => a.relayed);
+}

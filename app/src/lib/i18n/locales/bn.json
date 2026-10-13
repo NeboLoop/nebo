@@ -279,6 +279,8 @@
 		"waitingForYou": "আপনার অপেক্ষায়",
 		"waitingOnYou": "{name} আপনার জন্য অপেক্ষা করছে",
 		"seeConversation": "কথোপকথন দেখুন",
+		"relayWantsToConnect": "{name} {plugin} সংযুক্ত করতে চায়",
+		"relayViewIn": "{name}-এ দেখুন",
 		"waitingOnYourAnswer": "{name} আপনার উত্তরের অপেক্ষায়:",
 		"waitingOpen": "খুলুন",
 		"waitingAsksLabel": "আপনার উত্তরের অপেক্ষায়",

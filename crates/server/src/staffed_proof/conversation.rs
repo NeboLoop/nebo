@@ -2267,6 +2267,7 @@ async fn an_in_app_card_is_skipped_by_the_owners_spoken_skip() {
         prompt: "I need your Shopify login connected to continue.".into(),
         widgets: Some(json!([{ "type": "connect_account", "plugin": "shopify", "label": "Shopify login" }])),
         created_at: 100,
+        relayed: false,
     };
     assert!(nebo.state.run_registry.park_ask(KEY, parked).await);
     let say = |words: &'static str| {

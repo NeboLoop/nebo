@@ -339,6 +339,7 @@ async fn the_point_person_sees_what_everyone_is_doing() {
         prompt: "Text Dana at the new number?".into(),
         widgets: None,
         created_at: chrono::Utc::now().timestamp(),
+        relayed: false,
     };
     assert!(nebo.state.run_registry.park_ask(&desk_key, parked).await);
 

@@ -897,12 +897,13 @@ async fn a_workflow_ask_never_lands_in_the_chat_the_owner_is_in() {
     assert!(!ok && said.contains("never on this call"), "{said}");
     assert_eq!(nebo.store().get_permission_ask(&ask_id).unwrap().unwrap().status, "open", "Flip-Flap decided nothing");
 
-    // Its Inbox item: who is waiting on him, opening in the Inbox. The app's
-    // loud signal is its blocking notice, so the row itself is quiet.
+    // Its Inbox item: who is waiting on him, opening the assistant's chat,
+    // where it is relayed. The app's loud signal is its blocking notice, so
+    // the row itself is quiet.
     let user = nebo.store().ensure_local_user_id().unwrap();
     let inbox = nebo.store().get_notification(&format!("permission-ask:{ask_id}"), &user).unwrap().expect("the Inbox has it");
     assert!(inbox.title.ends_with(" is waiting on you"), "{}", inbox.title);
-    assert_eq!(inbox.action_url.as_deref(), Some(format!("/inbox?m=permission-ask%3A{ask_id}").as_str()));
+    assert_eq!(inbox.action_url.as_deref(), Some("/assistant"));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut quiet = false;
     while tokio::time::Instant::now() < deadline && !quiet {
@@ -957,7 +958,7 @@ async fn a_coworker_ask_never_lands_in_the_chat_the_owner_is_in() {
         "Post the draft entry to the offset account?",
         Some(json!([{ "type": "options", "options": ["Yes", "No"] }])),
     );
-    let ask = crate::chat_dispatch::announce_ask(state, &key, &event).await;
+    let ask = crate::chat_dispatch::announce_ask(state, &key, &types::permissions::Door::Coworker { from: "controller".into() }, &event).await;
     assert_eq!(ask.request_id, "req-bk");
     let waiting = crate::handlers::asks::waiting(state, None).await;
     let w = waiting.iter().find(|w| w.card.id == "req-bk").expect("it waits on the owner");
@@ -986,3 +987,121 @@ async fn a_coworker_ask_never_lands_in_the_chat_the_owner_is_in() {
     drop(handle);
 }
 
+/// Registers a run in `key` for `agent` and parks it on `widgets` through
+/// the one announce, via `door`. Returns the run's handle and the receiver
+/// its answer reaches.
+async fn park_card(
+    nebo: &Nebo,
+    agent: &str,
+    key: &str,
+    door: &Door,
+    request_id: &str,
+    prompt: &str,
+    widgets: Value,
+) -> (crate::run_registry::RunHandle, tokio::sync::oneshot::Receiver<String>) {
+    let state = &nebo.state;
+    let handle = state
+        .run_registry
+        .register(crate::run_registry::RegisterParams {
+            session_key: key.to_string(),
+            entity_id: agent.to_string(),
+            entity_name: agent.to_string(),
+            origin: "comm".into(),
+            channel: "coworker".into(),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            parent_run_id: None,
+        })
+        .await;
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    state.ask_channels.lock().await.insert(request_id.into(), tx);
+    let event = ai::StreamEvent::ask_request(request_id, prompt, Some(widgets));
+    crate::chat_dispatch::announce_ask(state, key, door, &event).await;
+    (handle, rx)
+}
+
+/// The owner asked the assistant to have the Bookkeeper reconcile the
+/// books; the Bookkeeper's turn (a request passed on through the assistant)
+/// parks on QuickBooks' connect card. The card is relayed to the
+/// assistant's chat and its notification opens there, and it is the
+/// Bookkeeper's own card: the account it connects is the Bookkeeper's,
+/// never the assistant's (live 2026-10-05: a QuickBooks card connected
+/// Chief instead of the Bookkeeper). The owner's Connect in the assistant's
+/// chat answers the Bookkeeper's run on the same path. The assistant's
+/// conversation gets not a word of it: it relays, it never answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_card_relayed_through_the_assistant_connects_the_asking_employee() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let bk = format!("bk-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let key = format!("agent:{bk}:coworker:assistant");
+    let owner = owner_elsewhere(&nebo);
+    let card = json!([{
+        "type": "connect_account", "plugin": "books", "agentId": bk,
+        "label": "Example Books account", "employee": "Bookkeeper",
+    }]);
+    let (handle, rx) = park_card(
+        &nebo,
+        &bk,
+        &key,
+        &Door::Coworker { from: "assistant".into() },
+        "req-connect",
+        "I need Bookkeeper's Example Books account connected to continue.",
+        card,
+    )
+    .await;
+
+    let waiting = crate::handlers::asks::waiting(state, None).await;
+    let w = &waiting.iter().find(|w| w.card.id == "req-connect").expect("it waits on the owner").card;
+    assert!(w.relayed, "work the owner is not in comes to the assistant");
+    assert_eq!(w.agent_id, bk, "the employee who asked");
+    let widget = &w.widgets.as_ref().expect("the card itself is relayed")[0];
+    assert_eq!(widget["type"], "connect_account");
+    assert_eq!(widget["agentId"], bk.as_str(), "the card connects the employee who asked, never the assistant");
+    assert_eq!(widget["employee"], "Bookkeeper");
+    assert_eq!(
+        crate::handlers::asks::push_item(w)["link"],
+        tools::owner_notify::link::assistant(),
+        "its notification opens the assistant's chat"
+    );
+
+    // Connect in the assistant's chat answers the Bookkeeper's run.
+    assert!(crate::chat_dispatch::answer_ask(state, "req-connect", "connected".into()).await);
+    let got = tokio::time::timeout(Duration::from_secs(5), rx).await.expect("the run hears it").unwrap();
+    assert_eq!(got, "connected");
+    owner.chats_untouched(&nebo);
+    drop(handle);
+}
+
+/// A card shows where the owner asked: one raised in his own chat with an
+/// employee (typed or spoken) stays in that chat. It is not relayed to the
+/// assistant, and its notification opens that chat, never pulling him away.
+/// The same card raised by work he is not in (a schedule, a heartbeat, a
+/// colleague's hand-off, a team seat) is relayed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_card_raised_in_a_direct_owner_employee_chat_is_not_relayed() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let bk = format!("bk-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let chat = uuid::Uuid::new_v4().to_string();
+    nebo.store().create_chat(&chat, "Books").unwrap();
+    let key = format!("agent:{bk}:thread:{chat}");
+    let card = json!([{ "type": "install_plugin", "plugin": "books", "name": "Example Books", "code": "PLUG-BOOKS" }]);
+    let (handle, _rx) =
+        park_card(&nebo, &bk, &key, &Door::Chat, "req-direct", "Install Example Books on the card.", card).await;
+    let waiting = crate::handlers::asks::waiting(state, None).await;
+    let w = &waiting.iter().find(|w| w.card.id == "req-direct").expect("it waits on the owner").card;
+    assert!(!w.relayed, "the owner asked in this chat: the card stays here");
+    let link = crate::handlers::asks::push_item(w)["link"].as_str().unwrap().to_string();
+    assert_ne!(link, tools::owner_notify::link::assistant(), "nothing pulls him to the assistant");
+    assert!(link.starts_with(&format!("/{bk}")), "{link}");
+    drop(handle);
+
+    // The rule, door by door.
+    use crate::handlers::asks::relayed;
+    assert!(!relayed(&Door::Voice, &key), "a call in the chat is the owner's own conversation");
+    for door in [Door::Schedule, Door::Heartbeat, Door::Workflow, Door::LocalApi, Door::Coworker { from: "chief".into() }] {
+        assert!(relayed(&door, &key), "{} is work the owner is not in", door.label());
+    }
+    assert!(relayed(&Door::Chat, &format!("agent:{bk}:coworker:team:t1")), "a team seat");
+    assert!(relayed(&Door::Chat, &format!("subagent:{key}:task-1")), "a helper");
+}

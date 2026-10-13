@@ -2490,6 +2490,26 @@ mod tests {
         assert_eq!(p.agent_id, "agent-1");
     }
 
+    /// A per-employee connect card relayed to the assistant's chat signs in
+    /// the employee who asked: the login the card starts there carries the
+    /// card's own `agentId` (the request body the desktop and phone cards
+    /// send), so the account lands in the Bookkeeper's profile, never the
+    /// assistant's (live 2026-10-05).
+    #[test]
+    fn a_relayed_connect_card_signs_in_the_asking_employee() {
+        let relayed = serde_json::json!({
+            "id": "req-1", "kind": "question", "agentId": "bk", "employee": "Bookkeeper", "relayed": true,
+            "widgets": [{ "type": "connect_account", "plugin": "books", "agentId": "bk", "employee": "Bookkeeper" }],
+        });
+        let card = &relayed["widgets"][0];
+        let body = serde_json::json!({ "agentId": card["agentId"], "accountLabel": "Primary" });
+        let req: AccountLoginRequest = serde_json::from_value(body).unwrap();
+        let p = login_profile(Some("BOOKS_CONFIG_DIR".into()), "books", req).expect("profile");
+        assert_eq!(p.agent_id, "bk");
+        assert_eq!(p.config_dir, plugin_profile_dir("bk", "books", "Primary").to_string_lossy());
+        assert_ne!(p.config_dir, plugin_profile_dir("assistant", "books", "Primary").to_string_lossy());
+    }
+
     /// A credential field reads as words, with the plugin's own prefix gone
     /// and secrets masked — unless the manifest labels it itself.
     #[test]

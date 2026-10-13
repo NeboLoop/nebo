@@ -21,14 +21,13 @@ import {
 	closeAsk,
 	newBlockingAsks,
 	seedBlockingAsks,
-	askHome,
 	answerById,
 	inAsksChat
 } from './blockingAsks';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 
 // Live 2026-10-02: Bookkeeper's workflow step parked on the owner's OK while
-// he was in Flip-Flap's chat.
+// he was in Flip-Flap's chat. Work he is not in: relayed to the assistant.
 const bookkeeper: WaitingAsk = {
 	id: 'ask-bk',
 	kind: 'permission',
@@ -42,9 +41,12 @@ const bookkeeper: WaitingAsk = {
 	freeText: false,
 	answerable: true,
 	blocking: true,
-	createdAt: 1
+	createdAt: 1,
+	relayed: true
 };
 const quiet: WaitingAsk = { ...bookkeeper, id: 'ask-quiet', blocking: false };
+// The owner asked the Bookkeeper in its own chat: the card stays there.
+const direct: WaitingAsk = { ...bookkeeper, id: 'ask-direct', chatId: 'c-9', relayed: false };
 
 describe('blocking asks', () => {
 	beforeEach(() => {
@@ -52,7 +54,7 @@ describe('blocking asks', () => {
 		answered.length = 0;
 		navigated.length = 0;
 		closeAsk();
-		waitingAsks.set([bookkeeper, quiet]);
+		waitingAsks.set([bookkeeper, quiet, direct]);
 	});
 
 	it('tells of each new blocking ask once, and never of one nothing waits on', () => {
@@ -67,11 +69,17 @@ describe('blocking asks', () => {
 		expect(newBlockingAsks([backlog])).toEqual([]);
 	});
 
-	it('a click opens the card over the current screen, with no navigation', () => {
-		openAsk('ask-bk');
-		expect(get(openAskCard)).toBe('ask-bk');
+	it("a click on an ask from a chat the owner asked in opens its card over the current screen, with no navigation", () => {
+		openAsk('ask-direct');
+		expect(get(openAskCard)).toBe('ask-direct');
 		expect(navigated).toEqual([]);
 		closeAsk();
+		expect(get(openAskCard)).toBeNull();
+	});
+
+	it("a click on a relayed ask opens the assistant's chat, where its card is", () => {
+		openAsk('ask-bk');
+		expect(navigated).toEqual(['/assistant']);
 		expect(get(openAskCard)).toBeNull();
 	});
 
@@ -89,16 +97,18 @@ describe('blocking asks', () => {
 	});
 
 	it('is in its chat only on that chat, never on another or with no chat', () => {
-		const inChat = { ...bookkeeper, chatId: 'c-9' };
-		expect(inAsksChat(inChat, '/bookkeeper/threads/c-9')).toBe(true);
-		expect(inAsksChat(inChat, '/bookkeeper/threads/c-9/files')).toBe(true);
-		expect(inAsksChat(inChat, '/bookkeeper/threads/c-90')).toBe(false);
-		expect(inAsksChat(inChat, '/flip-flap/threads/c-1')).toBe(false);
-		expect(inAsksChat(bookkeeper, '/bookkeeper')).toBe(false);
+		expect(inAsksChat(direct, '/bookkeeper/threads/c-9')).toBe(true);
+		expect(inAsksChat(direct, '/bookkeeper/threads/c-9/files')).toBe(true);
+		expect(inAsksChat(direct, '/bookkeeper/threads/c-90')).toBe(false);
+		expect(inAsksChat(direct, '/flip-flap/threads/c-1')).toBe(false);
+		expect(inAsksChat(direct, '/assistant')).toBe(false);
+		expect(inAsksChat({ ...direct, chatId: '' }, '/bookkeeper')).toBe(false);
 	});
 
-	it('See conversation goes to the chat it waits in, or its Inbox item when no chat raised it', () => {
-		expect(askHome(bookkeeper)).toBe('/inbox?m=permission-ask%3Aask-bk');
-		expect(askHome({ ...bookkeeper, chatId: 'c-9' })).toBe('/bookkeeper/threads/c-9');
+	it("a relayed ask's card is in the assistant's chat, and only there", () => {
+		expect(inAsksChat(bookkeeper, '/assistant')).toBe(true);
+		expect(inAsksChat(bookkeeper, '/assistant/threads/a-1')).toBe(true);
+		expect(inAsksChat(bookkeeper, '/assistants')).toBe(false);
+		expect(inAsksChat(bookkeeper, '/bookkeeper')).toBe(false);
 	});
 });

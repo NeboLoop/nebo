@@ -29,12 +29,21 @@ use crate::state::AppState;
 /// app renders live is broadcast. Returns the recorded question.
 /// It is then surfaced wherever the owner is (`handlers::asks`): his live
 /// call is told, his phone is pushed a link to it, every pinned bar shows it.
-pub(crate) async fn announce_ask(state: &AppState, session_key: &str, event: &ai::StreamEvent) -> PendingAsk {
+/// `door` is the entry the run came through: with the session, it says
+/// whether the owner is in the conversation that raised the question, or it
+/// is relayed to the assistant's chat ([`crate::handlers::asks::relayed`]).
+pub(crate) async fn announce_ask(
+    state: &AppState,
+    session_key: &str,
+    door: &types::permissions::Door,
+    event: &ai::StreamEvent,
+) -> PendingAsk {
     let ask = PendingAsk {
         request_id: event.error.clone().unwrap_or_default(),
         prompt: event.text.clone(),
         widgets: event.widgets.clone(),
         created_at: chrono::Utc::now().timestamp(),
+        relayed: crate::handlers::asks::relayed(door, session_key),
     };
     if !state.run_registry.park_ask(session_key, ask.clone()).await {
         warn!(session_key, "ask request on a session with no registered run: the card will not survive a reload");
@@ -681,6 +690,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
     let ask_state = state.clone();
+    let ask_door = config.door.clone();
     let approval_channels = state.approval_channels.clone();
     let live_calls = state.live_calls.clone();
     let approvals_agent_id = config.agent_id.clone();
@@ -1239,6 +1249,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "input": tc.input,
                                     // Present when several gated calls share this card.
                                     "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
+                                    // Not raised in a conversation the owner is in: shown in the
+                                    // assistant's chat (`handlers::asks::relayed`).
+                                    "relayed": crate::handlers::asks::relayed(&ask_door, &sid),
                                 }));
                                 record_approval_card(
                                     &approval_channels,
@@ -1302,7 +1315,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                         }
                         StreamEventType::AskRequest => {
-                            let ask = announce_ask(&ask_state, &sid, &event).await;
+                            let ask = announce_ask(&ask_state, &sid, &ask_door, &event).await;
                             let request_id = ask.request_id.as_str();
                             // Forward the question to the loop/channel
                             // conversation — without this the run blocks on a
