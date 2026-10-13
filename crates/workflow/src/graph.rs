@@ -708,6 +708,8 @@ async fn run_command<'a>(
     );
     tool_ctx.door = types::permissions::Door::Workflow;
     tool_ctx.cannot_wait = true;
+    // The next step parses the result: it comes back whole.
+    tool_ctx.whole_result = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     // Owner-authored deterministic step: plugin auth env rides along so
@@ -830,6 +832,8 @@ async fn run_operation<'a>(
     );
     tool_ctx.door = types::permissions::Door::Workflow;
     tool_ctx.cannot_wait = true;
+    // The next step parses the result: it comes back whole.
+    tool_ctx.whole_result = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     let tool_ctx = tool_ctx;
@@ -1120,6 +1124,8 @@ async fn run_http<'a>(
     );
     tool_ctx.door = types::permissions::Door::Workflow;
     tool_ctx.cannot_wait = true;
+    // The next step parses the result: it comes back whole.
+    tool_ctx.whole_result = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     let tool_ctx = tool_ctx;
@@ -4994,6 +5000,57 @@ mod walk_tests {
         let def = one_step("match", "command", serde_json::json!({"command": "jq length", "stdin": "nodes.nothing"}));
         let (result, _, _) = run_with_tools(&def, serde_json::json!({}), &[tool]).await;
         assert!(matches!(result, Err(WorkflowError::ActivityFailed(_, m)) if m.contains("names no data")));
+    }
+
+    /// A command step asks for its result whole (the next step parses it,
+    /// so it is never saved and previewed), and a 200k-char list it prints
+    /// reaches the next step intact.
+    #[tokio::test]
+    async fn a_command_steps_big_output_reaches_the_next_step_whole() {
+        /// Each call: whether it asked for its result whole, and its stdin.
+        type Calls = Arc<StdMutex<Vec<(bool, Option<String>)>>>;
+        struct Lister(Calls);
+        impl DynTool for Lister {
+            fn name(&self) -> &str {
+                "run_command"
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>> {
+                let stdin = ctx.stdin.as_ref().map(|b| String::from_utf8_lossy(b).into_owned());
+                self.0.lock().unwrap().push((ctx.whole_result, stdin));
+                let rows: Vec<serde_json::Value> = (0..10_000).map(|i| serde_json::json!({"id": i, "sku": format!("sku-{i:05}")})).collect();
+                Box::pin(async move { tools::ToolResult::ok(serde_json::Value::Array(rows).to_string()) })
+            }
+        }
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"list","type":"command","params":{"command":"list-skus"}},
+                {"id":"count","type":"command","params":{"command":"jq length","stdin":"nodes.list"}}],
+            "connections":[
+                {"from":"__trigger__","to":"list"},
+                {"from":"list","to":"count"},
+                {"from":"count","to":"__emit__"}]
+        }"#;
+        let (result, _, _) = run_with_tools(def, serde_json::json!({}), &[Box::new(Lister(seen.clone()))]).await;
+        result.expect("run ok");
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().all(|(whole, _)| *whole), "every command step asks for its result whole");
+        let piped = seen[1].1.as_deref().expect("the list on stdin");
+        assert!(piped.len() >= 200_000, "{}", piped.len());
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(piped).expect("intact JSON");
+        assert_eq!(parsed.len(), 10_000);
+        assert_eq!(parsed[9_999]["sku"], "sku-09999");
     }
 }
 

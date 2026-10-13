@@ -244,6 +244,7 @@ impl RunToolScope<'_> {
             session_id: session_id.to_string(),
             user_id: memory_user_id.clone(),
             trusted_plugin_env: false,
+            whole_result: false,
             handoff_depth,
             grant: Some(grant.clone()),
             door: door.clone(),

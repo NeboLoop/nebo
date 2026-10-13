@@ -390,6 +390,12 @@ pub struct ToolContext {
     /// plugin credential to the model. Not forgeable from tool input: it
     /// lives on the context, not the payload.
     pub trusted_plugin_env: bool,
+    /// Engine-set ONLY (a workflow's command, http and operation steps): a
+    /// program reads this call's result, not a model — the next step
+    /// parses it — so it comes back whole: never saved to a file and
+    /// previewed (`result_shape`), never paged. A workflow never silently
+    /// loses data. Not forgeable from tool input.
+    pub whole_result: bool,
     /// Engine-stamped provenance snapshot of the run at this iteration — the
     /// classes of untrusted content the run has touched so far (accumulated by
     /// the runner from the static tool→class table). Read-only for tools; the
