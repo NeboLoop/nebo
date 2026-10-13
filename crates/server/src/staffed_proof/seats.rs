@@ -653,6 +653,142 @@ async fn every_claude_code_hire_is_an_employee_of_its_own() {
     }
 }
 
+/// An employee whose coding agent works on this computer under another bot
+/// (a nebo-link of this computer's, unlinked since) is hosted by Nebo itself
+/// at the next look: the same employee, name and chats, its agent the same
+/// id, kind and folder, and its chat bound to the same session, which its
+/// next message reopens through Nebo's host. One whose bot is online
+/// elsewhere, or whose folder is not on this computer, is left as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employee_whose_agent_works_here_is_hosted_here() {
+    const BOT: &str = "5e1f0000-0000-4000-8000-00000000c0d4";
+    const UNLINKED: &str = "a0b20000-0000-4000-8000-00000000c0d4";
+    const ELSEWHERE: &str = "e15e0000-0000-4000-8000-00000000c0d4";
+    let nebo = session().await;
+    let root = tempfile::tempdir().unwrap();
+    let told = root.path().join("told.jsonl");
+    let host = claude_code_here(BOT, root.path(), &told);
+    let mut state = nebo.state.clone();
+    state.local_host = Some(host.clone());
+    state.linked_apps = Arc::new(Default::default());
+    let store = nebo.store().clone();
+    let folder_of = |agent: &str| {
+        let folder = root.path().join("home").join("NeboAI").join(agent);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder.canonicalize().unwrap()
+    };
+    let employee = |name: &str, brain: &str| {
+        let id = uuid::Uuid::new_v4().to_string();
+        store.create_agent(&id, Some("linked"), name, "", &format!("---\nname: {name:?}\n---\n"), "{}", None, None).unwrap();
+        store.upsert_entity_config("agent", &id, &json!({ "modelPreference": brain })).unwrap();
+        id
+    };
+    let chat_with = |employee: &str, agent: &str, session: &str, folder: Option<&Path>| {
+        let chat = uuid::Uuid::new_v4().to_string();
+        store.create_chat_for_session(&chat, &format!("agent:{employee}:thread:{chat}"), "Proof", None).unwrap();
+        store.set_chat_linked_session(&chat, agent, session).unwrap();
+        if let Some(folder) = folder {
+            store.set_chat_linked_folder(&chat, &folder.to_string_lossy()).unwrap();
+        }
+        for (n, (role, text)) in [("user", "Ship the login page"), ("assistant", "Shipped it.")].into_iter().enumerate() {
+            store.create_chat_message(&format!("{chat}-{n}"), &chat, role, text, None).unwrap();
+        }
+        chat
+    };
+
+    // App Dev's Claude Code worked here under this computer's nebo-link,
+    // in its folder, its conversation a session of its own.
+    let folder = folder_of("claude-code-5");
+    let app_dev = employee("Proof App Dev", &format!("linked/{UNLINKED}/claude-code-5"));
+    let chat = chat_with(&app_dev, "claude-code-5", "sess-from-before", Some(&folder));
+    // Remote Dev's runs on another computer, whose bot is online; its
+    // folder's name happens to be here too.
+    let remote_folder = folder_of("claude-code-2");
+    let remote_dev = employee("Proof Remote Dev", &format!("linked/{ELSEWHERE}/claude-code-2"));
+    chat_with(&remote_dev, "claude-code-2", "sess-remote", Some(&remote_folder));
+    // Away Dev's folder is not on this computer.
+    let away_dev = employee("Proof Away Dev", &format!("linked/{UNLINKED}/claude-code-9"));
+    chat_with(&away_dev, "claude-code-9", "sess-away", Some(Path::new("/nonexistent/NeboAI/claude-code-9")));
+
+    let bot = |id: &str, online: bool| {
+        let bot = comm::api_types::ManagedBot {
+            id: id.into(),
+            name: "Mac · Claude Code".into(),
+            online,
+            runtime: "claude-code".into(),
+            chat: true,
+            ..Default::default()
+        };
+        (bot, comm::api_types::LinkedRoster::default())
+    };
+    let links = [bot(UNLINKED, false), bot(ELSEWHERE, true)];
+    let hosted = crate::linked_apps::host_here(&state, &links).await;
+    assert_eq!(hosted, [app_dev.clone()], "only the employee whose agent works here");
+
+    // The same employee, now Nebo's: its agent the same id, kind and folder.
+    let brain = |id: &str| store.get_entity_config("agent", id).unwrap().and_then(|c| c.model_preference).unwrap();
+    assert_eq!(brain(&app_dev), format!("linked/{BOT}/claude-code-5"));
+    assert_eq!(nebo.agent(&app_dev).name, "Proof App Dev");
+    let agents = host.agents();
+    assert_eq!(agents.len(), 1, "{agents:?}");
+    assert_eq!(
+        (agents[0].id.as_str(), agents[0].agent, agents[0].acp.workdir.as_path()),
+        ("claude-code-5", nebo_runtimes::acp::Agent::ClaudeCode, folder.as_path())
+    );
+    // The others are left as they are.
+    assert_eq!(brain(&remote_dev), format!("linked/{ELSEWHERE}/claude-code-2"));
+    assert_eq!(brain(&away_dev), format!("linked/{UNLINKED}/claude-code-9"));
+
+    // Its chat keeps its history and its session.
+    let kept = store.get_chat(&chat).unwrap().unwrap();
+    assert_eq!(
+        (kept.linked_chat_id.as_deref(), kept.linked_agent_id.as_deref()),
+        (Some("sess-from-before"), Some("claude-code-5"))
+    );
+    let history: Vec<(String, String)> =
+        store.get_chat_messages(&chat).unwrap().into_iter().map(|m| (m.role, m.content)).collect();
+    assert_eq!(
+        history,
+        [("user".to_owned(), "Ship the login page".to_owned()), ("assistant".to_owned(), "Shipped it.".to_owned())]
+    );
+
+    // Its next message reopens that session through Nebo's host, in its
+    // folder, and goes on in it.
+    let provider = ai::LinkedProvider::new(
+        ai::Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) },
+        store.clone(),
+        Some(host.clone()),
+        "Nebo proof",
+        0,
+    );
+    let req = ai::ChatRequest {
+        messages: vec![ai::Message { role: "user".into(), content: "How many files are left?".into(), ..Default::default() }],
+        model: format!("{BOT}/claude-code-5"),
+        chat_id: chat.clone(),
+        ..ai::ChatRequest::new(ai::RequestTrace { agent_id: app_dev.clone(), ..ai::RequestTrace::new("agent_turn") })
+    };
+    let mut rx = ai::Provider::stream(&provider, &req).await.unwrap();
+    let mut said = String::new();
+    while let Some(e) = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.expect("the turn ended") {
+        said.push_str(&e.text);
+    }
+    assert_eq!(said, "ANSWER: 3 files left.");
+    let told: Vec<Value> = std::fs::read_to_string(&told).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(told.iter().all(|t| t.get("new").is_none()), "no new session: {told:?}");
+    assert!(told.iter().any(|t| t["load"] == "sess-from-before" && t["cwd"] == folder.to_string_lossy().as_ref()), "{told:?}");
+    assert!(told.iter().any(|t| t["session"] == "sess-from-before" && t.get("prompt").is_some()), "{told:?}");
+    assert_eq!(store.get_chat(&chat).unwrap().unwrap().linked_chat_id.as_deref(), Some("sess-from-before"));
+
+    // Hosted here now, it is left as it is at the next look.
+    assert!(crate::linked_apps::host_here(&state, &links).await.is_empty());
+    assert_eq!(host.agents().len(), 1);
+
+    host.shutdown(Duration::from_secs(5)).await;
+    for id in [&app_dev, &remote_dev, &away_dev] {
+        let _ = nebo.delete(&format!("/agents/{id}")).await;
+    }
+}
+
 /// The hire list is known before it is asked: a listing answers at once
 /// with what was last found on the owner's computers and looks again behind
 /// it; an app found meanwhile reaches every open list in ONE
