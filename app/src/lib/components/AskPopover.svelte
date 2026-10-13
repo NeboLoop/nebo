@@ -1,7 +1,8 @@
 <!--
   AskPopover — a blocking ask's card over whatever screen the owner is on,
   opened only by his click on its toast or OS notification
-  (`$lib/stores/blockingAsks`). Small, no backdrop, blocks nothing: he
+  (`$lib/stores/blockingAsks`), for an ask from a chat he asked in. A
+  relayed ask opens in the assistant's chat instead. Small, no backdrop, blocks nothing: he
   answers and stays in the chat he was in. Escape or the close button puts
   him back exactly where he was; "See conversation" is the one way it moves
   him. Answered anywhere else first, it is gone (`asks_waiting`).
@@ -9,8 +10,8 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import { goto } from '$lib/nav';
-  import { waitingAsks } from '$lib/stores/waitingAsks';
-  import { openAskCard, closeAsk, askHome, answerById } from '$lib/stores/blockingAsks';
+  import { waitingAsks, askPath } from '$lib/stores/waitingAsks';
+  import { openAskCard, closeAsk, answerById } from '$lib/stores/blockingAsks';
   import X from 'lucide-svelte/icons/x';
 
   const ask = $derived($openAskCard ? $waitingAsks.find((a) => a.id === $openAskCard) : undefined);
@@ -29,7 +30,7 @@
 
   function seeConversation() {
     if (!ask) return;
-    const home = askHome(ask);
+    const home = askPath(ask);
     closeAsk();
     void goto(home);
   }

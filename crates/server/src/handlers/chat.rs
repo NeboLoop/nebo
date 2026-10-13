@@ -57,6 +57,12 @@ pub struct PendingAsk {
     pub widgets: Option<serde_json::Value>,
     /// Unix seconds when the run parked.
     pub created_at: i64,
+    /// The owner is not in the conversation that raised it (a colleague's
+    /// hand-off, a schedule, a background run, a request passed on through
+    /// the assistant): it is relayed to the assistant's chat
+    /// ([`crate::handlers::asks::relayed`]).
+    #[serde(default)]
+    pub relayed: bool,
 }
 
 impl PendingAsk {
@@ -970,6 +976,7 @@ mod pending_ask_tests {
             prompt: "Which calendar?".into(),
             widgets: Some(serde_json::json!([{ "type": "options", "options": ["Work", "Home"] }])),
             created_at: 7,
+            relayed: false,
         };
         let payload = ask.event_payload("agent:a:thread:t");
         assert_eq!(payload["session_id"], "agent:a:thread:t");
@@ -987,6 +994,7 @@ mod pending_ask_tests {
             prompt: "Continue?".into(),
             widgets: None,
             created_at: 0,
+            relayed: false,
         };
         let payload = ask.event_payload("s");
         assert!(payload.get("widgets").is_none());

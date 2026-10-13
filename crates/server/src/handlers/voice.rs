@@ -998,7 +998,7 @@ async fn drain_voice_run(
                 last_notice = event.text;
             }
             ai::StreamEventType::AskRequest => {
-                announce_ask(&state, &session_key, &event).await;
+                announce_ask(&state, &session_key, &types::permissions::Door::Voice, &event).await;
                 if let Some(tx) = spoken.take() {
                     let _ = tx.send(Some(out.clone()));
                 }

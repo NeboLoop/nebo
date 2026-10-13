@@ -279,6 +279,8 @@
 		"waitingForYou": "Menunggu Anda",
 		"waitingOnYou": "{name} menunggu Anda",
 		"seeConversation": "Lihat percakapan",
+		"relayWantsToConnect": "{name} ingin menghubungkan {plugin}",
+		"relayViewIn": "Lihat di {name}",
 		"waitingOnYourAnswer": "{name} menunggu jawaban Anda:",
 		"waitingOpen": "Buka",
 		"waitingAsksLabel": "Menunggu jawaban Anda",

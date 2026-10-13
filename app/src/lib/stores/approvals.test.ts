@@ -6,7 +6,7 @@ vi.mock('$lib/websocket/client', () => ({
 	getWebSocketClient: () => ({ send: (type: string, data: unknown) => sent.push({ type, data }) })
 }));
 
-import { approvals, approvalRaised, approvalSettled, answerApproval, chatApprovalsOf } from './approvals';
+import { approvals, approvalRaised, approvalSettled, answerApproval, chatApprovalsOf, relayedApprovalsOf } from './approvals';
 
 const raise = (requestId: string, sessionId: string) =>
 	approvalRaised({ requestId, sessionId, agent: 'Bookkeeper', actionType: 'shell_command', actionDetail: 'ls' });
@@ -24,6 +24,12 @@ describe('an approval is a card in the chat that raised it, never a dialog', () 
 		expect(chatApprovalsOf(list, 'agent:bk:thread:t1').map((a) => a.requestId)).toEqual(['r1']);
 		expect(chatApprovalsOf(list, 'agent:bk:thread:t2')).toEqual([]);
 		expect(chatApprovalsOf(list, '')).toEqual([]);
+	});
+
+	it("a schedule's is relayed to the assistant's chat; one from a chat the owner is in stays there", () => {
+		raise('r1', 'agent:bk:thread:t1');
+		approvalRaised({ requestId: 'r2', sessionId: 'agent:bk:cron:morning', agent: 'Bookkeeper', actionType: 'shell_command', actionDetail: 'ls', relayed: true });
+		expect(relayedApprovalsOf(get(approvals)).map((a) => a.requestId)).toEqual(['r2']);
 	});
 
 	it('Allow always answers always and the card keeps its place as a receipt', () => {

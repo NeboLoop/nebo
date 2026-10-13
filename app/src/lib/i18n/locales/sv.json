@@ -279,6 +279,8 @@
 		"waitingForYou": "Väntar på dig",
 		"waitingOnYou": "{name} väntar på dig",
 		"seeConversation": "Visa samtalet",
+		"relayWantsToConnect": "{name} vill ansluta {plugin}",
+		"relayViewIn": "Visa hos {name}",
 		"waitingOnYourAnswer": "{name} väntar på ditt svar:",
 		"waitingOpen": "Öppna",
 		"waitingAsksLabel": "Väntar på ditt svar",

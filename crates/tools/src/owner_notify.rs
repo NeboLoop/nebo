@@ -158,6 +158,13 @@ pub mod link {
         format!("/{agent_id}")
     }
 
+    /// The assistant's chat: the owner's one front door. Where everything
+    /// waiting on him that he is not already in opens (a colleague's
+    /// hand-off, a schedule, a background run): its card is relayed there.
+    pub fn assistant() -> String {
+        employee(crate::team_tool::PRIMARY_AGENT_ID)
+    }
+
     /// A conversation: `/{agent}/threads/{chat}` — where a card the owner
     /// answers sits. The employee when the chat is not known.
     pub fn chat(agent_id: &str, chat_id: &str) -> String {
@@ -244,6 +251,7 @@ pub mod link {
             assert_eq!(chat("emp", "c-1"), "/emp/threads/c-1");
             assert_eq!(chat("emp", ""), "/emp");
             assert_eq!(employee("emp"), "/emp");
+            assert_eq!(assistant(), "/assistant");
             assert_eq!(cases("emp"), "/emp/cases");
             assert_eq!(employee_settings("emp", "workflows"), "/emp/settings/workflows");
             assert_eq!(plugins(), "/settings/plugins");

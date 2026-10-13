@@ -631,6 +631,7 @@ mod tests {
             prompt: format!("question {id}"),
             widgets: None,
             created_at: 1,
+            relayed: false,
         }
     }
 

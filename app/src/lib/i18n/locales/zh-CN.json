@@ -279,6 +279,8 @@
 		"waitingForYou": "等待你处理",
 		"waitingOnYou": "{name} 正在等你处理",
 		"seeConversation": "查看对话",
+		"relayWantsToConnect": "{name} 想要连接 {plugin}",
+		"relayViewIn": "在 {name} 中查看",
 		"waitingOnYourAnswer": "{name} 正在等你回答：",
 		"waitingOpen": "打开",
 		"waitingAsksLabel": "正在等你回答",

@@ -279,6 +279,8 @@
 		"waitingForYou": "Esperándote",
 		"waitingOnYou": "{name} te está esperando",
 		"seeConversation": "Ver conversación",
+		"relayWantsToConnect": "{name} quiere conectar {plugin}",
+		"relayViewIn": "Ver en {name}",
 		"waitingOnYourAnswer": "{name} espera tu respuesta:",
 		"waitingOpen": "Abrir",
 		"waitingAsksLabel": "Esperando tu respuesta",
