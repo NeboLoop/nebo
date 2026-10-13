@@ -1,7 +1,8 @@
 <!--
-  One piece of background work: what it is, how long it has run (or when it
-  fires next), and the owner's actions on it. A click opens the end of its
-  output and what started it.
+  One piece of background work: what it is, who or what does it, how long it
+  has run (or when it fires next, or how it ended), "View transcript" when
+  its steps are kept in a chat, and the owner's actions on it. A click opens
+  the end of its output and what started it.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
@@ -9,8 +10,8 @@
   import Terminal from 'lucide-svelte/icons/terminal';
   import Bot from 'lucide-svelte/icons/bot';
   import Square from 'lucide-svelte/icons/square';
-  import type { BackgroundAction, BackgroundTask } from '$lib/api/neboComponents';
-  import { actOn, outputOf, shortClock, isRunning } from '$lib/stores/background';
+  import type { BackgroundAction, BackgroundTask, FinishedTask } from '$lib/api/neboComponents';
+  import { actOn, outputOf, shortClock, isRunning, kindLabel, waitsOnOwner } from '$lib/stores/background';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { callWords } from '$lib/chat/callLabel';
 
@@ -19,7 +20,10 @@
     now,
     showEmployee = false,
     color = null,
+    outcome = null,
+    depth = 0,
     onstopped,
+    ontranscript,
   }: {
     task: BackgroundTask;
     /** Now, in unix seconds, ticking. */
@@ -27,8 +31,14 @@
     /** Name the employee it belongs to (a list across employees). */
     showEmployee?: boolean;
     color?: string | null;
+    /** How it ended, for a finished row; null while it runs. */
+    outcome?: FinishedTask['outcome'] | null;
+    /** How deep it is under the work that started it (a helper's helper). */
+    depth?: number;
     /** It was stopped by the owner from this row. */
     onstopped?: () => void;
+    /** Open its transcript (the chat that holds its steps). */
+    ontranscript?: (task: BackgroundTask) => void;
   } = $props();
 
   let open = $state(false);
@@ -41,12 +51,16 @@
   /** What it is doing now: the call it makes, worded, or its own line. */
   const detail = $derived(task.call ? callWords(task.call, $t) : task.detail);
   const title = $derived(task.title || (task.source === 'heartbeat' ? $t('background.heartbeat') : detail));
-  const stopAction = $derived(task.actions.find((a) => a === 'stop' || a === 'cancel'));
-  const otherActions = $derived(task.actions.filter((a) => a !== stopAction));
+  const actions = $derived(outcome ? [] : task.actions);
+  const stopAction = $derived(actions.find((a) => a === 'stop' || a === 'cancel'));
+  const otherActions = $derived(actions.filter((a) => a !== stopAction));
+  const onYou = $derived(!outcome && waitsOnOwner(task));
 
   const meta = $derived.by(() => {
+    if (outcome) return $t(`background.outcome.${outcome}`);
     if (stopping) return $t('background.stopping');
-    if (task.status === 'waiting') return $t(`background.wait.${task.wait ?? 'approval'}`);
+    if (onYou) return $t('background.waitingOnYou');
+    if (task.status === 'waiting') return $t(`background.wait.${task.wait ?? 'reply'}`);
     if (task.status === 'degraded') return $t('background.degraded');
     if (isRunning(task)) return task.startedAt ? shortClock(now - task.startedAt) : '';
     if (task.nextRunAt) return $t('background.next', { values: { when: shortClock(task.nextRunAt - now) } });
@@ -82,16 +96,21 @@
   }
 </script>
 
-<div class="bg-row {open ? 'bg-row-open' : ''}">
+<div class="bg-row {open ? 'bg-row-open' : ''} {outcome ? 'bg-row-finished' : ''} {depth > 0 ? 'bg-row-nested' : ''}" data-depth={depth}>
   <div class="bg-row-line">
     <button type="button" class="bg-row-main" onclick={toggle} aria-expanded={open}>
       <span class="bg-row-icon" aria-hidden="true">
         {#if task.kind === 'loop'}<Clock class="w-3.5 h-3.5" />{:else if task.kind === 'shell'}<Terminal class="w-3.5 h-3.5" />{:else if showEmployee}<AgentAvatar name={task.employee} {color} size="xs" />{:else}<Bot class="w-3.5 h-3.5" />{/if}
       </span>
-      <span class="bg-row-title">
-        {#if showEmployee}<span class="bg-row-employee">{`${task.employee} · `}</span>{/if}{title}
+      <span class="bg-row-text">
+        <span class="bg-row-title">
+          {#if showEmployee}<span class="bg-row-employee">{`${task.employee} · `}</span>{/if}{title}
+        </span>
+        <span class="bg-row-sub">
+          <span class="bg-row-kind">{kindLabel(task, $t)}</span>
+          {#if meta}<span class="bg-row-meta {onYou ? 'bg-row-on-you' : ''} {outcome === 'failed' ? 'bg-row-failed' : ''}">{meta}</span>{/if}
+        </span>
       </span>
-      <span class="bg-row-meta">{meta}</span>
     </button>
     {#if stopAction && !stopping}
       <button
@@ -106,6 +125,9 @@
       </button>
     {/if}
   </div>
+  {#if task.transcript && ontranscript}
+    <button type="button" class="bg-row-transcript" onclick={() => ontranscript(task)}>{$t('background.viewTranscript')}</button>
+  {/if}
   {#if open}
     <div class="bg-row-detail">
       {#if detail && detail !== title}<div class="bg-row-detail-line">{detail}</div>{/if}

@@ -4124,8 +4124,6 @@
 			"off": "Выключить"
 		},
 		"wait": {
-			"approval": "Ждёт вашего одобрения",
-			"answer": "Ждёт вашего ответа",
 			"expert": "Ждёт эксперта",
 			"reply": "Ждёт ответа"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "В работе",
 			"scheduled": "Таймеры",
 			"watching": "Наблюдения"
-		}
+		},
+		"label": {
+			"helper": "Помощник",
+			"shell": "Команда",
+			"workflow": "Процесс",
+			"timer": "Таймер",
+			"watch": "Наблюдение",
+			"heartbeat": "Пульс"
+		},
+		"viewTranscript": "Открыть запись",
+		"section": {
+			"running": "Выполняется"
+		},
+		"waitingOnYou": "Ждёт вас",
+		"waitingOnYouN": "{n, plural, other {Ждут вас: #}}"
 	},
 	"handoff": {
 		"fromAsk": "От {name}: {ask}",

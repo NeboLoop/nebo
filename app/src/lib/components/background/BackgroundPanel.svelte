@@ -1,13 +1,16 @@
 <!--
   A list of background work: a header that folds it away, the first few
-  rows with "Show more", and the work that finished lately behind one row.
-  Hidden when it has nothing to show.
+  rows with "Show more", and the work that finished lately in its own
+  section that folds open. A chat's list (not collapsible) has a close
+  button, and its running work is a section that folds too. Hidden when it
+  has nothing to show.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import X from 'lucide-svelte/icons/x';
   import type { BackgroundTask, FinishedTask } from '$lib/api/neboComponents';
-  import { isRunning, sortForPanel } from '$lib/stores/background';
+  import { isRunning, rollUp, sortForPanel } from '$lib/stores/background';
   import BackgroundRow from './BackgroundRow.svelte';
 
   let {
@@ -18,6 +21,8 @@
     showEmployee = false,
     colors = {},
     collapsible = true,
+    ontranscript,
+    onclose,
   }: {
     tasks: BackgroundTask[];
     finished?: FinishedTask[];
@@ -28,6 +33,10 @@
     /** Employee colours, by id, for their avatars. */
     colors?: Record<string, string>;
     collapsible?: boolean;
+    /** Open a row's transcript (the chat that holds its steps). */
+    ontranscript?: (task: BackgroundTask) => void;
+    /** Close the list (a chat's list). */
+    onclose?: () => void;
   } = $props();
 
   /** Rows shown before "Show more". */
@@ -35,10 +44,12 @@
 
   let collapsed = $state(false);
   let showAll = $state(false);
+  let showRunning = $state(true);
   let showFinished = $state(false);
   let announce = $state('');
 
-  const sorted = $derived(sortForPanel(tasks));
+  // Helpers a helper started follow their parent, a level in.
+  const sorted = $derived(rollUp(sortForPanel(tasks)));
   const visible = $derived(showAll ? sorted : sorted.slice(0, SHOWN));
   const running = $derived(tasks.filter(isRunning).length);
 
@@ -59,34 +70,37 @@
     {:else}
       <div class="bg-panel-header">
         <span class="bg-panel-title">{title || $t('background.title')}</span>
+        {#if onclose}
+          <button type="button" class="bg-panel-close" aria-label={$t('common.close')} onclick={onclose}><X class="w-3.5 h-3.5" /></button>
+        {/if}
       </div>
     {/if}
     {#if !collapsed}
       <div class="bg-panel-rows">
-        {#each visible as task (task.id)}
-          <BackgroundRow {task} {now} {showEmployee} color={colors[task.agentId] ?? null} onstopped={stopped} />
-        {/each}
-        {#if sorted.length > SHOWN}
-          <button type="button" class="bg-panel-more" onclick={() => (showAll = !showAll)}>
-            {showAll ? $t('background.showLess') : $t('background.showMore')}
+        {#if !collapsible && tasks.length > 0}
+          <button type="button" class="bg-panel-section" onclick={() => (showRunning = !showRunning)} aria-expanded={showRunning}>
+            {$t('background.section.running')}
+            <ChevronDown class="bg-panel-chevron {showRunning ? 'rotate-180' : ''}" aria-hidden="true" />
           </button>
         {/if}
+        {#if collapsible || showRunning}
+          {#each visible as { task, depth } (task.id)}
+            <BackgroundRow {task} {now} {depth} {showEmployee} color={colors[task.agentId] ?? null} onstopped={stopped} {ontranscript} />
+          {/each}
+          {#if sorted.length > SHOWN}
+            <button type="button" class="bg-panel-more" onclick={() => (showAll = !showAll)}>
+              {showAll ? $t('background.showLess') : $t('background.showMore')}
+            </button>
+          {/if}
+        {/if}
         {#if finished.length > 0}
-          <button type="button" class="bg-panel-more" onclick={() => (showFinished = !showFinished)} aria-expanded={showFinished}>
+          <button type="button" class="bg-panel-section" onclick={() => (showFinished = !showFinished)} aria-expanded={showFinished}>
             {$t('background.finishedN', { values: { n: finished.length } })}
+            <ChevronDown class="bg-panel-chevron {showFinished ? 'rotate-180' : ''}" aria-hidden="true" />
           </button>
           {#if showFinished}
             {#each finished as f (f.task.id + f.endedAt)}
-              <div class="bg-row bg-row-finished">
-                <div class="bg-row-line">
-                  <span class="bg-row-main">
-                    <span class="bg-row-title">
-                      {#if showEmployee}<span class="bg-row-employee">{`${f.task.employee} · `}</span>{/if}{f.task.title || $t('background.heartbeat')}
-                    </span>
-                    <span class="bg-row-meta {f.outcome === 'failed' ? 'text-error' : ''}">{$t(`background.outcome.${f.outcome}`)}</span>
-                  </span>
-                </div>
-              </div>
+              <BackgroundRow task={f.task} {now} {showEmployee} color={colors[f.task.agentId] ?? null} outcome={f.outcome} {ontranscript} />
             {/each}
           {/if}
         {/if}

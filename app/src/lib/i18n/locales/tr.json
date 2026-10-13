@@ -4124,8 +4124,6 @@
 			"off": "Kapat"
 		},
 		"wait": {
-			"approval": "Onayını bekliyor",
-			"answer": "Yanıtını bekliyor",
 			"expert": "Bir uzmanı bekliyor",
 			"reply": "Yanıt bekliyor"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Çalışıyor",
 			"scheduled": "Zamanlayıcılar",
 			"watching": "İzlemeler"
-		}
+		},
+		"label": {
+			"helper": "Yardımcı",
+			"shell": "Komut",
+			"workflow": "İş akışı",
+			"timer": "Zamanlayıcı",
+			"watch": "İzleme",
+			"heartbeat": "Nabız"
+		},
+		"viewTranscript": "Dökümü gör",
+		"section": {
+			"running": "Çalışıyor"
+		},
+		"waitingOnYou": "Seni bekliyor",
+		"waitingOnYouN": "{n, plural, other {# seni bekliyor}}"
 	},
 	"handoff": {
 		"fromAsk": "{name} kişisinden: {ask}",

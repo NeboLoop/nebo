@@ -4124,8 +4124,6 @@
 			"off": "Turn off"
 		},
 		"wait": {
-			"approval": "Needs your approval",
-			"answer": "Needs your answer",
 			"expert": "Waiting for an expert",
 			"reply": "Waiting for a reply"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Working",
 			"scheduled": "Timers",
 			"watching": "Watches"
-		}
+		},
+		"label": {
+			"helper": "Helper",
+			"shell": "Command",
+			"workflow": "Workflow",
+			"timer": "Timer",
+			"watch": "Watch",
+			"heartbeat": "Heartbeat"
+		},
+		"viewTranscript": "View transcript",
+		"section": {
+			"running": "Running"
+		},
+		"waitingOnYou": "Waiting on you",
+		"waitingOnYouN": "{n, plural, other {# waiting on you}}"
 	},
 	"handoff": {
 		"fromAsk": "From {name}: {ask}",

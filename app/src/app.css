@@ -813,7 +813,10 @@
   @apply shrink truncate min-w-0;
 }
 .bg-status-tasks {
-  @apply btn btn-ghost btn-xs h-6 min-h-6 px-1.5 font-normal text-base-content/70 border-0;
+  @apply btn btn-ghost btn-xs h-6 min-h-6 px-1.5 font-normal text-primary border-0;
+}
+.bg-status-on-you {
+  @apply text-warning;
 }
 .bg-status-tasks[aria-pressed='true'] {
   @apply bg-base-200 text-base-content;
@@ -853,6 +856,12 @@
 .bg-panel-count {
   @apply text-xs text-base-content/50 tabular-nums;
 }
+.bg-panel-close {
+  @apply btn btn-ghost btn-xs btn-circle text-base-content/60;
+}
+.bg-panel-section {
+  @apply mx-1 mt-1 flex items-center gap-1 rounded-lg px-2 py-1 text-start text-xs text-base-content/60 hover:bg-base-200 tabular-nums;
+}
 .bg-panel-chevron {
   @apply w-3.5 h-3.5 shrink-0 text-base-content/40 transition-transform;
 }
@@ -866,6 +875,13 @@
 .bg-row {
   @apply mx-1 rounded-lg;
 }
+.bg-row-nested {
+  @apply ms-6 border-s border-base-content/10;
+}
+.bg-row-nested[data-depth='2'],
+.bg-row-nested[data-depth='3'] {
+  @apply ms-12;
+}
 .bg-row-open {
   @apply bg-base-200/60;
 }
@@ -873,7 +889,25 @@
   @apply flex items-center gap-1 min-w-0;
 }
 .bg-row-main {
-  @apply flex flex-1 items-center gap-2 min-w-0 rounded-lg px-2 py-1.5 text-start text-[13px] hover:bg-base-200;
+  @apply flex flex-1 items-start gap-2 min-w-0 rounded-lg px-2 py-1.5 text-start text-[13px] hover:bg-base-200;
+}
+.bg-row-text {
+  @apply flex flex-1 flex-col min-w-0;
+}
+.bg-row-sub {
+  @apply flex items-center gap-2 min-w-0;
+}
+.bg-row-kind {
+  @apply min-w-0 truncate text-xs text-base-content/70;
+}
+.bg-row-meta.bg-row-on-you {
+  @apply text-warning;
+}
+.bg-row-meta.bg-row-failed {
+  @apply text-error;
+}
+.bg-row-transcript {
+  @apply -mt-1 mb-1 ms-9 text-xs text-primary hover:underline;
 }
 .bg-row-finished .bg-row-main {
   @apply hover:bg-transparent text-base-content/60;
@@ -884,7 +918,7 @@
   @apply inline-flex shrink-0 items-center justify-center text-base-content/50;
 }
 .bg-row-title {
-  @apply flex-1 min-w-0 truncate;
+  @apply min-w-0 truncate;
 }
 .bg-row-employee {
   @apply text-base-content/50;

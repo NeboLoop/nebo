@@ -4124,8 +4124,6 @@
 			"off": "끄기"
 		},
 		"wait": {
-			"approval": "승인이 필요합니다",
-			"answer": "답변이 필요합니다",
 			"expert": "전문가를 기다리는 중",
 			"reply": "답장을 기다리는 중"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "작업 중",
 			"scheduled": "타이머",
 			"watching": "감시"
-		}
+		},
+		"label": {
+			"helper": "도우미",
+			"shell": "명령",
+			"workflow": "워크플로",
+			"timer": "타이머",
+			"watch": "감시",
+			"heartbeat": "하트비트"
+		},
+		"viewTranscript": "기록 보기",
+		"section": {
+			"running": "실행 중"
+		},
+		"waitingOnYou": "내 응답 대기 중",
+		"waitingOnYouN": "{n, plural, other {내 응답 대기 #개}}"
 	},
 	"handoff": {
 		"fromAsk": "{name}님으로부터: {ask}",

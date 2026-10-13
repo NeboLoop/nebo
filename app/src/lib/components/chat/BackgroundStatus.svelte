@@ -1,24 +1,28 @@
 <!--
   The one line above the composer: shown while the turn works or any of the
-  employee's background work runs, after the turn ends too. A mark, the
-  turn's time, the employee's running tasks (a button that opens them), and
+  work this conversation launched runs, after the turn ends too. A mark, the
+  turn's time, the conversation's running tasks (a button that opens them), and
   what the turn is doing. When the last task ends it says how many finished,
-  briefly, then goes.
+  briefly, then goes. A task's "View transcript" opens the chat that holds
+  its steps (BackgroundTranscript).
 -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { backgroundTasks, backgroundFinished, belongsTo, inStrip, clock } from '$lib/stores/background';
+  import { backgroundTasks, backgroundFinished, isRunning, launchedIn, clock, waitsOnOwner } from '$lib/stores/background';
   import BackgroundPanel from '$lib/components/background/BackgroundPanel.svelte';
+  import BackgroundTranscript from '$lib/components/background/BackgroundTranscript.svelte';
+  import type { BackgroundTask } from '$lib/api/neboComponents';
   import { widthFade } from '$lib/components/background/widthFade';
 
   let {
-    agentId,
+    sessionKey,
     isLoading = false,
     activityStatus = '',
     turnStartedAt = 0,
   }: {
-    agentId: string;
+    /** The conversation's session: its list is what its turns launched. */
+    sessionKey: string;
     isLoading?: boolean;
     activityStatus?: string;
     /** When the running turn started (ms); 0 while none runs. */
@@ -38,13 +42,17 @@
   });
 
   let open = $state(false);
+  let transcript = $state<BackgroundTask | null>(null);
   let flash = $state(0);
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
   let lastCount = 0;
 
-  const mine = $derived($backgroundTasks.filter((task) => belongsTo(task, agentId) && inStrip(task)));
-  const finished = $derived($backgroundFinished.filter((f) => belongsTo(f.task, agentId) && inStrip(f.task)));
+  // What this conversation's turns launched, and what that launched in turn.
+  const launched = $derived(launchedIn([...$backgroundTasks, ...$backgroundFinished.map((f) => f.task)], sessionKey));
+  const mine = $derived($backgroundTasks.filter((task) => isRunning(task) && launched.has(task.id)));
+  const finished = $derived($backgroundFinished.filter((f) => launched.has(f.task.id)));
   const count = $derived(mine.length);
+  const onYou = $derived(mine.filter(waitsOnOwner).length);
 
   $effect(() => {
     const n = count;
@@ -73,7 +81,12 @@
   const shown = $derived(isLoading || count > 0 || flash > 0);
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === 'Escape') open = false;
+    if (e.key === 'Escape' && !transcript) open = false;
+  }
+
+  function showTranscript(task: BackgroundTask) {
+    open = false;
+    transcript = task;
   }
 </script>
 
@@ -84,7 +97,14 @@
     {#if open && count > 0}
       <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
       <div class="bg-status-popover">
-        <BackgroundPanel tasks={mine} {finished} now={Math.floor(nowMs / 1000)} collapsible={false} />
+        <BackgroundPanel
+          tasks={mine}
+          {finished}
+          now={Math.floor(nowMs / 1000)}
+          collapsible={false}
+          ontranscript={showTranscript}
+          onclose={() => (open = false)}
+        />
       </div>
     {/if}
     <div class="bg-status-row">
@@ -100,6 +120,9 @@
             {$t('background.runningTasks', { values: { n: count } })}
           </button>
         </span>
+        {#if onYou > 0}
+          <span class="bg-status-piece bg-status-on-you" transition:widthFade>{$t('background.waitingOnYouN', { values: { n: onYou } })}</span>
+        {/if}
       {:else if flash > 0}
         <span class="bg-status-piece" transition:widthFade>{$t('background.tasksFinished', { values: { n: flash } })}</span>
       {/if}
@@ -108,4 +131,10 @@
       {/if}
     </div>
   </div>
+{/if}
+
+{#if transcript}
+  {#key transcript.id}
+    <BackgroundTranscript task={transcript} onclose={() => (transcript = null)} />
+  {/key}
 {/if}

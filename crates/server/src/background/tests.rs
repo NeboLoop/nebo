@@ -59,6 +59,7 @@ fn timers_carry_their_maker_reason_next_fire_and_actions() {
     assert_eq!(b.agent_id, "ava", "a binding's schedule belongs to the employee its command names");
     assert_eq!(b.created_by, "workflow");
     assert_eq!(b.actions, vec![Action::Off]);
+    assert!(timers.iter().all(|t| t.launched_from.is_none()), "a schedule fires on its own: no chat's running task");
 }
 
 /// A schedule made before makers were kept reads as made by someone
@@ -93,7 +94,7 @@ fn workflow_runs_show_their_step_turns_and_wait() {
 
     let live = s.list_live_workflow_runs().unwrap();
     assert_eq!(live.len(), 2, "an ended run is not background work");
-    let tasks = workflows(live, |id| (id == "r-run").then_some((42, 150)));
+    let tasks = workflows(live, |id| (id == "r-run").then_some((42, 150)), &|_| None);
     let run = tasks.iter().find(|t| t.id == "workflow:r-run").unwrap();
     assert_eq!((run.kind, run.status), (Kind::Workflow, Status::Running));
     assert_eq!((run.agent_id.as_str(), run.title.as_str(), run.detail.as_str()), ("ava", "sweep", "read-inbox"));
@@ -108,6 +109,7 @@ fn workflow_runs_show_their_step_turns_and_wait() {
     assert_eq!(wait.next_run_at, Some(4_000_000_000), "when the wait gives up");
     assert_eq!(wait.created_by, "chat");
     assert_eq!(wait.actions, vec![Action::Cancel]);
+    assert!(tasks.iter().all(|t| t.launched_from.is_none()), "a workflow run keeps no record of a chat that started it");
 }
 
 fn snapshot(run_id: &str, session_key: &str, entity_id: &str, origin: &str) -> crate::run_registry::RunSnapshot {
@@ -141,7 +143,7 @@ fn turns_list_what_runs_unwatched() {
         snapshot("t-loop", "neboai:dm:1", "main", "comm"),
     ];
     let parked: HashSet<String> = ["neboai:dm:1".to_string()].into();
-    let tasks = turns(runs, &parked, 1_000);
+    let tasks = turns(runs, &parked, 1_000, &|_| None);
     assert_eq!(tasks.len(), 2);
     let cron = &tasks[0];
     assert_eq!((cron.id.as_str(), cron.created_by.as_str(), cron.status), ("turn:t-cron", "schedule", Status::Running));
@@ -170,7 +172,7 @@ fn helper(task_id: &str, running: bool, parent: &str, agent: &str) -> agent::har
 /// the conversation they report to; a helper that finished is not.
 #[test]
 fn helpers_list_the_running_ones_where_they_report() {
-    let tasks = helpers(vec![helper("h-1", true, "agent:ava:web", "ava"), helper("h-2", false, "agent:ava:web", "ava")]);
+    let tasks = helpers(vec![helper("h-1", true, "agent:ava:web", "ava"), helper("h-2", false, "agent:ava:web", "ava")], &|_| None);
     assert_eq!(tasks.len(), 1);
     let t = &tasks[0];
     assert_eq!((t.id.as_str(), t.kind, t.agent_id.as_str()), ("helper:h-1", Kind::Agent, "ava"));
@@ -437,7 +439,7 @@ fn handoff(id: &str, kind: &str, status: &str) -> crate::handoff::HandoffView {
 /// closes from its case.
 #[test]
 fn a_handoff_is_the_receivers_row_passed_on_by_the_sender() {
-    let rows = handoffs(vec![handoff("h1", "message", "running"), handoff("a1", "assignment", "queued")]);
+    let rows = handoffs(vec![handoff("h1", "message", "running"), handoff("a1", "assignment", "queued")], &HashSet::new(), &|_| None);
     let msg = &rows[0];
     assert_eq!((msg.id.as_str(), msg.kind, msg.source, msg.status), ("handoff:h1", Kind::Agent, Source::Handoff, Status::Running));
     assert_eq!(msg.agent_id, "bk");
@@ -450,4 +452,47 @@ fn a_handoff_is_the_receivers_row_passed_on_by_the_sender() {
     let asg = &rows[1];
     assert_eq!((asg.status, asg.started_at), (Status::Waiting, Some(100)));
     assert!(asg.actions.is_empty(), "an assignment closes from its case");
+}
+
+/// "View transcript" opens the chat that holds the work's own steps: a
+/// helper's own session (not the conversation it reports to), and the
+/// receiving employee's conversation for a hand-off.
+#[test]
+fn a_rows_transcript_is_the_chat_of_its_own_steps() {
+    let chat_of = |key: &str| Some(format!("chat-of:{key}"));
+    let helper_rows = helpers(vec![helper("h-1", true, "agent:ava:web", "ava")], &chat_of);
+    let steps = helper_rows[0].transcript.as_ref().expect("a helper's transcript");
+    assert_eq!((steps.session_key.as_str(), steps.chat_id.as_str()), ("subagent:agent:ava:web:h-1", "chat-of:subagent:agent:ava:web:h-1"));
+    let handoff_rows = handoffs(vec![handoff("h1", "message", "running")], &HashSet::new(), &chat_of);
+    let steps = handoff_rows[0].transcript.as_ref().expect("a hand-off's transcript");
+    assert_eq!((steps.session_key.as_str(), steps.chat_id.as_str()), ("agent:bk:coworker:lead", "chat-of:agent:bk:coworker:lead"));
+    let none = handoffs(vec![handoff("h1", "message", "running")], &HashSet::new(), &|_| None);
+    assert_eq!(none[0].transcript, None, "a conversation with no chat yet has no transcript");
+}
+
+/// A hand-off whose receiving conversation is parked on the owner (a
+/// question, a connect card) waits on the owner, not "running".
+#[test]
+fn a_handoff_parked_on_the_owner_waits_on_the_owner() {
+    let parked: HashSet<String> = ["agent:bk:coworker:lead".to_string()].into();
+    let rows = handoffs(vec![handoff("h1", "message", "running")], &parked, &|_| None);
+    assert_eq!((rows[0].status, rows[0].wait.as_deref()), (Status::Waiting, Some("answer")));
+}
+
+/// A chat lists only what its own turns launched: a helper names its
+/// parent's conversation, a hand-off its sender's. Work that starts on its
+/// own (a schedule's or a trigger's turn, a workflow run, a timer) is no
+/// chat's launch.
+#[test]
+fn only_what_a_chat_launched_names_the_chat() {
+    let helper_rows = helpers(vec![helper("h-1", true, "agent:ava:web", "ava")], &|_| None);
+    assert_eq!(helper_rows[0].launched_from.as_deref(), Some("agent:ava:web"));
+    let handoff_rows = handoffs(vec![handoff("h1", "message", "running")], &HashSet::new(), &|_| None);
+    assert_eq!(handoff_rows[0].launched_from.as_deref(), Some("agent:lead:web"));
+
+    let scheduled = snapshot("t-cron", "agent:ava:web", "ava", "cron");
+    let triggered = snapshot("t-hook", "agent:ava:web", "ava", "system");
+    let turn_rows = turns(vec![scheduled, triggered], &HashSet::new(), 1_000, &|_| None);
+    assert_eq!(turn_rows.len(), 2);
+    assert!(turn_rows.iter().all(|t| t.launched_from.is_none()), "a scheduled or triggered turn is no chat's launch");
 }
