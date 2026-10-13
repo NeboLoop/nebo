@@ -601,8 +601,9 @@ fn fingerprint(s: &str) -> String {
 }
 
 /// The last durable events on a case, one line each, for the turn's prompt:
-/// what the case recorded (turn results, failures, attention) and what the
-/// person sent it (signals, which target the case's key). Seen live: a
+/// what the case recorded (turn results with their receipts, failures,
+/// attention) and what the person sent it (signals, which target the case's
+/// key), each whole: the turn works from what was actually said and done. Seen live: a
 /// retry after a failed first turn was handed the failure line alone and
 /// answered "no lead data available to process" — the lead's own message
 /// had only ever been the first turn's event.
@@ -615,10 +616,7 @@ fn history_lines(store: &Store, case_id: &str, key: &str) -> Vec<String> {
     events.dedup_by_key(|e| e.id);
     events
         .into_iter()
-        .map(|e| {
-            let keep = if e.kind == "signal" { 600 } else { 200 };
-            format!("{} [{}] {}", e.id, e.kind, e.payload.chars().take(keep).collect::<String>())
-        })
+        .map(|e| format!("{} [{}] {}", e.id, e.kind, e.payload))
         .collect()
 }
 
@@ -1244,5 +1242,30 @@ mod assignment_tests {
         assert_eq!(assignment_state_for("Blocked"), "blocked");
         assert_eq!(assignment_state_for("failed"), "failed");
         assert_eq!(assignment_state_for("shipped"), "done");
+    }
+
+    /// A case turn reads its history whole: what the person sent and what
+    /// earlier turns recorded, receipts included, never a clipped line.
+    #[test]
+    fn a_case_turn_reads_its_history_whole() {
+        let s = store();
+        let said = format!("Here is everything about my order: {}", "detail ".repeat(300));
+        let result = format!("{} — 2 send(s) on the ledger this turn: gmail#1, gmail#2", "summary ".repeat(60));
+        for (kind, target, payload, idem) in [("signal", "lead@example.com", &said, "s1"), ("turn_result", "case-1", &result, "t1")] {
+            s.engine_enqueue_event(&NewEvent {
+                kind,
+                target_type: "run",
+                target_id: target,
+                payload,
+                idem_key: idem,
+                durable: true,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let lines = history_lines(&s, "case-1", "lead@example.com");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines.iter().any(|l| l.ends_with(&said)), "the person's whole message: {lines:?}");
+        assert!(lines.iter().any(|l| l.ends_with("gmail#1, gmail#2")), "the receipts after a long summary: {lines:?}");
     }
 }

@@ -263,10 +263,9 @@ fn done_means(req: &Request<'_>) -> String {
     if !req.contract.is_empty() {
         s.push_str(&format!(" Then give the result as: {}.", req.contract));
     }
+    // The task's data goes whole: the expert works from all of it.
     if !req.input.is_null() {
-        let data = req.input.to_string();
-        let data = if data.len() > 8_000 { format!("{}…", truncate(&data, 8_000)) } else { data };
-        s.push_str(&format!(" The data for the task: {data}"));
+        s.push_str(&format!(" The data for the task: {}", req.input));
     }
     s.push_str(" If you cannot or will not do it, close as blocked or failed and say why.");
     s
@@ -476,5 +475,25 @@ mod tests {
         assert_eq!(b["summary"], "ok");
         let c = answer("Ana", &"word ".repeat(200));
         assert!(c["summary"].as_str().unwrap().len() <= SUMMARY_MAX + 3);
+    }
+
+    /// The expert is handed the task's data whole, however large.
+    #[test]
+    fn the_expert_gets_the_tasks_data_whole() {
+        let rows: Vec<Value> = (0..5_000).map(|i| serde_json::json!({"sku": format!("sku-{i:05}")})).collect();
+        let input = Value::Array(rows);
+        let req = Request {
+            run_id: "r",
+            key: "k",
+            owner_agent_id: "owner",
+            workflow_name: "W",
+            task: "Price these",
+            input: &input,
+            contract: "",
+            timeout_secs: 60,
+        };
+        let told = done_means(&req);
+        assert!(told.contains(&input.to_string()), "all {} chars of it", input.to_string().len());
+        assert!(told.contains("sku-04999"));
     }
 }

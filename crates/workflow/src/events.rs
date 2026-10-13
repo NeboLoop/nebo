@@ -192,7 +192,7 @@ impl EventDispatcher {
                     insert_event_envelope(
                         &mut inputs,
                         &event.source,
-                        summarize_event_payload(&event.payload),
+                        event_payload_for_inputs(&event.payload),
                         &event.origin,
                     );
 
@@ -286,56 +286,39 @@ fn source_matches(pattern: &str, source: &str) -> bool {
     false
 }
 
-/// Summarize an event payload for workflow inputs.
+/// An event payload for workflow inputs: whole, never cut. A workflow never
+/// silently loses data — a payload too large for the model's context window
+/// fails the step loudly when it is sent.
 ///
-/// Plugin event payloads (e.g. raw Gmail API responses) can be enormous (100KB+).
-/// This extracts the useful fields into a clean, compact object the LLM can parse.
-/// For email-like payloads with nested `payload.headers`, promotes From/To/Subject/Date
-/// to top-level fields alongside `snippet`, `id`, `labels`, etc.
-fn summarize_event_payload(payload: &serde_json::Value) -> serde_json::Value {
+/// Plugin event payloads (e.g. raw Gmail API responses) can be enormous
+/// (100KB+), with the useful fields buried in MIME structure. For a payload
+/// over 8KB, email-style fields are also promoted to the top level beside
+/// what is already there: From/To/Cc/Subject/Date/Reply-To from
+/// `payload.headers`, and the attachment handles in `payload.parts`. A
+/// top-level key the payload already has is never overwritten.
+fn event_payload_for_inputs(payload: &serde_json::Value) -> serde_json::Value {
     let map = match payload.as_object() {
         Some(m) => m,
         None => return payload.clone(),
     };
-
-    // If payload is small enough (<8KB serialized), pass it through
     let raw_len = serde_json::to_string(payload).map(|s| s.len()).unwrap_or(0);
     if raw_len < 8_000 {
         return payload.clone();
     }
+    let mut out = map.clone();
 
-    // Extract all scalar values (id, snippet, historyId, etc.)
-    let mut summary = serde_json::Map::new();
-    for (k, v) in map {
-        match v {
-            serde_json::Value::Object(_) => {}
-            serde_json::Value::Array(arr) => {
-                // Keep small arrays (e.g. labelIds), skip large ones
-                if arr.len() <= 20 {
-                    summary.insert(k.clone(), v.clone());
-                }
-            }
-            _ => {
-                summary.insert(k.clone(), v.clone());
-            }
-        }
-    }
-
-    // Promote attachment handles (email-style payloads: payload.parts[], possibly
-    // nested multiparts). The full `payload` object is dropped above for being an
-    // object, which is precisely when attachments exist — a message with a real
-    // attachment is always over the size cutoff. Without this promotion every
-    // "process the attachment" workflow would have to refetch the message just
-    // to rediscover the attachmentId the event already had in hand.
+    // Attachment handles (email-style payloads: payload.parts[], possibly
+    // nested multiparts): a "process the attachment" workflow reads the
+    // attachmentId here instead of digging for it or refetching the message.
     let mut attachments = Vec::new();
     if let Some(parts) = map.get("payload").and_then(|p| p.get("parts")) {
         collect_attachments(parts, &mut attachments);
     }
     if !attachments.is_empty() {
-        summary.insert("attachments".to_string(), serde_json::Value::Array(attachments));
+        out.entry("attachments").or_insert(serde_json::Value::Array(attachments));
     }
 
-    // Promote nested headers (email-style payloads: payload.headers[{name, value}])
+    // Headers (email-style payloads: payload.headers[{name, value}])
     if let Some(headers) = map
         .get("payload")
         .and_then(|p| p.get("headers"))
@@ -347,14 +330,15 @@ fn summarize_event_payload(payload: &serde_json::Value) -> serde_json::Value {
                 header.get("name").and_then(|n| n.as_str()),
                 header.get("value").and_then(|v| v.as_str()),
             ) {
-                if promote.contains(&name.to_lowercase().as_str()) {
-                    summary.insert(name.to_lowercase(), serde_json::json!(value));
+                let name = name.to_lowercase();
+                if promote.contains(&name.as_str()) {
+                    out.entry(name).or_insert(serde_json::json!(value));
                 }
             }
         }
     }
 
-    serde_json::Value::Object(summary)
+    serde_json::Value::Object(out)
 }
 
 /// Walk a Gmail-style MIME part tree collecting attachment handles.
@@ -405,15 +389,14 @@ mod tests {
     #[test]
     fn test_summarize_small_payload() {
         let small = serde_json::json!({"from": "alice@example.com", "subject": "Hello"});
-        let result = summarize_event_payload(&small);
+        let result = event_payload_for_inputs(&small);
         assert_eq!(result, small); // unchanged — under 8KB
     }
 
     #[test]
     fn test_summarize_promotes_attachment_handles() {
-        // A message with a real attachment is always over the 8KB cutoff, which
-        // drops `payload` wholesale — the promotion is the only way the
-        // attachmentId reaches the workflow.
+        // A message with a real attachment is always over the 8KB cutoff: its
+        // attachment handles are promoted beside the whole payload.
         let payload = serde_json::json!({
             "id": "msg9",
             "snippet": "invoice attached",
@@ -429,13 +412,23 @@ mod tests {
                 ]
             }
         });
-        let result = summarize_event_payload(&payload);
+        let result = event_payload_for_inputs(&payload);
         let atts = result["attachments"].as_array().unwrap();
         assert_eq!(atts.len(), 1); // inline text parts are NOT attachments
         assert_eq!(atts[0]["filename"], "invoice.pdf");
         assert_eq!(atts[0]["attachmentId"], "ATT123");
         assert_eq!(atts[0]["size"], 52133);
         assert_eq!(result["from"], "vendor@example.com");
+    }
+
+    /// A large event payload reaches the workflow whole: a 500-record
+    /// list and its nested objects are all there.
+    #[test]
+    fn a_large_event_payload_is_kept_whole() {
+        let records: Vec<serde_json::Value> =
+            (0..500).map(|i| serde_json::json!({"id": i, "detail": {"name": format!("lead-{i}")}})).collect();
+        let payload = serde_json::json!({"batch": "b1", "records": records, "meta": {"page": 1}});
+        assert_eq!(event_payload_for_inputs(&payload), payload);
     }
 
     #[test]
@@ -462,7 +455,7 @@ mod tests {
             }
         });
 
-        let result = summarize_event_payload(&payload);
+        let result = event_payload_for_inputs(&payload);
         let map = result.as_object().unwrap();
 
         // Scalars promoted
@@ -475,11 +468,12 @@ mod tests {
         assert_eq!(map["subject"], "Meeting tomorrow");
         assert_eq!(map["to"], "bob@example.com");
 
-        // Labels kept (small array)
+        // Labels kept
         assert!(map.contains_key("labelIds"));
 
-        // Massive nested payload removed
-        assert!(!map.contains_key("payload"));
+        // The whole payload stays: nothing is dropped
+        assert_eq!(map["payload"], payload["payload"]);
+        assert_eq!(map["payload"]["body"]["data"].as_str().map(str::len), Some(10_000));
     }
 
     /// The assessment thread, through the real dispatcher path: four
