@@ -249,9 +249,9 @@ pub(crate) struct ModelCall<'a> {
     /// The compaction threshold, logged beside the context usage.
     pub context_limit: usize,
     /// Issues this run's tool credential, for a provider that runs tools
-    /// itself over /agent/mcp (the CLI providers). Revoked when the call ends.
-    pub tool_credential:
-        Option<&'a (dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)>,
+    /// itself over /agent/mcp (the CLI and linked providers), for the linked
+    /// chat it names, if any. Revoked when the call ends.
+    pub tool_credential: Option<&'a crate::tool_credentials::Issue<'a>>,
     /// Each tool call as its input completes in the stream, for the tool
     /// executor to start while the reply streams. Dropped when the call
     /// returns, which tells the executor the stream is over.
@@ -434,11 +434,12 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         chat_req.model = String::new();
     }
 
-    // A CLI provider's tool calls come back over /agent/mcp carrying this
-    // credential, and execute as this run until the call returns.
+    // A CLI or linked provider's tool calls come back over /agent/mcp
+    // carrying this credential, and execute as this run until the call
+    // returns. A linked agent keeps its chat's one token across turns.
     let run_credential = match tool_credential {
         Some(issue) if provider.handles_tools() => {
-            let guard = issue();
+            let guard = issue(provider.linked().map(|_| chat_req.chat_id.as_str()));
             chat_req.tool_credential = Some(guard.token().to_string());
             Some(guard)
         }

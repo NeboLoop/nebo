@@ -973,7 +973,7 @@ pub fn build_providers(
         host if host.is_empty() => "Nebo".to_owned(),
         host => format!("Nebo on {host}"),
     };
-    providers.push(Arc::new(ai::LinkedProvider::new(relay, store.clone(), local_host.cloned(), &device)));
+    providers.push(Arc::new(ai::LinkedProvider::new(relay, store.clone(), local_host.cloned(), &device, cfg.port)));
 
     providers
 }

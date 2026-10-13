@@ -1894,16 +1894,19 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         };
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
-            move || {
+            move |chat: Option<&str>| {
                 // The CLI was sent every tool's definition (`tools/list` on
                 // /agent/mcp), deferred ones too: none of its calls is to a
                 // tool it was never sent, so no error carries a definition.
                 let mut ctx = tool_scope.tool_context();
                 ctx.declared_tools = None;
-                credentials.issue(crate::tool_credentials::RunGrant {
-                    ctx,
-                    agent_id: cx.agent_id().to_string(),
-                })
+                credentials.issue(
+                    crate::tool_credentials::RunGrant {
+                        ctx,
+                        agent_id: cx.agent_id().to_string(),
+                    },
+                    chat,
+                )
             }
         });
         let fork_of = request.clone();
@@ -1993,7 +1996,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 context_limit: compact::checkpoint::Trigger::threshold(context_window, max_output),
                 tool_credential: issue_credential
                     .as_ref()
-                    .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
+                    .map(|issue| issue as &crate::tool_credentials::Issue<'_>),
                 tool_calls_out,
                 folds: reply_folds,
                 heard_through: reply_heard_through.as_deref(),

@@ -969,7 +969,7 @@ mod boundary_tests {
     #[tokio::test]
     async fn a_run_credential_reaches_agent_mcp_alone() {
         let b = loopback_bind();
-        let guard = b.credentials.issue(agent::RunGrant { ctx: Default::default(), agent_id: "emp-1".into() });
+        let guard = b.credentials.issue(agent::RunGrant { ctx: Default::default(), agent_id: "emp-1".into() }, None);
         let token = guard.token().to_string();
         let run = || ("x-nebo-run-credential", token.as_str());
         assert_eq!(send(b.clone(), request("POST", "/agent/mcp", LOCAL, &[HOST, run()])).await.0, StatusCode::OK);

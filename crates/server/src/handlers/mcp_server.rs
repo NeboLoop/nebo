@@ -67,7 +67,7 @@ pub async fn agent_mcp_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let req: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -78,11 +78,19 @@ pub async fn agent_mcp_handler(
                     -32700,
                     format!("Parse error: {}", e),
                 )),
-            );
+            )
+                .into_response();
         }
     };
 
     info!(method = %req.method, "MCP request");
+
+    // A notification (no id) is answered 202 with no body, as MCP's
+    // Streamable HTTP transport says: a client such as Codex's drops a
+    // server that answers one with a JSON-RPC response.
+    if req.id.is_none() {
+        return StatusCode::ACCEPTED.into_response();
+    }
 
     let resp = match req.method.as_str() {
         "initialize" => JsonRpcResponse::success(
@@ -190,7 +198,7 @@ pub async fn agent_mcp_handler(
         }
     };
 
-    (StatusCode::OK, axum::Json(resp))
+    (StatusCode::OK, axum::Json(resp)).into_response()
 }
 
 /// Run one `tools/call` that arrived over `/agent/mcp`.
