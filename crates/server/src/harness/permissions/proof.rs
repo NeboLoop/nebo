@@ -542,7 +542,7 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
     };
     let hosted = local.host(nebo_runtimes::acp::Agent::ClaudeCode, coder).await.unwrap();
     let relay = ai::Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) };
-    let linked = ai::LinkedProvider::new(relay, nebo.store().clone(), Some(local.clone()), "Nebo proof");
+    let linked = ai::LinkedProvider::new(relay, nebo.store().clone(), Some(local.clone()), "Nebo proof", 0);
     nebo.state
         .harness
         .reload_providers(vec![Arc::new(Quiet) as Arc<dyn ai::Provider>, Arc::new(linked)])
@@ -638,6 +638,164 @@ async fn a_linked_agents_ask_is_answered_once_in_its_own_turn() {
         ],
         "each task sent once after the employee's mode, each ask answered once by its kind"
     );
+}
+
+/// Not a proof when the harness runs it: the coding agent
+/// [`a_linked_agent_calls_nebos_tools_as_each_turn`] hires (this test binary
+/// again, with `NEBO_PROOF_TOOL_AGENT` naming the file it writes what it was
+/// given and what Nebo answered to). It takes HTTP MCP servers; every
+/// message, it lists `nebo-agent`'s tools and calls one with the header it
+/// was given when its session opened, then ends the turn.
+#[test]
+fn fake_tool_agent() {
+    use std::io::{BufRead, Read, Write};
+    let Ok(told) = std::env::var("NEBO_PROOF_TOOL_AGENT") else {
+        return;
+    };
+    let note = |line: Value| {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&told).unwrap();
+        writeln!(file, "{line}").unwrap();
+    };
+    let send = |frame: Value| {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{frame}").unwrap();
+        out.flush().unwrap();
+    };
+    // One JSON-RPC call to the MCP server `server`: its HTTP status and body.
+    let mcp = |server: &Value, body: Value| -> (u16, Value) {
+        let url = server["url"].as_str().unwrap_or_default();
+        let rest = url.strip_prefix("http://").unwrap_or_default();
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let headers: String = server["headers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|h| format!("{}: {}\r\n", h["name"].as_str().unwrap_or_default(), h["value"].as_str().unwrap_or_default()))
+            .collect();
+        let body = body.to_string();
+        let Ok(mut stream) = std::net::TcpStream::connect(authority) else {
+            return (0, Value::Null);
+        };
+        let request = format!(
+            "POST /{path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        let status = response.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let json = response.split_once("\r\n\r\n").and_then(|(_, b)| serde_json::from_str(b.trim()).ok()).unwrap_or(Value::Null);
+        (status, json)
+    };
+    send(Value::Null);
+    let mut server = Value::Null;
+    for line in std::io::stdin().lock().lines() {
+        let Ok(message) = serde_json::from_str::<Value>(&line.unwrap()) else {
+            continue;
+        };
+        let id = message["id"].clone();
+        let reply = |result: Value| send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+        match message["method"].as_str() {
+            Some("initialize") => reply(json!({ "protocolVersion": 1,
+                "agentCapabilities": { "loadSession": false, "mcpCapabilities": { "http": true } },
+                "agentInfo": { "name": "proof-tool-agent" } })),
+            Some("session/new") => {
+                server = message["params"]["mcpServers"]
+                    .as_array()
+                    .and_then(|s| s.iter().find(|s| s["name"] == "nebo-agent"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                note(json!({ "given": server }));
+                reply(json!({ "sessionId": "s-1" }));
+            }
+            Some("session/prompt") => {
+                let (listed, tools) = mcp(&server, json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
+                let count = tools["result"]["tools"].as_array().map_or(0, Vec::len);
+                let (called, answer) = mcp(&server, json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": { "name": "no_such_tool", "arguments": {} } }));
+                let text = answer["result"]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+                note(json!({ "listed": listed, "tools": count, "called": called, "answer": text }));
+                send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s-1", "update": {
+                    "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": format!("Listed {count} tools.") } } } }));
+                reply(json!({ "stopReason": "end_turn" }));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Customers asked for it many times: a coding agent Nebo hosts (Claude
+/// Code, Codex, ...) acts on Nebo with Nebo's own tools. Its session is
+/// given Nebo's `/agent/mcp` as `nebo-agent` once, when it opens, with the
+/// chat's one credential; each turn grants that credential the turn's run
+/// and the grant ends with the turn. So the agent's tools work on its first
+/// turn and on every turn after in the same session, and between turns the
+/// credential executes nothing. Through the real server, the real linked
+/// provider and host, and a coding agent process; no model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_linked_agent_calls_nebos_tools_as_each_turn() {
+    const BOT: &str = "5e1f0000-0000-4000-8000-0000000c0de6";
+    let nebo = session().await;
+    let root = tempfile::tempdir().unwrap();
+    let told_path = root.path().join("told.jsonl");
+    let local = ai::LocalHost::open(
+        Arc::new(|| Some(BOT.to_owned())),
+        root.path().join("link"),
+        root.path().join("home"),
+        Some(root.path().join("nebo-link")),
+    )
+    .unwrap();
+    let coder = nebo_runtimes::RuntimeCommand {
+        program: std::env::current_exe().unwrap().to_string_lossy().into_owned(),
+        args: ["harness::permissions::proof::fake_tool_agent", "--exact", "--nocapture", "--test-threads=1"]
+            .map(String::from)
+            .to_vec(),
+        env: vec![("NEBO_PROOF_TOOL_AGENT".into(), told_path.to_string_lossy().into_owned())],
+    };
+    let hosted = local.host(nebo_runtimes::acp::Agent::Codex, coder).await.unwrap();
+    let relay = ai::Relay::Hub { api_url: "http://127.0.0.1:9".into(), token: Arc::new(|| None) };
+    let linked = ai::LinkedProvider::new(relay, nebo.store().clone(), Some(local.clone()), "Nebo proof", nebo.port);
+    nebo.state
+        .harness
+        .reload_providers(vec![Arc::new(Quiet) as Arc<dyn ai::Provider>, Arc::new(linked)])
+        .await;
+
+    let agent = format!("lc-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    nebo.store()
+        .create_agent(&agent, Some("linked"), "Proof Tools", "", "---\nname: Proof Tools\n---\n", "{}", None, None)
+        .unwrap();
+    nebo.store()
+        .upsert_entity_config("agent", &agent, &json!({ "modelPreference": ai::LinkedProvider::model_id(BOT, &hosted.id) }))
+        .unwrap();
+    let chat = uuid::Uuid::new_v4().to_string();
+    nebo.store().create_chat(&chat, "Proof").unwrap();
+    let key = format!("agent:{agent}:thread:{chat}");
+    let state = &nebo.state;
+
+    for (turn, prompt) in [(1, "list your tools"), (2, "and again")] {
+        let spoken = crate::handlers::voice::run_delegated_task(state, &key, prompt, prompt, None, None).await.text;
+        assert!(spoken.contains("tools."), "turn {turn}: {spoken}");
+        until("the turn is over", || !state.harness.is_session_busy(&key)).await;
+    }
+
+    let told = coder_told(&told_path);
+    let given: Vec<&Value> = told.iter().filter_map(|t| t.get("given")).collect();
+    assert_eq!(given.len(), 1, "one session, given the server once: {told:?}");
+    assert_eq!(given[0]["type"], "http");
+    assert_eq!(given[0]["url"], format!("http://127.0.0.1:{}/agent/mcp", nebo.port));
+    let header = &given[0]["headers"][0];
+    assert_eq!(header["name"], "X-Nebo-Run-Credential");
+    let token = header["value"].as_str().expect("the chat's credential");
+    let turns: Vec<&Value> = told.iter().filter(|t| t.get("listed").is_some()).collect();
+    assert_eq!(turns.len(), 2, "{told:?}");
+    for (n, turn) in turns.iter().enumerate() {
+        assert_eq!(turn["listed"], 200, "turn {}: the credential it was given is live: {turn}", n + 1);
+        assert!(turn["tools"].as_u64().unwrap() > 0, "turn {}: Nebo's tools are listed: {turn}", n + 1);
+        assert_eq!(turn["called"], 200, "turn {}: {turn}", n + 1);
+        let answer = turn["answer"].as_str().unwrap();
+        assert!(!answer.is_empty() && !answer.contains("run has ended"), "turn {}: the call ran as the turn: {answer}", n + 1);
+    }
+    assert!(state.tool_credentials.grant(token).is_none(), "between turns the credential executes nothing");
 }
 
 /// The owner's chats and calls while another employee's ask waits:
