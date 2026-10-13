@@ -235,6 +235,12 @@ impl PluginCliTool {
 }
 
 impl DynTool for PluginCliTool {
+
+    /// The plugin runner's output limit: past it a chat's output is cut
+    /// within it, and a workflow's is saved whole and read in pages.
+    fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
+        Some(crate::MAX_SUBPROCESS_OUTPUT)
+    }
     fn name(&self) -> &str {
         &self.name
     }

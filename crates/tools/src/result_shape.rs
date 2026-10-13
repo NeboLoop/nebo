@@ -36,7 +36,7 @@ pub fn results_dir(session_id: &str) -> PathBuf {
 /// Shape a finished call's result for the model: an empty success names
 /// the tool, a long error keeps head and tail, and a success over the
 /// threshold is saved under `dir` (a session's [`results_dir`]) and previewed.
-pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, result: &mut ToolResult) {
+pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, reader: Reader, result: &mut ToolResult) {
     if result.is_error {
         cap_error(&mut result.content);
         return;
@@ -52,7 +52,7 @@ pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, result: &mut Tool
     if let Some(limit) = threshold
         && result.content.chars().count() > limit
     {
-        result.content = persist(dir, &result.content);
+        result.content = persist(dir, &result.content, reader);
     }
 }
 
@@ -83,22 +83,53 @@ pub fn persist_cleared(dir: &Path, content: &str) -> Option<String> {
     }
 }
 
+/// Who reads a saved result back: a chat turn with `read_file`, or a
+/// workflow step with `read_step_data` (its tools are its own; a page is
+/// sized to what its model has left).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reader {
+    File,
+    StepData,
+}
+
+impl Reader {
+    /// A workflow's calls are read back by its step.
+    pub fn of(door: &types::permissions::Door) -> Self {
+        if *door == types::permissions::Door::Workflow { Self::StepData } else { Self::File }
+    }
+}
+
+/// Characters of the summary a workflow step reads in place of a saved
+/// result.
+const STEP_SUMMARY_CHARS: usize = 1_500;
+
 /// Save `content` in `dir` (a session's [`results_dir`]) and return what
-/// the model sees in its place: the size, the path and a preview cut at a
-/// newline. A failed write keeps the preview and says the rest is gone.
-pub fn persist(dir: &Path, content: &str) -> String {
+/// the model sees in its place: the size, where it is and how `reader`
+/// reads it — for a chat turn a preview cut at a newline and `read_file`;
+/// for a workflow step a summary (kind, size, fields, first items) and
+/// `read_step_data`. A failed write keeps the preview and says the rest is
+/// gone.
+pub fn persist(dir: &Path, content: &str, reader: Reader) -> String {
     let saved = save(dir, content);
     let size = human_size(content.len());
     let preview = preview(content);
-    match saved {
-        Ok(path) => format!(
+    match (saved, reader) {
+        (Ok(path), Reader::File) => format!(
             "{SAVED_OUTPUT}\nThe output is {size}, too long to show here. Saved in full at: {}\n\n\
              First 2KB:\n{preview}\n</saved-output>\n\
              Read the file a line range at a time with read_file (offset and limit), or search it with \
              run_command(command: \"grep -n '<text>' {0}\"); don't read it whole.",
             path.display()
         ),
-        Err(e) => {
+        (Ok(path), Reader::StepData) => {
+            let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let source = crate::step_data::Source::new(format!("{}{stem}", crate::step_data::SAVED), "");
+            format!(
+                "{SAVED_OUTPUT}\nThe output is {size}, too long to show here, and was saved whole.\n{}\n</saved-output>",
+                crate::step_data::described(&crate::step_data::parse(content), &source, STEP_SUMMARY_CHARS)
+            )
+        }
+        (Err(e), _) => {
             tracing::warn!(error = %e, "failed to persist a large tool result");
             format!(
                 "{SAVED_OUTPUT}\nThe output is {size}, too long to show here, and saving it failed ({e}); \
@@ -229,7 +260,7 @@ mod tests {
         {
             let body: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
             let mut r = ToolResult::ok(body.clone());
-            shape("run_command", &dir, threshold(Some(30_000)), &mut r);
+            shape("run_command", &dir, threshold(Some(30_000)), Reader::File, &mut r);
             assert!(r.content.starts_with("<saved-output>\nThe output is "));
             assert!(r.content.contains("First 2KB:\nline 0\n"));
             let path = r
@@ -250,17 +281,17 @@ mod tests {
         assert_eq!(threshold(Some(100_000)), Some(PERSIST_THRESHOLD_CHARS));
         assert_eq!(threshold(None), None);
         let mut r = ToolResult::ok("x".repeat(200_000));
-        shape("read_file", Path::new("/nonexistent"), threshold(None), &mut r);
+        shape("read_file", Path::new("/nonexistent"), threshold(None), Reader::File, &mut r);
         assert_eq!(r.content.len(), 200_000, "a self-paging tool's result is untouched");
     }
 
     #[test]
     fn empty_success_names_the_tool_and_errors_keep_head_and_tail() {
         let mut r = ToolResult::ok("");
-        shape("read_file", Path::new("/nonexistent"), Some(10), &mut r);
+        shape("read_file", Path::new("/nonexistent"), Some(10), Reader::File, &mut r);
         assert_eq!(r.content, "(read_file returned no output)");
         let mut e = ToolResult::error(format!("{}{}", "a".repeat(8_000), "z".repeat(8_000)));
-        shape("run_command", Path::new("/nonexistent"), Some(10), &mut e);
+        shape("run_command", Path::new("/nonexistent"), Some(10), Reader::File, &mut e);
         assert!(e.content.starts_with("aaaa") && e.content.ends_with("zzzz"));
         assert!(e.content.contains("[6000 characters truncated]"), "{}", &e.content[4_990..5_040]);
         assert!(e.is_error);

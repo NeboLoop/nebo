@@ -1137,6 +1137,7 @@ impl Registry {
             name,
             &crate::result_shape::results_dir(&ctx.session_id),
             threshold,
+            crate::result_shape::Reader::of(&ctx.door),
             &mut result,
         );
         if result.is_error {
@@ -1451,6 +1452,7 @@ impl Registry {
             crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone(), teams.clone(), self.coworker_rail.clone()).tools(),
             crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
             crate::history_tools::History::new(store.clone()).tools(),
+            vec![Box::new(crate::step_data::ReadStepDataTool::new(store.clone())) as Box<dyn DynTool>],
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
             crate::research_tools::Research::new(structured_agent, orchestrator.clone()).tools(),
             crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone(), agent_loader.clone(), agent_reg.clone()).tools(),
@@ -2570,6 +2572,32 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
         let short = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi"})).await;
         assert_eq!(short.content, "hi");
+    }
+
+    /// In a workflow step a result over its tool's threshold is saved whole
+    /// and handed as a summary with the read_step_data call that reads it,
+    /// a bounded page at a time.
+    #[tokio::test]
+    async fn a_workflow_steps_long_result_is_saved_whole_and_read_in_pages() {
+        let r = echo_registry().await;
+        let ctx = ToolContext {
+            session_id: format!("wp0-step-{}", uuid::Uuid::new_v4()),
+            door: types::permissions::Door::Workflow,
+            context_room: Some(3_000),
+            ..Default::default()
+        };
+        let out = r.execute(&ctx, "echo_text", serde_json::json!({"text": "line of text\n", "times": 20_000})).await;
+        assert!(out.content.starts_with(crate::result_shape::SAVED_OUTPUT), "{}", &out.content[..200]);
+        assert!(out.content.contains("Text, 260,000 characters, 20,000 lines."), "{}", out.content);
+        let call = out.content.split("read_step_data ").nth(1).and_then(|c| c.split(". Each page").next()).unwrap();
+        let args: serde_json::Value = serde_json::from_str(call).unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let reader = crate::step_data::ReadStepDataTool::new(Arc::new(db::Store::new(&db.path().join("s.db").to_string_lossy()).unwrap()));
+        let page = reader.execute_dyn(&ctx, args).await;
+        assert!(!page.is_error, "{}", page.content);
+        assert!(page.content.contains("Characters 0–") && page.content.contains("of 260,000"), "{}", &page.content[..120]);
+        assert!(page.content.len() <= 3_000 + 200, "a page sized to the room left: {}", page.content.len());
+        let _ = std::fs::remove_dir_all(crate::result_shape::results_dir(&ctx.session_id).parent().unwrap());
     }
 
     /// A result a program reads (a workflow's command, http or operation

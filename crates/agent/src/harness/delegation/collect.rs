@@ -188,7 +188,7 @@ pub fn spill_if_long(text: &str, spill_dir: &Path) -> String {
     if text.chars().count() <= RESULT_CAP {
         return text.to_string();
     }
-    tools::result_shape::persist(spill_dir, text)
+    tools::result_shape::persist(spill_dir, text, tools::result_shape::Reader::File)
 }
 
 /// The first `max` characters of `s`, cut on a character boundary.

@@ -396,6 +396,11 @@ pub struct ToolContext {
     /// previewed (`result_shape`), never paged. A workflow never silently
     /// loses data. Not forgeable from tool input.
     pub whole_result: bool,
+    /// Tokens the step's model has left for this round's results (its
+    /// context threshold less the request just sent), set by the turn for
+    /// every call it makes. A tool that pages its output sizes a page from
+    /// it (`step_data::page_chars`). `None` outside a model's step.
+    pub context_room: Option<usize>,
     /// Engine-stamped provenance snapshot of the run at this iteration — the
     /// classes of untrusted content the run has touched so far (accumulated by
     /// the runner from the static tool→class table). Read-only for tools; the

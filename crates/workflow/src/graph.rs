@@ -111,6 +111,9 @@ struct WalkScope {
     stop_node: Option<String>,
     /// Current loop item, exposed to expressions as `item`.
     item: Option<serde_json::Value>,
+    /// Where the item lives in the run, so a step handed it as a summary
+    /// reads it from there.
+    item_source: Option<ItemSource>,
     /// Dotted loop scope path — "" at top level, "2" inside the third item of
     /// a loop, "2.0" for the first item of a loop nested inside that one. This
     /// is the identity the resume fast-forward matches on; without it every
@@ -209,6 +212,7 @@ pub(crate) async fn execute_graph(
         indegree: top_indegree(&ctx),
         stop_node: None,
         item: None,
+        item_source: None,
         iteration: String::new(),
         outputs: None,
     };
@@ -988,6 +992,12 @@ fn interpolate_strings(value: &mut serde_json::Value, data: &serde_json::Value) 
 /// values are inserted verbatim; anything else is inserted as JSON. Unknown
 /// paths are left as-is so a typo is visible in the executed command.
 fn interpolate_context(template: &str, data: &serde_json::Value) -> String {
+    interpolate_with(template, data, &|_, value| value_as_string(value))
+}
+
+/// [`interpolate_context`] with each resolved value rendered by `render`
+/// (its path and value).
+fn interpolate_with(template: &str, data: &serde_json::Value, render: &dyn Fn(&str, &serde_json::Value) -> String) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(start) = rest.find("{{") {
@@ -999,8 +1009,7 @@ fn interpolate_context(template: &str, data: &serde_json::Value) -> String {
         };
         let path = after[..end].trim();
         match resolve_path(data, path) {
-            Some(serde_json::Value::String(s)) => out.push_str(&s),
-            Some(v) => out.push_str(&v.to_string()),
+            Some(v) => out.push_str(&render(path, &v)),
             None => {
                 out.push_str("{{");
                 out.push_str(path);
@@ -1148,6 +1157,7 @@ async fn run_http<'a>(
         started_at,
         Some(chrono::Utc::now().timestamp()),
     );
+    let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &result.content);
     info!(activity = activity.id.as_str(), "http node completed");
     record_output(ctx, scope, &activity.id, result.content);
     route(ctx, scope, &activity.id, |_| true).await
@@ -1163,7 +1173,7 @@ async fn run_http<'a>(
 ///
 /// `params.state` is a data path (`inputs._event_payload`, `item`,
 /// `nodes.fetch.body`); a path that resolves to nothing is sent as the
-/// literal text, and a state over [`DECIDE_STATE_CAP`] is clipped.
+/// literal text, and a state over [`DECIDE_STATE_CAP`] goes as its summary ([`decide_state`]).
 /// `params.questions` is the Jev question map, passed through as-is (an
 /// object, or a JSON string from the builder's textarea).
 ///
@@ -1217,7 +1227,7 @@ async fn run_decide<'a>(
     let state_path = param_str(activity, "state");
     let state = resolve_path(&data, state_path)
         .unwrap_or_else(|| serde_json::Value::String(state_path.to_string()));
-    let state = cap_decide_state(&activity.id, state);
+    let (state, summarized) = decide_state(&activity.id, state);
 
     let trace = ai::RequestTrace {
         agent_id: ctx.agent_id.clone(),
@@ -1273,12 +1283,9 @@ async fn run_decide<'a>(
                 started_at,
                 Some(chrono::Utc::now().timestamp()),
             );
-            record_output(
-                ctx,
-                scope,
-                &activity.id,
-                serde_json::Value::Object(output).to_string(),
-            );
+            let content = serde_json::Value::Object(output).to_string();
+            let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &content);
+            record_output(ctx, scope, &activity.id, content);
             return route(ctx, scope, &activity.id, |_| true).await;
         }
     };
@@ -1293,6 +1300,9 @@ async fn run_decide<'a>(
         }
     }
     output.insert("model".into(), serde_json::Value::String(decision.model.clone()));
+    if summarized {
+        output.insert("state_summarized".into(), serde_json::Value::Bool(true));
+    }
 
     let tokens = (decision.usage.input_tokens + decision.usage.output_tokens) as i64;
     let _ = ctx.store.create_activity_result(
@@ -1315,35 +1325,39 @@ async fn run_decide<'a>(
         answers = decision.answers.len(),
         "decide node completed"
     );
-    record_output(ctx, scope, &activity.id, serde_json::Value::Object(output).to_string());
+    let content = serde_json::Value::Object(output).to_string();
+    let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &content);
+    record_output(ctx, scope, &activity.id, content);
     route(ctx, scope, &activity.id, |_| true).await
 }
 
 /// Most bytes of state one `decide` node sends, about 6k tokens and under
 /// the decision service's state limit. A whole event payload or tool result
-/// can be far larger; past this the state is clipped at both ends.
+/// can be far larger.
 const DECIDE_STATE_CAP: usize = ai::decide::STATE_CAP;
 
-/// Clip a `decide` node's state to [`DECIDE_STATE_CAP`] bytes of JSON. A
-/// state within the cap goes as it is; a larger one goes as its JSON text,
-/// clipped at both ends ([`ai::decide::clip`]), and the cut is logged so an
-/// author can narrow `params.state`.
-fn cap_decide_state(activity_id: &str, state: serde_json::Value) -> serde_json::Value {
-    let text = match &state {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    if text.len() <= DECIDE_STATE_CAP {
-        return state;
+/// A `decide` node's state within [`DECIDE_STATE_CAP`]: as it is when it
+/// fits, else its summary (`tools::step_data::summary`: its own summary,
+/// kind, size, fields, then as much of its first items or fields as fit)
+/// as text, and `true`. Nothing is cut silently: the node's output says the
+/// decision was made on a summary, and the state stays whole in the run.
+fn decide_state(activity_id: &str, state: serde_json::Value) -> (serde_json::Value, bool) {
+    let size = tools::step_data::chars(&state);
+    if size <= DECIDE_STATE_CAP {
+        return (state, false);
     }
     warn!(
         site = "decide_node",
         activity = activity_id,
-        bytes = text.len(),
+        bytes = size,
         cap = DECIDE_STATE_CAP,
-        "decide state over the cap; clipped at both ends (narrow params.state)"
+        "decide state over the decision service's limit; deciding on its summary (narrow params.state)"
     );
-    serde_json::Value::String(ai::decide::clip(&text, DECIDE_STATE_CAP).into_owned())
+    let state = match state {
+        serde_json::Value::String(s) => tools::step_data::parse(&s),
+        other => other,
+    };
+    (serde_json::Value::String(tools::step_data::summary(&state, DECIDE_STATE_CAP)), true)
 }
 
 /// Expert step: the work is done by another agent (`params.expert`), asked
@@ -1662,6 +1676,12 @@ async fn run_loop<'a>(
     let taken_items: Vec<serde_json::Value> = taken.iter().map(|(_, item)| item.clone()).collect();
     let ceiling = declared_concurrency.unwrap_or(processed).max(1) as usize;
 
+    // Where each item lives in the run: the source list, read from there by
+    // a step handed the item as a summary.
+    let list_source = source_of(source, &data, &scope.iteration, scope.item_source.as_ref())
+        .filter(|(_, range)| range.is_none())
+        .map(|(s, _)| s);
+    let list_source = &list_source;
     let body = &body;
     let entry_edges = &entry_edges;
     // On success an iteration returns its scope-local outputs, so the loop
@@ -1677,11 +1697,22 @@ async fn run_loop<'a>(
             .as_ref()
             .map(|l| l.lock().unwrap().clone())
             .unwrap_or_default();
+        let item_source = list_source.as_ref().map(|list| match &item {
+            serde_json::Value::Array(batch) if batch_size > 1 => ItemSource {
+                source: list.clone(),
+                range: Some((idx as usize * batch_size, batch.len())),
+            },
+            _ => ItemSource {
+                source: tools::step_data::Source::new(format!("{}.{idx}", list.path), list.at.clone()),
+                range: None,
+            },
+        });
         let body_scope = WalkScope {
             arrivals: Mutex::new(HashMap::new()),
             indegree: body_indegree(ctx, &activity.id, body),
             stop_node: Some(activity.id.clone()),
             item: Some(item),
+            item_source,
             iteration: if scope.iteration.is_empty() {
                 idx.to_string()
             } else {
@@ -1870,12 +1901,10 @@ async fn run_loop<'a>(
             detail
         ));
     }
-    record_output(
-        ctx,
-        scope,
-        &activity.id,
-        serde_json::json!({ "summary": summary, "results": results }).to_string(),
-    );
+    // Kept whole in the run: a later step reads it from there.
+    let content = serde_json::json!({ "summary": summary, "results": results }).to_string();
+    let _ = ctx.store.set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &content);
+    record_output(ctx, scope, &activity.id, content);
     info!(activity = activity.id.as_str(), processed, "loop completed");
     route(ctx, scope, &activity.id, |label| label == Some("Done")).await
 }
@@ -1889,14 +1918,25 @@ async fn run_llm_activity<'a>(
     activity: &Activity,
 ) -> Result<(), WorkflowError> {
     let parents = ctx.parents.get(&activity.id).map(Vec::as_slice).unwrap_or_default();
-    let (resolved, prior_context) =
-        step_context(activity, parents, &scope_outputs(ctx, scope), ctx.inputs, scope.item.as_ref());
+    let outputs = scope_outputs(ctx, scope);
+    let step = step_context(
+        activity,
+        parents,
+        StepData {
+            outputs: &outputs,
+            inputs: ctx.inputs,
+            item: scope.item.as_ref(),
+            item_source: scope.item_source.as_ref(),
+            at: &scope.iteration,
+            budget: data_budget(ctx.loop_impl.context_chars(&ctx.agent_id, &activity.model)),
+        },
+    );
 
     // Tool assembly mirrors the sequential path (same scoping — see
     // scoped_activity_tools); the emit tool is injected only on terminal
     // nodes (edge to __emit__).
     let mut activity_tools: Vec<&Box<dyn DynTool>> =
-        crate::engine::scoped_activity_tools(activity, ctx.resolved_tools);
+        crate::engine::scoped_activity_tools(&step.activity, ctx.resolved_tools);
     // The producing seat rides every emitted payload and every address it
     // raises (R6) — the graph path stamps it exactly as the sequential path does.
     let emit_tool_box: Option<Box<dyn DynTool>> = ctx.event_bus.map(|bus| {
@@ -1923,11 +1963,11 @@ async fn run_llm_activity<'a>(
     // Output tokens only — the unit token budgets are enforced in.
     let mut spent_output: u32 = 0;
     match execute_activity_with_retry(
-        &resolved,
-        &prior_context,
+        &step.activity,
+        &step.prior,
         &ctx.memory_user_id,
         ctx.memory_writes_disabled,
-        ctx.inputs,
+        &step.inputs,
         ctx.decide,
         ctx.loop_impl,
         &activity_tools,
@@ -2051,30 +2091,111 @@ async fn run_llm_activity<'a>(
     }
 }
 
-/// What an AI activity's model reads of earlier steps, in both executors:
-/// the activity with its references resolved, and its Prior Results.
+/// The share of a step's model input its data may take: the rest is room
+/// for its instructions, its tools, the pages it reads and its reply.
+pub(crate) fn data_budget(context_chars: usize) -> usize {
+    context_chars / 2
+}
+
+/// Characters of the summary a step reads in place of one piece of data
+/// too large to hand it whole.
+const PIECE_SUMMARY_CHARS: usize = 1_500;
+
+/// Where a loop body's item lives in the run: the loop's source list and
+/// the item's place in it (`range`: a batch's first item and count).
+#[derive(Debug, Clone)]
+pub(crate) struct ItemSource {
+    source: tools::step_data::Source,
+    range: Option<(usize, usize)>,
+}
+
+/// What a step can see of the run, and the room its model has for it.
+pub(crate) struct StepData<'a> {
+    /// Every result this step can see, by activity id.
+    pub outputs: &'a HashMap<String, String>,
+    pub inputs: &'a serde_json::Value,
+    pub item: Option<&'a serde_json::Value>,
+    pub item_source: Option<&'a ItemSource>,
+    /// The loop iteration the step runs in ("" outside a loop).
+    pub at: &'a str,
+    /// Characters of data its model takes ([`data_budget`]).
+    pub budget: usize,
+}
+
+/// What an AI step is handed: the activity with its references resolved
+/// (and `read_step_data` among its tools when it may need it), its Prior
+/// Results, and its inputs as the prompt shows them.
+pub(crate) struct StepContext {
+    pub activity: Activity,
+    pub prior: String,
+    pub inputs: serde_json::Value,
+}
+
+/// One piece of a step's data: a parent's result, an input, the loop item
+/// or a `{{...}}` reference.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Piece {
+    Parent(String),
+    Input(String),
+    Item,
+    Ref(String),
+}
+
+/// The run data a data path names, as `read_step_data` reads it: a path
+/// rooted at `nodes.` or `inputs.` (a bare path resolves the way
+/// [`resolve_path`] does it), or into the loop item through its source.
+fn source_of(path: &str, data: &serde_json::Value, at: &str, item: Option<&ItemSource>) -> Option<(tools::step_data::Source, Option<(usize, usize)>)> {
+    use tools::step_data::Source;
+    let path = path.trim();
+    let (root, rest) = path.split_once('.').unwrap_or((path, ""));
+    match root {
+        "nodes" => Some((Source::new(path, at), None)),
+        "inputs" => Some((Source::new(path, ""), None)),
+        "item" => {
+            let item = item?;
+            let base = &item.source;
+            let join = |tail: &str| if tail.is_empty() { base.path.clone() } else { format!("{}.{tail}", base.path) };
+            match item.range {
+                None => Some((Source::new(join(rest), base.at.clone()), None)),
+                Some((start, count)) => match rest.split_once('.').unwrap_or((rest, "")) {
+                    ("", _) => Some((base.clone(), Some((start, count)))),
+                    (i, tail) => {
+                        let at_item = format!("{}", start + i.parse::<usize>().ok()?);
+                        let full = if tail.is_empty() { at_item } else { format!("{at_item}.{tail}") };
+                        Some((Source::new(join(&full), base.at.clone()), None))
+                    }
+                },
+            }
+        }
+        _ => {
+            let in_inputs = data.get("inputs").and_then(|i| i.get(root)).is_some();
+            let rooted = format!("{}.{path}", if in_inputs { "inputs" } else { "nodes" });
+            source_of(&rooted, data, at, item)
+        }
+    }
+}
+
+/// What an AI activity's model reads of earlier steps, in both executors.
 ///
 /// - References: `{{nodes.<id>}}`, `{{nodes.<id>.field}}`, `{{item.x}}`,
 ///   `{{inputs.x}}` in its intent and steps resolve the way a command
-///   step's do ([`interpolate_context`]), from ANY earlier step. This is how
-///   full data reaches a step.
-/// - Prior Results: one entry per parent that has run, each whole (a
-///   workflow never silently loses data: a result too large for the model's
-///   context window fails the step loudly when it is sent), then the loop
-///   item. Nothing from further back — a step that needs it names it. A
-///   parent the step references is left out: the reference already put what
-///   the step needs into its text.
+///   step's do ([`interpolate_context`]), from ANY earlier step.
+/// - Prior Results: one entry per parent that has run, then the loop item.
+///   Nothing from further back — a step that needs it names it. A parent
+///   the step references is left out: the reference already put what the
+///   step needs into its text.
+/// - Inputs, shown by the prompt.
+///
+/// All of it goes whole while it fits the model ([`StepData::budget`]).
+/// Past that, the largest pieces are handed as a summary each (kind, size,
+/// fields, first items: `tools::step_data::described`) with the
+/// `read_step_data` call that reads them a page at a time, until the rest
+/// fits. Nothing is cut: the data stays whole in the run.
 ///
 /// `parents` are the graph's result parents ([`result_parents`]), or the
-/// previous activity on the sequential path; `outputs` every result this
-/// step can see, by activity id.
-pub(crate) fn step_context(
-    activity: &Activity,
-    parents: &[String],
-    outputs: &HashMap<String, String>,
-    inputs: &serde_json::Value,
-    item: Option<&serde_json::Value>,
-) -> (Activity, String) {
+/// previous activity on the sequential path.
+pub(crate) fn step_context(activity: &Activity, parents: &[String], data: StepData<'_>) -> StepContext {
+    use tools::step_data::{chars, described, parse};
     let texts = || std::iter::once(&activity.intent).chain(&activity.steps);
     let referenced = |id: &str| {
         let open = format!("{{{{nodes.{id}");
@@ -2083,25 +2204,147 @@ pub(crate) fn step_context(
                 .any(|(i, _)| matches!(t[i + open.len()..].chars().next(), Some('.' | '}')))
         })
     };
-    let mut prior = String::new();
+    let all = data_of(data.outputs, data.inputs, data.item);
+    let has_refs = texts().any(|t| t.contains("{{"));
+
+    // Every piece and the characters it takes whole.
+    let mut pieces: Vec<(Piece, usize)> = Vec::new();
     for id in parents {
-        if let Some(result) = outputs.get(id).filter(|_| !referenced(id)) {
-            prior.push_str(&format!("\n[Activity '{id}' result]: {result}\n"));
+        if let Some(result) = data.outputs.get(id).filter(|_| !referenced(id)) {
+            pieces.push((Piece::Parent(id.clone()), result.len()));
         }
     }
-    if let Some(item) = item {
-        prior.push_str(&format!("\n[Current item]: {}\n", item));
+    if let serde_json::Value::Object(map) = data.inputs {
+        for (key, value) in map.iter().filter(|(k, _)| k.as_str() != "_emit") {
+            pieces.push((Piece::Input(key.clone()), chars(value)));
+        }
+    }
+    if let Some(item) = data.item {
+        pieces.push((Piece::Item, chars(item)));
+    }
+    if has_refs {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for text in texts() {
+            for path in placeholder_paths(text) {
+                *seen.entry(path.to_string()).or_default() += 1;
+            }
+        }
+        for (path, times) in seen {
+            if let Some(value) = resolve_path(&all, &path) {
+                pieces.push((Piece::Ref(path), chars(&value) * times));
+            }
+        }
+    }
+
+    // The largest pieces that have a place in the run to be read from go
+    // as summaries until the rest fits.
+    let readable = |piece: &Piece| match piece {
+        Piece::Item => data.item_source.is_some(),
+        Piece::Ref(path) => source_of(path, &all, data.at, data.item_source).is_some(),
+        _ => true,
+    };
+    let mut total: usize = pieces.iter().map(|(_, c)| c).sum();
+    pieces.sort_by_key(|p| std::cmp::Reverse(p.1));
+    let mut paged: std::collections::HashSet<Piece> = std::collections::HashSet::new();
+    for (piece, size) in &pieces {
+        if total <= data.budget || *size <= 2 * PIECE_SUMMARY_CHARS {
+            break;
+        }
+        if readable(piece) {
+            total = total - size + PIECE_SUMMARY_CHARS;
+            paged.insert(piece.clone());
+        }
+    }
+    if !paged.is_empty() {
+        info!(
+            activity = activity.id.as_str(),
+            pieces = paged.len(),
+            budget = data.budget,
+            "step data over the model's room: large pieces handed as summaries, read in pages"
+        );
+    }
+
+    let mut prior = String::new();
+    for id in parents {
+        if let Some(result) = data.outputs.get(id).filter(|_| !referenced(id)) {
+            if paged.contains(&Piece::Parent(id.clone())) {
+                let source = tools::step_data::Source::new(format!("nodes.{id}"), data.at);
+                prior.push_str(&format!(
+                    "\n[Activity '{id}' result — too large to include whole]:\n{}\n",
+                    described(&parse(result), &source, PIECE_SUMMARY_CHARS)
+                ));
+            } else {
+                prior.push_str(&format!("\n[Activity '{id}' result]: {result}\n"));
+            }
+        }
+    }
+    if let Some(item) = data.item {
+        match data.item_source.filter(|_| paged.contains(&Piece::Item)) {
+            Some(src) => prior.push_str(&format!(
+                "\n[Current item — too large to include whole]:\n{}\n",
+                with_range(described(item, &src.source, PIECE_SUMMARY_CHARS), src.range)
+            )),
+            None => prior.push_str(&format!("\n[Current item]: {}\n", item)),
+        }
+    }
+
+    let mut inputs = data.inputs.clone();
+    if let serde_json::Value::Object(map) = &mut inputs {
+        for (key, value) in map.iter_mut() {
+            if paged.contains(&Piece::Input(key.clone())) {
+                let source = tools::step_data::Source::new(format!("inputs.{key}"), "");
+                *value = serde_json::Value::String(described(value, &source, PIECE_SUMMARY_CHARS));
+            }
+        }
     }
 
     let mut resolved = activity.clone();
-    if texts().any(|t| t.contains("{{")) {
-        let data = data_of(outputs, inputs, item);
-        resolved.intent = interpolate_context(&activity.intent, &data);
+    if has_refs {
+        let render = |path: &str, value: &serde_json::Value| -> String {
+            match source_of(path, &all, data.at, data.item_source).filter(|_| paged.contains(&Piece::Ref(path.to_string()))) {
+                Some((source, range)) => format!(
+                    "[{{{{{path}}}}} — too large to include whole: {}]",
+                    with_range(described(value, &source, PIECE_SUMMARY_CHARS), range)
+                ),
+                None => value_as_string(value),
+            }
+        };
+        resolved.intent = interpolate_with(&activity.intent, &all, &render);
         for step in &mut resolved.steps {
-            *step = interpolate_context(step, &data);
+            *step = interpolate_with(step, &all, &render);
         }
     }
-    (resolved, prior)
+    // A step reads what it was handed as a summary, and a tool result too
+    // large to show, with `read_step_data`; a step without tools of its own
+    // needs it only for the first.
+    let step_data = tools::step_data::TOOL.to_string();
+    if (!paged.is_empty() || !crate::engine::is_lean(activity)) && !resolved.tools.contains(&step_data) {
+        resolved.tools.push(step_data);
+    }
+    StepContext { activity: resolved, prior, inputs }
+}
+
+/// A batch item's place in its loop's list, after its summary.
+fn with_range(text: String, range: Option<(usize, usize)>) -> String {
+    match range {
+        Some((start, count)) => format!(
+            "{text}\nThis item is {count} entries of that list starting at position {start}: read them with from=\"{start}\" and limit {count}."
+        ),
+        None => text,
+    }
+}
+
+/// The `{{path}}` placeholders in a text, trimmed.
+fn placeholder_paths(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else { break };
+        out.push(after[..end].trim());
+        rest = &after[end + 2..];
+    }
+    out
 }
 
 /// The text a `contains` / `regex` condition matches: every executed static
@@ -2359,6 +2602,9 @@ mod walk_tests {
         /// user-message substrings whose turn "read outside text": the Done
         /// event carries web provenance, as the runner stamps it.
         tainted_scripts: Vec<String>,
+        /// Characters of input the step's model takes (the loop's
+        /// `context_chars`): a 200k-token window's by default.
+        context_chars: usize,
     }
 
     impl MockProvider {
@@ -2375,7 +2621,12 @@ mod walk_tests {
                 exit_scripts: vec![],
                 blocked_scripts: vec![],
                 tainted_scripts: vec![],
+                context_chars: 800_000,
             }
+        }
+        fn with_context_chars(mut self, chars: usize) -> Self {
+            self.context_chars = chars;
+            self
         }
         fn with_tainted_turns(mut self, keys: &[&str]) -> Self {
             self.tainted_scripts = keys.iter().map(|k| k.to_string()).collect();
@@ -2655,6 +2906,10 @@ mod walk_tests {
         }
 
         fn cleanup(&self, _run_id: &str) {}
+
+        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+            self.provider.context_chars
+        }
     }
 
     async fn run_graph(
@@ -3936,21 +4191,24 @@ mod walk_tests {
         assert_eq!(run_status(&store, &run_id), "completed");
     }
 
-    /// A state past the cap is clipped at both ends; one within it is sent
-    /// untouched, object shape included.
+    /// A state past the cap goes as its summary, said to be one; one within
+    /// it is sent untouched, object shape included.
     #[test]
-    fn test_decide_state_is_capped() {
+    fn test_decide_state_past_the_cap_is_its_summary() {
         let small = serde_json::json!({"subject": "hi"});
-        assert_eq!(cap_decide_state("n", small.clone()), small);
+        assert_eq!(decide_state("n", small.clone()), (small, false));
         let big = serde_json::json!({
             "subject": "Quote please",
             "body": "x".repeat(DECIDE_STATE_CAP * 2),
             "zz_signature": "Sent from the road"
         });
-        let capped = cap_decide_state("n", big);
-        let text = capped.as_str().expect("clipped state goes as text");
-        assert!(text.len() < DECIDE_STATE_CAP + 64, "{}", text.len());
-        assert!(text.contains("Quote please") && text.contains("Sent from the road"));
+        let (state, summarized) = decide_state("n", big);
+        assert!(summarized);
+        let text = state.as_str().expect("a summary goes as text");
+        assert!(text.len() <= DECIDE_STATE_CAP, "{}", text.len());
+        assert!(text.starts_with("An object with 3 keys"), "{}", &text[..80]);
+        assert!(text.contains("- subject: \"Quote please\"") && text.contains("- zz_signature: \"Sent from the road\""), "{text}");
+        assert!(text.contains(&format!("({} characters)", "48,000")), "the body's beginning and its size");
     }
 
     /// A two-step activity pays for ONE evaluator call: after step 1. The
@@ -4401,6 +4659,78 @@ mod walk_tests {
         assert!(b.contains(&format!("[Activity 'a' result]: {big}\n")), "the whole result, {} chars", big.len());
         assert!(b.contains("customer-03999"), "the last row");
         assert!(!b.contains("clipped"), "nothing clipped");
+    }
+
+    /// A parent's result too large for the step's model reaches it as a
+    /// summary with the call that reads it in pages, never cut, and the
+    /// result itself stays whole in the run.
+    #[tokio::test]
+    async fn a_parent_result_too_large_for_the_model_is_handed_as_a_summary() {
+        let rows: Vec<serde_json::Value> =
+            (0..4_000).map(|i| serde_json::json!({"id": i, "name": format!("customer-{i:05}"), "note": "x".repeat(20)})).collect();
+        let big = serde_json::json!({"summary": "4000 rows", "rows": rows}).to_string();
+        let provider = MockProvider::new(&[("task-a", big.as_str()), ("task-b", "B-OUT")]).with_context_chars(100_000);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"b","intent":"task-b"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},
+                {"from":"a","to":"b"},
+                {"from":"b","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(def, serde_json::json!({}), &provider).await;
+        result.expect("run ok");
+        let b = system_of(&provider, "task-b");
+        assert!(b.contains("[Activity 'a' result — too large to include whole]:\nIts own summary: 4000 rows\nAn object with 2 keys"), "{b}");
+        assert!(b.contains("read_step_data {\"source\":\"nodes.a\"}"), "{b}");
+        assert!(!b.contains("customer-03999"), "not whole");
+        assert!(b.len() < 50_000, "{}", b.len());
+        assert_eq!(node_output(&store, &run_id, "a", "").to_string(), big, "kept whole in the run");
+    }
+
+    /// Fitting a step to its model: inputs, a referenced path and a loop
+    /// item each go as a summary with where to read them, the largest
+    /// first, small ones whole; a step that was handed a summary is given
+    /// `read_step_data`.
+    #[test]
+    fn step_data_fits_its_model_largest_pieces_first() {
+        let rows: Vec<serde_json::Value> = (0..3_000).map(|i| serde_json::json!({"id": i, "tag": "t"})).collect();
+        let inputs = serde_json::json!({"who": "Dana", "rows": rows});
+        let mut outputs = HashMap::new();
+        outputs.insert("fetch".to_string(), serde_json::json!({"records": rows}).to_string());
+        let item = serde_json::json!({"blob": "z".repeat(60_000)});
+        let item_source = ItemSource { source: tools::step_data::Source::new("nodes.fetch.records.4", ""), range: None };
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "digest", "intent": "Digest {{nodes.fetch.records}} for {{inputs.who}}"
+        }))
+        .unwrap();
+        let step = step_context(
+            &activity,
+            &[],
+            StepData { outputs: &outputs, inputs: &inputs, item: Some(&item), item_source: Some(&item_source), at: "4", budget: 20_000 },
+        );
+        assert!(step.activity.intent.starts_with("Digest [{{nodes.fetch.records}} — too large to include whole: A list of 3,000 items"), "{}", &step.activity.intent[..120]);
+        assert!(step.activity.intent.contains("read_step_data {\"at\":\"4\",\"source\":\"nodes.fetch.records\"}"), "{}", step.activity.intent);
+        assert!(step.activity.intent.ends_with(" for Dana"), "a small reference goes whole");
+        let rows_view = step.inputs["rows"].as_str().expect("the input's summary");
+        assert!(rows_view.contains("read_step_data {\"source\":\"inputs.rows\"}"), "{rows_view}");
+        assert_eq!(step.inputs["who"], "Dana");
+        assert!(step.prior.contains("[Current item — too large to include whole]:"), "{}", step.prior);
+        assert!(step.prior.contains("read_step_data {\"source\":\"nodes.fetch.records.4\"}"), "{}", step.prior);
+        assert!(step.activity.tools.contains(&"read_step_data".to_string()));
+
+        // Everything fits: all of it whole, and a step with no tools of its
+        // own gets none.
+        let step = step_context(
+            &activity,
+            &[],
+            StepData { outputs: &outputs, inputs: &inputs, item: None, item_source: None, at: "", budget: 10_000_000 },
+        );
+        assert!(step.activity.intent.contains("{\"id\":2999,\"tag\":\"t\"}"));
+        assert_eq!(step.inputs, inputs);
+        assert!(step.activity.tools.is_empty());
     }
 
     // ── expert nodes ────────────────────────────────────────────────────

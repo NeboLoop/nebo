@@ -556,6 +556,10 @@ impl ActivityLoop for WorkflowTurns {
         })
     }
 
+    fn context_chars(&self, agent_id: &str, model: &str) -> usize {
+        self.harness.workflow_context_chars(agent_id, model)
+    }
+
     fn cleanup(&self, run_id: &str) {
         let ids = self
             .sessions_by_run

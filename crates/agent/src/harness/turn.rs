@@ -1905,6 +1905,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             declared_tools: &declared_names,
             withheld_tools: &cx.withheld_tools,
             given_text: &given_text,
+            context_room: Some(
+                compact::checkpoint::Trigger::threshold(context_window, max_output).saturating_sub(request_tokens),
+            ),
         };
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
@@ -2507,13 +2510,19 @@ async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &
 /// agent: that is not a model choice, so a request's model never replaces
 /// it and nothing else answers for it. Empty: the bot's default.
 fn turn_choice(h: &Harness, req: &TurnRequest) -> (String, EmployeeModel) {
-    let employee = employee_model(&h.store, &req.seat.agent_id);
+    chosen_model(h, &req.seat.agent_id, &req.seat.model_override, req.seat.model_preference.as_deref())
+}
+
+/// The model an employee's turn is set to run on: a linked employee's own,
+/// else the turn's override, else its preference, else the employee's.
+fn chosen_model(h: &Harness, agent_id: &str, model_override: &str, model_preference: Option<&str>) -> (String, EmployeeModel) {
+    let employee = employee_model(&h.store, agent_id);
     let raw_model = if employee.linked {
         employee.preference.clone().unwrap_or_default()
-    } else if !req.seat.model_override.is_empty() {
-        req.seat.model_override.clone()
+    } else if !model_override.is_empty() {
+        model_override.to_string()
     } else {
-        req.seat.model_preference.clone().or(employee.preference.clone()).unwrap_or_default()
+        model_preference.map(str::to_string).or(employee.preference.clone()).unwrap_or_default()
     };
     let model = if raw_model.is_empty() || types::packs::parse_ref(&raw_model).is_some() {
         raw_model
@@ -2521,6 +2530,19 @@ fn turn_choice(h: &Harness, req: &TurnRequest) -> (String, EmployeeModel) {
         h.selector.resolve_fuzzy(&raw_model).unwrap_or(raw_model)
     };
     (model, employee)
+}
+
+impl Harness {
+    /// Characters of input a workflow step's model takes: the request size
+    /// its turn checkpoints at (its context window less room for its
+    /// reply), for the model the step's turn resolves to (`model`, its own,
+    /// else the workflow lane's). The engine fits a step's data to it.
+    pub fn workflow_context_chars(&self, agent_id: &str, model: &str) -> usize {
+        let (chosen, _) = chosen_model(self, agent_id, model, None);
+        let lane = model.trim().is_empty().then_some(types::packs::Lane::Workflow);
+        let model = turn_model(self.resolver(), &chosen, lane).map(|t| t.model).unwrap_or(chosen);
+        compact::checkpoint::Trigger::threshold(self.selector.context_window(&model), usize::MAX) * crate::CHARS_PER_TOKEN
+    }
 }
 
 /// An employee's own model, as its entity config stores it.
@@ -3324,7 +3346,7 @@ mod tests {
         }
 
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
-            let turn_call = matches!(req.trace.purpose, "agent_turn" | "build");
+            let turn_call = matches!(req.trace.purpose, "agent_turn" | "build" | "workflow_activity");
             if !turn_call {
                 self.side.lock().unwrap().push(req.clone());
             }
@@ -6776,6 +6798,58 @@ mod tests {
         assert!(why.starts_with("Step 2's data is too large for its model: "), "{why}");
         assert!(why.contains("refused it as over its window"), "{why}");
         assert!(model.side.lock().unwrap().iter().all(|r| r.trace.purpose != "checkpoint"), "nothing was compacted");
+    }
+
+    /// A workflow step handed a 2 MB list, far more than its model takes,
+    /// completes: it gets the list's summary and reads it with
+    /// read_step_data, a bounded page at a time, and no request or result
+    /// carries the whole list.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_oversized_workflow_step_completes_by_reading_pages() {
+        let model = Scripted::new(vec![
+            Step::Call("read_step_data", serde_json::json!({"source": "inputs.rows"})),
+            Step::Call("read_step_data", serde_json::json!({"source": "inputs.rows", "from": "5990", "where": {"status": "open"}})),
+            Step::Say("Read the rows: 2,000 are open."),
+        ]);
+        let h = harness(&model).await;
+        let store = h.store.clone();
+        h.tools.register(Box::new(tools::step_data::ReadStepDataTool::new(store.clone()))).await;
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(h);
+        let rows: Vec<serde_json::Value> = (0..6_000)
+            .map(|i| serde_json::json!({"id": i, "status": if i % 3 == 0 { "open" } else { "closed" }, "note": "n".repeat(300)}))
+            .collect();
+        let inputs = serde_json::json!({"rows": rows});
+        assert!(inputs.to_string().len() >= 2_000_000);
+        let def = workflow::parser::parse_workflow(
+            r#"{"version":"1.0","id":"rows","name":"Rows","activities":[{"id":"count","intent":"Count the open rows"}]}"#,
+        )
+        .unwrap();
+        let roster: Vec<Box<dyn tools::registry::DynTool>> = vec![Box::new(tools::step_data::ReadStepDataTool::new(store.clone()))];
+        let (_, output) = workflow::engine::execute_workflow(
+            &def, "", "owner", false, inputs, "manual", None, &store, None, &looper, &roster, None, None, None, None, Vec::new(), None,
+            None, None,
+        )
+        .await
+        .expect("the step completes");
+        assert!(output.contains("2,000 are open"), "{output}");
+
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "two pages, then the answer");
+        let first: String = calls[0].messages.iter().map(|m| m.content.as_str()).collect();
+        assert!(first.contains("A list of 6,000 items") && first.contains("read_step_data {\"source\":\"inputs.rows\"}"), "the summary");
+        assert!(first.len() < 200_000, "not the whole list: {}", first.len());
+        let results: Vec<String> = calls[2]
+            .messages
+            .iter()
+            .filter_map(|m| m.tool_results.as_ref())
+            .flat_map(|r| r.as_array().cloned().unwrap_or_default())
+            .filter_map(|t| t["content"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(results[0].starts_with("inputs.rows: a list of 6,000 items. Items 0–"), "{}", &results[0][..80]);
+        assert!(results[0].contains("Next page: from=\""), "page 1 ends with its cursor");
+        assert!(results[1].contains("match {\"status\":\"open\"}") && results[1].ends_with("End of the list."), "{}", results[1]);
+        assert!(results.iter().all(|r| r.len() <= tools::step_data::PAGE_MAX_CHARS + 300), "every page within the bound");
     }
 
     /// The owner's spending limit ends the turn before the next step, with

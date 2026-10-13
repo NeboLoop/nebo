@@ -21,6 +21,7 @@
 //! | step not reachable from the trigger | error | it never runs |
 //! | `nodes.<id>` in an AI step's text that is not an upstream step | warning | the step may run before it, or never see it |
 //! | loop without `params.concurrency` | warning | every item starts at once against the same systems |
+//! | AI step fed an `operation` step's whole list (its parent, or `nodes.<op>` in its text) | warning | thousands of records reach one step as a summary it pages through; a loop hands them over one at a time |
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -29,6 +30,9 @@ use serde_json::Value;
 use crate::condition::{self, Reference};
 
 const TRIGGER: &str = "__trigger__";
+
+/// Step types that run without a model; every other step is an AI step.
+const DETERMINISTIC: [&str; 8] = ["condition", "loop", "wait", "http", "command", "operation", "decide", "expert"];
 const EMIT: &str = "__emit__";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +345,32 @@ pub fn check_workflow(name: &str, def: &Value) -> Vec<Issue> {
                 }
             }
         }
+        // An AI step fed an operation step's whole list: every page of
+        // records reaches one step, which can only page through them.
+        if !DETERMINISTIC.contains(&node.kind) {
+            let fed: Vec<&str> = if graph {
+                parents.get(node.id).cloned().unwrap_or_default()
+            } else {
+                nodes.iter().take_while(|n| n.id != node.id).last().map(|n| n.id).into_iter().collect()
+            };
+            let lists: Vec<&str> = nodes
+                .iter()
+                .filter(|n| n.kind == "operation" && n.raw.pointer("/params/rows").and_then(Value::as_str).is_none_or(|r| r.trim().is_empty()))
+                .map(|n| n.id)
+                .filter(|op| fed.contains(op) || named.contains(op))
+                .collect();
+            for op in lists {
+                push(
+                    Severity::Warning,
+                    node.id,
+                    format!(
+                        "this AI step is handed every record '{op}' reads (all its pages), which can be thousands: \
+                         it gets a summary and pages through them. Loop over nodes.{op}.records and hand the step \
+                         one record (or a batchSize) at a time"
+                    ),
+                );
+            }
+        }
         for target in named {
             if !ids.contains(target) {
                 push(
@@ -594,6 +624,32 @@ mod tests {
         assert!(e[0].contains("no step 'nobody'"), "{e:?}");
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].contains("'sibling' is not upstream"), "{w:?}");
+    }
+
+    #[test]
+    fn an_ai_step_fed_an_operations_whole_list_warns() {
+        let read = json!({"id": "invoices", "type": "operation", "params": {"operation": "ledger.invoice.search"}});
+        let def = json!({
+            "activities": [read.clone(), {"id": "digest", "intent": "Summarize the invoices"}],
+            "connections": [edge("__trigger__", "invoices"), edge("invoices", "digest")]
+        });
+        let w = warnings(&check_workflow("w", &def));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("step 'digest'") && w[0].contains("Loop over nodes.invoices.records"), "{w:?}");
+
+        // On the sequential path: the step after it, and one naming it.
+        let def = json!({"activities": [read.clone(), act("other"), {"id": "digest", "intent": "Total {{nodes.invoices.records}}"}]});
+        let w = warnings(&check_workflow("w", &def));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("step 'other'") && w[1].contains("step 'digest'"), "{w:?}");
+
+        // A loop body gets one record at a time: no warning.
+        let def = json!({
+            "activities": [read, {"id": "each", "type": "loop", "params": {"source": "nodes.invoices.records", "concurrency": 2}},
+                {"id": "one", "intent": "Check {{item.id}}"}],
+            "connections": [edge("__trigger__", "invoices"), edge("invoices", "each"), branch("each", "one", "Each item"), edge("one", "each")]
+        });
+        assert_eq!(check_workflow("w", &def), vec![]);
     }
 
     #[test]
