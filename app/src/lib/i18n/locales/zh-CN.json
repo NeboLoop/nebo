@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "这个时间安排比简易编辑器能表示的更具体",
 		"askSetupPrompt": "帮我设置一个新流程：",
 		"everyNHours": "每 N 小时",
-		"everyNMinutes": "每 N 分钟"
+		"everyNMinutes": "每 N 分钟",
+		"auditAdded": "{count, plural, other {已添加 # 个工具}}",
+		"auditFixed": "{count, plural, other {# 处修复}}",
+		"auditWrong": "{count, plural, other {仍有 # 个问题}}",
+		"auditUnresolved": "{step}：Nebo 无法确定它所需的工具",
+		"auditNotHere": "{tool} 未连接",
+		"auditUsed": "{step} 使用了不在其列表中的 {tool}"
 	},
 	"christen": {
 		"title": "给你的第一名员工起个名字",

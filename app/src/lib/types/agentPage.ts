@@ -1,4 +1,4 @@
-import type { AppWindow, Team } from '$lib/api/neboComponents'
+import type { AppWindow, Team, WorkflowAudit } from '$lib/api/neboComponents'
 // Types for the [agentId] layout context shared across child routes.
 
 /** Input field configuration for agent setup forms. */
@@ -75,6 +75,8 @@ export interface WorkflowConfig {
 	description?: string
 	lastFired?: string
 	emit?: string
+	/** The workflow audit: what it added and fixed, what is still wrong. */
+	audit?: WorkflowAudit
 }
 
 /** A single workflow activity. */

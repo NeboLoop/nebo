@@ -344,6 +344,7 @@ pub struct PersonaTool {
 /// what is stored now. The server implements it; the workers are its own.
 /// Without it, a duty made or changed in chat waited for the directory
 /// watcher, and a toggle or a removal (which writes no file) for a restart.
+/// The changed duties are audited too (the server's workflow audit).
 #[async_trait::async_trait]
 pub trait LiveTriggers: Send + Sync {
     async fn resync(&self, agent_id: &str);
@@ -4264,11 +4265,11 @@ mod tests {
     /// Bake-off 2026-10-10 (B1, B7, B13): every builder left tools out of
     /// its steps' declarations (memory above all), so 66 of 69 runs paused
     /// for the owner; and one wrote `recall(key '…')`, which no run can
-    /// make. A duty made or changed here gets its memory and the tools its
-    /// steps name, and the result says so; a step that writes a call its
-    /// tool can't take is refused before anything is written.
+    /// make. Memory is always allowed now; a duty made or changed here gets
+    /// the tools its steps name, and the result says so; a step that writes
+    /// a call its tool can't take is refused before anything is written.
     #[tokio::test]
-    async fn a_built_duty_gets_its_memory_and_the_tools_its_steps_name() {
+    async fn a_built_duty_gets_the_tools_its_steps_name() {
         use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap());
@@ -4322,10 +4323,10 @@ mod tests {
             )
             .await;
         assert!(!made.is_error, "{}", made.content);
-        assert!(made.content.contains("Step tools: evening-wrap/run also has recall, remember, write_file."), "{}", made.content);
+        assert!(made.content.contains("Step tools: evening-wrap/run also has write_file."), "{}", made.content);
         assert_eq!(
             tools_of("emp-1", "evening-wrap"),
-            serde_json::json!(["mcp__hubspot__hubspot_search_deals", "message_owner", "recall", "remember", "write_file"])
+            serde_json::json!(["mcp__hubspot__hubspot_search_deals", "message_owner", "write_file"])
         );
 
         let added = persona
@@ -4337,7 +4338,7 @@ mod tests {
         assert!(!added.is_error, "{}", added.content);
         assert_eq!(
             tools_of("emp-1", "morning-brief"),
-            serde_json::json!(["mcp__hubspot__hubspot_search_deals", "recall", "remember", "message_owner"])
+            serde_json::json!(["mcp__hubspot__hubspot_search_deals", "message_owner"])
         );
 
         let refused = persona

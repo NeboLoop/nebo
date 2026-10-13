@@ -37,6 +37,7 @@ export function mapWorkflows(
 			description: typeof wf.description === 'string' ? wf.description : undefined,
 			lastFired: typeof wf.lastFired === 'string' ? wf.lastFired : undefined,
 			emit: typeof wf.emit === 'string' ? wf.emit : undefined,
+			audit: wf.audit,
 		};
 	}
 	return wfMap;

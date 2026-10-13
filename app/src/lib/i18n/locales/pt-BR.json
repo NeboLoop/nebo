@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Esta agenda é mais específica do que o editor simples consegue mostrar",
 		"askSetupPrompt": "Crie um novo fluxo para mim: ",
 		"everyNHours": "A cada N horas",
-		"everyNMinutes": "A cada N minutos"
+		"everyNMinutes": "A cada N minutos",
+		"auditAdded": "{count, plural, one {# ferramenta adicionada} other {# ferramentas adicionadas}}",
+		"auditFixed": "{count, plural, one {# correção} other {# correções}}",
+		"auditWrong": "{count, plural, one {# problema pendente} other {# problemas pendentes}}",
+		"auditUnresolved": "{step}: o Nebo não conseguiu definir as ferramentas",
+		"auditNotHere": "{tool} não está conectado",
+		"auditUsed": "{step} usou {tool}, que não estava na lista"
 	},
 	"christen": {
 		"title": "Dê um nome ao seu primeiro funcionário",

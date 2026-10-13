@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Цей розклад надто складний для простого редактора",
 		"askSetupPrompt": "Налаштуй для мене новий сценарій: ",
 		"everyNHours": "Кожні N годин",
-		"everyNMinutes": "Кожні N хвилин"
+		"everyNMinutes": "Кожні N хвилин",
+		"auditAdded": "{count, plural, one {Додано # інструмент} few {Додано # інструменти} many {Додано # інструментів} other {Додано # інструмента}}",
+		"auditFixed": "{count, plural, one {# виправлення} few {# виправлення} many {# виправлень} other {# виправлення}}",
+		"auditWrong": "{count, plural, one {# проблема залишилась} few {# проблеми залишились} many {# проблем залишилось} other {# проблеми залишилось}}",
+		"auditUnresolved": "{step}: Nebo не зміг визначити його інструменти",
+		"auditNotHere": "{tool} не підключено",
+		"auditUsed": "{step} використав {tool}, якого не було в списку"
 	},
 	"christen": {
 		"title": "Дайте ім'я першому співробітнику",

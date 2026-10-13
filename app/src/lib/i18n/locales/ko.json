@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "이 일정은 간단한 편집기로 표현하기에는 너무 세부적입니다",
 		"askSetupPrompt": "새 플로우를 설정해 주세요: ",
 		"everyNHours": "N시간마다",
-		"everyNMinutes": "N분마다"
+		"everyNMinutes": "N분마다",
+		"auditAdded": "{count, plural, other {도구 #개 추가됨}}",
+		"auditFixed": "{count, plural, other {#건 수정됨}}",
+		"auditWrong": "{count, plural, other {남은 문제 #건}}",
+		"auditUnresolved": "{step}: Nebo가 이 단계의 도구를 정하지 못했습니다",
+		"auditNotHere": "{tool}이(가) 연결되어 있지 않습니다",
+		"auditUsed": "{step}이(가) 목록에 없는 {tool}을(를) 사용했습니다"
 	},
 	"christen": {
 		"title": "첫 직원의 이름을 지어주세요",

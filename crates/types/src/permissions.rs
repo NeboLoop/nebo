@@ -626,10 +626,6 @@ pub enum AskCase {
     /// row `effect_id` is held): only the owner can say whether it went
     /// out. Not a permission; nothing runs on the answer.
     UnconfirmedSend { effect_id: i64 },
-    /// A workflow step called a tool its activity doesn't declare. The run
-    /// pauses; the owner's allow adds the tool to that activity's
-    /// declaration and the run continues at the call.
-    StepTool { step: String, tool: String },
 }
 
 /// What the check decided for one call.

@@ -245,18 +245,11 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     if let Some(d) = arms_schedule(cx, t) {
         return Some(d);
     }
-    // A workflow step's declared tools: a call outside them pauses the run
-    // for the owner, whose allow adds the tool to the step and resumes it.
-    if !cx.ctx.whitelist_allows(t) && matches!(cx.ctx.door, Door::Workflow) {
-        return Some(Decision::Ask {
-            case: types::permissions::AskCase::StepTool {
-                step: step_of(&cx.ctx.session_key).to_string(),
-                tool: t.tool.clone(),
-            },
-        });
-    }
-    // The restricted run's allowlist (the review fork, phone callers).
-    if !cx.ctx.whitelist_allows(t) {
+    // The restricted run's allowlist (the review fork, phone callers). A
+    // workflow step's declared tools are not a limit: a call outside them
+    // is decided like any call, under the employee's mode, and the audit
+    // records it (`Check::check`). A run never pauses for a missing tool.
+    if !cx.ctx.whitelist_allows(t) && !matches!(cx.ctx.door, Door::Workflow) {
         return Some(deny(
             "allowlist",
             match &cx.ctx.whitelist_denial_hint {
@@ -291,13 +284,6 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
         return Some(d);
     }
     None
-}
-
-/// The activity a workflow step's session belongs to:
-/// `[agent:<id>:]workflow:<run>:<activity>:<iteration>…` (`WorkflowTurns`).
-pub fn step_of(session_key: &str) -> &str {
-    let parts: Vec<&str> = session_key.split(':').collect();
-    parts.iter().position(|p| *p == "workflow").and_then(|i| parts.get(i + 2)).copied().unwrap_or("")
 }
 
 /// Whether someone is attending the run the call came from: the owner's own
@@ -364,13 +350,6 @@ fn credentials(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_steps_activity_is_read_from_its_session() {
-        assert_eq!(step_of("agent:emp:workflow:run-1:resolve-and-record:3:0"), "resolve-and-record");
-        assert_eq!(step_of("workflow:run-1:digest:0"), "digest");
-        assert_eq!(step_of("agent:emp:web"), "");
-    }
 
     #[test]
     fn shell_session_control_is_shell_and_helper_control_is_not() {

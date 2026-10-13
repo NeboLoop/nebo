@@ -127,6 +127,11 @@ pub fn operation_named(tool_name: &str) -> Option<&'static str> {
         .find(|op| crate::operation_tools::operation_tool_name(op) == tool_name)
 }
 
+/// Every catalogued operation (`<capability>.<resource>.<action>`).
+pub fn operations() -> impl Iterator<Item = &'static str> {
+    catalog().entries.keys().copied()
+}
+
 /// Whether the operation (bare op or fully-qualified port) is gated.
 pub fn is_gated(operation: &str) -> bool {
     entry(operation).is_some_and(|e| e.gated)

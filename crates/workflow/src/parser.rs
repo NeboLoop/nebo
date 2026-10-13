@@ -111,11 +111,12 @@ pub struct Activity {
     /// covers every `odoo.*` tool — or a `prefix*` family), what its `mcps`,
     /// `cmds` and skills bring, and the minimal runtime set
     /// (`engine::RUNTIME_TOOLS`). An activity that declares none gets only
-    /// the runtime set. A call to anything else pauses the run for the
-    /// owner, who can add the tool (`AskCase::StepTool`) (2026-10-08: a
-    /// Vivid step created schedules to "retry in 30 seconds", and those
-    /// runs created more). An empty list with no `mcps` or `cmds` is a lean
-    /// activity (`engine::is_lean`).
+    /// the runtime set. A call to anything else never pauses the run: the
+    /// employee's mode decides it, a read the step ran is added here by the
+    /// audit (`napp::workflow_check::audit_workflow`), and scheduling stays
+    /// refused (2026-10-08: a Vivid step created schedules to "retry in 30
+    /// seconds", and those runs created more). An empty list with no `mcps`
+    /// or `cmds` is a lean activity (`engine::is_lean`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
 }

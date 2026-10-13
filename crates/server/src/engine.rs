@@ -1813,7 +1813,7 @@ const EMPLOYEE_DATA_TOOLS: &[&str] = &[
 
 /// Tools that create, turn on or start scheduled work: never part of a
 /// derived declaration (Rule 2 refuses them in an unattended run anyway).
-const SCHEDULING_TOOLS: &[&str] = &[
+pub(crate) const SCHEDULING_TOOLS: &[&str] = &[
     "create_schedule",
     "set_schedule_paused",
     "run_schedule_now",

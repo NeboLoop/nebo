@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Det här schemat är mer detaljerat än den enkla redigeraren kan hantera",
 		"askSetupPrompt": "Ställ in ett nytt flöde åt mig: ",
 		"everyNHours": "Var N:e timme",
-		"everyNMinutes": "Var N:e minut"
+		"everyNMinutes": "Var N:e minut",
+		"auditAdded": "{count, plural, one {# verktyg tillagt} other {# verktyg tillagda}}",
+		"auditFixed": "{count, plural, one {# rättelse} other {# rättelser}}",
+		"auditWrong": "{count, plural, one {# problem kvar} other {# problem kvar}}",
+		"auditUnresolved": "{step}: Nebo kunde inte avgöra vilka verktyg som behövs",
+		"auditNotHere": "{tool} är inte anslutet",
+		"auditUsed": "{step} använde {tool}, som inte fanns i listan"
 	},
 	"christen": {
 		"title": "Ge din första medarbetare ett namn",

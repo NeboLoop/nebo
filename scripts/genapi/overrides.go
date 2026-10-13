@@ -456,6 +456,20 @@ export interface RunDisplay {
 	activities?: unknown[]
 	connections?: unknown[]
 	inputs?: unknown
+	audit?: WorkflowAudit
+}`,
+
+	"WorkflowAudit": `export interface WorkflowAudit {
+	definitionHash: string
+	depth: 'programmatic' | 'full'
+	steps: { step: string; added: { tool: string; source: 'history' | 'named' | 'declared' | 'model' }[]; resolvedBy: 'history' | 'named' | 'declared' | 'model' | null }[]
+	fixes: { step: string; message: string }[]
+	unresolved: string[]
+	issues: { severity: 'error' | 'warning'; workflow: string; step: string | null; message: string }[]
+	disconnected: string[]
+	modelCalls: number
+	healed: { step: string; tool: string; readOnly: boolean; outcome: 'ran' | 'asked'; at: number }[]
+	auditedAt: number
 }`,
 
 	"ImportItem": `export interface ImportItem {

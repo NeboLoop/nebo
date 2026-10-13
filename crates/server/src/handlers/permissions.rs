@@ -84,7 +84,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         employee: employee_name(state, &ask.agent_id),
         session_key: ask.session_key.clone(),
         sentence: ask.sentence.clone(),
-        reason: ask.reason_text(),
+        reason: ask.reason().to_string(),
         command: match &ask.target.field {
             Some(RuleField::CommandPrefix(c)) => Some(c.clone()),
             _ => None,
@@ -1218,7 +1218,6 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
             format!("An employee it made needs more than it holds: {}", needs.join(", "))
         }
         AskCase::UnconfirmedSend { .. } => "A send whose outcome never came back: did it go out?".into(),
-        AskCase::StepTool { step, tool } => format!("The workflow step \u{201c}{step}\u{201d} called {tool}, which it wasn't given"),
     }
 }
 

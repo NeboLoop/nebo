@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Это расписание сложнее, чем умеет показать простой редактор",
 		"askSetupPrompt": "Настрой для меня новый сценарий: ",
 		"everyNHours": "Каждые N часов",
-		"everyNMinutes": "Каждые N минут"
+		"everyNMinutes": "Каждые N минут",
+		"auditAdded": "{count, plural, one {Добавлен # инструмент} few {Добавлено # инструмента} many {Добавлено # инструментов} other {Добавлено # инструмента}}",
+		"auditFixed": "{count, plural, one {# исправление} few {# исправления} many {# исправлений} other {# исправления}}",
+		"auditWrong": "{count, plural, one {# проблема осталась} few {# проблемы остались} many {# проблем осталось} other {# проблемы осталось}}",
+		"auditUnresolved": "{step}: Nebo не смог определить его инструменты",
+		"auditNotHere": "{tool} не подключён",
+		"auditUsed": "{step} использовал {tool}, которого не было в списке"
 	},
 	"christen": {
 		"title": "Дайте имя первому сотруднику",

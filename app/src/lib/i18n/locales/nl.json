@@ -3157,7 +3157,13 @@
 		"scheduleTooSpecific": "Dit schema is specifieker dan de eenvoudige editor aankan",
 		"askSetupPrompt": "Zet een nieuwe flow voor me op: ",
 		"everyNHours": "Elke N uur",
-		"everyNMinutes": "Elke N minuten"
+		"everyNMinutes": "Elke N minuten",
+		"auditAdded": "{count, plural, one {# tool toegevoegd} other {# tools toegevoegd}}",
+		"auditFixed": "{count, plural, one {# correctie} other {# correcties}}",
+		"auditWrong": "{count, plural, one {# probleem open} other {# problemen open}}",
+		"auditUnresolved": "{step}: Nebo kon de tools niet bepalen",
+		"auditNotHere": "{tool} is niet verbonden",
+		"auditUsed": "{step} gebruikte {tool}, dat niet in de lijst stond"
 	},
 	"christen": {
 		"title": "Geef je eerste medewerker een naam",

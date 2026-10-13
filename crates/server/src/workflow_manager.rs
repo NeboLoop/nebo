@@ -87,8 +87,12 @@ pub struct WorkflowManagerImpl {
     /// immediately — schedule triggers fire via the cron scheduler regardless.
     agent_workers: std::sync::OnceLock<Arc<agent::AgentWorkerRegistry>>,
     /// Late-injected harness: the workflow tune rewrites workflows, which is
-    /// build work, and runs on its build lane (`Harness::build_lane`).
+    /// build work, and runs on its build lane (`Harness::build_lane`); the
+    /// workflow audit's picker takes its embeddings and background model.
     harness: std::sync::OnceLock<agent::harness::Harness>,
+    /// One background workflow audit at a time, so two triggers for the
+    /// same employee never ask the model twice for one step.
+    audits: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl WorkflowManagerImpl {
@@ -122,6 +126,7 @@ impl WorkflowManagerImpl {
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_workers: std::sync::OnceLock::new(),
             harness: std::sync::OnceLock::new(),
+            audits: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -134,6 +139,48 @@ impl WorkflowManagerImpl {
     /// Wire in the harness the workflow tune takes its build lane from.
     pub fn set_harness(&self, harness: agent::harness::Harness) {
         let _ = self.harness.set(harness);
+    }
+
+    /// The tools a workflow step may be given now.
+    pub async fn audit_catalog(&self) -> crate::workflow_audit::Catalog {
+        crate::workflow_audit::Catalog::of_registry(&self.tools).await
+    }
+
+    /// Audit an employee's workflows in the background, fully: on save,
+    /// install and upgrade, and (`agent_id` None) every employee's at
+    /// startup. A workflow whose last audit stands is skipped.
+    pub fn audit_in_background(&self, agent_id: Option<&str>) {
+        let (store, registry, loader, audits) =
+            (self.store.clone(), self.tools.clone(), self.skill_loader.clone(), self.audits.clone());
+        let picker = self.harness.get().and_then(|h| {
+            Some(crate::workflow_audit::ModelPicker { embedder: h.embedding_provider()?, housekeeper: h.housekeeper() })
+        });
+        let agent_id = agent_id.map(str::to_string);
+        tokio::spawn(async move {
+            let _one = audits.lock().await;
+            let catalog = crate::workflow_audit::Catalog::of_registry(&registry).await;
+            let picker = picker.as_ref().map(|p| p as &dyn crate::workflow_audit::Picker);
+            let agents: Vec<String> = match agent_id {
+                Some(id) => vec![id],
+                None => store.list_agents(500, 0).unwrap_or_default().into_iter().map(|a| a.id).collect(),
+            };
+            for id in agents {
+                let audited = crate::workflow_audit::audit_employee(
+                    &store,
+                    &catalog,
+                    loader.as_deref(),
+                    picker,
+                    &id,
+                    crate::workflow_audit::Depth::Full,
+                    crate::workflow_audit::Write::Apply,
+                    true,
+                )
+                .await;
+                if !audited.is_empty() {
+                    info!(agent = %id, workflows = audited.len(), "workflow audit: audited");
+                }
+            }
+        });
     }
 
     /// Wire in the agent worker registry once it has been constructed (it
@@ -1300,6 +1347,18 @@ impl WorkflowManager for WorkflowManagerImpl {
                 );
             }
 
+            // The workflow audit's check before a run: a hash compare and
+            // whether its steps' plugins and MCP servers are here, no tokens.
+            // A resumed or relaunched run keeps the definition it ran with.
+            let definition_json = match trigger_detail.as_deref() {
+                Some(detail) if inputs.get("_resume_run").is_none() && inputs.get("_relaunch_run").is_none() => {
+                    let binding = detail.split(':').next().unwrap_or(detail);
+                    let catalog = self.audit_catalog().await;
+                    crate::workflow_audit::pre_run(&self.store, &catalog, self.skill_loader.as_deref(), agent_id, binding, definition_json)
+                        .await
+                }
+                _ => definition_json,
+            };
             let mut def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
             self.expand_command_params(&mut def, &self.store, agent_id).await?;
@@ -2857,6 +2916,7 @@ async fn save_binding(
                 serde_json::json!({ "agentId": agent_id, "binding": binding_name }),
             );
             info!(agent_id, binding = %binding_name, trigger = %trigger_type, "agent workflow created via tool");
+            mgr.audit_in_background(Some(agent_id));
 
             let activity_count = def
                 .get("activities")
@@ -2970,12 +3030,16 @@ fn definition_of_run(store: &db::Store, run_id: &str, overlay: serde_json::Value
 /// Apply a full workflow binding definition to an agent: frontmatter merge,
 /// tracking row, trigger registration, and on-disk agent.json — the same
 /// primitives the REST create/update handlers use. Shared by the tuning pass
-/// (auto mode) and the Inbox approval handler (staged mode).
+/// (auto mode), the Inbox approval handler (staged mode) and the workflow
+/// audit. `owner_modified`: a live change to this instance the package
+/// must not take back (`upsert_agent_workflow`); the audit's fixes are not
+/// (an update's definition is audited again).
 pub(crate) fn apply_workflow_binding(
     store: &db::Store,
     agent_id: &str,
     binding_name: &str,
     binding_val: &serde_json::Value,
+    owner_modified: bool,
 ) -> Result<(), String> {
     use crate::handlers::agents::{flatten_trigger_config, write_agent_json_to_fs};
 
@@ -3037,8 +3101,7 @@ pub(crate) fn apply_workflow_binding(
             emit,
             activities_json.as_deref(),
             connections_json.as_deref(),
-            // Applied proposals and tuning are live changes to this instance.
-            true,
+            owner_modified,
         )
         .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
 
@@ -3281,7 +3344,8 @@ async fn workflow_tuning_sweep(
         }
 
         if mode == "auto" {
-            match apply_workflow_binding(store, &agent.id, binding, workflow_val) {
+            // Applied tuning is a live change to this instance.
+            match apply_workflow_binding(store, &agent.id, binding, workflow_val, true) {
                 Ok(()) => {
                     let _ = store.resolve_pending_write(&pending_id, "approved");
                     tools::owner_notify::emit(
@@ -3415,7 +3479,7 @@ async fn load_activity_skills(
 }
 
 /// The tools a skill brings to an activity that declares it.
-fn skill_tools(skill: &tools::skills::Skill) -> Vec<String> {
+pub(crate) fn skill_tools(skill: &tools::skills::Skill) -> Vec<String> {
     skill
         .plugins
         .iter()
