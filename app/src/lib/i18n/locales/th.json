@@ -4124,8 +4124,6 @@
 			"off": "ปิด"
 		},
 		"wait": {
-			"approval": "รอการอนุมัติจากคุณ",
-			"answer": "รอคำตอบจากคุณ",
 			"expert": "รอผู้เชี่ยวชาญ",
 			"reply": "รอการตอบกลับ"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "กำลังทำงาน",
 			"scheduled": "ตัวจับเวลา",
 			"watching": "การเฝ้าดู"
-		}
+		},
+		"label": {
+			"helper": "ผู้ช่วย",
+			"shell": "คำสั่ง",
+			"workflow": "เวิร์กโฟลว์",
+			"timer": "ตัวจับเวลา",
+			"watch": "การเฝ้าดู",
+			"heartbeat": "ฮาร์ตบีต"
+		},
+		"viewTranscript": "ดูบันทึก",
+		"section": {
+			"running": "กำลังทำงาน"
+		},
+		"waitingOnYou": "รอคุณอยู่",
+		"waitingOnYouN": "{n, plural, other {รอคุณ # รายการ}}"
 	},
 	"handoff": {
 		"fromAsk": "จาก {name}: {ask}",

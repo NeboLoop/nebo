@@ -4124,8 +4124,6 @@
 			"off": "বন্ধ করুন"
 		},
 		"wait": {
-			"approval": "আপনার অনুমোদন প্রয়োজন",
-			"answer": "আপনার উত্তর প্রয়োজন",
 			"expert": "একজন বিশেষজ্ঞের অপেক্ষায়",
 			"reply": "উত্তরের অপেক্ষায়"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "কাজ চলছে",
 			"scheduled": "টাইমার",
 			"watching": "নজরদারি"
-		}
+		},
+		"label": {
+			"helper": "সহকারী",
+			"shell": "কমান্ড",
+			"workflow": "ওয়ার্কফ্লো",
+			"timer": "টাইমার",
+			"watch": "নজরদারি",
+			"heartbeat": "হার্টবিট"
+		},
+		"viewTranscript": "ট্রান্সক্রিপ্ট দেখুন",
+		"section": {
+			"running": "চলছে"
+		},
+		"waitingOnYou": "আপনার অপেক্ষায়",
+		"waitingOnYouN": "{n, plural, other {#টি আপনার অপেক্ষায়}}"
 	},
 	"handoff": {
 		"fromAsk": "{name} থেকে: {ask}",

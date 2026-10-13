@@ -136,6 +136,17 @@ pub struct BackgroundTask {
     /// which conversation. It belongs to both employees' lists.
     pub from_agent_id: Option<String>,
     pub from_session_key: Option<String>,
+    /// The conversation whose turn launched it: a helper's parent, a
+    /// command's caller, a hand-off's sender. A chat lists the work its own
+    /// turns launched, and what that work launched in turn. None for work
+    /// that starts on its own (a schedule's or a trigger's turn, a workflow
+    /// run, a timer, a watch): workflow runs keep no record of the
+    /// conversation that started them.
+    pub launched_from: Option<String>,
+    /// Where its own steps are kept, what "View transcript" opens. None
+    /// for a background command (its output is read with `output`), and
+    /// for work whose conversation holds no chat yet.
+    pub transcript: Option<Transcript>,
     /// A workflow run's model turns used of its budget.
     pub turns_used: Option<u32>,
     pub turns_cap: Option<u32>,
@@ -164,6 +175,8 @@ impl BackgroundTask {
             session_key: None,
             from_agent_id: None,
             from_session_key: None,
+            launched_from: None,
+            transcript: None,
             turns_used: None,
             turns_cap: None,
             actions: Vec::new(),
@@ -176,6 +189,22 @@ impl BackgroundTask {
         let agent_id = employee_id(agent_id);
         self.agent_id == agent_id || self.from_agent_id.as_deref() == Some(agent_id)
     }
+}
+
+/// The conversation that holds a piece of work's own steps: a helper's,
+/// a turn's or a workflow run's own session, the receiving employee's
+/// conversation for a hand-off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transcript {
+    pub session_key: String,
+    pub chat_id: String,
+}
+
+/// The transcript of conversation `session_key`, through `chat_of` (its
+/// active chat, when it has one).
+fn transcript(session_key: &str, chat_of: &dyn Fn(&str) -> Option<String>) -> Option<Transcript> {
+    chat_of(session_key).map(|chat_id| Transcript { session_key: session_key.to_string(), chat_id })
 }
 
 /// How it ended, for the finished list and the chat's notice.
@@ -213,19 +242,23 @@ fn now() -> i64 {
 /// alone: running work first (oldest first), then timers and watches by
 /// when they next fire.
 pub async fn collect(state: &AppState, agent_id: Option<&str>) -> Vec<BackgroundTask> {
+    let sessions = state.harness.sessions();
+    let chat_of = |key: &str| {
+        sessions.resolve_session_id_by_key(key).ok().map(|sid| sessions.active_chat_id(&sid)).filter(|c| !c.is_empty())
+    };
     let mut tasks = Vec::new();
-    tasks.extend(helpers(state.helpers.list(None)));
+    tasks.extend(helpers(state.helpers.list(None), &chat_of));
     tasks.extend(shells(state.tools.process_registry().running_for(None).await));
     let asks: HashSet<String> = state.run_registry.pending_asks().await.into_iter().map(|(s, _)| s).collect();
     // A turn in a conversation a hand-off is worked in IS that hand-off:
     // listed once, as the hand-off.
     let handed = crate::handoff::receiver_sessions(state);
     let runs = state.run_registry.list_top_level().await.into_iter().filter(|r| !handed.contains(&r.session_key)).collect();
-    tasks.extend(turns(runs, &asks, now()));
-    tasks.extend(handoffs(crate::handoff::live(state)));
+    tasks.extend(turns(runs, &asks, now(), &chat_of));
+    tasks.extend(handoffs(crate::handoff::live(state), &asks, &chat_of));
     match state.store.list_live_workflow_runs() {
         Ok(runs) => {
-            for mut task in workflows(runs, |id| state.workflow_manager.turns_used(id)) {
+            for mut task in workflows(runs, |id| state.workflow_manager.turns_used(id), &chat_of) {
                 let native = task.id.trim_start_matches("workflow:");
                 if task.status == Status::Waiting
                     && let Ok(Some(ask)) = state.permission_asks.for_run(native)
@@ -288,7 +321,7 @@ async fn name_employees(state: &AppState, tasks: &mut [BackgroundTask]) {
 }
 
 /// Helpers at work.
-pub(crate) fn helpers(list: Vec<agent::harness::delegation::HelperStatus>) -> Vec<BackgroundTask> {
+pub(crate) fn helpers(list: Vec<agent::harness::delegation::HelperStatus>, chat_of: &dyn Fn(&str) -> Option<String>) -> Vec<BackgroundTask> {
     list.into_iter()
         .filter(|h| h.running)
         .map(|h| {
@@ -299,7 +332,9 @@ pub(crate) fn helpers(list: Vec<agent::harness::delegation::HelperStatus>) -> Ve
             t.call = h.call;
             t.started_at = Some(h.started_at);
             t.created_by = "chat".into();
+            t.launched_from = Some(h.parent_key.clone());
             t.session_key = Some(h.parent_key);
+            t.transcript = transcript(&h.session_key, chat_of);
             t.actions = vec![Action::Stop];
             t
         })
@@ -317,6 +352,7 @@ pub(crate) fn shells(running: Vec<(std::sync::Arc<tools::process::BackgroundSess
             t.detail = session.command.clone();
             t.started_at = Some(session.started_at);
             t.created_by = "chat".into();
+            t.launched_from = Some(caller.session_key.clone());
             t.session_key = Some(caller.session_key);
             t.actions = vec![Action::Stop];
             t
@@ -327,7 +363,12 @@ pub(crate) fn shells(running: Vec<(std::sync::Arc<tools::process::BackgroundSess
 /// Turns nobody started from a conversation they watch: a schedule's, a
 /// heartbeat's, a message's from outside. The owner's own chat turns are
 /// in front of him and are not listed.
-pub(crate) fn turns(runs: Vec<crate::run_registry::RunSnapshot>, parked: &HashSet<String>, now: i64) -> Vec<BackgroundTask> {
+pub(crate) fn turns(
+    runs: Vec<crate::run_registry::RunSnapshot>,
+    parked: &HashSet<String>,
+    now: i64,
+    chat_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<BackgroundTask> {
     runs.into_iter()
         .filter(|r| r.origin != "user")
         .map(|r| {
@@ -352,6 +393,7 @@ pub(crate) fn turns(runs: Vec<crate::run_registry::RunSnapshot>, parked: &HashSe
                 _ => "system",
             }
             .to_string();
+            t.transcript = transcript(&r.session_key, chat_of);
             t.session_key = Some(r.session_key);
             t.actions = vec![Action::Stop];
             t
@@ -360,22 +402,31 @@ pub(crate) fn turns(runs: Vec<crate::run_registry::RunSnapshot>, parked: &HashSe
 }
 
 /// Work one employee passed to another, still going: the receiving
-/// employee's row, passed on by the sender from its conversation. A
-/// message hand-off can be stopped; an assignment is the assignee's own
-/// case and closes from there.
-pub(crate) fn handoffs(live: Vec<crate::handoff::HandoffView>) -> Vec<BackgroundTask> {
+/// employee's row, passed on by the sender from its conversation. One whose
+/// receiving conversation is `parked` on the owner (a question, a connect
+/// card) waits on the owner. A message hand-off can be stopped; an
+/// assignment is the assignee's own case and closes from there.
+pub(crate) fn handoffs(
+    live: Vec<crate::handoff::HandoffView>,
+    parked: &HashSet<String>,
+    chat_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<BackgroundTask> {
     live.into_iter()
         .map(|h| {
-            let status = if h.status == "queued" { Status::Waiting } else { Status::Running };
+            let on_owner = parked.contains(&h.receiver_session);
+            let status = if h.status == "queued" || on_owner { Status::Waiting } else { Status::Running };
             let mut t = BackgroundTask::new(Source::Handoff, &h.id, Kind::Agent, status);
+            t.wait = on_owner.then(|| "answer".to_string());
             t.agent_id = employee_id(&h.to_agent_id).to_string();
             t.title = h.ask.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().chars().take(200).collect();
             t.started_at = Some(h.started_at.unwrap_or(h.created_at));
             t.created_by = "message".into();
             t.source_run_id = h.sender_run_id.clone();
             t.session_key = Some(h.receiver_session.clone());
+            t.transcript = transcript(&h.receiver_session, chat_of);
             t.from_agent_id = Some(employee_id(&h.from_agent_id).to_string());
             t.from_session_key = Some(h.sender_session.clone());
+            t.launched_from = Some(h.sender_session.clone());
             t.actions = if h.kind == "message" { vec![Action::Stop] } else { Vec::new() };
             t
         })
@@ -408,7 +459,11 @@ fn wait_of(wait_kind: Option<&str>) -> String {
 
 /// Workflow runs still going, running or parked. `turns` reads a running
 /// run's turns used of its budget.
-pub(crate) fn workflows(runs: Vec<db::models::LiveWorkflowRun>, turns: impl Fn(&str) -> Option<(u32, u32)>) -> Vec<BackgroundTask> {
+pub(crate) fn workflows(
+    runs: Vec<db::models::LiveWorkflowRun>,
+    turns: impl Fn(&str) -> Option<(u32, u32)>,
+    chat_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<BackgroundTask> {
     runs.into_iter()
         .map(|live| {
             let run = live.run;
@@ -437,6 +492,7 @@ pub(crate) fn workflows(runs: Vec<db::models::LiveWorkflowRun>, turns: impl Fn(&
             t.next_run_at = if waiting { live.wait_deadline } else { None };
             t.created_by = run_starter(&run.trigger_type).to_string();
             t.session_key = run.session_key.clone();
+            t.transcript = run.session_key.as_deref().and_then(|k| transcript(k, chat_of));
             if let Some((used, cap)) = turns(&run.id) {
                 t.turns_used = Some(used);
                 t.turns_cap = Some(cap);

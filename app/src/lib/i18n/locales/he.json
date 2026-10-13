@@ -4124,8 +4124,6 @@
 			"off": "כבה"
 		},
 		"wait": {
-			"approval": "ממתין לאישורך",
-			"answer": "ממתין לתשובתך",
 			"expert": "ממתין למומחה",
 			"reply": "ממתין לתשובה"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "עובד",
 			"scheduled": "טיימרים",
 			"watching": "מעקבים"
-		}
+		},
+		"label": {
+			"helper": "עוזר",
+			"shell": "פקודה",
+			"workflow": "תהליך עבודה",
+			"timer": "טיימר",
+			"watch": "מעקב",
+			"heartbeat": "דופק"
+		},
+		"viewTranscript": "הצגת התמליל",
+		"section": {
+			"running": "פועל"
+		},
+		"waitingOnYou": "ממתין לך",
+		"waitingOnYouN": "{n, plural, other {# ממתינים לך}}"
 	},
 	"handoff": {
 		"fromAsk": "מאת {name}: {ask}",

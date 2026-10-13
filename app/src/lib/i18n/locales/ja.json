@@ -4124,8 +4124,6 @@
 			"off": "オフにする"
 		},
 		"wait": {
-			"approval": "承認待ち",
-			"answer": "回答待ち",
 			"expert": "専門家の返答待ち",
 			"reply": "返信待ち"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "作業中",
 			"scheduled": "タイマー",
 			"watching": "監視"
-		}
+		},
+		"label": {
+			"helper": "ヘルパー",
+			"shell": "コマンド",
+			"workflow": "ワークフロー",
+			"timer": "タイマー",
+			"watch": "監視",
+			"heartbeat": "ハートビート"
+		},
+		"viewTranscript": "記録を見る",
+		"section": {
+			"running": "実行中"
+		},
+		"waitingOnYou": "あなたの対応待ち",
+		"waitingOnYouN": "{n, plural, other {あなたの対応待ち #件}}"
 	},
 	"handoff": {
 		"fromAsk": "{name} から: {ask}",

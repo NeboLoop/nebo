@@ -4124,8 +4124,6 @@
 			"off": "Matikan"
 		},
 		"wait": {
-			"approval": "Perlu persetujuan Anda",
-			"answer": "Perlu jawaban Anda",
 			"expert": "Menunggu pakar",
 			"reply": "Menunggu balasan"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Bekerja",
 			"scheduled": "Pengatur waktu",
 			"watching": "Pemantauan"
-		}
+		},
+		"label": {
+			"helper": "Pembantu",
+			"shell": "Perintah",
+			"workflow": "Alur kerja",
+			"timer": "Pengatur waktu",
+			"watch": "Pantauan",
+			"heartbeat": "Detak"
+		},
+		"viewTranscript": "Lihat transkrip",
+		"section": {
+			"running": "Berjalan"
+		},
+		"waitingOnYou": "Menunggu Anda",
+		"waitingOnYouN": "{n, plural, other {# menunggu Anda}}"
 	},
 	"handoff": {
 		"fromAsk": "Dari {name}: {ask}",

@@ -171,9 +171,16 @@ export interface BackgroundTask {
 	sessionKey: string | null
 	fromAgentId: string | null
 	fromSessionKey: string | null
+	launchedFrom: string | null
+	transcript: BackgroundTranscript | null
 	turnsUsed: number | null
 	turnsCap: number | null
 	actions: BackgroundAction[]
+}
+
+export interface BackgroundTranscript {
+	sessionKey: string
+	chatId: string
 }`,
 	// A piece of background work that ended, and how.
 	"FinishedTask": `export interface FinishedTask {

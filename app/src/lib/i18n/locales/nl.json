@@ -4124,8 +4124,6 @@
 			"off": "Uitzetten"
 		},
 		"wait": {
-			"approval": "Wacht op je goedkeuring",
-			"answer": "Wacht op je antwoord",
 			"expert": "Wacht op een expert",
 			"reply": "Wacht op een antwoord"
 		},
@@ -4168,7 +4166,21 @@
 			"running": "Aan het werk",
 			"scheduled": "Timers",
 			"watching": "Bewakingen"
-		}
+		},
+		"label": {
+			"helper": "Helper",
+			"shell": "Opdracht",
+			"workflow": "Workflow",
+			"timer": "Timer",
+			"watch": "Bewaking",
+			"heartbeat": "Hartslag"
+		},
+		"viewTranscript": "Transcript bekijken",
+		"section": {
+			"running": "Actief"
+		},
+		"waitingOnYou": "Wacht op jou",
+		"waitingOnYouN": "{n, plural, other {# wachten op jou}}"
 	},
 	"handoff": {
 		"fromAsk": "Van {name}: {ask}",

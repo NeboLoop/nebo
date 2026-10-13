@@ -78,12 +78,60 @@ export function isRunning(task: BackgroundTask): boolean {
   return task.status === 'running' || task.status === 'waiting';
 }
 
-/** Whether `task` shows in a chat's strip: work running or waiting now,
- *  and timers an employee set from a conversation. Standing setup (a
- *  workflow's schedule, a watch, a heartbeat, a schedule the owner made)
- *  lives on the dashboard, not under every chat. */
-export function inStrip(task: BackgroundTask): boolean {
-  return isRunning(task) || (task.source === 'timer' && task.createdBy === 'chat');
+/** Whether `task` waits on the owner: an approval, or an answer (a
+ *  question, a connect card). */
+export function waitsOnOwner(task: BackgroundTask): boolean {
+  return task.status === 'waiting' && (task.wait === 'approval' || task.wait === 'answer');
+}
+
+/** What a row is, in a word: the employee doing it for a turn or a
+ *  hand-off, else its kind of work ("Helper", "Command", "Workflow"). */
+export function kindLabel(task: BackgroundTask, t: (key: string) => string): string {
+  if (task.source === 'turn' || task.source === 'handoff') return task.employee;
+  return t(`background.label.${task.source}`);
+}
+
+/** Work rolled up under the work that launched it: a helper a helper
+ *  started (launched from its parent's own conversation) follows its
+ *  parent, one level deeper. Order is kept otherwise. */
+export function rollUp(tasks: BackgroundTask[]): { task: BackgroundTask; depth: number }[] {
+  const byOwnSession = new Map(tasks.filter((t) => t.transcript).map((t) => [t.transcript!.sessionKey, t]));
+  const parentOf = (t: BackgroundTask) => (t.launchedFrom ? byOwnSession.get(t.launchedFrom) : undefined);
+  const children = new Map<string, BackgroundTask[]>();
+  const roots: BackgroundTask[] = [];
+  for (const t of tasks) {
+    const parent = parentOf(t);
+    if (parent && parent.id !== t.id) children.set(parent.id, [...(children.get(parent.id) ?? []), t]);
+    else roots.push(t);
+  }
+  const out: { task: BackgroundTask; depth: number }[] = [];
+  const walk = (t: BackgroundTask, depth: number) => {
+    if (out.some((o) => o.task.id === t.id)) return;
+    out.push({ task: t, depth });
+    for (const c of children.get(t.id) ?? []) walk(c, depth + 1);
+  };
+  roots.forEach((t) => walk(t, 0));
+  return out;
+}
+
+/** The ids of the work conversation `sessionKey` launched: what its own
+ *  turns launched (`launchedFrom`), and what that work launched in turn
+ *  from its own conversation (a helper's helper, a coworker's helper).
+ *  What starts on its own (a schedule, a trigger, a watch) is no chat's. */
+export function launchedIn(tasks: BackgroundTask[], sessionKey: string): Set<string> {
+  const ids = new Set<string>();
+  if (!sessionKey) return ids;
+  const from = new Set([sessionKey]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const t of tasks) {
+      if (ids.has(t.id) || !t.launchedFrom || !from.has(t.launchedFrom)) continue;
+      ids.add(t.id);
+      if (t.transcript) from.add(t.transcript.sessionKey);
+      grew = true;
+    }
+  }
+  return ids;
 }
 
 /** The panel's order: what fires next first (soonest first), then running
