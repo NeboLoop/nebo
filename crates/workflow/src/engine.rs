@@ -1501,7 +1501,7 @@ fn build_activity_prompt_with_context(
               Do not waste steps re-analyzing data you already evaluated.\n\
             - After completing all tool calls for a step, always end with a brief text summary of what \
               you found or did. Never end a step with zero text output — downstream activities see \
-              only your final reply (clipped when long), so put what they need in it.\n\n"
+              only your final reply, so put what they need in it.\n\n"
     });
 
     // Memory continuity for agent-bound runs (recent and most-used).
