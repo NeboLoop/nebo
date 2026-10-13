@@ -231,10 +231,15 @@ jobs:
             exit 0
           fi
           sed -i "s|^  image: \"ghcr.io/neboloop/nebo-server:.*\"\$|${LINE}|" "$FILE"
+          # The canary bot runs the release too.
+          CANARY=nebo-canary/bot.yaml
+          [ "$(grep -c 'image: ghcr.io/neboloop/nebo-server:' "$CANARY")" = 1 ] \
+            || { echo "::error::expected exactly one nebo-server image line in $CANARY"; exit 1; }
+          sed -i "s|image: ghcr.io/neboloop/nebo-server:.*|image: ghcr.io/neboloop/nebo-server:${IMAGE_TAG}|" "$CANARY"
           git diff --stat
           git config user.name "nebo-release"
           git config user.email "nebo-release@users.noreply.github.com"
-          git commit -qam "neboloop: fleet default nebo-server:${IMAGE_TAG} (${RELEASE})"
+          git commit -qam "neboloop + canary: nebo-server:${IMAGE_TAG} (${RELEASE})"
           # A push that loses a race with another k8s commit rebases once and retries.
           git push -q origin HEAD:main || { git pull -q --rebase origin main && git push -q origin HEAD:main; }
           echo "Pushed: Flux moves the fleet default to $IMAGE_TAG."
