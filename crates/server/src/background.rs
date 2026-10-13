@@ -137,11 +137,11 @@ pub struct BackgroundTask {
     pub from_agent_id: Option<String>,
     pub from_session_key: Option<String>,
     /// The conversation whose turn launched it: a helper's parent, a
-    /// command's caller, a hand-off's sender. A chat lists the work its own
-    /// turns launched, and what that work launched in turn. None for work
-    /// that starts on its own (a schedule's or a trigger's turn, a workflow
-    /// run, a timer, a watch): workflow runs keep no record of the
-    /// conversation that started them.
+    /// command's caller, a hand-off's sender (a coding agent's session
+    /// included), the chat that ran a workflow. A chat lists the work its
+    /// own turns launched, and what that work launched in turn. None for
+    /// work that starts on its own (a schedule's or a trigger's turn or
+    /// workflow run, a timer, a watch).
     pub launched_from: Option<String>,
     /// Where its own steps are kept, what "View transcript" opens. None
     /// for a background command (its output is read with `output`), and
@@ -258,7 +258,7 @@ pub async fn collect(state: &AppState, agent_id: Option<&str>) -> Vec<Background
     tasks.extend(handoffs(crate::handoff::live(state), &asks, &chat_of));
     match state.store.list_live_workflow_runs() {
         Ok(runs) => {
-            for mut task in workflows(runs, |id| state.workflow_manager.turns_used(id), &chat_of) {
+            for mut task in workflows(runs, |id| state.workflow_manager.turns_used(id), |id| state.store.workflow_run_launched_from(id).ok().flatten(), &chat_of) {
                 let native = task.id.trim_start_matches("workflow:");
                 if task.status == Status::Waiting
                     && let Ok(Some(ask)) = state.permission_asks.for_run(native)
@@ -458,10 +458,12 @@ fn wait_of(wait_kind: Option<&str>) -> String {
 }
 
 /// Workflow runs still going, running or parked. `turns` reads a running
-/// run's turns used of its budget.
+/// run's turns used of its budget; `launched` the conversation that started
+/// a run from a chat (none for a scheduled, watched or triggered run).
 pub(crate) fn workflows(
     runs: Vec<db::models::LiveWorkflowRun>,
     turns: impl Fn(&str) -> Option<(u32, u32)>,
+    launched: impl Fn(&str) -> Option<String>,
     chat_of: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<BackgroundTask> {
     runs.into_iter()
@@ -493,6 +495,7 @@ pub(crate) fn workflows(
             t.created_by = run_starter(&run.trigger_type).to_string();
             t.session_key = run.session_key.clone();
             t.transcript = run.session_key.as_deref().and_then(|k| transcript(k, chat_of));
+            t.launched_from = launched(&run.id);
             if let Some((used, cap)) = turns(&run.id) {
                 t.turns_used = Some(used);
                 t.turns_cap = Some(cap);

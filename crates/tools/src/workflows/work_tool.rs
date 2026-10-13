@@ -414,7 +414,9 @@ impl WorkflowTool {
                 let inputs = input.get("inputs").filter(|v| !v.is_null()).cloned().unwrap_or_else(|| serde_json::json!({}));
                 // Held to the mode this run carries (a conversation's
                 // stricter pick); otherwise the employee's own.
-                match self.manager.run(&info.id, inputs, "agent", ctx.narrow()).await {
+                // Recorded on the run: this conversation lists it among its
+                // running tasks.
+                match self.manager.run(&info.id, inputs, "agent", ctx.narrow(), Some(&ctx.session_key)).await {
                     Ok(run_id) => json_result(serde_json::json!({
                         "started": true,
                         "runId": run_id,
@@ -630,10 +632,12 @@ pub(crate) mod tests {
             inputs: serde_json::Value,
             _trigger: &'a str,
             narrow: Option<types::permissions::Mode>,
+            launched_from: Option<&'a str>,
         ) -> Fut<'a, Result<String, String>> {
+            let from = launched_from.map(|f| format!(" from={f}")).unwrap_or_default();
             match narrow {
-                Some(mode) => self.log(format!("run {id} {inputs} narrow={}", mode.as_str())),
-                None => self.log(format!("run {id} {inputs}")),
+                Some(mode) => self.log(format!("run {id} {inputs} narrow={}{from}", mode.as_str())),
+                None => self.log(format!("run {id} {inputs}{from}")),
             }
             Box::pin(async { Ok("run-1".to_string()) })
         }
@@ -759,7 +763,7 @@ pub(crate) mod tests {
         assert_eq!(rig.calls(), ["list ops", "install WORK-AAAA-BBBB", "uninstall wf-9"]);
         let run = rig.call("run_workflow", json!({"workflow": "Weekly Report", "inputs": {"week": "2026-39"}})).await;
         assert!(run.content.contains("run-1") && !run.content.contains("workflow_status"), "{}", run.content);
-        assert_eq!(rig.calls(), ["resolve ops Weekly Report", r#"run wf-1 {"week":"2026-39"}"#]);
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", r#"run wf-1 {"week":"2026-39"} from=agent:ops:web"#]);
     }
 
     /// The lifetime option rides the one create path: temporary reports to
@@ -793,7 +797,7 @@ pub(crate) mod tests {
         grant.narrow = Some(types::permissions::Mode::Plan);
         let ctx = ToolContext { session_key: "agent:ops:web".into(), grant: Some(Arc::new(grant)), ..ToolContext::default() };
         rig.call_in(&ctx, "run_workflow", json!({"workflow": "Weekly Report"})).await;
-        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {} narrow=plan"]);
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {} narrow=plan from=agent:ops:web"]);
         let def = r#"{"name":"Budget check","activities":[{"id":"a","intent":"x"}]}"#;
         rig.call_in(&ctx, "create_workflow", json!({"definition": def, "lifetime": "temporary"})).await;
         assert_eq!(rig.calls(), ["create ops Budget check temporary→agent:ops:web narrow=plan"]);
@@ -803,7 +807,7 @@ pub(crate) mod tests {
             ..ToolContext::default()
         };
         rig.call_in(&own, "run_workflow", json!({"workflow": "Weekly Report"})).await;
-        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {}"]);
+        assert_eq!(rig.calls(), ["resolve ops Weekly Report", "run wf-1 {} from=agent:ops:web"], "the run records the conversation that started it");
     }
 
     /// The guidance for long-running work sits where the model decides: in

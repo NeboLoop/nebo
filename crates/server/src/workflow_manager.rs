@@ -764,6 +764,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         inputs: serde_json::Value,
         trigger_type: &'a str,
         narrow: Option<types::permissions::Mode>,
+        launched_from: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -771,9 +772,18 @@ impl WorkflowManager for WorkflowManagerImpl {
             // binding-scoped id; fire them through run_inline, never the
             // standalone path below.
             if let Some((agent_id, binding_name)) = split_binding_id(id) {
-                return self
+                let run_id = self
                     .run_binding(agent_id, binding_name, inputs, trigger_type, narrow)
-                    .await;
+                    .await?;
+                // The conversation that started it lists it (a run routed
+                // into a case is the case's, and has no run row here).
+                if let Some(from) = launched_from {
+                    self.store
+                        .set_workflow_run_launched_from(&run_id, from)
+                        .map_err(|e| format!("set_workflow_run_launched_from: {}", e))?;
+                    crate::background::changed();
+                }
+                return Ok(run_id);
             }
 
             let wf = self
@@ -812,6 +822,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 self.store
                     .set_workflow_run_narrow(&run_id, mode)
                     .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
+            }
+            // The conversation that started it lists it among its running
+            // tasks.
+            if let Some(from) = launched_from {
+                self.store
+                    .set_workflow_run_launched_from(&run_id, from)
+                    .map_err(|e| format!("set_workflow_run_launched_from: {}", e))?;
             }
 
             // Create cancellation token
