@@ -1713,85 +1713,59 @@ fn build_activity_prompt_with_context(
     prompt
 }
 
-/// Format an input value for the activity prompt.
+/// Format an input value for the activity prompt, whole.
 ///
 /// Scalar values are printed inline. JSON objects are smart-formatted: scalar
-/// fields first (always visible), then nested objects/arrays truncated if large.
-/// This ensures key data like `snippet`, `id`, `from` is never buried under
-/// massive nested structures (e.g. raw Gmail API responses with MIME/DKIM noise).
-const INPUT_VALUE_MAX_CHARS: usize = 4_000;
-
+/// fields first, then the nested objects/arrays, so key data like `snippet`,
+/// `id`, `from` leads instead of sitting under massive nested structures
+/// (e.g. raw Gmail API responses with MIME/DKIM noise). Nothing is cut: a
+/// workflow never silently loses data, and an input too large for the
+/// model's context window fails the step loudly when it is sent.
 fn format_input_value(val: &serde_json::Value) -> String {
+    let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
     match val {
-        serde_json::Value::String(s) => {
-            if s.len() <= INPUT_VALUE_MAX_CHARS {
-                s.clone()
-            } else {
-                format!(
-                    "{}\n\n... (truncated — {} total chars)",
-                    truncate_at_char_boundary(s, INPUT_VALUE_MAX_CHARS),
-                    s.len()
-                )
-            }
-        }
+        serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Object(map) => {
-            // Separate scalars from nested structures so key fields are always visible
-            let mut scalars = serde_json::Map::new();
-            let mut nested = serde_json::Map::new();
-            for (k, v) in map {
-                match v {
-                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
-                        nested.insert(k.clone(), v.clone());
-                    }
-                    _ => {
-                        scalars.insert(k.clone(), v.clone());
-                    }
+            let (nested, scalars): (serde_json::Map<_, _>, serde_json::Map<_, _>) = map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .partition(|(_, v)| v.is_object() || v.is_array());
+            let mut blocks = Vec::new();
+            for part in [scalars, nested] {
+                if !part.is_empty() {
+                    blocks.push(format!("```json\n{}\n```", pretty(&serde_json::Value::Object(part))));
                 }
             }
-            // Build: scalars always shown, nested truncated
-            let mut result = String::new();
-            if !scalars.is_empty() {
-                let scalar_obj = serde_json::Value::Object(scalars);
-                let pretty = serde_json::to_string_pretty(&scalar_obj)
-                    .unwrap_or_else(|_| scalar_obj.to_string());
-                result.push_str("```json\n");
-                result.push_str(&pretty);
-                result.push_str("\n```\n");
-            }
-            if !nested.is_empty() {
-                let nested_obj = serde_json::Value::Object(nested);
-                let pretty = serde_json::to_string_pretty(&nested_obj)
-                    .unwrap_or_else(|_| nested_obj.to_string());
-                if pretty.len() <= INPUT_VALUE_MAX_CHARS {
-                    result.push_str("```json\n");
-                    result.push_str(&pretty);
-                    result.push_str("\n```");
-                } else {
-                    result.push_str("```json\n");
-                    result.push_str(truncate_at_char_boundary(&pretty, INPUT_VALUE_MAX_CHARS));
-                    result.push_str("\n```\n");
-                    result.push_str(&format!(
-                        "... (nested data truncated — {} total chars)",
-                        pretty.len()
-                    ));
-                }
-            }
-            result
+            blocks.join("\n")
         }
-        serde_json::Value::Array(_) => {
-            let pretty =
-                serde_json::to_string_pretty(val).unwrap_or_else(|_| val.to_string());
-            if pretty.len() <= INPUT_VALUE_MAX_CHARS {
-                format!("```json\n{}\n```", pretty)
-            } else {
-                format!(
-                    "```json\n{}\n```\n... (truncated — {} total chars)",
-                    truncate_at_char_boundary(&pretty, INPUT_VALUE_MAX_CHARS),
-                    pretty.len()
-                )
-            }
-        }
+        serde_json::Value::Array(_) => format!("```json\n{}\n```", pretty(val)),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod input_value_tests {
+    use super::*;
+
+    /// A large workflow input reaches the step whole: a 200k-char text, a
+    /// 2,000-row list and an object nesting that list are all in the
+    /// activity's instructions, last row included.
+    #[test]
+    fn a_large_input_reaches_the_step_whole() {
+        let text = "x".repeat(200_000);
+        let rows: Vec<serde_json::Value> =
+            (0..2_000).map(|i| serde_json::json!({"id": i, "name": format!("row-{i}")})).collect();
+        let inputs = serde_json::json!({
+            "text": text,
+            "rows": rows,
+            "message": {"id": "m1", "records": rows},
+        });
+        let activity: Activity = serde_json::from_value(serde_json::json!({"id": "read", "intent": "Read it all"})).unwrap();
+        let prompt = build_activity_prompt_with_context(&activity, "", &inputs, None, &[], false, &[], None);
+        assert!(prompt.contains(&text), "the whole text");
+        assert_eq!(prompt.matches("\"row-1999\"").count(), 2, "the last row, in the list and in the object");
+        assert!(prompt.contains("\"id\": \"m1\""), "the object's scalars");
+        assert!(!prompt.contains("truncated"), "nothing cut");
     }
 }
 
