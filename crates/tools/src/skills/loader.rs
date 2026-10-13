@@ -1015,6 +1015,16 @@ impl Loader {
         let learned_dir = self.learned_dir.clone();
         let agent_dirs = self.agent_dirs.clone();
         let watcher_paused = self.watcher_paused.clone();
+        // The manifest's file names (`SkillManifest::save` writes the `.tmp`
+        // one, then renames it over the manifest). Matched by name: the
+        // watcher may report the tree by its resolved path (/private/var vs
+        // /var on macOS).
+        let manifest_path = self.manifest_path();
+        let manifest_names: Vec<std::ffi::OsString> =
+            [manifest_path.clone(), manifest_path.with_extension("tmp")]
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_os_string()))
+                .collect();
         let plugins_dir = self
             .plugin_store
             .as_ref()
@@ -1098,8 +1108,8 @@ impl Loader {
                 }
             }
 
-            let mut last_reload = std::time::Instant::now();
-            let debounce = std::time::Duration::from_secs(1);
+            let debounce = std::time::Duration::from_millis(500);
+            const MAX_COALESCE: std::time::Duration = std::time::Duration::from_secs(3);
 
             // Storm breaker: a writer inside a watched tree turns the debounce
             // into a permanent ~1 reload/sec loop that pegs a 1-vCPU cloud pod
@@ -1143,6 +1153,25 @@ impl Loader {
                     }
 
                     let relevant = event.paths.iter().any(|p| {
+                        // The loader's own writes never count: every reload
+                        // rewrites the warm-start manifest inside a watched
+                        // tree, so an event for it would start the next one.
+                        if p.file_name().is_some_and(|n| manifest_names.iter().any(|m| m == n)) {
+                            return false;
+                        }
+                        // Neither do an install's work copies: a plugin
+                        // extracts to `<version>.staging` (and keeps a
+                        // `<version>.prev`), then renames and reloads by
+                        // itself. Hundreds of files land there per install;
+                        // each event became one full reload, run back to
+                        // back for minutes after the install was done.
+                        if p.components().any(|c| {
+                            c.as_os_str().to_str().is_some_and(|n| {
+                                n.ends_with(".staging") || n.ends_with(".prev")
+                            })
+                        }) {
+                            return false;
+                        }
                         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                         if name.eq_ignore_ascii_case("skill.md") || name.ends_with(".napp") {
                             return true;
@@ -1191,15 +1220,20 @@ impl Loader {
                 }
 
                 // Coalesce a burst into one reload — but never DROP the
-                // event. An edit that lands inside the debounce window
-                // waits the window out; discarding it left the change on
-                // disk and the old procedure in memory until some
-                // unrelated write happened to trigger the next reload.
-                if let Some(remaining) = debounce.checked_sub(last_reload.elapsed()) {
-                    tokio::time::sleep(remaining).await;
-                    // Whatever piled up while waiting is covered by the
-                    // reload below.
-                    while rx.try_recv().is_ok() {}
+                // change: wait until the trees go quiet for the debounce
+                // window (capped, so a steady writer still gets reloads),
+                // consuming every event that lands meanwhile; the reload
+                // below covers them all. Before, only an event within a
+                // second of the last reload was coalesced. A cold reload
+                // takes seconds on a loaded node, so every queued event of
+                // a burst ran its own full reload, back to back.
+                let burst_start = std::time::Instant::now();
+                loop {
+                    match tokio::time::timeout(debounce, rx.recv()).await {
+                        Ok(None) => return,
+                        Ok(Some(_)) if burst_start.elapsed() < MAX_COALESCE => {}
+                        _ => break,
+                    }
                 }
 
                 // Storm breaker: inside a cooldown, drop events outright.
@@ -1233,8 +1267,6 @@ impl Loader {
                     storm_until = Some(std::time::Instant::now() + STORM_COOLDOWN);
                     continue;
                 }
-                last_reload = std::time::Instant::now();
-
                 debug!("skills directory changed, reloading");
                 // The same scan the boot runs — sealed skills, the
                 // disabled-plugin gate, every tier. A second copy of
@@ -1522,6 +1554,20 @@ pub fn is_quarantined(dir: &Path) -> bool {
     dir.join(QUARANTINE_MARKER).exists() || dir.parent().is_some_and(|p| p.join(QUARANTINE_MARKER).exists())
 }
 
+/// Whether this version of a SKILL.md's parse failure has not been reported
+/// yet. Every reload re-reads every file, so a broken one is reported once
+/// per content it has, not once per reload; an edit reports it again.
+fn parse_failure_is_new(path: &Path, data: &[u8]) -> bool {
+    use std::hash::{Hash, Hasher};
+    static REPORTED: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, u64>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    let version = hasher.finish();
+    let mut reported = REPORTED.lock().unwrap_or_else(|e| e.into_inner());
+    reported.insert(path.to_path_buf(), version) != Some(version)
+}
+
 /// Load skills from extracted .napp directories in a directory tree.
 ///
 /// Recursively walks the directory looking for SKILL.md marker files
@@ -1559,7 +1605,11 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
                         }
                     }
                     Err(e) => {
-                        warn!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md");
+                        if parse_failure_is_new(&md_path, &data) {
+                            warn!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md");
+                        } else {
+                            debug!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md (unchanged)");
+                        }
                         None
                     }
                 },
@@ -1744,7 +1794,11 @@ fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
                         }
                     }
                     Err(e) => {
-                        warn!(path = %md_path.display(), error = %e, "failed to parse SKILL.md");
+                        if parse_failure_is_new(&md_path, &data) {
+                            warn!(path = %md_path.display(), error = %e, "failed to parse SKILL.md");
+                        } else {
+                            debug!(path = %md_path.display(), error = %e, "failed to parse SKILL.md (unchanged)");
+                        }
                         None
                     }
                 },
@@ -2554,6 +2608,97 @@ Triage instructions.
         }
         handle.abort();
         assert!(found, "the watch never found the skill written before it was in place");
+    }
+
+    /// When the manifest was last rewritten — every watcher reload rewrites it.
+    fn manifest_written(loader: &Loader) -> Option<std::time::SystemTime> {
+        std::fs::metadata(loader.manifest_path()).and_then(|m| m.modified()).ok()
+    }
+
+    /// Wait until the watcher stops reloading: the manifest is unchanged for
+    /// `quiet`. Returns how many reloads were seen meanwhile, or None when it
+    /// never went quiet within 20s.
+    async fn reloads_settle(loader: &Loader, quiet: std::time::Duration) -> Option<usize> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut last = manifest_written(loader);
+        let mut since = std::time::Instant::now();
+        let mut reloads = 0;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let now = manifest_written(loader);
+            if now != last {
+                last = now;
+                reloads += 1;
+                since = std::time::Instant::now();
+            } else if last.is_some() && since.elapsed() >= quiet {
+                return Some(reloads);
+            }
+        }
+        None
+    }
+
+    /// A SKILL.md that does not parse, and a burst of writes to it, cost a
+    /// bounded number of reloads and then the watcher goes quiet. The data
+    /// tree sits under a folder named `core` (one of the resource-folder
+    /// names a change is reloaded for), so the manifest every reload writes
+    /// would be taken for a skill change if the loader's own writes counted:
+    /// each reload would start the next one, forever.
+    #[tokio::test]
+    async fn a_broken_skill_does_not_keep_the_watcher_reloading() {
+        let root = TempDir::new().unwrap();
+        let installed = root.path().join("core").join("skills");
+        let user = root.path().join("core").join("user-skills");
+        std::fs::create_dir_all(&installed).unwrap();
+        let broken = "---\nname: broken\ndescription: [unclosed\n---\nbody\n";
+        create_skill_md(&user, "broken", broken);
+
+        let loader = Arc::new(Loader::new(installed.clone(), user.clone()));
+        loader.load_all().await;
+        let handle = loader.watch();
+
+        let skill_md = user.join("broken").join("SKILL.md");
+        for _ in 0..50 {
+            std::fs::write(&skill_md, broken).unwrap();
+        }
+        // The look at startup plus the burst: a few reloads, not one per
+        // event and not an endless chain (the storm breaker stops a chain
+        // at 20, so anything near that is the bug).
+        let reloads = reloads_settle(&loader, std::time::Duration::from_secs(3)).await;
+        handle.abort();
+        let reloads = reloads.expect("the watcher kept reloading after a broken SKILL.md");
+        assert!(reloads <= 4, "a broken SKILL.md and a burst of writes cost {reloads} reloads");
+    }
+
+    /// An install's work copy (`<version>.staging`) is the installer's to
+    /// reload for; the watcher never reloads for the files landing there.
+    #[tokio::test]
+    async fn an_install_staging_copy_does_not_reload_skills() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let loader = Arc::new(Loader::new(installed.path().to_path_buf(), user.path().to_path_buf()));
+        loader.load_all().await;
+        let handle = loader.watch();
+        // The watch looks once when it starts; let that pass.
+        assert!(reloads_settle(&loader, std::time::Duration::from_secs(2)).await.is_some());
+
+        let before = manifest_written(&loader);
+        let staging = installed.path().join("acme").join("1.0.0.staging");
+        for i in 0..30 {
+            create_skill_md(&staging, &format!("s{i}"), &package_skill_md(&format!("s{i}"), "d"));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let after = manifest_written(&loader);
+        handle.abort();
+        assert_eq!(before, after, "files landing in a .staging copy reloaded the skills");
+    }
+
+    #[test]
+    fn a_parse_failure_is_reported_once_per_version() {
+        let path = Path::new("/nonexistent/parse-failure-test/SKILL.md");
+        assert!(parse_failure_is_new(path, b"v1"));
+        assert!(!parse_failure_is_new(path, b"v1"));
+        assert!(parse_failure_is_new(path, b"v2"));
+        assert!(!parse_failure_is_new(path, b"v2"));
     }
 
     const SEALED_ARTIFACT_ID: &str = "0b7e5c2a-sealed-closer";
