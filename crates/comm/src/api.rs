@@ -2138,10 +2138,19 @@ impl NeboAIApi {
             Err((status, body)) => return Err(CommError::Http { status: status.as_u16(), body }),
         };
 
-        resp.bytes()
+        // Into one buffer sized from the header as the body arrives: reading
+        // it whole and then copying it out held every byte twice, and a
+        // backup chunk is 64 MB (a restore's boot peak, 2026-10-13).
+        let mut out = Vec::with_capacity(resp.content_length().unwrap_or(0).min(1 << 30) as usize);
+        let mut resp = resp;
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read body: {}", e)))
+            .map_err(|e| CommError::Other(format!("read body: {}", e)))?
+        {
+            out.extend_from_slice(&chunk);
+        }
+        Ok(out)
     }
 }
 

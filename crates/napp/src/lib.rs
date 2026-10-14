@@ -8,6 +8,7 @@ pub mod hooks;
 pub mod manifest;
 pub mod napp;
 pub mod pack;
+pub mod page_cache;
 pub mod plugin;
 pub mod plugin_runtime;
 pub mod reader;

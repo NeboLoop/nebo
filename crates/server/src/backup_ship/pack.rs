@@ -657,43 +657,50 @@ pub fn pack_object(
 }
 
 /// Open one downloaded chunk: find the sealed piece beside its manifest,
-/// decrypt it, and prove it is the piece the generation names.
+/// decrypt it, and prove it is the piece the generation names. All in the
+/// chunk's own buffer: a chunk is up to 64 MB, and the copies (the sealed
+/// piece out of the tar, the plaintext out of the ciphertext) held it three
+/// times over at a cloud bot's boot.
 pub fn open_chunk(
-    chunk_tar: &[u8],
+    mut chunk_tar: Vec<u8>,
     key: &[u8; 32],
     expected_sha256: &str,
 ) -> Result<Vec<u8>, String> {
     let mut sealed = None;
-    let mut ar = tar::Archive::new(chunk_tar);
-    for entry in ar
-        .entries()
-        .map_err(|e| format!("chunk is not a tar: {e}"))?
     {
-        let mut entry = entry.map_err(|e| format!("chunk tar: {e}"))?;
-        let name = entry
-            .path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if name == "manifest.json" {
-            continue;
+        let mut ar = tar::Archive::new(chunk_tar.as_slice());
+        for entry in ar
+            .entries()
+            .map_err(|e| format!("chunk is not a tar: {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("chunk tar: {e}"))?;
+            let name = entry
+                .path()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name == "manifest.json" {
+                continue;
+            }
+            let at = entry.raw_file_position() as usize;
+            sealed = Some((at, entry.size() as usize));
         }
-        let mut bytes = Vec::new();
-        entry
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("chunk tar: {e}"))?;
-        sealed = Some(bytes);
     }
-    let sealed = sealed.ok_or("chunk holds no sealed piece")?;
-    let plain = mcp::crypto::Encryptor::new(*key)
-        .decrypt(&sealed)
+    let (at, len) = sealed.ok_or("chunk holds no sealed piece")?;
+    if at.checked_add(len).is_none_or(|end| end > chunk_tar.len()) {
+        return Err("chunk tar: the sealed piece runs past its end".into());
+    }
+    chunk_tar.truncate(at + len);
+    chunk_tar.drain(..at);
+    mcp::crypto::Encryptor::new(*key)
+        .decrypt_in_place(&mut chunk_tar)
         .map_err(|e| format!("chunk does not decrypt with this bot's key: {e}"))?;
-    let got = hex::encode(Sha256::digest(&plain));
+    let got = hex::encode(Sha256::digest(&chunk_tar));
     if got != expected_sha256 {
         return Err(format!(
             "chunk checksum mismatch: expected {expected_sha256}, got {got}"
         ));
     }
-    Ok(plain)
+    Ok(chunk_tar)
 }
 
 /// Hashes and counts everything read through it.
@@ -712,17 +719,16 @@ impl<R: Read> Read for HashingReader<R> {
     }
 }
 
-/// Unpack an object's reassembled gzip stream into `into`, and prove the
-/// tar it held is the one the generation names.
+/// Unpack an object's gzip stream (its opened chunks, in order) into
+/// `into`, and prove the tar it held is the one the generation names.
 pub fn unpack_object(
-    gz_path: &Path,
+    gz: impl Read,
     into: &Path,
     expected_sha256: &str,
     expected_bytes: u64,
 ) -> Result<(), String> {
-    let file = File::open(gz_path).map_err(|e| format!("open {}: {e}", gz_path.display()))?;
     let reader = HashingReader {
-        inner: GzDecoder::new(io::BufReader::new(file)),
+        inner: GzDecoder::new(io::BufReader::new(gz)),
         sha: Sha256::new(),
         n: 0,
     };
@@ -812,7 +818,7 @@ pub(super) mod tests {
         let mut out = File::create(gz).unwrap();
         for c in chunks {
             let bytes = fs::read(&c.path).unwrap();
-            out.write_all(&open_chunk(&bytes, key, &c.sha256)?).unwrap();
+            out.write_all(&open_chunk(bytes, key, &c.sha256)?).unwrap();
         }
         Ok(())
     }
@@ -859,7 +865,7 @@ pub(super) mod tests {
         let dst = tempfile::tempdir().unwrap();
         let gz = out.path().join("files.gz");
         reassemble(&packed.chunks, &KEY, &gz).unwrap();
-        unpack_object(&gz, dst.path(), &packed.sha256, packed.bytes).unwrap();
+        unpack_object(File::open(&gz).unwrap(), dst.path(), &packed.sha256, packed.bytes).unwrap();
         assert_eq!(snapshot(src.path()), snapshot(dst.path()));
         let m = |d: &Path| {
             fs::metadata(d.join("files/a.txt"))
@@ -955,7 +961,7 @@ pub(super) mod tests {
         let dst = tempfile::tempdir().unwrap();
         let gz = out.path().join("files.gz");
         reassemble(&packed.chunks, &KEY, &gz).unwrap();
-        unpack_object(&gz, dst.path(), &packed.sha256, packed.bytes).unwrap();
+        unpack_object(File::open(&gz).unwrap(), dst.path(), &packed.sha256, packed.bytes).unwrap();
         assert_eq!(fs::read(dst.path().join("files/noise.bin")).unwrap(), noise);
     }
 
@@ -976,7 +982,7 @@ pub(super) mod tests {
         )
         .unwrap();
         let bytes = fs::read(&packed.chunks[0].path).unwrap();
-        let err = open_chunk(&bytes, &[8u8; 32], &packed.chunks[0].sha256).unwrap_err();
+        let err = open_chunk(bytes, &[8u8; 32], &packed.chunks[0].sha256).unwrap_err();
         assert!(err.contains("decrypt"), "{err}");
     }
 
@@ -1001,7 +1007,7 @@ pub(super) mod tests {
 
         let wrong_sha = "0".repeat(64);
         assert!(
-            open_chunk(&bytes, &KEY, &wrong_sha)
+            open_chunk(bytes.clone(), &KEY, &wrong_sha)
                 .unwrap_err()
                 .contains("checksum")
         );
@@ -1018,7 +1024,7 @@ pub(super) mod tests {
             .unwrap();
         let forged = forged.into_inner().unwrap();
         assert!(
-            open_chunk(&forged, &KEY, &packed.chunks[0].sha256)
+            open_chunk(forged, &KEY, &packed.chunks[0].sha256)
                 .unwrap_err()
                 .contains("checksum")
         );
@@ -1027,7 +1033,7 @@ pub(super) mod tests {
         let mut flipped = bytes.clone();
         flipped[sealed_offset(&bytes) + 20] ^= 0xFF;
         assert!(
-            open_chunk(&flipped, &KEY, &packed.chunks[0].sha256)
+            open_chunk(flipped, &KEY, &packed.chunks[0].sha256)
                 .unwrap_err()
                 .contains("decrypt")
         );
@@ -1054,7 +1060,7 @@ pub(super) mod tests {
         reassemble(&packed.chunks, &KEY, &gz).unwrap();
         let dst = tempfile::tempdir().unwrap();
         assert!(
-            unpack_object(&gz, dst.path(), &"f".repeat(64), packed.bytes)
+            unpack_object(File::open(&gz).unwrap(), dst.path(), &"f".repeat(64), packed.bytes)
                 .unwrap_err()
                 .contains("checksum")
         );

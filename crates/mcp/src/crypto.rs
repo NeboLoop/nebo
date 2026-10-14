@@ -62,6 +62,18 @@ impl Encryptor {
 
     /// Decrypt data (nonce + ciphertext).
     pub fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, McpError> {
+        let mut buf = data.to_vec();
+        self.decrypt_in_place(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// Decrypt `data` (nonce + ciphertext) where it lies: on success it
+    /// holds the plaintext. A sealed backup chunk is tens of megabytes, and
+    /// a copy of it is that much more memory on a pod whose memory is the
+    /// scarce resource. On failure `data` is left in an unspecified state.
+    pub fn decrypt_in_place(&self, data: &mut Vec<u8>) -> Result<(), McpError> {
+        use aes_gcm::aead::AeadInPlace;
+
         if data.len() < NONCE_SIZE {
             return Err(McpError::Crypto("data too short".into()));
         }
@@ -69,11 +81,11 @@ impl Encryptor {
         let cipher =
             Aes256Gcm::new_from_slice(&self.key).map_err(|e| McpError::Crypto(e.to_string()))?;
 
-        let nonce = Nonce::from_slice(&data[..NONCE_SIZE]);
-        let ciphertext = &data[NONCE_SIZE..];
+        let nonce = *Nonce::from_slice(&data[..NONCE_SIZE]);
+        data.drain(..NONCE_SIZE);
 
         cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt_in_place(&nonce, b"", data)
             .map_err(|e| McpError::Crypto(e.to_string()))
     }
 

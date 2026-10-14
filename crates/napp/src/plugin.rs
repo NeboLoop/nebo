@@ -1426,7 +1426,7 @@ impl PluginStore {
             }
 
             // Check for binary — read manifest to find binary_name, or scan for executable
-            let binary_path = self.find_binary_in_version_dir(&path);
+            let binary_path = Self::find_binary_in_version_dir(&path);
             if binary_path.is_none() {
                 continue;
             }
@@ -1617,6 +1617,8 @@ impl PluginStore {
     ///     (re-extract → verify → swap). Same pathway, so no forked logic.
     ///   - otherwise unrecoverable → remove the orphan.
     /// If a promoted `<version>` already exists, the staging is stale → remove it.
+    /// Then the `.napp` an older Nebo kept beside each installed version is
+    /// retired (`retire_installed_napps`).
     ///
     /// Sealed (paid) plugins never extract to disk, so an orphaned staging-with-binary
     /// is always a loose plugin whose `.napp` re-extracts without a license key.
@@ -1671,7 +1673,7 @@ impl PluginStore {
                     continue;
                 }
             };
-            match self.install_from_napp(&slug, &version, &bytes).await {
+            match self.install_from_napp(&slug, &version, bytes).await {
                 Ok(_) => {
                     info!(plugin = %slug, version = %version, "startup: resumed interrupted .napp install")
                 }
@@ -1680,6 +1682,11 @@ impl PluginStore {
                 }
             }
         }
+
+        // An installed version needs no `.napp` beside it (`NAPP_SHA256`):
+        // retire what an older Nebo kept.
+        let installed_dir = self.installed_dir.clone();
+        let _ = tokio::task::spawn_blocking(move || retire_installed_napps(&installed_dir)).await;
     }
 
     /// Install a plugin from a .napp archive containing binary + plugin.json + PLUGIN.md + skills/.
@@ -1687,11 +1694,14 @@ impl PluginStore {
     /// Stores the .napp archive at `<installed_dir>/<slug>/<version>.napp`, then
     /// extracts alongside (into `<version>/`) — same pattern as agent install.
     /// Reads plugin.json for metadata, verifies binary integrity (SHA256 + ED25519).
+    /// Once the version is in place the `.napp` is deleted: its SHA-256 stays
+    /// in the version dir ([`NAPP_SHA256`]), which is all a reinstall of the
+    /// same bytes needs. Every file step runs off the async runtime.
     pub async fn install_from_napp(
         &self,
         slug: &str,
         version: &str,
-        napp_data: &[u8],
+        napp_data: Vec<u8>,
     ) -> Result<PathBuf, NappError> {
         // Dedup concurrent installs
         {
@@ -1712,22 +1722,7 @@ impl PluginStore {
             downloading.insert(slug.to_string());
         }
 
-        // The previous install goes under this lock, so a concurrent caller
-        // waits (above) instead of deleting the files this one is extracting.
-        // The same bytes as what is installed change nothing, so nothing is
-        // removed: the remove-then-extract left the plugin gone for the
-        // length of the extraction, and a "Sign in" tap in that window found
-        // no plugin (2026-09-26, a reinstall of the version already on disk).
-        let result = match self.installed_copy_of(slug, napp_data) {
-            Some(binary) => {
-                info!(plugin = slug, path = %binary.display(), "same .napp already installed; kept in place");
-                Ok(binary)
-            }
-            None => {
-                let _ = self.remove(slug);
-                self.install_from_napp_inner(slug, version, napp_data).await
-            }
-        };
+        let result = self.install_from_napp_inner(slug, version, napp_data).await;
 
         // Release install lock
         {
@@ -1738,26 +1733,17 @@ impl PluginStore {
         result
     }
 
-    /// The binary of an install of exactly these `.napp` bytes, if one is in
-    /// place: a retained `<version>.napp` under the slug with the same bytes,
-    /// beside a version dir that still has its binary and is not quarantined.
-    fn installed_copy_of(&self, slug: &str, napp_data: &[u8]) -> Option<PathBuf> {
-        let slug_dir = self.installed_dir.join(slug);
-        for entry in std::fs::read_dir(&slug_dir).ok()?.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(version) = name.strip_suffix(".napp") else {
-                continue;
-            };
-            if entry.metadata().map(|m| m.len()).ok() != Some(napp_data.len() as u64)
-                || std::fs::read(entry.path()).ok().as_deref() != Some(napp_data)
-            {
+    /// The binary of an install of exactly the `.napp` whose SHA-256 is
+    /// `napp_sha256`, if one is in place: a version dir under the slug that
+    /// records that hash, still has its binary, and is not quarantined.
+    fn installed_copy_of(slug_dir: &Path, napp_sha256: &str) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(slug_dir).ok()?.flatten() {
+            let version_dir = entry.path();
+            let recorded = std::fs::read_to_string(version_dir.join(NAPP_SHA256)).unwrap_or_default();
+            if recorded.trim() != napp_sha256 || version_dir.join(".quarantined").exists() {
                 continue;
             }
-            let version_dir = slug_dir.join(version);
-            if version_dir.join(".quarantined").exists() {
-                continue;
-            }
-            if let Some(binary) = self.find_binary_in_version_dir(&version_dir) {
+            if let Some(binary) = Self::find_binary_in_version_dir(&version_dir) {
                 return Some(binary);
             }
         }
@@ -1774,178 +1760,88 @@ impl PluginStore {
     ///   2. Extract to <version>.staging/ directory
     ///   3. Verify manifest, binary, SHA256, ED25519
     ///   4. Only after verification: swap staging into place, back up old version
-    ///   5. Clean up old backups
+    ///   5. Clean up old backups and the .napp, and give back the page cache
+    ///
+    /// Steps 1–3 and 4–5 are blocking file work (an extraction took 12–33 s
+    /// on a cloud bot and, run on the runtime, stalled it long enough to drop
+    /// the gateway): each runs in `spawn_blocking`.
     async fn install_from_napp_inner(
         &self,
         slug: &str,
         version: &str,
-        napp_data: &[u8],
+        napp_data: Vec<u8>,
     ) -> Result<PathBuf, NappError> {
         let plugin_dir = self.installed_dir.join(slug);
-        std::fs::create_dir_all(&plugin_dir)?;
-
-        // 1. Save .napp archive
-        let napp_path = plugin_dir.join(format!("{version}.napp"));
-        std::fs::write(&napp_path, napp_data)?;
-        info!(plugin = slug, path = %napp_path.display(), size = napp_data.len(), "stored sealed .napp");
-
-        // 2. Extract to staging dir (never touches the live version dir)
-        let staging_dir = plugin_dir.join(format!("{version}.staging"));
-        if staging_dir.exists() {
-            std::fs::remove_dir_all(&staging_dir)?;
-        }
-        crate::reader::extract_all(&napp_path, &staging_dir)?;
-        info!(plugin = slug, dir = %staging_dir.display(), "extracted .napp to staging");
-
-        // 3. Read and validate plugin.json from staging
-        let plugin_json_path = staging_dir.join("plugin.json");
-        let plugin_manifest: Option<PluginManifest> = if plugin_json_path.exists() {
-            let data = std::fs::read_to_string(&plugin_json_path)?;
-            match serde_json::from_str(&data) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    warn!(plugin = slug, error = %e, "failed to parse plugin.json");
-                    None
-                }
-            }
-        } else {
-            None
+        let staged = {
+            let (plugin_dir, user_slug_dir) = (plugin_dir.clone(), self.user_dir.join(slug));
+            let (slug, version) = (slug.to_string(), version.to_string());
+            let keep_binary = self.signing_key.is_some();
+            tokio::task::spawn_blocking(move || {
+                stage_napp(&plugin_dir, &user_slug_dir, &slug, &version, napp_data, keep_binary)
+            })
+            .await
+            .map_err(|e| NappError::Extraction(format!("install task: {e}")))?
         };
-
-        if let Some(ref pm) = plugin_manifest {
-            pm.validate()?;
-        }
-
-        // Resolve effective version (e.g., "latest" -> real semver from manifest)
-        let effective_version = if let Some(ref pm) = plugin_manifest {
-            if semver::Version::parse(version).is_err()
-                && semver::Version::parse(&pm.version).is_ok()
-            {
-                pm.version.clone()
-            } else {
-                version.to_string()
+        let mut staged = match staged {
+            Ok(Stage::Installed(binary)) => {
+                // The previous install goes only once the new one is
+                // verified, and the same bytes as what is installed change
+                // nothing: the remove-then-extract left the plugin gone for
+                // the length of the extraction, and a "Sign in" tap in that
+                // window found no plugin (2026-09-26, a reinstall of the
+                // version already on disk).
+                info!(plugin = slug, path = %binary.display(), "same .napp already installed; kept in place");
+                return Ok(binary);
             }
-        } else {
-            version.to_string()
+            Ok(Stage::Staged(s)) => s,
+            Err(StageError::Sha256(msg)) => {
+                self.record_diagnostic(slug, "error", "verify", "SHA256 mismatch");
+                return Err(NappError::PluginDownloadFailed(msg));
+            }
+            Err(StageError::Napp(e)) => return Err(e),
         };
+        info!(plugin = slug, dir = %staged.staging.display(), "extracted .napp to staging");
 
-        // If effective version differs, rename staging dir + .napp to match
-        let mut staging = staging_dir;
-        if effective_version != version {
-            let new_staging = plugin_dir.join(format!("{effective_version}.staging"));
-            let new_napp_path = plugin_dir.join(format!("{effective_version}.napp"));
-            if new_staging.exists() {
-                std::fs::remove_dir_all(&new_staging)?;
-            }
-            std::fs::rename(&staging, &new_staging)?;
-            std::fs::rename(&napp_path, &new_napp_path)?;
-            staging = new_staging;
-            info!(plugin = slug, from = %version, to = %effective_version, "resolved version from manifest");
-        }
-
-        // Find binary in staging and make executable
-        let binary_name = self
-            .find_binary_in_version_dir(&staging)
-            .ok_or_else(|| NappError::Extraction("no binary found in extracted .napp".into()))?
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let staging_binary = staging.join(&binary_name);
-        #[cfg(unix)]
+        // ED25519 against the staging binary (before touching the live dir)
+        if let (Some(binary_data), Some(pb), Some(signing_key)) =
+            (staged.binary_data.take(), staged.platform_binary.as_ref(), self.signing_key.as_ref())
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&staging_binary, std::fs::Permissions::from_mode(0o755))?;
-        }
-
-        // Verify SHA256 + ED25519 against staging binary (before touching live dir)
-        if let Some(ref pm) = plugin_manifest {
-            let platform = current_platform_key();
-            if let Some(pb) = pm.platforms.get(&platform) {
-                let binary_data = std::fs::read(&staging_binary)?;
-
-                // SHA256
-                let mut hasher = Sha256::new();
-                hasher.update(&binary_data);
-                let actual_hash = hex::encode(hasher.finalize());
-                if actual_hash != pb.sha256 {
-                    // Verification failed — clean up staging, keep old version intact
-                    let _ = std::fs::remove_dir_all(&staging);
-                    self.record_diagnostic(slug, "error", "verify", "SHA256 mismatch");
-                    return Err(NappError::PluginDownloadFailed(format!(
-                        "SHA256 mismatch for plugin '{}': expected {}, got {}",
-                        slug, pb.sha256, actual_hash
-                    )));
-                }
-
-                // ED25519
-                if let Some(ref signing_key) = self.signing_key {
-                    match signing_key.get_key().await {
-                        Ok(verifying_key) => {
-                            use base64::Engine;
-                            use ed25519_dalek::{Signature, Verifier};
-
-                            let sig_bytes = base64::engine::general_purpose::STANDARD
-                                .decode(&pb.signature)
-                                .map_err(|e| {
-                                    NappError::Signing(format!("decode plugin signature: {}", e))
-                                })?;
-                            let signature = Signature::from_slice(&sig_bytes).map_err(|e| {
-                                NappError::Signing(format!("invalid plugin signature: {}", e))
-                            })?;
-                            verifying_key
-                                .verify(&binary_data, &signature)
-                                .map_err(|_| {
-                                    // Verification failed — clean up staging, keep old version
-                                    let _ = std::fs::remove_dir_all(&staging);
-                                    NappError::Signing(format!(
-                                        "plugin '{}' signature verification failed",
-                                        slug
-                                    ))
-                                })?;
-                            debug!(plugin = slug, "ED25519 signature verified (.napp)");
-                        }
-                        Err(e) => {
-                            warn!(plugin = slug, error = %e, "could not fetch signing key, skipping signature verification");
-                        }
+            match signing_key.get_key().await {
+                Ok(verifying_key) => {
+                    let (slug_owned, signature) = (slug.to_string(), pb.signature.clone());
+                    let verified = tokio::task::spawn_blocking(move || {
+                        verify_signature(&slug_owned, &verifying_key, &binary_data, &signature)
+                    })
+                    .await
+                    .map_err(|e| NappError::Signing(format!("verify task: {e}")))?;
+                    if let Err(e) = verified {
+                        // Verification failed — clean up staging, keep old version
+                        let _ = std::fs::remove_dir_all(&staged.staging);
+                        return Err(e);
                     }
+                    debug!(plugin = slug, "ED25519 signature verified (.napp)");
+                }
+                Err(e) => {
+                    warn!(plugin = slug, error = %e, "could not fetch signing key, skipping signature verification");
                 }
             }
+        }
 
+        let effective_version = staged.effective_version.clone();
+        if let Some(ref pm) = staged.manifest {
             // Cache manifest in memory
             let cache_key = format!("{}:{}", slug, effective_version);
             let mut manifests = self.manifests.write().await;
             manifests.insert(cache_key, pm.clone());
         }
 
-        // 4. Verification passed — safe to swap staging into place.
-        let final_dir = plugin_dir.join(&effective_version);
-        if final_dir.exists() {
-            // Back up old version instead of deleting
-            let prev_dir = plugin_dir.join(format!("{effective_version}.prev"));
-            let _ = std::fs::remove_dir_all(&prev_dir); // clean up any leftover backup
-            std::fs::rename(&final_dir, &prev_dir)?;
-            info!(plugin = slug, version = %effective_version, "backed up previous version");
-        }
-        std::fs::rename(&staging, &final_dir)?;
-
-        // 5. Clean up old backups and stale version dirs (keep only the current version)
-        if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                // Keep the current version dir and .napp
-                if fname == effective_version || fname == format!("{effective_version}.napp") {
-                    continue;
-                }
-                // Remove .prev backups, .staging leftovers, and old version dirs
-                if fname.ends_with(".prev") || fname.ends_with(".staging") {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
-
-        let binary_path = final_dir.join(&binary_name);
+        // 4–5. Verification passed — swap staging into place, clean up.
+        let binary_path = {
+            let (plugin_dir, slug) = (plugin_dir.clone(), slug.to_string());
+            tokio::task::spawn_blocking(move || promote(&plugin_dir, &slug, staged))
+                .await
+                .map_err(|e| NappError::Extraction(format!("install task: {e}")))??
+        };
         info!(
             plugin = slug,
             version = %effective_version,
@@ -2093,7 +1989,7 @@ impl PluginStore {
                     continue; // Already seen from higher-priority dir
                 }
 
-                if let Some(binary_path) = self.find_binary_in_version_dir(&ver_path) {
+                if let Some(binary_path) = Self::find_binary_in_version_dir(&ver_path) {
                     results.push((slug.clone(), version, binary_path, source));
                 }
             }
@@ -2160,7 +2056,7 @@ impl PluginStore {
         }
 
         // 4. Fallback: any executable in the slug directory
-        if let Some(binary_path) = self.find_binary_in_version_dir(slug_dir) {
+        if let Some(binary_path) = Self::find_binary_in_version_dir(slug_dir) {
             return Some((version, binary_path));
         }
 
@@ -2321,7 +2217,7 @@ impl PluginStore {
         let _ = std::fs::write(&marker, reason);
 
         // Remove the binary (preserve manifest for investigation)
-        if let Some(binary_path) = self.find_binary_in_version_dir(&version_dir) {
+        if let Some(binary_path) = Self::find_binary_in_version_dir(&version_dir) {
             let _ = std::fs::remove_file(&binary_path);
         }
 
@@ -2496,7 +2392,7 @@ impl PluginStore {
     }
 
     /// Find a binary in a version directory by reading plugin.json or scanning for executables.
-    fn find_binary_in_version_dir(&self, version_dir: &Path) -> Option<PathBuf> {
+    fn find_binary_in_version_dir(version_dir: &Path) -> Option<PathBuf> {
         // Try plugin.json first
         let manifest_path = version_dir.join("plugin.json");
         if manifest_path.exists() {
@@ -2593,7 +2489,7 @@ impl PluginStore {
                 path.is_dir()
                     && e.file_name().to_str().is_some_and(|n| semver::Version::parse(n).is_ok())
                     && !path.join(".quarantined").exists()
-                    && self.find_binary_in_version_dir(&path).is_none()
+                    && Self::find_binary_in_version_dir(&path).is_none()
             })
         })
     }
@@ -3061,6 +2957,278 @@ fn interpret_auth_status_output(stdout: &[u8]) -> bool {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+
+/// The marker an install leaves in its version dir: the SHA-256 (hex) of the
+/// `.napp` it was extracted from. The `.napp` itself is deleted once the
+/// version is in place — its tens of megabytes sat on disk and in the page
+/// cache of every bot for nothing but a reinstall's same-bytes check, which
+/// this answers. A dotfile, so it is never taken for the binary.
+pub const NAPP_SHA256: &str = ".napp-sha256";
+
+/// An extracted, checked `.napp` waiting in `<version>.staging`.
+struct Staged {
+    staging: PathBuf,
+    effective_version: String,
+    napp_path: PathBuf,
+    napp_sha256: String,
+    binary_name: String,
+    manifest: Option<PluginManifest>,
+    platform_binary: Option<PlatformBinary>,
+    /// The binary's bytes, kept for the signature check.
+    binary_data: Option<Vec<u8>>,
+}
+
+enum Stage {
+    /// These very bytes are installed already: the binary.
+    Installed(PathBuf),
+    Staged(Staged),
+}
+
+enum StageError {
+    /// The binary is not the one its manifest names.
+    Sha256(String),
+    Napp(NappError),
+}
+
+impl From<NappError> for StageError {
+    fn from(e: NappError) -> Self {
+        StageError::Napp(e)
+    }
+}
+
+impl From<std::io::Error> for StageError {
+    fn from(e: std::io::Error) -> Self {
+        StageError::Napp(e.into())
+    }
+}
+
+/// Install steps 1–3 up to the signature: blocking. Removes the previous
+/// install (under the caller's per-slug lock) unless these very bytes are it,
+/// stores the `.napp`, extracts it to `<version>.staging`, and checks the
+/// binary against its manifest's SHA-256. `keep_binary` keeps the binary's
+/// bytes for the signature check.
+fn stage_napp(
+    plugin_dir: &Path,
+    user_slug_dir: &Path,
+    slug: &str,
+    version: &str,
+    napp_data: Vec<u8>,
+    keep_binary: bool,
+) -> Result<Stage, StageError> {
+    let napp_sha256 = hex::encode(Sha256::digest(&napp_data));
+    if let Some(binary) = PluginStore::installed_copy_of(plugin_dir, &napp_sha256) {
+        return Ok(Stage::Installed(binary));
+    }
+    for slug_dir in [user_slug_dir, plugin_dir] {
+        if slug_dir.exists() {
+            let _ = remove_store_artifacts(slug_dir);
+        }
+    }
+    std::fs::create_dir_all(plugin_dir)?;
+
+    // 1. Save .napp archive
+    let mut napp_path = plugin_dir.join(format!("{version}.napp"));
+    std::fs::write(&napp_path, &napp_data)?;
+    info!(plugin = slug, path = %napp_path.display(), size = napp_data.len(), "stored sealed .napp");
+    drop(napp_data);
+
+    // 2. Extract to staging dir (never touches the live version dir)
+    let staging_dir = plugin_dir.join(format!("{version}.staging"));
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir)?;
+    }
+    crate::reader::extract_all(&napp_path, &staging_dir)?;
+
+    // 3. Read and validate plugin.json from staging
+    let plugin_json_path = staging_dir.join("plugin.json");
+    let plugin_manifest: Option<PluginManifest> = if plugin_json_path.exists() {
+        let data = std::fs::read_to_string(&plugin_json_path)?;
+        match serde_json::from_str(&data) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                warn!(plugin = slug, error = %e, "failed to parse plugin.json");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(ref pm) = plugin_manifest {
+        pm.validate()?;
+    }
+
+    // Resolve effective version (e.g., "latest" -> real semver from manifest)
+    let effective_version = match plugin_manifest {
+        Some(ref pm)
+            if semver::Version::parse(version).is_err()
+                && semver::Version::parse(&pm.version).is_ok() =>
+        {
+            pm.version.clone()
+        }
+        _ => version.to_string(),
+    };
+
+    // If effective version differs, rename staging dir + .napp to match
+    let mut staging = staging_dir;
+    if effective_version != version {
+        let new_staging = plugin_dir.join(format!("{effective_version}.staging"));
+        let new_napp_path = plugin_dir.join(format!("{effective_version}.napp"));
+        if new_staging.exists() {
+            std::fs::remove_dir_all(&new_staging)?;
+        }
+        std::fs::rename(&staging, &new_staging)?;
+        std::fs::rename(&napp_path, &new_napp_path)?;
+        staging = new_staging;
+        napp_path = new_napp_path;
+        info!(plugin = slug, from = %version, to = %effective_version, "resolved version from manifest");
+    }
+
+    // Find binary in staging and make executable
+    let binary_name = PluginStore::find_binary_in_version_dir(&staging)
+        .ok_or_else(|| NappError::Extraction("no binary found in extracted .napp".into()))?
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let staging_binary = staging.join(&binary_name);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staging_binary, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    // SHA256 against the staging binary (before touching the live dir)
+    let platform_binary = plugin_manifest
+        .as_ref()
+        .and_then(|pm| pm.platforms.get(&current_platform_key()).cloned());
+    let mut binary_data = None;
+    if let Some(ref pb) = platform_binary {
+        let data = std::fs::read(&staging_binary)?;
+        let actual_hash = hex::encode(Sha256::digest(&data));
+        if actual_hash != pb.sha256 {
+            // Verification failed — clean up staging, keep old version intact
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(StageError::Sha256(format!(
+                "SHA256 mismatch for plugin '{}': expected {}, got {}",
+                slug, pb.sha256, actual_hash
+            )));
+        }
+        if keep_binary {
+            binary_data = Some(data);
+        }
+    }
+
+    Ok(Stage::Staged(Staged {
+        staging,
+        effective_version,
+        napp_path,
+        napp_sha256,
+        binary_name,
+        manifest: plugin_manifest,
+        platform_binary,
+        binary_data,
+    }))
+}
+
+/// The ED25519 check of a staged binary against its manifest's signature:
+/// blocking (it hashes the whole binary).
+fn verify_signature(
+    slug: &str,
+    verifying_key: &ed25519_dalek::VerifyingKey,
+    binary_data: &[u8],
+    signature: &str,
+) -> Result<(), NappError> {
+    use base64::Engine;
+    use ed25519_dalek::{Signature, Verifier};
+
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signature)
+        .map_err(|e| NappError::Signing(format!("decode plugin signature: {}", e)))?;
+    let signature = Signature::from_slice(&sig_bytes)
+        .map_err(|e| NappError::Signing(format!("invalid plugin signature: {}", e)))?;
+    verifying_key.verify(binary_data, &signature).map_err(|_| {
+        NappError::Signing(format!("plugin '{}' signature verification failed", slug))
+    })
+}
+
+/// Install steps 4–5: blocking. Record the `.napp`'s hash in the staged
+/// version, swap it into place (the old version backed up, then removed),
+/// delete the `.napp`, and give the extraction's page cache back. Returns the
+/// installed binary.
+fn promote(plugin_dir: &Path, slug: &str, staged: Staged) -> Result<PathBuf, NappError> {
+    std::fs::write(staged.staging.join(NAPP_SHA256), &staged.napp_sha256)?;
+    let final_dir = plugin_dir.join(&staged.effective_version);
+    if final_dir.exists() {
+        // Back up old version instead of deleting
+        let prev_dir = plugin_dir.join(format!("{}.prev", staged.effective_version));
+        let _ = std::fs::remove_dir_all(&prev_dir); // clean up any leftover backup
+        std::fs::rename(&final_dir, &prev_dir)?;
+        info!(plugin = slug, version = %staged.effective_version, "backed up previous version");
+    }
+    std::fs::rename(&staged.staging, &final_dir)?;
+
+    // Clean up old backups and stale copies (keep only the current version)
+    if let Ok(entries) = std::fs::read_dir(plugin_dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.ends_with(".prev") || fname.ends_with(".staging") {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    // The version is in place and records the `.napp`'s hash: the archive
+    // is no longer needed (an interrupted install resumes from it only
+    // until here).
+    let _ = std::fs::remove_file(&staged.napp_path);
+    crate::page_cache::release(&final_dir);
+    Ok(final_dir.join(&staged.binary_name))
+}
+
+/// A `.napp` an older Nebo kept beside a version it had installed: the
+/// version records the archive's hash ([`NAPP_SHA256`]) and the archive is
+/// deleted. Blocking. A `.napp` whose install was interrupted (a `.staging`,
+/// no promoted version) is left for [`PluginStore::reconcile_orphaned_staging`].
+fn retire_installed_napps(installed_dir: &Path) {
+    let Ok(slugs) = std::fs::read_dir(installed_dir) else {
+        return;
+    };
+    for slug_dir in slugs.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        let Ok(entries) = std::fs::read_dir(&slug_dir) else {
+            continue;
+        };
+        for napp in entries.flatten().map(|e| e.path()) {
+            let Some(version) = napp
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".napp"))
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let version_dir = slug_dir.join(&version);
+            if !napp.is_file()
+                || !version_dir.is_dir()
+                || slug_dir.join(format!("{version}.staging")).exists()
+            {
+                continue;
+            }
+            let marker = version_dir.join(NAPP_SHA256);
+            if !marker.exists() {
+                let Ok(bytes) = std::fs::read(&napp) else {
+                    continue;
+                };
+                if std::fs::write(&marker, hex::encode(Sha256::digest(&bytes))).is_err() {
+                    continue;
+                }
+            }
+            if std::fs::remove_file(&napp).is_ok() {
+                info!(path = %napp.display(), "retired the .napp of an installed plugin version");
+            }
+        }
+    }
+}
 
 /// The names in a marketplace plugin's slug directory that are its package:
 /// what the marketplace can always send again. Each version directory, each
@@ -4154,7 +4322,7 @@ mod tests {
         let slug_dir = plugins_dir.join("xero");
         let version_dir = slug_dir.join("0.1.0");
         std::fs::create_dir_all(&version_dir).unwrap();
-        std::fs::write(slug_dir.join("0.1.0.napp"), &napp).unwrap();
+        std::fs::write(version_dir.join(NAPP_SHA256), hex::encode(Sha256::digest(&napp))).unwrap();
         let binary = version_dir.join("xero");
         std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
         #[cfg(unix)]
@@ -4164,7 +4332,7 @@ mod tests {
         }
         let store = PluginStore::new(plugins_dir, user_dir, None);
 
-        let kept = store.install_from_napp("xero", "0.1.0", &napp).await.expect("the same bytes are a no-op");
+        let kept = store.install_from_napp("xero", "0.1.0", napp.clone()).await.expect("the same bytes are a no-op");
         assert_eq!(kept, binary);
         assert!(binary.is_file(), "the plugin never left the disk");
         assert!(store.resolve("xero", "*").is_some());
@@ -4172,7 +4340,87 @@ mod tests {
         // Different bytes for the same version are a real reinstall, which
         // extracts: these are no archive, so it fails.
         let changed = b"other bytes".to_vec();
-        assert!(store.install_from_napp("xero", "0.1.0", &changed).await.is_err());
+        assert!(store.install_from_napp("xero", "0.1.0", changed).await.is_err());
+    }
+
+    /// A loose `.napp` (a raw tar.gz) of `plugin.json` and a shell binary.
+    fn loose_napp(slug: &str, version: &str) -> Vec<u8> {
+        let binary = "#!/bin/sh\necho ok\n";
+        let manifest = serde_json::json!({
+            "id": slug, "slug": slug, "name": slug, "version": version,
+            "platforms": { current_platform_key(): {
+                "binaryName": slug, "sha256": hex::encode(Sha256::digest(binary.as_bytes())),
+                "signature": "", "size": binary.len(), "downloadUrl": "",
+            } },
+        })
+        .to_string();
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        for (path, body, mode) in [("plugin.json", manifest.as_str(), 0o644), (slug, binary, 0o755)] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(mode);
+            header.set_cksum();
+            tar.append_data(&mut header, path, body.as_bytes()).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// An install leaves the version and the `.napp`'s hash in it, and no
+    /// `.napp`; installing the same bytes again keeps it in place, and new
+    /// bytes replace it.
+    #[tokio::test]
+    async fn an_installed_version_keeps_the_napp_hash_and_not_the_napp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = PluginStore::new(tmp.path().join("installed"), tmp.path().join("user"), None);
+        let napp = loose_napp("abacus", "0.3.0");
+        let binary = store.install_from_napp("abacus", "0.3.0", napp.clone()).await.unwrap();
+        let slug_dir = tmp.path().join("installed/abacus");
+        assert_eq!(binary, slug_dir.join("0.3.0/abacus"));
+        assert!(!slug_dir.join("0.3.0.napp").exists(), "the .napp is deleted once the version is in place");
+        assert_eq!(
+            std::fs::read_to_string(slug_dir.join("0.3.0").join(NAPP_SHA256)).unwrap(),
+            hex::encode(Sha256::digest(&napp))
+        );
+        assert_eq!(package_entries(&slug_dir), vec!["0.3.0"]);
+
+        let mtime = |p: &Path| p.metadata().unwrap().modified().unwrap();
+        let before = mtime(&binary);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(store.install_from_napp("abacus", "0.3.0", napp).await.unwrap(), binary);
+        assert_eq!(mtime(&binary), before, "the same bytes are not extracted again");
+
+        let next = loose_napp("abacus", "0.4.0");
+        let binary = store.install_from_napp("abacus", "0.4.0", next).await.unwrap();
+        assert_eq!(binary, slug_dir.join("0.4.0/abacus"));
+        assert_eq!(package_entries(&slug_dir), vec!["0.4.0"]);
+    }
+
+    /// The `.napp` an older Nebo kept beside an installed version is retired
+    /// at startup: its hash goes into the version, the archive goes. One whose
+    /// install was interrupted is resumed from it instead.
+    #[tokio::test]
+    async fn startup_retires_the_napp_of_an_installed_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let installed = tmp.path().join("installed");
+        let napp = loose_napp("abacus", "0.3.0");
+        let slug_dir = installed.join("abacus");
+        std::fs::create_dir_all(slug_dir.join("0.3.0")).unwrap();
+        std::fs::write(slug_dir.join("0.3.0.napp"), &napp).unwrap();
+        // Interrupted: staged, never promoted.
+        let other = installed.join("ledger");
+        std::fs::create_dir_all(other.join("0.1.0.staging")).unwrap();
+        std::fs::write(other.join("0.1.0.napp"), loose_napp("ledger", "0.1.0")).unwrap();
+
+        let store = PluginStore::new(installed.clone(), tmp.path().join("user"), None);
+        store.reconcile_orphaned_staging().await;
+
+        assert!(!slug_dir.join("0.3.0.napp").exists());
+        assert_eq!(
+            std::fs::read_to_string(slug_dir.join("0.3.0").join(NAPP_SHA256)).unwrap(),
+            hex::encode(Sha256::digest(&napp))
+        );
+        assert!(other.join("0.1.0/ledger").is_file(), "the interrupted install was resumed");
+        assert!(!other.join("0.1.0.napp").exists() && !other.join("0.1.0.staging").exists());
     }
 
     /// A plugin version as a copy by hand leaves it partway: plugin.json
