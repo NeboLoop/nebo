@@ -301,8 +301,8 @@ pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_js
     // user *what* is wrong (and how to fix it) instead of a bare "Degraded".
     let (status, reason) = if provider_count == 0 {
         (
-            "no_providers",
-            "No AI providers configured — add an API key in Settings → Providers.",
+            agent::harness::model_call::NOT_SIGNED_IN,
+            agent::harness::model_call::NOT_SIGNED_IN_TEXT,
         )
     } else if tool_names.is_empty() {
         (
