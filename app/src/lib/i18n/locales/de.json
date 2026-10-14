@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Fragt nur, was Sie fragen lassen. Gesperrte Tools und feste Grenzen gelten weiterhin",
 		"useWithCare": "Mit Vorsicht verwenden",
 		"footnote": "Gilt für diese Unterhaltung. Die übliche Einstellung des Mitarbeiters bleibt gleich."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Was schiefging",
+		"theFix": "Die Lösung",
+		"whatHappensNow": "Was jetzt passiert",
+		"whatChanges": "Was sich ändert",
+		"showRawChange": "Rohänderung anzeigen",
+		"rawTitle": "Rohänderung",
+		"rawNew": "Das ist alles neu, daher ist jede Zeile hinzugefügt.",
+		"rawUnavailable": "Das Original ist nicht verfügbar, daher siehst du die ganze vorgeschlagene Fassung.",
+		"unchangedLines": "{n, plural, one {# unveränderte Zeile} other {# unveränderte Zeilen}}",
+		"stepAdded": "Neuer Schritt: {step}",
+		"stepRemoved": "Schritt entfernt: {step}",
+		"stepRenamed": "Schritt umbenannt: {before} → {after}",
+		"stepChanged": "Schritt geändert: {step}",
+		"stepsReordered": "Schritte in neuer Reihenfolge: {steps}",
+		"scheduleSet": "Wann es läuft: {after}",
+		"scheduleChanged": "Wann es läuft",
+		"whenManual": "Nur wenn jemand es startet",
+		"whenOther": "Wenn etwas passiert, das es beobachtet",
+		"inZone": "{when} (Zeit in {zone})",
+		"descriptionChanged": "Zusammenfassung geändert",
+		"sectionAdded": "Neuer Abschnitt: {section}",
+		"sectionRemoved": "Abschnitt entfernt: {section}",
+		"sectionChanged": "Abschnitt geändert: {section}",
+		"sectionOpening": "Einleitung",
+		"settingChanged": "Geändert: {setting}"
 	}
 }

@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Chỉ hỏi những gì bạn đã đặt để hỏi. Công cụ bị chặn và giới hạn cứng vẫn áp dụng",
 		"useWithCare": "Dùng cẩn thận",
 		"footnote": "Áp dụng cho cuộc trò chuyện này. Cài đặt thường lệ của nhân viên vẫn giữ nguyên."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Điều gì đã sai",
+		"theFix": "Cách sửa",
+		"whatHappensNow": "Giờ sẽ ra sao",
+		"whatChanges": "Những gì thay đổi",
+		"showRawChange": "Xem thay đổi thô",
+		"rawTitle": "Thay đổi thô",
+		"rawNew": "Tất cả đều mới, nên mọi dòng đều được thêm.",
+		"rawUnavailable": "Không có bản gốc, nên đây là toàn bộ phiên bản đề xuất.",
+		"unchangedLines": "{n, plural, one {# dòng không đổi} other {# dòng không đổi}}",
+		"stepAdded": "Bước mới: {step}",
+		"stepRemoved": "Bỏ bước: {step}",
+		"stepRenamed": "Đổi tên bước: {before} → {after}",
+		"stepChanged": "Bước đã đổi: {step}",
+		"stepsReordered": "Các bước theo thứ tự mới: {steps}",
+		"scheduleSet": "Khi nào chạy: {after}",
+		"scheduleChanged": "Khi nào chạy",
+		"whenManual": "Chỉ khi có người khởi động",
+		"whenOther": "Khi điều nó theo dõi xảy ra",
+		"inZone": "{when} (giờ {zone})",
+		"descriptionChanged": "Đã đổi phần tóm tắt",
+		"sectionAdded": "Phần mới: {section}",
+		"sectionRemoved": "Bỏ phần: {section}",
+		"sectionChanged": "Phần đã đổi: {section}",
+		"sectionOpening": "Mở đầu",
+		"settingChanged": "Đã đổi: {setting}"
 	}
 }

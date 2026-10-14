@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "केवल वही पूछता है जो आपने पूछने के लिए सेट किया है। ब्लॉक किए गए टूल और सख़्त सीमाएँ फिर भी लागू रहती हैं",
 		"useWithCare": "सावधानी से इस्तेमाल करें",
 		"footnote": "यह इस बातचीत पर लागू होता है। कर्मचारी की सामान्य सेटिंग वैसी ही रहती है।"
+	},
+	"proposedChange": {
+		"whatWentWrong": "क्या गलत हुआ",
+		"theFix": "सुधार",
+		"whatHappensNow": "अब क्या होगा",
+		"whatChanges": "क्या बदलता है",
+		"showRawChange": "कच्चा बदलाव दिखाएँ",
+		"rawTitle": "कच्चा बदलाव",
+		"rawNew": "यह सब नया है, इसलिए हर पंक्ति जोड़ी गई है।",
+		"rawUnavailable": "मूल उपलब्ध नहीं है, इसलिए पूरा प्रस्तावित संस्करण दिख रहा है।",
+		"unchangedLines": "{n, plural, one {# अपरिवर्तित पंक्ति} other {# अपरिवर्तित पंक्तियाँ}}",
+		"stepAdded": "नया चरण: {step}",
+		"stepRemoved": "हटाया गया चरण: {step}",
+		"stepRenamed": "चरण का नया नाम: {before} → {after}",
+		"stepChanged": "चरण बदला: {step}",
+		"stepsReordered": "चरण नए क्रम में: {steps}",
+		"scheduleSet": "कब चलता है: {after}",
+		"scheduleChanged": "कब चलता है",
+		"whenManual": "सिर्फ़ जब कोई इसे शुरू करे",
+		"whenOther": "जब कुछ ऐसा हो जिस पर यह नज़र रखता है",
+		"inZone": "{when} ({zone} समय)",
+		"descriptionChanged": "सारांश बदला",
+		"sectionAdded": "नया भाग: {section}",
+		"sectionRemoved": "हटाया गया भाग: {section}",
+		"sectionChanged": "भाग बदला: {section}",
+		"sectionOpening": "शुरुआत",
+		"settingChanged": "बदला: {setting}"
 	}
 }

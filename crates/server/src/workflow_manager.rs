@@ -2533,7 +2533,10 @@ async fn review_failed_workflow_run(
         ZERO client-, case-, matter-, or engagement-specific information — general procedure only; if \
         the failure cannot be expressed without naming a client or case, answer null. \
         Respond with STRICT JSON only, no prose, no code fences: \
-        {\"lesson\": null} or {\"lesson\": {\"name\": \"kebab-case-name\", \"content\": \"---\\nname: <name>\\ndescription: <one line>\\n---\\n<what to do differently next run, concrete and specific>\"}}";
+        {\"lesson\": null} or {\"lesson\": {\"name\": \"kebab-case-name\", \"content\": \"---\\nname: <name>\\ndescription: <one line>\\n---\\n<what to do differently next run, concrete and specific>\", \
+        \"what_went_wrong\": \"<the failure, with evidence, in plain words>\", \"the_fix\": \"<what the lesson changes>\", \
+        \"what_happens_now\": \"<how the next run goes>\"}} — the last three are what the owner reads first, in plain \
+        words with no jargon (say step and schedule, never activity, field, cron or turns), and are required.";
 
     let mut def_excerpt = def_json.clone();
     if def_excerpt.len() > 4000 {
@@ -2622,10 +2625,17 @@ async fn review_failed_workflow_run(
     ctx.learned_write_staged = staged;
     ctx.tool_whitelist = Some(std::collections::HashSet::from(["save_skill".to_string()]));
 
-    let input = serde_json::json!({
+    // The lesson's own account of itself (`ChangeExplanation::KEYS`) goes
+    // with it; the skill tool refuses a lesson that has none.
+    let mut input = serde_json::json!({
         "name": name,
         "content": content,
     });
+    for key in db::models::ChangeExplanation::KEYS {
+        if let Some(part) = lesson.get(key) {
+            input[key] = part.clone();
+        }
+    }
     let result = registry.execute(&ctx, "save_skill", input).await;
     if result.is_error {
         info!(agent = %agent_id, binding = %binding, result = %result.content.chars().take(160).collect::<String>(), "workflow lesson not saved");
@@ -3280,8 +3290,17 @@ async fn workflow_tuning_sweep(
             Workflow definitions are shared across every context this agent serves: the proposed steps \
             must contain ZERO client-, case-, or matter-specific information — procedure only. \
             Respond with STRICT JSON only, no prose, no code fences: {\"proposal\": null} or \
-            {\"proposal\": {\"binding\": \"<name>\", \"reason\": \"<one line>\", \"workflow\": {\"trigger\": {...}, \"description\": \"...\", \"activities\": [{\"id\": \"...\", \"intent\": \"...\", \"steps\": [\"...\"]}]}}} \
-            — `workflow` is the complete corrected binding, not a diff.";
+            {\"proposal\": {\"binding\": \"<name>\", \"reason\": \"<one line>\", \
+            \"what_went_wrong\": \"<the observed problem, with evidence>\", \"the_fix\": \"<what changes>\", \
+            \"what_happens_now\": \"<the new behaviour>\", \
+            \"workflow\": {\"trigger\": {...}, \"description\": \"...\", \"activities\": [{\"id\": \"...\", \"intent\": \"...\", \"steps\": [\"...\"]}]}}} \
+            — `workflow` is the complete corrected binding, not a diff. what_went_wrong, the_fix and what_happens_now \
+            are REQUIRED: the owner approves the change from them, so write each as one or two plain sentences an owner \
+            understands, with no jargon (say step, schedule and instructions; never activity, field, cron, binding or \
+            model turns). Example — what_went_wrong: \"Last Tuesday's run stopped halfway: the gather-spend step ran out \
+            of turns pulling every report.\" the_fix: \"Split gather-spend into two steps: find the sources, then pull \
+            only the numbers.\" what_happens_now: \"Weekdays at 8:00 AM it finds the spend sources, pulls the numbers, \
+            works out the pace and adjusts the budget. No step runs out of turns.\"";
 
         let report = format!(
             "Agent: {}\n\nRun stats: {} total, {} completed, {} failed\n\nRecent errors:\n{}\n\nOutcome history:\n{}\n\nCurrent workflow bindings:\n{}",
@@ -3347,6 +3366,14 @@ async fn workflow_tuning_sweep(
         ) else {
             continue;
         };
+        // A change nobody explained is not one the owner can approve.
+        let explanation = match db::models::ChangeExplanation::from_input(proposal) {
+            Ok(e) => e,
+            Err(why) => {
+                info!(agent = %agent.name, binding, why, "tuning pass proposal unexplained; discarded");
+                continue;
+            }
+        };
         // The proposal must target an existing binding — tuning edits, it
         // never creates new duties.
         if workflows_json.get(binding).is_none() {
@@ -3370,6 +3397,7 @@ async fn workflow_tuning_sweep(
             &gist,
             &conflict_token,
             Some(&conflict_token),
+            Some(&explanation),
         ) {
             warn!(agent = %agent.name, error = %e, "tuning pass: failed to record proposal");
             continue;

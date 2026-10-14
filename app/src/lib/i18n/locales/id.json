@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Hanya menanyakan yang Anda atur untuk ditanyakan. Alat yang diblokir dan batas tetap tetap berlaku",
 		"useWithCare": "Gunakan dengan hati-hati",
 		"footnote": "Berlaku untuk percakapan ini. Pengaturan biasa karyawan tetap sama."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Apa yang salah",
+		"theFix": "Perbaikannya",
+		"whatHappensNow": "Apa yang terjadi sekarang",
+		"whatChanges": "Apa yang berubah",
+		"showRawChange": "Tampilkan perubahan mentah",
+		"rawTitle": "Perubahan mentah",
+		"rawNew": "Semua ini baru, jadi setiap baris ditambahkan.",
+		"rawUnavailable": "Versi aslinya tidak tersedia, jadi yang tampil adalah seluruh versi usulan.",
+		"unchangedLines": "{n, plural, one {# baris tidak berubah} other {# baris tidak berubah}}",
+		"stepAdded": "Langkah baru: {step}",
+		"stepRemoved": "Langkah dihapus: {step}",
+		"stepRenamed": "Langkah diganti nama: {before} → {after}",
+		"stepChanged": "Langkah diubah: {step}",
+		"stepsReordered": "Urutan langkah baru: {steps}",
+		"scheduleSet": "Kapan berjalan: {after}",
+		"scheduleChanged": "Kapan berjalan",
+		"whenManual": "Hanya saat seseorang memulainya",
+		"whenOther": "Saat terjadi sesuatu yang dipantaunya",
+		"inZone": "{when} (waktu {zone})",
+		"descriptionChanged": "Ringkasan diubah",
+		"sectionAdded": "Bagian baru: {section}",
+		"sectionRemoved": "Bagian dihapus: {section}",
+		"sectionChanged": "Bagian diubah: {section}",
+		"sectionOpening": "Pembuka",
+		"settingChanged": "Diubah: {setting}"
 	}
 }

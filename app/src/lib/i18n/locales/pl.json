@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Pyta tylko o to, o co kazałeś pytać. Zablokowane narzędzia i stałe limity nadal obowiązują",
 		"useWithCare": "Używaj ostrożnie",
 		"footnote": "Dotyczy tej rozmowy. Zwykłe ustawienie pracownika pozostaje bez zmian."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Co poszło nie tak",
+		"theFix": "Poprawka",
+		"whatHappensNow": "Co dzieje się teraz",
+		"whatChanges": "Co się zmienia",
+		"showRawChange": "Pokaż surową zmianę",
+		"rawTitle": "Surowa zmiana",
+		"rawNew": "To wszystko jest nowe, więc każdy wiersz jest dodany.",
+		"rawUnavailable": "Oryginał jest niedostępny, więc widać całą proponowaną wersję.",
+		"unchangedLines": "{n, plural, one {# niezmieniony wiersz} few {# niezmienione wiersze} other {# niezmienionych wierszy}}",
+		"stepAdded": "Nowy krok: {step}",
+		"stepRemoved": "Usunięty krok: {step}",
+		"stepRenamed": "Zmieniona nazwa kroku: {before} → {after}",
+		"stepChanged": "Zmieniony krok: {step}",
+		"stepsReordered": "Kroki w nowej kolejności: {steps}",
+		"scheduleSet": "Kiedy działa: {after}",
+		"scheduleChanged": "Kiedy działa",
+		"whenManual": "Tylko gdy ktoś to uruchomi",
+		"whenOther": "Gdy wydarzy się coś, co obserwuje",
+		"inZone": "{when} (czas: {zone})",
+		"descriptionChanged": "Zmienione podsumowanie",
+		"sectionAdded": "Nowa sekcja: {section}",
+		"sectionRemoved": "Usunięta sekcja: {section}",
+		"sectionChanged": "Zmieniona sekcja: {section}",
+		"sectionOpening": "Wstęp",
+		"settingChanged": "Zmieniono: {setting}"
 	}
 }

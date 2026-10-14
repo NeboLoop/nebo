@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Ne demande que ce que vous avez choisi de demander. Les outils bloqués et les limites strictes s'appliquent toujours",
 		"useWithCare": "À utiliser avec prudence",
 		"footnote": "S'applique à cette conversation. Le réglage habituel de l'employé reste le même."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Ce qui n'a pas marché",
+		"theFix": "La correction",
+		"whatHappensNow": "Ce qui se passe maintenant",
+		"whatChanges": "Ce qui change",
+		"showRawChange": "Voir la modification brute",
+		"rawTitle": "Modification brute",
+		"rawNew": "Tout est nouveau, donc chaque ligne est ajoutée.",
+		"rawUnavailable": "L'original n'est pas disponible : voici toute la version proposée.",
+		"unchangedLines": "{n, plural, one {# ligne inchangée} other {# lignes inchangées}}",
+		"stepAdded": "Nouvelle étape : {step}",
+		"stepRemoved": "Étape retirée : {step}",
+		"stepRenamed": "Étape renommée : {before} → {after}",
+		"stepChanged": "Étape modifiée : {step}",
+		"stepsReordered": "Les étapes changent d'ordre : {steps}",
+		"scheduleSet": "Quand elle s'exécute : {after}",
+		"scheduleChanged": "Quand elle s'exécute",
+		"whenManual": "Seulement quand quelqu'un la lance",
+		"whenOther": "Quand se produit quelque chose qu'elle surveille",
+		"inZone": "{when} (heure de {zone})",
+		"descriptionChanged": "Résumé modifié",
+		"sectionAdded": "Nouvelle section : {section}",
+		"sectionRemoved": "Section retirée : {section}",
+		"sectionChanged": "Section modifiée : {section}",
+		"sectionOpening": "Introduction",
+		"settingChanged": "Modifié : {setting}"
 	}
 }

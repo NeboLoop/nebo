@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Спрашивает только о том, о чём вы велели спрашивать. Заблокированные инструменты и жёсткие ограничения по-прежнему действуют",
 		"useWithCare": "Используйте с осторожностью",
 		"footnote": "Действует для этого разговора. Обычная настройка сотрудника не меняется."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Что пошло не так",
+		"theFix": "Исправление",
+		"whatHappensNow": "Что будет теперь",
+		"whatChanges": "Что меняется",
+		"showRawChange": "Показать исходное изменение",
+		"rawTitle": "Исходное изменение",
+		"rawNew": "Здесь всё новое, поэтому каждая строка добавлена.",
+		"rawUnavailable": "Оригинал недоступен, поэтому показана вся предложенная версия.",
+		"unchangedLines": "{n, plural, one {# неизменённая строка} few {# неизменённые строки} other {# неизменённых строк}}",
+		"stepAdded": "Новый шаг: {step}",
+		"stepRemoved": "Шаг убран: {step}",
+		"stepRenamed": "Шаг переименован: {before} → {after}",
+		"stepChanged": "Шаг изменён: {step}",
+		"stepsReordered": "Шаги идут в новом порядке: {steps}",
+		"scheduleSet": "Когда запускается: {after}",
+		"scheduleChanged": "Когда запускается",
+		"whenManual": "Только когда кто-то запускает",
+		"whenOther": "Когда происходит то, за чем он следит",
+		"inZone": "{when} (время: {zone})",
+		"descriptionChanged": "Описание изменено",
+		"sectionAdded": "Новый раздел: {section}",
+		"sectionRemoved": "Раздел убран: {section}",
+		"sectionChanged": "Раздел изменён: {section}",
+		"sectionOpening": "Вступление",
+		"settingChanged": "Изменено: {setting}"
 	}
 }

@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Chiede solo ciò che hai impostato di chiedere. Strumenti bloccati e limiti fissi restano validi",
 		"useWithCare": "Usare con cautela",
 		"footnote": "Vale per questa conversazione. L'impostazione abituale del dipendente resta invariata."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Cosa è andato storto",
+		"theFix": "La correzione",
+		"whatHappensNow": "Cosa succede ora",
+		"whatChanges": "Cosa cambia",
+		"showRawChange": "Mostra la modifica grezza",
+		"rawTitle": "Modifica grezza",
+		"rawNew": "È tutto nuovo, quindi ogni riga è aggiunta.",
+		"rawUnavailable": "L'originale non è disponibile, quindi vedi l'intera versione proposta.",
+		"unchangedLines": "{n, plural, one {# riga invariata} other {# righe invariate}}",
+		"stepAdded": "Nuovo passaggio: {step}",
+		"stepRemoved": "Passaggio tolto: {step}",
+		"stepRenamed": "Passaggio rinominato: {before} → {after}",
+		"stepChanged": "Passaggio modificato: {step}",
+		"stepsReordered": "I passaggi cambiano ordine: {steps}",
+		"scheduleSet": "Quando parte: {after}",
+		"scheduleChanged": "Quando parte",
+		"whenManual": "Solo quando qualcuno lo avvia",
+		"whenOther": "Quando succede qualcosa che controlla",
+		"inZone": "{when} (ora di {zone})",
+		"descriptionChanged": "Riepilogo modificato",
+		"sectionAdded": "Nuova sezione: {section}",
+		"sectionRemoved": "Sezione tolta: {section}",
+		"sectionChanged": "Sezione modificata: {section}",
+		"sectionOpening": "Introduzione",
+		"settingChanged": "Modificato: {setting}"
 	}
 }

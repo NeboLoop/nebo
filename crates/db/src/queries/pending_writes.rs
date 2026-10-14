@@ -3,7 +3,7 @@
 
 use rusqlite::params;
 
-use crate::models::PendingWrite;
+use crate::models::{ChangeExplanation, PendingWrite};
 use crate::store::Store;
 use types::NeboError;
 
@@ -22,6 +22,16 @@ fn row_to_pending_write(row: &rusqlite::Row) -> rusqlite::Result<PendingWrite> {
         gist: row.get("gist")?,
         target_hash: row.get("target_hash")?,
         prior_content: row.get("prior_content")?,
+        explanation: match (
+            row.get::<_, Option<String>>("what_went_wrong")?,
+            row.get::<_, Option<String>>("the_fix")?,
+            row.get::<_, Option<String>>("what_happens_now")?,
+        ) {
+            (Some(what_went_wrong), Some(the_fix), Some(what_happens_now)) => {
+                Some(ChangeExplanation { what_went_wrong, the_fix, what_happens_now })
+            }
+            _ => None,
+        },
         status: row.get("status")?,
         created_at: row.get("created_at")?,
         resolved_at: row.get("resolved_at")?,
@@ -41,12 +51,19 @@ impl Store {
         gist: &str,
         target_hash: &str,
         prior_content: Option<&str>,
+        explanation: Option<&ChangeExplanation>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash, prior_content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, agent_id, kind, action, target, content, gist, target_hash, prior_content],
+            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash, prior_content,
+                                         what_went_wrong, the_fix, what_happens_now)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                id, agent_id, kind, action, target, content, gist, target_hash, prior_content,
+                explanation.map(|e| e.what_went_wrong.as_str()),
+                explanation.map(|e| e.the_fix.as_str()),
+                explanation.map(|e| e.what_happens_now.as_str()),
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -68,12 +85,19 @@ impl Store {
         gist: &str,
         target_hash: &str,
         prior_content: Option<&str>,
+        explanation: Option<&ChangeExplanation>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash, prior_content, status, resolved_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'approved', unixepoch())",
-            params![id, agent_id, kind, action, target, content, gist, target_hash, prior_content],
+            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash, prior_content,
+                                         what_went_wrong, the_fix, what_happens_now, status, resolved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'approved', unixepoch())",
+            params![
+                id, agent_id, kind, action, target, content, gist, target_hash, prior_content,
+                explanation.map(|e| e.what_went_wrong.as_str()),
+                explanation.map(|e| e.the_fix.as_str()),
+                explanation.map(|e| e.what_happens_now.as_str()),
+            ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -162,6 +186,7 @@ impl Store {
     /// Replace what an open proposal would write with the employee's newer
     /// proposal of the same thing, and date it now. False when the row was
     /// decided meanwhile (nothing is changed then).
+    #[allow(clippy::too_many_arguments)]
     pub fn restage_pending_write(
         &self,
         id: &str,
@@ -170,14 +195,21 @@ impl Store {
         gist: &str,
         target_hash: &str,
         prior_content: Option<&str>,
+        explanation: Option<&ChangeExplanation>,
     ) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         let n = conn
             .execute(
                 "UPDATE pending_writes
-                 SET target = ?2, content = ?3, gist = ?4, target_hash = ?5, prior_content = ?6, created_at = unixepoch()
+                 SET target = ?2, content = ?3, gist = ?4, target_hash = ?5, prior_content = ?6,
+                     what_went_wrong = ?7, the_fix = ?8, what_happens_now = ?9, created_at = unixepoch()
                  WHERE id = ?1 AND status = 'pending'",
-                params![id, target, content, gist, target_hash, prior_content],
+                params![
+                    id, target, content, gist, target_hash, prior_content,
+                    explanation.map(|e| e.what_went_wrong.as_str()),
+                    explanation.map(|e| e.the_fix.as_str()),
+                    explanation.map(|e| e.what_happens_now.as_str()),
+                ],
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(n > 0)
@@ -258,7 +290,7 @@ mod tests {
         let s = temp_store();
         s.create_pending_write(
             "p1", "agent-a", "skill", "update", "my-skill",
-            Some("new body"), "Update my-skill", "abc123", Some("old body"),
+            Some("new body"), "Update my-skill", "abc123", Some("old body"), None,
         )
         .unwrap();
         let row = s.get_pending_write("p1").unwrap().unwrap();
@@ -272,7 +304,7 @@ mod tests {
         let s = temp_store();
         s.record_applied_write(
             "p2", "agent-a", "skill", "create", "made", Some("body"),
-            "Create made", "", None,
+            "Create made", "", None, None,
         )
         .unwrap();
         let row = s.get_pending_write("p2").unwrap().unwrap();
@@ -287,7 +319,7 @@ mod tests {
         // An applied learning can be reverted exactly once.
         s.record_applied_write(
             "p3", "agent-a", "skill", "update", "made", Some("v2"),
-            "Update made", "h", Some("v1"),
+            "Update made", "h", Some("v1"), None,
         )
         .unwrap();
         assert!(s.revert_pending_write("p3").unwrap());
@@ -297,10 +329,50 @@ mod tests {
 
         // A pending (not-yet-applied) row cannot be reverted.
         s.create_pending_write(
-            "p4", "agent-a", "skill", "create", "x", Some("b"), "g", "", None,
+            "p4", "agent-a", "skill", "create", "x", Some("b"), "g", "", None, None,
         )
         .unwrap();
         assert!(!s.revert_pending_write("p4").unwrap());
         assert_eq!(s.get_pending_write("p4").unwrap().unwrap().status, "pending");
+    }
+
+    #[test]
+    fn explanation_round_trips_and_old_rows_have_none() {
+        use crate::models::ChangeExplanation;
+        let s = temp_store();
+        let e = ChangeExplanation {
+            what_went_wrong: "Tuesday's run stopped halfway.".into(),
+            the_fix: "Split the step in two.".into(),
+            what_happens_now: "Each step finishes.".into(),
+        };
+        s.create_pending_write("p5", "agent-a", "workflow", "update", "wf", Some("{}"), "g", "t", Some("t"), Some(&e))
+            .unwrap();
+        assert_eq!(s.get_pending_write("p5").unwrap().unwrap().explanation, Some(e.clone()));
+        let json = serde_json::to_value(s.get_pending_write("p5").unwrap().unwrap()).unwrap();
+        assert_eq!(json["explanation"]["whatWentWrong"], "Tuesday's run stopped halfway.");
+        assert_eq!(json["explanation"]["theFix"], "Split the step in two.");
+        assert_eq!(json["explanation"]["whatHappensNow"], "Each step finishes.");
+
+        // A row filed before proposals carried an explanation has none, and
+        // its payload has no `explanation` key at all.
+        s.create_pending_write("p6", "agent-a", "workflow", "update", "wf", Some("{}"), "Tune", "t", Some("t"), None)
+            .unwrap();
+        let old = s.get_pending_write("p6").unwrap().unwrap();
+        assert_eq!(old.explanation, None);
+        assert!(serde_json::to_value(&old).unwrap().get("explanation").is_none());
+
+        // A restage carries the newer words.
+        let newer = ChangeExplanation { the_fix: "Split it in three.".into(), ..e };
+        assert!(s.restage_pending_write("p5", "wf", Some("{}"), "g", "t", Some("t"), Some(&newer)).unwrap());
+        assert_eq!(s.get_pending_write("p5").unwrap().unwrap().explanation, Some(newer));
+    }
+
+    #[test]
+    fn explanation_from_input_needs_all_three_parts() {
+        use crate::models::ChangeExplanation;
+        let full = serde_json::json!({"what_went_wrong": "a", "the_fix": "b", "what_happens_now": "c"});
+        assert!(ChangeExplanation::from_input(&full).is_ok());
+        let err = ChangeExplanation::from_input(&serde_json::json!({"what_went_wrong": "a", "the_fix": "  "})).unwrap_err();
+        assert!(err.contains("Missing: the_fix, what_happens_now"), "{err}");
     }
 }

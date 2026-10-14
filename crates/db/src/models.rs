@@ -1163,10 +1163,61 @@ pub struct PendingWrite {
     /// previous workflow binding JSON — or None when the target did not exist
     /// before (a create). The restore point a revert writes back.
     pub prior_content: Option<String>,
+    /// The employee's own account of the change, in plain words; None on
+    /// rows filed before proposals carried one (they render from `gist`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<ChangeExplanation>,
     /// pending | approved | rejected | expired | conflict | reverted
     pub status: String,
     pub created_at: i64,
     pub resolved_at: Option<i64>,
+}
+
+/// What a proposed change is, in the proposing employee's words: the three
+/// parts an approval leads with, so the owner decides on what the change
+/// does rather than on the raw text it writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeExplanation {
+    /// The observed problem, with evidence.
+    pub what_went_wrong: String,
+    /// What changes.
+    pub the_fix: String,
+    /// The new behaviour.
+    pub what_happens_now: String,
+}
+
+impl ChangeExplanation {
+    /// The input keys a proposal carries the three parts under — the one
+    /// spelling every proposer (a tool call, a tuning pass) is told to use.
+    pub const KEYS: [&'static str; 3] = ["what_went_wrong", "the_fix", "what_happens_now"];
+
+    /// The three parts from a proposal's JSON (`KEYS`). A proposal missing
+    /// any of them is refused, naming what is missing: the owner cannot
+    /// approve a change nobody explained.
+    pub fn from_input(input: &serde_json::Value) -> Result<Self, String> {
+        let part = |k: &str| {
+            input
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        match (part(Self::KEYS[0]), part(Self::KEYS[1]), part(Self::KEYS[2])) {
+            (Some(what_went_wrong), Some(the_fix), Some(what_happens_now)) => {
+                Ok(Self { what_went_wrong, the_fix, what_happens_now })
+            }
+            _ => {
+                let missing: Vec<&str> = Self::KEYS.iter().copied().filter(|k| part(k).is_none()).collect();
+                Err(format!(
+                    "A change the owner approves must say, in plain words: `what_went_wrong` (the problem you saw, with evidence), \
+                     `the_fix` (what changes) and `what_happens_now` (how it works after). Missing: {}.",
+                    missing.join(", ")
+                ))
+            }
+        }
+    }
 }
 
 // ── Commander ──────────────────────────────────────────────────────────────

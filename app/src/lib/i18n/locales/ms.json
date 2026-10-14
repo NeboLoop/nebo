@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Hanya bertanya apa yang anda tetapkan untuk ditanya. Alat yang disekat dan had tetap masih terpakai",
 		"useWithCare": "Gunakan dengan berhati-hati",
 		"footnote": "Terpakai pada perbualan ini. Tetapan biasa pekerja kekal sama."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Apa yang tidak kena",
+		"theFix": "Pembetulannya",
+		"whatHappensNow": "Apa yang berlaku sekarang",
+		"whatChanges": "Apa yang berubah",
+		"showRawChange": "Tunjukkan perubahan mentah",
+		"rawTitle": "Perubahan mentah",
+		"rawNew": "Semua ini baharu, jadi setiap baris ditambah.",
+		"rawUnavailable": "Versi asal tidak tersedia, jadi seluruh versi cadangan dipaparkan.",
+		"unchangedLines": "{n, plural, one {# baris tidak berubah} other {# baris tidak berubah}}",
+		"stepAdded": "Langkah baharu: {step}",
+		"stepRemoved": "Langkah dibuang: {step}",
+		"stepRenamed": "Langkah dinamakan semula: {before} → {after}",
+		"stepChanged": "Langkah diubah: {step}",
+		"stepsReordered": "Susunan langkah baharu: {steps}",
+		"scheduleSet": "Bila ia berjalan: {after}",
+		"scheduleChanged": "Bila ia berjalan",
+		"whenManual": "Hanya apabila seseorang memulakannya",
+		"whenOther": "Apabila berlaku sesuatu yang dipantaunya",
+		"inZone": "{when} (waktu {zone})",
+		"descriptionChanged": "Ringkasan diubah",
+		"sectionAdded": "Bahagian baharu: {section}",
+		"sectionRemoved": "Bahagian dibuang: {section}",
+		"sectionChanged": "Bahagian diubah: {section}",
+		"sectionOpening": "Pembukaan",
+		"settingChanged": "Diubah: {setting}"
 	}
 }

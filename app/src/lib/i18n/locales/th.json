@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "ถามเฉพาะสิ่งที่คุณตั้งให้ถาม เครื่องมือที่ถูกบล็อกและขีดจำกัดตายตัวยังคงมีผล",
 		"useWithCare": "ใช้อย่างระมัดระวัง",
 		"footnote": "ใช้กับบทสนทนานี้ การตั้งค่าปกติของพนักงานยังคงเหมือนเดิม"
+	},
+	"proposedChange": {
+		"whatWentWrong": "อะไรผิดพลาด",
+		"theFix": "วิธีแก้",
+		"whatHappensNow": "จากนี้จะเป็นอย่างไร",
+		"whatChanges": "อะไรเปลี่ยนบ้าง",
+		"showRawChange": "แสดงการเปลี่ยนแปลงแบบดิบ",
+		"rawTitle": "การเปลี่ยนแปลงแบบดิบ",
+		"rawNew": "ทั้งหมดนี้เป็นของใหม่ ทุกบรรทัดจึงถูกเพิ่ม",
+		"rawUnavailable": "ไม่มีต้นฉบับ จึงแสดงฉบับที่เสนอทั้งหมด",
+		"unchangedLines": "{n, plural, one {# บรรทัดที่ไม่เปลี่ยน} other {# บรรทัดที่ไม่เปลี่ยน}}",
+		"stepAdded": "ขั้นตอนใหม่: {step}",
+		"stepRemoved": "นำขั้นตอนออก: {step}",
+		"stepRenamed": "เปลี่ยนชื่อขั้นตอน: {before} → {after}",
+		"stepChanged": "ขั้นตอนเปลี่ยน: {step}",
+		"stepsReordered": "ลำดับขั้นตอนใหม่: {steps}",
+		"scheduleSet": "ทำงานเมื่อ: {after}",
+		"scheduleChanged": "ทำงานเมื่อ",
+		"whenManual": "เฉพาะเมื่อมีคนเริ่ม",
+		"whenOther": "เมื่อมีสิ่งที่มันเฝ้าดูเกิดขึ้น",
+		"inZone": "{when} (เวลา {zone})",
+		"descriptionChanged": "สรุปเปลี่ยน",
+		"sectionAdded": "ส่วนใหม่: {section}",
+		"sectionRemoved": "นำส่วนออก: {section}",
+		"sectionChanged": "ส่วนเปลี่ยน: {section}",
+		"sectionOpening": "บทนำ",
+		"settingChanged": "เปลี่ยน: {setting}"
 	}
 }

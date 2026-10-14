@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "শুধু সেটাই জিজ্ঞেস করে যা আপনি জিজ্ঞেস করতে বলেছেন। ব্লক করা টুল ও কঠোর সীমা তবুও প্রযোজ্য",
 		"useWithCare": "সাবধানে ব্যবহার করুন",
 		"footnote": "এই কথোপকথনে প্রযোজ্য। কর্মীর সাধারণ সেটিং একই থাকে।"
+	},
+	"proposedChange": {
+		"whatWentWrong": "কী ভুল হয়েছিল",
+		"theFix": "সমাধান",
+		"whatHappensNow": "এখন কী হবে",
+		"whatChanges": "কী বদলায়",
+		"showRawChange": "কাঁচা পরিবর্তন দেখান",
+		"rawTitle": "কাঁচা পরিবর্তন",
+		"rawNew": "এর সবই নতুন, তাই প্রতিটি লাইন যোগ করা হয়েছে।",
+		"rawUnavailable": "মূলটি পাওয়া যাচ্ছে না, তাই পুরো প্রস্তাবিত সংস্করণ দেখানো হচ্ছে।",
+		"unchangedLines": "{n, plural, one {# টি অপরিবর্তিত লাইন} other {# টি অপরিবর্তিত লাইন}}",
+		"stepAdded": "নতুন ধাপ: {step}",
+		"stepRemoved": "বাদ দেওয়া ধাপ: {step}",
+		"stepRenamed": "ধাপের নতুন নাম: {before} → {after}",
+		"stepChanged": "ধাপ বদলেছে: {step}",
+		"stepsReordered": "ধাপগুলো নতুন ক্রমে: {steps}",
+		"scheduleSet": "কখন চলে: {after}",
+		"scheduleChanged": "কখন চলে",
+		"whenManual": "শুধু কেউ শুরু করলে",
+		"whenOther": "যখন এটি যা নজরে রাখে তেমন কিছু ঘটে",
+		"inZone": "{when} ({zone} সময়)",
+		"descriptionChanged": "সারাংশ বদলেছে",
+		"sectionAdded": "নতুন অংশ: {section}",
+		"sectionRemoved": "বাদ দেওয়া অংশ: {section}",
+		"sectionChanged": "অংশ বদলেছে: {section}",
+		"sectionOpening": "শুরু",
+		"settingChanged": "বদলেছে: {setting}"
 	}
 }

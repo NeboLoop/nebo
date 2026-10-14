@@ -325,7 +325,7 @@ fn collect_suspensions(state: &AppState) -> Vec<serde_json::Value> {
 /// humanize turns a developer binding name into words an owner reads:
 /// "chase-overdue_invoices" → "Chase overdue invoices". Deliberately dumb —
 /// a wrong-but-readable name beats a correct slug.
-fn humanize(binding: &str) -> String {
+pub(crate) fn humanize(binding: &str) -> String {
     let words = binding.replace(['-', '_'], " ");
     let trimmed = words.trim();
     if trimmed.is_empty() {

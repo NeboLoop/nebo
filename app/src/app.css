@@ -1336,3 +1336,82 @@ button.connector-row {
 .intel-desc-muted {
 	@apply text-base-content/50 italic;
 }
+
+/* ── A proposed change (ProposedChange.svelte): what went wrong, the fix,
+   what happens now, then what changes. Old text reads struck and red, new
+   text green, from the theme's own tokens. */
+.proposed-change {
+  @apply flex flex-col gap-5;
+}
+.proposed-change-heading {
+  @apply mb-1.5 text-xs font-semibold uppercase tracking-wide text-base-content/50;
+}
+.proposed-change-text {
+  @apply m-0 text-sm leading-relaxed whitespace-pre-wrap;
+}
+.proposed-change-list {
+  @apply m-0 flex list-none flex-col gap-3 p-0 text-sm;
+}
+.proposed-change-list > li {
+  @apply flex flex-col gap-1 border-s-2 border-base-content/15 ps-3;
+}
+.proposed-change-old {
+  @apply rounded bg-error/10 px-2 py-1 text-base-content/70 line-through decoration-error/50 whitespace-pre-wrap;
+}
+.proposed-change-new {
+  @apply rounded bg-success/10 px-2 py-1 whitespace-pre-wrap;
+}
+.proposed-change-raw-link {
+  @apply self-start cursor-pointer border-none bg-transparent p-0 text-xs text-base-content/60 underline underline-offset-2 hover:text-base-content;
+}
+
+/* ── The code view (ui/CodeView.svelte): numbered, monospace, scrolls both
+   ways; diff lines tinted with a -/+ gutter; token colours from the theme. */
+.code-view {
+  @apply bg-base-100 font-mono text-xs leading-5;
+}
+.code-view-table {
+  @apply min-w-full border-collapse;
+}
+.code-view-num {
+  @apply select-none px-2 text-right align-top text-base-content/35 tabular-nums;
+}
+.code-view-op {
+  @apply w-4 select-none pe-1 text-center align-top text-base-content/50;
+}
+.code-view-text {
+  @apply pe-4 align-top whitespace-pre;
+}
+.code-line-add {
+  @apply bg-success/15;
+}
+.code-line-add .code-view-op {
+  @apply text-success;
+}
+.code-line-del {
+  @apply bg-error/15;
+}
+.code-line-del .code-view-op {
+  @apply text-error;
+}
+.code-view-fold {
+  @apply bg-base-200/70;
+}
+.code-view-fold-button {
+  @apply w-full cursor-pointer border-none bg-transparent px-4 py-1 text-left font-sans text-xs text-base-content/60 hover:text-base-content;
+}
+.code-tok-key {
+  @apply text-primary;
+}
+.code-tok-string {
+  @apply text-success;
+}
+.code-tok-number {
+  @apply text-warning;
+}
+.code-tok-literal {
+  @apply text-info;
+}
+.code-tok-punct {
+  @apply text-base-content/50;
+}

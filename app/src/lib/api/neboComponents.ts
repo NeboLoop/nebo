@@ -436,6 +436,12 @@ export interface CellView {
 	editable: boolean
 }
 
+export interface ChangeExplanation {
+	whatWentWrong: string
+	theFix: string
+	whatHappensNow: string
+}
+
 export interface Changed {
 	sheet: string
 	cell: string
@@ -1227,6 +1233,7 @@ export interface PendingWrite {
 	gist: string
 	targetHash: string
 	priorContent?: string
+	explanation?: ChangeExplanation
 	status: string
 	createdAt: number
 	resolvedAt?: number
