@@ -316,6 +316,51 @@ mod tests {
         );
     }
 
+    /// Every migration has its own number: two files with one number apply
+    /// only the first, and the other is skipped on every database for good
+    /// (2026-10-14: 0234 was taken by two branches merged an hour apart).
+    #[test]
+    fn every_migration_number_is_used_once() {
+        let mut seen = std::collections::HashMap::new();
+        for f in iter_files() {
+            let v = extract_version(&f).unwrap_or_else(|| panic!("{f}: no number"));
+            if let Some(other) = seen.insert(v, f.clone()) {
+                panic!("{f} and {other} share number {v}");
+            }
+        }
+    }
+
+    /// A database that applied the Inbox migration under its old number
+    /// (0234, which it shared) has it follow to 0235 and then gets the
+    /// migration it skipped.
+    #[test]
+    fn a_shared_number_is_untangled_on_the_databases_that_ran_one_of_them() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_to(&conn, 233).unwrap();
+        // As a database on the colliding build left it: the Inbox migration
+        // applied as 0234, the approvals one skipped.
+        let inbox = get_file("0235_inbox_items.sql").unwrap();
+        conn.execute_batch(&extract_goose_up(&String::from_utf8_lossy(&inbox.data))).unwrap();
+        conn.execute(
+            "INSERT INTO _nebo_migrations (version, name) VALUES (234, '0234_inbox_items.sql')",
+            [],
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('pending_writes')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(cols.iter().any(|c| c == "what_went_wrong"), "the skipped migration ran: {cols:?}");
+        let name: String = conn
+            .query_row("SELECT name FROM _nebo_migrations WHERE version = 235", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "0235_inbox_items.sql");
+    }
+
     #[test]
     fn test_run_migrations_in_memory() {
         let conn = Connection::open_in_memory().unwrap();
