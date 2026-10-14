@@ -38,6 +38,29 @@ export function chatAsksOf(
   return [...settled.filter((a) => mine(a) && !openHere.some((o) => o.id === a.id)), ...openHere];
 }
 
+/** Where a chat's asks sit: an answered one stays in the conversation right
+ *  after the message that was last when its card first showed (`anchors`:
+ *  ask id → message key), so the talk that follows reads below it; open ones,
+ *  and any whose message is no longer shown, sit at the bottom by the composer.
+ *  ponytail: receipts live only while the app is open (settledAsks), so the
+ *  anchor is the client's own; persist an anchor server-side if receipts ever
+ *  survive a reload. */
+export function placeAsks(
+	asks: PermissionAskCard[],
+	anchors: Record<string, string | number>,
+	keys: (string | number)[]
+): { after: Map<string | number, PermissionAskCard[]>; bottom: PermissionAskCard[] } {
+	const shown = new Set(keys);
+	const after = new Map<string | number, PermissionAskCard[]>();
+	const bottom: PermissionAskCard[] = [];
+	for (const a of asks) {
+		const key = anchors[a.id];
+		if (a.status === 'open' || key === undefined || !shown.has(key)) bottom.push(a);
+		else after.set(key, [...(after.get(key) ?? []), a]);
+	}
+	return { after, bottom };
+}
+
 /** A new ask was raised. */
 export function askRaised(card: PermissionAskCard): void {
   openAsks.update((list) => (list.some((a) => a.id === card.id) ? list : [...list, card]));
