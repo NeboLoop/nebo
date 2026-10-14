@@ -542,7 +542,8 @@
 		},
 		"runStopped": "Gestopt",
 		"noteMore": "Alles tonen",
-		"noteLess": "Minder tonen"
+		"noteLess": "Minder tonen",
+		"notSignedIn": "{name} moet bij NeboAI zijn ingelogd om te antwoorden."
 	},
 	"chatInput": {
 		"placeholder": "Antwoord...",

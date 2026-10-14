@@ -53,6 +53,9 @@ interface MessageMeta {
   /** The error a failed run left in the thread (role "system"): shown on the
    * chat's error banner, never as a bubble. */
   runError?: boolean;
+  /** The typed stop that error carried (`NOT_SIGNED_IN`): the thread words
+   * it, and the banner stays down. */
+  stopReason?: string;
 }
 
 /** The error the thread's last run ended on, when that is the newest row:
@@ -63,7 +66,7 @@ export function lastRunError(rawMessages: ApiChatMessage[]): string | null {
   if (!last?.metadata) return null;
   try {
     const meta: MessageMeta = typeof last.metadata === 'string' ? JSON.parse(last.metadata) : last.metadata;
-    return meta?.runError === true ? last.content : null;
+    return meta?.runError === true && !meta.stopReason ? last.content : null;
   } catch {
     return null;
   }
@@ -155,7 +158,13 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     // The error a run ended on stays where it happened in the thread.
     if (m.role === 'system' && meta?.runError === true) {
       open = null;
-      result.push({ type: 'runError' as const, id: m.id, content: m.content, time: formatTime(m.createdAt) });
+      result.push({
+        type: 'runError' as const,
+        id: m.id,
+        content: m.content,
+        time: formatTime(m.createdAt),
+        ...(meta.stopReason ? { reason: meta.stopReason } : {}),
+      });
       continue;
     }
     if (m.role !== 'assistant') continue;

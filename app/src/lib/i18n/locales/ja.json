@@ -542,7 +542,8 @@
 		},
 		"runStopped": "停止しました",
 		"noteMore": "すべて表示",
-		"noteLess": "折りたたむ"
+		"noteLess": "折りたたむ",
+		"notSignedIn": "{name} が返信するには、NeboAI へのサインインが必要です。"
 	},
 	"chatInput": {
 		"placeholder": "返信...",

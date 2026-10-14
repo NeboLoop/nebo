@@ -542,7 +542,8 @@
 		},
 		"runStopped": "Đã dừng",
 		"noteMore": "Xem tất cả",
-		"noteLess": "Thu gọn"
+		"noteLess": "Thu gọn",
+		"notSignedIn": "{name} cần đăng nhập NeboAI để trả lời."
 	},
 	"chatInput": {
 		"placeholder": "Trả lời...",

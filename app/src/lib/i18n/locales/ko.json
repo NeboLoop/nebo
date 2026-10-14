@@ -542,7 +542,8 @@
 		},
 		"runStopped": "중지됨",
 		"noteMore": "모두 보기",
-		"noteLess": "간단히 보기"
+		"noteLess": "간단히 보기",
+		"notSignedIn": "{name}이(가) 답하려면 NeboAI에 로그인해야 합니다."
 	},
 	"chatInput": {
 		"placeholder": "답장...",

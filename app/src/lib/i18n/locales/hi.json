@@ -542,7 +542,8 @@
 		},
 		"runStopped": "रुका",
 		"noteMore": "सब दिखाएँ",
-		"noteLess": "कम दिखाएँ"
+		"noteLess": "कम दिखाएँ",
+		"notSignedIn": "जवाब देने के लिए {name} को NeboAI में साइन इन होना ज़रूरी है।"
 	},
 	"chatInput": {
 		"placeholder": "जवाब दें...",

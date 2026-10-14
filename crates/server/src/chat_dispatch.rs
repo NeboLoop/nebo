@@ -245,6 +245,11 @@ pub(crate) async fn finish_turn(state: &AppState, run: &RunHandle, end: TurnEnd<
 /// The metadata key on the row a failed run leaves in its conversation.
 pub(crate) const RUN_ERROR_KEY: &str = "runError";
 
+/// The metadata key on that row for the typed stop reason the error carried
+/// (`agent::harness::model_call::NOT_SIGNED_IN`), so a reloaded thread words
+/// it as the live `chat_error` did.
+pub(crate) const STOP_REASON_KEY: &str = "stopReason";
+
 /// A run that ended on an error keeps it in the conversation, stored like any
 /// message: one `system` row stamped `{"runError": true}` whose text is the
 /// error the live `chat_error` event carried. The event reaches only a page
@@ -287,7 +292,7 @@ fn credits_after(known: Option<u64>, header: Option<u64>, active_pool: Option<&s
     }
 }
 
-fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
+fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str, stop_reason: Option<&str>) {
     if error.is_empty() {
         return;
     }
@@ -295,7 +300,11 @@ fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str) {
     let Ok(session_id) = sessions.resolve_session_id_by_key(session_key) else {
         return;
     };
-    let metadata = serde_json::json!({ RUN_ERROR_KEY: true }).to_string();
+    let mut metadata = serde_json::json!({ RUN_ERROR_KEY: true });
+    if let Some(reason) = stop_reason {
+        metadata[STOP_REASON_KEY] = serde_json::json!(reason);
+    }
+    let metadata = metadata.to_string();
     if let Err(e) = sessions.append_message(&session_id, "system", error, None, None, Some(&metadata)) {
         warn!(error = %e, session_key, "could not keep the run's error in its conversation");
     }
@@ -814,6 +823,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // The error the run ended on, kept in the conversation when
                 // the stream closes (`record_run_error`).
                 let mut run_error: Option<String> = None;
+                // Its typed stop reason, when it carried one.
+                let mut run_error_reason: Option<String> = None;
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
                 // Tight coalesce window so text streams in small, token-smooth chunks
@@ -1220,12 +1231,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::Error => {
                             let error = event.error.unwrap_or_default();
-                            hub.broadcast(
-                                "chat_error",
-                                ws_payload!(
-                                    "error": &error,
-                                ),
+                            let mut payload = ws_payload!(
+                                "error": &error,
                             );
+                            // A typed error (`not_signed_in`) rides the run's
+                            // typed stop: on chat_error, chat_complete and the
+                            // row it leaves, so the apps word it themselves.
+                            if let Some(reason) = event.stop_reason {
+                                payload["stop_reason"] = serde_json::json!(&reason);
+                                control_stop = Some((reason.clone(), error.clone()));
+                                run_error_reason = Some(reason);
+                            }
+                            hub.broadcast("chat_error", payload);
                             run_error = Some(error);
                         }
                         // Kept on the stored reply by the harness; nothing to show.
@@ -1800,7 +1817,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // Kept before chat_complete, so a page that reloads the thread
                 // on completion reads it.
                 if let Some(error) = &run_error {
-                    record_run_error(&harness, &sid, error);
+                    record_run_error(&harness, &sid, error, run_error_reason.as_deref());
                 }
 
                 // Always send chat_complete (with any run-produced artifacts so
@@ -1841,7 +1858,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         "error": &error,
                     ),
                 );
-                record_run_error(&harness, &sid, &error);
+                record_run_error(&harness, &sid, &error, None);
                 finish_turn(
                     &ask_state,
                     &_run_handle,
@@ -2982,15 +2999,23 @@ mod tests {
         let session = harness.sessions().get_or_create(key, "").expect("session");
         harness.sessions().append_message(&session.id, "user", "Hello", None, None, None).expect("user row");
 
-        super::record_run_error(&harness, key, "");
+        super::record_run_error(&harness, key, "", None);
         assert_eq!(harness.sessions().get_messages(&session.id).unwrap().len(), 1, "an empty error leaves nothing");
 
-        super::record_run_error(&harness, key, "USAGE_LIMIT_EXCEEDED: no balance");
+        super::record_run_error(&harness, key, "USAGE_LIMIT_EXCEEDED: no balance", None);
         let thread = harness.sessions().get_messages(&session.id).unwrap();
         let last = thread.last().expect("rows");
         assert_eq!((last.role.as_str(), last.content.as_str()), ("system", "USAGE_LIMIT_EXCEEDED: no balance"));
         let meta: serde_json::Value = serde_json::from_str(last.metadata.as_deref().unwrap()).unwrap();
         assert_eq!(meta[super::RUN_ERROR_KEY], true);
+        assert!(meta.get(super::STOP_REASON_KEY).is_none(), "an untyped error carries no reason");
+
+        // A typed error keeps its reason, so a reloaded thread words it.
+        let not_signed_in = agent::harness::model_call::NOT_SIGNED_IN;
+        super::record_run_error(&harness, key, agent::harness::model_call::NOT_SIGNED_IN_TEXT, Some(not_signed_in));
+        let thread = harness.sessions().get_messages(&session.id).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(thread.last().unwrap().metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta[super::STOP_REASON_KEY], not_signed_in);
 
         let model = harness.sessions().get_messages_since_checkpoint(&session.id).unwrap();
         assert_eq!(model.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["Hello"], "the model never reads it");

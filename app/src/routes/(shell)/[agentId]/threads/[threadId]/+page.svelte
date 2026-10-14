@@ -13,7 +13,7 @@
   import type { ChatMessage } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { conversationTitle, threadKey } from '$lib/chat/sessionKey';
-  import { endsRun } from '$lib/chat/runEnd';
+  import { endsRun, NOT_SIGNED_IN } from '$lib/chat/runEnd';
   import { formatTime } from '$lib/time';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
@@ -109,8 +109,11 @@
   if (startActive) {
     chat.isLoading = true;
     const ws = getWebSocketClient();
-    activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string; error?: string }>('chat_error', (data) => {
+    activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string; error?: string; stop_reason?: string }>('chat_error', (data) => {
       if (!isFirstRunEvent(data)) return;
+      // A typed stop is worded in the thread, never on the banner: the
+      // thread reloads on chat_complete and shows the row it left.
+      if (data.stop_reason === NOT_SIGNED_IN) return;
       const message = data.error || $t('chat.somethingWentWrong');
       // Survive a remount: keep pending-send + stash the error so a new page
       // instance can restore the bubble and the provider banner.

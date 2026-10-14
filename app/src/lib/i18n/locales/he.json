@@ -542,7 +542,8 @@
 		},
 		"runStopped": "נעצר",
 		"noteMore": "הצג הכול",
-		"noteLess": "הצג פחות"
+		"noteLess": "הצג פחות",
+		"notSignedIn": "{name} צריך להיות מחובר ל-NeboAI כדי לענות."
 	},
 	"chatInput": {
 		"placeholder": "השב...",

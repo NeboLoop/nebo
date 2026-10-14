@@ -542,7 +542,8 @@
 		},
 		"runStopped": "หยุดแล้ว",
 		"noteMore": "แสดงทั้งหมด",
-		"noteLess": "แสดงน้อยลง"
+		"noteLess": "แสดงน้อยลง",
+		"notSignedIn": "{name} ต้องลงชื่อเข้าใช้ NeboAI ก่อนจึงจะตอบได้"
 	},
 	"chatInput": {
 		"placeholder": "ตอบกลับ...",

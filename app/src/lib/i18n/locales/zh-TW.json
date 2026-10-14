@@ -542,7 +542,8 @@
 		},
 		"runStopped": "已停止",
 		"noteMore": "顯示全部",
-		"noteLess": "收合"
+		"noteLess": "收合",
+		"notSignedIn": "{name} 需要登入 NeboAI 才能回覆。"
 	},
 	"chatInput": {
 		"placeholder": "回覆...",

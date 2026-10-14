@@ -542,7 +542,8 @@
 		},
 		"runStopped": "থেমেছে",
 		"noteMore": "সব দেখুন",
-		"noteLess": "কম দেখুন"
+		"noteLess": "কম দেখুন",
+		"notSignedIn": "উত্তর দিতে {name}-কে NeboAI-তে সাইন ইন করতে হবে।"
 	},
 	"chatInput": {
 		"placeholder": "উত্তর দিন...",

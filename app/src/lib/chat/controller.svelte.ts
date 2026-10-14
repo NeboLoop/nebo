@@ -20,7 +20,7 @@ import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboCompo
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages, lastRunError } from '$lib/chat/history';
-import { endsRun } from '$lib/chat/runEnd';
+import { endsRun, NOT_SIGNED_IN } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
@@ -115,8 +115,9 @@ export type ChatMessage =
   /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
    *  prose or a note in the turn's work; `segment`: its index in the turn. */
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
-  /** The error a run ended on: it stays in the thread where it happened. */
-  | { type: 'runError'; content: string; time?: string; id?: string }
+  /** The error a run ended on: it stays in the thread where it happened.
+   *  `reason`: its typed stop (`NOT_SIGNED_IN`), which the thread words. */
+  | { type: 'runError'; content: string; time?: string; id?: string; reason?: string }
   /** The boundary the backend leaves where earlier conversation was
    *  summarized, or (`cleared`) where the owner cleared it. */
   | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean };
@@ -721,12 +722,16 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
-    chatError = data.error || get(t)('common.errorOccurred');
+    const content = data.error || get(t)('common.errorOccurred');
+    const reason = typeof data.stop_reason === 'string' && data.stop_reason ? data.stop_reason : undefined;
+    // A typed stop is worded once, in the thread, with its own action: no
+    // banner over it.
+    if (reason !== NOT_SIGNED_IN) chatError = content;
     // The banner can be dismissed; the thread keeps where the run stopped,
     // as a reloaded thread shows the row the server stored for it.
     const last = messages[messages.length - 1];
-    if (!(last?.type === 'runError' && last.content === chatError)) {
-      messages = [...messages, { type: 'runError' as const, content: chatError, time: formatTime(Date.now()) }];
+    if (!(last?.type === 'runError' && last.content === content && last.reason === reason)) {
+      messages = [...messages, { type: 'runError' as const, content, time: formatTime(Date.now()), ...(reason ? { reason } : {}) }];
     }
   }
 

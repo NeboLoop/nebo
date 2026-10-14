@@ -542,7 +542,8 @@
 		},
 		"runStopped": "Остановлено",
 		"noteMore": "Показать всё",
-		"noteLess": "Свернуть"
+		"noteLess": "Свернуть",
+		"notSignedIn": "Чтобы ответить, {name} должен войти в NeboAI."
 	},
 	"chatInput": {
 		"placeholder": "Ответить...",
