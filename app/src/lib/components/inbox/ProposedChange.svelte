@@ -8,6 +8,7 @@
 -->
 <script lang="ts" module>
   import type { CodeLine } from '$lib/components/ui/CodeView.svelte';
+  import type { ChangeExplanation } from '$lib/api/neboComponents';
 
   export type When = { type: string; cron?: string };
   export type Change =
@@ -25,7 +26,7 @@
     action?: string;
     target?: string;
     content?: string | null;
-    explanation?: { whatWentWrong: string; theFix: string; whatHappensNow: string };
+    explanation?: ChangeExplanation;
     changes?: Change[];
     rawChange?: { language: string; original: 'present' | 'new' | 'unavailable'; lines: CodeLine[] };
   };
