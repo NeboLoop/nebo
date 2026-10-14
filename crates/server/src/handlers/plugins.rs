@@ -1202,6 +1202,11 @@ async fn logout_plugin(state: &AppState, slug: &str) -> Result<(), NeboError> {
 /// DELETE /plugins/{slug} handler and the marketplace uninstall flow, so both
 /// uninstall a plugin identically (CODE_AUDITOR Rule 8). Disk removal is the
 /// critical path; the DB delete is best-effort.
+///
+/// Only the marketplace copy is removed (`PluginStore::remove`). When the
+/// owner's own plugin of the same slug is in the user plugins folder, it is
+/// the plugin in use (it takes precedence), so it keeps its connected
+/// accounts and hooks: only the marketplace record goes.
 pub async fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboError> {
     state
         .plugin_store
@@ -1210,6 +1215,20 @@ pub async fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), N
 
     if let Err(e) = state.store.delete_installed_plugin(slug) {
         warn!(plugin = %slug, error = %e, "failed to delete plugin from DB registry");
+    }
+
+    // Drop the artifact-update-tracking row (plugin prefs are keyed by slug) so
+    // the update checker doesn't keep polling an uninstalled plugin.
+    let _ = state.store.delete_artifact_update_pref(slug, "plugin");
+    // A default the owner removes stays removed at startup.
+    crate::default_artifacts::record_removal(&state.store, slug);
+
+    // The marketplace copy is gone; what still resolves is the owner's own
+    // plugin, which stays in use with its accounts and hooks.
+    if state.plugin_store.resolve(slug, "*").is_some() {
+        state.tools.refresh_plugin_tools().await;
+        info!(plugin = %slug, "marketplace plugin removed; the owner's own plugin of this name stays");
+        return Ok(());
     }
 
     // Take the connected accounts with it. Each account's credentials live in a
@@ -1237,14 +1256,8 @@ pub async fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), N
         Err(e) => warn!(plugin = %slug, error = %e, "failed to clear account profiles"),
     }
 
-    // Drop the artifact-update-tracking row (plugin prefs are keyed by slug) so
-    // the update checker doesn't keep polling an uninstalled plugin.
-    let _ = state.store.delete_artifact_update_pref(slug, "plugin");
-
     state.hooks.unregister_app(slug);
     state.tools.refresh_plugin_tools().await;
-    // A default the owner removes stays removed at startup.
-    crate::default_artifacts::record_removal(&state.store, slug);
     info!(plugin = %slug, "plugin removed");
     Ok(())
 }
