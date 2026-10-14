@@ -69,7 +69,6 @@
       <section class="intro-screen" class:is-active={screen === i} inert={screen !== i}>
         <div class="intro-art" aria-hidden="true">
           {#if i === 0}
-            <div class="intro-sun"></div>
             <div class="intro-hero">
               <AgentAvatar name={assistantName} shape={ASSISTANT_SHAPE} size="xl" class="intro-hero-character" />
             </div>

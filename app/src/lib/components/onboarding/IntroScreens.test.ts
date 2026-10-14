@@ -62,15 +62,20 @@ describe('IntroScreens', () => {
 		expect(api.startOnboarding).toHaveBeenCalled();
 	});
 
+	it('puts no glow or halo behind a character', () => {
+		expect(html()).not.toContain('intro-sun');
+		expect(readFileSync('src/app.css', 'utf8')).not.toContain('.intro-sun');
+	});
+
 	it('is still under prefers-reduced-motion', () => {
 		expect(html()).toContain('class="intro-screens"');
 		const css = readFileSync('src/app.css', 'utf8');
 		const start = css.indexOf('@media (prefers-reduced-motion: no-preference)');
 		expect(start).toBeGreaterThan(-1);
 		// Every intro and burst animation sits inside the no-preference block.
-		const outside = css.slice(0, start) + css.slice(css.indexOf('@keyframes intro-rise'));
+		const outside = css.slice(0, start) + css.slice(css.indexOf('@keyframes intro-pop'));
 		expect(outside).not.toMatch(/\.intro-[^{]*\{[^}]*animation:/);
 		expect(outside).not.toMatch(/\.first-run-burst[^{]*\{[^}]*animation:/);
-		expect(css.slice(start, css.indexOf('@keyframes intro-rise'))).toContain('.is-active .intro-hero { animation');
+		expect(css.slice(start, css.indexOf('@keyframes intro-pop'))).toContain('.is-active .intro-hero { animation');
 	});
 });
