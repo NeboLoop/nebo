@@ -94,15 +94,13 @@ fn sweep(store: &Arc<Store>, workflow_manager: &Arc<dyn tools::workflows::Workfl
         }
     }
 
-    // Expire staged self-improvement writes past their 30-day TTL and clear
-    // their Inbox cards (audited gap: approvals pending forever).
+    // Expire staged self-improvement writes past their 30-day TTL; their
+    // Inbox cards move to History as expired (audited gap: approvals pending
+    // forever). Nothing is deleted.
     match store.expire_pending_writes() {
         Ok(ids) => {
-            if !ids.is_empty() {
-                let user_id = store.ensure_local_user_id().unwrap_or_default();
-                for pid in ids {
-                    let _ = store.delete_notification(&format!("learn:{}", pid), &user_id);
-                }
+            for pid in ids {
+                tools::owner_notify::settle(store, None, &format!("learn:{pid}"), "Expired", None);
             }
         }
         Err(e) => warn!("failed to expire pending writes: {}", e),
@@ -655,6 +653,7 @@ async fn nightly_backup(store: &Arc<Store>, state: &AppState) {
             action_url: None,
             agent_id: None,
             loud: true,
+            ..Default::default()
         },
     );
 }

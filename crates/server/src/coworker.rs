@@ -720,12 +720,13 @@ async fn deliver_reply(
 /// park the run on its existing oneshots (`state.approval_channels` /
 /// `state.ask_channels`, registered where the events are emitted) and are
 /// surfaced to the owner through the SAME broadcasts `run_chat` emits — the
-/// frontend's one approval/ask surface — plus a bell notification naming who
-/// is asking and on whose behalf.
+/// frontend's one approval/ask surface — and the same Inbox item.
 pub(crate) struct OwnerForward<'a> {
     pub state: &'a AppState,
     pub agent_id: &'a str,
     pub agent_name: &'a str,
+    /// Who the run is working for ("Office Lead", "API key \"ci\""): the
+    /// approval's words say so.
     pub from_name: &'a str,
     pub session_key: &'a str,
     /// The team whose post this run picked up; `None` for every other run.
@@ -748,31 +749,18 @@ impl OwnerForward<'_> {
             event: request.clone(),
             session_key: self.session_key.to_string(),
             agent_id: self.agent_id.to_string(),
-            summary: format!("{} wants to run `{}`", self.agent_name, tc.name),
+            summary: format!("{} wants to run `{}` while handling a message from {}", self.agent_name, tc.name, self.from_name),
             since: chrono::Utc::now().timestamp(),
         };
         crate::handlers::asks::approval_raised(self.state, &tc.id, &card);
         crate::chat_dispatch::record_approval_card(&self.state.approval_channels, &tc.id, card).await;
         self.state.hub.broadcast("approval_request", request);
-        self.notify_owner(
-            &format!("coworker-approval:{}", tc.id),
-            "approval",
-            &format!("{} needs your approval", self.agent_name),
-            &format!(
-                "While handling a message from {}: wants to run `{}`.",
-                self.from_name, tc.name
-            ),
-        );
     }
 
     pub(crate) async fn forward_ask(&self, event: &ai::StreamEvent) {
-        let ask = crate::chat_dispatch::announce_ask(self.state, self.session_key, self.door, event).await;
-        self.notify_owner(
-            &format!("coworker-ask:{}", ask.request_id),
-            "info",
-            &format!("{} has a question", self.agent_name),
-            &event.text,
-        );
+        // Announced like every parked question: its Inbox item, push and
+        // relay come from there.
+        crate::chat_dispatch::announce_ask(self.state, self.session_key, self.door, event).await;
     }
 
     /// The member's work starts now (its first tool call) on a team post it
@@ -813,32 +801,6 @@ impl OwnerForward<'_> {
                 false
             }
         }
-    }
-
-    /// Bell + broadcast so the parked run is discoverable even when the owner
-    /// isn't looking at the target agent's thread — same Inbox pathway as
-    /// workflow approval notifications.
-    fn notify_owner(&self, id: &str, kind: &str, title: &str, body: &str) {
-        // Work the owner is not in opens the assistant's chat, where its card
-        // is relayed; else the conversation the parked work is in.
-        let action_url = if crate::handlers::asks::relayed(self.door, self.session_key) {
-            tools::owner_notify::link::assistant()
-        } else {
-            tools::owner_notify::link::session_chat(&self.state.store, self.agent_id, self.session_key)
-        };
-        tools::owner_notify::emit(
-            &self.state.store,
-            Some(&|ev, payload| self.state.hub.broadcast(ev, payload)),
-            &tools::owner_notify::OwnerNotification {
-                id,
-                kind,
-                title,
-                body: Some(body),
-                action_url: Some(&action_url),
-                agent_id: Some(self.agent_id),
-                loud: false,
-            },
-        );
     }
 }
 

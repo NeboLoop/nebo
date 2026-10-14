@@ -793,6 +793,7 @@ fn alarm(store: &Arc<Store>, state: &AppState, what: &str, title: &str, body: &s
             action_url: None,
             agent_id: None,
             loud: true,
+            ..Default::default()
         },
     );
 }

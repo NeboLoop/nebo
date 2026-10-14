@@ -888,6 +888,11 @@ export interface InvokeResponse {
 	tools?: unknown[]
 }
 
+export interface ItemOption {
+	label: string
+	value: string
+}
+
 export interface LayerApplyResponse {
 	applied: string[]
 	seats: number
@@ -1081,6 +1086,14 @@ export interface Notification {
 	agentId?: string
 	readAt?: number
 	createdAt: number
+	needsYou: boolean
+	options: ItemOption[]
+	linkLabel?: string
+	answeredAt?: number
+	answer?: string
+	answeredVia?: string
+	archivedAt?: number
+	status: string
 }
 
 export interface OAuthStartResponse {
@@ -1802,6 +1815,10 @@ export interface AgentStatsResponse {
 	recentErrors: WorkflowRunError[]
 }
 
+export interface AnswerNotificationResponse {
+	notification: Notification
+}
+
 export interface AnswerWorkflowRunApprovalResponse {
 	status: string
 	runId: string
@@ -1810,10 +1827,6 @@ export interface AnswerWorkflowRunApprovalResponse {
 export interface ApplyAgentUpdateResponse {
 	ok: boolean
 	agent: Agent
-}
-
-export interface ApplyUpdateResponse {
-	status: string
 }
 
 export interface AuthLogoutResponse {
@@ -2653,10 +2666,6 @@ export interface RemoveTeamResponse {
 	message: string
 }
 
-export interface ResolveLearningResponse {
-	status: string
-}
-
 export interface RestoreFileHistoryResponse {
 	path: string
 	restored: unknown
@@ -2829,6 +2838,8 @@ export interface UninstallStoreProductResponse {
 
 export interface UnreadCountResponse {
 	count: number
+	needsYou: number
+	unread: number
 }
 
 export interface UpdateAgentInputsResponse {

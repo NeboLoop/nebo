@@ -140,6 +140,9 @@ impl SkillCore {
             action_url: None,
             agent_id: Some(agent_id),
             loud: false,
+            needs_you: true,
+            options: &crate::owner_notify::proposal_options(),
+            ..Default::default()
         };
         let broadcast = |ev: &str, payload: serde_json::Value| {
             if let Some(f) = &notify {
@@ -227,11 +230,12 @@ impl SkillCore {
             action_url: None,
             agent_id: Some(agent_id),
             loud: false,
+            ..Default::default()
         };
         match &notify {
             Some(f) => crate::owner_notify::emit(store, Some(&|ev, payload| f(ev, payload)), &n),
             None => crate::owner_notify::emit(store, None, &n),
-        }
+        };
     }
 
     /// Find an installed plugin whose slug matches `term` (case-insensitive
@@ -1422,7 +1426,7 @@ mod tests {
         core.record_applied_learning("mom", "update", "verify-invoices", Some("body 2"), "Refine 'verify-invoices'", "", None);
         let user = store.ensure_local_user_id().unwrap();
         let rows: Vec<_> = store
-            .list_user_notifications(&user, 10, 0)
+            .list_user_notifications(&user, db::models::InboxView::All, None, 10, 0)
             .unwrap()
             .into_iter()
             .filter(|n| n.id.starts_with("learn:"))
@@ -1452,7 +1456,7 @@ mod tests {
         };
         let user = store.ensure_local_user_id().unwrap();
         let items = || -> Vec<db::models::Notification> {
-            store.list_user_notifications(&user, 50, 0).unwrap().into_iter().filter(|n| n.id.starts_with("learn:")).collect()
+            store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap().into_iter().filter(|n| n.id.starts_with("learn:")).collect()
         };
         assert!(stage("verify-shell-permissions-before-command-execution", "v1").content.starts_with("Staged for the owner's approval"));
         let again = stage("verify-shell-permissions-before-command", "v2");
@@ -1475,7 +1479,7 @@ mod tests {
         assert_eq!(store.open_pending_writes("other", "skill", "create").unwrap().len(), 1);
 
         // Dismissed: the same proposal again does not bring it back.
-        store.delete_notification(&format!("learn:{}", open[0].id), &user).unwrap();
+        store.archive_notification(&format!("learn:{}", open[0].id), &user).unwrap();
         stage("verify-shell-permissions-before-command", "v4");
         assert!(items().iter().all(|n| n.id != format!("learn:{}", open[0].id)), "a dismissed proposal stays dismissed");
 

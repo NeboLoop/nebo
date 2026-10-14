@@ -35,6 +35,12 @@ pub async fn apply_update(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
+    start_update(&state, &id)
+}
+
+/// Start applying an artifact's pending update: the ONE path Settings →
+/// Updates and the Inbox's "Update now" both take.
+pub(crate) fn start_update(state: &AppState, id: &str) -> HandlerResult<serde_json::Value> {
     // Find the artifact in pending updates
     let pending = state
         .store

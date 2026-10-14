@@ -2589,7 +2589,7 @@ const PERSONAL_LOOP_TYPE: &str = "personal";
 
 /// Local id of the primary agent (the bot's own "Nebo" identity). The gateway
 /// owns its loop presence; reconcile never registers it as a secondary.
-const PRIMARY_AGENT_ID: &str = "assistant";
+use tools::team_tool::PRIMARY_AGENT_ID;
 
 /// Request one employee roster reconcile pass (see `reconcile_agents`). The
 /// ONE entry point for every trigger: gateway connect, and employee

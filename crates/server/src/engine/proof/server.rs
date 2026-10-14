@@ -228,7 +228,7 @@ fn receptionist(w: &World) {
 /// The owner's need items, oldest first.
 fn need_items(w: &World) -> Vec<db::models::Notification> {
     let user = w.s.ensure_local_user_id().unwrap();
-    let mut n: Vec<_> = w.s.list_user_notifications(&user, 200, 0).unwrap().into_iter().filter(|n| n.id.starts_with("need:")).collect();
+    let mut n: Vec<_> = w.s.list_user_notifications(&user, db::models::InboxView::All, None, 200, 0).unwrap().into_iter().filter(|n| n.id.starts_with("need:")).collect();
     n.sort_by_key(|n| (n.created_at, n.title.clone()));
     n
 }
@@ -543,7 +543,7 @@ fn one_missing_need_is_one_notice_whoever_sees_it_and_however_often() {
     assert_eq!(items[0].id, told);
 
     // The owner dismisses it: nothing brings it back while it stands.
-    w.s.delete_notification(&told, &user).unwrap();
+    w.s.archive_notification(&told, &user).unwrap();
     for _ in 0..8 {
         w.t += 15 * 60;
         let i = next();

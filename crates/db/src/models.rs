@@ -520,6 +520,92 @@ pub struct Notification {
     pub agent_id: Option<String>,
     pub read_at: Option<i64>,
     pub created_at: i64,
+    /// A decision or question the owner answers on the card; else an update.
+    pub needs_you: bool,
+    /// The answers a needs_you item takes, in order; empty when it is
+    /// answered on its own screen (its link).
+    pub options: Vec<ItemOption>,
+    /// The words on the item's link ("Orders sheet", "Chat").
+    pub link_label: Option<String>,
+    /// The session an employee's own question is answered into.
+    #[serde(skip_serializing)]
+    pub reply_to: Option<String>,
+    /// When a needs_you item was settled, with the answer in the owner's
+    /// words and the surface that gave it.
+    pub answered_at: Option<i64>,
+    pub answer: Option<String>,
+    pub answered_via: Option<String>,
+    /// The owner put it away. Answered and archived items are History.
+    pub archived_at: Option<i64>,
+    /// Where the item stands ([`Notification::status_of`]): `open`,
+    /// `answered`, `archived` or `update`.
+    pub status: String,
+}
+
+impl Notification {
+    /// `open` (a needs_you item waiting on the owner), `answered`,
+    /// `archived`, or `update` (an update in the list).
+    pub fn status_of(needs_you: bool, answered_at: Option<i64>, archived_at: Option<i64>) -> &'static str {
+        if archived_at.is_some() {
+            "archived"
+        } else if answered_at.is_some() {
+            "answered"
+        } else if needs_you {
+            "open"
+        } else {
+            "update"
+        }
+    }
+}
+
+/// One answer a needs_you item takes: the words on its button and what the
+/// answer sends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemOption {
+    pub label: String,
+    pub value: String,
+}
+
+/// A new Inbox item, as the one writer (`tools::owner_notify::emit`) stores it.
+#[derive(Debug, Clone, Default)]
+pub struct NewNotification<'a> {
+    pub id: &'a str,
+    pub user_id: &'a str,
+    pub notification_type: &'a str,
+    pub title: &'a str,
+    pub body: Option<&'a str>,
+    pub action_url: Option<&'a str>,
+    pub agent_id: Option<&'a str>,
+    pub needs_you: bool,
+    pub options: &'a [ItemOption],
+    pub link_label: Option<&'a str>,
+    pub reply_to: Option<&'a str>,
+}
+
+/// Which part of the Inbox a list reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InboxView {
+    /// Everything, newest first (the old flat list).
+    #[default]
+    All,
+    /// Decisions still waiting on the owner.
+    NeedsYou,
+    /// Updates not yet put away.
+    Updates,
+    /// Answered and archived items.
+    History,
+}
+
+impl InboxView {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "all" => Some(Self::All),
+            "needs_you" => Some(Self::NeedsYou),
+            "updates" => Some(Self::Updates),
+            "history" => Some(Self::History),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

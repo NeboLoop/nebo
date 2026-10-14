@@ -1090,3 +1090,40 @@ async fn the_invoice_senders_step_completes_after_the_audit() {
     }
     assert!(store.open_permission_asks(None).unwrap().is_empty(), "nothing waits for the owner");
 }
+
+/// Routine work never reaches the owner's Inbox: checking or searching
+/// memory, loading tools, finding and loading the employee's own skills are
+/// never asked about, in any mode, through any door (a workflow step that
+/// didn't declare them included). The real tools are checked, not stand-ins.
+#[tokio::test]
+async fn routine_work_never_asks() {
+    let (_d, store) = store();
+    let reg = Arc::new(registry(&store, vec![]).await);
+    reg.register_all(store.clone(), tools::orchestrator::new_handle()).await;
+    reg.register(Box::new(tools::FindToolsTool::new(reg.clone()))).await;
+    let routine = [
+        ("recall", json!({ "query": "supplier prices" })),
+        ("find_tools", json!({ "query": "select:mail_message_send" })),
+        ("use_skill", json!({ "name": "shopify-orders" })),
+        ("find_skills", json!({ "query": "restock" })),
+    ];
+    let doors = [
+        (Door::Chat, "agent:emp:web".to_string()),
+        (Door::Schedule, "agent:emp:cron:daily".to_string()),
+        (Door::Workflow, "agent:emp:workflow:run-1:pull-sales".to_string()),
+    ];
+    for mode in [Mode::Automatic, Mode::Ask, Mode::Plan, Mode::FullAccess] {
+        for (door, session_key) in &doors {
+            let mut c = with_mode(ctx(&store, "emp", Origin::User), mode);
+            c.door = door.clone();
+            c.session_key = session_key.clone();
+            for (name, input) in &routine {
+                let tool = reg.get(name).await.unwrap_or_else(|| panic!("{name} is registered"));
+                let t = tools::registry::target_of(tool.as_ref(), input);
+                let cx = CheckCx { ctx: &c, input, grant: c.grant.as_ref().unwrap(), store: &store };
+                let d = decide(&cx, &t);
+                assert!(matches!(d, Decision::Allow { .. }), "{name} in {mode:?} through {door:?}: {d:?}");
+            }
+        }
+    }
+}

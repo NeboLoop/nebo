@@ -1105,3 +1105,143 @@ async fn a_card_raised_in_a_direct_owner_employee_chat_is_not_relayed() {
     assert!(relayed(&Door::Chat, &format!("agent:{bk}:coworker:team:t1")), "a team seat");
     assert!(relayed(&Door::Chat, &format!("subagent:{key}:task-1")), "a helper");
 }
+
+// ── The Inbox: one item model, one answer path ─────────────────────────
+
+/// The owner's Inbox items, one part of it.
+fn inbox(nebo: &Nebo, view: db::models::InboxView) -> Vec<db::models::Notification> {
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    nebo.store().list_user_notifications(&user, view, None, 200, 0).unwrap()
+}
+
+fn item(nebo: &Nebo, id: &str) -> db::models::Notification {
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    nebo.store().get_notification(id, &user).unwrap().unwrap_or_else(|| panic!("{id} is in the Inbox"))
+}
+
+/// A question from work the owner is not in is a Needs-you item with its
+/// answers on the card. Answered from the Inbox (the phone's tap), the run
+/// hears the answer and the item moves to History with it. A question in
+/// the owner's own chat stays that chat's card: no Inbox item.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relayed_question_is_a_needs_you_item_answered_on_its_card() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let bk = format!("bk-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let req = format!("req-{}", uuid::Uuid::new_v4().simple());
+    let card = json!([{ "type": "options", "multiSelect": false, "options": ["Lumen · $14.20", "Northfield · $16.20"] }]);
+    let (handle, rx) = park_card(
+        &nebo,
+        &bk,
+        &format!("agent:{bk}:cron:restock"),
+        &Door::Schedule,
+        &req,
+        "Which supplier should I reorder AirWash from?",
+        card.clone(),
+    )
+    .await;
+    let id = crate::handlers::asks::push_id(&req);
+    let waiting = item(&nebo, &id);
+    assert!(waiting.needs_you && waiting.status == "open", "{waiting:?}");
+    assert_eq!(
+        waiting.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(),
+        ["Lumen · $14.20", "Northfield · $16.20"]
+    );
+    assert!(inbox(&nebo, db::models::InboxView::NeedsYou).iter().any(|n| n.id == id));
+
+    crate::handlers::notification::answer_item(state, &waiting, "Lumen · $14.20", "mobile").await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(5), rx).await.expect("the run hears it").unwrap();
+    assert_eq!(got, "Lumen · $14.20");
+    let answered = item(&nebo, &id);
+    assert_eq!((answered.status.as_str(), answered.answer.as_deref()), ("answered", Some("Lumen · $14.20")));
+    assert!(!inbox(&nebo, db::models::InboxView::NeedsYou).iter().any(|n| n.id == id), "it left Needs you");
+    assert!(inbox(&nebo, db::models::InboxView::History).iter().any(|n| n.id == id), "it is in History");
+    drop(handle);
+
+    // In the owner's own chat: the card stays there.
+    let chat = uuid::Uuid::new_v4().to_string();
+    nebo.store().create_chat(&chat, "Restock").unwrap();
+    let direct = format!("req-{}", uuid::Uuid::new_v4().simple());
+    let (handle, _rx) =
+        park_card(&nebo, &bk, &format!("agent:{bk}:thread:{chat}"), &Door::Chat, &direct, "Which one?", card).await;
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    assert!(nebo.store().get_notification(&crate::handlers::asks::push_id(&direct), &user).unwrap().is_none());
+    drop(handle);
+}
+
+/// An employee's own question (push_notification with options) is a
+/// Needs-you item; its answer settles it with the option's words and goes
+/// to the session that asked, on the wake rail. An update has nothing to
+/// answer, and an item put away is History, never deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employees_own_question_is_answered_into_its_conversation() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let emp = format!("store-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let session_key = format!("agent:{emp}:cron:stock");
+    let c = ToolContext { session_key: session_key.clone(), ..Default::default() };
+    let r = state
+        .tools
+        .execute(
+            &c,
+            "push_notification",
+            json!({
+                "title": "Which supplier for AirWash?",
+                "message": "Stock runs out in 6 days.",
+                "options": ["Lumen", "Northfield"],
+            }),
+        )
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    let asked = inbox(&nebo, db::models::InboxView::NeedsYou)
+        .into_iter()
+        .find(|n| n.agent_id.as_deref() == Some(emp.as_str()))
+        .expect("the question is a Needs-you item");
+    assert_eq!(asked.options.len(), 2);
+
+    crate::handlers::notification::answer_item(state, &asked, "Lumen", "web").await.unwrap();
+    let settled = item(&nebo, &asked.id);
+    assert_eq!((settled.answer.as_deref(), settled.answered_via.as_deref()), (Some("Lumen"), Some("web")));
+    let woke = nebo.store().engine_events_for("session", &session_key, 10).unwrap();
+    assert!(woke.iter().any(|e| e.payload.contains("Lumen") && e.payload.contains("Which supplier")), "{woke:?}");
+
+    // An update: nothing to answer. Put away, it is History and still there.
+    let r = state
+        .tools
+        .execute(&c, "push_notification", json!({ "title": "Shopify orders synced", "message": "42 new orders." }))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    let update = inbox(&nebo, db::models::InboxView::Updates)
+        .into_iter()
+        .find(|n| n.agent_id.as_deref() == Some(emp.as_str()))
+        .expect("the update is in Updates");
+    assert!(crate::handlers::notification::answer_item(state, &update, "x", "web").await.is_err());
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    nebo.store().archive_notification(&update.id, &user).unwrap();
+    assert_eq!(item(&nebo, &update.id).status, "archived", "put away, never deleted");
+    assert!(inbox(&nebo, db::models::InboxView::History).iter().any(|n| n.id == update.id));
+}
+
+/// A permission ask is a Needs-you item whose answers are its card's; the
+/// Inbox answers it through the ask's own path, which moves the item to
+/// History with the answer's words and where it came from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_permission_ask_is_answered_from_the_inbox_through_its_own_path() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let emp = format!("emp-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let name = format!("probe_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let ran = Arc::new(AtomicUsize::new(0));
+    state.tools.register(Box::new(Probe { name: name.clone(), capability: Some("sms"), ran: ran.clone() })).await;
+    let parked = nebo.tool(&heartbeat(&format!("agent:{emp}:heartbeat")), &name, json!({ "to": "+15550142" })).await;
+    let ask = parked.parked_ask.expect("the step parks on the owner");
+    let id = crate::permission_asks::inbox_id(&ask);
+    let waiting = item(&nebo, &id);
+    assert!(waiting.needs_you && waiting.status == "open");
+    assert!(waiting.options.iter().any(|o| o.value == "this_once"), "{:?}", waiting.options);
+
+    crate::handlers::notification::answer_item(state, &waiting, "this_once", "mobile").await.unwrap();
+    let answered = item(&nebo, &id);
+    assert_eq!(answered.status, "answered");
+    assert_eq!((answered.answer.as_deref(), answered.answered_via.as_deref()), (Some("This once"), Some("mobile")));
+}

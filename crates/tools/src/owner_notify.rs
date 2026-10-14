@@ -15,8 +15,16 @@
 
 use serde_json::json;
 
-/// One owner notification. `id` should be deterministic when the event is
-/// retryable (e.g. `wf-approval:{run_id}`) — emission is idempotent.
+/// One owner notification: an Inbox item. `id` should be deterministic
+/// when the event is retryable (e.g. `wf-approval:{run_id}`) — emission is
+/// idempotent.
+///
+/// An item is one of two kinds: an update (a title, one sentence, a link
+/// to the work) or a decision that needs the owner (`needs_you`), answered
+/// right on its card with `options`, or on its own screen (its link) when
+/// it has none. Every surface answers it through the one answer path
+/// (`POST /notifications/{id}/answer`), which settles it ([`settle`]).
+#[derive(Default)]
 pub struct OwnerNotification<'a> {
     pub id: &'a str,
     /// Inbox row type: "info" | "warning" | "error" | "approval" | ...
@@ -29,6 +37,14 @@ pub struct OwnerNotification<'a> {
     pub agent_id: Option<&'a str>,
     /// `true` = bell + toast + native OS banner; `false` = bell only.
     pub loud: bool,
+    /// A decision or question waiting on the owner.
+    pub needs_you: bool,
+    /// The answers it takes on its card, in order.
+    pub options: &'a [db::models::ItemOption],
+    /// The words on its link ("Orders sheet").
+    pub link_label: Option<&'a str>,
+    /// The session an employee's own question is answered into.
+    pub reply_to: Option<&'a str>,
 }
 
 impl OwnerNotification<'_> {
@@ -54,6 +70,12 @@ impl OwnerNotification<'_> {
         if let Some(agent_id) = self.agent_id.filter(|a| !a.is_empty()) {
             item["agentId"] = json!(agent_id);
         }
+        if self.needs_you {
+            item["needsYou"] = json!(true);
+        }
+        if let Some(label) = self.link_label {
+            item["linkLabel"] = json!(label);
+        }
         if let (Some(item), serde_json::Value::Object(extra)) = (item.as_object_mut(), extra) {
             item.extend(extra);
         }
@@ -63,27 +85,35 @@ impl OwnerNotification<'_> {
 
 /// Persist the Inbox row (idempotent) and broadcast the canonical payload.
 /// Persistence is best-effort — the live broadcast is what surfaces the
-/// notification, so a failed row write is logged, never fatal.
+/// notification, so a failed row write is logged, never fatal. Returns
+/// whether the row is stored, for a caller that must not go on without it.
 pub fn emit(
     store: &db::Store,
     broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
     n: &OwnerNotification,
-) {
+) -> bool {
     // notifications FK to users(id) — resolve the real local user ("" violates it).
     let user_id = store.ensure_local_user_id().unwrap_or_default();
     let link = n.link();
-    if let Err(e) = store.create_notification_if_not_exists(
-        n.id,
-        &user_id,
-        n.kind,
-        n.title,
-        n.body,
-        Some(&link),
-        None,
-        n.agent_id,
-    ) {
-        tracing::warn!(id = %n.id, error = %e, "owner notification row not persisted; broadcasting anyway");
-    }
+    let stored = match store.create_notification_if_not_exists(&db::models::NewNotification {
+        id: n.id,
+        user_id: &user_id,
+        notification_type: n.kind,
+        title: n.title,
+        body: n.body,
+        action_url: Some(&link),
+        agent_id: n.agent_id,
+        needs_you: n.needs_you,
+        options: n.options,
+        link_label: n.link_label,
+        reply_to: n.reply_to,
+    }) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(id = %n.id, error = %e, "owner notification row not persisted; broadcasting anyway");
+            false
+        }
+    };
 
     if let Some(broadcast) = broadcast {
         broadcast(
@@ -97,7 +127,71 @@ pub fn emit(
                 "agentId": n.agent_id,
                 "readAt": null,
                 "createdAt": chrono::Utc::now().timestamp(),
+                "needsYou": n.needs_you,
+                "options": n.options,
+                "linkLabel": n.link_label,
+                "status": db::models::Notification::status_of(n.needs_you, None, None),
             }),
+        );
+    }
+    stored
+}
+
+/// The answers a staged proposal (`learn:`) takes on its card.
+pub fn proposal_options() -> Vec<db::models::ItemOption> {
+    vec![
+        db::models::ItemOption { label: "Approve".into(), value: "yes".into() },
+        db::models::ItemOption { label: "Decline".into(), value: "no".into() },
+    ]
+}
+
+/// Settle a needs_you item: it leaves Needs you for History with the
+/// answer in the owner's words and the surface that gave it, and every
+/// open app hears it (`notification_settled`). The first answer from any
+/// surface wins; a later one changes nothing and returns false. Called by
+/// each item's own answer path (an ask's, a proposal's, a question's), so
+/// an answer given anywhere settles the item everywhere.
+pub fn settle(
+    store: &db::Store,
+    broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
+    id: &str,
+    answer: &str,
+    via: Option<&str>,
+) -> bool {
+    match store.settle_notification(id, answer, via) {
+        Ok(true) => {
+            settled(broadcast, id, answer, via);
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            tracing::warn!(id, error = %e, "Inbox item not settled");
+            false
+        }
+    }
+}
+
+/// [`settle`] every open item whose id starts with `prefix`, all but `keep`:
+/// an update notice for a version no longer on offer.
+pub fn settle_all(
+    store: &db::Store,
+    broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
+    prefix: &str,
+    keep: Option<&str>,
+    answer: &str,
+) {
+    match store.settle_notifications_like(prefix, keep, answer) {
+        Ok(ids) => ids.iter().for_each(|id| settled(broadcast, id, answer, None)),
+        Err(e) => tracing::warn!(prefix, error = %e, "Inbox items not settled"),
+    }
+}
+
+/// Every open app hears an item was settled.
+fn settled(broadcast: Option<&dyn Fn(&str, serde_json::Value)>, id: &str, answer: &str, via: Option<&str>) {
+    if let Some(broadcast) = broadcast {
+        broadcast(
+            "notification_settled",
+            json!({ "id": id, "answer": answer, "answeredVia": via, "status": "answered" }),
         );
     }
 }
@@ -137,6 +231,10 @@ pub fn restate(
                 "agentId": n.agent_id,
                 "readAt": row.read_at,
                 "createdAt": row.created_at,
+                "needsYou": row.needs_you,
+                "options": row.options,
+                "linkLabel": row.link_label,
+                "status": row.status,
             }),
         );
     }
@@ -286,7 +384,7 @@ mod tests {
 
     fn row(store: &db::Store, id: &str) -> db::models::Notification {
         let user = store.ensure_local_user_id().unwrap();
-        store.list_user_notifications(&user, 50, 0).unwrap().into_iter().find(|n| n.id == id).unwrap()
+        store.get_notification(id, &user).unwrap().unwrap()
     }
 
     /// An item about a place opens there, and one about no other place
@@ -299,8 +397,8 @@ mod tests {
         let broadcast = |_: &str, payload: serde_json::Value| seen.lock().unwrap().push(payload);
         let place = link::run("emp", "r1");
         let cases = [
-            (OwnerNotification { id: "wf-fail:r1", kind: "error", title: "t", body: None, action_url: Some(&place), agent_id: Some("emp"), loud: false }, "/emp/runs/r1"),
-            (OwnerNotification { id: "backup-failed:7", kind: "error", title: "t", body: None, action_url: None, agent_id: None, loud: true }, "/inbox?m=backup-failed%3A7"),
+            (OwnerNotification { id: "wf-fail:r1", kind: "error", title: "t", body: None, action_url: Some(&place), agent_id: Some("emp"), loud: false, ..Default::default() }, "/emp/runs/r1"),
+            (OwnerNotification { id: "backup-failed:7", kind: "error", title: "t", body: None, action_url: None, agent_id: None, loud: true, ..Default::default() }, "/inbox?m=backup-failed%3A7"),
         ];
         for (n, want) in &cases {
             emit(&store, Some(&broadcast), n);
@@ -320,7 +418,7 @@ mod tests {
         let (_dir, store) = store();
         let seen = std::sync::Mutex::new(Vec::new());
         let broadcast = |ev: &str, payload: serde_json::Value| seen.lock().unwrap().push((ev.to_string(), payload));
-        let first = OwnerNotification { id: "need:1", kind: "warning", title: "Ava needs a telephony plugin", body: Some("one duty"), action_url: Some("/settings/plugins"), agent_id: Some("ava"), loud: true };
+        let first = OwnerNotification { id: "need:1", kind: "warning", title: "Ava needs a telephony plugin", body: Some("one duty"), action_url: Some("/settings/plugins"), agent_id: Some("ava"), loud: true, ..Default::default() };
         emit(&store, Some(&broadcast), &first);
         let user = store.ensure_local_user_id().unwrap();
         store.mark_notification_read("need:1", &user).unwrap();
@@ -334,12 +432,12 @@ mod tests {
         let (ev, payload) = seen.lock().unwrap().last().unwrap().clone();
         assert_eq!(ev, "notification_created", "a restatement is never a banner");
         assert_eq!((payload["id"].as_str(), payload["body"].as_str()), (Some("need:1"), Some("two duties")));
-        assert_eq!(store.list_user_notifications(&user, 50, 0).unwrap().len(), 1, "still one item");
+        assert_eq!(store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap().len(), 1, "still one item");
 
-        store.delete_notification("need:1", &user).unwrap();
+        store.archive_notification("need:1", &user).unwrap();
         let heard = seen.lock().unwrap().len();
         assert!(!restate(&store, Some(&broadcast), &again), "dismissed: not restated");
-        assert!(store.list_user_notifications(&user, 50, 0).unwrap().is_empty(), "and not brought back");
+        assert!(store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap().is_empty(), "and not brought back");
         assert_eq!(seen.lock().unwrap().len(), heard, "nothing is broadcast for it");
     }
 
@@ -347,7 +445,7 @@ mod tests {
     /// carries; an item with no employee names none.
     #[test]
     fn the_hub_copy_is_the_item() {
-        let n = OwnerNotification { id: "need:1", kind: "warning", title: "Ava needs Gmail connected", body: Some("b"), action_url: Some("/ava/settings/accounts?plugin=gmail"), agent_id: Some("ava"), loud: false };
+        let n = OwnerNotification { id: "need:1", kind: "warning", title: "Ava needs Gmail connected", body: Some("b"), action_url: Some("/ava/settings/accounts?plugin=gmail"), agent_id: Some("ava"), loud: false, ..Default::default() };
         let item = n.hub_item(serde_json::json!({ "chatId": "c1" }));
         assert_eq!(
             item,
@@ -359,4 +457,57 @@ mod tests {
         let n = OwnerNotification { agent_id: None, ..n };
         assert!(n.hub_item(serde_json::json!({})).get("agentId").is_none());
     }
+
+    /// The two kinds of item, through the one writer: an update lists in
+    /// Updates; a needs_you item keeps its answers and lists in Needs you
+    /// until it is settled, then in History with the answer and where it
+    /// came from. The first answer wins. Nothing is deleted: an item put
+    /// away is History, and told again it comes back fresh.
+    #[test]
+    fn an_item_is_an_update_or_needs_you_and_an_answer_moves_it_to_history() {
+        use db::models::{InboxView, ItemOption};
+        let (_dir, store) = store();
+        let user = store.ensure_local_user_id().unwrap();
+        let ids = |view| -> Vec<String> {
+            store.list_user_notifications(&user, view, None, 50, 0).unwrap().into_iter().map(|n| n.id).collect()
+        };
+        let options = [
+            ItemOption { label: "Lumen · $14.20".into(), value: "lumen".into() },
+            ItemOption { label: "Northfield · $16.20".into(), value: "northfield".into() },
+        ];
+        let ask = OwnerNotification {
+            id: "q:1", kind: "info", title: "Which supplier?", body: Some("Stock runs out in 6 days."),
+            agent_id: Some("store"), needs_you: true, options: &options, reply_to: Some("agent:store:cron:x"),
+            ..Default::default()
+        };
+        let update = OwnerNotification {
+            id: "u:1", kind: "info", title: "Shopify orders synced", body: Some("42 new orders."),
+            action_url: Some("/store/runs/r1"), agent_id: Some("store"), link_label: Some("Orders sheet"),
+            ..Default::default()
+        };
+        assert!(emit(&store, None, &ask) && emit(&store, None, &update));
+        assert_eq!(ids(InboxView::NeedsYou), ["q:1"]);
+        assert_eq!(ids(InboxView::Updates), ["u:1"]);
+        let q = row(&store, "q:1");
+        assert_eq!((q.status.as_str(), q.options.clone(), q.reply_to.as_deref()), ("open", options.to_vec(), Some("agent:store:cron:x")));
+        assert_eq!(row(&store, "u:1").link_label.as_deref(), Some("Orders sheet"));
+
+        let seen = std::sync::Mutex::new(Vec::new());
+        let broadcast = |ev: &str, payload: serde_json::Value| seen.lock().unwrap().push((ev.to_string(), payload));
+        assert!(settle(&store, Some(&broadcast), "q:1", "Lumen · $14.20", Some("mobile")));
+        assert!(!settle(&store, Some(&broadcast), "q:1", "Northfield · $16.20", Some("web")), "the first answer wins");
+        let q = row(&store, "q:1");
+        assert_eq!((q.status.as_str(), q.answer.as_deref(), q.answered_via.as_deref()), ("answered", Some("Lumen · $14.20"), Some("mobile")));
+        assert!(q.read_at.is_some());
+        assert_eq!(seen.lock().unwrap().len(), 1, "one settle heard");
+        assert!(ids(InboxView::NeedsYou).is_empty());
+        assert_eq!(ids(InboxView::History), ["q:1"]);
+
+        store.archive_notification("u:1", &user).unwrap();
+        assert_eq!(row(&store, "u:1").status, "archived", "put away, never deleted");
+        assert!(ids(InboxView::Updates).is_empty() && ids(InboxView::History).contains(&"u:1".to_string()));
+        assert!(emit(&store, None, &update), "told again");
+        assert_eq!((row(&store, "u:1").status.as_str(), row(&store, "u:1").read_at), ("update", None), "it comes back fresh");
+    }
+
 }

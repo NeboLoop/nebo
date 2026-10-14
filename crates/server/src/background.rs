@@ -898,6 +898,7 @@ pub fn spawn(state: AppState) {
                 let outcome = outcome_of(&state, task).await;
                 workflow_ended |= task.source == Source::Workflow;
                 let ended = FinishedTask { task: task.clone(), outcome, ended_at: now() };
+                post_finished(&state, &ended);
                 state.hub.broadcast("background_finished", serde_json::json!(ended));
                 remember_finished(ended);
             }
@@ -914,6 +915,69 @@ pub fn spawn(state: AppState) {
             }
         }
     });
+}
+
+/// Work an employee's turn launched has ended: the owner's Inbox gets ONE
+/// update for it (quiet: the bell, never a banner), with how it ended, its
+/// result in a line, and a link to the run or its transcript. The wake the
+/// launching conversation gets is that employee's own; this is the owner's
+/// record, which the assistant's brief and summaries read. Work that starts
+/// on its own (a schedule, a trigger, a timer, a watch) and the chat turn
+/// itself are not reported here.
+fn post_finished(state: &AppState, ended: &FinishedTask) {
+    if let Some((id, title, result, link)) = finished_item(state, ended) {
+        let task = &ended.task;
+        let agent = employee_id(&task.agent_id);
+        tools::owner_notify::emit(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &tools::owner_notify::OwnerNotification {
+                id: &id,
+                kind: if ended.outcome == Outcome::Failed { "warning" } else { "info" },
+                title: &title,
+                body: Some(&result),
+                action_url: link.as_deref(),
+                agent_id: Some(if agent.is_empty() { tools::team_tool::PRIMARY_AGENT_ID } else { agent }),
+                link_label: Some(if task.source == Source::Workflow { "Run" } else { "Chat" }),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+/// The Inbox update for ended work: (id, title, one-line result, link), or
+/// None for work that isn't reported ([`post_finished`]).
+fn finished_item(state: &AppState, ended: &FinishedTask) -> Option<(String, String, String, Option<String>)> {
+    let task = &ended.task;
+    if task.launched_from.is_none() || matches!(task.source, Source::Turn | Source::Timer | Source::Watch | Source::Heartbeat) {
+        return None;
+    }
+    let how = match ended.outcome {
+        Outcome::Done => "finished",
+        Outcome::Failed => "failed",
+        Outcome::Stopped => "was stopped",
+        Outcome::Removed => return None,
+    };
+    let native = task.id.split_once(':').map(|(_, n)| n).unwrap_or_default();
+    let said = match task.source {
+        Source::Helper => state.store.get_pending_task(native).ok().flatten().and_then(|r| r.output.or(r.last_error)),
+        Source::Workflow => state.store.get_workflow_run(native).ok().flatten().and_then(|r| r.output.or(r.error)),
+        _ => None,
+    };
+    let result = said
+        .as_deref()
+        .and_then(|s| s.lines().map(str::trim).find(|l| !l.is_empty()))
+        .map(|l| l.chars().take(200).collect::<String>())
+        .unwrap_or_else(|| format!("It {how}."));
+    let agent = employee_id(&task.agent_id);
+    let agent = if agent.is_empty() { tools::team_tool::PRIMARY_AGENT_ID } else { agent };
+    let link = match (&task.source, &task.transcript) {
+        (Source::Workflow, _) => Some(tools::owner_notify::link::run(agent, native)),
+        (_, Some(t)) => Some(tools::owner_notify::link::chat(agent, &t.chat_id)),
+        _ => None,
+    };
+    let what = task.title.trim().trim_end_matches('.');
+    Some((format!("finished:{}", task.id), format!("{what} {how}"), result, link))
 }
 
 /// A chat turn ended. Stopped by the owner, the schedules it made go with

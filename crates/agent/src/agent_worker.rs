@@ -1517,6 +1517,7 @@ async fn watch_loop(
                     action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
+                    ..Default::default()
                 };
                 // Broadcast so notification bell updates in real-time
                 match &notify_fn {
@@ -1526,7 +1527,7 @@ async fn watch_loop(
                         &n,
                     ),
                     None => tools::owner_notify::emit(&store, None, &n),
-                }
+                };
 
                 // Self-heal: never park permanently. Keep probing on the slow
                 // cadence — if the failure was a provider blip the next spawn
@@ -2659,6 +2660,7 @@ async fn channel_loop(
                     action_url: Some(&link),
                     agent_id: Some(agent_id.as_ref()),
                     loud: true,
+                    ..Default::default()
                 };
                 match &notify_fn {
                     Some(f) => tools::owner_notify::emit(
@@ -2667,7 +2669,7 @@ async fn channel_loop(
                         &n,
                     ),
                     None => tools::owner_notify::emit(&store, None, &n),
-                }
+                };
 
                 // Self-heal: keep probing on the slow cadence instead of
                 // parking (see the watch loop for the rationale); a real
@@ -3117,11 +3119,12 @@ async fn shared_channel_loop(
                     action_url: Some(&link),
                     agent_id: None,
                     loud: true,
+                    ..Default::default()
                 };
                 match &notify_fn {
                     Some(f) => tools::owner_notify::emit(&store, Some(&|ev, payload| f(ev, payload)), &n),
                     None => tools::owner_notify::emit(&store, None, &n),
-                }
+                };
                 // Self-heal: keep probing on the slow cadence instead of
                 // parking; reconnecting still resumes via plugin_auth_complete.
                 backoff_secs = AUTH_PAUSED_RETRY_SECS;

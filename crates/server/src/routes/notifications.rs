@@ -23,6 +23,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::delete(handlers::notification::delete_notification),
         )
         .route(
+            "/notifications/{id}/answer",
+            axum::routing::post(handlers::notification::answer_notification),
+        )
+        .route(
             "/notifications/unread-count",
             axum::routing::get(handlers::notification::unread_count),
         )
