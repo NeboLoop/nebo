@@ -19,8 +19,6 @@
 use axum::extract::{Path, State};
 use axum::response::Json;
 use serde_json::{Value, json};
-use tools::origin::ToolContext;
-use tools::registry::{DynTool, ToolResult};
 use tracing::warn;
 
 use super::{HandlerResult, to_error_response};
@@ -570,81 +568,39 @@ pub async fn start_onboarding(State(state): State<AppState>) -> HandlerResult<ty
     Ok(Json(types::api::OnboardingStarted { status: status(&state, step), thread_id }))
 }
 
-/// The assistant's side of the guided chat: what to do now, and each answer.
-pub struct OnboardingTool {
+/// The guided chat as the assistant's `onboarding` tool reads and answers
+/// it (`tools::onboarding_tool`): the step, what to do now, each answer.
+pub struct ServerFirstRun {
     state: AppState,
 }
 
-impl OnboardingTool {
+impl ServerFirstRun {
     pub fn new(state: AppState) -> Self {
         Self { state }
     }
 
-    async fn run(&self, ctx: &ToolContext, input: &Value) -> ToolResult {
-        if types::keyparser::extract_agent_id(&ctx.session_key) != PRIMARY {
-            return ToolResult::error("Only the assistant runs the first-run chat.");
-        }
-        let state = &self.state;
-        let reply = |step: Step| {
-            let f = Facts::read(state);
-            ToolResult::ok(json!({ "step": step.as_str(), "next": guide(step, &f) }).to_string())
-        };
-        match input["action"].as_str().unwrap_or("status") {
-            "status" => reply(current(&state.store)),
-            "answer" => {
-                let Some(step) = input["step"].as_str().and_then(Step::parse) else {
-                    return ToolResult::error("step is one of name, focus, connect, plate, day, daily, hire, set.");
-                };
-                let value = input["value"].as_str().unwrap_or("");
-                match answer(state, step, value).await {
-                    Ok(next) => reply(next),
-                    Err(e) => ToolResult::error(e),
-                }
-            }
-            other => ToolResult::error(format!("Unknown action '{other}': use status or answer.")),
-        }
+    fn reply(&self, step: Step) -> String {
+        let f = Facts::read(&self.state);
+        json!({ "step": step.as_str(), "next": guide(step, &f) }).to_string()
     }
 }
 
-impl DynTool for OnboardingTool {
-    fn name(&self) -> &str {
-        "onboarding"
+impl tools::onboarding_tool::FirstRun for ServerFirstRun {
+    fn status<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
+        Box::pin(async move { self.reply(current(&self.state.store)) })
     }
 
-    fn description(&self) -> String {
-        "The guided first-run chat with the owner (the assistant only).\n\
-         - status: the step you are on and what to do now.\n\
-         - answer: report the owner's answer at a step; it says what comes next.\n\
-         - At any step, value \"skip\" moves on and \"finish\" ends the first-run chat."
-            .to_string()
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "enum": ["status", "answer"] },
-                "step": { "type": "string", "enum": ["name", "focus", "connect", "plate", "day", "daily", "hire", "set"] },
-                "value": { "type": "string", "description": "The answer, as the step's instructions name it." }
-            },
-            "required": ["action"]
-        })
-    }
-
-    fn search_hint(&self) -> &str {
-        "first-run guided chat onboarding steps"
-    }
-
-    fn read_only(&self, input: &Value) -> bool {
-        input["action"].as_str() != Some("answer")
-    }
-
-    fn execute_dyn<'a>(
+    fn answer<'a>(
         &'a self,
-        ctx: &'a ToolContext,
-        input: Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move { self.run(ctx, &input).await })
+        step: &'a str,
+        value: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let step = Step::parse(step)
+                .ok_or_else(|| "step is one of name, focus, connect, plate, day, daily, hire, set.".to_string())?;
+            let next = answer(&self.state, step, value).await?;
+            Ok(self.reply(next))
+        })
     }
 }
 

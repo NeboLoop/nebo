@@ -1373,6 +1373,12 @@ mod tests {
         let loader = std::sync::Arc::new(crate::skills::Loader::new(dir.path().join("s1"), dir.path().join("s2")));
         let tier = std::sync::Arc::new(tokio::sync::RwLock::new("free".to_string()));
         registry.register(Box::new(crate::execute_tool::ExecuteTool::new(loader, tier, None))).await;
+        // The guided first-run chat: the server's, behind its trait.
+        registry
+            .register(Box::new(crate::onboarding_tool::OnboardingTool::new(std::sync::Arc::new(
+                crate::onboarding_tool::tests::Fixed,
+            ))))
+            .await;
         (registry, dir)
     }
 

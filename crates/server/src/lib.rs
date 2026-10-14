@@ -2759,7 +2759,9 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // and reports each answer through the same state the apps read.
     state
         .tools
-        .register(Box::new(handlers::onboarding::OnboardingTool::new(state.clone())))
+        .register(Box::new(tools::onboarding_tool::OnboardingTool::new(Arc::new(
+            handlers::onboarding::ServerFirstRun::new(state.clone()),
+        ))))
         .await;
 
     // An ask's card and its answers reach the owner through the hub, the

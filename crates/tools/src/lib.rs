@@ -85,6 +85,7 @@ pub mod origin;
 pub mod os_tool;
 pub mod owner_clock;
 pub mod owner_notify;
+pub mod onboarding_tool;
 pub mod owner_tools;
 pub mod permission_request_tool;
 pub mod plan;
