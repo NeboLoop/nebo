@@ -165,6 +165,22 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().db_err("notifications")
     }
 
+    /// The items whose ids start with `prefix`, newest first, put away or
+    /// not: what a learned rule handled ("See what it did").
+    pub fn notifications_like(&self, prefix: &str, page_size: i64, page_offset: i64) -> Result<Vec<Notification>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM notifications WHERE substr(id, 1, length(?1)) = ?1
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?2 OFFSET ?3",
+            )
+            .db_err("notifications")?;
+        let rows = stmt
+            .query_map(params![prefix, page_size, page_offset], row_to_notification)
+            .db_err("notifications")?;
+        rows.collect::<Result<Vec<_>, _>>().db_err("notifications")
+    }
+
     /// How many items have ids starting with `prefix`, and when the newest
     /// was made: how often a learned rule handled something.
     pub fn count_notifications_like(&self, prefix: &str) -> Result<(i64, Option<i64>), NeboError> {

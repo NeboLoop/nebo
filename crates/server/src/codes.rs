@@ -2561,9 +2561,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             if let Err(e) = refresh_license_keys(&st).await {
                 warn!(error = %e, "license key refresh failed");
             }
-            // Backfill the owner's web inbox with any still-open asks —
-            // pushes are best-effort, so reconnect is the reconcile point. The
-            // upsert is idempotent on the item id.
+            // Backfill the Inbox and the owner's web inbox with any
+            // still-open asks: pushes are best-effort, so reconnect is the
+            // reconcile point. Both writes are idempotent on the item id.
             crate::permission_asks::reconcile_inbox(&st);
             // Same self-heal for the app mirror: covers apps that arrived
             // outside the install-code path (hand-dropped dirs, restored
