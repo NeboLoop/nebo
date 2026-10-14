@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tools::registry::DynTool;
 use tools::{Origin, ToolContext, ToolResult};
+use agent::harness::permissions::{Answer, AnsweredVia};
 use types::permissions::Door;
 
 use crate::staffed_proof::{Nebo, session};
@@ -1244,4 +1245,215 @@ async fn a_permission_ask_is_answered_from_the_inbox_through_its_own_path() {
     let answered = item(&nebo, &id);
     assert_eq!(answered.status, "answered");
     assert_eq!((answered.answer.as_deref(), answered.answered_via.as_deref()), (Some("This once"), Some("mobile")));
+}
+
+// ── Learned rules: the assistant handles it, only on the owner's yes ────
+
+/// A purchase: spends `amount_cents`, reaches nobody, publishes nothing.
+struct Buy {
+    name: String,
+    ran: Arc<AtomicUsize>,
+}
+
+impl DynTool for Buy {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> String {
+        String::new()
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+    fn capability(&self, _input: &Value) -> Option<&'static str> {
+        Some("purchasing")
+    }
+    fn effects(&self, input: &Value) -> types::permissions::CallEffects {
+        types::permissions::CallEffects {
+            money_cents: input["amount_cents"].as_i64(),
+            publishes: types::permissions::Knowable::No,
+            ..types::permissions::CallEffects::none()
+        }
+    }
+    fn describe(&self, input: &Value) -> String {
+        format!("reordering {}", input["item"].as_str().unwrap_or("stock"))
+    }
+    fn execute_dyn<'a>(
+        &'a self,
+        _ctx: &'a ToolContext,
+        _input: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+        self.ran.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { ToolResult::ok("ORDERED") })
+    }
+}
+
+/// An employee whose schedule buys, with its purchase tool registered.
+async fn buyer(nebo: &Nebo) -> (String, String, Arc<AtomicUsize>) {
+    let emp = format!("store-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let name = format!("buy_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let ran = Arc::new(AtomicUsize::new(0));
+    nebo.state.tools.register(Box::new(Buy { name: name.clone(), ran: ran.clone() })).await;
+    (emp, name, ran)
+}
+
+/// One purchase through the check; the ask it parked on, if it asked.
+async fn buy(nebo: &Nebo, emp: &str, tool: &str, cents: i64) -> Option<String> {
+    let r = nebo
+        .tool(&heartbeat(&format!("agent:{emp}:heartbeat")), tool, json!({ "item": "AirWash", "amount_cents": cents }))
+        .await;
+    r.parked_ask
+}
+
+/// The offer items in the owner's Inbox about `emp`'s decisions.
+fn offers_for(nebo: &Nebo, emp: &str) -> Vec<db::models::Notification> {
+    inbox(nebo, db::models::InboxView::All)
+        .into_iter()
+        .filter(|n| n.notification_type == crate::handlers::learned_rules::OFFER_TYPE)
+        .filter(|n| {
+            let id = n.id.strip_prefix("learn:").unwrap_or_default();
+            nebo.store().get_pending_write(id).unwrap().is_some_and(|p| p.agent_id == emp)
+        })
+        .collect()
+}
+
+/// After the owner answers the same kind of decision "This once" three
+/// times in a row, and only then, the assistant offers to handle it: two
+/// answers make no offer, a "No" among them makes none, and an offer the
+/// owner answered "Ask me each time" is not made again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_offer_comes_after_exactly_three_matching_answers_and_never_on_mixed_ones() {
+    let nebo = session().await;
+    let asks = &nebo.state.permission_asks;
+    let (emp, tool, _ran) = buyer(&nebo).await;
+    let answer = |a: Answer| {
+        let emp = emp.clone();
+        let tool = tool.clone();
+        let nebo = &nebo;
+        async move {
+            let id = buy(nebo, &emp, &tool, 31_200).await.expect("outside its job: it asks");
+            asks.answer(&id, a, AnsweredVia::Mobile).unwrap();
+        }
+    };
+    answer(Answer::ThisOnce).await;
+    answer(Answer::ThisOnce).await;
+    assert!(offers_for(&nebo, &emp).is_empty(), "two answers: no offer");
+    answer(Answer::ThisOnce).await;
+    let offers = offers_for(&nebo, &emp);
+    assert_eq!(offers.len(), 1, "the third matching answer: one offer");
+    let offer = &offers[0];
+    assert!(offer.needs_you && offer.agent_id.as_deref() == Some(tools::team_tool::PRIMARY_AGENT_ID), "from the assistant");
+    assert_eq!(
+        offer.options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(),
+        ["yes", "no", "never"]
+    );
+    let pending = nebo.store().get_pending_write(offer.id.strip_prefix("learn:").unwrap()).unwrap().unwrap();
+    let pattern: crate::handlers::learned_rules::Pattern = serde_json::from_str(pending.content.as_deref().unwrap()).unwrap();
+    assert_eq!(pattern.ceiling_cents, Some(50_000), "$312 spent: the offer proposes up to $500");
+    let content: serde_json::Value = serde_json::from_str(pending.content.as_deref().unwrap()).unwrap();
+    assert!(content["covers"].as_str().unwrap().contains("up to $500"), "the card's words are stored: {content}");
+    assert_eq!(content["stillAsks"], "Anything over $500, anything not like this");
+
+    // "Ask me each time": three more answers make no new offer.
+    crate::handlers::notification::answer_item(&nebo.state, offer, "no", "mobile").await.unwrap();
+    for _ in 0..3 {
+        answer(Answer::ThisOnce).await;
+    }
+    assert_eq!(offers_for(&nebo, &emp).len(), 1, "not offered again for 30 days");
+
+    // Mixed answers: no offer.
+    let (other, tool2, _) = buyer(&nebo).await;
+    // (Each a different call: a call he said no to isn't asked again.)
+    for (a, cents) in [(Answer::ThisOnce, 9_900), (Answer::No, 9_800), (Answer::ThisOnce, 9_700)] {
+        let id = buy(&nebo, &other, &tool2, cents).await.expect("it asks");
+        asks.answer(&id, a, AnsweredVia::Inbox).unwrap();
+    }
+    assert!(offers_for(&nebo, &other).is_empty(), "a No among them: no offer");
+}
+
+/// On the owner's yes the rule is his, recorded with when and where he
+/// said it. It acts only inside its conditions: a purchase under the
+/// ceiling runs without asking and he is told it was handled (with Undo);
+/// one over it still asks. Paused, it asks again; every change is one more
+/// entry in its history, and nothing in it is ever deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learned_rule_acts_only_inside_its_conditions_and_keeps_its_consent_and_history() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let (emp, tool, ran) = buyer(&nebo).await;
+    for _ in 0..3 {
+        let id = buy(&nebo, &emp, &tool, 31_200).await.expect("it asks");
+        state.permission_asks.answer(&id, Answer::ThisOnce, AnsweredVia::Mobile).unwrap();
+    }
+    let offer = offers_for(&nebo, &emp).pop().expect("offered");
+    crate::handlers::notification::answer_item(state, &offer, "yes", "mobile").await.unwrap();
+    assert_eq!(item(&nebo, &offer.id).answer.as_deref(), Some("Yes, handle these"));
+
+    let list = |nebo: &Nebo| {
+        let rules = nebo.store().learned_permission_rules().unwrap();
+        rules.into_iter().find(|(r, _)| matches!(&r.scope, types::permissions::Scope::Employee(a) if a == &emp)).unwrap()
+    };
+    let (rule, paused) = list(&nebo);
+    assert!(paused.is_none());
+    assert_eq!(rule.money.as_ref().and_then(|m| m.per_action_cents), Some(50_000));
+    let consent = nebo.store().pending_writes_on("rule", &rule.id).unwrap();
+    assert_eq!(consent.len(), 1);
+    assert_eq!((consent[0].action.as_str(), consent[0].resolved_via.as_deref()), ("turned_on", Some("mobile")));
+    assert_eq!(consent[0].resolved_tz.as_deref(), tools::owner_clock::OwnerZone::of(nebo.store()).name());
+    let offer_row = nebo.store().get_pending_write(offer.id.strip_prefix("learn:").unwrap()).unwrap().unwrap();
+    assert_eq!((offer_row.status.as_str(), offer_row.resolved_via.as_deref()), ("approved", Some("mobile")));
+
+    // Inside: runs, handled for him, with Undo.
+    let before = ran.load(Ordering::SeqCst);
+    assert!(buy(&nebo, &emp, &tool, 31_200).await.is_none(), "under $500: it runs");
+    assert_eq!(ran.load(Ordering::SeqCst), before + 1);
+    let handled: Vec<_> = inbox(&nebo, db::models::InboxView::Updates)
+        .into_iter()
+        .filter(|n| n.id.starts_with(&format!("handled:{}:", rule.id)))
+        .collect();
+    assert_eq!(handled.len(), 1, "one Handled for you");
+    assert_eq!(handled[0].title, "Reordering AirWash");
+    assert_eq!(handled[0].options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), ["undo"]);
+    // Outside: over the ceiling, it asks.
+    assert!(buy(&nebo, &emp, &tool, 60_000).await.is_some(), "over $500: it still asks");
+
+    // Undo asks the employee, in its conversation, to reverse it.
+    crate::handlers::notification::answer_item(state, &handled[0], "undo", "web").await.unwrap();
+    assert_eq!(item(&nebo, &handled[0].id).answer.as_deref(), Some("Undo asked"));
+    let woke = nebo.store().engine_events_for("session", &format!("agent:{emp}:heartbeat"), 20).unwrap();
+    assert!(woke.iter().any(|e| e.payload.contains("pressed Undo")), "{woke:?}");
+
+    // Paused: it asks again. Resumed and edited: each change is recorded.
+    let body = |via: &str, cents: Option<i64>| {
+        axum::Json(crate::handlers::learned_rules::RuleChangeBody { via: Some(via.into()), ceiling_cents: cents, candidate_id: None })
+    };
+    let st = || axum::extract::State(state.clone());
+    let id = || axum::extract::Path(rule.id.clone());
+    let _ = crate::handlers::learned_rules::pause_learned_rule(st(), id(), body("desktop", None)).await.unwrap();
+    assert!(list(&nebo).1.is_some(), "kept, turned off");
+    assert!(buy(&nebo, &emp, &tool, 31_200).await.is_some(), "paused: it asks");
+    let _ = crate::handlers::learned_rules::resume_learned_rule(st(), id(), body("mobile", None)).await.unwrap();
+    let _ = crate::handlers::learned_rules::update_learned_rule(st(), id(), body("web", Some(30_000))).await.unwrap();
+    assert!(buy(&nebo, &emp, &tool, 31_200).await.is_some(), "$312 is over the new $300: it asks");
+    let history: Vec<(String, Option<String>)> = nebo
+        .store()
+        .pending_writes_on("rule", &rule.id)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.action, r.resolved_via))
+        .collect();
+    assert_eq!(
+        history,
+        [
+            ("turned_on".to_string(), Some("mobile".to_string())),
+            ("paused".to_string(), Some("desktop".to_string())),
+            ("resumed".to_string(), Some("mobile".to_string())),
+            ("edited".to_string(), Some("web".to_string())),
+        ]
+    );
+    let listed = crate::handlers::learned_rules::list_learned_rules(st()).await.unwrap().0;
+    let shown = listed.rules.iter().find(|r| r.id == rule.id).unwrap();
+    assert_eq!((shown.uses, shown.history.len(), shown.paused), (1, 4, false));
+    assert_eq!(shown.consent.via.as_deref(), Some("mobile"));
+    assert!(shown.history[3].detail.contains("from $500 to $300"), "{}", shown.history[3].detail);
 }

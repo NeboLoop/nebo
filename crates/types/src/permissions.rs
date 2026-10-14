@@ -355,6 +355,10 @@ pub enum RuleSource {
     Created { draft_id: String },
     JobEdit,
     AllowAlways { ask_id: String },
+    /// The owner said yes to the assistant's offer to handle this kind of
+    /// decision (or added it himself). `consent_id` is the proposal row his
+    /// yes is recorded on: when, where and in which time zone.
+    Learned { consent_id: String },
     Owner,
     Package { package: String },
     Law { pack: String },

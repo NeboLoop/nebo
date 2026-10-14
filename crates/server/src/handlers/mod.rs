@@ -21,6 +21,7 @@ pub mod integrations;
 pub mod mcp_server;
 pub mod memory;
 pub mod neboai;
+pub mod learned_rules;
 pub mod notification;
 pub mod openai;
 pub mod permissions;

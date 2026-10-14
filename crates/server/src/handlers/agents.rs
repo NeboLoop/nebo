@@ -5746,6 +5746,13 @@ pub struct LearningResolveBody {
     /// so an edit applies cleanly while a target that moved still conflicts.
     #[serde(default)]
     pub content: Option<String>,
+    /// An offer of a learned rule: "Don't offer again" (with `approved`
+    /// false).
+    #[serde(default)]
+    pub never: bool,
+    /// Where the owner decided it: mobile, desktop, web, chat.
+    #[serde(default)]
+    pub via: Option<String>,
 }
 
 /// GET /api/v1/agents/learnings/{id} — a staged self-improvement write for
@@ -5802,6 +5809,13 @@ pub(crate) async fn decide_learning(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     if row.status != "pending" {
         return Ok(Json(serde_json::json!({ "status": row.status })));
+    }
+    // An offer of a learned rule: the owner's yes writes the rule.
+    if row.kind == "rule" {
+        let value = if body.approved { "yes" } else if body.never { "never" } else { "no" };
+        return crate::handlers::learned_rules::decide_offer(state, &row, value, body.via.as_deref())
+            .map(Json)
+            .map_err(to_error_response);
     }
 
     if !body.approved {

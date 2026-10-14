@@ -165,6 +165,18 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().db_err("notifications")
     }
 
+    /// How many items have ids starting with `prefix`, and when the newest
+    /// was made: how often a learned rule handled something.
+    pub fn count_notifications_like(&self, prefix: &str) -> Result<(i64, Option<i64>), NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COUNT(*), MAX(created_at) FROM notifications WHERE substr(id, 1, length(?1)) = ?1",
+            params![prefix],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .db_err("notifications")
+    }
+
     /// Insert an item unless one with the same `id` exists (ids are
     /// deterministic for retryable events). One the owner put away comes
     /// back fresh and unread when it is told again, as a new one would.

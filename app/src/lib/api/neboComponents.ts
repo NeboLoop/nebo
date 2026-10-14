@@ -987,6 +987,27 @@ export interface Lead {
 	created_at: number
 }
 
+export interface LearnedRule extends RuleWords {
+	id: string
+	agentId: string
+	employee: string
+	cantUndo: boolean
+	ceilingCents?: number
+	counterparties: string[]
+	bot: string
+	paused: boolean
+	consent: RuleEvent
+	history: RuleEvent[]
+	uses: number
+	lastUsedAt?: number
+}
+
+export interface LearnedRulesResponse {
+	rules: LearnedRule[]
+	neverOffer: NeverOffer[]
+	candidates: RuleCandidate[]
+}
+
 export interface LevelEffort {
 	instant?: ProviderEffort
 	low?: ProviderEffort
@@ -1079,6 +1100,13 @@ export interface MoneyAmounts {
 	perDayCents?: number
 	perDayCount?: number
 	perCounterpartyDayCents?: number
+}
+
+export interface NeverOffer {
+	id: string
+	agentId: string
+	employee: string
+	what: string
 }
 
 export interface Notification {
@@ -1237,6 +1265,8 @@ export interface PendingWrite {
 	status: string
 	createdAt: number
 	resolvedAt?: number
+	resolvedVia?: string
+	resolvedTz?: string
 }
 
 export interface PermissionAskCard {
@@ -1401,6 +1431,31 @@ export interface Report extends Context {
 	runtime?: RuntimeState
 	unrecovered?: boolean
 	suppressed?: number
+}
+
+export interface RuleCandidate extends RuleWords {
+	id: string
+	agentId: string
+	employee: string
+	cantUndo: boolean
+	ceilingCents?: number
+	counterparties: string[]
+}
+
+export interface RuleEvent {
+	event: string
+	at: number
+	timeZone?: string
+	offsetSeconds?: number
+	zoneAbbr?: string
+	via?: string
+	detail: string
+}
+
+export interface RuleWords {
+	covers: string
+	does: string
+	stillAsks: string
 }
 
 export interface RunExit {
@@ -2586,6 +2641,10 @@ export interface OauthRelayResponse {
 
 export interface OauthTokenResponse {
 	error: string
+}
+
+export interface OfferAgainResponse {
+	success: boolean
 }
 
 export interface OpenTeamResponse {

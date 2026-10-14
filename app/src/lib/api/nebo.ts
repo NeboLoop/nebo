@@ -1728,6 +1728,48 @@ export function removeCompanyPermission(ruleId: string) {
 }
 
 /**
+ * @description "List learned rules"
+ */
+export function listLearnedRules() {
+	return webapi.get<components.LearnedRulesResponse>(`/api/v1/permissions/learned`)
+}
+
+/**
+ * @description "Add learned rule"
+ */
+export function addLearnedRule(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/permissions/learned`, req)
+}
+
+/**
+ * @description "Offer again"
+ */
+export function offerAgain(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.OfferAgainResponse>(`/api/v1/permissions/learned/never/${id}/offer-again`, req)
+}
+
+/**
+ * @description "Update learned rule"
+ */
+export function updateLearnedRule(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<unknown>(`/api/v1/permissions/learned/${id}`, req)
+}
+
+/**
+ * @description "Pause learned rule"
+ */
+export function pauseLearnedRule(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/permissions/learned/${id}/pause`, req)
+}
+
+/**
+ * @description "Resume learned rule"
+ */
+export function resumeLearnedRule(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/permissions/learned/${id}/resume`, req)
+}
+
+/**
  * @description "Nebo a i phone answer"
  */
 export function neboAIPhoneAnswer(req: Record<string, unknown> = {}) {

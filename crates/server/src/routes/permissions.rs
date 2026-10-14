@@ -12,6 +12,18 @@ pub fn routes() -> Router<AppState> {
         // bar's list (`asks_waiting` keeps it current).
         .route("/asks", axum::routing::get(handlers::asks::list_waiting_asks))
         .route("/permissions/asks", axum::routing::get(handlers::permissions::list_permission_asks))
+        // What the assistant handles for the owner (learned rules).
+        .route(
+            "/permissions/learned",
+            axum::routing::get(handlers::learned_rules::list_learned_rules).post(handlers::learned_rules::add_learned_rule),
+        )
+        .route("/permissions/learned/{id}", axum::routing::put(handlers::learned_rules::update_learned_rule))
+        .route("/permissions/learned/{id}/pause", axum::routing::post(handlers::learned_rules::pause_learned_rule))
+        .route("/permissions/learned/{id}/resume", axum::routing::post(handlers::learned_rules::resume_learned_rule))
+        .route(
+            "/permissions/learned/never/{id}/offer-again",
+            axum::routing::post(handlers::learned_rules::offer_again),
+        )
         .route("/permissions/asks/{id}", axum::routing::get(handlers::permissions::get_permission_ask))
         .route(
             "/permissions/asks/{id}/answer",

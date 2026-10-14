@@ -251,6 +251,9 @@ impl AskSurfaces for OwnerSurfaces {
         tools::owner_notify::settle(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &id, answer, via);
         crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
         crate::ask_push::global(state).settled(&c.id);
+        // The third "This once" for the same kind of decision: the assistant
+        // offers to handle it.
+        crate::handlers::learned_rules::after_answer(state, ask);
         state.hub.broadcast("permission_ask_resolved", serde_json::to_value(&c).unwrap_or_default());
         crate::handlers::asks::spawn_changed(state);
     }
@@ -271,6 +274,10 @@ impl AskSurfaces for OwnerSurfaces {
             Ok(_) => info!(run_id, allowed, "ask answered; parked workflow run released"),
             Err(e) => warn!(run_id, error = %e, "ask answered but the parked run could not be released"),
         }
+    }
+
+    fn handled(&self, handled: &agent::harness::permissions::Handled) {
+        crate::handlers::learned_rules::handled(&self.state, handled);
     }
 
     fn expire_run(&self, run_id: &str) {

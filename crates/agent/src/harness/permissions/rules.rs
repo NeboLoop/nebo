@@ -142,10 +142,11 @@ impl RuleSet {
         self.allowed_by(t, |r| !matches!(r.key, RuleKey::Capability(_)))
     }
 
-    /// Whether the owner answered "Allow always" to an ask for this call:
-    /// an allow written by that answer covers it.
+    /// Whether the owner answered "Allow always" to an ask for this call,
+    /// or said yes to the assistant handling it (a learned rule): an allow
+    /// written by that answer covers it.
     pub fn answered_always(&self, t: &Target) -> bool {
-        self.allowed_by(t, |r| matches!(r.source, RuleSource::AllowAlways { .. }))
+        self.allowed_by(t, |r| matches!(r.source, RuleSource::AllowAlways { .. } | RuleSource::Learned { .. }))
     }
 
     /// Whether the owner allowed every command of `t` that watches him or
@@ -160,7 +161,7 @@ impl RuleSet {
     pub fn reach_allowed(&self, t: &Target) -> bool {
         if !matches!(t.field, Some(RuleField::CommandPrefix(_))) {
             return self.allowed_by(t, |r| {
-                r.key == RuleKey::Tool(t.key.clone()) && matches!(r.source, RuleSource::Owner | RuleSource::AllowAlways { .. })
+                r.key == RuleKey::Tool(t.key.clone()) && owners_own(&r.source)
             });
         }
         let reaching: Vec<Subcommand> =
@@ -173,7 +174,7 @@ impl RuleSet {
     pub fn reach_piece_allowed(&self, t: &Target, piece: &Subcommand) -> bool {
         self.piece_allowed_by(t, Some(piece), |r| {
             matches!(r.field, Some(RuleField::CommandPrefix(_)))
-                && matches!(r.source, RuleSource::Owner | RuleSource::AllowAlways { .. })
+                && owners_own(&r.source)
         })
     }
 
@@ -195,6 +196,12 @@ impl RuleSet {
     pub fn all(&self) -> impl Iterator<Item = &Rule> {
         self.employee.iter().chain(self.company.iter())
     }
+}
+
+/// A rule the owner wrote himself: on the Permissions page, by answering
+/// "Allow always", or by saying yes to a learned rule.
+fn owners_own(source: &RuleSource) -> bool {
+    matches!(source, RuleSource::Owner | RuleSource::AllowAlways { .. } | RuleSource::Learned { .. })
 }
 
 /// Why `t` falls outside `folders` (empty: no fence).
