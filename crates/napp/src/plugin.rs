@@ -1774,11 +1774,11 @@ impl PluginStore {
     ) -> Result<PathBuf, NappError> {
         let plugin_dir = self.installed_dir.join(slug);
         let staged = {
-            let (plugin_dir, user_slug_dir) = (plugin_dir.clone(), self.user_dir.join(slug));
+            let plugin_dir = plugin_dir.clone();
             let (slug, version) = (slug.to_string(), version.to_string());
             let keep_binary = self.signing_key.is_some();
             tokio::task::spawn_blocking(move || {
-                stage_napp(&plugin_dir, &user_slug_dir, &slug, &version, napp_data, keep_binary)
+                stage_napp(&plugin_dir, &slug, &version, napp_data, keep_binary)
             })
             .await
             .map_err(|e| NappError::Extraction(format!("install task: {e}")))?
@@ -1856,6 +1856,15 @@ impl PluginStore {
             "install",
             &format!("installed v{}", effective_version),
         );
+        if let Some(own) = self.resolve_in_dir(&self.user_dir, slug, "*") {
+            info!(plugin = slug, path = %own.display(), "the owner's own plugin of this name keeps precedence over the marketplace copy");
+            self.record_diagnostic(
+                slug,
+                "info",
+                "install",
+                "your own plugin of this name stays in use; the marketplace copy is kept beside it",
+            );
+        }
 
         Ok(binary_path)
     }
@@ -2183,19 +2192,24 @@ impl PluginStore {
         removed
     }
 
-    /// Remove a plugin entirely (all versions). Checks both user and installed dirs.
+    /// Remove the marketplace copy of a plugin (all its versions). The
+    /// owner's own plugin of the same slug, in the user plugins folder, is
+    /// never removed: it stays, and with the marketplace copy gone it is the
+    /// one that resolves. A slug that is only the owner's own plugin is
+    /// refused with a message that says so.
     pub fn remove(&self, slug: &str) -> Result<(), NappError> {
-        let mut found = false;
-        for root in [&self.user_dir, &self.installed_dir] {
-            let slug_dir = root.join(slug);
-            if slug_dir.exists() {
-                remove_store_artifacts(&slug_dir)?;
-                found = true;
+        let slug_dir = self.installed_dir.join(slug);
+        if !slug_dir.exists() {
+            let own = self.user_dir.join(slug);
+            if own.exists() {
+                return Err(NappError::Other(format!(
+                    "'{slug}' is your own plugin (in {}). Nebo never deletes your own plugins; remove that folder to uninstall it.",
+                    own.display()
+                )));
             }
-        }
-        if !found {
             return Err(NappError::PluginNotFound(slug.to_string()));
         }
+        remove_store_artifacts(&slug_dir)?;
         info!(slug = slug, "removed plugin");
         Ok(())
     }
@@ -2996,13 +3010,16 @@ impl From<std::io::Error> for StageError {
 }
 
 /// Install steps 1–3 up to the signature: blocking. Removes the previous
-/// install (under the caller's per-slug lock) unless these very bytes are it,
-/// stores the `.napp`, extracts it to `<version>.staging`, and checks the
-/// binary against its manifest's SHA-256. `keep_binary` keeps the binary's
-/// bytes for the signature check.
+/// marketplace install (under the caller's per-slug lock) unless these very
+/// bytes are it, stores the `.napp`, extracts it to `<version>.staging`, and
+/// checks the binary against its manifest's SHA-256. `keep_binary` keeps the
+/// binary's bytes for the signature check.
+///
+/// Only `plugin_dir` (the marketplace copy) is touched. The owner's own
+/// plugin of the same slug, in the user plugins folder, is never removed: it
+/// keeps its precedence over the marketplace copy ([`PluginStore::resolve`]).
 fn stage_napp(
     plugin_dir: &Path,
-    user_slug_dir: &Path,
     slug: &str,
     version: &str,
     napp_data: Vec<u8>,
@@ -3011,10 +3028,8 @@ fn stage_napp(
     if let Some(binary) = PluginStore::installed_copy_of(plugin_dir, &napp_data) {
         return Ok(Stage::Installed(binary));
     }
-    for slug_dir in [user_slug_dir, plugin_dir] {
-        if slug_dir.exists() {
-            let _ = remove_store_artifacts(slug_dir);
-        }
+    if plugin_dir.exists() {
+        let _ = remove_store_artifacts(plugin_dir);
     }
     std::fs::create_dir_all(plugin_dir)?;
 
@@ -4386,6 +4401,52 @@ mod tests {
         for f in &custom_files {
             assert_eq!(std::fs::read(f).unwrap(), b"mine", "{} kept", f.display());
         }
+    }
+
+    /// The owner's own plugin with the same slug as a marketplace plugin is
+    /// never deleted by that plugin's install, update, reinstall or
+    /// uninstall: every version, `.napp` and data file stays, and it keeps
+    /// its precedence over the marketplace copy throughout. Removing a slug
+    /// that is only ever the owner's own plugin is refused.
+    #[tokio::test]
+    async fn a_custom_plugin_named_like_a_marketplace_plugin_survives_its_install_update_and_uninstall() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (installed, user) = (tmp.path().join("installed"), tmp.path().join("user"));
+        copy_in(&user, "abacus", "0.1.0", 4, 4);
+        copy_in(&user, "abacus", "0.2.0", 4, 4);
+        let own = user.join("abacus");
+        std::fs::write(own.join("0.2.0.napp"), b"mine").unwrap();
+        std::fs::write(own.join("data.db"), b"mine").unwrap();
+        let own_files: Vec<PathBuf> = ["0.1.0/abacus", "0.1.0/plugin.json", "0.2.0/abacus", "0.2.0/plugin.json", "0.2.0.napp", "data.db"]
+            .iter()
+            .map(|f| own.join(f))
+            .collect();
+        let snapshot = |files: &[PathBuf]| -> Vec<Vec<u8>> { files.iter().map(|f| std::fs::read(f).unwrap()).collect() };
+        let before = snapshot(&own_files);
+        let store = PluginStore::new(installed.clone(), user.clone(), None);
+        let own_binary = own.join("0.2.0/abacus");
+        let check = |step: &str| {
+            assert_eq!(snapshot(&own_files), before, "the owner's plugin is intact after {step}");
+            assert_eq!(store.resolve("abacus", "*"), Some(own_binary.clone()), "the owner's plugin wins after {step}");
+        };
+
+        let napp = loose_napp("abacus", "0.3.0");
+        let binary = store.install_from_napp("abacus", "0.3.0", napp.clone()).await.unwrap();
+        assert_eq!(binary, installed.join("abacus/0.3.0/abacus"), "the marketplace copy installs beside it");
+        check("install");
+        store.install_from_napp("abacus", "0.4.0", loose_napp("abacus", "0.4.0")).await.unwrap();
+        check("update");
+        store.install_from_napp("abacus", "0.4.0", loose_napp("abacus", "0.4.0")).await.unwrap();
+        check("reinstall");
+
+        store.remove("abacus").unwrap();
+        assert!(!installed.join("abacus/0.4.0").exists(), "uninstall removes the marketplace copy");
+        check("uninstall");
+
+        copy_in(&user, "homebrew", "1.0.0", 4, 4);
+        let refused = store.remove("homebrew").unwrap_err().to_string();
+        assert!(refused.contains("your own plugin"), "{refused}");
+        assert!(user.join("homebrew/1.0.0/homebrew").is_file(), "a refused remove deletes nothing");
     }
 
     /// A plugin version as a copy by hand leaves it partway: plugin.json

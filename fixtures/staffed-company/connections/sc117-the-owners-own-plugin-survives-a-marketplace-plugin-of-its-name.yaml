@@ -1,0 +1,12 @@
+id: sc117-the-owners-own-plugin-survives-a-marketplace-plugin-of-its-name
+name: "SC117 — The owner's own plugin survives a marketplace plugin of its name"
+description: |
+  The owner built a plugin locally with the same name as a marketplace
+  plugin. Installing the marketplace plugin by code puts its copy beside the
+  owner's and deletes nothing: every version, package and data file of the
+  owner's plugin stays byte for byte, and the owner's plugin keeps
+  precedence. Uninstalling the marketplace plugin removes only its copy; the
+  owner's plugin stays in use.
+target_component: staffed-company
+proof: staffed_proof::connections::the_owners_own_plugin_survives_a_marketplace_plugin_of_its_name
+conversation: []

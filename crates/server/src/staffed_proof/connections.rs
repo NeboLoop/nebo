@@ -1164,3 +1164,67 @@ async fn a_cloud_pass_waits_its_spread_and_a_request_that_needs_a_default_does_n
     let _ = pass.await;
     forget_defaults(&nebo, &defaults, &profile).await;
 }
+
+/// The owner's own plugin, built locally with the same slug as a
+/// marketplace plugin, survives that plugin's install by code and its
+/// uninstall through the one removal path (`remove_plugin_by_slug`): its
+/// versions and data stay byte for byte, it keeps precedence over the
+/// marketplace copy, and the uninstall leaves its connected accounts alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_own_plugin_survives_a_marketplace_plugin_of_its_name() {
+    const CODE: &str = "PLUG-0WN0-0001";
+    const SLUG: &str = "own-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Own Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+
+    let own = nebo.state.plugin_store.user_plugins_dir().join(SLUG);
+    let binary = "#!/bin/sh\nprintf '%s\\n' \"$@\"\n";
+    for version in ["0.1.0", "0.2.0"] {
+        let dir = own.join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.json"),
+            json!({ "id": SLUG, "slug": SLUG, "name": "My Ledger", "version": version, "platforms": {} }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join(SLUG), binary).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join(SLUG), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    std::fs::write(own.join("0.2.0.napp"), b"mine").unwrap();
+    std::fs::write(own.join("ledger.db"), b"the owner's books").unwrap();
+    let own_files: Vec<std::path::PathBuf> = ["0.1.0/plugin.json", "0.1.0/own-ledger", "0.2.0/plugin.json", "0.2.0/own-ledger", "0.2.0.napp", "ledger.db"]
+        .iter()
+        .map(|f| own.join(f))
+        .collect();
+    let read_all = || own_files.iter().map(|f| std::fs::read(f).unwrap()).collect::<Vec<_>>();
+    let before = read_all();
+    let own_binary = own.join("0.2.0").join(SLUG);
+    nebo.wait_until(30, "the owner's plugin to be found", || nebo.state.plugin_store.resolve(SLUG, "*").is_some()).await;
+
+    crate::codes::handle_code(&nebo.state, crate::codes::CodeType::Plugin, CODE, &crate::handlers::ws::EventOrigin::unclaimed("own-ledger-install")).await;
+    let store_copy = nebo.state.plugin_store.plugins_dir().join(SLUG).join("0.1.0").join(SLUG);
+    assert!(store_copy.is_file(), "the marketplace copy installed beside the owner's plugin");
+    assert_eq!(read_all(), before, "the install left the owner's plugin intact");
+    assert_eq!(nebo.state.plugin_store.resolve(SLUG, "*"), Some(own_binary.clone()), "the owner's plugin keeps precedence");
+
+    crate::handlers::plugins::remove_plugin_by_slug(&nebo.state, SLUG).await.unwrap();
+    assert!(!store_copy.exists(), "the uninstall removed the marketplace copy");
+    assert_eq!(read_all(), before, "the uninstall left the owner's plugin intact");
+    assert_eq!(nebo.state.plugin_store.resolve(SLUG, "*"), Some(own_binary), "the owner's plugin is the one in use");
+
+    // Leave the shared server as it was found: the fixture is this test's own.
+    let _ = std::fs::remove_dir_all(&own);
+    let _ = std::fs::remove_dir_all(nebo.state.plugin_store.plugins_dir().join(SLUG));
+    nebo.wait_until(30, "the fixture plugin to leave", || nebo.state.plugin_store.resolve(SLUG, "*").is_none()).await;
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.store().delete_auth_profile(&profile).unwrap();
+    nebo.state.tools.refresh_plugin_tools().await;
+}
