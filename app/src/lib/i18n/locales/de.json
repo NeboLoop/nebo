@@ -1732,6 +1732,7 @@
 			"fromPlan": "Aus deinem Plan",
 			"fromCredit": "Aus Aufladungen",
 			"loadMore": "Mehr laden",
+			"breakdownLink": "Sehen, wofür dein Guthaben verwendet wurde",
 			"phoneNumber": "Telefonnummer {number}",
 			"phoneNumberPlain": "Telefonnummer",
 			"calls": "Anrufe · {minutes} Min.",
@@ -1741,7 +1742,8 @@
 			"cloudComputer": "Cloud-Computer",
 			"cloudComputerNamed": "Cloud-Computer · {name}",
 			"memory": "Speicher",
-			"media": "Medien"
+			"media": "Medien",
+			"email": "E-Mail"
 		}
 	},
 	"settingsFamily": {

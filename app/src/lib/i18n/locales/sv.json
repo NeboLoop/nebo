@@ -1732,6 +1732,7 @@
 			"fromPlan": "Från din plan",
 			"fromCredit": "Från påfyllningar",
 			"loadMore": "Läs in fler",
+			"breakdownLink": "Se vart ditt saldo har tagit vägen",
 			"phoneNumber": "Telefonnummer {number}",
 			"phoneNumberPlain": "Telefonnummer",
 			"calls": "Samtal · {minutes} min",
@@ -1741,7 +1742,8 @@
 			"cloudComputer": "Molndator",
 			"cloudComputerNamed": "Molndator · {name}",
 			"memory": "Minne",
-			"media": "Media"
+			"media": "Media",
+			"email": "E-post"
 		}
 	},
 	"settingsFamily": {

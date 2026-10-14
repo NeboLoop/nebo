@@ -1732,6 +1732,7 @@
 			"fromPlan": "आपके प्लान से",
 			"fromCredit": "टॉप-अप से",
 			"loadMore": "और लोड करें",
+			"breakdownLink": "देखें कि आपका बैलेंस कहाँ खर्च हुआ",
 			"phoneNumber": "फ़ोन नंबर {number}",
 			"phoneNumberPlain": "फ़ोन नंबर",
 			"calls": "कॉल · {minutes} मिनट",
@@ -1741,7 +1742,8 @@
 			"cloudComputer": "क्लाउड कंप्यूटर",
 			"cloudComputerNamed": "क्लाउड कंप्यूटर · {name}",
 			"memory": "मेमोरी",
-			"media": "मीडिया"
+			"media": "मीडिया",
+			"email": "ईमेल"
 		}
 	},
 	"settingsFamily": {

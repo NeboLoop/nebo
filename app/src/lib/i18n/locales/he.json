@@ -1732,6 +1732,7 @@
 			"fromPlan": "מהתוכנית שלך",
 			"fromCredit": "מטעינות",
 			"loadMore": "טען עוד",
+			"breakdownLink": "לראות לאן הלכה היתרה שלך",
 			"phoneNumber": "מספר טלפון {number}",
 			"phoneNumberPlain": "מספר טלפון",
 			"calls": "שיחות · {minutes} דק׳",
@@ -1741,7 +1742,8 @@
 			"cloudComputer": "מחשב ענן",
 			"cloudComputerNamed": "מחשב ענן · {name}",
 			"memory": "זיכרון",
-			"media": "מדיה"
+			"media": "מדיה",
+			"email": "אימייל"
 		}
 	},
 	"settingsFamily": {

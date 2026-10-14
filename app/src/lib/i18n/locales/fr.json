@@ -1732,6 +1732,7 @@
 			"fromPlan": "De votre forfait",
 			"fromCredit": "Des recharges",
 			"loadMore": "Charger plus",
+			"breakdownLink": "Voir où est passé votre solde",
 			"phoneNumber": "Numéro de téléphone {number}",
 			"phoneNumberPlain": "Numéro de téléphone",
 			"calls": "Appels · {minutes} min",
@@ -1741,7 +1742,8 @@
 			"cloudComputer": "Ordinateur cloud",
 			"cloudComputerNamed": "Ordinateur cloud · {name}",
 			"memory": "Mémoire",
-			"media": "Médias"
+			"media": "Médias",
+			"email": "E-mail"
 		}
 	},
 	"settingsFamily": {
