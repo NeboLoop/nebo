@@ -54,6 +54,7 @@
     item,
     name,
     color = null,
+    shape = null,
     assistantName = '',
     via = answerVia(),
     onopen
@@ -62,6 +63,8 @@
     /** The employee who asks, in the owner's words. */
     name: string;
     color?: string | null;
+    /** The character the employee wears. */
+    shape?: string | null;
     /** The assistant's configured name, for its own offers. */
     assistantName?: string;
     via?: AnswerVia;
@@ -107,7 +110,7 @@
 
 <div class="inbox-card {offer && open ? 'inbox-card-offer' : ''}" data-testid="needs-you-card">
   <div class="inbox-card-meta">
-    <AgentAvatar {name} {color} size="xs" />
+    <AgentAvatar {name} {color} {shape} size="sm" />
     <span class="truncate">{offer ? $t('inbox.yourAssistant', { values: { name: assistantName || name } }) : name}</span>
     <span class="shrink-0">· {formatRelative(current.createdAt, 'short')}</span>
   </div>

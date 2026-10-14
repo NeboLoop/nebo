@@ -57,23 +57,23 @@
     onnavigate: (link: string) => void;
   } = $props();
 
-  // id → {name, colour} for every card's who-line and the employee filters.
-  let roster = $state<Record<string, { name: string; color?: string | null }>>({});
+  // id → {name, colour, character} for every card's who-line and the
+  // employee filters.
+  type Who = { name: string; color?: string | null; shape?: string | null };
+  let roster = $state<Record<string, Who>>({});
   onMount(async () => {
     loadNotifications();
     try {
       const { listAgents } = await import('$lib/api/nebo');
       const res = await listAgents(200);
-      const map: Record<string, { name: string; color?: string | null }> = {};
-      for (const a of (res.agents || []) as Array<{ id: string; name: string; color?: string | null }>) {
-        map[a.id] = { name: a.name, color: a.color };
-      }
+      const map: Record<string, Who> = {};
+      for (const a of res.agents || []) map[a.id] = { name: a.name, color: a.color, shape: a.shape };
       roster = map;
     } catch { /* names are progressive enhancement */ }
   });
 
   const assistantName = $derived(roster[ASSISTANT_ID]?.name ?? '');
-  const who = (agentId?: string | null) =>
+  const who = (agentId?: string | null): Who =>
     isAssistant(agentId) ? roster[ASSISTANT_ID] ?? { name: assistantName } : agentId ? roster[agentId] ?? { name: $t('inbox.formerEmployee') } : { name: $t('inbox.fromNebo') };
 
   // ── Filters: one part of the Inbox, or one employee's items. ──
@@ -215,7 +215,7 @@
 </script>
 
 {#snippet card(n: InboxItem)}
-  <NeedsYouCard item={n} name={who(n.agentId).name} color={who(n.agentId).color} {assistantName} onopen={onnavigate} />
+  <NeedsYouCard item={n} name={who(n.agentId).name} color={who(n.agentId).color} shape={who(n.agentId).shape} {assistantName} onopen={onnavigate} />
 {/snippet}
 
 <!-- One update: title, time, sentence, its link, a dot while unread. A
@@ -337,7 +337,7 @@
             {#if brief}
               <div class="inbox-brief" data-testid="inbox-brief">
                 <div class="inbox-card-meta">
-                  <AgentAvatar name={assistantName || 'N'} color={roster[ASSISTANT_ID]?.color} size="xs" />
+                  <AgentAvatar name={assistantName} color={roster[ASSISTANT_ID]?.color} shape={roster[ASSISTANT_ID]?.shape} size="sm" />
                   <span>{$t('inbox.yourAssistant', { values: { name: assistantName } })}</span>
                 </div>
                 <p class="text-sm text-base-content">{brief.body || brief.title}</p>
@@ -366,7 +366,7 @@
               {#each split.shown as g (g.agentId)}
                 <div class="inbox-group">
                   <div class="flex items-center gap-2.5 pb-1">
-                    <AgentAvatar name={who(g.agentId).name || 'N'} color={who(g.agentId).color} size="sm" />
+                    <AgentAvatar name={who(g.agentId).name} color={who(g.agentId).color} shape={who(g.agentId).shape} size="md" />
                     <div class="min-w-0">
                       <div class="text-sm font-medium truncate">{who(g.agentId).name}</div>
                       <div class="text-xs text-base-content/70">

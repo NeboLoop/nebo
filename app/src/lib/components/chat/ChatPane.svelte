@@ -2314,7 +2314,7 @@
             {#each segs.flatMap((sg) => inboxCards(sg.tools)) as item, iIdx (iIdx)}
               {@const asker = allAgents.find((a) => a.id === item.agentId)}
               <div class="inbox-chat-card">
-                <NeedsYouCard {item} name={asker?.name ?? ''} color={asker?.color} assistantName={agentName} via="chat" onopen={(link) => navigate(link)} />
+                <NeedsYouCard {item} name={asker?.name ?? ''} color={asker?.color} shape={asker?.shape} assistantName={agentName} via="chat" onopen={(link) => navigate(link)} />
               </div>
             {/each}
           {#if turnAttachments.length}
