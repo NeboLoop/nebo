@@ -5,14 +5,14 @@
   conversation, and this is that record's one shape.
 -->
 <script lang="ts">
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { attSrc, getAttachmentType, type UploadedAttachment } from '$lib/types/attachment';
   let {
     name,
     time = '',
     mine = false,
     html,
-    initial = '',
-    avatarClass = '',
+    avatar = null,
     attachments = [],
   }: {
     /** Uploaded files on the message, drawn as the standard chips. */
@@ -21,9 +21,8 @@
     time?: string;
     mine?: boolean;
     html: string;
-    /** Optional colored avatar beside the name (multi-party rooms). */
-    initial?: string;
-    avatarClass?: string;
+    /** The speaking employee's avatar beside the name (multi-party rooms). */
+    avatar?: { id: string; name: string; color?: string | null; shape?: string | null } | null;
   } = $props();
 </script>
 
@@ -31,8 +30,8 @@
   <!-- The speaker's face rides the name line — small, in their roster color —
        so a multi-party room reads at a glance (owner-approved grammar). -->
   <div class="flex items-center gap-2 mb-1 {mine ? 'flex-row-reverse' : ''}">
-    {#if initial}
-      <span class="w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {avatarClass || 'bg-base-200'}">{initial}</span>
+    {#if avatar}
+      <AgentAvatar name={avatar.name} id={avatar.id} color={avatar.color} shape={avatar.shape} size="xs" />
     {/if}
     <span class="text-xs font-medium text-base-content/70">{name}</span>
     {#if time}<span class="text-xs text-base-content/40">{time}</span>{/if}

@@ -1,4 +1,5 @@
 import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+import { characterSvg } from '$lib/characters';
 
 /** The `@` picker entry that addresses the whole team, written as the plain
  * word `@everyone` (the bot reads the word itself). */
@@ -9,6 +10,8 @@ export type MentionAgent = {
 	name: string;
 	initial?: string;
 	color?: string;
+	/** The character it wears (server-resolved). */
+	shape?: string;
 	/** Hub identity — the wire may carry <@loopAgentId> instead of the local id. */
 	loopAgentId?: string;
 };
@@ -24,6 +27,6 @@ export function renderMentionChips(escapedHtml: string, agents: MentionAgent[]):
 		if (!agent)
 			return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/70 align-baseline">@unknown</span>`;
 		const c = AGENT_COLORS_MAP[agent.color || 'teal'] || AGENT_COLORS_MAP['teal'];
-		return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium align-baseline ${c.bgClass} ${c.inkClass}"><span class="w-4 h-4 rounded-sm flex items-center justify-center text-xs font-semibold shrink-0">${agent.initial || agent.name.charAt(0).toUpperCase()}</span><span>${agent.name}</span></span>`;
+		return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium align-baseline ${c.bgClass} ${c.inkClass}">${characterSvg(agent.shape ?? '', agent.id || agent.name, c.fillClass, 'w-4 h-4')}<span>${agent.name}</span></span>`;
 	});
 }

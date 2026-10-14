@@ -32,6 +32,7 @@
   import { get } from 'svelte/store';
   import type { SlashCommand } from './slashCommands.js';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
   import Bot from 'lucide-svelte/icons/bot';
   import AudioLines from 'lucide-svelte/icons/audio-lines';
@@ -56,7 +57,7 @@
     name: string;
   }
 
-  type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; isApp?: boolean };
+  type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; shape?: string; isApp?: boolean };
 
   let { agentName = 'Agent', agentId = '', threadId = '', teamId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true, onteach, prefill = '', onprefilled }: {
     agentName?: string;
@@ -755,7 +756,11 @@
             onmouseenter={() => mentionActiveIdx = idx}
             onmousedown={(e) => { e.preventDefault(); selectMention(agent); }}
           >
-            <div class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-xs font-semibold shrink-0 {c.bgClass} {c.inkClass}">{agent.initial}</div>
+            {#if agent.id === EVERYONE}
+              <div class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-xs font-semibold shrink-0 {c.bgClass} {c.inkClass}">@</div>
+            {:else}
+              <AgentAvatar name={agent.name} id={agent.id} color={agent.color} shape={agent.shape} size="xs" />
+            {/if}
             <div class="flex-1 min-w-0 flex items-center gap-1.5">
               <span class="text-sm font-medium shrink-0">{agent.name}</span>
               {#if !agent.isApp}

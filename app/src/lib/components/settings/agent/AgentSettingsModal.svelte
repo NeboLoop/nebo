@@ -26,8 +26,7 @@
     agentRole = '',
     isPrimary = false,
     readOnly = false,
-    avatarInitial = '',
-    avatarClass = '',
+    avatar = null,
     onsection,
     onclose
   }: {
@@ -42,9 +41,8 @@
     /** The primary employee: the owner's personal assistant. */
     isPrimary?: boolean;
     readOnly?: boolean;
-    /** The employee's roster identity chip — same avatar/color as the sidebar. */
-    avatarInitial?: string;
-    avatarClass?: string;
+    /** The employee, drawn as its roster avatar. */
+    avatar?: { id: string; name: string; color?: string | null; shape?: string | null } | null;
     onsection: (id: string) => void;
     onclose: () => void;
   } = $props();
@@ -89,7 +87,7 @@
   </button>
 {/snippet}
 
-<ShelfModal {open} {title} {subtitle} {avatarInitial} {avatarClass} {onclose}>
+<ShelfModal {open} {title} {subtitle} {avatar} {onclose}>
   {#snippet actions()}
     {#if readOnly}
       <span class="py-0.5 px-2 rounded bg-base-200 font-mono text-xs text-base-content/70" title={$t('agentSettings.identityManagedNote')}>{$t('agentSettings.readOnly')}</span>

@@ -65,7 +65,7 @@ export function ensureAgentColor(shortId: string): void {
 }
 
 // Agent color map by color name (used for agent avatar backgrounds).
-// `solidClass` is the initials chip: ink as fill, page surface as the letters,
+// `solidClass` is a solid chip: ink as fill, page surface as the letters,
 // `fillClass` the same ink as a character's body (SVG fill),
 // so contrast holds in both themes. Spelled out per colour because Tailwind
 // only emits classes it can read from source — a class built at runtime
@@ -82,14 +82,6 @@ export const AGENT_COLORS_MAP: Record<string, { bgClass: string; inkClass: strin
   lilac:  { bgClass: 'bg-[var(--agent-lilac-bg)]',  inkClass: 'text-[var(--agent-lilac-ink)]',  borderClass: 'border-[var(--agent-lilac-ink)]',  solidClass: 'bg-[var(--agent-lilac-ink)] text-base-100', fillClass: 'fill-[var(--agent-lilac-ink)]' },
   teal:   { bgClass: 'bg-primary/15',               inkClass: 'text-primary',                   borderClass: 'border-primary',                   solidClass: 'bg-primary text-primary-content', fillClass: 'fill-primary' },
 };
-
-/** Avatar letters: first of the first two words ("Executive Assistant" → EA),
- *  or the first two of a single word ("Nebo" → NE). */
-export function initialsOf(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  const two = words.length >= 2 ? words[0][0] + words[1][0] : (words[0] ?? '?').slice(0, 2);
-  return two.toUpperCase();
-}
 
 /**
  * The ONE place an employee's colour is decided.

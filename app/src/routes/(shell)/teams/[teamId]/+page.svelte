@@ -45,6 +45,7 @@
       name: a.name,
       initial: a.initial,
       color: a.color,
+      shape: a.shape,
       loopAgentId: a.loopAgentId,
       isApp: a.isApp,
     }))

@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from 'svelte/server';
 import AgentAvatar from '$lib/components/AgentAvatar.svelte';
-import { CHARACTERS, EMPLOYEE_SHAPES, ASSISTANT_SHAPE, ASSISTANT_BLUE, characterOf } from './characters';
+import { CHARACTERS, EMPLOYEE_SHAPES, ASSISTANT_SHAPE, ASSISTANT_BLUE, characterOf, shapeFor } from './characters';
 
 describe('the mountain family', () => {
 	it('has a character for every shape the server can send', () => {
@@ -44,15 +44,29 @@ describe('AgentAvatar', () => {
 		expect(body).toContain('character-eye');
 	});
 
+	it('never fills an employee in the brand colour', () => {
+		const { body } = render(AgentAvatar, { props: { name: 'Piper', id: 'e-9', color: 'teal', shape: 'dome' } });
+		expect(body).not.toContain('fill-primary');
+	});
+
 	it('draws the assistant in brand blue with its spark', () => {
 		const { body } = render(AgentAvatar, { props: { name: 'Nebo', shape: 'assistant' } });
 		expect(body).toContain('#2F60C9');
 		expect(body).toContain('character-twinkle');
 	});
 
-	it('falls back to initials when no shape is known', () => {
-		const { body } = render(AgentAvatar, { props: { name: 'Store Manager', color: 'violet' } });
-		expect(body).toContain('>SM<');
+	it('gives every employee a character, even with no shape from the server', () => {
+		const { body } = render(AgentAvatar, { props: { name: 'Dana Cole', id: 'e-1', color: 'violet' } });
+		expect(body).toContain('character-eye');
+		expect(body).not.toContain('>DC<');
 		expect(characterOf('nonsense')).toBeNull();
+	});
+
+	it('falls back on the same id hash as the server, never to the assistant', () => {
+		// types::character::shape_for_id pins "a" → snowcap and "zz" → diamond.
+		expect(shapeFor(null, 'a')).toBe('snowcap');
+		expect(shapeFor(null, 'zz')).toBe('diamond');
+		expect(shapeFor('nonsense', 'a')).toBe('snowcap');
+		for (const key of ['x', 'assistant-ish', 'Nebo', 'Dana Cole']) expect(shapeFor(undefined, key)).not.toBe(ASSISTANT_SHAPE);
 	});
 });

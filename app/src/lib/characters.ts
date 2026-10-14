@@ -101,7 +101,50 @@ export const CHARACTERS: Record<string, CharacterSpec> = {
  *  (`types::character::EMPLOYEE_SHAPES`). */
 export const EMPLOYEE_SHAPES = ['ridge', 'twin', 'mesa', 'butte', 'diamond', 'dome', 'snowcap', 'volcano', 'spire', 'sawtooth', 'hook', 'flattop', 'littlehill'] as const;
 
+/** A stable 31-multiplier hash (the one the colour and shape fallbacks use). */
+export function hashOf(key: string): number {
+	return [...key].reduce((h, ch) => (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0, 0);
+}
+
+/**
+ * The shape to draw: the one the server resolved, or — for an employee the
+ * server sent none for (an older bot, an employee borrowed from another bot,
+ * a name in a team thread) — a stable one from its id or name. Every
+ * employee wears a character; the assistant's is never a fallback.
+ */
+export function shapeFor(shape: string | null | undefined, key: string): string {
+	if (shape && CHARACTERS[shape]) return shape;
+	return EMPLOYEE_SHAPES[hashOf(key) % EMPLOYEE_SHAPES.length];
+}
+
 /** The spec for `shape`, or null when this app does not know it. */
 export function characterOf(shape: string | null | undefined): CharacterSpec | null {
 	return (shape && CHARACTERS[shape]) || null;
+}
+
+/**
+ * A character as SVG markup: the ONE drawing of the spec on the web.
+ * AgentAvatar renders it, and so do the mention chips built as HTML strings.
+ * `bodyClass` fills the body (the employee's colour); `cls` sizes the SVG.
+ */
+export function characterSvg(shape: string, key: string, bodyClass: string, cls: string): string {
+	const spec = CHARACTERS[shapeFor(shape, key)];
+	const beat = `character-beat-${hashOf(key) % 5}`;
+	const layers = spec.layers
+		.map((l) => {
+			const fill = l.fill === 'body' ? '' : ` fill="${l.fill}"`;
+			const klass = [l.fill === 'body' ? bodyClass : '', l.anim ? `character-${l.anim}` : ''].filter(Boolean).join(' ');
+			const k = klass ? ` class="${klass}"` : '';
+			return l.circle
+				? `<circle cx="${l.circle[0]}" cy="${l.circle[1]}" r="${l.circle[2]}"${fill}${k}/>`
+				: `<path d="${l.d}"${fill}${k}/>`;
+		})
+		.join('');
+	const eyes = spec.eyes
+		.map(
+			([x, y]) =>
+				`<g class="character-eye ${beat}"><circle cx="${x}" cy="${y}" r="${spec.eyeR}" fill="${EYE_WHITE}"/><circle cx="${x + spec.eyeR * PUPIL_DX}" cy="${y + spec.eyeR * PUPIL_DY}" r="${spec.eyeR * PUPIL_R}" fill="${PUPIL}"/></g>`
+		)
+		.join('');
+	return `<svg class="character shrink-0 select-none ${cls}" viewBox="0 0 100 100" aria-hidden="true">${layers}${eyes}</svg>`;
 }
