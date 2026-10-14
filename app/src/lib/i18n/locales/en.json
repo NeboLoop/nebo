@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Asks only what you set to ask. Blocked tools and hard limits still apply",
 		"useWithCare": "Use with care",
 		"footnote": "Applies to this conversation. The employee's usual setting stays the same."
+	},
+	"proposedChange": {
+		"whatWentWrong": "What went wrong",
+		"theFix": "The fix",
+		"whatHappensNow": "What happens now",
+		"whatChanges": "What changes",
+		"showRawChange": "Show raw change",
+		"rawTitle": "Raw change",
+		"rawNew": "This is all new, so every line is added.",
+		"rawUnavailable": "The original isn't available, so this shows the whole proposed version.",
+		"unchangedLines": "{n, plural, one {# unchanged line} other {# unchanged lines}}",
+		"stepAdded": "New step: {step}",
+		"stepRemoved": "Step taken out: {step}",
+		"stepRenamed": "Step renamed: {before} → {after}",
+		"stepChanged": "Step changed: {step}",
+		"stepsReordered": "Steps run in a new order: {steps}",
+		"scheduleSet": "When it runs: {after}",
+		"scheduleChanged": "When it runs",
+		"whenManual": "Only when someone starts it",
+		"whenOther": "When something it watches happens",
+		"inZone": "{when} ({zone} time)",
+		"descriptionChanged": "Summary changed",
+		"sectionAdded": "New section: {section}",
+		"sectionRemoved": "Section taken out: {section}",
+		"sectionChanged": "Section changed: {section}",
+		"sectionOpening": "Opening",
+		"settingChanged": "Changed: {setting}"
 	}
 }

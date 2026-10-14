@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Só pergunta o que você definiu para perguntar. Ferramentas bloqueadas e limites fixos continuam valendo",
 		"useWithCare": "Use com cuidado",
 		"footnote": "Vale para esta conversa. A configuração habitual do funcionário continua a mesma."
+	},
+	"proposedChange": {
+		"whatWentWrong": "O que deu errado",
+		"theFix": "A correção",
+		"whatHappensNow": "O que acontece agora",
+		"whatChanges": "O que muda",
+		"showRawChange": "Ver a alteração bruta",
+		"rawTitle": "Alteração bruta",
+		"rawNew": "Tudo isto é novo, então cada linha é adicionada.",
+		"rawUnavailable": "O original não está disponível, então aparece a versão proposta inteira.",
+		"unchangedLines": "{n, plural, one {# linha sem alteração} other {# linhas sem alteração}}",
+		"stepAdded": "Nova etapa: {step}",
+		"stepRemoved": "Etapa removida: {step}",
+		"stepRenamed": "Etapa renomeada: {before} → {after}",
+		"stepChanged": "Etapa alterada: {step}",
+		"stepsReordered": "As etapas mudam de ordem: {steps}",
+		"scheduleSet": "Quando roda: {after}",
+		"scheduleChanged": "Quando roda",
+		"whenManual": "Só quando alguém inicia",
+		"whenOther": "Quando acontece algo que ele acompanha",
+		"inZone": "{when} (horário de {zone})",
+		"descriptionChanged": "Resumo alterado",
+		"sectionAdded": "Nova seção: {section}",
+		"sectionRemoved": "Seção removida: {section}",
+		"sectionChanged": "Seção alterada: {section}",
+		"sectionOpening": "Introdução",
+		"settingChanged": "Alterado: {setting}"
 	}
 }

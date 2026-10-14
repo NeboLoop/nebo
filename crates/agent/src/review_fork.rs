@@ -133,7 +133,15 @@ not a blocker.\n\
 \"---\\nname: ...\\ndescription: <trigger class, under 60 chars>\\n---\\n<body>\"). \
 The name MUST describe a class of work (e.g. \
 'report-formatting', 'vendor-email-tone') — NEVER a specific error string, \
-ticket, or 'fix-X-today' session artifact.\n\n\
+ticket, or 'fix-X-today' session artifact.\n\
+4. Every save (and every delete) also passes three short plain-language \
+parts the owner reads before the SKILL.md: what_went_wrong (what you saw, \
+with evidence: 'The owner corrected the report twice: it listed every \
+invoice, not just the overdue ones'), the_fix (what the lesson changes: \
+'List only overdue invoices, oldest first') and what_happens_now (how the \
+work goes from now on: 'The weekly report shows only what is overdue'). \
+No jargon: say steps, schedule and instructions, not fields or tokens. A \
+save without all three is refused.\n\n\
 User-preference embedding (important): memory captures WHO the owner is; \
 LEARNED skills capture HOW to do a class of task for this owner. A \
 preference that was stored to memory during the conversation does NOT count \

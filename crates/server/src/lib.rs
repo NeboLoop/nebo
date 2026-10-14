@@ -37,6 +37,7 @@ mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
 mod preflight;
+pub mod proposed_change;
 pub mod process;
 mod redact;
 pub mod routes;

@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Yalnızca sormasını ayarladığın şeyleri sorar. Engellenen araçlar ve kesin sınırlar yine geçerlidir",
 		"useWithCare": "Dikkatli kullan",
 		"footnote": "Bu konuşma için geçerlidir. Çalışanın olağan ayarı aynı kalır."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Ne ters gitti",
+		"theFix": "Düzeltme",
+		"whatHappensNow": "Şimdi ne olacak",
+		"whatChanges": "Neler değişiyor",
+		"showRawChange": "Ham değişikliği göster",
+		"rawTitle": "Ham değişiklik",
+		"rawNew": "Bunların hepsi yeni, bu yüzden her satır eklendi.",
+		"rawUnavailable": "Orijinal mevcut değil, bu yüzden önerilen sürümün tamamı gösteriliyor.",
+		"unchangedLines": "{n, plural, one {# değişmeyen satır} other {# değişmeyen satır}}",
+		"stepAdded": "Yeni adım: {step}",
+		"stepRemoved": "Çıkarılan adım: {step}",
+		"stepRenamed": "Adımın adı değişti: {before} → {after}",
+		"stepChanged": "Adım değişti: {step}",
+		"stepsReordered": "Adımlar yeni sırayla: {steps}",
+		"scheduleSet": "Ne zaman çalışır: {after}",
+		"scheduleChanged": "Ne zaman çalışır",
+		"whenManual": "Yalnızca biri başlattığında",
+		"whenOther": "İzlediği bir şey olduğunda",
+		"inZone": "{when} ({zone} saati)",
+		"descriptionChanged": "Özet değişti",
+		"sectionAdded": "Yeni bölüm: {section}",
+		"sectionRemoved": "Çıkarılan bölüm: {section}",
+		"sectionChanged": "Bölüm değişti: {section}",
+		"sectionOpening": "Giriş",
+		"settingChanged": "Değişti: {setting}"
 	}
 }

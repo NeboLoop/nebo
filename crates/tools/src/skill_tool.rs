@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use db::models::ChangeExplanation;
+
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -93,6 +95,7 @@ impl SkillCore {
         gist: &str,
         target_hash: &str,
         prior_content: Option<&str>,
+        explanation: Option<&ChangeExplanation>,
     ) -> ToolResult {
         let Some(store) = self.store.as_ref() else {
             return ToolResult::error("Staging unavailable: the database is not initialized. Tell the user to restart Nebo.");
@@ -104,7 +107,7 @@ impl SkillCore {
             .find(|p| same_proposal(action, &p.target, target))
             .filter(|p| {
                 store
-                    .restage_pending_write(&p.id, target, content, gist, target_hash, prior_content)
+                    .restage_pending_write(&p.id, target, content, gist, target_hash, prior_content, explanation)
                     .unwrap_or(false)
             });
         let restaged = open.is_some();
@@ -114,7 +117,7 @@ impl SkillCore {
                 let id = uuid::Uuid::new_v4().to_string();
                 if let Err(e) = store.create_pending_write(
                     &id, agent_id, "skill", action, target, content, gist, target_hash,
-                    prior_content,
+                    prior_content, explanation,
                 ) {
                     return ToolResult::error(format!("Failed to stage write: {}. Do not retry — this is a database error.", e));
                 }
@@ -197,6 +200,7 @@ impl SkillCore {
         gist: &str,
         target_hash: &str,
         prior_content: Option<&str>,
+        explanation: Option<&ChangeExplanation>,
     ) {
         let Some(store) = self.store.as_ref() else {
             return;
@@ -204,7 +208,7 @@ impl SkillCore {
         let pending_id = uuid::Uuid::new_v4().to_string();
         if let Err(e) = store.record_applied_write(
             &pending_id, agent_id, "skill", action, target, content, gist, target_hash,
-            prior_content,
+            prior_content, explanation,
         ) {
             tracing::warn!(error = %e, "auto learned write: could not record audit row");
             return;
@@ -586,7 +590,7 @@ impl SkillCore {
             && let Some(owner) = scope.learned_owner
         {
             let gist = format!("Create learned skill '{}'", name);
-            return self.stage_learned_write(owner, "create", name, Some(&final_content), &gist, "", None);
+            return self.stage_learned_write(owner, "create", name, Some(&final_content), &gist, "", None, scope.explanation);
         }
 
         let path = skill_dir.join("SKILL.md");
@@ -613,7 +617,7 @@ impl SkillCore {
                 // re-apply (approve/revert already have a row).
                 if let Some(owner) = scope.learned_owner.filter(|_| !ctx.learned_write_reapply) {
                     let gist = format!("Create learned skill '{}'", name);
-                    self.record_applied_learning(owner, "create", name, Some(&final_content), &gist, "", None);
+                    self.record_applied_learning(owner, "create", name, Some(&final_content), &gist, "", None, scope.explanation);
                 }
                 ToolResult::ok(format!("Created skill '{}' at {}", name, path.display()))
             }
@@ -667,7 +671,7 @@ impl SkillCore {
                 let hash = skill.source_path.as_deref().map(crate::skills::hash_skill_file).unwrap_or_default();
                 let prior = skill.source_path.as_deref().and_then(|p| std::fs::read_to_string(p).ok());
                 let gist = format!("Update learned skill '{}'", name);
-                return self.stage_learned_write(owner, "update", &name, Some(&final_content), &gist, &hash, prior.as_deref());
+                return self.stage_learned_write(owner, "update", &name, Some(&final_content), &gist, &hash, prior.as_deref(), scope.explanation);
             }
         }
         let Some(ref path) = skill.source_path else {
@@ -695,7 +699,7 @@ impl SkillCore {
                 self.loader.reload_from_disk().await;
                 if let Some(owner) = learned_write.filter(|_| !ctx.learned_write_reapply) {
                     let gist = format!("Update learned skill '{}'", name);
-                    self.record_applied_learning(owner, "update", &name, Some(&final_content), &gist, &prior_hash, prior.as_deref());
+                    self.record_applied_learning(owner, "update", &name, Some(&final_content), &gist, &prior_hash, prior.as_deref(), scope.explanation);
                 }
                 ToolResult::ok(format!("Updated skill '{}'", name))
             }
@@ -741,7 +745,7 @@ impl SkillCore {
                 // Staged learning: park the delete for approval.
                 if ctx.learned_write_staged {
                     let gist = format!("Delete learned skill '{}'", name);
-                    return self.stage_learned_write(owner, "delete", name, None, &gist, &hash, prior.as_deref());
+                    return self.stage_learned_write(owner, "delete", name, None, &gist, &hash, prior.as_deref(), scope.explanation);
                 }
                 let dir = match self.learned_skill_dir(owner, name) {
                     Ok(d) => d,
@@ -760,7 +764,7 @@ impl SkillCore {
                 // on a re-apply — approve/revert own the row).
                 if !ctx.learned_write_reapply {
                     let gist = format!("Delete learned skill '{}'", name);
-                    self.record_applied_learning(owner, "delete", name, None, &gist, &hash, prior.as_deref());
+                    self.record_applied_learning(owner, "delete", name, None, &gist, &hash, prior.as_deref(), scope.explanation);
                 }
                 return ToolResult::ok(format!("Deleted learned skill '{}'", name));
             }
@@ -950,6 +954,11 @@ struct Scope<'a> {
     /// Set on the review fork: saves and deletes target this seat's learned
     /// tree, with read-before-write.
     learned_owner: Option<&'a str>,
+    /// A learned write's account of itself (what went wrong, the fix, what
+    /// happens now), which its approval leads with. Present on every fresh
+    /// learned save or delete; None on any other call, and on the owner's
+    /// approval re-applying a write already explained.
+    explanation: Option<&'a ChangeExplanation>,
 }
 
 /// Whether a learned write the employee proposes is one it already has
@@ -1126,8 +1135,12 @@ impl Kind {
             Kind::SaveSkill => "Creates a skill, or replaces one you made, from a whole SKILL.md.\n\
                 - `content` is the full file: a --- frontmatter block with name and description, then the instructions.\n\
                 - To change an existing skill, load it with use_skill first and rewrite from what it returned.\n\
-                - Marketplace skills are read-only.",
-            Kind::DeleteSkill => "Deletes a skill you made. Marketplace skills are read-only.",
+                - Marketplace skills are read-only.\n\
+                - Saving a lesson you learned is a change the owner approves: also pass `what_went_wrong`, `the_fix` and \
+                `what_happens_now`, in plain words the owner reads first. A lesson without them is refused.",
+            Kind::DeleteSkill => "Deletes a skill you made. Marketplace skills are read-only.\n\
+                - Deleting a lesson you learned is a change the owner approves: also pass `what_went_wrong`, `the_fix` and \
+                `what_happens_now`. A delete without them is refused.",
             Kind::InstallSkill => "Installs a skill from the NeboAI marketplace with its install code (SKIL-XXXX-XXXX).",
             Kind::ConfigureSkill => "Sets a secret a skill needs, such as an API key; the value is stored encrypted.\n\
                 - With `key` and `value`: saves that secret.\n\
@@ -1167,13 +1180,21 @@ impl Kind {
                 "type": "object",
                 "properties": {
                     "name": name("The skill's name: lowercase words joined by hyphens."),
-                    "content": { "type": "string", "description": "The whole SKILL.md: frontmatter, then instructions." }
+                    "content": { "type": "string", "description": "The whole SKILL.md: frontmatter, then instructions." },
+                    "what_went_wrong": explain_part(0),
+                    "the_fix": explain_part(1),
+                    "what_happens_now": explain_part(2)
                 },
                 "required": ["name", "content"]
             }),
             Kind::DeleteSkill => serde_json::json!({
                 "type": "object",
-                "properties": { "name": name("The skill's name.") },
+                "properties": {
+                    "name": name("The skill's name."),
+                    "what_went_wrong": explain_part(0),
+                    "the_fix": explain_part(1),
+                    "what_happens_now": explain_part(2)
+                },
                 "required": ["name"]
             }),
             Kind::InstallSkill => serde_json::json!({
@@ -1253,6 +1274,21 @@ impl Kind {
     }
 }
 
+/// The schema of one of a learned change's three plain-language parts
+/// ([`ChangeExplanation::KEYS`], in order), each with an example, so every
+/// lesson the owner approves arrives explained the same way.
+fn explain_part(i: usize) -> serde_json::Value {
+    let description = match i {
+        0 => "Required for a lesson you learned. What went wrong, with evidence, in plain words: \
+              \"The owner had to correct the report twice: it listed every invoice instead of only the overdue ones.\"",
+        1 => "Required for a lesson you learned. The fix, in plain words: \
+              \"List only overdue invoices, oldest first.\"",
+        _ => "Required for a lesson you learned. What happens now, in plain words: \
+              \"The weekly report shows only what is overdue, and the owner doesn't have to correct it.\"",
+    };
+    serde_json::json!({ "type": "string", "description": description })
+}
+
 /// One skill tool (see [`Kind`] for the family).
 pub struct SkillTool {
     core: Arc<SkillCore>,
@@ -1320,9 +1356,21 @@ impl DynTool for SkillTool {
             let agent_scope =
                 Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
             let learned_owner = ctx.learned_write_agent.as_deref();
+            // A learned save or delete is a change the owner approves (or is
+            // told of): it says what it is for, or it is refused.
+            let explanation = match self.kind {
+                Kind::SaveSkill | Kind::DeleteSkill if learned_owner.is_some() && !ctx.learned_write_reapply => {
+                    match ChangeExplanation::from_input(&input) {
+                        Ok(e) => Some(e),
+                        Err(why) => return ToolResult::error(why),
+                    }
+                }
+                _ => None,
+            };
             let scope = Scope {
                 agent: learned_owner.or(agent_scope.as_deref()),
                 learned_owner,
+                explanation: explanation.as_ref(),
             };
             let core = &self.core;
             let name = str_field(&input, "name");
@@ -1417,9 +1465,9 @@ mod tests {
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
         let loader = Arc::new(Loader::new(dir.path().join("installed"), dir.path().join("user")));
         let core = SkillCore::new(loader).with_store(store.clone());
-        let r = core.stage_learned_write("mom", "create", "verify-invoices", Some("body"), "Create learned skill 'verify-invoices'", "", None);
+        let r = core.stage_learned_write("mom", "create", "verify-invoices", Some("body"), "Create learned skill 'verify-invoices'", "", None, None);
         assert!(!r.is_error, "{}", r.content);
-        core.record_applied_learning("mom", "update", "verify-invoices", Some("body 2"), "Refine 'verify-invoices'", "", None);
+        core.record_applied_learning("mom", "update", "verify-invoices", Some("body 2"), "Refine 'verify-invoices'", "", None, None);
         let user = store.ensure_local_user_id().unwrap();
         let rows: Vec<_> = store
             .list_user_notifications(&user, 10, 0)
@@ -1446,7 +1494,7 @@ mod tests {
         let core = SkillCore::new(loader).with_store(store.clone());
         let stage = |name: &str, body: &str| {
             let gist = format!("Create learned skill '{name}' ({body})");
-            let r = core.stage_learned_write("mom", "create", name, Some(body), &gist, "", None);
+            let r = core.stage_learned_write("mom", "create", name, Some(body), &gist, "", None, None);
             assert!(!r.is_error, "{}", r.content);
             r
         };
@@ -1469,7 +1517,7 @@ mod tests {
 
         // A different skill, and another employee's same skill, are their own.
         stage("handle-empty-model-responses", "x");
-        let r = core.stage_learned_write("other", "create", "verify-shell-permissions-before-command", Some("y"), "g", "", None);
+        let r = core.stage_learned_write("other", "create", "verify-shell-permissions-before-command", Some("y"), "g", "", None, None);
         assert!(!r.is_error);
         assert_eq!(store.open_pending_writes("mom", "skill", "create").unwrap().len(), 2);
         assert_eq!(store.open_pending_writes("other", "skill", "create").unwrap().len(), 1);
@@ -1508,7 +1556,11 @@ mod tests {
         let propose = |name: &'static str| {
             let ctx = &ctx;
             async move {
-                save.execute_dyn(ctx, json!({"name": name, "content": format!("---\nname: {name}\ndescription: d\n---\nbody")})).await
+                save.execute_dyn(ctx, json!({
+                    "name": name,
+                    "content": format!("---\nname: {name}\ndescription: d\n---\nbody"),
+                    "what_went_wrong": "w", "the_fix": "f", "what_happens_now": "h",
+                })).await
             }
         };
         let open = || store.open_pending_writes("mom", "skill", "create").unwrap();
@@ -1535,6 +1587,43 @@ mod tests {
 
         // A different lesson is its own proposal.
         assert!(propose("quickbooks-date-format").await.content.starts_with("Staged"));
+    }
+
+    /// A lesson the owner approves says what it is for: a learned save
+    /// without the three plain-language parts is refused, naming what is
+    /// missing, and one with them stages them with the proposal.
+    #[tokio::test]
+    async fn a_learned_save_must_explain_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(
+            Loader::new(dir.path().join("installed"), dir.path().join("user")).with_learned_dir(dir.path().join("learned")),
+        );
+        let family = tools(SkillCore::new(loader).with_store(store.clone()));
+        let save = tool(&family, "save_skill");
+        let mut ctx = ToolContext::new(crate::origin::Origin::System);
+        ctx.learned_write_agent = Some("mom".into());
+        ctx.learned_write_staged = true;
+        let content = "---\nname: overdue-only\ndescription: d\n---\nbody";
+
+        let bare = save.execute_dyn(&ctx, json!({"name": "overdue-only", "content": content, "the_fix": "f"})).await;
+        assert!(bare.is_error && bare.content.contains("Missing: what_went_wrong, what_happens_now"), "{}", bare.content);
+        assert!(store.open_pending_writes("mom", "skill", "create").unwrap().is_empty());
+
+        let explained = save
+            .execute_dyn(&ctx, json!({
+                "name": "overdue-only", "content": content,
+                "what_went_wrong": "The report listed every invoice.",
+                "the_fix": "List only overdue invoices.",
+                "what_happens_now": "The report shows only what is overdue.",
+            }))
+            .await;
+        assert!(!explained.is_error, "{}", explained.content);
+        let open = store.open_pending_writes("mom", "skill", "create").unwrap();
+        let e = open[0].explanation.as_ref().expect("the proposal carries its explanation");
+        assert_eq!(e.what_went_wrong, "The report listed every invoice.");
+        assert_eq!(e.the_fix, "List only overdue invoices.");
+        assert_eq!(e.what_happens_now, "The report shows only what is overdue.");
     }
 
     #[test]

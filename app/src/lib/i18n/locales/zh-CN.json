@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "只询问你设置为需要询问的内容。已屏蔽的工具和硬性限制仍然有效",
 		"useWithCare": "请谨慎使用",
 		"footnote": "仅适用于此对话。员工的常规设置保持不变。"
+	},
+	"proposedChange": {
+		"whatWentWrong": "出了什么问题",
+		"theFix": "修复方法",
+		"whatHappensNow": "现在会怎样",
+		"whatChanges": "有哪些变化",
+		"showRawChange": "显示原始改动",
+		"rawTitle": "原始改动",
+		"rawNew": "这些全是新内容，所以每一行都是新增的。",
+		"rawUnavailable": "原版本不可用，所以显示的是完整的提议版本。",
+		"unchangedLines": "{n, plural, one {# 行未改动} other {# 行未改动}}",
+		"stepAdded": "新步骤：{step}",
+		"stepRemoved": "移除的步骤：{step}",
+		"stepRenamed": "步骤改名：{before} → {after}",
+		"stepChanged": "改动的步骤：{step}",
+		"stepsReordered": "步骤新顺序：{steps}",
+		"scheduleSet": "运行时间：{after}",
+		"scheduleChanged": "运行时间",
+		"whenManual": "仅在有人启动时",
+		"whenOther": "当它关注的事发生时",
+		"inZone": "{when}（{zone} 时间）",
+		"descriptionChanged": "摘要已改动",
+		"sectionAdded": "新部分：{section}",
+		"sectionRemoved": "移除的部分：{section}",
+		"sectionChanged": "改动的部分：{section}",
+		"sectionOpening": "开头",
+		"settingChanged": "已改动：{setting}"
 	}
 }

@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "確認するよう設定したことだけを確認します。ブロックしたツールと固定の上限は引き続き適用されます",
 		"useWithCare": "注意して使用",
 		"footnote": "この会話にだけ適用されます。従業員の通常の設定は変わりません。"
+	},
+	"proposedChange": {
+		"whatWentWrong": "何がうまくいかなかったか",
+		"theFix": "修正内容",
+		"whatHappensNow": "これからどうなるか",
+		"whatChanges": "変更点",
+		"showRawChange": "変更の元データを表示",
+		"rawTitle": "変更の元データ",
+		"rawNew": "すべて新しい内容なので、すべての行が追加です。",
+		"rawUnavailable": "元の内容がないため、提案された全体を表示しています。",
+		"unchangedLines": "{n, plural, one {変更のない # 行} other {変更のない # 行}}",
+		"stepAdded": "新しいステップ: {step}",
+		"stepRemoved": "削除されたステップ: {step}",
+		"stepRenamed": "ステップ名の変更: {before} → {after}",
+		"stepChanged": "変更されたステップ: {step}",
+		"stepsReordered": "ステップの新しい順序: {steps}",
+		"scheduleSet": "実行タイミング: {after}",
+		"scheduleChanged": "実行タイミング",
+		"whenManual": "誰かが開始したときだけ",
+		"whenOther": "見守っていることが起きたとき",
+		"inZone": "{when}（{zone} 時間）",
+		"descriptionChanged": "概要の変更",
+		"sectionAdded": "新しいセクション: {section}",
+		"sectionRemoved": "削除されたセクション: {section}",
+		"sectionChanged": "変更されたセクション: {section}",
+		"sectionOpening": "冒頭",
+		"settingChanged": "変更: {setting}"
 	}
 }

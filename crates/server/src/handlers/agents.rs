@@ -5749,7 +5749,11 @@ pub struct LearningResolveBody {
 }
 
 /// GET /api/v1/agents/learnings/{id} — a staged self-improvement write for
-/// the Inbox card: status, gist, action/target, staged content, agent.
+/// the approval: status, gist, action/target, staged content, agent; the
+/// employee's own account of the change (`explanation`, on proposals that
+/// carry one); and what the change does, worked out from it
+/// ([`crate::proposed_change`]): `changes`, the readable list, and
+/// `rawChange`, the line diff of the whole text.
 pub async fn get_learning(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -5766,11 +5770,8 @@ pub async fn get_learning(
         .flatten()
         .map(|a| a.name)
         .unwrap_or_default();
-    let mut v = serde_json::to_value(&row).unwrap_or_default();
-    if let Some(m) = v.as_object_mut() {
-        m.insert("agentName".into(), serde_json::json!(agent_name));
-    }
-    Ok(Json(v))
+    let timezone = tools::owner_clock::OwnerZone::of(&state.store).name();
+    Ok(Json(crate::proposed_change::approval(&row, &agent_name, timezone)))
 }
 
 /// POST /api/v1/agents/learnings/{id}/resolve — approve or reject a staged

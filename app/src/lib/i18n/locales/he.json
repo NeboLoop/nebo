@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "שואל רק את מה שהגדרת שישאל. כלים חסומים ומגבלות קשיחות עדיין חלים",
 		"useWithCare": "להשתמש בזהירות",
 		"footnote": "חל על השיחה הזו. ההגדרה הרגילה של העובד נשארת כפי שהיא."
+	},
+	"proposedChange": {
+		"whatWentWrong": "מה השתבש",
+		"theFix": "התיקון",
+		"whatHappensNow": "מה קורה עכשיו",
+		"whatChanges": "מה משתנה",
+		"showRawChange": "הצגת השינוי הגולמי",
+		"rawTitle": "שינוי גולמי",
+		"rawNew": "הכול חדש, לכן כל שורה נוספה.",
+		"rawUnavailable": "המקור אינו זמין, לכן מוצגת כל הגרסה המוצעת.",
+		"unchangedLines": "{n, plural, one {שורה # ללא שינוי} other {# שורות ללא שינוי}}",
+		"stepAdded": "שלב חדש: {step}",
+		"stepRemoved": "שלב הוסר: {step}",
+		"stepRenamed": "שם השלב שונה: {before} ← {after}",
+		"stepChanged": "השלב השתנה: {step}",
+		"stepsReordered": "השלבים בסדר חדש: {steps}",
+		"scheduleSet": "מתי זה רץ: {after}",
+		"scheduleChanged": "מתי זה רץ",
+		"whenManual": "רק כשמישהו מפעיל אותו",
+		"whenOther": "כשקורה משהו שהוא עוקב אחריו",
+		"inZone": "{when} (שעון {zone})",
+		"descriptionChanged": "הסיכום השתנה",
+		"sectionAdded": "סעיף חדש: {section}",
+		"sectionRemoved": "סעיף הוסר: {section}",
+		"sectionChanged": "הסעיף השתנה: {section}",
+		"sectionOpening": "פתיחה",
+		"settingChanged": "השתנה: {setting}"
 	}
 }

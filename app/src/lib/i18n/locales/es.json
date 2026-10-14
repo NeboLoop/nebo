@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Solo pregunta lo que configuraste para preguntar. Las herramientas bloqueadas y los límites fijos siguen aplicándose",
 		"useWithCare": "Úsalo con cuidado",
 		"footnote": "Se aplica a esta conversación. La configuración habitual del empleado no cambia."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Qué salió mal",
+		"theFix": "La solución",
+		"whatHappensNow": "Qué pasa ahora",
+		"whatChanges": "Qué cambia",
+		"showRawChange": "Ver el cambio sin procesar",
+		"rawTitle": "Cambio sin procesar",
+		"rawNew": "Todo esto es nuevo, así que cada línea se añade.",
+		"rawUnavailable": "El original no está disponible, así que se muestra toda la versión propuesta.",
+		"unchangedLines": "{n, plural, one {# línea sin cambios} other {# líneas sin cambios}}",
+		"stepAdded": "Paso nuevo: {step}",
+		"stepRemoved": "Paso quitado: {step}",
+		"stepRenamed": "Paso renombrado: {before} → {after}",
+		"stepChanged": "Paso cambiado: {step}",
+		"stepsReordered": "Los pasos van en otro orden: {steps}",
+		"scheduleSet": "Cuándo se ejecuta: {after}",
+		"scheduleChanged": "Cuándo se ejecuta",
+		"whenManual": "Solo cuando alguien lo inicia",
+		"whenOther": "Cuando pasa algo que vigila",
+		"inZone": "{when} (hora de {zone})",
+		"descriptionChanged": "Resumen cambiado",
+		"sectionAdded": "Sección nueva: {section}",
+		"sectionRemoved": "Sección quitada: {section}",
+		"sectionChanged": "Sección cambiada: {section}",
+		"sectionOpening": "Introducción",
+		"settingChanged": "Cambiado: {setting}"
 	}
 }

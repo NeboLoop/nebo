@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Vraagt alleen wat je hebt ingesteld om te vragen. Geblokkeerde tools en vaste limieten blijven gelden",
 		"useWithCare": "Voorzichtig gebruiken",
 		"footnote": "Geldt voor dit gesprek. De gewone instelling van de medewerker blijft hetzelfde."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Wat er misging",
+		"theFix": "De oplossing",
+		"whatHappensNow": "Wat er nu gebeurt",
+		"whatChanges": "Wat er verandert",
+		"showRawChange": "Ruwe wijziging tonen",
+		"rawTitle": "Ruwe wijziging",
+		"rawNew": "Dit is allemaal nieuw, dus elke regel is toegevoegd.",
+		"rawUnavailable": "Het origineel is niet beschikbaar, dus je ziet de hele voorgestelde versie.",
+		"unchangedLines": "{n, plural, one {# ongewijzigde regel} other {# ongewijzigde regels}}",
+		"stepAdded": "Nieuwe stap: {step}",
+		"stepRemoved": "Stap weggehaald: {step}",
+		"stepRenamed": "Stap hernoemd: {before} → {after}",
+		"stepChanged": "Stap gewijzigd: {step}",
+		"stepsReordered": "Stappen in een nieuwe volgorde: {steps}",
+		"scheduleSet": "Wanneer het draait: {after}",
+		"scheduleChanged": "Wanneer het draait",
+		"whenManual": "Alleen als iemand het start",
+		"whenOther": "Als er iets gebeurt dat het in de gaten houdt",
+		"inZone": "{when} (tijd in {zone})",
+		"descriptionChanged": "Samenvatting gewijzigd",
+		"sectionAdded": "Nieuw onderdeel: {section}",
+		"sectionRemoved": "Onderdeel weggehaald: {section}",
+		"sectionChanged": "Onderdeel gewijzigd: {section}",
+		"sectionOpening": "Inleiding",
+		"settingChanged": "Gewijzigd: {setting}"
 	}
 }

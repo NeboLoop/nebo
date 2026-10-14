@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Frågar bara om det du har valt att den ska fråga om. Blockerade verktyg och fasta gränser gäller fortfarande",
 		"useWithCare": "Använd med försiktighet",
 		"footnote": "Gäller den här konversationen. Medarbetarens vanliga inställning är oförändrad."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Vad som gick fel",
+		"theFix": "Lösningen",
+		"whatHappensNow": "Vad som händer nu",
+		"whatChanges": "Vad som ändras",
+		"showRawChange": "Visa råa ändringen",
+		"rawTitle": "Rå ändring",
+		"rawNew": "Allt är nytt, så varje rad läggs till.",
+		"rawUnavailable": "Originalet finns inte tillgängligt, så hela den föreslagna versionen visas.",
+		"unchangedLines": "{n, plural, one {# oförändrad rad} other {# oförändrade rader}}",
+		"stepAdded": "Nytt steg: {step}",
+		"stepRemoved": "Steg borttaget: {step}",
+		"stepRenamed": "Steg omdöpt: {before} → {after}",
+		"stepChanged": "Steg ändrat: {step}",
+		"stepsReordered": "Stegen körs i ny ordning: {steps}",
+		"scheduleSet": "När det körs: {after}",
+		"scheduleChanged": "När det körs",
+		"whenManual": "Bara när någon startar det",
+		"whenOther": "När något det bevakar händer",
+		"inZone": "{when} ({zone}-tid)",
+		"descriptionChanged": "Sammanfattning ändrad",
+		"sectionAdded": "Nytt avsnitt: {section}",
+		"sectionRemoved": "Avsnitt borttaget: {section}",
+		"sectionChanged": "Avsnitt ändrat: {section}",
+		"sectionOpening": "Inledning",
+		"settingChanged": "Ändrat: {setting}"
 	}
 }

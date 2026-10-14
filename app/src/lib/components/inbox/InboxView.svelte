@@ -17,6 +17,7 @@
   } from '$lib/stores/notifications';
   import { openAsks } from '$lib/stores/permissionAsks';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
+  import ProposedChange, { type Learning } from '$lib/components/inbox/ProposedChange.svelte';
 
   import Hand from 'lucide-svelte/icons/hand';
   import { applyUpdate, getLearning, getRun, resolveLearning, revertLearning } from '$lib/api/nebo';
@@ -214,9 +215,8 @@
   const selected = $derived($notifications.find(n => n.id === selectedId) ?? null);
 
   // ── Reader detail: the one-line body is a headline, not the evidence.
-  // A staged learning shows the exact text that would be written; a failed
+  // A staged learning shows what the change is (ProposedChange); a failed
   // run shows its full error and the activity trail. Fetched once per id.
-  type Learning = { action?: string; target?: string; content?: string | null };
   type Detail = { kind: 'learning'; data: Learning } | { kind: 'run'; data: GetRunResponse } | { kind: 'gone' };
   let details = $state<Record<string, Detail>>({});
   const detailFetched = new Set<string>();
@@ -237,20 +237,6 @@
     fetch.then(d => { details = { ...details, [n.id]: d }; }).catch(() => { details = { ...details, [n.id]: { kind: 'gone' } }; });
   });
   const detail = $derived(selected ? details[selected.id] ?? null : null);
-
-  /** A staged SKILL.md, split for reading: the front-matter fields as a
-   *  header, the body as markdown. Rendered, not edited — editing is not
-   *  offered yet, so what you see is exactly what Approve writes. */
-  function splitSkill(text: string): { meta: Array<[string, string]>; body: string } {
-    const m = /^---\n([\s\S]*?)\n---\n?/.exec(text);
-    if (!m) return { meta: [], body: text };
-    const meta = m[1]
-      .split('\n')
-      .map((line) => line.split(/:\s*/, 2))
-      .filter((kv): kv is [string, string] => kv.length === 2 && kv[0].trim() !== '')
-      .map(([k, v]) => [k.trim(), v.replace(/^["']|["']$/g, '').trim()] as [string, string]);
-    return { meta, body: text.slice(m[0].length) };
-  }
 
   /** Whether a link names a place other than the Inbox itself (an item about
    *  no other place links to itself here, `/inbox?m=<id>`; rows filed before
@@ -486,21 +472,9 @@
           </div>
         </div>
         <div class="flex-1 min-h-0 max-w-2xl w-full mx-auto px-6 pb-6 flex flex-col">
-          {#if detail?.kind === 'learning' && detail.data.content}
-            <div class="mt-6 pt-4 border-t border-base-content/10 shrink-0 text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.stagedText', { values: { action: detail.data.action ?? '', target: detail.data.target ?? '' } })}</div>
-            {@const skill = splitSkill(detail.data.content)}
-            <div class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-base-content/10 bg-base-100">
-              {#if skill.meta.length > 0}
-                <div class="px-5 py-3 border-b border-base-content/10 bg-base-200/50 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-                  {#each skill.meta as [k, v] (k)}
-                    <span class="text-xs font-mono text-base-content/50">{k}</span>
-                    <span class="text-sm {k === 'name' ? 'font-semibold' : 'text-base-content/80'}">{v}</span>
-                  {/each}
-                </div>
-              {/if}
-              <div class="px-5 py-4 prose prose-sm max-w-none [&>:first-child]:mt-0">
-                {@html parseMarkdown(skill.body)}
-              </div>
+          {#if detail?.kind === 'learning'}
+            <div class="mt-6 pt-4 border-t border-base-content/10 flex-1 min-h-0 overflow-y-auto">
+              <ProposedChange learning={detail.data} />
             </div>
           {:else if detail?.kind === 'gone'}
             <div class="mt-6 pt-4 border-t border-base-content/10 text-xs text-base-content/70">{$t('inbox.recordGone')}</div>

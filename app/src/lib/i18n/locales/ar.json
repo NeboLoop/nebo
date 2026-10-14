@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "لا يسأل إلا عمّا طلبت أن يسأل عنه. تظل الأدوات المحظورة والحدود الصارمة سارية",
 		"useWithCare": "استخدمه بحذر",
 		"footnote": "ينطبق على هذه المحادثة. يبقى الإعداد المعتاد للموظف كما هو."
+	},
+	"proposedChange": {
+		"whatWentWrong": "ما الذي حدث خطأ",
+		"theFix": "الإصلاح",
+		"whatHappensNow": "ما يحدث الآن",
+		"whatChanges": "ما الذي يتغير",
+		"showRawChange": "عرض التغيير الخام",
+		"rawTitle": "التغيير الخام",
+		"rawNew": "كل هذا جديد، لذا كل سطر مُضاف.",
+		"rawUnavailable": "الأصل غير متاح، لذا تظهر النسخة المقترحة كاملة.",
+		"unchangedLines": "{n, plural, one {# سطر بلا تغيير} other {# أسطر بلا تغيير}}",
+		"stepAdded": "خطوة جديدة: {step}",
+		"stepRemoved": "خطوة محذوفة: {step}",
+		"stepRenamed": "خطوة باسم جديد: {before} ← {after}",
+		"stepChanged": "خطوة تغيّرت: {step}",
+		"stepsReordered": "الخطوات بترتيب جديد: {steps}",
+		"scheduleSet": "متى يعمل: {after}",
+		"scheduleChanged": "متى يعمل",
+		"whenManual": "فقط عندما يبدأه أحد",
+		"whenOther": "عندما يحدث شيء يراقبه",
+		"inZone": "{when} (بتوقيت {zone})",
+		"descriptionChanged": "تغيّر الملخص",
+		"sectionAdded": "قسم جديد: {section}",
+		"sectionRemoved": "قسم محذوف: {section}",
+		"sectionChanged": "قسم تغيّر: {section}",
+		"sectionOpening": "المقدمة",
+		"settingChanged": "تغيّر: {setting}"
 	}
 }

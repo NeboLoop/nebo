@@ -4278,5 +4278,32 @@
 		"fullAccessDesc": "Питає лише про те, про що ви веліли питати. Заблоковані інструменти та жорсткі обмеження й далі діють",
 		"useWithCare": "Використовуйте обережно",
 		"footnote": "Діє для цієї розмови. Звичайне налаштування працівника не змінюється."
+	},
+	"proposedChange": {
+		"whatWentWrong": "Що пішло не так",
+		"theFix": "Виправлення",
+		"whatHappensNow": "Що буде тепер",
+		"whatChanges": "Що змінюється",
+		"showRawChange": "Показати сиру зміну",
+		"rawTitle": "Сира зміна",
+		"rawNew": "Тут усе нове, тож кожен рядок додано.",
+		"rawUnavailable": "Оригінал недоступний, тож показано всю запропоновану версію.",
+		"unchangedLines": "{n, plural, one {# незмінений рядок} few {# незмінені рядки} other {# незмінених рядків}}",
+		"stepAdded": "Новий крок: {step}",
+		"stepRemoved": "Крок прибрано: {step}",
+		"stepRenamed": "Крок перейменовано: {before} → {after}",
+		"stepChanged": "Крок змінено: {step}",
+		"stepsReordered": "Кроки йдуть у новому порядку: {steps}",
+		"scheduleSet": "Коли запускається: {after}",
+		"scheduleChanged": "Коли запускається",
+		"whenManual": "Лише коли хтось запускає",
+		"whenOther": "Коли стається те, за чим він стежить",
+		"inZone": "{when} (час: {zone})",
+		"descriptionChanged": "Опис змінено",
+		"sectionAdded": "Новий розділ: {section}",
+		"sectionRemoved": "Розділ прибрано: {section}",
+		"sectionChanged": "Розділ змінено: {section}",
+		"sectionOpening": "Вступ",
+		"settingChanged": "Змінено: {setting}"
 	}
 }
