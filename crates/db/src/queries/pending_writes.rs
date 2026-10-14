@@ -35,6 +35,8 @@ fn row_to_pending_write(row: &rusqlite::Row) -> rusqlite::Result<PendingWrite> {
         status: row.get("status")?,
         created_at: row.get("created_at")?,
         resolved_at: row.get("resolved_at")?,
+        resolved_via: row.get("resolved_via")?,
+        resolved_tz: row.get("resolved_tz")?,
     })
 }
 
@@ -237,6 +239,59 @@ impl Store {
                 "UPDATE pending_writes SET status = ?1, resolved_at = unixepoch()
                  WHERE id = ?2 AND status = 'pending'",
                 params![status, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    /// Record where the owner decided a proposal and his time zone then.
+    pub fn stamp_pending_write(&self, id: &str, via: Option<&str>, time_zone: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE pending_writes SET resolved_via = ?2, resolved_tz = ?3 WHERE id = ?1",
+            params![id, via, time_zone],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Every row of `kind` on `target`, oldest first: a learned rule's
+    /// history.
+    pub fn pending_writes_on(&self, kind: &str, target: &str) -> Result<Vec<PendingWrite>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM pending_writes WHERE kind = ?1 AND target = ?2 ORDER BY created_at, rowid")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![kind, target], row_to_pending_write)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Every row of `kind` and `action` in `status`, newest first (the
+    /// offers the owner said never to make again).
+    pub fn pending_writes_in(&self, kind: &str, action: &str, status: &str) -> Result<Vec<PendingWrite>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM pending_writes WHERE kind = ?1 AND action = ?2 AND status = ?3
+                 ORDER BY COALESCE(resolved_at, created_at) DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![kind, action, status], row_to_pending_write)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Move a decided row from one status to another (an offer taken off
+    /// the "never" list). False when it wasn't in `from`.
+    pub fn restatus_pending_write(&self, id: &str, from: &str, to: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = conn
+            .execute(
+                "UPDATE pending_writes SET status = ?3, resolved_at = unixepoch() WHERE id = ?1 AND status = ?2",
+                params![id, from, to],
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(n > 0)

@@ -1167,10 +1167,16 @@ pub struct PendingWrite {
     /// rows filed before proposals carried one (they render from `gist`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<ChangeExplanation>,
-    /// pending | approved | rejected | expired | conflict | reverted
+    /// pending | approved | rejected | expired | conflict | reverted; an
+    /// offer of a learned rule may also be `never` (don't offer again) or
+    /// `reopened` (taken off that list).
     pub status: String,
     pub created_at: i64,
     pub resolved_at: Option<i64>,
+    /// Where the owner decided it: mobile, desktop, web, chat.
+    pub resolved_via: Option<String>,
+    /// The owner's time zone when he decided it.
+    pub resolved_tz: Option<String>,
 }
 
 /// What a proposed change is, in the proposing employee's words: the three

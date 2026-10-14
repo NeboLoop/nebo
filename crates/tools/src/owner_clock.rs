@@ -62,6 +62,16 @@ impl OwnerZone {
     }
 }
 
+/// The UTC offset (seconds) and abbreviation ("MDT") zone `name` had at
+/// `at` (unix seconds): how a record kept with its zone is read back on a
+/// device with no zone database. None for a name the database doesn't know.
+pub fn offset_at(name: &str, at: i64) -> Option<(i32, String)> {
+    use chrono::Offset as _;
+    let tz = name.parse::<Tz>().ok()?;
+    let local = Utc.timestamp_opt(at, 0).single()?.with_timezone(&tz);
+    Some((local.offset().fix().local_minus_utc(), local.format("%Z").to_string()))
+}
+
 /// The UTC offset an [`OwnerZone`] has at an instant.
 #[derive(Clone, Copy, Debug)]
 pub enum OwnerOffset {

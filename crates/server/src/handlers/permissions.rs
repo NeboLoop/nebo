@@ -1228,6 +1228,7 @@ fn source_words(rule: &Rule) -> &'static str {
         RuleSource::Created { .. } => "Part of the job you agreed to when you created it",
         RuleSource::JobEdit => "You changed its job",
         RuleSource::AllowAlways { .. } => "You answered \u{201c}Allow always\u{201d}",
+        RuleSource::Learned { .. } => "You said yes to your assistant handling these",
         RuleSource::Owner if rule.scope == Scope::Company => "Your company default",
         RuleSource::Owner => "Your setting",
         RuleSource::Package { .. } => "Set when it was hired",

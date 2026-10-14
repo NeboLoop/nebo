@@ -161,7 +161,7 @@ pub(crate) async fn answer_item(state: &AppState, item: &Notification, value: &s
     if item.answered_at.is_some() {
         return Ok(());
     }
-    if !item.needs_you {
+    if !item.needs_you && item.options.is_empty() {
         return Err(NeboError::Validation("this item is an update; there is nothing to answer".into()));
     }
     if value.is_empty() {
@@ -193,8 +193,19 @@ pub(crate) async fn answer_item(state: &AppState, item: &Notification, value: &s
         }
         return Ok(());
     }
+    if id.starts_with("handled:") {
+        return match value {
+            crate::handlers::learned_rules::UNDO => crate::handlers::learned_rules::undo(state, item, via),
+            _ => Err(NeboError::Validation("a handled update takes Undo".into())),
+        };
+    }
     if let Some(pending_id) = id.strip_prefix("learn:") {
-        let body = crate::handlers::agents::LearningResolveBody { approved: value == "yes", content: None };
+        let body = crate::handlers::agents::LearningResolveBody {
+            approved: value == "yes",
+            never: value == "never",
+            content: None,
+            via: Some(via.to_string()),
+        };
         return crate::handlers::agents::decide_learning(state, pending_id, body)
             .await
             .map(|_| ())

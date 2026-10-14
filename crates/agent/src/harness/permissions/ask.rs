@@ -328,6 +328,34 @@ pub trait AskSurfaces: Send + Sync {
     /// A workflow run parked on an ask nobody answered in
     /// [`RUN_ASK_EXPIRES_AFTER`]: end it, saying it waited and why.
     fn expire_run(&self, run_id: &str);
+    /// A call ran without asking because of a learned rule the owner said
+    /// yes to, where it would have asked him otherwise: he is told it was
+    /// handled for him.
+    fn handled(&self, _handled: &Handled) {}
+}
+
+/// A call a learned rule let through that would have asked the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handled {
+    pub rule_id: String,
+    pub agent_id: String,
+    pub session_key: String,
+    /// The tool's activity line for the call.
+    pub sentence: String,
+    /// Whether the employee can be asked to reverse it: it removed nothing,
+    /// sent nothing to anyone and published nothing.
+    pub undoable: bool,
+}
+
+impl Handled {
+    /// Whether a call with these effects can be reversed by the employee
+    /// that made it.
+    pub fn undoable(effects: &types::permissions::CallEffects) -> bool {
+        effects.deletes.is_empty()
+            && effects.overwrites.is_empty()
+            && effects.recipients.is_empty()
+            && effects.publishes != types::permissions::Knowable::Yes
+    }
 }
 
 /// Why an answer wasn't taken.
@@ -368,6 +396,13 @@ impl Asks {
 
     fn surfaces(&self) -> Option<&Arc<dyn AskSurfaces>> {
         self.surfaces.get()
+    }
+
+    /// Tell the owner a learned rule handled a call for him.
+    pub(super) fn handled(&self, handled: &Handled) {
+        if let Some(s) = self.surfaces() {
+            s.handled(handled);
+        }
     }
 
     pub fn store(&self) -> &Arc<db::Store> {
@@ -503,6 +538,15 @@ impl Asks {
     pub fn get(&self, id: &str) -> Result<Option<Ask>, AskError> {
         let row = self.store.get_permission_ask(id).map_err(|e| AskError::Store(e.to_string()))?;
         Ok(row.and_then(Ask::from_row))
+    }
+
+    /// An employee's answered asks, the newest answer first.
+    pub fn answered(&self, agent_id: &str, limit: i64) -> Result<Vec<Ask>, AskError> {
+        let rows = self
+            .store
+            .answered_permission_asks(agent_id, limit)
+            .map_err(|e| AskError::Store(e.to_string()))?;
+        Ok(rows.into_iter().filter_map(Ask::from_row).collect())
     }
 
     /// The ask a workflow run is (or was last) parked on.
@@ -948,7 +992,7 @@ fn command_rules(ask: &Ask) -> Option<Vec<Rule>> {
         let answered = match &ask.case {
             AskCase::AskRule { .. } => !matches!(rules.decide_piece(t, piece.as_ref()), Some((_, Effect::Ask | Effect::Deny))),
             AskCase::AskMode => rules.piece_allowed_by(t, piece.as_ref(), |r| !matches!(r.key, RuleKey::Capability(_))),
-            _ => rules.piece_allowed_by(t, piece.as_ref(), |r| matches!(r.source, RuleSource::AllowAlways { .. })),
+            _ => rules.piece_allowed_by(t, piece.as_ref(), |r| matches!(r.source, RuleSource::AllowAlways { .. } | RuleSource::Learned { .. })),
         };
         if answered {
             continue;

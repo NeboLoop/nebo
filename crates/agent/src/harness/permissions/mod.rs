@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tools::{GateVerdict, PermissionGate, ResolvedCall, ToolContext, ToolResult};
 use types::permissions::{AskCase, CallEffects, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
 
-pub use ask::{Answer, AnsweredVia, Ask, AskError, AskKind, AskStatus, AskSurfaces, Asks, send_check_id};
+pub use ask::{Answer, AnsweredVia, Ask, AskError, AskKind, AskStatus, AskSurfaces, Asks, Handled, send_check_id};
 pub use rules::RuleSet;
 
 /// The permission check: the registry's gate.
@@ -169,6 +169,11 @@ impl PermissionGate for Check {
                 tracing::warn!(tool = %t.tool, error = %e, "the step's undeclared tool was not recorded");
             }
         }
+        if let Decision::Allow { why: Why::Rule { rule_id } } = &decision
+            && let Some(handled) = handled_by_learned_rule(&cx, call, t, rule_id)
+        {
+            self.asks.handled(&handled);
+        }
         let ask_id = match &decision {
             Decision::Ask { case } => Some(self.asks.park(&cx, call, case)),
             _ => None,
@@ -221,6 +226,26 @@ impl PermissionGate for Check {
             }
         }
     }
+}
+
+/// The call a learned rule (`rule_id`) let through, when without that rule
+/// it would have asked the owner: what he is told was handled for him.
+/// `None` for any other rule, and for a call that would have run anyway.
+fn handled_by_learned_rule(cx: &CheckCx<'_>, call: &ResolvedCall<'_>, t: &Target, rule_id: &str) -> Option<Handled> {
+    cx.grant
+        .rules
+        .iter()
+        .find(|r| r.id == rule_id && matches!(r.source, types::permissions::RuleSource::Learned { .. }))?;
+    let mut without = cx.grant.clone();
+    without.rules.retain(|r| r.id != rule_id);
+    let otherwise = CheckCx { grant: &without, ..*cx };
+    matches!(decide(&otherwise, t), Decision::Ask { .. }).then(|| Handled {
+        rule_id: rule_id.to_string(),
+        agent_id: cx.grant.agent_id.clone(),
+        session_key: cx.ctx.session_key.clone(),
+        sentence: call.tool.describe(call.input),
+        undoable: Handled::undoable(&t.effects),
+    })
 }
 
 /// A judge's verdict as the check applied it: recorded with the decision.

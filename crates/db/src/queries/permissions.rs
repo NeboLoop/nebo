@@ -17,6 +17,14 @@ fn db_err(e: impl std::fmt::Display) -> NeboError {
     NeboError::Database(e.to_string())
 }
 
+/// The employee a rule is for; empty for a company rule.
+fn rule_agent(rule: &Rule) -> &str {
+    match &rule.scope {
+        Scope::Employee(a) => a,
+        Scope::Company => "",
+    }
+}
+
 fn scope_parts(scope: &Scope) -> (&'static str, &str) {
     match scope {
         Scope::Company => ("company", ""),
@@ -177,14 +185,16 @@ const COMPANY_SPEND: &str = "*";
 
 impl Store {
     /// The rules that decide for one employee: the company defaults and the
-    /// employee's own. An empty `agent_id` (the main assistant, an outside
+    /// employee's own. A rule the owner turned off (paused) decides nothing
+    /// and is not among them; it is kept ([`Store::learned_permission_rules`]). An empty `agent_id` (the main assistant, an outside
     /// client) gets the company rules only.
     pub fn permission_rules(&self, agent_id: &str) -> Result<Vec<Rule>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {RULE_COLUMNS} FROM permission_rules
-                 WHERE scope = 'company' OR (scope = 'employee' AND agent_id = ?1 AND ?1 != '')
+                 WHERE (scope = 'company' OR (scope = 'employee' AND agent_id = ?1 AND ?1 != ''))
+                   AND paused_at IS NULL
                  ORDER BY created_at, id"
             ))
             .map_err(db_err)?;
@@ -205,7 +215,7 @@ impl Store {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {RULE_COLUMNS} FROM permission_rules
-                 WHERE scope = ?1 AND agent_id = ?2 ORDER BY created_at, id"
+                 WHERE scope = ?1 AND agent_id = ?2 AND paused_at IS NULL ORDER BY created_at, id"
             ))
             .map_err(db_err)?;
         let rows = stmt.query_map(params![scope_s, agent_id], row_to_rule).map_err(db_err)?;
@@ -222,7 +232,7 @@ impl Store {
     pub fn all_permission_rules(&self) -> Result<Vec<Rule>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!("SELECT {RULE_COLUMNS} FROM permission_rules ORDER BY created_at, id"))
+            .prepare(&format!("SELECT {RULE_COLUMNS} FROM permission_rules WHERE paused_at IS NULL ORDER BY created_at, id"))
             .map_err(db_err)?;
         let rows = stmt.query_map([], row_to_rule).map_err(db_err)?;
         let mut rules = Vec::new();
@@ -256,14 +266,53 @@ impl Store {
     /// replaces anything. An employee only narrows: it
     /// writes deny and ask, and an allow only to tighten an existing allow's
     /// money.
+    ///
+    /// A learned rule keeps being one: a write on its key and field by
+    /// another door (an "Allow always" that raises its money, a change on
+    /// the Permissions page) keeps its source, turns it back on if it was
+    /// off, and is one more entry in its history.
     pub fn write_permission_rule(&self, rule: &Rule, by: &Writer) -> Result<Rule, RuleError> {
         let store_err = |e: NeboError| RuleError::Store(e.to_string());
-        let existing = self
-            .permission_rules_in(&rule.scope)
-            .map_err(store_err)?
-            .into_iter()
-            .find(|r| r.key == rule.key && r.field == rule.field);
-        match (&existing, by) {
+        let existing = self.stored_rule(rule).map_err(store_err)?;
+        let learned = existing
+            .as_ref()
+            .filter(|e| matches!(e.source, RuleSource::Learned { .. }) && !matches!(rule.source, RuleSource::Learned { .. }));
+        if let Some(e) = learned {
+            let kept = Rule { source: e.source.clone(), ..rule.clone() };
+            let written = self.write_permission_rule_checked(&kept, existing.as_ref(), by)?;
+            let gist = "Changed outside your assistant's page (an \u{201c}Allow always\u{201d} answer or your Permissions page)";
+            if let Err(e) = self.record_rule_change(&written.id, rule_agent(&written), "edited", e, &written, gist, None, None) {
+                tracing::warn!(rule = %written.id, error = %e, "learned rule's change not recorded");
+            }
+            return Ok(written);
+        }
+        self.write_permission_rule_checked(rule, existing.as_ref(), by)
+    }
+
+    /// The stored rule on `rule`'s scope, key and field, turned off or not.
+    fn stored_rule(&self, rule: &Rule) -> Result<Option<Rule>, NeboError> {
+        let (scope_s, agent_id) = scope_parts(&rule.scope);
+        let (field_kind, field) = match &rule.field {
+            Some(f) => (f.kind().to_string(), f.value()),
+            None => (String::new(), String::new()),
+        };
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "SELECT {RULE_COLUMNS} FROM permission_rules
+                 WHERE scope = ?1 AND agent_id = ?2 AND key_kind = ?3 AND key = ?4 AND field_kind = ?5 AND field = ?6"
+            ),
+            params![scope_s, agent_id, rule.key.kind(), rule.key.value(), field_kind, field],
+            row_to_rule,
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(db_err)
+    }
+
+    fn write_permission_rule_checked(&self, rule: &Rule, existing: Option<&Rule>, by: &Writer) -> Result<Rule, RuleError> {
+        let store_err = |e: NeboError| RuleError::Store(e.to_string());
+        match (existing, by) {
             // A package's must-ask never replaces a rule the owner wrote; a
             // law (locked) ends whatever stood.
             (Some(e), Writer::Package { .. }) if !e.locked && !rule.locked => return Ok(e.clone()),
@@ -277,7 +326,7 @@ impl Store {
         if let Writer::Employee { .. } = by {
             let narrows = match rule.effect {
                 Effect::Deny | Effect::Ask => true,
-                Effect::Allow => existing.as_ref().is_some_and(|e| {
+                Effect::Allow => existing.is_some_and(|e| {
                     e.effect == Effect::Allow
                         && match (&rule.money, &e.money) {
                             (Some(new), Some(old)) => new.within(old),
@@ -292,6 +341,63 @@ impl Store {
             }
         }
         self.put_permission_rule(rule).map_err(store_err)
+    }
+
+    /// Turn a rule off (`paused`) or back on. A rule turned off decides
+    /// nothing and is kept. Returns whether it changed.
+    pub fn set_permission_rule_paused(&self, id: &str, paused: bool) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = if paused {
+            conn.execute("UPDATE permission_rules SET paused_at = unixepoch() WHERE id = ?1 AND paused_at IS NULL", params![id])
+        } else {
+            conn.execute("UPDATE permission_rules SET paused_at = NULL WHERE id = ?1 AND paused_at IS NOT NULL", params![id])
+        }
+        .map_err(db_err)?;
+        Ok(n > 0)
+    }
+
+    /// Every learned rule, on or off, with when it was turned off.
+    pub fn learned_permission_rules(&self) -> Result<Vec<(Rule, Option<i64>)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RULE_COLUMNS}, paused_at FROM permission_rules
+                 WHERE json_extract(source, '$.kind') = 'learned' ORDER BY created_at, id"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row_to_rule(row)?, row.get::<_, Option<i64>>(12)?)))
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            if let (Some(rule), paused) = r.map_err(db_err)? {
+                out.push((rule, paused));
+            }
+        }
+        Ok(out)
+    }
+
+    /// One entry in a learned rule's history: a `pending_writes` row (kind
+    /// `rule`, target the rule's id), applied, with the rule before and
+    /// after, the owner's words for it, and where he did it and his time
+    /// zone then. Kept for good.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_rule_change(
+        &self,
+        rule_id: &str,
+        agent_id: &str,
+        event: &str,
+        before: &Rule,
+        after: &Rule,
+        gist: &str,
+        via: Option<&str>,
+        time_zone: Option<&str>,
+    ) -> Result<String, NeboError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (before, after) = (serde_json::to_string(before).map_err(db_err)?, serde_json::to_string(after).map_err(db_err)?);
+        self.record_applied_write(&id, agent_id, "rule", event, rule_id, Some(&after), gist, "", Some(&before))?;
+        self.stamp_pending_write(&id, via, time_zone)?;
+        Ok(id)
     }
 
     /// Remove a rule. A locked rule is removed only by its package; an
@@ -323,7 +429,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(scope, agent_id, key_kind, key, field_kind, field) DO UPDATE SET
                effect = excluded.effect, money = excluded.money, source = excluded.source,
-               locked = excluded.locked",
+               locked = excluded.locked, paused_at = NULL",
             params![
                 rule.id,
                 scope_s,
@@ -711,6 +817,31 @@ impl Store {
 
     /// The asks still waiting on the owner, oldest first; `session_key`
     /// narrows them to one session.
+    /// An employee's answered asks, the newest answer first: what the
+    /// assistant learns the owner's patterns from.
+    pub fn answered_permission_asks(&self, agent_id: &str, limit: i64) -> Result<Vec<PermissionAskRow>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {ASK_COLUMNS} FROM permission_asks
+                 WHERE agent_id = ?1 AND status = 'answered'
+                 ORDER BY COALESCE(answered_at, created_at) DESC, rowid DESC LIMIT ?2"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt.query_map(params![agent_id, limit], row_to_ask).map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
+    /// Every employee with an answered ask since `since` (unix seconds).
+    pub fn agents_with_answered_asks(&self, since: i64) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT agent_id FROM permission_asks WHERE status = 'answered' AND COALESCE(answered_at, created_at) >= ?1")
+            .map_err(db_err)?;
+        let rows = stmt.query_map(params![since], |r| r.get::<_, String>(0)).map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
     pub fn open_permission_asks(&self, session_key: Option<&str>) -> Result<Vec<PermissionAskRow>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
