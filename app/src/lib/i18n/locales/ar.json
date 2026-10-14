@@ -542,7 +542,8 @@
 		},
 		"runStopped": "توقف",
 		"noteMore": "عرض الكل",
-		"noteLess": "عرض أقل"
+		"noteLess": "عرض أقل",
+		"notSignedIn": "يحتاج {name} إلى تسجيل الدخول إلى NeboAI ليتمكن من الرد."
 	},
 	"chatInput": {
 		"placeholder": "اكتب ردك...",

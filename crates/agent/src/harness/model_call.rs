@@ -297,6 +297,9 @@ pub(crate) enum CallOutcome {
     Exhausted,
     /// The call failed for good; the turn ends with this error.
     Failed(String),
+    /// No AI can take the call: the bot is not signed in to NeboAI. The
+    /// turn ends on [`not_signed_in`], the typed stop the apps word.
+    NotSignedIn,
 }
 
 /// Why a call is taken again.
@@ -401,14 +404,10 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     // Snapshot provider from lock, then release before I/O
     let provider = {
         let prov_lock = providers.read().await;
-        if prov_lock.is_empty() {
-            return CallOutcome::Failed("No AI providers available".to_string());
-        }
-
         // The chosen model's provider, every attempt: a failed call is
         // retried on the same model, never handed to another provider.
         let Some(idx) = pick_provider(&prov_lock, selected_provider_id) else {
-            return CallOutcome::Failed(no_provider(selected_provider_id));
+            return CallOutcome::NotSignedIn;
         };
 
         info!(
@@ -1046,13 +1045,19 @@ fn pick_provider(providers: &[Arc<dyn Provider>], selected: &str) -> Option<usiz
     providers.iter().position(|p| p.retryable())
 }
 
-/// What the owner reads when no provider can take the call.
-fn no_provider(selected: &str) -> String {
-    if selected.is_empty() {
-        "No AI provider is connected.".to_string()
-    } else {
-        format!("No AI provider is connected for {selected}.")
-    }
+/// The typed stop a turn ends on when no AI can take its call: the bot is
+/// not signed in to NeboAI. It rides `stop_reason` on `chat_error` and
+/// `chat_complete`; the apps show their own sentence for it, in the owner's
+/// language, with the one action that fixes it (Sign in).
+pub const NOT_SIGNED_IN: &str = "not_signed_in";
+
+/// The words an app that does not know [`NOT_SIGNED_IN`] shows as they are.
+pub const NOT_SIGNED_IN_TEXT: &str = "Nebo needs to be signed in to NeboAI to answer.";
+
+/// The event a turn ends on when no AI can take its call: an error, so every
+/// consumer reads the turn as failed, carrying the typed [`NOT_SIGNED_IN`].
+pub(crate) fn not_signed_in() -> StreamEvent {
+    StreamEvent { stop_reason: Some(NOT_SIGNED_IN.to_string()), ..StreamEvent::error(NOT_SIGNED_IN_TEXT) }
 }
 
 /// What a reply without tool calls asks of the next step.
@@ -1351,7 +1356,25 @@ mod tests {
 
         let no_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
         assert_eq!(pick_provider(&no_linked, "linked"), None);
-        assert_eq!(no_provider("janus"), "No AI provider is connected for janus.");
+    }
+
+    /// A call no AI can take (the 10-14 report: "Stopped · No AI provider is
+    /// connected for janus.", twice): the turn ends on the typed
+    /// `not_signed_in` stop, and the words an older app shows name no
+    /// provider and no service of ours.
+    #[tokio::test]
+    async fn a_call_no_ai_can_take_ends_on_the_typed_not_signed_in_stop() {
+        let mut st = CallState::default();
+        let (outcome, shown) = call_once(Addressed, &mut st, false).await;
+        assert!(matches!(outcome, CallOutcome::NotSignedIn));
+        assert!(shown.is_empty(), "the turn says it, once");
+
+        let event = not_signed_in();
+        assert_eq!(event.event_type, ai::StreamEventType::Error);
+        assert_eq!(event.stop_reason.as_deref(), Some(NOT_SIGNED_IN));
+        assert_eq!(event.error.as_deref(), Some("Nebo needs to be signed in to NeboAI to answer."));
+        let words = NOT_SIGNED_IN_TEXT.to_lowercase();
+        assert!(!words.contains("provider") && !words.contains("janus"));
     }
 
 
@@ -1518,7 +1541,7 @@ mod tests {
 
     /// One call to `provider` from state `st`, on a phone-app turn when
     /// `store_app`: what it returned, and the error text the owner was shown.
-    async fn call_once(provider: Answers, st: &mut CallState, store_app: bool) -> (CallOutcome, Vec<String>) {
+    async fn call_once(provider: impl Provider + 'static, st: &mut CallState, store_app: bool) -> (CallOutcome, Vec<String>) {
         let rig = Rig::new();
         let sessions = SessionManager::new(rig.store.clone());
         let providers: RwLock<Vec<Arc<dyn Provider>>> = RwLock::new(vec![Arc::new(provider)]);

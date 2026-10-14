@@ -2083,6 +2083,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 let _ = cx.tx.send(StreamEvent::error(e.clone())).await;
                 return TurnExit::ProviderFailed(e);
             }
+            CallOutcome::NotSignedIn => {
+                let _ = cx.tx.send(model_call::not_signed_in()).await;
+                return TurnExit::ProviderFailed(model_call::NOT_SIGNED_IN_TEXT.into());
+            }
         };
         let model_call::ModelReply {
             text,

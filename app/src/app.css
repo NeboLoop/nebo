@@ -253,6 +253,12 @@
   overflow-wrap: anywhere;
 }
 
+/* A turn no AI could take (the bot is not signed in to NeboAI): one plain
+   sentence and its Sign in action, never an error. */
+.chat-run-notice {
+  @apply max-w-[640px] mt-3 flex items-center justify-between gap-3 rounded-lg border border-base-content/10 bg-base-200 px-3 py-2 text-sm text-base-content;
+}
+
 /* Contenteditable placeholder */
 [contenteditable][data-placeholder]:empty::before {
   content: attr(data-placeholder);

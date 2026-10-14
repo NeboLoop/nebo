@@ -542,7 +542,8 @@
 		},
 		"runStopped": "Durduruldu",
 		"noteMore": "Tümünü göster",
-		"noteLess": "Daha az göster"
+		"noteLess": "Daha az göster",
+		"notSignedIn": "{name} yanıt verebilmek için NeboAI'da oturum açmış olmalı."
 	},
 	"chatInput": {
 		"placeholder": "Yanıtla...",

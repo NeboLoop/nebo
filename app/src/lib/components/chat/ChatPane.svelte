@@ -29,6 +29,8 @@
   import { flushPendingSave, hasPendingSave, viewerKey } from '$lib/sheet/pending';
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
+  import { botName } from '$lib/stores/botName';
+  import { NOT_SIGNED_IN } from '$lib/chat/runEnd';
   import { parseMarkdown } from '$lib/markdown';
   import FileText from 'lucide-svelte/icons/file-text';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
@@ -118,7 +120,7 @@
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
     | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean }
-    | { type: 'runError'; content: string; time?: string; id?: string };
+    | { type: 'runError'; content: string; time?: string; id?: string; reason?: string };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
@@ -2208,6 +2210,14 @@
           {#if !msg.response && askQueueLength > 0}
             <p class="mt-1.5 text-xs text-base-content/50">{$t('chat.moreQuestionsWaiting', { values: { count: askQueueLength } })}</p>
           {/if}
+        </div>
+
+      {:else if msg.type === 'runError' && msg.reason === NOT_SIGNED_IN}
+        <!-- No AI could take the turn: one plain sentence and the one action
+             that fixes it, the same sign-in Settings → Account offers. -->
+        <div class="chat-run-notice" role="note">
+          <span class="min-w-0">{$t('chat.notSignedIn', { values: { name: $botName || 'Nebo' } })}</span>
+          <a class="btn btn-primary btn-xs shrink-0" href="/settings/account">{$t('chat.connect')}</a>
         </div>
 
       {:else if msg.type === 'runError'}
