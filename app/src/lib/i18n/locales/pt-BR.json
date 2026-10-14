@@ -780,53 +780,9 @@
 			"description": "Seu primeiro funcionário de IA. Vamos configurar tudo em um minuto.",
 			"getStarted": "Começar"
 		},
-		"terms": {
-			"title": "Privacidade e termos",
-			"description": "Informações importantes sobre como o Nebo lida com seus dados",
-			"dataLocal": "Seus dados ficam no seu dispositivo",
-			"dataLocalDesc": "Todas as conversas, memórias e configurações são armazenadas localmente no seu dispositivo em um banco de dados SQLite. Nada é enviado para os servidores do Nebo.",
-			"aiProvider": "Comunicação com o provedor de IA",
-			"aiProviderDesc": "Quando você conversa, suas mensagens são enviadas ao provedor de IA escolhido (Anthropic, OpenAI ou Google) para processamento. As políticas de privacidade deles se aplicam a esses dados.",
-			"apiKeys": "Chaves API",
-			"apiKeysDesc": "Suas chaves API são armazenadas localmente no banco de dados do seu dispositivo. Elas são usadas apenas para autenticação com seu provedor de IA.",
-			"systemAccess": "Acesso ao sistema",
-			"systemAccessDesc": "O Nebo pode acessar recursos do sistema (arquivos, shell, contatos, etc.), mas apenas as capacidades que você habilitar explicitamente. Você controla o que o funcionário pode fazer.",
-			"noAnalytics": "Sem análises ou telemetria",
-			"noAnalyticsDesc": "O Nebo não coleta análises de uso, telemetria ou relatórios de erros. Seu uso é completamente privado.",
-			"consent": "Entendo que minhas conversas são enviadas ao provedor de IA que escolhi para processamento, e que eu controlo quais capacidades do sistema o funcionário pode acessar."
-		},
-		"provider": {
-			"title": "Conecte sua IA",
-			"subtitle": "Escolha como alimentar o Nebo",
-			"janus": "Nebo AI",
-			"recommended": "Recomendado",
-			"janusDesc": "IA fornecida pelo NeboAI — sem chaves API necessárias",
-			"useOwnKey": "Use sua própria chave API ou CLI",
-			"detectingCli": "Detectando ferramentas CLI...",
-			"ready": "Pronto",
-			"needsLogin": "Login necessário",
-			"needsLoginDesc": "Instalado mas não conectado. Execute {cliKey} no terminal para autenticar.",
-			"addApiKey": "Adicionar chave API",
-			"addApiKeyDesc": "Use uma chave API da Anthropic, OpenAI ou Google.",
-			"settingUp": "Configurando...",
-			"cliClaude": "Use sua assinatura existente do Claude",
-			"cliCodex": "Use sua assinatura do ChatGPT/OpenAI",
-			"cliGemini": "Use sua assinatura do Google AI (GRÁTIS)"
-		},
 		"apiKey": {
-			"title": "Insira a chave API",
-			"description": "Sua chave é armazenada com segurança e nunca sai do seu dispositivo.",
-			"verified": "Chave API verificada com sucesso!",
-			"providerLabel": "Provedor",
-			"anthropic": "Anthropic (Claude) - Recomendado",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "Chave API",
-			"getKey": "Obter uma chave API",
 			"verifying": "Verificando...",
-			"backToProvider": "← Voltar para seleção de provedor",
-			"pleaseEnterKey": "Por favor insira uma chave API",
-			"validationFailed": "Validação da chave API falhou",
 			"saveFailed": "Não foi possível salvar a chave API"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Como a memória funciona",
 		"howItWorksIntro": "Este funcionário lembra entre conversas em três camadas — e apenas as dele:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Aqui é onde conversamos",
-				"bodyPersonal": "Pergunte qualquer coisa, ou apenas me diga o que fazer — eu cuido do resto.",
-				"bodyBusiness": "Pergunte qualquer coisa, ou apenas me diga o que fazer — eu cuido do resto."
-			},
-			"agents": {
-				"title": "Seus funcionários moram aqui",
-				"bodyPersonal": "Eu sou o Nebo. Você pode adicionar especialistas quando quiser — cada um é ótimo em um trabalho diferente.",
-				"bodyBusiness": "Eu sou o Nebo. Adicione especialistas quando quiser — um Chefe de Gabinete, um pesquisador e muito mais."
-			},
-			"work": {
-				"title": "Seu trabalho aparece aqui",
-				"bodyPersonal": "Notas, listas e documentos que eu criar para você abrem neste painel.",
-				"bodyBusiness": "Documentos, planilhas e apresentações que eu criar para você abrem neste painel."
-			},
-			"schedule": {
-				"title": "Coloque as coisas no piloto automático",
-				"bodyPersonal": "Configure lembretes e rotinas — compromissos, contas, um resumo matinal.",
-				"bodyBusiness": "Automatize o trabalho recorrente — briefings matinais, follow-ups, relatórios."
-			},
-			"marketplace": {
-				"title": "Adicione novas habilidades",
-				"bodyPersonal": "Explore skills e ferramentas — edição de documentos, design e muito mais.",
-				"bodyBusiness": "Explore skills e ferramentas — edição de documentos, design, um Chefe de Gabinete e muito mais."
-			},
-			"search": {
-				"title": "Vá a qualquer lugar rapidamente",
-				"bodyPersonal": "Pressione ⌘K para buscar ou executar qualquer comando num piscar de olhos.",
-				"bodyBusiness": "Pressione ⌘K para buscar ou executar qualquer comando num piscar de olhos."
-			}
-		},
-		"hiTitle": "Oi, eu sou o Nebo Desktop.",
-		"accountQuestion": "Primeiro — em que vou ajudar você principalmente?",
-		"personal": "Pessoal",
-		"personalDesc": "Organize e automatize sua vida.",
-		"business": "Negócios",
-		"businessDesc": "Organize e automatize seu trabalho.",
-		"welcomeTitle": "Bem-vindo a bordo.",
-		"welcomeBody": "Estou aqui para ajudar você a organizar e automatizar {noun}. Deixe-me fazer um tour rápido para você saber onde fica tudo.",
-		"nounPersonal": "sua vida",
-		"nounBusiness": "seu negócio",
-		"skipTour": "Pular tour",
-		"startTour": "Começar o tour",
-		"skip": "Pular",
-		"finish": "Finalizar"
-	},
 	"installFlow": {
 		"installedTitle": "{name} Instalado",
 		"installFailed": "Falha na Instalação",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Voltar ao Faturamento"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Sua equipe de IA, rodando localmente na sua máquina. Vamos configurar tudo em menos de um minuto.",
+		"welcomeDescription": "Seus funcionários de IA, prontos para tirar trabalho das suas mãos. Vamos deixar tudo pronto em menos de um minuto.",
 		"termsTitle": "Termos e Privacidade",
 		"termsBody": "O Nebo executa funcionários de IA na sua máquina. Eles podem ler arquivos, executar comandos e acessar a web conforme as permissões que você conceder. Ao continuar, você concorda com os",
 		"termsOfService": "Termos de Serviço",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: o Nebo não conseguiu definir as ferramentas",
 		"auditNotHere": "{tool} não está conectado",
 		"auditUsed": "{step} usou {tool}, que não estava na lista"
-	},
-	"christen": {
-		"title": "Dê um nome ao seu primeiro funcionário",
-		"lede": "Toda contratação começa por um nome. Este guarda tudo o que você ensina e trabalha só para você.",
-		"placeholder": "por ex. Jarvis, Piper, Ada…",
-		"create": "Contratar",
-		"creating": "Criando {name}…",
-		"failed": "A contratação não foi concluída. Verifique a conexão e tente de novo."
 	},
 	"newEmployee": {
 		"title": "Contratar um funcionário",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "Ver o que {name} fez",
 		"didNothing": "{name} ainda não cuidou de nada com esta regra.",
 		"didMore": "E mais {n}"
+	},
+	"firstRun": {
+		"getStarted": "Começar",
+		"meetTitle": "Conheça seu assistente",
+		"meetBody": "Ele aprende como você trabalha e tira tarefas das suas mãos.",
+		"awayTitle": "Trabalha no próprio computador, até enquanto você dorme",
+		"awayBody": "Trabalhos longos continuam depois que você fecha o app. Você acorda com tudo pronto.",
+		"awayClock": "2:14 · você está dormindo",
+		"teamTitle": "Delegue tarefas, sob demanda ou no automático",
+		"teamBody": "Monte uma equipe de funcionários de IA. Cada um faz um trabalho, e você aprova o que importa.",
+		"assistantRole": "{name} · Assistente",
+		"storeManager": "Gerente da loja",
+		"content": "Conteúdo",
+		"invoices": "Faturas",
+		"standup": "Reunião semanal",
+		"taskReorder": "Repôs 40 unidades da Lumen",
+		"taskVideo": "Publicou o vídeo de terça",
+		"taskInvoices": "Enviou 3 lembretes de fatura"
 	}
 }

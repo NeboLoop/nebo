@@ -780,53 +780,9 @@
 			"description": "İlk yapay zeka çalışanınız. Sizi bir dakikada ayarlayalım.",
 			"getStarted": "Başla"
 		},
-		"terms": {
-			"title": "Gizlilik ve Koşullar",
-			"description": "Nebo'nun verilerinizi nasıl işlediği hakkında önemli bilgiler",
-			"dataLocal": "Verileriniz Yerel Kalır",
-			"dataLocalDesc": "Tüm sohbetler, anılar ve ayarlar cihazınızda yerel olarak bir SQLite veritabanında saklanır. Nebo sunucularına hiçbir şey gönderilmez.",
-			"aiProvider": "AI Sağlayıcı İletişimi",
-			"aiProviderDesc": "Sohbet ettiğinizde, mesajlarınız işlenmek üzere seçtiğiniz AI sağlayıcısına (Anthropic, OpenAI veya Google) gönderilir. Bu verilere onların gizlilik politikaları uygulanır.",
-			"apiKeys": "API Anahtarları",
-			"apiKeysDesc": "API anahtarlarınız cihazınızın veritabanında yerel olarak saklanır. Yalnızca AI sağlayıcınız ile kimlik doğrulamak için kullanılır.",
-			"systemAccess": "Sistem Erişimi",
-			"systemAccessDesc": "Nebo, sistem özelliklerine (dosyalar, kabuk, kişiler vb.) erişebilir, ancak yalnızca açıkça etkinleştirdiğiniz yeteneklere. Çalışanın neler yapabileceğini siz kontrol edersiniz.",
-			"noAnalytics": "Analitik veya Telemetri Yok",
-			"noAnalyticsDesc": "Nebo kullanım analitiği, telemetri veya çökme raporu toplamaz. Kullanımınız tamamen özeldir.",
-			"consent": "Konuşmalarımın işlenmek üzere seçtiğim AI sağlayıcısına gönderildiğini ve çalışanın hangi sistem yeteneklerine erişebileceğini benim kontrol ettiğimi anlıyorum."
-		},
-		"provider": {
-			"title": "AI'nızı Bağlayın",
-			"subtitle": "Nebo'yu nasıl güçlendireceğinizi seçin",
-			"janus": "Nebo AI",
-			"recommended": "Önerilen",
-			"janusDesc": "NeboAI tarafından desteklenen AI — API anahtarı gerekmez",
-			"useOwnKey": "Kendi API anahtarınızı veya CLI kullanın",
-			"detectingCli": "CLI araçları algılanıyor...",
-			"ready": "Hazır",
-			"needsLogin": "Giriş Gerekli",
-			"needsLoginDesc": "Yüklü ama giriş yapılmamış. Kimlik doğrulamak için terminalde {cliKey} çalıştırın.",
-			"addApiKey": "API Anahtarı Ekle",
-			"addApiKeyDesc": "Anthropic, OpenAI veya Google'dan bir API anahtarı kullanın.",
-			"settingUp": "Ayarlanıyor...",
-			"cliClaude": "Mevcut Claude aboneliğinizi kullanın",
-			"cliCodex": "ChatGPT/OpenAI aboneliğinizi kullanın",
-			"cliGemini": "Google AI aboneliğinizi kullanın (ÜCRETSİZ)"
-		},
 		"apiKey": {
-			"title": "API Anahtarını Girin",
-			"description": "Anahtarınız güvenli bir şekilde saklanır ve cihazınızı asla terk etmez.",
-			"verified": "API anahtarı başarıyla doğrulandı!",
-			"providerLabel": "Sağlayıcı",
-			"anthropic": "Anthropic (Claude) - Önerilen",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "API Anahtarı",
-			"getKey": "API anahtarı al",
 			"verifying": "Doğrulanıyor...",
-			"backToProvider": "← Sağlayıcı seçimine geri dön",
-			"pleaseEnterKey": "Lütfen bir API anahtarı girin",
-			"validationFailed": "API anahtarı doğrulaması başarısız oldu",
 			"saveFailed": "API anahtarı kaydedilemedi"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Hafıza nasıl çalışır",
 		"howItWorksIntro": "Bu çalışan, konuşmalar arasında üç katmanda hatırlar — ve yalnızca kendi hafızasını:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Burası konuştuğumuz yer",
-				"bodyPersonal": "Bana istediğinizi sorun ya da sadece ne yapmam gerektiğini söyleyin — gerisini ben hallederim.",
-				"bodyBusiness": "Bana istediğinizi sorun ya da sadece ne yapmam gerektiğini söyleyin — gerisini ben hallederim."
-			},
-			"agents": {
-				"title": "Çalışanlarınız burada yaşar",
-				"bodyPersonal": "Ben Nebo. İstediğiniz zaman uzmanlar ekleyebilirsiniz — her biri farklı bir işte ustadır.",
-				"bodyBusiness": "Ben Nebo. İstediğiniz zaman uzmanlar ekleyin — bir Executive Assistant, bir araştırmacı ve daha fazlası."
-			},
-			"work": {
-				"title": "Çalışmalarınız burada görünür",
-				"bodyPersonal": "Sizin için hazırladığım notlar, listeler ve belgeler bu panelde açılır.",
-				"bodyBusiness": "Sizin için hazırladığım belgeler, hesap tabloları ve sunumlar bu panelde açılır."
-			},
-			"schedule": {
-				"title": "İşleri otomatik pilota alın",
-				"bodyPersonal": "Hatırlatıcılar ve rutinler kurun — randevular, faturalar, bir sabah özeti.",
-				"bodyBusiness": "Tekrarlayan işleri otomatikleştirin — sabah brifingleri, takipler, raporlar."
-			},
-			"marketplace": {
-				"title": "Yeni yetenekler ekleyin",
-				"bodyPersonal": "Becerilere ve araçlara göz atın — belge düzenleme, tasarım ve daha fazlası.",
-				"bodyBusiness": "Becerilere ve araçlara göz atın — belge düzenleme, tasarım, bir Executive Assistant ve daha fazlası."
-			},
-			"search": {
-				"title": "Her yere hızla atlayın",
-				"bodyPersonal": "Anında arama yapmak veya herhangi bir komutu çalıştırmak için ⌘K'ye basın.",
-				"bodyBusiness": "Anında arama yapmak veya herhangi bir komutu çalıştırmak için ⌘K'ye basın."
-			}
-		},
-		"hiTitle": "Merhaba, ben Nebo Desktop.",
-		"accountQuestion": "Önce — çoğunlukla kime yardım etmek için buradayım?",
-		"personal": "Kişisel",
-		"personalDesc": "Hayatınızı düzenleyin ve otomatikleştirin.",
-		"business": "İş",
-		"businessDesc": "İşinizi düzenleyin ve otomatikleştirin.",
-		"welcomeTitle": "Aramıza hoş geldiniz.",
-		"welcomeBody": "{noun} düzenleyip otomatikleştirmenize yardımcı olmak için buradayım. Her şeyin nerede olduğunu bilmeniz için size hızlı bir tur attırayım.",
-		"nounPersonal": "hayatınızı",
-		"nounBusiness": "işinizi",
-		"skipTour": "Turu atla",
-		"startTour": "Tura başla",
-		"skip": "Atla",
-		"finish": "Bitir"
-	},
 	"installFlow": {
 		"installedTitle": "{name} Yüklendi",
 		"installFailed": "Yükleme Başarısız",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Faturalandırmaya Dön"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Makinenizde yerel olarak çalışan yapay zeka ekibiniz. Sizi bir dakikadan kısa sürede hazırlayalım.",
+		"welcomeDescription": "Yapay zekâ çalışanlarınız, işlerinizi üstlenmeye hazır. Bir dakikadan kısa sürede hazırsınız.",
 		"termsTitle": "Şartlar ve Gizlilik",
 		"termsBody": "Nebo, makinenizde yapay zeka çalışanları çalıştırır. Çalışanlar, verdiğiniz izinlere göre dosyaları okuyabilir, komutlar çalıştırabilir ve web'e erişebilir. Devam ederek şunları kabul etmiş olursunuz:",
 		"termsOfService": "Hizmet Şartları",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo araçlarını belirleyemedi",
 		"auditNotHere": "{tool} bağlı değil",
 		"auditUsed": "{step}, listesinde olmayan {tool} aracını kullandı"
-	},
-	"christen": {
-		"title": "İlk çalışanınıza bir ad verin",
-		"lede": "Her işe alım bir adla başlar. Bu çalışan ona öğrettiğiniz her şeyi hatırlar ve yalnızca sizin için çalışır.",
-		"placeholder": "örneğin Jarvis, Piper, Ada…",
-		"create": "İşe al",
-		"creating": "{name} oluşturuluyor…",
-		"failed": "İşe alım tamamlanamadı. Bağlantınızı kontrol edip tekrar deneyin."
 	},
 	"newEmployee": {
 		"title": "Bir çalışan işe alın",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "{name} neler yaptı, görün",
 		"didNothing": "{name} bu kurala göre henüz bir şey yapmadı.",
 		"didMore": "Ve {n} tane daha"
+	},
+	"firstRun": {
+		"getStarted": "Başla",
+		"meetTitle": "Asistanınızla tanışın",
+		"meetBody": "Nasıl çalıştığınızı öğrenir ve işlerinizi üstlenir.",
+		"awayTitle": "Kendi bilgisayarında çalışır, siz uyurken bile",
+		"awayBody": "Uzun işler uygulamayı kapattıktan sonra da sürer. Bitmiş işlerle uyanırsınız.",
+		"awayClock": "02:14 · uyuyorsunuz",
+		"teamTitle": "Görevleri devredin, istediğinizde veya otomatik",
+		"teamBody": "Yapay zekâ çalışanlarından bir ekip kurun. Her biri bir iş yapar, önemli olanı siz onaylarsınız.",
+		"assistantRole": "{name} · Asistan",
+		"storeManager": "Mağaza Müdürü",
+		"content": "İçerik",
+		"invoices": "Faturalar",
+		"standup": "Haftalık toplantı",
+		"taskReorder": "Lumen'den 40 adet yeniden sipariş edildi",
+		"taskVideo": "Salı videosu yayınlandı",
+		"taskInvoices": "3 fatura hatırlatması gönderildi"
 	}
 }

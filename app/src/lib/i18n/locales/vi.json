@@ -780,53 +780,9 @@
 			"description": "Nhân viên AI đầu tiên của bạn. Hãy để chúng tôi thiết lập trong một phút.",
 			"getStarted": "Bắt đầu"
 		},
-		"terms": {
-			"title": "Quyền riêng tư & Điều khoản",
-			"description": "Thông tin quan trọng về cách Nebo xử lý dữ liệu của bạn",
-			"dataLocal": "Dữ liệu của bạn ở trên máy",
-			"dataLocalDesc": "Tất cả cuộc trò chuyện, ký ức và cài đặt được lưu trữ cục bộ trên thiết bị của bạn trong cơ sở dữ liệu SQLite. Không có gì được gửi đến máy chủ Nebo.",
-			"aiProvider": "Giao tiếp với nhà cung cấp AI",
-			"aiProviderDesc": "Khi bạn trò chuyện, tin nhắn của bạn được gửi đến nhà cung cấp AI đã chọn (Anthropic, OpenAI hoặc Google) để xử lý. Chính sách bảo mật của họ áp dụng cho dữ liệu đó.",
-			"apiKeys": "Khóa API",
-			"apiKeysDesc": "Khóa API của bạn được lưu trữ cục bộ trong cơ sở dữ liệu thiết bị. Chúng chỉ được sử dụng để xác thực với nhà cung cấp AI.",
-			"systemAccess": "Truy cập hệ thống",
-			"systemAccessDesc": "Nebo có thể truy cập các tính năng hệ thống (tệp, shell, danh bạ, v.v.) nhưng chỉ những khả năng bạn bật rõ ràng. Bạn kiểm soát những gì nhân viên có thể làm.",
-			"noAnalytics": "Không có phân tích hay đo lường",
-			"noAnalyticsDesc": "Nebo không thu thập phân tích sử dụng, đo lường hay báo cáo lỗi. Việc sử dụng của bạn hoàn toàn riêng tư.",
-			"consent": "Tôi hiểu rằng các cuộc trò chuyện được gửi đến nhà cung cấp AI đã chọn để xử lý, và tôi kiểm soát những khả năng hệ thống nào nhân viên có thể truy cập."
-		},
-		"provider": {
-			"title": "Kết nối AI của bạn",
-			"subtitle": "Chọn cách cung cấp năng lượng cho Nebo",
-			"janus": "Nebo AI",
-			"recommended": "Khuyên dùng",
-			"janusDesc": "AI được cung cấp bởi NeboAI — không cần khóa API",
-			"useOwnKey": "Sử dụng khóa API hoặc CLI của riêng bạn",
-			"detectingCli": "Đang phát hiện công cụ CLI...",
-			"ready": "Sẵn sàng",
-			"needsLogin": "Cần đăng nhập",
-			"needsLoginDesc": "Đã cài đặt nhưng chưa đăng nhập. Chạy {cliKey} trong terminal để xác thực.",
-			"addApiKey": "Thêm khóa API",
-			"addApiKeyDesc": "Sử dụng khóa API từ Anthropic, OpenAI hoặc Google.",
-			"settingUp": "Đang thiết lập...",
-			"cliClaude": "Sử dụng đăng ký Claude hiện có của bạn",
-			"cliCodex": "Sử dụng đăng ký ChatGPT/OpenAI của bạn",
-			"cliGemini": "Sử dụng đăng ký Google AI của bạn (MIỄN PHÍ)"
-		},
 		"apiKey": {
-			"title": "Nhập khóa API",
-			"description": "Khóa của bạn được lưu trữ an toàn và không bao giờ rời khỏi thiết bị.",
-			"verified": "Khóa API đã xác minh thành công!",
-			"providerLabel": "Nhà cung cấp",
-			"anthropic": "Anthropic (Claude) - Khuyên dùng",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "Khóa API",
-			"getKey": "Lấy khóa API",
 			"verifying": "Đang xác minh...",
-			"backToProvider": "← Quay lại chọn nhà cung cấp",
-			"pleaseEnterKey": "Vui lòng nhập khóa API",
-			"validationFailed": "Xác minh khóa API thất bại",
 			"saveFailed": "Không thể lưu khóa API"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Cách ký ức hoạt động",
 		"howItWorksIntro": "Nhân viên này ghi nhớ qua các cuộc trò chuyện theo ba lớp — và chỉ của riêng nó:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Đây là nơi chúng ta trò chuyện",
-				"bodyPersonal": "Hỏi tôi bất cứ điều gì, hoặc chỉ cần nói tôi phải làm gì — tôi sẽ lo phần còn lại.",
-				"bodyBusiness": "Hỏi tôi bất cứ điều gì, hoặc chỉ cần nói tôi phải làm gì — tôi sẽ lo phần còn lại."
-			},
-			"agents": {
-				"title": "Nhân viên của bạn ở đây",
-				"bodyPersonal": "Tôi là Nebo. Bạn có thể thêm chuyên gia bất cứ lúc nào — mỗi người giỏi một việc khác nhau.",
-				"bodyBusiness": "Tôi là Nebo. Thêm chuyên gia bất cứ lúc nào — một Chánh văn phòng, một nhân viên nghiên cứu, và nhiều hơn nữa."
-			},
-			"work": {
-				"title": "Công việc của bạn hiện ở đây",
-				"bodyPersonal": "Ghi chú, danh sách và tài liệu tôi tạo cho bạn sẽ mở trong bảng này.",
-				"bodyBusiness": "Tài liệu, bảng tính và bản trình bày tôi tạo cho bạn sẽ mở trong bảng này."
-			},
-			"schedule": {
-				"title": "Đưa mọi thứ vào chế độ tự động",
-				"bodyPersonal": "Đặt lời nhắc và thói quen — cuộc hẹn, hóa đơn, điểm tin buổi sáng.",
-				"bodyBusiness": "Tự động hóa công việc lặp lại — điểm tin buổi sáng, theo dõi khách hàng, báo cáo."
-			},
-			"marketplace": {
-				"title": "Thêm khả năng mới",
-				"bodyPersonal": "Duyệt kỹ năng và công cụ — chỉnh sửa tài liệu, thiết kế, và nhiều hơn nữa.",
-				"bodyBusiness": "Duyệt kỹ năng và công cụ — chỉnh sửa tài liệu, thiết kế, một Chánh văn phòng, và nhiều hơn nữa."
-			},
-			"search": {
-				"title": "Nhảy đến bất cứ đâu thật nhanh",
-				"bodyPersonal": "Nhấn ⌘K để tìm kiếm hoặc chạy bất kỳ lệnh nào trong nháy mắt.",
-				"bodyBusiness": "Nhấn ⌘K để tìm kiếm hoặc chạy bất kỳ lệnh nào trong nháy mắt."
-			}
-		},
-		"hiTitle": "Chào bạn, tôi là Nebo Desktop.",
-		"accountQuestion": "Trước tiên — tôi chủ yếu ở đây để giúp ai?",
-		"personal": "Cá nhân",
-		"personalDesc": "Tổ chức và tự động hóa cuộc sống của bạn.",
-		"business": "Công việc",
-		"businessDesc": "Tổ chức và tự động hóa công việc của bạn.",
-		"welcomeTitle": "Chào mừng bạn.",
-		"welcomeBody": "Tôi ở đây để giúp bạn tổ chức và tự động hóa {noun}. Hãy để tôi đưa bạn tham quan nhanh để bạn biết mọi thứ ở đâu.",
-		"nounPersonal": "cuộc sống của bạn",
-		"nounBusiness": "công việc kinh doanh của bạn",
-		"skipTour": "Bỏ qua chuyến tham quan",
-		"startTour": "Bắt đầu tham quan",
-		"skip": "Bỏ qua",
-		"finish": "Hoàn tất"
-	},
 	"installFlow": {
 		"installedTitle": "Đã cài {name}",
 		"installFailed": "Cài đặt thất bại",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Quay lại Thanh toán"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Đội ngũ AI của bạn, chạy cục bộ trên máy của bạn. Hãy để chúng tôi thiết lập trong chưa đầy một phút.",
+		"welcomeDescription": "Các nhân viên AI của bạn, sẵn sàng gánh bớt việc cho bạn. Thiết lập xong trong chưa đầy một phút.",
 		"termsTitle": "Điều khoản & Quyền riêng tư",
 		"termsBody": "Nebo chạy các nhân viên AI trên máy của bạn. Nhân viên có thể đọc tệp, thực thi lệnh và truy cập web dựa trên các quyền bạn cấp. Bằng cách tiếp tục, bạn đồng ý với",
 		"termsOfService": "Điều khoản dịch vụ",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo không xác định được công cụ của bước này",
 		"auditNotHere": "{tool} chưa được kết nối",
 		"auditUsed": "{step} đã dùng {tool}, vốn không có trong danh sách"
-	},
-	"christen": {
-		"title": "Đặt tên cho nhân viên đầu tiên của bạn",
-		"lede": "Mỗi lần tuyển người đều bắt đầu bằng một cái tên. Người này nhớ mọi thứ bạn dạy, và chỉ làm việc cho bạn.",
-		"placeholder": "vd. Jarvis, Piper, Ada…",
-		"create": "Tuyển họ",
-		"creating": "Đang tạo {name}…",
-		"failed": "Không hoàn tất được việc tuyển. Hãy kiểm tra kết nối và thử lại."
 	},
 	"newEmployee": {
 		"title": "Tuyển nhân viên",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "Xem {name} đã làm gì",
 		"didNothing": "{name} chưa xử lý việc gì theo quy tắc này.",
 		"didMore": "Và {n} mục nữa"
+	},
+	"firstRun": {
+		"getStarted": "Bắt đầu",
+		"meetTitle": "Gặp trợ lý của bạn",
+		"meetBody": "Trợ lý học cách bạn làm việc và gánh bớt việc cho bạn.",
+		"awayTitle": "Làm việc trên máy tính riêng, kể cả khi bạn ngủ",
+		"awayBody": "Việc dài vẫn tiếp tục sau khi bạn đóng ứng dụng. Bạn thức dậy với công việc đã xong.",
+		"awayClock": "2:14 sáng · bạn đang ngủ",
+		"teamTitle": "Giao việc, theo yêu cầu hoặc tự động",
+		"teamBody": "Xây dựng đội ngũ nhân viên AI. Mỗi người làm một việc, và bạn duyệt những gì quan trọng.",
+		"assistantRole": "{name} · Trợ lý",
+		"storeManager": "Quản lý cửa hàng",
+		"content": "Nội dung",
+		"invoices": "Hóa đơn",
+		"standup": "Họp hằng tuần",
+		"taskReorder": "Đã đặt lại 40 sản phẩm từ Lumen",
+		"taskVideo": "Đã đăng video thứ Ba",
+		"taskInvoices": "Đã gửi 3 lời nhắc hóa đơn"
 	}
 }

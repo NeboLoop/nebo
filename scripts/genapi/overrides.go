@@ -50,7 +50,6 @@ var typeOverrides = map[string]string{
 
 	// ── Agents roster (enriched rows: display name, source, isolation, setup) ──
 	"list_agents.agents": "AgentListEntry[]",
-	"list_agents.primaryChristened": "boolean",
 	// Linked bots (OpenClaw, Hermes) with chat, and the agents each serves:
 	// what "Hire from <linked bot>" offers.
 	"list_linked_agents.computers": "LinkedComputerEntry[]",

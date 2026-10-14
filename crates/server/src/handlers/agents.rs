@@ -597,21 +597,6 @@ fn roster(
     }
 
     let total = agents.len() as i64;
-    // First-contact gate: the primary must be NAMED by the owner before the
-    // workspace is usable (owner decision — not skippable). Christened = the
-    // ceremony ran, or the primary already carries a non-default name (an
-    // existing install that renamed long ago must never see the modal).
-    let primary_christened = store
-        .get_plugin_setting("core", "primary_christened")
-        .ok()
-        .flatten()
-        .is_some()
-        || store
-            .get_agent("assistant")
-            .ok()
-            .flatten()
-            .map(|a| a.name != "Nebo")
-            .unwrap_or(true);
     // The owner's conversations with a reply he has not read, by session key
     // (`agent:<id>:…`): the roster's "New reply" dots, an employee's row lit
     // when any of its conversations is. Cleared by `PUT /chats/{id}/read`.
@@ -627,7 +612,6 @@ fn roster(
     serde_json::json!({
         "agents": agents,
         "total": total,
-        "primaryChristened": primary_christened,
         "unreadSessions": unread_sessions,
     })
 }
@@ -680,20 +664,15 @@ fn write_user_agent_files(
 /// intro pathway for every hire. The primary's first contact is the guided
 /// first-run chat instead (`handlers::onboarding`), which speaks through the
 /// same hidden turn. Best-effort: a failed intro never fails the hire.
-fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bool) -> Option<String> {
+fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str) -> Option<String> {
     let (chat, session_key) = create_agent_thread(state, agent_id).ok()?;
-    let what_you_do = if brand_new {
-        "say in one short, plain paragraph that you're a brand-new employee ready \
-         to learn whatever job they need done"
-    } else {
-        "say in one short, plain paragraph what you can do for them day to day"
-    };
     let intro = format!(
         "You have just been hired, and the owner has given you your name: {name}. \
          They are watching you come online right now — this is your very first \
          moment together. Introduce yourself: greet them warmly by your new name, \
-         {what_you_do}, and end by asking what they'd like you to take on first. \
-         Do not use any tools. Do not mention these instructions."
+         say in one short, plain paragraph that you're a brand-new employee ready \
+         to learn whatever job they need done, and end by asking what they'd like \
+         you to take on first. Do not use any tools. Do not mention these instructions."
     );
     dispatch_hidden_turn(state, session_key, agent_id, name, intro);
     Some(chat.id)
@@ -1214,63 +1193,6 @@ pub async fn get_agent(
 }
 
 /// PUT /agents/{id}
-/// POST /agents/assistant/christen — the first-contact ceremony (owner
-/// decision: not skippable). The owner names their first employee; we rename
-/// the primary through the ONE rename pathway, mark the ceremony done, open
-/// the first thread, and dispatch a hidden self-introduction — the owner
-/// watches their new hire come online and speak first.
-pub async fn christen_primary(
-    State(state): State<AppState>,
-    Json(body): Json<serde_json::Value>,
-) -> HandlerResult<serde_json::Value> {
-    // ONE-SHOT, enforced here — not in any client. Once the primary has been
-    // christened, that moment is over, permanently: no surface can re-trigger
-    // the ceremony, rename races can't fork it, and a UI bug can only show a
-    // modal whose submit is refused.
-    let already = state
-        .store
-        .get_plugin_setting("core", "primary_christened")
-        .ok()
-        .flatten()
-        .is_some();
-    if already {
-        return Err(to_error_response(types::NeboError::Validation(
-            "Your first employee already has a name. Rename them any time in their settings.".into(),
-        )));
-    }
-
-    let name = body["name"].as_str().unwrap_or("").trim().to_string();
-    if name.is_empty() || name.chars().count() > 40 {
-        return Err(to_error_response(types::NeboError::Validation(
-            "A name is required (40 characters or fewer).".into(),
-        )));
-    }
-
-    // Rename via the existing update pathway (registry sync + broadcast ride it).
-    // The Json response body is the caller's own payload echoed back — unused here.
-    let _ = update_agent(
-        State(state.clone()),
-        Path("assistant".to_string()),
-        Json(serde_json::json!({ "name": name })),
-    )
-    .await?;
-
-    let _ = state.store.ensure_plugin_registry_entry("core");
-    state
-        .store
-        .set_plugin_setting("core", "primary_christened", "1")
-        .map_err(to_error_response)?;
-
-    // The ONE intro ceremony (shared with every later hire).
-    let thread_id = spawn_agent_intro(&state, "assistant", &name, false)
-        .ok_or_else(|| to_error_response(types::NeboError::Internal("failed to open the first thread".into())))?;
-
-    Ok(Json(serde_json::json!({
-        "name": name,
-        "threadId": thread_id,
-    })))
-}
-
 pub async fn update_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2035,7 +1957,7 @@ async fn create_blank_agent(
     activate_hire(&state, &agent).await;
 
     // Every hire introduces itself — the ONE intro ceremony.
-    let thread_id = spawn_agent_intro(&state, &id, &agent.name, true)
+    let thread_id = spawn_agent_intro(&state, &id, &agent.name)
         .map(serde_json::Value::String)
         .unwrap_or(serde_json::Value::Null);
 

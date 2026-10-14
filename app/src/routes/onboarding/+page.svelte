@@ -1,6 +1,5 @@
 <script lang="ts">
   import { goto } from '$lib/nav';
-  import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
   import { t, locale } from 'svelte-i18n';
   import { get } from 'svelte/store';
@@ -289,8 +288,6 @@
 
   async function finish() {
     await completeOnboarding();
-    // One-shot handoff: the tour runs exactly once, right after onboarding.
-    storage.set('nebo:tour-pending', '1');
     goto('/');
   }
 

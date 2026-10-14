@@ -780,53 +780,9 @@
 			"description": "Karyawan AI pertama Anda. Mari siapkan dalam satu menit saja.",
 			"getStarted": "Mulai"
 		},
-		"terms": {
-			"title": "Privasi & Ketentuan",
-			"description": "Informasi penting tentang bagaimana Nebo menangani data Anda",
-			"dataLocal": "Data Anda Tetap Lokal",
-			"dataLocalDesc": "Semua percakapan, memori, dan pengaturan disimpan secara lokal di perangkat Anda dalam database SQLite. Tidak ada yang dikirim ke server Nebo.",
-			"aiProvider": "Komunikasi Penyedia AI",
-			"aiProviderDesc": "Saat Anda mengobrol, pesan Anda dikirim ke penyedia AI pilihan Anda (Anthropic, OpenAI, atau Google) untuk diproses. Kebijakan privasi mereka berlaku untuk data tersebut.",
-			"apiKeys": "Kunci API",
-			"apiKeysDesc": "Kunci API Anda disimpan secara lokal di database perangkat Anda. Kunci hanya digunakan untuk mengautentikasi dengan penyedia AI Anda.",
-			"systemAccess": "Akses Sistem",
-			"systemAccessDesc": "Nebo dapat mengakses fitur sistem (berkas, shell, kontak, dll.) tetapi hanya kemampuan yang Anda aktifkan secara eksplisit. Anda mengontrol apa yang dapat dilakukan karyawan.",
-			"noAnalytics": "Tanpa Analitik atau Telemetri",
-			"noAnalyticsDesc": "Nebo tidak mengumpulkan analitik penggunaan, telemetri, atau laporan kerusakan. Penggunaan Anda sepenuhnya privat.",
-			"consent": "Saya memahami bahwa percakapan saya dikirim ke penyedia AI pilihan saya untuk diproses, dan bahwa saya mengontrol kemampuan sistem mana yang dapat diakses karyawan."
-		},
-		"provider": {
-			"title": "Hubungkan AI Anda",
-			"subtitle": "Pilih cara menggerakkan Nebo",
-			"janus": "Nebo AI",
-			"recommended": "Direkomendasikan",
-			"janusDesc": "AI didukung oleh NeboAI — tidak perlu kunci API",
-			"useOwnKey": "Gunakan kunci API atau CLI Anda sendiri",
-			"detectingCli": "Mendeteksi alat CLI...",
-			"ready": "Siap",
-			"needsLogin": "Perlu Masuk",
-			"needsLoginDesc": "Terpasang tetapi belum masuk. Jalankan {cliKey} di terminal untuk mengautentikasi.",
-			"addApiKey": "Tambah Kunci API",
-			"addApiKeyDesc": "Gunakan kunci API dari Anthropic, OpenAI, atau Google.",
-			"settingUp": "Menyiapkan...",
-			"cliClaude": "Gunakan langganan Claude Anda yang sudah ada",
-			"cliCodex": "Gunakan langganan ChatGPT/OpenAI Anda",
-			"cliGemini": "Gunakan langganan Google AI Anda (GRATIS)"
-		},
 		"apiKey": {
-			"title": "Masukkan Kunci API",
-			"description": "Kunci Anda disimpan dengan aman dan tidak pernah meninggalkan perangkat Anda.",
-			"verified": "Kunci API berhasil diverifikasi!",
-			"providerLabel": "Penyedia",
-			"anthropic": "Anthropic (Claude) - Direkomendasikan",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "Kunci API",
-			"getKey": "Dapatkan kunci API",
 			"verifying": "Memverifikasi...",
-			"backToProvider": "← Kembali ke pemilihan penyedia",
-			"pleaseEnterKey": "Silakan masukkan kunci API",
-			"validationFailed": "Validasi kunci API gagal",
 			"saveFailed": "Gagal menyimpan kunci API"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Cara kerja memori",
 		"howItWorksIntro": "Karyawan ini mengingat lintas percakapan dalam tiga lapisan — dan hanya miliknya sendiri:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Di sinilah kita berbincang",
-				"bodyPersonal": "Tanyakan apa saja, atau cukup katakan apa yang harus dilakukan — sisanya saya yang urus.",
-				"bodyBusiness": "Tanyakan apa saja, atau cukup katakan apa yang harus dilakukan — sisanya saya yang urus."
-			},
-			"agents": {
-				"title": "Karyawan Anda ada di sini",
-				"bodyPersonal": "Saya Nebo. Anda dapat menambahkan spesialis kapan saja — masing-masing ahli di bidang yang berbeda.",
-				"bodyBusiness": "Saya Nebo. Tambahkan spesialis kapan saja — Kepala Staf, periset, dan lainnya."
-			},
-			"work": {
-				"title": "Hasil kerja Anda muncul di sini",
-				"bodyPersonal": "Catatan, daftar, dan dokumen yang saya buat untuk Anda terbuka di panel ini.",
-				"bodyBusiness": "Dokumen, lembar kerja, dan presentasi yang saya buat untuk Anda terbuka di panel ini."
-			},
-			"schedule": {
-				"title": "Jalankan semuanya secara otomatis",
-				"bodyPersonal": "Atur pengingat dan rutinitas — janji temu, tagihan, ringkasan pagi.",
-				"bodyBusiness": "Otomatiskan pekerjaan berulang — briefing pagi, tindak lanjut, laporan."
-			},
-			"marketplace": {
-				"title": "Tambahkan kemampuan baru",
-				"bodyPersonal": "Jelajahi keahlian dan alat — pengeditan dokumen, desain, dan lainnya.",
-				"bodyBusiness": "Jelajahi keahlian dan alat — pengeditan dokumen, desain, Kepala Staf, dan lainnya."
-			},
-			"search": {
-				"title": "Lompat ke mana saja dengan cepat",
-				"bodyPersonal": "Tekan ⌘K untuk mencari atau menjalankan perintah apa pun secara kilat.",
-				"bodyBusiness": "Tekan ⌘K untuk mencari atau menjalankan perintah apa pun secara kilat."
-			}
-		},
-		"hiTitle": "Hai, saya Nebo Desktop.",
-		"accountQuestion": "Pertama — siapa yang paling sering akan saya bantu?",
-		"personal": "Pribadi",
-		"personalDesc": "Atur dan otomatiskan kehidupan Anda.",
-		"business": "Bisnis",
-		"businessDesc": "Atur dan otomatiskan pekerjaan Anda.",
-		"welcomeTitle": "Selamat bergabung.",
-		"welcomeBody": "Saya di sini untuk membantu Anda mengatur serta mengotomatiskan {noun}. Izinkan saya memberi tur singkat agar Anda tahu letak semuanya.",
-		"nounPersonal": "kehidupan Anda",
-		"nounBusiness": "bisnis Anda",
-		"skipTour": "Lewati tur",
-		"startTour": "Mulai tur",
-		"skip": "Lewati",
-		"finish": "Selesai"
-	},
 	"installFlow": {
 		"installedTitle": "{name} Terpasang",
 		"installFailed": "Pemasangan Gagal",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Kembali ke Penagihan"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Tenaga kerja AI Anda, berjalan secara lokal di mesin Anda. Mari kita siapkan dalam waktu kurang dari satu menit.",
+		"welcomeDescription": "Karyawan AI Anda, siap mengambil alih pekerjaan Anda. Kita siapkan dalam waktu kurang dari satu menit.",
 		"termsTitle": "Ketentuan & Privasi",
 		"termsBody": "Nebo menjalankan karyawan AI di mesin Anda. Karyawan dapat membaca berkas, menjalankan perintah, dan mengakses web sesuai izin yang Anda berikan. Dengan melanjutkan, Anda menyetujui",
 		"termsOfService": "Ketentuan Layanan",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo tidak dapat menentukan alatnya",
 		"auditNotHere": "{tool} tidak terhubung",
 		"auditUsed": "{step} memakai {tool}, yang tidak ada di daftarnya"
-	},
-	"christen": {
-		"title": "Beri nama karyawan pertama Anda",
-		"lede": "Setiap perekrutan dimulai dari sebuah nama. Yang satu ini mengingat semua yang Anda ajarkan dan bekerja untuk Anda seorang.",
-		"placeholder": "mis. Jarvis, Piper, Ada…",
-		"create": "Rekrut dia",
-		"creating": "Membuat {name}…",
-		"failed": "Tidak bisa menyelesaikan perekrutan. Periksa koneksi Anda dan coba lagi."
 	},
 	"newEmployee": {
 		"title": "Rekrut karyawan",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "Lihat apa yang dilakukan {name}",
 		"didNothing": "{name} belum menangani apa pun dengan aturan ini.",
 		"didMore": "Dan {n} lagi"
+	},
+	"firstRun": {
+		"getStarted": "Mulai",
+		"meetTitle": "Kenalan dengan asisten Anda",
+		"meetBody": "Ia mempelajari cara Anda bekerja dan mengambil alih pekerjaan Anda.",
+		"awayTitle": "Bekerja di komputernya sendiri, bahkan saat Anda tidur",
+		"awayBody": "Pekerjaan panjang tetap berjalan setelah aplikasi ditutup. Anda bangun dengan pekerjaan yang sudah selesai.",
+		"awayClock": "02.14 · Anda sedang tidur",
+		"teamTitle": "Serahkan tugas, sesuai permintaan atau otomatis",
+		"teamBody": "Bangun tim karyawan AI. Masing-masing mengerjakan satu tugas, dan Anda menyetujui yang penting.",
+		"assistantRole": "{name} · Asisten",
+		"storeManager": "Manajer Toko",
+		"content": "Konten",
+		"invoices": "Faktur",
+		"standup": "Rapat mingguan",
+		"taskReorder": "Memesan ulang 40 unit dari Lumen",
+		"taskVideo": "Memposting video hari Selasa",
+		"taskInvoices": "Mengirim 3 pengingat faktur"
 	}
 }

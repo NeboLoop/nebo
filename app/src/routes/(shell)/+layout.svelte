@@ -8,7 +8,8 @@
   import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens.js';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
-  import ChristeningModal from '$lib/components/ChristeningModal.svelte';
+  import IntroScreens from '$lib/components/onboarding/IntroScreens.svelte';
+  import { checkFirstRun, firstRunView } from '$lib/stores/onboarding';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
@@ -420,7 +421,11 @@
   let apiSkills = $state<Record<string, string[]>>({});
   let apiConfig = $state<Record<string, { persona: string; agentMd: string; soul: string; rules: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }>>({});
   let agentsLoading = $state(true);
-  let primaryChristened = $state(true);
+  // The guided first-run chat (`stores/onboarding`): the intro screens while
+  // the server's step is `intro`, and a short burst when the chat finishes.
+  let introOpen = $state(false);
+  let celebrating = $state(false);
+  const CELEBRATE_MS = 2600;
   let threadsLoading = $state<Record<string, boolean>>({});
 
 
@@ -438,10 +443,6 @@
       const activeIds = new Set<string>(
         activeAgents.map((a) => a.id || a.agentId)
       );
-      // First-contact gate (owner decision: not skippable): until the primary
-      // is named, the workspace waits behind the christening ceremony. Cloud
-      // installs hit this on first workspace mount — the wizard never runs there.
-      primaryChristened = (agentsResp as any)?.primaryChristened !== false;
       unread = seedAgentUnread(unread, agentsResp?.unreadSessions ?? []);
       if (agentsResp?.agents?.length) {
         const agents = agentsResp.agents;
@@ -622,6 +623,9 @@
   onMount(() => {
     // Initial roster load
     loadAgentRoster();
+    // First run: the intro screens, or the guided chat picking up where it
+    // stopped.
+    checkFirstRun().then((view) => { introOpen = view === 'intro'; });
     loadTeams();
     loadWorking();
     // A reply read only counts once the window is on screen.
@@ -656,6 +660,15 @@
       loadAgentRoster();
     });
     onWsEvent('nebo:agent_installed', () => loadAgentRoster());
+    // The first-run chat moved on (here or on another device): the intro is
+    // over, and the last step ends in a short celebration.
+    onWsEvent('nebo:onboarding_step', (data) => {
+      if (firstRunView(data?.step) !== 'intro') introOpen = false;
+      if (data?.step === 'done') {
+        celebrating = true;
+        setTimeout(() => { celebrating = false; }, CELEBRATE_MS);
+      }
+    });
 
     // Live "working" state per employee (see `working` above). A reconnect
     // means a server that may have restarted: forget what the old one said
@@ -1618,7 +1631,6 @@
   section="workspace"
   mobileOpen={listOpen}
   onmobileclose={closeList}
-  tour="agents"
 >
   {#snippet leading()}
     <!-- The mark and the word are ONE link Home. -->
@@ -1929,14 +1941,19 @@
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
 
-{#if !primaryChristened && !agentsLoading}
-  <ChristeningModal
-    oncreated={(threadId, name) => {
-      primaryChristened = true;
-      loadAgentRoster();
-      goto(`/assistant/threads/${threadId}`);
+{#if introOpen}
+  <IntroScreens
+    assistantName={allAgents.find((a) => a.id === 'assistant')?.name ?? 'Nebo'}
+    onstarted={(threadId) => {
+      introOpen = false;
+      if (threadId) goto(`/assistant/threads/${threadId}`);
     }}
   />
+{/if}
+{#if celebrating}
+  <div class="first-run-burst" aria-hidden="true">
+    {#each Array.from({ length: 12 }, (_, i) => i) as i (i)}<i></i>{/each}
+  </div>
 {/if}
 
 {#if newEmployeeOpen}

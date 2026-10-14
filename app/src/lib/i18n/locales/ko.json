@@ -780,53 +780,9 @@
 			"description": "당신의 첫 AI 직원입니다. 1분 만에 설정을 완료하세요.",
 			"getStarted": "시작하기"
 		},
-		"terms": {
-			"title": "개인정보 보호 및 이용약관",
-			"description": "Nebo의 데이터 처리에 관한 중요한 정보",
-			"dataLocal": "데이터는 로컬에 저장됩니다",
-			"dataLocalDesc": "모든 대화, 기억, 설정은 기기의 SQLite 데이터베이스에 로컬로 저장됩니다. Nebo 서버로 전송되는 것은 없습니다.",
-			"aiProvider": "AI 제공업체 통신",
-			"aiProviderDesc": "채팅 시 메시지는 선택한 AI 제공업체(Anthropic, OpenAI 또는 Google)로 처리를 위해 전송됩니다. 해당 데이터에는 제공업체의 개인정보 보호정책이 적용됩니다.",
-			"apiKeys": "API 키",
-			"apiKeysDesc": "API 키는 기기의 데이터베이스에 로컬로 저장됩니다. AI 제공업체 인증에만 사용됩니다.",
-			"systemAccess": "시스템 접근",
-			"systemAccessDesc": "Nebo는 시스템 기능(파일, 셸, 연락처 등)에 접근할 수 있지만 명시적으로 활성화한 기능만 가능합니다. 직원의 권한은 사용자가 관리합니다.",
-			"noAnalytics": "분석 또는 텔레메트리 없음",
-			"noAnalyticsDesc": "Nebo는 사용 분석, 텔레메트리 또는 충돌 보고서를 수집하지 않습니다. 사용 내역은 완전히 비공개입니다.",
-			"consent": "대화가 처리를 위해 선택한 AI 제공업체로 전송되며, 직원이 접근할 수 있는 시스템 기능을 직접 관리한다는 것을 이해합니다."
-		},
-		"provider": {
-			"title": "AI 연결",
-			"subtitle": "Nebo의 구동 방식 선택",
-			"janus": "Nebo AI",
-			"recommended": "추천",
-			"janusDesc": "NeboAI 제공 AI — API 키 불필요",
-			"useOwnKey": "자체 API 키 또는 CLI 사용",
-			"detectingCli": "CLI 도구 감지 중...",
-			"ready": "준비 완료",
-			"needsLogin": "로그인 필요",
-			"needsLoginDesc": "설치되었지만 로그인되지 않았습니다. 터미널에서 {cliKey}를 실행하여 인증하세요.",
-			"addApiKey": "API 키 추가",
-			"addApiKeyDesc": "Anthropic, OpenAI 또는 Google의 API 키를 사용합니다.",
-			"settingUp": "설정 중...",
-			"cliClaude": "기존 Claude 구독 사용",
-			"cliCodex": "ChatGPT/OpenAI 구독 사용",
-			"cliGemini": "Google AI 구독 사용 (무료)"
-		},
 		"apiKey": {
-			"title": "API 키 입력",
-			"description": "키는 안전하게 저장되며 기기 외부로 전송되지 않습니다.",
-			"verified": "API 키가 성공적으로 확인되었습니다!",
-			"providerLabel": "제공업체",
-			"anthropic": "Anthropic (Claude) - 추천",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "API 키",
-			"getKey": "API 키 발급",
 			"verifying": "확인 중...",
-			"backToProvider": "← 제공업체 선택으로 돌아가기",
-			"pleaseEnterKey": "API 키를 입력하세요",
-			"validationFailed": "API 키 확인에 실패했습니다",
 			"saveFailed": "API 키 저장에 실패했습니다"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "기억 작동 방식",
 		"howItWorksIntro": "이 직원은 대화를 넘어 세 가지 계층으로 기억하며 — 자신의 기억만 사용합니다:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "여기서 대화합니다",
-				"bodyPersonal": "무엇이든 물어보거나 그냥 할 일을 말씀하세요 — 나머지는 제가 알아서 합니다.",
-				"bodyBusiness": "무엇이든 물어보거나 그냥 할 일을 말씀하세요 — 나머지는 제가 알아서 합니다."
-			},
-			"agents": {
-				"title": "직원들이 여기에 있습니다",
-				"bodyPersonal": "저는 Nebo입니다. 언제든 전문가를 추가할 수 있어요 — 각자 잘하는 일이 다릅니다.",
-				"bodyBusiness": "저는 Nebo입니다. 언제든 전문가를 추가하세요 — Executive Assistant, 리서처 등."
-			},
-			"work": {
-				"title": "작업 결과가 여기에 표시됩니다",
-				"bodyPersonal": "제가 만든 메모, 목록, 문서가 이 패널에 열립니다.",
-				"bodyBusiness": "제가 만든 문서, 스프레드시트, 프레젠테이션이 이 패널에 열립니다."
-			},
-			"schedule": {
-				"title": "자동으로 굴러가게 하세요",
-				"bodyPersonal": "리마인더와 루틴을 설정하세요 — 약속, 청구서, 아침 브리핑.",
-				"bodyBusiness": "반복 업무를 자동화하세요 — 아침 브리핑, 후속 조치, 보고서."
-			},
-			"marketplace": {
-				"title": "새로운 능력 추가",
-				"bodyPersonal": "스킬과 도구를 둘러보세요 — 문서 편집, 디자인 등.",
-				"bodyBusiness": "스킬과 도구를 둘러보세요 — 문서 편집, 디자인, Executive Assistant 등."
-			},
-			"search": {
-				"title": "어디로든 빠르게 이동",
-				"bodyPersonal": "⌘K를 누르면 무엇이든 즉시 검색하거나 실행할 수 있습니다.",
-				"bodyBusiness": "⌘K를 누르면 무엇이든 즉시 검색하거나 실행할 수 있습니다."
-			}
-		},
-		"hiTitle": "안녕하세요, Nebo Desktop입니다.",
-		"accountQuestion": "먼저 — 주로 어떤 일을 도와드릴까요?",
-		"personal": "개인",
-		"personalDesc": "일상을 정리하고 자동화합니다.",
-		"business": "비즈니스",
-		"businessDesc": "업무를 정리하고 자동화합니다.",
-		"welcomeTitle": "함께하게 되어 반갑습니다.",
-		"welcomeBody": "저는 {noun} 정리하고 자동화하도록 돕습니다. 어디에 무엇이 있는지 빠르게 안내해 드릴게요.",
-		"nounPersonal": "일상을",
-		"nounBusiness": "비즈니스를",
-		"skipTour": "투어 건너뛰기",
-		"startTour": "투어 시작",
-		"skip": "건너뛰기",
-		"finish": "완료"
-	},
 	"installFlow": {
 		"installedTitle": "{name} 설치 완료",
 		"installFailed": "설치 실패",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "결제 관리로 돌아가기"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "당신의 컴퓨터에서 로컬로 실행되는 AI 팀. 1분 안에 설정을 마쳐 드립니다.",
+		"welcomeDescription": "당신의 AI 직원들이 일을 덜어 줄 준비가 되었습니다. 1분 안에 설정을 마칠게요.",
 		"termsTitle": "약관 및 개인정보",
 		"termsBody": "Nebo는 당신의 컴퓨터에서 AI 직원을 실행합니다. 직원은 부여된 권한에 따라 파일을 읽고, 명령을 실행하고, 웹에 접근할 수 있습니다. 계속하면 다음에 동의하는 것입니다:",
 		"termsOfService": "서비스 약관",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo가 이 단계의 도구를 정하지 못했습니다",
 		"auditNotHere": "{tool}이(가) 연결되어 있지 않습니다",
 		"auditUsed": "{step}이(가) 목록에 없는 {tool}을(를) 사용했습니다"
-	},
-	"christen": {
-		"title": "첫 직원의 이름을 지어주세요",
-		"lede": "모든 채용은 이름에서 시작합니다. 이 직원은 가르친 것을 모두 기억하며, 오직 당신을 위해 일합니다.",
-		"placeholder": "예: Jarvis, Piper, Ada…",
-		"create": "채용하기",
-		"creating": "{name}을(를) 만드는 중…",
-		"failed": "채용을 마치지 못했습니다. 연결을 확인하고 다시 시도하세요."
 	},
 	"newEmployee": {
 		"title": "직원 채용",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "{name}이(가) 한 일 보기",
 		"didNothing": "{name}은(는) 아직 이 규칙으로 처리한 것이 없습니다.",
 		"didMore": "외 {n}건"
+	},
+	"firstRun": {
+		"getStarted": "시작하기",
+		"meetTitle": "어시스턴트를 만나보세요",
+		"meetBody": "당신이 일하는 방식을 배우고 일을 덜어 줍니다.",
+		"awayTitle": "자는 동안에도 자기 컴퓨터에서 일합니다",
+		"awayBody": "앱을 닫아도 긴 작업은 계속됩니다. 아침에 일어나면 일이 끝나 있습니다.",
+		"awayClock": "오전 2:14 · 주무시는 중",
+		"teamTitle": "필요할 때 또는 자동으로 일을 맡기세요",
+		"teamBody": "AI 직원 팀을 꾸려 보세요. 각자 한 가지 일을 맡고, 중요한 건 당신이 승인합니다.",
+		"assistantRole": "{name} · 어시스턴트",
+		"storeManager": "매장 관리자",
+		"content": "콘텐츠",
+		"invoices": "청구서",
+		"standup": "주간 회의",
+		"taskReorder": "Lumen에 40개 재주문함",
+		"taskVideo": "화요일 영상 게시함",
+		"taskInvoices": "청구서 알림 3건 보냄"
 	}
 }

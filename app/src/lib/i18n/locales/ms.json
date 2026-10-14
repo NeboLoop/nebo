@@ -780,53 +780,9 @@
 			"description": "Pekerja AI pertama anda. Mari sediakan anda dalam satu minit sahaja.",
 			"getStarted": "Mulakan"
 		},
-		"terms": {
-			"title": "Privasi & Terma",
-			"description": "Maklumat penting tentang cara Nebo mengendalikan data anda",
-			"dataLocal": "Data Anda Kekal di Peranti",
-			"dataLocalDesc": "Semua perbualan, memori, dan tetapan disimpan secara setempat di peranti anda dalam pangkalan data SQLite. Tiada apa yang dihantar ke pelayan Nebo.",
-			"aiProvider": "Komunikasi Pembekal AI",
-			"aiProviderDesc": "Apabila anda bersembang, mesej anda dihantar kepada pembekal AI pilihan anda (Anthropic, OpenAI, atau Google) untuk diproses. Dasar privasi mereka terpakai untuk data tersebut.",
-			"apiKeys": "Kunci API",
-			"apiKeysDesc": "Kunci API anda disimpan secara setempat dalam pangkalan data peranti anda. Ia hanya digunakan untuk mengesahkan identiti dengan pembekal AI anda.",
-			"systemAccess": "Akses Sistem",
-			"systemAccessDesc": "Nebo boleh mengakses ciri sistem (fail, shell, kenalan, dsb.) tetapi hanya keupayaan yang anda dayakan secara eksplisit. Anda mengawal apa yang pekerja boleh lakukan.",
-			"noAnalytics": "Tiada Analitik atau Telemetri",
-			"noAnalyticsDesc": "Nebo tidak mengumpul analitik penggunaan, telemetri, atau laporan ranap. Penggunaan anda adalah sepenuhnya peribadi.",
-			"consent": "Saya faham bahawa perbualan saya dihantar kepada pembekal AI pilihan saya untuk diproses, dan saya mengawal keupayaan sistem mana yang boleh diakses oleh pekerja."
-		},
-		"provider": {
-			"title": "Sambungkan AI Anda",
-			"subtitle": "Pilih cara untuk menggerakkan Nebo",
-			"janus": "Nebo AI",
-			"recommended": "Disyorkan",
-			"janusDesc": "AI dikuasakan oleh NeboAI — tiada kunci API diperlukan",
-			"useOwnKey": "Gunakan kunci API anda sendiri atau CLI sebaliknya",
-			"detectingCli": "Mengesan alat CLI...",
-			"ready": "Sedia",
-			"needsLogin": "Perlu Log Masuk",
-			"needsLoginDesc": "Dipasang tetapi belum log masuk. Jalankan {cliKey} di terminal untuk mengesahkan.",
-			"addApiKey": "Tambah Kunci API",
-			"addApiKeyDesc": "Gunakan kunci API daripada Anthropic, OpenAI, atau Google.",
-			"settingUp": "Menyediakan...",
-			"cliClaude": "Gunakan langganan Claude sedia ada anda",
-			"cliCodex": "Gunakan langganan ChatGPT/OpenAI anda",
-			"cliGemini": "Gunakan langganan Google AI anda (PERCUMA)"
-		},
 		"apiKey": {
-			"title": "Masukkan Kunci API",
-			"description": "Kunci anda disimpan dengan selamat dan tidak pernah meninggalkan peranti anda.",
-			"verified": "Kunci API berjaya disahkan!",
-			"providerLabel": "Pembekal",
-			"anthropic": "Anthropic (Claude) - Disyorkan",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "Kunci API",
-			"getKey": "Dapatkan kunci API",
 			"verifying": "Mengesahkan...",
-			"backToProvider": "← Kembali ke pilihan pembekal",
-			"pleaseEnterKey": "Sila masukkan kunci API",
-			"validationFailed": "Pengesahan kunci API gagal",
 			"saveFailed": "Gagal menyimpan kunci API"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Cara memori berfungsi",
 		"howItWorksIntro": "Pekerja ini mengingati merentas perbualan dalam tiga lapisan — dan hanya miliknya sendiri:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Di sinilah kita berbual",
-				"bodyPersonal": "Tanya saya apa sahaja, atau beritahu sahaja apa yang perlu dibuat — saya uruskan selebihnya.",
-				"bodyBusiness": "Tanya saya apa sahaja, atau beritahu sahaja apa yang perlu dibuat — saya uruskan selebihnya."
-			},
-			"agents": {
-				"title": "Pekerja anda berada di sini",
-				"bodyPersonal": "Saya Nebo. Anda boleh menambah pakar pada bila-bila masa — setiap satu mahir dalam tugas yang berbeza.",
-				"bodyBusiness": "Saya Nebo. Tambah pakar pada bila-bila masa — Ketua Staf, penyelidik, dan banyak lagi."
-			},
-			"work": {
-				"title": "Hasil kerja anda muncul di sini",
-				"bodyPersonal": "Nota, senarai, dan dokumen yang saya buat untuk anda dibuka dalam panel ini.",
-				"bodyBusiness": "Dokumen, hamparan, dan dek persembahan yang saya buat untuk anda dibuka dalam panel ini."
-			},
-			"schedule": {
-				"title": "Biarkan semuanya berjalan automatik",
-				"bodyPersonal": "Tetapkan peringatan dan rutin — temu janji, bil, ringkasan pagi.",
-				"bodyBusiness": "Automasikan kerja berulang — taklimat pagi, susulan, laporan."
-			},
-			"marketplace": {
-				"title": "Tambah kebolehan baharu",
-				"bodyPersonal": "Layari kemahiran dan alat — penyuntingan dokumen, reka bentuk, dan banyak lagi.",
-				"bodyBusiness": "Layari kemahiran dan alat — penyuntingan dokumen, reka bentuk, Ketua Staf, dan banyak lagi."
-			},
-			"search": {
-				"title": "Lompat ke mana-mana dengan pantas",
-				"bodyPersonal": "Tekan ⌘K untuk mencari atau menjalankan sebarang arahan sepantas kilat.",
-				"bodyBusiness": "Tekan ⌘K untuk mencari atau menjalankan sebarang arahan sepantas kilat."
-			}
-		},
-		"hiTitle": "Hai, saya Nebo Desktop.",
-		"accountQuestion": "Pertama sekali — siapa yang paling kerap akan saya bantu?",
-		"personal": "Peribadi",
-		"personalDesc": "Urus dan automasikan kehidupan anda.",
-		"business": "Perniagaan",
-		"businessDesc": "Urus dan automasikan kerja anda.",
-		"welcomeTitle": "Selamat datang.",
-		"welcomeBody": "Saya di sini untuk membantu anda mengurus serta mengautomasikan {noun}. Mari saya bawa anda melihat sekeliling supaya anda tahu di mana semuanya berada.",
-		"nounPersonal": "kehidupan anda",
-		"nounBusiness": "perniagaan anda",
-		"skipTour": "Langkau lawatan",
-		"startTour": "Mulakan lawatan",
-		"skip": "Langkau",
-		"finish": "Selesai"
-	},
 	"installFlow": {
 		"installedTitle": "{name} Dipasang",
 		"installFailed": "Pemasangan Gagal",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Kembali ke Pengebilan"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Tenaga kerja AI anda, berjalan secara setempat pada mesin anda. Mari kami sediakan anda dalam masa kurang seminit.",
+		"welcomeDescription": "Pekerja AI anda, sedia meringankan beban kerja anda. Kami sediakan anda dalam masa kurang seminit.",
 		"termsTitle": "Terma & Privasi",
 		"termsBody": "Nebo menjalankan pekerja AI pada mesin anda. Pekerja boleh membaca fail, melaksanakan arahan, dan mengakses web berdasarkan kebenaran yang anda berikan. Dengan meneruskan, anda bersetuju dengan",
 		"termsOfService": "Terma Perkhidmatan",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo tidak dapat menentukan alatnya",
 		"auditNotHere": "{tool} tidak disambungkan",
 		"auditUsed": "{step} menggunakan {tool}, yang tiada dalam senarainya"
-	},
-	"christen": {
-		"title": "Namakan pekerja pertama anda",
-		"lede": "Setiap pengambilan bermula dengan satu nama. Yang ini mengingati semua yang anda ajar, dan bekerja untuk anda seorang.",
-		"placeholder": "cth. Jarvis, Piper, Ada…",
-		"create": "Ambil dia bekerja",
-		"creating": "Mencipta {name}…",
-		"failed": "Tidak dapat menyiapkan pengambilan itu. Semak sambungan anda dan cuba lagi."
 	},
 	"newEmployee": {
 		"title": "Ambil pekerja",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "Lihat apa yang {name} buat",
 		"didNothing": "{name} belum mengendalikan apa-apa di bawah peraturan ini.",
 		"didMore": "Dan {n} lagi"
+	},
+	"firstRun": {
+		"getStarted": "Mula",
+		"meetTitle": "Kenali pembantu anda",
+		"meetBody": "Ia belajar cara anda bekerja dan meringankan beban kerja anda.",
+		"awayTitle": "Bekerja di komputernya sendiri, walaupun ketika anda tidur",
+		"awayBody": "Kerja panjang terus berjalan selepas anda menutup aplikasi. Anda bangun dengan kerja yang sudah siap.",
+		"awayClock": "2:14 pagi · anda sedang tidur",
+		"teamTitle": "Serahkan tugas, atas permintaan atau secara automatik",
+		"teamBody": "Bina pasukan pekerja AI. Setiap seorang membuat satu kerja, dan anda meluluskan perkara yang penting.",
+		"assistantRole": "{name} · Pembantu",
+		"storeManager": "Pengurus Kedai",
+		"content": "Kandungan",
+		"invoices": "Invois",
+		"standup": "Mesyuarat mingguan",
+		"taskReorder": "Memesan semula 40 unit daripada Lumen",
+		"taskVideo": "Menyiarkan video hari Selasa",
+		"taskInvoices": "Menghantar 3 peringatan invois"
 	}
 }

@@ -780,53 +780,9 @@
 			"description": "你的第一位 AI 员工。让我们用一分钟完成设置。",
 			"getStarted": "开始使用"
 		},
-		"terms": {
-			"title": "隐私和条款",
-			"description": "关于 Nebo 如何处理你数据的重要信息",
-			"dataLocal": "数据保留在本地",
-			"dataLocalDesc": "所有对话、记忆和设置都存储在设备上的 SQLite 数据库中。不会向 Nebo 服务器发送任何数据。",
-			"aiProvider": "AI 提供商通信",
-			"aiProviderDesc": "聊天时，消息会发送到你选择的 AI 提供商（Anthropic、OpenAI 或 Google）进行处理。该数据适用其隐私政策。",
-			"apiKeys": "API 密钥",
-			"apiKeysDesc": "API 密钥存储在设备的本地数据库中，仅用于 AI 提供商的身份验证。",
-			"systemAccess": "系统访问",
-			"systemAccessDesc": "Nebo 可以访问系统功能（文件、终端、通讯录等），但仅限你明确启用的功能。员工的权限由你控制。",
-			"noAnalytics": "无分析或遥测",
-			"noAnalyticsDesc": "Nebo 不收集使用分析、遥测数据或崩溃报告。你的使用完全私密。",
-			"consent": "我了解我的对话会发送到所选 AI 提供商进行处理，并且我可以控制员工能访问的系统功能。"
-		},
-		"provider": {
-			"title": "连接你的 AI",
-			"subtitle": "选择 Nebo 的驱动方式",
-			"janus": "Nebo AI",
-			"recommended": "推荐",
-			"janusDesc": "NeboAI 提供的 AI——无需 API 密钥",
-			"useOwnKey": "使用你自己的 API 密钥或 CLI",
-			"detectingCli": "正在检测 CLI 工具...",
-			"ready": "就绪",
-			"needsLogin": "需要登录",
-			"needsLoginDesc": "已安装但未登录。在终端中运行 {cliKey} 进行认证。",
-			"addApiKey": "添加 API 密钥",
-			"addApiKeyDesc": "使用 Anthropic、OpenAI 或 Google 的 API 密钥。",
-			"settingUp": "设置中...",
-			"cliClaude": "使用现有的 Claude 订阅",
-			"cliCodex": "使用 ChatGPT/OpenAI 订阅",
-			"cliGemini": "使用 Google AI 订阅（免费）"
-		},
 		"apiKey": {
-			"title": "输入 API 密钥",
-			"description": "密钥安全存储，不会离开你的设备。",
-			"verified": "API 密钥验证成功！",
-			"providerLabel": "提供商",
-			"anthropic": "Anthropic (Claude) - 推荐",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "API 密钥",
-			"getKey": "获取 API 密钥",
 			"verifying": "验证中...",
-			"backToProvider": "← 返回提供商选择",
-			"pleaseEnterKey": "请输入 API 密钥",
-			"validationFailed": "API 密钥验证失败",
 			"saveFailed": "API 密钥保存失败"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "记忆如何运作",
 		"howItWorksIntro": "该员工跨对话的记忆分为三层——且仅属于它自己："
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "我们在这里交谈",
-				"bodyPersonal": "问我任何事，或者直接告诉我要做什么——剩下的交给我。",
-				"bodyBusiness": "问我任何事，或者直接告诉我要做什么——剩下的交给我。"
-			},
-			"agents": {
-				"title": "你的员工都住在这里",
-				"bodyPersonal": "我是 Nebo。你可以随时添加专家——每位擅长不同的工作。",
-				"bodyBusiness": "我是 Nebo。随时添加专家——幕僚长、研究员等等。"
-			},
-			"work": {
-				"title": "你的工作成果在这里显示",
-				"bodyPersonal": "我为你制作的笔记、清单和文档会在此面板中打开。",
-				"bodyBusiness": "我为你制作的文档、电子表格和演示文稿会在此面板中打开。"
-			},
-			"schedule": {
-				"title": "让事情自动运转",
-				"bodyPersonal": "设置提醒和例行安排——约会、账单、晨间简报。",
-				"bodyBusiness": "自动化重复性工作——晨间简报、跟进、报告。"
-			},
-			"marketplace": {
-				"title": "添加新能力",
-				"bodyPersonal": "浏览技能和工具——文档编辑、设计等。",
-				"bodyBusiness": "浏览技能和工具——文档编辑、设计、幕僚长等。"
-			},
-			"search": {
-				"title": "快速跳转到任何地方",
-				"bodyPersonal": "按 ⌘K 即可闪电般搜索或运行任何命令。",
-				"bodyBusiness": "按 ⌘K 即可闪电般搜索或运行任何命令。"
-			}
-		},
-		"hiTitle": "你好，我是 Nebo Desktop。",
-		"accountQuestion": "首先——我主要帮助谁？",
-		"personal": "个人",
-		"personalDesc": "整理并自动化你的生活。",
-		"business": "商务",
-		"businessDesc": "整理并自动化你的工作。",
-		"welcomeTitle": "欢迎加入。",
-		"welcomeBody": "我在这里帮你整理和自动化{noun}。让我带你快速转一圈，让你知道每样东西在哪里。",
-		"nounPersonal": "你的生活",
-		"nounBusiness": "你的业务",
-		"skipTour": "跳过导览",
-		"startTour": "开始导览",
-		"skip": "跳过",
-		"finish": "完成"
-	},
 	"installFlow": {
 		"installedTitle": "{name} 已安装",
 		"installFailed": "安装失败",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "返回账单"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "你的 AI 团队，在你的机器上本地运行。一分钟内完成设置。",
+		"welcomeDescription": "你的 AI 员工已准备好为你分担工作。不到一分钟就能设置好。",
 		"termsTitle": "条款与隐私",
 		"termsBody": "Nebo 在你的机器上运行 AI 员工。员工可以根据你授予的权限读取文件、执行命令和访问网络。继续即表示你同意",
 		"termsOfService": "服务条款",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}：Nebo 无法确定它所需的工具",
 		"auditNotHere": "{tool} 未连接",
 		"auditUsed": "{step} 使用了不在其列表中的 {tool}"
-	},
-	"christen": {
-		"title": "给你的第一名员工起个名字",
-		"lede": "每一次雇佣都从名字开始。这名员工记得你教的每一件事，只为你工作。",
-		"placeholder": "例如 Jarvis、Piper、Ada…",
-		"create": "雇佣他",
-		"creating": "正在创建 {name}…",
-		"failed": "未能完成雇佣。请检查网络连接后重试。"
 	},
 	"newEmployee": {
 		"title": "雇一名员工",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "查看 {name} 做了什么",
 		"didNothing": "{name} 还没有按这条规则处理过任何事。",
 		"didMore": "还有 {n} 项"
+	},
+	"firstRun": {
+		"getStarted": "开始使用",
+		"meetTitle": "认识你的助理",
+		"meetBody": "它会了解你的工作方式，帮你分担事务。",
+		"awayTitle": "在自己的电脑上工作，即使你在睡觉",
+		"awayBody": "关闭应用后，长时间的任务仍会继续。醒来时工作已经完成。",
+		"awayClock": "凌晨 2:14 · 你在睡觉",
+		"teamTitle": "交办任务，随时或自动",
+		"teamBody": "组建一支 AI 员工团队。每人负责一项工作，重要的事由你批准。",
+		"assistantRole": "{name} · 助理",
+		"storeManager": "店长",
+		"content": "内容",
+		"invoices": "发票",
+		"standup": "每周例会",
+		"taskReorder": "已向 Lumen 补订 40 件",
+		"taskVideo": "已发布周二的视频",
+		"taskInvoices": "已发送 3 条发票提醒"
 	}
 }

@@ -780,53 +780,9 @@
 			"description": "あなたの最初のAI社員です。1分でセットアップしましょう。",
 			"getStarted": "始める"
 		},
-		"terms": {
-			"title": "プライバシーと利用規約",
-			"description": "Neboのデータ取り扱いに関する重要な情報",
-			"dataLocal": "データはローカルに保存",
-			"dataLocalDesc": "すべての会話、記憶、設定はデバイス上のSQLiteデータベースにローカル保存されます。Neboのサーバーには何も送信されません。",
-			"aiProvider": "AIプロバイダーとの通信",
-			"aiProviderDesc": "チャット時、メッセージは選択したAIプロバイダー（Anthropic、OpenAI、またはGoogle）に処理のために送信されます。そのデータにはプロバイダーのプライバシーポリシーが適用されます。",
-			"apiKeys": "APIキー",
-			"apiKeysDesc": "APIキーはデバイスのデータベースにローカル保存されます。AIプロバイダーとの認証にのみ使用されます。",
-			"systemAccess": "システムアクセス",
-			"systemAccessDesc": "Neboはシステム機能（ファイル、シェル、連絡先など）にアクセスできますが、明示的に有効にした機能のみです。社員の権限はあなたが管理します。",
-			"noAnalytics": "アナリティクス・テレメトリーなし",
-			"noAnalyticsDesc": "Neboは使用状況の分析、テレメトリー、クラッシュレポートを収集しません。使用状況は完全にプライベートです。",
-			"consent": "会話が処理のために選択したAIプロバイダーに送信されること、および社員がアクセスできるシステム機能を自分で管理することを理解しました。"
-		},
-		"provider": {
-			"title": "AIを接続",
-			"subtitle": "Neboの駆動方式を選択",
-			"janus": "Nebo AI",
-			"recommended": "おすすめ",
-			"janusDesc": "NeboAI提供のAI — APIキー不要",
-			"useOwnKey": "自分のAPIキーまたはCLIを使用",
-			"detectingCli": "CLIツールを検出中...",
-			"ready": "準備完了",
-			"needsLogin": "ログインが必要",
-			"needsLoginDesc": "インストール済みですがログインされていません。ターミナルで{cliKey}を実行して認証してください。",
-			"addApiKey": "APIキーを追加",
-			"addApiKeyDesc": "Anthropic、OpenAI、またはGoogleのAPIキーを使用します。",
-			"settingUp": "セットアップ中...",
-			"cliClaude": "既存のClaudeサブスクリプションを使用",
-			"cliCodex": "ChatGPT/OpenAIサブスクリプションを使用",
-			"cliGemini": "Google AIサブスクリプションを使用（無料）"
-		},
 		"apiKey": {
-			"title": "APIキーを入力",
-			"description": "キーは安全に保存され、デバイスの外に送信されることはありません。",
-			"verified": "APIキーの検証に成功しました！",
-			"providerLabel": "プロバイダー",
-			"anthropic": "Anthropic (Claude) - おすすめ",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "APIキー",
-			"getKey": "APIキーを取得",
 			"verifying": "検証中...",
-			"backToProvider": "← プロバイダー選択に戻る",
-			"pleaseEnterKey": "APIキーを入力してください",
-			"validationFailed": "APIキーの検証に失敗しました",
 			"saveFailed": "APIキーの保存に失敗しました"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "メモリの仕組み",
 		"howItWorksIntro": "この社員は会話をまたいで3つのレイヤーで記憶します — 記憶は本人だけのものです:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "ここで会話します",
-				"bodyPersonal": "何でも聞いてください。やってほしいことを伝えるだけでもOK — あとは私が引き受けます。",
-				"bodyBusiness": "何でも聞いてください。やってほしいことを伝えるだけでもOK — あとは私が引き受けます。"
-			},
-			"agents": {
-				"title": "あなたの社員はここにいます",
-				"bodyPersonal": "私はNeboです。いつでもスペシャリストを追加できます — それぞれ得意な仕事が違います。",
-				"bodyBusiness": "私はNeboです。いつでもスペシャリストを追加できます — 首席補佐官、リサーチャーなど。"
-			},
-			"work": {
-				"title": "成果物はここに表示されます",
-				"bodyPersonal": "私が作成したメモ、リスト、ドキュメントがこのパネルに開きます。",
-				"bodyBusiness": "私が作成したドキュメント、スプレッドシート、スライドがこのパネルに開きます。"
-			},
-			"schedule": {
-				"title": "自動運転にお任せ",
-				"bodyPersonal": "リマインダーやルーティンを設定 — 予定、支払い、朝のまとめなど。",
-				"bodyBusiness": "繰り返しの仕事を自動化 — 朝のブリーフィング、フォローアップ、レポートなど。"
-			},
-			"marketplace": {
-				"title": "新しい能力を追加",
-				"bodyPersonal": "スキルやツールを探せます — 文書編集、デザインなど。",
-				"bodyBusiness": "スキルやツールを探せます — 文書編集、デザイン、首席補佐官など。"
-			},
-			"search": {
-				"title": "どこへでも素早く移動",
-				"bodyPersonal": "⌘Kを押すと、検索や任意のコマンド実行が一瞬でできます。",
-				"bodyBusiness": "⌘Kを押すと、検索や任意のコマンド実行が一瞬でできます。"
-			}
-		},
-		"hiTitle": "はじめまして、Nebo Desktopです。",
-		"accountQuestion": "まず — 主にどちらのお手伝いをしましょうか?",
-		"personal": "個人",
-		"personalDesc": "暮らしを整理し、自動化します。",
-		"business": "ビジネス",
-		"businessDesc": "仕事を整理し、自動化します。",
-		"welcomeTitle": "ようこそ。",
-		"welcomeBody": "{noun}の整理と自動化をお手伝いします。どこに何があるか、簡単にツアーでご案内しますね。",
-		"nounPersonal": "暮らし",
-		"nounBusiness": "ビジネス",
-		"skipTour": "ツアーをスキップ",
-		"startTour": "ツアーを開始",
-		"skip": "スキップ",
-		"finish": "完了"
-	},
 	"installFlow": {
 		"installedTitle": "{name}をインストールしました",
 		"installFailed": "インストールに失敗しました",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "請求に戻る"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "あなたのマシン上でローカルに動くAIチーム。1分以内にセットアップを済ませましょう。",
+		"welcomeDescription": "あなたのAI社員が、仕事を引き受ける準備をしています。1分以内にセットアップを済ませましょう。",
 		"termsTitle": "利用規約とプライバシー",
 		"termsBody": "NeboはあなたのマシンでAI社員を実行します。社員は、あなたが許可した権限に基づいてファイルの読み取り、コマンドの実行、ウェブへのアクセスを行えます。続行すると、以下に同意したことになります:",
 		"termsOfService": "利用規約",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo はこのステップのツールを特定できませんでした",
 		"auditNotHere": "{tool} は接続されていません",
 		"auditUsed": "{step} はリストにない {tool} を使いました"
-	},
-	"christen": {
-		"title": "最初の社員に名前をつけましょう",
-		"lede": "採用は名前から始まります。この社員は教えたことをすべて覚え、あなたのためだけに働きます。",
-		"placeholder": "例：Jarvis、Piper、Ada…",
-		"create": "採用する",
-		"creating": "{name}を作成しています…",
-		"failed": "採用を完了できませんでした。接続を確認してもう一度お試しください。"
 	},
 	"newEmployee": {
 		"title": "社員を採用する",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "{name}が行ったことを見る",
 		"didNothing": "{name}はまだこのルールで何も対応していません。",
 		"didMore": "ほか{n}件"
+	},
+	"firstRun": {
+		"getStarted": "はじめる",
+		"meetTitle": "あなたのアシスタントです",
+		"meetBody": "あなたの働き方を覚えて、仕事を引き受けます。",
+		"awayTitle": "寝ている間も、自分のコンピューターで働きます",
+		"awayBody": "アプリを閉じても長い作業は続きます。朝起きたら仕事は終わっています。",
+		"awayClock": "午前2:14 · おやすみ中",
+		"teamTitle": "仕事を任せる。必要なときも、自動でも",
+		"teamBody": "AI社員のチームを作りましょう。それぞれが一つの仕事をこなし、大事なことはあなたが承認します。",
+		"assistantRole": "{name} · アシスタント",
+		"storeManager": "店長",
+		"content": "コンテンツ",
+		"invoices": "請求書",
+		"standup": "週次ミーティング",
+		"taskReorder": "Lumenに40個を再注文しました",
+		"taskVideo": "火曜日の動画を投稿しました",
+		"taskInvoices": "請求書のリマインダーを3件送りました"
 	}
 }

@@ -381,7 +381,7 @@ pub struct ChatConfig {
     /// denial — the phone-caller mechanism). None = full roster.
     pub tool_allowlist: Option<std::collections::HashSet<String>>,
     /// Persist the prompt as an isMeta (owner-invisible) user message — for
-    /// platform-authored prompts like the christening self-introduction. The
+    /// platform-authored prompts like a hire's self-introduction. The
     /// model sees it; the transcript never does.
     pub hidden_prompt: bool,
     /// The coworker whose message the prompt is (display name): the input is

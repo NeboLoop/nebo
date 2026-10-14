@@ -32,7 +32,6 @@
     collapsed?: Snippet;
     /** Pinned to the bottom in both states. */
     footer?: Snippet<[boolean]>;
-    tour?: string;
   }
 
   let {
@@ -44,8 +43,7 @@
     headerActions,
     expanded,
     collapsed,
-    footer,
-    tour
+    footer
   }: Props = $props();
 
   const isCollapsed = sidebarCollapsedFor(section);
@@ -73,7 +71,6 @@
 {/if}
 
 <div
-  data-tour={tour}
   class="{$isCollapsed
     ? 'md:w-rail-collapsed md:min-w-rail-collapsed'
     : 'md:w-rail md:min-w-rail'} {hasDrawer
