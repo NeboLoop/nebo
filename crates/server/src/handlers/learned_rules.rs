@@ -255,12 +255,25 @@ pub(crate) fn offer_options() -> Vec<db::models::ItemOption> {
         .collect()
 }
 
+/// An offer's stored content: its pattern, and the words its card shows
+/// (the one place they are worded is [`Pattern::words`]; clients read them).
+fn offer_content(pattern: &Pattern, words: &RuleWords) -> Result<String, NeboError> {
+    #[derive(Serialize)]
+    struct Content<'a> {
+        #[serde(flatten)]
+        pattern: &'a Pattern,
+        #[serde(flatten)]
+        words: &'a RuleWords,
+    }
+    serde_json::to_string(&Content { pattern, words }).map_err(|e| NeboError::Internal(e.to_string()))
+}
+
 /// Put the offer before the owner: its proposal row and its Inbox card,
 /// from the assistant.
 fn offer(state: &AppState, pattern: &Pattern) -> Result<String, NeboError> {
     let id = uuid::Uuid::new_v4().to_string();
-    let content = serde_json::to_string(pattern).map_err(|e| NeboError::Internal(e.to_string()))?;
     let words = pattern.words(pattern.ceiling_cents);
+    let content = offer_content(pattern, &words)?;
     state.store.create_pending_write(&id, &pattern.agent_id, RULE, OFFER, &pattern.target(), Some(&content), &words.covers, "", None)?;
     let item = format!("learn:{id}");
     let title = format!("Want me to handle these for {}?", pattern.employee);
@@ -719,8 +732,8 @@ pub async fn add_learned_rule(
         pattern.ceiling_cents = body.ceiling_cents.filter(|c| *c > 0);
     }
     let consent_id = uuid::Uuid::new_v4().to_string();
-    let content = serde_json::to_string(&pattern).map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
     let words = pattern.words(pattern.ceiling_cents);
+    let content = offer_content(&pattern, &words).map_err(to_error_response)?;
     let via = body.via.as_deref();
     let tz = time_zone(&state.store);
     state

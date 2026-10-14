@@ -1350,6 +1350,9 @@ async fn an_offer_comes_after_exactly_three_matching_answers_and_never_on_mixed_
     let pending = nebo.store().get_pending_write(offer.id.strip_prefix("learn:").unwrap()).unwrap().unwrap();
     let pattern: crate::handlers::learned_rules::Pattern = serde_json::from_str(pending.content.as_deref().unwrap()).unwrap();
     assert_eq!(pattern.ceiling_cents, Some(50_000), "$312 spent: the offer proposes up to $500");
+    let content: serde_json::Value = serde_json::from_str(pending.content.as_deref().unwrap()).unwrap();
+    assert!(content["covers"].as_str().unwrap().contains("up to $500"), "the card's words are stored: {content}");
+    assert_eq!(content["stillAsks"], "Anything over $500, anything not like this");
 
     // "Ask me each time": three more answers make no new offer.
     crate::handlers::notification::answer_item(&nebo.state, offer, "no", "mobile").await.unwrap();
