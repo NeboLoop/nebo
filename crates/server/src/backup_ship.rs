@@ -379,7 +379,16 @@ async fn commit_staged(req: &CommitRequest<'_>, staging: &Path) -> Result<Manife
                 (req.data_dir.to_path_buf(), source.clone(), staging.to_path_buf(), *req.key, req.bot_id.to_string());
             let db_copy = db_copy.clone();
             tokio::task::spawn_blocking(move || {
-                pack::pack_object(&dir, &source, db_copy.as_deref(), &out, &key, &ChunkMeta { bot_id: &bot_id, taken_at }, pack::CHUNK_PLAIN_MAX)
+                let packed = pack::pack_object(&dir, &source, db_copy.as_deref(), &out, &key, &ChunkMeta { bot_id: &bot_id, taken_at }, pack::CHUNK_PLAIN_MAX);
+                // Packing read the whole tree through the page cache, and
+                // nothing reads most of it again soon. (Not the loose top
+                // files: the live database sits beside them.)
+                if source.role == "tree" {
+                    for m in &source.members {
+                        napp::page_cache::release(&dir.join(m));
+                    }
+                }
+                packed
             })
             .await
             .map_err(|e| e.to_string())??
@@ -606,33 +615,14 @@ async fn restore(api: &NeboAIApi, generation: Option<i64>, into: &Path, key: Opt
     let _ = std::fs::remove_dir_all(&staging);
     let tree = staging.join("tree");
     std::fs::create_dir_all(&tree).map_err(|e| format!("create {}: {e}", tree.display()))?;
-    let result = restore_staged(api, &manifest, &key, &staging, &tree, into).await;
+    let result = restore_staged(api, &manifest, &key, &tree, into).await;
     let _ = std::fs::remove_dir_all(&staging);
     result.map(|_| Some(st.generation))
 }
 
-async fn restore_staged(api: &NeboAIApi, manifest: &Manifest, key: &[u8; 32], staging: &Path, tree: &Path, into: &Path) -> Result<(), String> {
-    for (i, obj) in manifest.objects.iter().enumerate() {
-        let gz = staging.join(format!("object-{i}.gz"));
-        {
-            use std::io::Write;
-            let mut out = std::fs::File::create(&gz).map_err(|e| format!("create {}: {e}", gz.display()))?;
-            for c in &obj.chunks {
-                let bytes = api.download_file(&c.file_id).await.map_err(|e| format!("download chunk {}: {e}", c.file_id))?;
-                let (key, sha) = (*key, c.sha256.clone());
-                let plain = tokio::task::spawn_blocking(move || pack::open_chunk(&bytes, &key, &sha))
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| format!("{} {}: {e}", obj.role, obj.root))?;
-                out.write_all(&plain).map_err(|e| format!("write {}: {e}", gz.display()))?;
-            }
-        }
-        let (gz2, tree2, sha, bytes) = (gz.clone(), tree.to_path_buf(), obj.sha256.clone(), obj.bytes);
-        tokio::task::spawn_blocking(move || pack::unpack_object(&gz2, &tree2, &sha, bytes))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("{} {}: {e}", obj.role, obj.root))?;
-        let _ = std::fs::remove_file(&gz);
+async fn restore_staged(api: &NeboAIApi, manifest: &Manifest, key: &[u8; 32], tree: &Path, into: &Path) -> Result<(), String> {
+    for obj in &manifest.objects {
+        restore_object(api, obj, key, tree).await.map_err(|e| format!("{} {}: {e}", obj.role, obj.root))?;
     }
     let db = tree.join(pack::DATABASE_PATH);
     if db.exists() {
@@ -642,7 +632,108 @@ async fn restore_staged(api: &NeboAIApi, manifest: &Manifest, key: &[u8; 32], st
             Err(e) => return Err(format!("restored database: {e}")),
         }
     }
-    move_into_place(tree, into)
+    let restored: Vec<PathBuf> = std::fs::read_dir(tree)
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| into.join(e.file_name())).collect())
+        .unwrap_or_default();
+    move_into_place(tree, into)?;
+    release_restored(restored, into.join(pack::DATABASE_PATH));
+    Ok(())
+}
+
+/// Everything a restore wrote, but the database the server is about to
+/// open, leaves the page cache: nothing reads most of it soon, and its pages
+/// were a cloud bot's memory (a restored tree stayed whole in its cache). In
+/// the background: writing it out first must not hold up the boot.
+fn release_restored(restored: Vec<PathBuf>, database: PathBuf) {
+    let release = move || {
+        for path in restored {
+            if !database.starts_with(&path) {
+                napp::page_cache::release(&path);
+                continue;
+            }
+            // The data directory: all of it but the database.
+            for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                if entry.path() != database {
+                    napp::page_cache::release(&entry.path());
+                }
+            }
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("restore-release".into()).spawn(release) {
+        warn!(error = %e, "the restored files stay in the page cache");
+    }
+}
+
+/// Download one object's chunks and unpack them as they arrive: each chunk
+/// is opened in its own buffer and streamed into the unpack, which runs on
+/// a blocking thread. At most two chunks are in memory (the one unpacking,
+/// the next arriving), and the object is written once — never staged whole
+/// as a `.gz` first.
+async fn restore_object(api: &NeboAIApi, obj: &ObjectEntry, key: &[u8; 32], tree: &Path) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let unpack = {
+        let (tree, sha, bytes) = (tree.to_path_buf(), obj.sha256.clone(), obj.bytes);
+        tokio::task::spawn_blocking(move || pack::unpack_object(Pieces { rx, cur: Vec::new(), at: 0 }, &tree, &sha, bytes))
+    };
+    let mut fetched = Ok(());
+    for c in &obj.chunks {
+        // Wait for room before downloading, so a chunk is fetched only once
+        // the unpack has taken the one before.
+        let Ok(permit) = tx.reserve().await else {
+            break; // the unpack stopped; its error says why
+        };
+        let bytes = match api.download_file(&c.file_id).await {
+            Ok(b) => b,
+            Err(e) => {
+                fetched = Err(format!("download chunk {}: {e}", c.file_id));
+                break;
+            }
+        };
+        let (key, sha) = (*key, c.sha256.clone());
+        match tokio::task::spawn_blocking(move || pack::open_chunk(bytes, &key, &sha)).await {
+            Ok(Ok(plain)) => permit.send(plain),
+            Ok(Err(e)) => {
+                fetched = Err(e);
+                break;
+            }
+            Err(e) => {
+                fetched = Err(e.to_string());
+                break;
+            }
+        }
+    }
+    drop(tx);
+    let unpacked = unpack.await.map_err(|e| e.to_string())?;
+    // A chunk that never arrived is the cause; the unpack's short read only
+    // its symptom.
+    fetched?;
+    unpacked
+}
+
+/// An object's opened chunks, in order, read as one stream. Each is dropped
+/// once it has been read through.
+struct Pieces {
+    rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    cur: Vec<u8>,
+    at: usize,
+}
+
+impl std::io::Read for Pieces {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.at == self.cur.len() {
+            // Let go of the chunk read through before waiting for the next.
+            self.cur = Vec::new();
+            self.at = 0;
+            match self.rx.blocking_recv() {
+                Some(next) => self.cur = next,
+                None => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.cur.len() - self.at);
+        buf[..n].copy_from_slice(&self.cur[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
 }
 
 /// Move the unpacked tree into the data directory, the database last: until
@@ -1032,6 +1123,51 @@ mod tests {
         let next = commit_as(&api, dst.path(), Role::State).await.unwrap();
         let nebo = next.objects.iter().find(|o| o.root == "nebo").unwrap();
         assert!(nebo.bytes < 64 << 10, "{} bytes", nebo.bytes);
+    }
+
+    /// An object cut into many chunks streams into the unpack chunk by
+    /// chunk, across every boundary, and comes back byte for byte; a chunk
+    /// that never arrives fails the object instead of leaving half of it.
+    #[tokio::test]
+    async fn an_object_in_many_chunks_streams_into_the_unpack() {
+        let src = bot_dir();
+        let noise: Vec<u8> = (0..300_000u32).flat_map(|i| (i.wrapping_mul(2_654_435_761)).to_le_bytes()).collect();
+        std::fs::write(src.path().join("files/docs/noise.bin"), &noise).unwrap();
+        let source = pack::sources(src.path(), false).into_iter().find(|s| s.root == "files").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let meta = ChunkMeta { bot_id: BOT, taken_at: 1_789_700_000 };
+        let packed = pack::pack_object(src.path(), &source, None, out.path(), &KEY, &meta, 64 << 10).unwrap();
+        assert!(packed.chunks.len() > 10, "{} chunks", packed.chunks.len());
+
+        let unpack = |chunks: Vec<Vec<u8>>| {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let dst = tempfile::tempdir().unwrap();
+            let (into, sha, bytes) = (dst.path().to_path_buf(), packed.sha256.clone(), packed.bytes);
+            let task = tokio::task::spawn_blocking(move || pack::unpack_object(Pieces { rx, cur: Vec::new(), at: 0 }, &into, &sha, bytes));
+            (dst, tx, task, chunks)
+        };
+        let opened: Vec<Vec<u8>> = packed
+            .chunks
+            .iter()
+            .map(|c| pack::open_chunk(std::fs::read(&c.path).unwrap(), &KEY, &c.sha256).unwrap())
+            .collect();
+
+        let (dst, tx, task, chunks) = unpack(opened.clone());
+        for c in chunks {
+            tx.send(c).await.unwrap();
+        }
+        drop(tx);
+        task.await.unwrap().unwrap();
+        assert_eq!(read(&dst.path().join("files/docs/noise.bin")), noise);
+        assert_eq!(read(&dst.path().join("files/docs/a.txt")), b"a document");
+
+        let (_dst, tx, task, mut chunks) = unpack(opened);
+        chunks.pop();
+        for c in chunks {
+            tx.send(c).await.unwrap();
+        }
+        drop(tx);
+        assert!(task.await.unwrap().is_err(), "a short object fails");
     }
 
     /// Two writers from the same head: the second is refused and the head

@@ -1694,7 +1694,7 @@ pub(crate) async fn fetch_and_install_plugin(
     state.skill_loader.pause_watcher();
     let install = state
         .plugin_store
-        .install_from_napp(slug, &version, &napp_data)
+        .install_from_napp(slug, &version, napp_data)
         .await;
     // COLD reload, not load_all(): a plugin install/update just deleted the old
     // version dir and wrote a new one, and load_all()'s warm path trusts the
