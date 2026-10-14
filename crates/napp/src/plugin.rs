@@ -2498,7 +2498,7 @@ impl PluginStore {
     /// Whether any version of `slug` is on disk, in either root: a whole one,
     /// or a quarantined one (a revoked plugin keeps its marker, and is never
     /// fetched again for want of a binary). False is a registered plugin
-    /// whose package is not here, which a cloud bot's saved state leaves out
+    /// whose package is not here, which a cloud bot's saved state may not hold
     /// ([`package_entries`]) and its default pass fetches again.
     pub fn package_on_disk(&self, slug: &str) -> bool {
         self.resolve(slug, "*").is_some()

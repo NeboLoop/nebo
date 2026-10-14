@@ -15,14 +15,16 @@
 //! that needs it still installs it (`default_artifacts::install_on_request`).
 //!
 //! On a Nebo Cloud bot a pass also fetches every installed plugin whose
-//! package is not on disk: its saved state leaves packages out
-//! (`backup_ship::pack`), so a restored bot has the plugin's records and data
-//! and fetches its package again through the one plugin installer
-//! (`codes::fetch_and_install_plugin`, what an update runs). And there a pass
-//! that has anything to fetch first waits a random spread of up to
-//! [`CLOUD_SPREAD`]: a release rolls every cloud bot at once, and their
-//! downloads must not land on the hub in one burst. A request that needs a
-//! default never waits for it: the safety net installs on the spot.
+//! package is not on disk. Its saved state holds each installed plugin
+//! version (`backup_ship::pack`), so a restored bot normally has them all;
+//! what is missing is a plugin installed after the last commit, or one a
+//! generation committed before versions were saved left out. The bot has the
+//! plugin's records and data and fetches its package again through the one
+//! plugin installer (`codes::fetch_and_install_plugin`, what an update runs).
+//! And there a pass that has anything to fetch first waits a random spread
+//! of up to [`CLOUD_SPREAD`]: a release rolls every cloud bot at once, and
+//! their downloads must not land on the hub in one burst. A request that
+//! needs a default never waits for it: the safety net installs on the spot.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,7 +164,7 @@ fn packages_missing(state: &AppState) -> Vec<db::models::PluginRegistry> {
 }
 
 /// One round: fetch the package of each installed plugin that has none on
-/// disk — what a restored cloud bot had — through the one plugin installer,
+/// disk — what a restored cloud bot's state did not hold — through the one plugin installer,
 /// the one an update runs; its data and settings were restored and stay.
 /// A default's code is claimed, so a request that needs it waits for this
 /// install instead of fetching it a second time. Returns the slugs still

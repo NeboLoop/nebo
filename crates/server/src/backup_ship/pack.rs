@@ -52,13 +52,18 @@ const DURABLE_TREES: &[&str] = &[
     CHROMIUM_PROFILE,
 ];
 
-/// Where marketplace plugins are installed, inside the `nebo` tree. Their
-/// packages are not state: the marketplace sends them again, and after a
-/// restore the bot fetches what it had (the server's `default_artifacts`
-/// pass). Each is tens of megabytes; every cloud bot carrying them made
-/// every restore download them from Spaces at once. A plugin's own data —
-/// `appdata/plugins/<slug>/`, and anything it wrote beside its versions —
-/// is state, and stays (`napp::plugin::package_entries`).
+/// Where marketplace plugins are installed, inside the `nebo` tree. The
+/// `nebo` object leaves their packages out; each installed version dir is an
+/// object of its own instead ([`plugin_versions`]), so a plugin is uploaded
+/// once per version (an unchanged object is never packed again) and a
+/// restored bot has it on disk at boot: no download from the marketplace,
+/// no extraction, no verification again. Fetching and extracting every
+/// plugin after each restore cost a cloud bot a minute of work, stalled it
+/// long enough to drop the gateway, and left the archives in its page cache
+/// (2026-10-13). The `.napp` archives, and an install's `.staging` / `.prev`
+/// copies, are never state. A plugin's own data — `appdata/plugins/<slug>/`,
+/// and anything it wrote beside its versions — is state in the `nebo`
+/// object (`napp::plugin::package_entries`).
 const PLUGINS_DIR: &str = "nebo/plugins";
 
 /// The built-in browser's profile. Durable only while no Chromium holds it:
@@ -236,10 +241,28 @@ fn plugin_packages(data_dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Each installed plugin version dir (`nebo/plugins/<slug>/<semver>`), as
+/// paths relative to the data directory, sorted: one object each in a state
+/// commit. Not a quarantined version (it stays in the `nebo` object, the
+/// record of a revocation), nor an install's `.staging` / `.prev` copy, nor
+/// a `.napp`.
+fn plugin_versions(data_dir: &Path) -> Vec<String> {
+    plugin_packages(data_dir)
+        .into_iter()
+        .filter(|rel| {
+            rel.rsplit('/')
+                .next()
+                .is_some_and(|name| semver::Version::parse(name).is_ok())
+                && data_dir.join(rel).is_dir()
+        })
+        .collect()
+}
+
 /// The objects of a commit. `archive` is the whole data directory (the
-/// one-shot copy taken before a disk is retired); otherwise the durable set,
-/// without the installed plugins' packages. The Chromium profile is left out
-/// while a Chromium holds it.
+/// one-shot copy taken before a disk is retired); otherwise the durable set:
+/// the `nebo` tree without the installed plugins' packages, and each
+/// installed plugin version as an object of its own. The Chromium profile is
+/// left out while a Chromium holds it.
 pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
     let browser_busy = chromium_running(data_dir);
     let database = Source {
@@ -295,6 +318,14 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
                     },
                 });
             }
+        }
+        for version in plugin_versions(data_dir) {
+            out.push(Source {
+                role: "tree".into(),
+                root: version.clone(),
+                members: vec![version],
+                exclude: vec![],
+            });
         }
         return out;
     }
@@ -1092,10 +1123,11 @@ pub(super) mod tests {
     /// A state commit's `nebo` tree leaves every installed plugin's package
     /// out — version dirs, `.napp`s, install copies — and keeps all its data:
     /// a database beside the versions, `appdata/plugins/<slug>/`, a revoked
-    /// (quarantined) version, the owner's own plugins under `user/`. An
-    /// archive still holds everything.
+    /// (quarantined) version, the owner's own plugins under `user/`. Each
+    /// installed version is an object of its own; a `.napp` and an install
+    /// copy are in none. An archive still holds everything.
     #[test]
-    fn a_state_commit_leaves_plugin_packages_out_and_keeps_their_data() {
+    fn a_state_commit_holds_each_plugin_version_apart_and_no_napp() {
         let d = tempfile::tempdir().unwrap();
         for dir in [
             "nebo/plugins/ballast/0.2.0/skills/kb",
@@ -1155,6 +1187,18 @@ pub(super) mod tests {
         );
         assert_eq!(packed("appdata"), vec!["appdata/plugins/ballast/ballast.db"]);
         assert_eq!(packed("user"), vec!["user/plugins/mine/0.1.0/mine"]);
+        // Each installed version is an object of its own: no `.napp`, no
+        // install copy, no quarantined version.
+        let versions: Vec<&str> = state.iter().filter(|s| s.root.starts_with("nebo/plugins/")).map(|s| s.root.as_str()).collect();
+        assert_eq!(versions, vec!["nebo/plugins/ballast/0.2.0", "nebo/plugins/nebo-office/0.4.1"]);
+        assert_eq!(
+            packed("nebo/plugins/ballast/0.2.0"),
+            vec![
+                "nebo/plugins/ballast/0.2.0/ballast",
+                "nebo/plugins/ballast/0.2.0/plugin.json",
+                "nebo/plugins/ballast/0.2.0/skills/kb/SKILL.md",
+            ]
+        );
 
         let archive = sources(d.path(), true);
         let nebo = archive.iter().find(|s| s.root == "nebo").unwrap();
