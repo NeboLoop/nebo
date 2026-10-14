@@ -4364,6 +4364,9 @@
 		"offerAgain": "Erbjud igen",
 		"addYourself": "Lägg till en regel själv",
 		"noCandidates": "Inget att välja än. De kommer från dina egna senaste svar.",
-		"turnOn": "Slå på"
+		"turnOn": "Slå på",
+		"seeWhatDid": "Se vad {name} gjorde",
+		"didNothing": "{name} har inte hanterat något enligt den här regeln än.",
+		"didMore": "Och {n} till"
 	}
 }

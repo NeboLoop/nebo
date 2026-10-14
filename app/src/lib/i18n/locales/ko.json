@@ -4364,6 +4364,9 @@
 		"offerAgain": "다시 제안하기",
 		"addYourself": "직접 규칙 추가",
 		"noCandidates": "아직 고를 항목이 없습니다. 후보는 내 최근 답변에서 나옵니다.",
-		"turnOn": "켜기"
+		"turnOn": "켜기",
+		"seeWhatDid": "{name}이(가) 한 일 보기",
+		"didNothing": "{name}은(는) 아직 이 규칙으로 처리한 것이 없습니다.",
+		"didMore": "외 {n}건"
 	}
 }

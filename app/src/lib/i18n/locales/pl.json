@@ -4364,6 +4364,9 @@
 		"offerAgain": "Proponuj ponownie",
 		"addYourself": "Dodaj regułę samodzielnie",
 		"noCandidates": "Na razie nie ma z czego wybierać. Propozycje pochodzą z Twoich ostatnich odpowiedzi.",
-		"turnOn": "Włącz"
+		"turnOn": "Włącz",
+		"seeWhatDid": "Zobacz działania: {name}",
+		"didNothing": "{name}: w ramach tej reguły nic jeszcze nie zrobiono.",
+		"didMore": "I jeszcze {n}"
 	}
 }

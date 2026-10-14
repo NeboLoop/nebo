@@ -4364,6 +4364,9 @@
 		"offerAgain": "Tawarkan lagi",
 		"addYourself": "Tambah peraturan sendiri",
 		"noCandidates": "Belum ada apa-apa untuk dipilih. Ini datang daripada jawapan terkini anda sendiri.",
-		"turnOn": "Hidupkan"
+		"turnOn": "Hidupkan",
+		"seeWhatDid": "Lihat apa yang {name} buat",
+		"didNothing": "{name} belum mengendalikan apa-apa di bawah peraturan ini.",
+		"didMore": "Dan {n} lagi"
 	}
 }

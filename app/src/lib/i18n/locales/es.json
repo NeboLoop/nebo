@@ -4364,6 +4364,9 @@
 		"offerAgain": "Volver a ofrecer",
 		"addYourself": "Añadir una regla tú mismo",
 		"noCandidates": "Aún no hay nada que elegir. Esto sale de tus propias respuestas recientes.",
-		"turnOn": "Activarla"
+		"turnOn": "Activarla",
+		"seeWhatDid": "Ver lo que hizo {name}",
+		"didNothing": "{name} aún no ha hecho nada con esta regla.",
+		"didMore": "Y {n} más"
 	}
 }

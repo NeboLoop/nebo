@@ -6,15 +6,17 @@
 
 import { writable, get } from 'svelte/store';
 import type { LearnedRule, LearnedRulesResponse, NeverOffer, RuleCandidate, RuleEvent } from '$lib/api/neboComponents';
-import { answerVia, ASSISTANT_ID } from './item';
+import { answerVia, ASSISTANT_ID, type InboxItem } from './item';
 
 export type { LearnedRule, NeverOffer, RuleCandidate, RuleEvent };
 export type LearnedRules = LearnedRulesResponse;
 
 export const learnedRules = writable<LearnedRules | null>(null);
 
-/** Where the rules list lives: a section of the assistant's own settings. */
-export const rulesPath = (): string => `/${ASSISTANT_ID}/settings/handles`;
+/** Where the rules list lives: a section of the assistant's own settings;
+ *  with `ruleId`, at that rule. */
+export const rulesPath = (ruleId?: string): string =>
+	`/${ASSISTANT_ID}/settings/handles${ruleId ? `?rule=${encodeURIComponent(ruleId)}` : ''}`;
 
 export async function loadLearnedRules(): Promise<LearnedRules> {
 	const api = await import('$lib/api/nebo');
@@ -28,6 +30,13 @@ export async function loadLearnedRules(): Promise<LearnedRules> {
 export async function ruleById(id: string): Promise<LearnedRule | null> {
 	const have = get(learnedRules) ?? (await loadLearnedRules());
 	return have.rules.find((r) => r.id === id) ?? null;
+}
+
+/** What the assistant handled under a rule, newest first. */
+export async function handledUnder(id: string, limit = 20): Promise<{ items: InboxItem[]; total: number }> {
+	const api = await import('$lib/api/nebo');
+	const res = await api.listRuleHandled(id, limit, 0);
+	return { items: res.notifications ?? [], total: res.total ?? 0 };
 }
 
 /** Stop or restart a rule. Nothing is deleted: a paused rule keeps its history. */

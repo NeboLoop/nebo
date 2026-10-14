@@ -4364,6 +4364,9 @@
 		"offerAgain": "再び提案する",
 		"addYourself": "自分でルールを追加",
 		"noCandidates": "まだ選べるものがありません。候補はあなた自身の最近の回答から作られます。",
-		"turnOn": "オンにする"
+		"turnOn": "オンにする",
+		"seeWhatDid": "{name}が行ったことを見る",
+		"didNothing": "{name}はまだこのルールで何も対応していません。",
+		"didMore": "ほか{n}件"
 	}
 }

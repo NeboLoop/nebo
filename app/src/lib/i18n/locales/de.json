@@ -4364,6 +4364,9 @@
 		"offerAgain": "Wieder anbieten",
 		"addYourself": "Selbst eine Regel hinzufügen",
 		"noCandidates": "Noch nichts zur Auswahl. Das kommt aus deinen eigenen letzten Antworten.",
-		"turnOn": "Einschalten"
+		"turnOn": "Einschalten",
+		"seeWhatDid": "Sehen, was {name} gemacht hat",
+		"didNothing": "{name} hat nach dieser Regel noch nichts erledigt.",
+		"didMore": "Und {n} weitere"
 	}
 }

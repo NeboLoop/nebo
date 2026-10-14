@@ -2,7 +2,8 @@
   Redirects /{agentId}/settings/{section} into the settings modal. Kept so
   every existing deep link and bookmark still lands on the right section.
   `/{agentId}/settings/accounts?plugin={slug}` (an Inbox item naming the
-  plugin to connect) lands on the section that plugin's accounts live in.
+  plugin to connect) lands on the section that plugin's accounts live in;
+  `/assistant/settings/handles?rule={id}` (the Inbox's Why?) on that rule.
 -->
 <script lang="ts">
   import { page } from '$app/stores';
@@ -15,6 +16,7 @@
     const requested = $page.params.section || 'general';
     const section = requested === 'accounts' && plugin ? accountsSectionFor(plugin) : requested;
     if (!id) return;
-    goto(`/${id}/threads?settings=${encodeURIComponent(section)}`, { replaceState: true });
+    const rule = $page.url.searchParams.get('rule');
+    goto(`/${id}/threads?settings=${encodeURIComponent(section)}${rule ? `&rule=${encodeURIComponent(rule)}` : ''}`, { replaceState: true });
   });
 </script>

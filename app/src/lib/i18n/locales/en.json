@@ -4364,6 +4364,9 @@
 		"offerAgain": "Offer again",
 		"addYourself": "Add a rule yourself",
 		"noCandidates": "Nothing to pick yet. These come from your own recent answers.",
-		"turnOn": "Turn it on"
+		"turnOn": "Turn it on",
+		"seeWhatDid": "See what {name} did",
+		"didNothing": "{name} hasn't handled anything under this rule yet.",
+		"didMore": "And {n} more"
 	}
 }

@@ -13,14 +13,29 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { botName, loadBotName } from '$lib/stores/botName';
   import { addToast } from '$lib/stores/toast';
+  import { tick } from 'svelte';
+  import { goto } from '$lib/nav';
   import { formatRelative } from '$lib/time';
+  import UpdateRow from '$lib/components/inbox/UpdateRow.svelte';
+  import type { InboxItem } from '$lib/inbox/item';
   import { surfaceKey } from '$lib/inbox/item';
   import {
-    learnedRules, loadLearnedRules, setRulePaused, editRule, addRule, offerAgain, formatMoment, dollars, cents,
+    learnedRules, loadLearnedRules, handledUnder, setRulePaused, editRule, addRule, offerAgain, formatMoment, dollars, cents,
     type LearnedRule, type RuleEvent,
   } from '$lib/inbox/rules';
 
-  let { name, color = null, shape = null }: { name: string; color?: string | null; shape?: string | null } = $props();
+  let {
+    name,
+    color = null,
+    shape = null,
+    highlight = null
+  }: {
+    name: string;
+    color?: string | null;
+    shape?: string | null;
+    /** The rule the Inbox's Why? came from: shown and marked. */
+    highlight?: string | null;
+  } = $props();
 
   let failed = $state(false);
   onMount(() => {
@@ -59,10 +74,43 @@
     paused: 'handles.eventPaused',
     resumed: 'handles.eventResumed',
   };
+  // Opened at a rule (the Inbox's Why?): once the list is in, that rule
+  // comes into view, marked.
+  let section = $state<HTMLElement | null>(null);
+  let shown = '';
+  $effect(() => {
+    const target = highlight ?? '';
+    if (!data || !section || shown === target) return;
+    shown = target;
+    void tick().then(() => {
+      const el = (target && section?.querySelector(`[data-rule-id="${CSS.escape(target)}"]`)) || section;
+      el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  });
+
+  // "See what <name> did": what each rule handled, newest first.
+  let did = $state<Record<string, { items: InboxItem[]; total: number } | 'loading'>>({});
+  async function toggleDid(id: string) {
+    if (did[id]) {
+      const { [id]: _, ...rest } = did;
+      did = rest;
+      return;
+    }
+    did = { ...did, [id]: 'loading' };
+    try {
+      did = { ...did, [id]: await handledUnder(id) };
+    } catch (e) {
+      const { [id]: _, ...rest } = did;
+      did = rest;
+      addToast((e as Error)?.message || $t('handles.loadFailed'), 'error');
+    }
+  }
+  const openItem = (n: InboxItem) => { if (n.actionUrl) void goto(n.actionUrl); };
+
   const pausedAt = (r: LearnedRule): RuleEvent | undefined => [...r.history].reverse().find((e) => e.event === 'paused');
 </script>
 
-<div class="flex items-start gap-3" data-testid="handles-section">
+<div class="flex items-start gap-3" data-testid="handles-section" bind:this={section}>
   <AgentAvatar {name} {color} {shape} size="md" />
   <div class="min-w-0">
     <div class="text-sm font-semibold">{$t('handles.title', { values: { name } })}</div>
@@ -79,7 +127,7 @@
     <p class="text-xs text-base-content/70">{$t('handles.none', { values: { name } })}</p>
   {/if}
   {#each data.rules as r (r.id)}
-    <div class="rule-card {r.paused ? 'rule-card-paused' : ''}">
+    <div class="rule-card {r.paused ? 'rule-card-paused' : ''} {highlight === r.id ? 'rule-card-highlight' : ''}" data-rule-id={r.id}>
       <div class="flex items-start gap-3">
         <div class="text-sm font-semibold flex-1 min-w-0">{r.covers}</div>
         <input
@@ -120,7 +168,25 @@
           <button type="button" class="btn btn-ghost btn-xs" onclick={() => (editing = null)}>{$t('common.cancel')}</button>
         </form>
       {:else}
-        <div><button type="button" class="inbox-link" onclick={() => startEdit(r)}>{$t('handles.edit')}</button></div>
+        <div class="flex flex-wrap gap-1.5">
+          <button type="button" class="inbox-link" onclick={() => startEdit(r)}>{$t('handles.edit')}</button>
+          <button type="button" class="inbox-link" aria-expanded={!!did[r.id]} onclick={() => toggleDid(r.id)}>{$t('handles.seeWhatDid', { values: { name } })}</button>
+        </div>
+      {/if}
+      {#if did[r.id] === 'loading'}
+        <span class="loading loading-dots loading-xs text-base-content/40"></span>
+      {:else if did[r.id]}
+        {@const list = did[r.id] as { items: InboxItem[]; total: number }}
+        <div class="rule-did">
+          {#each list.items as n (n.id)}
+            <UpdateRow item={n} assistantName={name} why={false} onopen={openItem} onnavigate={(link) => void goto(link)} />
+          {:else}
+            <p class="rule-meta">{$t('handles.didNothing', { values: { name } })}</p>
+          {/each}
+          {#if list.total > list.items.length}
+            <p class="rule-meta">{$t('handles.didMore', { values: { n: list.total - list.items.length } })}</p>
+          {/if}
+        </div>
       {/if}
     </div>
   {/each}

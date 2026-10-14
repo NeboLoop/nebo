@@ -4364,6 +4364,9 @@
 		"offerAgain": "Yeniden teklif et",
 		"addYourself": "Kendiniz kural ekleyin",
 		"noCandidates": "Henüz seçilecek bir şey yok. Bunlar kendi son yanıtlarınızdan gelir.",
-		"turnOn": "Aç"
+		"turnOn": "Aç",
+		"seeWhatDid": "{name} neler yaptı, görün",
+		"didNothing": "{name} bu kurala göre henüz bir şey yapmadı.",
+		"didMore": "Ve {n} tane daha"
 	}
 }

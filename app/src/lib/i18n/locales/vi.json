@@ -4364,6 +4364,9 @@
 		"offerAgain": "Đề nghị lại",
 		"addYourself": "Tự thêm quy tắc",
 		"noCandidates": "Chưa có gì để chọn. Những mục này đến từ các câu trả lời gần đây của chính bạn.",
-		"turnOn": "Bật"
+		"turnOn": "Bật",
+		"seeWhatDid": "Xem {name} đã làm gì",
+		"didNothing": "{name} chưa xử lý việc gì theo quy tắc này.",
+		"didMore": "Và {n} mục nữa"
 	}
 }

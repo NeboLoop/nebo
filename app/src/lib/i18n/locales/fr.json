@@ -4364,6 +4364,9 @@
 		"offerAgain": "Proposer à nouveau",
 		"addYourself": "Ajouter une règle vous-même",
 		"noCandidates": "Rien à choisir pour l'instant. Ces éléments viennent de vos propres réponses récentes.",
-		"turnOn": "L'activer"
+		"turnOn": "L'activer",
+		"seeWhatDid": "Voir ce que {name} a fait",
+		"didNothing": "{name} n'a encore rien géré avec cette règle.",
+		"didMore": "Et {n} de plus"
 	}
 }

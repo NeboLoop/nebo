@@ -4364,6 +4364,9 @@
 		"offerAgain": "Tawarkan lagi",
 		"addYourself": "Tambahkan aturan sendiri",
 		"noCandidates": "Belum ada yang bisa dipilih. Ini berasal dari jawaban terbaru Anda sendiri.",
-		"turnOn": "Aktifkan"
+		"turnOn": "Aktifkan",
+		"seeWhatDid": "Lihat apa yang dilakukan {name}",
+		"didNothing": "{name} belum menangani apa pun dengan aturan ini.",
+		"didMore": "Dan {n} lagi"
 	}
 }

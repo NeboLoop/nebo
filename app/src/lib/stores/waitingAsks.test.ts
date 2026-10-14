@@ -6,7 +6,6 @@ vi.mock('$lib/websocket/client', () => ({
 	getWebSocketClient: () => ({ send: (type: string, data: unknown) => sent.push({ type, data }) })
 }));
 const answered: { id: string; value: string; via: string }[] = [];
-vi.mock('./permissionAsks', () => ({ answerAsk: async () => {} }));
 vi.mock('$lib/inbox/item', async (orig) => ({
 	...(await orig<typeof import('$lib/inbox/item')>()),
 	answerItem: async (id: string, value: string, via: string) => {

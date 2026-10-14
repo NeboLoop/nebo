@@ -4364,6 +4364,9 @@
 		"offerAgain": "Proponi di nuovo",
 		"addYourself": "Aggiungi una regola tu",
 		"noCandidates": "Ancora niente da scegliere. Vengono dalle tue risposte recenti.",
-		"turnOn": "Attivala"
+		"turnOn": "Attivala",
+		"seeWhatDid": "Vedi cosa ha fatto {name}",
+		"didNothing": "{name} non ha ancora gestito nulla con questa regola.",
+		"didMore": "E altri {n}"
 	}
 }

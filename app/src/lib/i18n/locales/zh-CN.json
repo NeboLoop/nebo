@@ -4364,6 +4364,9 @@
 		"offerAgain": "再次提议",
 		"addYourself": "自己添加规则",
 		"noCandidates": "暂时没有可选项。这些来自您自己最近的回答。",
-		"turnOn": "开启"
+		"turnOn": "开启",
+		"seeWhatDid": "查看 {name} 做了什么",
+		"didNothing": "{name} 还没有按这条规则处理过任何事。",
+		"didMore": "还有 {n} 项"
 	}
 }

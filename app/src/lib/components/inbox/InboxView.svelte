@@ -27,19 +27,18 @@
   import Undo2 from 'lucide-svelte/icons/undo-2';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import NeedsYouCard from './NeedsYouCard.svelte';
-  import RuleWhy from './RuleWhy.svelte';
+  import UpdateRow from './UpdateRow.svelte';
   import ProposedChange, { type Learning } from './ProposedChange.svelte';
   import {
     notifications, history, inboxCounts, hasMore, loadNotifications, loadMore, loadHistory,
     markAsRead, markAllRead, removeNotification,
   } from '$lib/stores/notifications';
   import {
-    ASSISTANT_ID, answerItem, canRevertLearning, cardKindOf, groupUpdates, isAssistant, learningIdOf,
-    ruleIdOf, sectionOf, splitGroups, surfaceKey, topNeedsYou, undoOf, type InboxItem,
+    ASSISTANT_ID, canRevertLearning, groupUpdates, isAssistant, learningIdOf,
+    sectionOf, splitGroups, surfaceKey, topNeedsYou, type InboxItem,
   } from '$lib/inbox/item';
   import { rulesPath } from '$lib/inbox/rules';
   import { currentUser } from '$lib/stores/auth';
-  import { addToast } from '$lib/stores/toast';
   import { formatRelative, greetingKey } from '$lib/time';
   import { getLearning, getRun, revertLearning } from '$lib/api/nebo';
   import type { GetRunResponse, PendingTask } from '$lib/api/neboComponents';
@@ -82,7 +81,6 @@
   let search = $state('');
   let moreNeeds = $state(false);
   let moreGroups = $state(false);
-  let whyOpen = $state<string | null>(null);
 
   function pick(f: Filter) {
     filter = filter === f ? 'all' : f;
@@ -155,19 +153,6 @@
   }
 
   let busy = $state<Record<string, boolean>>({});
-  async function undo(n: InboxItem) {
-    const u = undoOf(n);
-    if (!u || busy[n.id]) return;
-    busy = { ...busy, [n.id]: true };
-    try {
-      await answerItem(n.id, u.value);
-    } catch (e) {
-      addToast((e as Error)?.message || $t('inbox.answerFailed'), 'error');
-    } finally {
-      busy = { ...busy, [n.id]: false };
-    }
-  }
-
   /** An approved proposal undone from History, through the path that applied it. */
   async function revert(n: InboxItem) {
     const id = learningIdOf(n);
@@ -218,41 +203,6 @@
   <NeedsYouCard item={n} name={who(n.agentId).name} color={who(n.agentId).color} shape={who(n.agentId).shape} {assistantName} onopen={onnavigate} />
 {/snippet}
 
-<!-- One update: title, time, sentence, its link, a dot while unread. A
-     handled one also says why (the rule) and offers Undo where it can be. -->
-{#snippet update(n: InboxItem)}
-  {@const handled = cardKindOf(n) === 'handled'}
-  {@const u = undoOf(n)}
-  <div class="inbox-update group">
-    <span class="inbox-dot {n.readAt ? '' : 'inbox-dot-unread'}" aria-label={n.readAt ? undefined : $t('inbox.unread')}></span>
-    <div class="flex-1 min-w-0">
-      <button type="button" class="inbox-update-main" onclick={() => open(n)}>
-        <span class="text-sm truncate {n.readAt ? 'font-medium' : 'font-semibold'}">{n.title}</span>
-        <span class="text-xs text-base-content/50 font-mono shrink-0 ms-auto">{formatRelative(n.createdAt, 'short')}</span>
-      </button>
-      {#if n.body}<p class="text-xs text-base-content/70 mt-0.5">{n.body}</p>{/if}
-      {#if (n.actionUrl && n.linkLabel) || handled}
-        <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
-          {#if n.actionUrl && n.linkLabel}
-            <button type="button" class="inbox-link" onclick={() => { markAsRead(n.id); if (n.actionUrl) onnavigate(n.actionUrl); }}>↗ {n.linkLabel}</button>
-          {/if}
-          {#if handled && ruleIdOf(n)}
-            <button type="button" class="inbox-link" aria-expanded={whyOpen === n.id} onclick={() => (whyOpen = whyOpen === n.id ? null : n.id)}>{$t('inbox.why')}</button>
-          {/if}
-          {#if u}
-            <button type="button" class="inbox-link" disabled={!!busy[n.id]} onclick={() => undo(n)}><Undo2 class="w-3 h-3" />{u.label}</button>
-          {/if}
-        </div>
-      {/if}
-      {#if handled && whyOpen === n.id && ruleIdOf(n)}
-        <RuleWhy ruleId={ruleIdOf(n)!} {assistantName} onnavigate={onnavigate} />
-      {/if}
-    </div>
-    <button type="button" class="inbox-put-away" onclick={() => putAway(n.id)} aria-label={$t('inbox.putAwayAction')} title={$t('inbox.putAwayAction')}>
-      <Archive class="w-3 h-3" />
-    </button>
-  </div>
-{/snippet}
 
 {#snippet past(n: InboxItem)}
   <div class="inbox-update group">
@@ -375,7 +325,7 @@
                     </div>
                   </div>
                   {#each g.items as n (n.id)}
-                    {@render update(n)}
+                    <UpdateRow item={n} {assistantName} onopen={open} {onnavigate} onputaway={putAway} />
                   {/each}
                 </div>
               {/each}

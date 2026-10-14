@@ -46,7 +46,7 @@
       <p class="font-medium">{$t('inbox.rulePaused', { values: { name: assistantName } })}</p>
     {/if}
     <div class="flex flex-wrap gap-1.5 mt-1">
-      <button type="button" class="inbox-link" onclick={() => onnavigate(rulesPath())}>{$t('inbox.editRule')}</button>
+      <button type="button" class="inbox-link" onclick={() => onnavigate(rulesPath(rule!.id))}>{$t('inbox.editRule')}</button>
       {#if !rule.paused}
         <button type="button" class="inbox-link inbox-link-danger" disabled={busy} onclick={stop}>{$t('inbox.stopRule')}</button>
       {/if}

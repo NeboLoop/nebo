@@ -4364,6 +4364,9 @@
 		"offerAgain": "Opnieuw aanbieden",
 		"addYourself": "Zelf een regel toevoegen",
 		"noCandidates": "Nog niets om te kiezen. Deze komen uit je eigen recente antwoorden.",
-		"turnOn": "Aanzetten"
+		"turnOn": "Aanzetten",
+		"seeWhatDid": "Bekijk wat {name} deed",
+		"didNothing": "{name} heeft onder deze regel nog niets afgehandeld.",
+		"didMore": "En nog {n}"
 	}
 }

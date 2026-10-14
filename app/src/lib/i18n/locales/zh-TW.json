@@ -4364,6 +4364,9 @@
 		"offerAgain": "再次提議",
 		"addYourself": "自己新增規則",
 		"noCandidates": "暫時沒有可選項目。這些來自您自己最近的回答。",
-		"turnOn": "開啟"
+		"turnOn": "開啟",
+		"seeWhatDid": "查看 {name} 做了什麼",
+		"didNothing": "{name} 還沒有按這條規則處理過任何事。",
+		"didMore": "還有 {n} 項"
 	}
 }
