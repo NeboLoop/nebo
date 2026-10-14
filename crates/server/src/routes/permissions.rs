@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::learned_rules::list_learned_rules).post(handlers::learned_rules::add_learned_rule),
         )
         .route("/permissions/learned/{id}", axum::routing::put(handlers::learned_rules::update_learned_rule))
+        .route("/permissions/learned/{id}/handled", axum::routing::get(handlers::learned_rules::list_rule_handled))
         .route("/permissions/learned/{id}/pause", axum::routing::post(handlers::learned_rules::pause_learned_rule))
         .route("/permissions/learned/{id}/resume", axum::routing::post(handlers::learned_rules::resume_learned_rule))
         .route(

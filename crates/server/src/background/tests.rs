@@ -546,5 +546,17 @@ async fn finished_work_is_one_inbox_update() {
     for task in [on_its_own, turn] {
         assert!(finished_item(state, &FinishedTask { task, outcome: Outcome::Done, ended_at: now() }).is_none());
     }
-    assert!(finished_item(state, &FinishedTask { task: helper, outcome: Outcome::Removed, ended_at: now() }).is_none());
+    assert!(finished_item(state, &FinishedTask { task: helper.clone(), outcome: Outcome::Removed, ended_at: now() }).is_none());
+
+    // A temporary workflow's run reports its own outcome: not a second update.
+    let run = format!("{agent}-run");
+    let wf = BackgroundTask {
+        source: Source::Workflow,
+        id: format!("{}:{run}", Source::Workflow.prefix()),
+        ..helper
+    };
+    state.store.mark_temporary(db::TemporaryKind::Workflow, &agent, "one-off", "").unwrap();
+    assert!(finished_item(state, &FinishedTask { task: wf.clone(), outcome: Outcome::Done, ended_at: now() }).is_some());
+    state.store.claim_temporary_run(db::TemporaryKind::Workflow, &agent, "one-off", &run).unwrap();
+    assert!(finished_item(state, &FinishedTask { task: wf, outcome: Outcome::Done, ended_at: now() }).is_none());
 }

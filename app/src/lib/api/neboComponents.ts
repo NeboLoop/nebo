@@ -2508,6 +2508,11 @@ export interface ListRegistryResponse {
 	registry: unknown
 }
 
+export interface ListRuleHandledResponse {
+	notifications: Notification[]
+	total: number
+}
+
 export interface ListRunsResponse {
 	runs: WorkflowRun[]
 	total: number

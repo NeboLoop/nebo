@@ -959,6 +959,11 @@ fn finished_item(state: &AppState, ended: &FinishedTask) -> Option<(String, Stri
         Outcome::Removed => return None,
     };
     let native = task.id.split_once(':').map(|(_, n)| n).unwrap_or_default();
+    // Temporary work reports its own outcome (`engine::report_temporary_outcome`,
+    // the `temporary:<run>` item): one finished job, one update.
+    if task.source == Source::Workflow && is_temporary_run(state, native) {
+        return None;
+    }
     let said = match task.source {
         Source::Helper => state.store.get_pending_task(native).ok().flatten().and_then(|r| r.output.or(r.last_error)),
         Source::Workflow => state.store.get_workflow_run(native).ok().flatten().and_then(|r| r.output.or(r.error)),
@@ -978,6 +983,19 @@ fn finished_item(state: &AppState, ended: &FinishedTask) -> Option<(String, Stri
     };
     let what = task.title.trim().trim_end_matches('.');
     Some((format!("finished:{}", task.id), format!("{what} {how}"), result, link))
+}
+
+/// Whether workflow run `run_id` is temporary work's one run: reported, or
+/// still to be reported, by the engine.
+fn is_temporary_run(state: &AppState, run_id: &str) -> bool {
+    let user = state.store.ensure_local_user_id().unwrap_or_default();
+    state.store.get_notification(&format!("temporary:{run_id}"), &user).ok().flatten().is_some()
+        || state
+            .store
+            .list_temporary_work()
+            .unwrap_or_default()
+            .iter()
+            .any(|w| w.run_id.as_deref() == Some(run_id))
 }
 
 /// A chat turn ended. Stopped by the owner, the schedules it made go with

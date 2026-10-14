@@ -2758,6 +2758,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // An ask's card and its answers reach the owner through the hub, the
     // Inbox and the wake rail.
     permission_asks.attach(Arc::new(permission_asks::OwnerSurfaces { state: state.clone() }));
+    // Every ask parked before now has its Inbox item: one answer path.
+    permission_asks::reconcile_inbox(&state);
     // Runs parked on the old approval card become asks, once, now that the
     // card has somewhere to go.
     let inbox = codes::inbox_api(&state.store, &state.config.neboai.api_url).map(Arc::new);

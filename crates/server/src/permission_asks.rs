@@ -288,12 +288,15 @@ impl AskSurfaces for OwnerSurfaces {
     }
 }
 
-/// The asks still open, pushed again to the hub Inbox: pushes are
-/// best-effort, so a reconnect is where a missed one heals. All of them go
-/// out together, as ONE hub item when there are several: a bot that comes
-/// up with a backlog (29 asks open across an upgrade) pushes the owner's
-/// phone once, and the same backlog on the next reconnect is the same item
-/// and pushes nothing. Nothing here answers or withdraws an ask.
+/// The asks still open: each has its Inbox item here (an ask raised before
+/// the surfaces were attached at boot, or whose row write failed, gets it
+/// now, so every ask is answered on the one Inbox path), and all are pushed
+/// again to the hub Inbox. Pushes are best-effort, so boot and every
+/// reconnect are where a missed one heals. All of them go out together, as
+/// ONE hub item when there are several: a bot that comes up with a backlog
+/// (29 asks open across an upgrade) pushes the owner's phone once, and the
+/// same backlog on the next reconnect is the same item and pushes nothing.
+/// Nothing here answers or withdraws an ask.
 pub(crate) fn reconcile_inbox(state: &AppState) {
     match state.permission_asks.open(None) {
         Ok(asks) => {
@@ -301,7 +304,12 @@ pub(crate) fn reconcile_inbox(state: &AppState) {
                 .iter()
                 .map(|ask| {
                     let c = card(state, ask);
-                    with_item(&c, |n, hub_only| queued(state, &c, n.hub_item(hub_only)))
+                    with_item(&c, |n, hub_only| {
+                        // Quiet: the owner was told when it was raised.
+                        let quiet = tools::owner_notify::OwnerNotification { loud: false, ..*n };
+                        tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &quiet);
+                        queued(state, &c, n.hub_item(hub_only))
+                    })
                 })
                 .collect();
             crate::ask_push::global(state).queue(queued);

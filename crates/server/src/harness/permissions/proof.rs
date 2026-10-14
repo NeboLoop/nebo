@@ -1414,6 +1414,17 @@ async fn a_learned_rule_acts_only_inside_its_conditions_and_keeps_its_consent_an
     assert_eq!(handled.len(), 1, "one Handled for you");
     assert_eq!(handled[0].title, "Reordering AirWash");
     assert_eq!(handled[0].options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), ["undo"]);
+    // "See what it did": the rule's handled calls, from those same items.
+    let did = crate::handlers::learned_rules::list_rule_handled(
+        axum::extract::State(state.clone()),
+        axum::extract::Path(rule.id.clone()),
+        axum::extract::Query(crate::handlers::learned_rules::HandledQuery { limit: None, offset: None }),
+    )
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(did["total"], 1);
+    assert_eq!(did["notifications"][0]["id"], handled[0].id.as_str());
     // Outside: over the ceiling, it asks.
     assert!(buy(&nebo, &emp, &tool, 60_000).await.is_some(), "over $500: it still asks");
 
@@ -1456,4 +1467,32 @@ async fn a_learned_rule_acts_only_inside_its_conditions_and_keeps_its_consent_an
     assert_eq!((shown.uses, shown.history.len(), shown.paused), (1, 4, false));
     assert_eq!(shown.consent.via.as_deref(), Some("mobile"));
     assert!(shown.history[3].detail.contains("from $500 to $300"), "{}", shown.history[3].detail);
+}
+
+/// Every permission ask is answered on the one Inbox path: an ask with no
+/// Inbox item (parked before the server attached its surfaces at boot, or
+/// whose row write failed) gets it when the open asks are reconciled, at
+/// boot and on every reconnect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_open_ask_gets_its_inbox_item() {
+    let nebo = session().await;
+    let state = &nebo.state;
+    let emp = format!("emp-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let name = format!("probe_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    state.tools.register(Box::new(Probe { name: name.clone(), capability: Some("sms"), ran: Arc::new(AtomicUsize::new(0)) })).await;
+    let raised = nebo.tool(&heartbeat(&format!("agent:{emp}:heartbeat")), &name, json!({ "to": "+15550142" })).await;
+    let ask = raised.parked_ask.expect("it asks");
+    // The same ask written with no surface to put it before the owner.
+    let mut row = nebo.store().get_permission_ask(&ask).unwrap().unwrap();
+    row.id = uuid::Uuid::new_v4().to_string();
+    nebo.store().insert_permission_ask(&row, row.created_at + 3600).unwrap();
+    let id = crate::permission_asks::inbox_id(&row.id);
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    assert!(nebo.store().get_notification(&id, &user).unwrap().is_none(), "no item yet");
+
+    crate::permission_asks::reconcile_inbox(state);
+    let n = item(&nebo, &id);
+    assert!(n.needs_you && n.status == "open" && n.options.iter().any(|o| o.value == "this_once"), "{n:?}");
+    crate::handlers::notification::answer_item(state, &n, "no", "web").await.unwrap();
+    assert_eq!(item(&nebo, &id).answer.as_deref(), Some("No"));
 }

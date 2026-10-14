@@ -372,7 +372,7 @@ fn assistant_name(state: &AppState) -> String {
 /// it to reverse it, in its conversation.
 pub(crate) fn handled(state: &AppState, h: &Handled) {
     let employee = super::permissions::employee_name(state, &h.agent_id);
-    let id = format!("handled:{}:{}", h.rule_id, &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let id = format!("{}{}", handled_prefix(&h.rule_id), &uuid::Uuid::new_v4().simple().to_string()[..12]);
     let mut title = h.sentence.trim().to_string();
     if let Some(first) = title.get(..1) {
         title.replace_range(..1, &first.to_uppercase());
@@ -527,7 +527,7 @@ fn learned_rule(state: &AppState, rule: &Rule, paused: bool) -> Option<LearnedRu
     let ceiling = rule.money.as_ref().and_then(|m| m.per_action_cents);
     let (uses, last_used_at) = state
         .store
-        .count_notifications_like(&format!("handled:{}:", rule.id))
+        .count_notifications_like(&handled_prefix(&rule.id))
         .unwrap_or((0, None));
     Some(LearnedRule {
         id: rule.id.clone(),
@@ -743,6 +743,38 @@ pub async fn add_learned_rule(
     state.store.stamp_pending_write(&consent_id, via, tz).map_err(to_error_response)?;
     let rule = turn_on(&state, &pattern, &consent_id, "You added it yourself", via, tz).map_err(to_error_response)?;
     read_back(&state, &rule.id)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HandledQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// GET /api/v1/permissions/learned/{id}/handled — "See what it did": every
+/// call the rule handled for the owner, newest first, as the Inbox items he
+/// was told of them by (with Undo where it can still be undone). Read from
+/// those items, the one record of it; nothing else is kept.
+pub async fn list_rule_handled(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<HandledQuery>,
+) -> HandlerResult<serde_json::Value> {
+    stored_learned(&state, &id).map_err(to_error_response)?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let items = state
+        .store
+        .notifications_like(&handled_prefix(&id), limit, q.offset.unwrap_or(0).max(0))
+        .map_err(to_error_response)?;
+    let total = items.len();
+    Ok(Json(serde_json::json!({ "notifications": items, "total": total })))
+}
+
+/// The id prefix of the updates a rule's handled calls are.
+fn handled_prefix(rule_id: &str) -> String {
+    format!("handled:{rule_id}:")
 }
 
 /// POST /api/v1/permissions/learned/never/{id}/offer-again — take a kind of

@@ -1756,6 +1756,13 @@ export function updateLearnedRule(id: string, req: Record<string, unknown> = {})
 }
 
 /**
+ * @description "List rule handled"
+ */
+export function listRuleHandled(id: string, limit?: number, offset?: number) {
+	return webapi.get<components.ListRuleHandledResponse>(`/api/v1/permissions/learned/${id}/handled`, { limit, offset })
+}
+
+/**
  * @description "Pause learned rule"
  */
 export function pauseLearnedRule(id: string, req: Record<string, unknown> = {}) {
