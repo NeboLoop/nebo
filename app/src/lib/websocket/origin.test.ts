@@ -15,10 +15,9 @@ vi.mock('$lib/monitoring/logger', () => ({
 	logger: { child: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }) }
 }));
 vi.mock('$lib/stores/notifications', () => ({
-	notifications: { subscribe: () => () => {} },
-	pushNotification: () => {},
+	pushNotification: () => ({}),
 	loadNotifications: () => {},
-	settleUpdateNotices: () => {}
+	settleNotification: () => {}
 }));
 vi.mock('$lib/stores/permissionAsks', () => ({
 	askRaised: () => {},

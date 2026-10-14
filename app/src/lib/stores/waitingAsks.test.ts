@@ -5,10 +5,12 @@ const sent: { type: string; data: unknown }[] = [];
 vi.mock('$lib/websocket/client', () => ({
 	getWebSocketClient: () => ({ send: (type: string, data: unknown) => sent.push({ type, data }) })
 }));
-const answered: { id: string; answer: string; via: string }[] = [];
-vi.mock('./permissionAsks', () => ({
-	answerAsk: async (id: string, answer: string, via: string) => {
-		answered.push({ id, answer, via });
+const answered: { id: string; value: string; via: string }[] = [];
+vi.mock('./permissionAsks', () => ({ answerAsk: async () => {} }));
+vi.mock('$lib/inbox/item', async (orig) => ({
+	...(await orig<typeof import('$lib/inbox/item')>()),
+	answerItem: async (id: string, value: string, via: string) => {
+		answered.push({ id, value, via });
 	}
 }));
 
@@ -61,9 +63,15 @@ describe('waitingAsks', () => {
 		expect(answered).toEqual([]);
 	});
 
-	it('answers a permission ask with the answer its option is', async () => {
+	it('answers a permission ask through its Inbox item with the answer its option is', async () => {
 		await answerWaiting(permission, 1);
-		expect(answered).toEqual([{ id: 'ask-1', answer: 'this_once', via: 'chat' }]);
+		expect(answered).toEqual([{ id: 'permission-ask:ask-1', value: 'this_once', via: 'chat' }]);
+		expect(sent).toEqual([]);
+	});
+
+	it('answers a relayed question through its Inbox item', async () => {
+		await answerWaiting({ ...question, relayed: true }, 1);
+		expect(answered).toEqual([{ id: 'question-ask:bf8e2c67', value: 'No', via: 'chat' }]);
 		expect(sent).toEqual([]);
 	});
 

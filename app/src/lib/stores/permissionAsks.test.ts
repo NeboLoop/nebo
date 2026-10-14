@@ -1,12 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
 
-vi.mock('./notifications', () => ({
-	askBandStatus: (s: string) => s,
-	askNotificationId: (id: string) => `permission-ask:${id}`,
-	setApprovalStatus: () => {}
-}));
-
 import { openAsks, settledAsks, askRaised, askSettled, chatAsksOf } from './permissionAsks';
 import type { PermissionAskCard } from '$lib/api/neboComponents';
 

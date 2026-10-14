@@ -9,6 +9,7 @@
   import type { AgentPageContext } from '$lib/types/agentPage';
   import type { Agent } from '$lib/api/neboComponents';
   import { currentUser } from '$lib/stores/auth';
+  import { greetingKey } from '$lib/time';
   import { sendInstallCode } from '$lib/marketplace/installCodes';
   import { createChatController } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
@@ -20,18 +21,10 @@
   const agentId = $derived(ctx.agentId);
   const agent = $derived(ctx.agent);
 
-  // Returns an i18n key — translated in the derived below.
-  function getGreeting(): string {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'chat.goodMorning';
-    if (hour < 17) return 'chat.goodAfternoon';
-    return 'chat.goodEvening';
-  }
-
   const firstName = $derived($currentUser?.name?.split(' ')[0] ?? '');
   const greeting = $derived(firstName
-    ? $t('chat.greetingWithName', { values: { greeting: $t(getGreeting()), name: firstName } })
-    : $t(getGreeting()));
+    ? $t('chat.greetingWithName', { values: { greeting: $t(greetingKey()), name: firstName } })
+    : $t(greetingKey()));
 
   // New-thread page: the controller owns chat state + WS wiring (quota warnings,
   // chat errors, roster). The run itself starts on the thread page after

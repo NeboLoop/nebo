@@ -27,6 +27,7 @@ export type AgentSettingsPart =
 	| 'channels'
 	| 'accounts'
 	| 'permissions'
+	| 'handles'
 	| 'webhooks'
 	| 'api'
 	| 'memory';
@@ -35,7 +36,7 @@ export interface AgentSettingsTab {
 	id: string;
 	label: string;
 	/** The sections this page is built from, in order. */
-	parts: readonly { id: AgentSettingsPart; developer?: boolean }[];
+	parts: readonly { id: AgentSettingsPart; developer?: boolean; assistant?: boolean }[];
 	/** A tab in the Developer group: shown only in Developer mode. */
 	developer?: boolean;
 	/** A developer tab that is a door to another page rather than a section. */
@@ -71,7 +72,9 @@ export const agentSettingsTabs: readonly AgentSettingsTab[] = [
 		parts: [{ id: 'reach' }, { id: 'phone' }, { id: 'channels' }]
 	},
 	{ id: 'accounts', label: 'agentSettings.connectedAccounts', parts: [{ id: 'accounts' }] },
-	{ id: 'permissions', label: 'permissions.title', parts: [{ id: 'permissions' }] },
+	// The assistant's page also lists what it handles for the owner: the
+	// rules he said yes to (the Inbox's ⋯ menu and Why? open it here).
+	{ id: 'permissions', label: 'permissions.title', parts: [{ id: 'permissions' }, { id: 'handles', assistant: true }] },
 	// Developer group. Two doors for outside systems (webhooks push into the
 	// employee, the API calls it as a model), the raw memory inspector, and
 	// the cases inspector.
@@ -92,11 +95,12 @@ export function visibleTabs(devMode: boolean): AgentSettingsTab[] {
 	return agentSettingsTabs.filter((t) => devMode || !t.developer);
 }
 
-/** The parts a tab renders: developer tabs and parts only in Developer mode. */
-export function visibleParts(tabId: string, devMode: boolean): AgentSettingsPart[] {
+/** The parts a tab renders: developer tabs and parts only in Developer
+ *  mode, the assistant's own parts only on the assistant's page. */
+export function visibleParts(tabId: string, devMode: boolean, assistant = false): AgentSettingsPart[] {
 	const tab = agentSettingsTabs.find((t) => t.id === tabId);
 	if (!tab || (tab.developer && !devMode)) return [];
-	return tab.parts.filter((p) => devMode || !p.developer).map((p) => p.id);
+	return tab.parts.filter((p) => (devMode || !p.developer) && (assistant || !p.assistant)).map((p) => p.id);
 }
 
 /**

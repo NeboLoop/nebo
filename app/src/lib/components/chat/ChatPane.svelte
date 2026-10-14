@@ -20,6 +20,9 @@
   import RelayedAsks from './RelayedAsks.svelte';
   import ConsentChip from './ConsentChip.svelte';
   import AppListingCard from './AppListingCard.svelte';
+  import NeedsYouCard from '$lib/components/inbox/NeedsYouCard.svelte';
+  import type { InboxItem } from '$lib/inbox/item';
+  import { goto as navigate } from '$lib/nav';
   import type { AppListingPayload } from './AppListingCard.svelte';
   import type { EmployeeConsentPayload } from './ConsentChip.svelte';
   import { SKIP_VALUE, type AskWidgetDef } from './AskWidget.svelte';
@@ -941,6 +944,14 @@
   function appListings(tools: ToolMsg[] | undefined): AppListingPayload[] {
     return (tools ?? [])
       .flatMap((t) => (t.payload?.kind === 'app_listing' ? [t.payload as AppListingPayload] : []));
+  }
+  // An Inbox item the assistant showed (`inbox_card`) is the Inbox's own
+  // card, answered right here on the one answer path.
+  function inboxCards(tools: ToolMsg[] | undefined): InboxItem[] {
+    return (tools ?? []).flatMap((t) => {
+      const item = t.payload?.kind === 'inbox_item' ? (t.payload as { item?: InboxItem }).item : undefined;
+      return item ? [item] : [];
+    });
   }
   function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
@@ -2299,6 +2310,12 @@
             {/each}
             {#each segs.flatMap((sg) => appListings(sg.tools)).slice(-1) as listing, lIdx (lIdx)}
               <AppListingCard {listing} />
+            {/each}
+            {#each segs.flatMap((sg) => inboxCards(sg.tools)) as item, iIdx (iIdx)}
+              {@const asker = allAgents.find((a) => a.id === item.agentId)}
+              <div class="inbox-chat-card">
+                <NeedsYouCard {item} name={asker?.name ?? ''} color={asker?.color} assistantName={agentName} via="chat" onopen={(link) => navigate(link)} />
+              </div>
             {/each}
           {#if turnAttachments.length}
             <div class="flex flex-wrap gap-2 mt-2">

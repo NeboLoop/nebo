@@ -7,10 +7,12 @@ vi.mock('$lib/websocket/client', () => ({
 }));
 const navigated: string[] = [];
 vi.mock('$lib/nav', () => ({ goto: async (to: string) => navigated.push(to) }));
-const answered: { id: string; answer: string; via: string }[] = [];
-vi.mock('./permissionAsks', () => ({
-	answerAsk: async (id: string, answer: string, via: string) => {
-		answered.push({ id, answer, via });
+const answered: { id: string; value: string; via: string }[] = [];
+vi.mock('./permissionAsks', () => ({ answerAsk: async () => {} }));
+vi.mock('$lib/inbox/item', async (orig) => ({
+	...(await orig<typeof import('$lib/inbox/item')>()),
+	answerItem: async (id: string, value: string, via: string) => {
+		answered.push({ id, value, via });
 	}
 }));
 
@@ -85,7 +87,7 @@ describe('blocking asks', () => {
 
 	it('answering from a notification while in another chat settles it by id and moves nothing', async () => {
 		await answerById('ask-bk', 2);
-		expect(answered).toEqual([{ id: 'ask-bk', answer: 'no', via: 'chat' }]);
+		expect(answered).toEqual([{ id: 'permission-ask:ask-bk', value: 'no', via: 'chat' }]);
 		expect(navigated).toEqual([]);
 		expect(get(openAskCard)).toBeNull();
 	});

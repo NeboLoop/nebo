@@ -17,7 +17,7 @@ import { getWebSocketClient } from './client';
 import { opensHere } from './origin';
 import { watchConnection } from './connectionNotice';
 import { botName, loadBotName } from '$lib/stores/botName';
-import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
+import { pushNotification, loadNotifications, settleNotification } from '$lib/stores/notifications';
 import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { loadWaitingAsks, setWaitingAsks, waitingAsks } from '$lib/stores/waitingAsks';
 import { loadBackground, setBackground, backgroundEnded, timerCreated } from '$lib/stores/background';
@@ -149,15 +149,7 @@ export function attachWebSocketListeners(): void {
       // ONE insert pathway: the store's pushNotification upserts by id, so a
       // WS re-broadcast can never duplicate a row the REST load already holds
       // (duplicate keys crash the Inbox's keyed each).
-      const n = {
-        id: data.id || `ws-${Date.now()}`,
-        type: data.type || undefined,
-        title: data.title || '',
-        body: data.message || data.body || '',
-        actionUrl: data.link || data.actionUrl || undefined,
-        agentId: data.agentId || undefined,
-      };
-      pushNotification(n);
+      const n = pushNotification({ ...data, id: data.id || `ws-${Date.now()}` });
       // A blocking ask brought back as a reminder: its own notice, whose
       // click opens the card over the screen the owner is on.
       const blocking = blockingAskOf(n.id);
@@ -165,7 +157,7 @@ export function attachWebSocketListeners(): void {
         tellBlockingAsk(blocking);
         return;
       }
-      addToast(n.title || n.body, n.type === 'error' ? 'error' : 'info');
+      addToast(n.title || n.body || '', n.type === 'error' ? 'error' : 'info');
 
       // Desktop: a NATIVE notification — system-wide (shows over any app),
       // auto-dismisses, and carries Nebo's icon. No webview window, so it cannot hang
@@ -220,6 +212,9 @@ export function attachWebSocketListeners(): void {
       pushNotification(data);
     })
   );
+  // A decision answered anywhere (here, the mobile app, the assistant's
+  // chat, an update applied from Settings) moves to History everywhere.
+  unsubs.push(ws.on('notification_settled', (data: any) => settleNotification(data)));
 
   // --- Browser extension: nudge the user to install it when it's missing ---
   // Tier-1 (authenticated) browser; research falls back to built-in Chrome when
@@ -327,15 +322,11 @@ export function attachWebSocketListeners(): void {
       if (data.count > 0) {
         addToast(get(t)('common.updatesAvailable', { values: { count: data.count } }), 'info');
       }
-      for (const u of (data.updates ?? []) as Array<{ type: string; id: string; remoteVersion: string }>) {
-        settleUpdateNotices(u.type, u.id, u.remoteVersion);
-      }
     })
   );
   unsubs.push(
     ws.on('artifact_update_applied', (data: any) => {
       addToast(get(t)('common.artifactUpdated', { values: { type: data.type, version: data.version } }), 'success');
-      settleUpdateNotices(data.type, data.id);
     })
   );
   unsubs.push(

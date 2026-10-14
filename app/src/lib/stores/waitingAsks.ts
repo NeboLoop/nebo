@@ -6,6 +6,7 @@
 import { writable } from 'svelte/store';
 import type { WaitingAsk } from '$lib/api/neboComponents';
 import { getWebSocketClient } from '$lib/websocket/client';
+import { answerItem, waitingItemId } from '$lib/inbox/item';
 import { answerAsk, type AskAnswer } from './permissionAsks';
 
 /** Oldest first. */
@@ -24,14 +25,24 @@ export function setWaitingAsks(data: { asks?: WaitingAsk[] } | null | undefined)
   waitingAsks.set(data?.asks ?? []);
 }
 
-/** Answer from the bar with option `i`: what a tap on that option sends,
- *  through the ask's own answer path (a question's reply on the socket, a
- *  permission ask's answer). The server's `asks_waiting` then clears it. */
+/** Answer from the bar with option `i`: what a tap on that option sends.
+ *  An ask that is an Inbox item (every permission ask, a relayed question)
+ *  is answered on the Inbox's one answer path; a question in the owner's
+ *  own chat is that chat's card and its reply goes on the socket. The
+ *  server's `asks_waiting` then clears it. */
 export async function answerWaiting(ask: WaitingAsk, i: number): Promise<void> {
   const value = ask.values[i] ?? ask.options[i];
   if (!value) return;
-  if (ask.kind === 'permission') {
-    await answerAsk(ask.id, value as AskAnswer, 'chat');
+  const item = waitingItemId(ask);
+  if (item) {
+    try {
+      await answerItem(item, value, 'chat');
+    } catch (e) {
+      // A permission ask raised before the server's Inbox was ready has no
+      // item: it is answered on its own path.
+      if (ask.kind !== 'permission' || (e as { response?: { status?: number } })?.response?.status !== 404) throw e;
+      await answerAsk(ask.id, value as AskAnswer, 'chat');
+    }
     return;
   }
   getWebSocketClient().send('ask_response', { request_id: ask.id, value });

@@ -112,6 +112,12 @@ describe('employee settings tabs', () => {
 		expect(visibleParts('work', true)).toEqual(['configure', 'questions', 'skills', 'workflows']);
 	});
 
+	it("lists what the assistant handles only on the assistant's own Permissions page", () => {
+		expect(visibleParts('permissions', false)).toEqual(['permissions']);
+		expect(visibleParts('permissions', false, true)).toEqual(['permissions', 'handles']);
+		expect(resolveSection('handles', false)).toEqual({ tab: 'permissions', focus: 'handles' });
+	});
+
 	it('lands every old section name on the page it now lives on', () => {
 		const lands: Record<string, [string, string | null]> = {
 			general: ['general', null],

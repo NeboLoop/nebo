@@ -1,5 +1,6 @@
 import * as api from './nebo';
 import type * as components from './neboComponents';
+import { inDesktopApp } from './engineService';
 
 /**
  * The native file and folder pickers. In the desktop app the window shows
@@ -7,9 +8,6 @@ import type * as components from './neboComponents';
  * process with no window, and macOS shows no panel from one. Anywhere else
  * the server shows them (`/api/v1/files/pick`, `/files/pick-folder`).
  */
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const inDesktopApp = () => typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
 
 export async function pickFiles(): Promise<components.PickFilesResponse> {
 	if (!inDesktopApp()) return api.pickFiles();
