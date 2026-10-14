@@ -439,6 +439,9 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The server's Inbox answer path, shared with the assistant's `inbox`
+    /// tool. Filled LATE like `coworker_rail`.
+    inbox_answers: crate::owner_tools::InboxAnswersCell,
     /// The server's worker restart, shared with `PersonaTool` and filled LATE
     /// like `code_installer`: duties made or changed in chat go live at once.
     live_triggers: crate::agent_tool::LiveTriggersCell,
@@ -479,6 +482,7 @@ impl Registry {
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            inbox_answers: Arc::new(std::sync::RwLock::new(None)),
             live_triggers: Arc::new(std::sync::RwLock::new(None)),
             workflows: Default::default(),
             goals: crate::goal_tool::new_handle(),
@@ -554,6 +558,12 @@ impl Registry {
     /// exists; MessageTool shares the cell and reads it at execution time.
     pub fn set_coworker_rail(&self, rail: Arc<dyn crate::coworker::CoworkerRail>) {
         *self.coworker_rail.write().unwrap() = Some(rail);
+    }
+
+    /// Set the server's Inbox answer path. Called LATE by the server once
+    /// `AppState` exists; the `inbox` tool shares the cell.
+    pub fn set_inbox_answers(&self, answers: Arc<dyn crate::owner_tools::InboxAnswers>) {
+        *self.inbox_answers.write().unwrap() = Some(answers);
     }
 
     /// Bind the harness's agreed goal: `suggest_goal` calls go to it. Until
@@ -1456,7 +1466,7 @@ impl Registry {
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
             crate::research_tools::Research::new(structured_agent, orchestrator.clone()).tools(),
             crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone(), agent_loader.clone(), agent_reg.clone()).tools(),
-            crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone()).tools(),
+            crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone(), self.inbox_answers.clone()).tools(),
             vec![
                 Box::new(crate::ask_owner_tool::AskOwnerTool::new(store.clone(), self.coworker_rail.clone())) as Box<dyn DynTool>,
                 Box::new(crate::goal_tool::SuggestGoalTool::new(self.goals.clone())),

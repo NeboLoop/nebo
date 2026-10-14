@@ -879,8 +879,9 @@ fn spawn_plugin_login(
                                     b.trigger_type == "watch" && b.trigger_config.contains(&slug_r)
                                 });
                                 if uses_plugin {
+                                    // Its "needs authentication" item is done: to History.
                                     let notif_id = format!("auth-required:{}:{}", agent.id, slug_r);
-                                    let _ = store_r.delete_notification(&notif_id, "");
+                                    tools::owner_notify::settle(&store_r, None, &notif_id, "Connected", None);
                                     info!(
                                         agent = %agent.id,
                                         plugin = %slug_r,
@@ -2245,6 +2246,7 @@ pub(crate) async fn revoke_plugin_auth(state: &AppState, revoked: &PluginAuthRev
             action_url: Some(&link),
             agent_id,
             loud: true,
+            ..Default::default()
         },
     );
 }

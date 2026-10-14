@@ -5783,6 +5783,17 @@ pub async fn resolve_learning(
     Path(id): Path<String>,
     Json(body): Json<LearningResolveBody>,
 ) -> HandlerResult<serde_json::Value> {
+    decide_learning(&state, &id, body).await
+}
+
+/// Decide a staged proposal: the ONE path the proposal's own route and the
+/// Inbox's answer (`POST /notifications/{id}/answer` on its `learn:` item)
+/// both take.
+pub(crate) async fn decide_learning(
+    state: &AppState,
+    id: &str,
+    body: LearningResolveBody,
+) -> HandlerResult<serde_json::Value> {
     let row = state
         .store
         .get_pending_write(&id)
@@ -5797,14 +5808,7 @@ pub async fn resolve_learning(
             .store
             .resolve_pending_write(&id, "rejected")
             .map_err(to_error_response)?;
-        state.hub.broadcast(
-            "learning_resolved",
-            serde_json::json!({ "id": id, "status": "rejected", "agentId": row.agent_id }),
-        );
-        crate::codes::push_inbox(
-            &state,
-            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
-        );
+        learning_settled(&state, &id, &row.agent_id, "rejected");
         return Ok(Json(serde_json::json!({ "status": "rejected" })));
     }
 
@@ -5817,14 +5821,7 @@ pub async fn resolve_learning(
                 .store
                 .resolve_pending_write(&id, "conflict")
                 .map_err(to_error_response)?;
-            state.hub.broadcast(
-                "learning_resolved",
-                serde_json::json!({ "id": id, "status": "conflict", "agentId": row.agent_id }),
-            );
-        crate::codes::push_inbox(
-            &state,
-            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
-        );
+            learning_settled(&state, &id, &row.agent_id, "conflict");
             return Ok(Json(serde_json::json!({
                 "status": "conflict",
                 "message": "The workflow changed after this was proposed; the proposal was discarded rather than overwriting it."
@@ -5842,14 +5839,7 @@ pub async fn resolve_learning(
             .store
             .resolve_pending_write(&id, "approved")
             .map_err(to_error_response)?;
-        state.hub.broadcast(
-            "learning_resolved",
-            serde_json::json!({ "id": id, "status": "approved", "agentId": row.agent_id }),
-        );
-        crate::codes::push_inbox(
-            &state,
-            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
-        );
+        learning_settled(&state, &id, &row.agent_id, "approved");
         info!(id, agent_id = %row.agent_id, binding = %row.target, "workflow tuning proposal approved and applied");
         return Ok(Json(serde_json::json!({ "status": "approved" })));
     }
@@ -5873,14 +5863,7 @@ pub async fn resolve_learning(
             .store
             .resolve_pending_write(&id, "conflict")
             .map_err(to_error_response)?;
-        state.hub.broadcast(
-            "learning_resolved",
-            serde_json::json!({ "id": id, "status": "conflict", "agentId": row.agent_id }),
-        );
-        crate::codes::push_inbox(
-            &state,
-            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
-        );
+        learning_settled(&state, &id, &row.agent_id, "conflict");
         return Ok(Json(serde_json::json!({
             "status": "conflict",
             "message": "The skill changed after this was staged; the learning was discarded rather than overwriting it. The employee will re-learn if it still matters."
@@ -5917,16 +5900,39 @@ pub async fn resolve_learning(
         .store
         .resolve_pending_write(&id, "approved")
         .map_err(to_error_response)?;
-    state.hub.broadcast(
-        "learning_resolved",
-        serde_json::json!({ "id": id, "status": "approved", "agentId": row.agent_id }),
-    );
-        crate::codes::push_inbox(
-            &state,
-            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
-        );
+    learning_settled(&state, &id, &row.agent_id, "approved");
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// A staged proposal was decided (`status`: approved, rejected, conflict):
+/// every app hears it, its Inbox item moves to History with the outcome in
+/// the owner's words, and its push is resolved.
+fn learning_settled(state: &AppState, id: &str, agent_id: &str, status: &str) {
+    state.hub.broadcast(
+        "learning_resolved",
+        serde_json::json!({ "id": id, "status": status, "agentId": agent_id }),
+    );
+    let item = format!("learn:{id}");
+    tools::owner_notify::settle(
+        &state.store,
+        Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+        &item,
+        learning_answer(status),
+        None,
+    );
+    crate::codes::push_inbox(state, serde_json::json!({ "id": item, "resolved": true }));
+}
+
+/// A proposal's outcome in the owner's words.
+pub(crate) fn learning_answer(status: &str) -> &'static str {
+    match status {
+        "approved" => "Approved",
+        "rejected" => "Declined",
+        "conflict" => "Changed meanwhile",
+        "reverted" => "Undone",
+        _ => "Expired",
+    }
 }
 
 /// The skill tool a learned write's action goes through: a create or an

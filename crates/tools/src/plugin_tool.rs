@@ -2441,6 +2441,7 @@ pub fn notify_plugin_needs_reauth(
             action_url: Some(&action_url),
             agent_id: Some(p.agent_id.as_ref()),
             loud: false,
+            ..Default::default()
         },
     );
 }
@@ -2804,7 +2805,7 @@ mod tests {
         };
         notify_plugin_needs_reauth(&store, |_, _| {}, &p);
         let user = store.ensure_local_user_id().unwrap();
-        let rows = store.list_user_notifications(&user, 10, 0).unwrap();
+        let rows = store.list_user_notifications(&user, db::models::InboxView::All, None, 10, 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].action_url.as_deref(), Some("/emp/settings/accounts?plugin=quickbooks"));
     }
@@ -2831,7 +2832,7 @@ mod tests {
             }
         };
         let items = || -> Vec<db::models::Notification> {
-            store.list_user_notifications(&user, 50, 0).unwrap().into_iter().filter(|n| n.id.starts_with("reauth:")).collect()
+            store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap().into_iter().filter(|n| n.id.starts_with("reauth:")).collect()
         };
 
         detect();

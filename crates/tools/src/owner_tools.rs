@@ -1,6 +1,9 @@
 //! Reaching the owner outside a conversation: `message_owner` writes into
-//! their chat, `push_notification` sends a notification (an urgent one
-//! raises the alert), `check_dnd` reads whether Do Not Disturb is on.
+//! their chat, `push_notification` posts to their Inbox (an update, or a
+//! question they answer on the card; an urgent one raises the alert),
+//! `check_dnd` reads whether Do Not Disturb is on, and `inbox` is the
+//! assistant's way into the Inbox: it reads it, shows a card in chat,
+//! answers one when the owner says so, and writes the morning brief.
 
 use std::sync::Arc;
 
@@ -11,21 +14,42 @@ use crate::message_tool::NotifyFn;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
+/// The server's side of the Inbox: the ONE answer path for an item
+/// (`POST /notifications/{id}/answer`), so the assistant answers a card
+/// exactly as the owner's tap would. Filled LATE by the server.
+#[async_trait::async_trait]
+pub trait InboxAnswers: Send + Sync {
+    /// Answer item `id` with `value`; `via` is where the owner said it.
+    async fn answer(&self, id: &str, value: &str, via: &str) -> Result<(), String>;
+}
+
+/// The shared cell [`InboxAnswers`] is read from, filled late.
+pub type InboxAnswersCell = Arc<std::sync::RwLock<Option<Arc<dyn InboxAnswers>>>>;
+
 pub struct Owner {
     store: Arc<Store>,
     /// The registry's broadcast cell, late-wired by the server: an alert
     /// reaches the bell and the desktop HUD through it.
     notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
+    inbox_answers: InboxAnswersCell,
 }
 
 impl Owner {
-    pub fn new(store: Arc<Store>, notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>) -> Self {
-        Self { store, notify_fn }
+    pub fn new(store: Arc<Store>, notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>, inbox_answers: InboxAnswersCell) -> Self {
+        Self { store, notify_fn, inbox_answers }
     }
 
     pub fn tools(self) -> Vec<Box<dyn DynTool>> {
         let owner = Arc::new(self);
-        [OwnerOp::Message, OwnerOp::Notify, OwnerOp::CheckDnd]
+        [
+            OwnerOp::Message,
+            OwnerOp::Notify,
+            OwnerOp::CheckDnd,
+            OwnerOp::InboxRead,
+            OwnerOp::InboxShow,
+            OwnerOp::InboxAnswer,
+            OwnerOp::InboxBrief,
+        ]
             .into_iter()
             .map(|op| {
                 Box::new(OwnerTool {
@@ -66,9 +90,12 @@ impl Owner {
         }
     }
 
-    /// A persisted notification (the bell) plus the OS notification; an
-    /// urgent one is the alert: a `notification` broadcast the desktop turns
-    /// into the auto-dismissing HUD. Never a modal.
+    /// An Inbox item from the employee: an update (a title, one sentence, a
+    /// link to the work) or, with `options`, a question the owner answers on
+    /// its card, whose answer comes back to this conversation. It is shown
+    /// in the bell at once; an urgent one is the alert: a `notification`
+    /// broadcast the desktop turns into the auto-dismissing HUD. Never a
+    /// modal.
     fn notify(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let text = input["message"].as_str().unwrap_or("");
         let title = input["title"]
@@ -80,10 +107,25 @@ impl Owner {
         let agent_id =
             Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
         let id = uuid::Uuid::new_v4().to_string();
-        // It opens the conversation it was sent from.
-        let link = agent_id
-            .as_deref()
-            .map(|a| crate::owner_notify::link::session_chat(&self.store, a, &ctx.session_key));
+        // It opens the work it names, else the conversation it was sent from.
+        let link = input["link"]
+            .as_str()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                agent_id
+                    .as_deref()
+                    .map(|a| crate::owner_notify::link::session_chat(&self.store, a, &ctx.session_key))
+            });
+        let options: Vec<db::models::ItemOption> = input["options"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::trim).filter(|o| !o.is_empty()))
+            .into_iter()
+            .flatten()
+            .map(|o| db::models::ItemOption { label: o.to_string(), value: o.to_string() })
+            .collect();
+        let asks = !options.is_empty();
         let n = crate::owner_notify::OwnerNotification {
             id: &id,
             kind: if urgent { "warning" } else { "info" },
@@ -92,24 +134,189 @@ impl Owner {
             action_url: link.as_deref(),
             agent_id: agent_id.as_deref(),
             loud: urgent,
+            needs_you: asks,
+            options: &options,
+            link_label: input["link_label"].as_str().map(str::trim).filter(|l| !l.is_empty()),
+            reply_to: asks.then_some(ctx.session_key.as_str()),
+        };
+        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+        match notify {
+            Some(f) => crate::owner_notify::emit(&self.store, Some(&|ev, payload| f(ev, payload)), &n),
+            None => crate::owner_notify::emit(&self.store, None, &n),
         };
         if urgent {
-            let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
-            match notify {
-                Some(f) => {
-                    crate::owner_notify::emit(&self.store, Some(&|ev, payload| f(ev, payload)), &n)
-                }
-                None => crate::owner_notify::emit(&self.store, None, &n),
-            }
             return ToolResult::ok(format!("Alerted the owner: {title}"));
         }
-        crate::owner_notify::emit(&self.store, None, &n);
         notify_crate::send(title, text);
+        if asks {
+            return ToolResult::ok(format!(
+                "Asked the owner in their Inbox: '{title}'. Their answer comes back to this conversation; \
+                 until then go on with anything that doesn't depend on it."
+            ));
+        }
         ToolResult::ok(format!(
-            "Notification sent ({} chars, title '{title}')",
+            "Posted to the owner's Inbox ({} chars, title '{title}')",
             text.chars().count()
         ))
     }
+}
+
+impl Owner {
+    /// The assistant's way into the Inbox: read it, show an item in chat,
+    /// answer one on the owner's word, write the day's brief.
+    async fn inbox(&self, op: OwnerOp, input: &Value, ctx: &ToolContext) -> ToolResult {
+        let me = types::keyparser::extract_agent_id(&ctx.session_key);
+        if !(me.is_empty() || me == crate::team_tool::PRIMARY_AGENT_ID) {
+            return ToolResult::error(
+                "The Inbox is read by the owner's assistant. Post to it with push_notification instead.",
+            );
+        }
+        let user = match self.store.ensure_local_user_id() {
+            Ok(u) => u,
+            Err(e) => return ToolResult::error(format!("The Inbox can't be read: {e}. Do not retry.")),
+        };
+        match op {
+            OwnerOp::InboxRead => self.inbox_list(input, &user),
+            OwnerOp::InboxShow => self.inbox_show(input, &user),
+            OwnerOp::InboxAnswer => self.inbox_answer(input, ctx, &user).await,
+            _ => self.inbox_brief(input),
+        }
+    }
+
+    /// The employee's name an item is from.
+    fn employee(&self, agent_id: Option<&str>) -> String {
+        agent_id
+            .filter(|a| !a.is_empty())
+            .and_then(|a| self.store.get_agent(a).ok().flatten())
+            .map(|a| a.name)
+            .unwrap_or_else(|| "Nebo".to_string())
+    }
+
+    /// One item as the assistant reads it.
+    fn item_json(&self, n: &db::models::Notification) -> Value {
+        json!({
+            "id": n.id,
+            "from": self.employee(n.agent_id.as_deref()),
+            "kind": if n.needs_you { "needs_you" } else { "update" },
+            "status": n.status,
+            "title": n.title,
+            "summary": n.body,
+            "answers": n.options.iter().map(|o| json!({ "label": o.label, "value": o.value })).collect::<Vec<_>>(),
+            "answered": n.answer,
+            "read": n.read_at.is_some(),
+            "at": n.created_at,
+        })
+    }
+
+    fn inbox_list(&self, input: &Value, user: &str) -> ToolResult {
+        let view = input["view"].as_str().and_then(db::models::InboxView::parse).unwrap_or_default();
+        let since = input["since_hours"].as_i64().map(|h| chrono::Utc::now().timestamp() - h.max(1) * 3600);
+        match self.store.list_user_notifications(user, view, None, 100, 0) {
+            Ok(items) => {
+                let items: Vec<Value> = items
+                    .iter()
+                    // The day's brief is the assistant's own writing.
+                    .filter(|n| n.notification_type != BRIEF_TYPE)
+                    .filter(|n| since.is_none_or(|t| n.created_at >= t || n.status == "open"))
+                    .map(|n| self.item_json(n))
+                    .collect();
+                ToolResult::ok(json!({ "items": items, "total": items.len() }).to_string())
+            }
+            Err(e) => ToolResult::error(format!("The Inbox can't be read: {e}. Do not retry.")),
+        }
+    }
+
+    fn inbox_show(&self, input: &Value, user: &str) -> ToolResult {
+        let id = input["id"].as_str().unwrap_or("");
+        match self.store.get_notification(id, user) {
+            Ok(Some(n)) => ToolResult::ok(format!(
+                "Shown to the owner in this chat as its Inbox card: '{}'. They can answer it on the card.",
+                n.title
+            ))
+            // The chat renders the Inbox's own card for it, answered on the
+            // same path as in the Inbox.
+            .with_payload(json!({ "kind": "inbox_item", "item": n })),
+            Ok(None) => ToolResult::error(format!("No Inbox item '{id}'. Read the Inbox (read_inbox) for the ids.")),
+            Err(e) => ToolResult::error(format!("The Inbox can't be read: {e}. Do not retry.")),
+        }
+    }
+
+    /// Answer a card for the owner. Only on his own word in his own chat:
+    /// the assistant never decides one by itself.
+    async fn inbox_answer(&self, input: &Value, ctx: &ToolContext, user: &str) -> ToolResult {
+        if !ctx.owner_request || !matches!(ctx.door, types::permissions::Door::Chat | types::permissions::Door::Voice) {
+            return ToolResult::error(
+                "Only the owner answers Inbox items. Answer one only when the owner tells you to, in their \
+                 own words in this chat; otherwise show it to them with inbox_card.",
+            );
+        }
+        let (id, value) = (input["id"].as_str().unwrap_or(""), input["value"].as_str().unwrap_or("").trim());
+        let item = match self.store.get_notification(id, user) {
+            Ok(Some(n)) => n,
+            Ok(None) => return ToolResult::error(format!("No Inbox item '{id}'. Read the Inbox (read_inbox) for the ids.")),
+            Err(e) => return ToolResult::error(format!("The Inbox can't be read: {e}. Do not retry.")),
+        };
+        if item.answered_at.is_some() {
+            return ToolResult::ok(format!(
+                "'{}' was already answered ({}). Nothing changed.",
+                item.title,
+                item.answer.as_deref().unwrap_or("answered")
+            ));
+        }
+        // The answer is one the card takes: an option's value or its words.
+        let value = item
+            .options
+            .iter()
+            .find(|o| o.value.eq_ignore_ascii_case(value) || o.label.eq_ignore_ascii_case(value))
+            .map_or(value.to_string(), |o| o.value.clone());
+        let answers = self.inbox_answers.read().ok().and_then(|g| g.clone());
+        let Some(answers) = answers else {
+            return ToolResult::error("Inbox answers aren't available here. Show the card instead.");
+        };
+        let via = if matches!(ctx.door, types::permissions::Door::Voice) { "voice" } else { "chat" };
+        match answers.answer(id, &value, via).await {
+            Ok(()) => ToolResult::ok(format!("Answered '{}' with {value} for the owner.", item.title)),
+            Err(e) => ToolResult::error(format!("'{}' was not answered: {e}", item.title)),
+        }
+    }
+
+    /// The day's brief, at the top of the Inbox: one item a day, rewritten
+    /// in place when the assistant writes it again the same day.
+    fn inbox_brief(&self, input: &Value) -> ToolResult {
+        let text = input["text"].as_str().map(str::trim).unwrap_or("");
+        if text.is_empty() {
+            return ToolResult::error("text can't be empty: write the brief in a few plain sentences.");
+        }
+        let day = crate::owner_clock::OwnerZone::of(&self.store).now().format("%Y-%m-%d").to_string();
+        let id = brief_id(&day);
+        let n = crate::owner_notify::OwnerNotification {
+            id: &id,
+            kind: BRIEF_TYPE,
+            title: "Your brief",
+            body: Some(text),
+            action_url: Some(&crate::owner_notify::link::assistant()),
+            agent_id: Some(crate::team_tool::PRIMARY_AGENT_ID),
+            ..Default::default()
+        };
+        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+        let broadcast = |ev: &str, payload: Value| {
+            if let Some(f) = &notify {
+                f(ev, payload);
+            }
+        };
+        if !crate::owner_notify::restate(&self.store, Some(&broadcast), &n) {
+            crate::owner_notify::emit(&self.store, Some(&broadcast), &n);
+        }
+        ToolResult::ok(format!("Today's brief is at the top of the owner's Inbox ({day})."))
+    }
+}
+
+/// The Inbox type of the assistant's daily brief.
+pub const BRIEF_TYPE: &str = "brief";
+
+/// The day's brief item (`day` on the owner's clock, `YYYY-MM-DD`).
+pub fn brief_id(day: &str) -> String {
+    format!("brief:{day}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +324,12 @@ enum OwnerOp {
     Message,
     Notify,
     CheckDnd,
+    InboxRead,
+    InboxShow,
+    InboxAnswer,
+    InboxBrief,
 }
+
 
 struct OwnerTool {
     op: OwnerOp,
@@ -130,17 +342,29 @@ impl DynTool for OwnerTool {
             OwnerOp::Message => "message_owner",
             OwnerOp::Notify => "push_notification",
             OwnerOp::CheckDnd => "check_dnd",
+            OwnerOp::InboxRead => "read_inbox",
+            OwnerOp::InboxShow => "inbox_card",
+            OwnerOp::InboxAnswer => "answer_inbox_item",
+            OwnerOp::InboxBrief => "write_brief",
         }
     }
 
     fn description(&self) -> String {
         match self.op {
             OwnerOp::Message => "Sends the owner a message in their chat with you, with a notification. For work nobody is watching (a schedule, a workflow); in a conversation, just reply.".to_string(),
-            OwnerOp::Notify => "Sends the owner a notification on this computer and in the app's bell.\n\
-                 - `urgent: true` raises the alert: for something that needs them now.\n\
-                 - check_dnd first if it can wait."
+            OwnerOp::Notify => "Posts to the owner's Inbox, the one place employees leave updates for them.\n\
+                 - An update: a short `title`, ONE plain sentence in `message`, and a `link` to the work (its chat, file or run) with `link_label`.\n\
+                 - A question: add `options`; the owner answers on the card and the answer comes back to this conversation.\n\
+                 - `urgent: true` raises the alert: for something that needs them now. check_dnd first if it can wait.\n\
+                 Don't post routine steps (checking memory, loading tools): only what the owner would want to know."
                 .to_string(),
             OwnerOp::CheckDnd => "Reads whether Do Not Disturb (Focus) is on for the owner, and which modes.".to_string(),
+            OwnerOp::InboxRead => "Reads the owner's Inbox, where the employees leave updates and questions (the owner's assistant only). \
+                 `view`: needs_you, updates or history; `since_hours` narrows it. Summarise it in plain words when asked what they missed."
+                .to_string(),
+            OwnerOp::InboxShow => "Puts one Inbox item's card in this chat (the owner's assistant only); the owner answers it on the card.".to_string(),
+            OwnerOp::InboxAnswer => "Answers an Inbox item with one of its answers (the owner's assistant only), ONLY when the owner tells you to in their own words.".to_string(),
+            OwnerOp::InboxBrief => "Writes today's brief at the top of the owner's Inbox (the owner's assistant only): a few plain sentences, what needs them first, then what went well.".to_string(),
         }
     }
 
@@ -154,26 +378,62 @@ impl DynTool for OwnerTool {
             OwnerOp::Notify => json!({
                 "type": "object",
                 "properties": {
-                    "message": { "type": "string", "description": "The notification text." },
-                    "title": { "type": "string", "description": "Short title (default Nebo)." },
+                    "message": { "type": "string", "description": "One plain sentence: what happened, or what you need to know." },
+                    "title": { "type": "string", "description": "Short title, a few words (\"Shopify orders synced\")." },
+                    "link": { "type": "string", "description": "Where the work is: an app path (\"/<employee>/runs/<run id>\") or a web address. Default: this conversation." },
+                    "link_label": { "type": "string", "description": "The link's words (\"Orders sheet\", \"Report\")." },
+                    "options": { "type": "array", "items": { "type": "string" }, "description": "Makes it a question with these answers, shown as buttons." },
                     "urgent": { "type": "boolean", "description": "Raise the alert: it needs the owner now." }
                 },
                 "required": ["message"]
             }),
             OwnerOp::CheckDnd => json!({ "type": "object", "properties": {} }),
+            OwnerOp::InboxRead => json!({
+                "type": "object",
+                "properties": {
+                    "view": { "type": "string", "enum": ["needs_you", "updates", "history"], "description": "Which part. Default: everything not put away." },
+                    "since_hours": { "type": "integer", "description": "Only items from the last N hours (open decisions always)." }
+                }
+            }),
+            OwnerOp::InboxShow => json!({
+                "type": "object",
+                "properties": { "id": { "type": "string", "description": "The item's id from read_inbox." } },
+                "required": ["id"]
+            }),
+            OwnerOp::InboxAnswer => json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The item's id from read_inbox." },
+                    "value": { "type": "string", "description": "One of the item's answers (its value or its words)." }
+                },
+                "required": ["id", "value"]
+            }),
+            OwnerOp::InboxBrief => json!({
+                "type": "object",
+                "properties": { "text": { "type": "string", "description": "The brief." } },
+                "required": ["text"]
+            }),
         }
     }
 
     fn search_hint(&self) -> &str {
         match self.op {
             OwnerOp::Message => "message the owner in their chat",
-            OwnerOp::Notify => "notify or alert the owner",
+            OwnerOp::Notify => "post an update or question to the inbox",
             OwnerOp::CheckDnd => "is do not disturb on",
+            OwnerOp::InboxRead => "read and summarise the owner's inbox",
+            OwnerOp::InboxShow => "put an inbox card in chat",
+            OwnerOp::InboxAnswer => "answer an inbox item for the owner",
+            OwnerOp::InboxBrief => "write the owner's daily brief",
         }
     }
 
     fn read_only(&self, _input: &Value) -> bool {
-        self.op == OwnerOp::CheckDnd
+        match self.op {
+            OwnerOp::CheckDnd => true,
+            OwnerOp::InboxRead | OwnerOp::InboxShow => true,
+            OwnerOp::Message | OwnerOp::Notify | OwnerOp::InboxAnswer | OwnerOp::InboxBrief => false,
+        }
     }
 
     /// Telling the owner is not an outside effect.
@@ -182,6 +442,16 @@ impl DynTool for OwnerTool {
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
+        let blank = |k: &str| input[k].as_str().is_none_or(|v| v.trim().is_empty());
+        match self.op {
+            OwnerOp::InboxShow | OwnerOp::InboxAnswer if blank("id") => {
+                return Err("id can't be empty: take it from read_inbox.".to_string());
+            }
+            OwnerOp::InboxAnswer if blank("value") => return Err("value can't be empty: one of the item's answers.".to_string()),
+            OwnerOp::InboxBrief if blank("text") => return Err("text can't be empty: write the brief in a few plain sentences.".to_string()),
+            OwnerOp::InboxRead | OwnerOp::InboxShow | OwnerOp::InboxAnswer | OwnerOp::InboxBrief => return Ok(()),
+            _ => {}
+        }
         if self.op != OwnerOp::CheckDnd
             && input["message"]
                 .as_str()
@@ -195,8 +465,12 @@ impl DynTool for OwnerTool {
     fn describe(&self, _input: &Value) -> String {
         match self.op {
             OwnerOp::Message => "messaging you".to_string(),
-            OwnerOp::Notify => "notifying you".to_string(),
+            OwnerOp::Notify => "posting to your Inbox".to_string(),
             OwnerOp::CheckDnd => "checking Do Not Disturb".to_string(),
+            OwnerOp::InboxRead => "reading your Inbox".to_string(),
+            OwnerOp::InboxShow => "showing an Inbox item".to_string(),
+            OwnerOp::InboxAnswer => "answering an Inbox item for you".to_string(),
+            OwnerOp::InboxBrief => "writing your brief".to_string(),
         }
     }
 
@@ -210,6 +484,9 @@ impl DynTool for OwnerTool {
                 OwnerOp::Message => self.owner.message(&input),
                 OwnerOp::Notify => self.owner.notify(&input, ctx),
                 OwnerOp::CheckDnd => handle_dnd_status().await,
+                OwnerOp::InboxRead | OwnerOp::InboxShow | OwnerOp::InboxAnswer | OwnerOp::InboxBrief => {
+                    self.owner.inbox(self.op, &input, ctx).await
+                }
             }
         })
     }
@@ -225,12 +502,76 @@ mod tests {
     fn the_owner_tools_need_a_message() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(&dir.path().join("o.db").to_string_lossy()).unwrap());
-        let tools = Owner::new(store, Arc::new(std::sync::RwLock::new(None))).tools();
+        let tools = Owner::new(store, Arc::new(std::sync::RwLock::new(None)), Arc::new(std::sync::RwLock::new(None))).tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert_eq!(names, ["message_owner", "push_notification", "check_dnd"]);
+        assert_eq!(names, ["message_owner", "push_notification", "check_dnd", "read_inbox", "inbox_card", "answer_inbox_item", "write_brief"]);
         assert!(tools[0].validate_input(&json!({"message": ""})).is_err());
         assert!(tools[1].validate_input(&json!({"title": "x"})).is_err());
         assert!(tools[2].validate_input(&json!({})).is_ok() && tools[2].read_only(&json!({})));
+    }
+
+    /// Answers the `inbox` tool hands the server, recorded.
+    struct Recorded(std::sync::Mutex<Vec<(String, String, String)>>);
+
+    #[async_trait::async_trait]
+    impl InboxAnswers for Recorded {
+        async fn answer(&self, id: &str, value: &str, via: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push((id.into(), value.into(), via.into()));
+            Ok(())
+        }
+    }
+
+    /// The assistant reads the Inbox, writes one brief a day (written again,
+    /// it is rewritten in place), and answers a card only on the owner's own
+    /// word in his chat, with the card's own answer, through the server's one
+    /// answer path. Another employee can't read it.
+    #[tokio::test]
+    async fn the_assistant_reads_the_inbox_and_answers_only_on_the_owners_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("o.db").to_string_lossy()).unwrap());
+        let recorded = Arc::new(Recorded(Default::default()));
+        let cell: InboxAnswersCell = Arc::new(std::sync::RwLock::new(Some(recorded.clone() as Arc<dyn InboxAnswers>)));
+        let tools = Owner::new(store.clone(), Arc::new(std::sync::RwLock::new(None)), cell).tools();
+        let tool = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        let options = [db::models::ItemOption { label: "Lumen · $14.20".into(), value: "lumen".into() }];
+        crate::owner_notify::emit(&store, None, &crate::owner_notify::OwnerNotification {
+            id: "q:1", kind: "info", title: "Which supplier?", needs_you: true, options: &options,
+            reply_to: Some("agent:store:cron:x"), agent_id: Some("store"), ..Default::default()
+        });
+        let pa = |owner_request: bool| ToolContext {
+            session_key: "agent:assistant:web".into(),
+            owner_request,
+            ..Default::default()
+        };
+
+        let listed = tool("read_inbox").execute_dyn(&pa(false), json!({ "view": "needs_you" })).await;
+        assert!(listed.content.contains("Which supplier?") && listed.content.contains("lumen"), "{}", listed.content);
+        let shown = tool("inbox_card").execute_dyn(&pa(false), json!({ "id": "q:1" })).await;
+        assert_eq!(shown.payload.as_ref().unwrap()["kind"], "inbox_item");
+
+        let unasked = tool("answer_inbox_item").execute_dyn(&pa(false), json!({ "id": "q:1", "value": "lumen" })).await;
+        assert!(unasked.is_error && recorded.0.lock().unwrap().is_empty(), "never without the owner's word");
+        let asked = tool("answer_inbox_item").execute_dyn(&pa(true), json!({ "id": "q:1", "value": "Lumen · $14.20" })).await;
+        assert!(!asked.is_error, "{}", asked.content);
+        assert_eq!(*recorded.0.lock().unwrap(), [("q:1".to_string(), "lumen".to_string(), "chat".to_string())]);
+
+        for text in ["Two things need you.", "Two things need you; the rest went well."] {
+            let r = tool("write_brief").execute_dyn(&pa(false), json!({ "text": text })).await;
+            assert!(!r.is_error, "{}", r.content);
+        }
+        let user = store.ensure_local_user_id().unwrap();
+        let briefs: Vec<_> = store
+            .list_user_notifications(&user, db::models::InboxView::All, None, 50, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.notification_type == BRIEF_TYPE)
+            .collect();
+        assert_eq!(briefs.len(), 1, "one brief a day");
+        assert_eq!(briefs[0].body.as_deref(), Some("Two things need you; the rest went well."));
+        assert!(!tool("read_inbox").execute_dyn(&pa(false), json!({})).await.content.contains("Two things need you"), "the brief isn't listed back");
+
+        let other = ToolContext { session_key: "agent:store:web".into(), owner_request: true, ..Default::default() };
+        assert!(tool("read_inbox").execute_dyn(&other, json!({})).await.is_error);
     }
 }
 

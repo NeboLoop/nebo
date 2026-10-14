@@ -247,7 +247,7 @@ export function getLearning(id: string) {
  * @description "Resolve learning"
  */
 export function resolveLearning(id: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.ResolveLearningResponse>(`/api/v1/agents/learnings/${id}/resolve`, req)
+	return webapi.post<unknown>(`/api/v1/agents/learnings/${id}/resolve`, req)
 }
 
 /**
@@ -639,7 +639,7 @@ export function listUpdates() {
  * @description "Apply update"
  */
 export function applyUpdate(id: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.ApplyUpdateResponse>(`/api/v1/artifacts/${id}/apply-update`, req)
+	return webapi.post<unknown>(`/api/v1/artifacts/${id}/apply-update`, req)
 }
 
 /**
@@ -1632,8 +1632,8 @@ export function neboAIBotStatus() {
 /**
  * @description "List notifications"
  */
-export function listNotifications(limit?: number, offset?: number) {
-	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, { limit, offset })
+export function listNotifications(limit?: number, offset?: number, view?: string, agent?: string) {
+	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, { limit, offset, view, agent })
 }
 
 /**
@@ -1655,6 +1655,13 @@ export function unreadCount() {
  */
 export function deleteNotification(id: string) {
 	return webapi.delete<components.DeleteNotificationResponse>(`/api/v1/notifications/${id}`)
+}
+
+/**
+ * @description "Answer notification"
+ */
+export function answerNotification(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.AnswerNotificationResponse>(`/api/v1/notifications/${id}/answer`, req)
 }
 
 /**

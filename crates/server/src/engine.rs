@@ -1385,7 +1385,6 @@ pub fn report_temporary_outcome(
         .chars()
         .take(1_500)
         .collect();
-    let user_id = store.ensure_local_user_id()?;
     let id = format!("temporary:{}", run.id);
     let agent = (!work.agent_id.is_empty()).then_some(work.agent_id.as_str());
     // The run is deleted below, so the item is its own place.
@@ -1397,10 +1396,12 @@ pub fn report_temporary_outcome(
         action_url: None,
         agent_id: agent,
         loud: true,
+        ..Default::default()
     };
-    // Written before anything is deleted: the outcome must reach the owner.
-    store.create_notification_if_not_exists(&id, &user_id, n.kind, n.title, n.body, Some(&n.link()), None, agent)?;
-    tools::owner_notify::emit(store, broadcast, &n);
+    // Stored before anything is deleted: the outcome must reach the owner.
+    if !tools::owner_notify::emit(store, broadcast, &n) {
+        return Err(types::NeboError::Database(format!("{id}: the outcome's Inbox item was not stored")));
+    }
     if !work.report_to.is_empty() {
         let saved_again = match work.kind {
             db::TemporaryKind::Workflow => format!(

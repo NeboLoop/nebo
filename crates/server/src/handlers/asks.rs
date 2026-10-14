@@ -746,18 +746,30 @@ pub(crate) fn blocking_fields() -> serde_json::Value {
     serde_json::json!({ "blocking": true, "interruptionLevel": "time-sensitive" })
 }
 
-/// A parked question as the owner's hub item, which pushes it to his phone:
-/// who is waiting, on what, and a link to where its card is: the
-/// conversation where the owner asked, or the assistant's chat for one
-/// relayed there. `askId` names the ask. A parked question always blocks
-/// its run.
-pub(crate) fn push_item(w: &WaitingAsk) -> serde_json::Value {
+/// A parked question as the owner's item: who is waiting, on what, the
+/// answers it takes, and a link to where its card is: the conversation where
+/// the owner asked, or the assistant's chat for one relayed there. The ONE
+/// place its Inbox row and its hub copy (the phone's push) are built: `f`
+/// gets the item and what only the hub copy carries (`askId`, the blocking
+/// fields). A parked question always blocks its run.
+fn with_question_item<R>(w: &WaitingAsk, f: impl FnOnce(&tools::owner_notify::OwnerNotification, serde_json::Value) -> R) -> R {
     let id = push_id(&w.id);
     let title = waiting_on_you(&w.employee);
     let link = if w.relayed {
         tools::owner_notify::link::assistant()
     } else {
         tools::owner_notify::link::chat(&w.agent_id, &w.chat_id)
+    };
+    // A card done in the app (install, connect) has no answer on the card:
+    // its link is where it is done.
+    let options: Vec<db::models::ItemOption> = if w.answerable {
+        w.options
+            .iter()
+            .zip(&w.values)
+            .map(|(label, value)| db::models::ItemOption { label: label.clone(), value: value.clone() })
+            .collect()
+    } else {
+        Vec::new()
     };
     let n = tools::owner_notify::OwnerNotification {
         id: &id,
@@ -767,18 +779,35 @@ pub(crate) fn push_item(w: &WaitingAsk) -> serde_json::Value {
         action_url: Some(&link),
         agent_id: (!w.agent_id.is_empty()).then_some(w.agent_id.as_str()),
         loud: true,
+        needs_you: true,
+        options: &options,
+        ..Default::default()
     };
     let mut extra = blocking_fields();
     extra["chatId"] = serde_json::json!(w.chat_id);
     extra["askId"] = serde_json::json!(w.id);
-    n.hub_item(extra)
+    f(&n, extra)
+}
+
+/// A parked question as the owner's hub item, which pushes it to his phone
+/// ([`with_question_item`]).
+pub(crate) fn push_item(w: &WaitingAsk) -> serde_json::Value {
+    with_question_item(w, |n, extra| n.hub_item(extra))
 }
 
 /// A run parked on a question: the owner's live calls are told now, the
-/// phone is pushed a link to it, and every app's pinned bar is updated.
+/// phone is pushed a link to it, and every app's pinned bar is updated. A
+/// question from work the owner is not in is also a Needs-you item in his
+/// Inbox; one in a chat he is in stays that chat's card.
 pub(crate) async fn question_raised(state: &AppState, session_key: &str, ask: &PendingAsk) {
     let w = from_parked(state, session_key, ask);
     crate::handlers::voice::tell_calls(&state.live_calls, &w.card);
+    if w.card.relayed {
+        with_question_item(&w.card, |n, _| {
+            let quiet = tools::owner_notify::OwnerNotification { loud: false, ..*n };
+            tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &quiet)
+        });
+    }
     crate::codes::push_inbox(state, push_item(&w.card));
     changed(state).await;
 }
@@ -794,25 +823,54 @@ pub(crate) fn approval_is_relayed(card: &tools::ApprovalCard) -> bool {
     card.event["relayed"] == serde_json::Value::Bool(true)
 }
 
-/// An approval card announced: one raised by work the owner is not in is
-/// pushed to his phone, opening the assistant's chat, where it is relayed.
-/// One from a chat he is in is that chat's card only, as before.
-pub(crate) fn approval_raised(state: &AppState, request_id: &str, card: &tools::ApprovalCard) {
-    let employee = crate::handlers::permissions::employee_name(state, &card.agent_id);
-    if let Some(item) = approval_push_item(request_id, card, &employee) {
-        crate::codes::push_inbox(state, item);
-    }
+/// The decisions an approval card takes: the words on its buttons and the
+/// decision each sends ([`crate::chat_dispatch::answer_approval`]).
+pub(crate) const APPROVAL_DECISIONS: [(&str, &str); 3] = [("Allow once", "once"), ("Always allow", "always"), ("Deny", "deny")];
+
+/// An approval decision in the owner's words.
+pub(crate) fn approval_answer_label(decision: &str) -> &'static str {
+    APPROVAL_DECISIONS.iter().find(|(_, d)| *d == decision).map_or("Deny", |(label, _)| label)
 }
 
-/// A relayed approval as the owner's hub item: who is waiting, on what, and
-/// a link to the assistant's chat. None for one from a chat he is in.
-pub(crate) fn approval_push_item(request_id: &str, card: &tools::ApprovalCard, employee: &str) -> Option<serde_json::Value> {
+/// An approval card announced: one raised by work the owner is not in is a
+/// Needs-you item in his Inbox and is pushed to his phone, opening the
+/// assistant's chat, where it is relayed. One from a chat he is in is that
+/// chat's card only, as before.
+pub(crate) fn approval_raised(state: &AppState, request_id: &str, card: &tools::ApprovalCard) {
+    let employee = crate::handlers::permissions::employee_name(state, &card.agent_id);
+    let Some(item) = with_approval_item(request_id, card, &employee, |n, extra| {
+        tools::owner_notify::emit(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &tools::owner_notify::OwnerNotification { loud: false, ..*n },
+        );
+        n.hub_item(extra)
+    }) else {
+        return;
+    };
+    crate::codes::push_inbox(state, item);
+}
+
+/// A relayed approval as the owner's item: who is waiting, on what, its
+/// decisions, and a link to the assistant's chat. The ONE place its Inbox
+/// row and hub copy are built (`f` as in [`with_question_item`]). None for
+/// one from a chat he is in.
+fn with_approval_item<R>(
+    request_id: &str,
+    card: &tools::ApprovalCard,
+    employee: &str,
+    f: impl FnOnce(&tools::owner_notify::OwnerNotification, serde_json::Value) -> R,
+) -> Option<R> {
     if !approval_is_relayed(card) {
         return None;
     }
     let id = approval_push_id(request_id);
     let title = waiting_on_you(employee);
     let link = tools::owner_notify::link::assistant();
+    let options: Vec<db::models::ItemOption> = APPROVAL_DECISIONS
+        .iter()
+        .map(|(label, value)| db::models::ItemOption { label: label.to_string(), value: value.to_string() })
+        .collect();
     let n = tools::owner_notify::OwnerNotification {
         id: &id,
         kind: "approval",
@@ -821,19 +879,28 @@ pub(crate) fn approval_push_item(request_id: &str, card: &tools::ApprovalCard, e
         action_url: Some(&link),
         agent_id: (!card.agent_id.is_empty()).then_some(card.agent_id.as_str()),
         loud: true,
+        needs_you: true,
+        options: &options,
+        ..Default::default()
     };
     let mut extra = blocking_fields();
     extra["approvalId"] = serde_json::json!(request_id);
-    Some(n.hub_item(extra))
+    Some(f(&n, extra))
 }
 
-/// A parked question was answered, or the run it held ended: its push is
+/// A parked question was answered (`answer`: the value it was given), or
+/// the run it held ended (`None`): its Inbox item is settled, its push
 /// resolved and every pinned bar updated.
-pub(crate) async fn question_settled(state: &AppState, request_id: &str) {
-    crate::codes::push_inbox(
-        state,
-        serde_json::json!({ "id": push_id(request_id), "resolved": true }),
+pub(crate) async fn question_settled(state: &AppState, request_id: &str, answer: Option<&str>) {
+    let id = push_id(request_id);
+    tools::owner_notify::settle(
+        &state.store,
+        Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+        &id,
+        answer.unwrap_or("Withdrawn"),
+        None,
     );
+    crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
     changed(state).await;
 }
 
@@ -886,13 +953,15 @@ pub(crate) mod tests {
             summary: "Bookkeeper wants to run `shell`".into(),
             since: 1,
         };
-        let item = approval_push_item("t1", &card(true), "Bookkeeper").expect("pushed");
+        let push = |c: &tools::ApprovalCard| with_approval_item("t1", c, "Bookkeeper", |n, extra| n.hub_item(extra));
+        let item = push(&card(true)).expect("pushed");
         assert_eq!(item["id"], "approval:t1");
         assert_eq!(item["link"], "/assistant");
         assert_eq!(item["title"], "Bookkeeper is waiting on you");
         assert_eq!(item["blocking"], true);
         assert_eq!(item["approvalId"], "t1");
-        assert!(approval_push_item("t1", &card(false), "Bookkeeper").is_none(), "a direct chat's card stays there");
+        assert_eq!(item["needsYou"], true);
+        assert!(push(&card(false)).is_none(), "a direct chat's card stays there");
     }
 
     pub(crate) fn question(id: &str, prompt: &str, options: &[&str]) -> Waiting {

@@ -47,7 +47,6 @@ pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &st
         }
     }
 
-    let user_id = store.ensure_local_user_id().unwrap_or_default();
     let title = match case {
         Some(_) => "A case needs your attention",
         None => "A run needs your attention",
@@ -58,16 +57,19 @@ pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &st
         Some(_) if !agent_id.is_empty() => tools::owner_notify::link::cases(agent_id),
         _ => tools::owner_notify::link::inbox_item(&idem),
     };
-    store.create_notification_if_not_exists(
-        &idem,
-        &user_id,
-        "needs_attention",
+    let n = tools::owner_notify::OwnerNotification {
+        id: &idem,
+        kind: "needs_attention",
         title,
-        Some(reason),
-        Some(&link),
-        None,
-        (!agent_id.is_empty()).then_some(agent_id),
-    )
+        body: Some(reason),
+        action_url: Some(&link),
+        agent_id: (!agent_id.is_empty()).then_some(agent_id),
+        ..Default::default()
+    };
+    if !tools::owner_notify::emit(store, None, &n) {
+        return Err(NeboError::Database(format!("{idem}: the Inbox item was not stored")));
+    }
+    Ok(())
 }
 
 /// How many turns in a row have failed on this case, counting back from the

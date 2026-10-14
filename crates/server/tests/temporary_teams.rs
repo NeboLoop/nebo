@@ -114,7 +114,7 @@ async fn a_temporary_team_takes_its_one_piece_of_work_and_disbands() {
     assert!(assignment.iter().all(|a| a.state != "open"), "its work is closed: {assignment:?}");
     let user = store.ensure_local_user_id().unwrap();
     let outcome = store
-        .list_user_notifications(&user, 100, 0)
+        .list_user_notifications(&user, db::models::InboxView::All, None, 100, 0)
         .unwrap()
         .into_iter()
         .find(|n| n.id.starts_with("temporary:"))

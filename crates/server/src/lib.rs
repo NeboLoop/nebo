@@ -3004,6 +3004,15 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // or a restart gets to it.
     state.tools.set_live_triggers(Arc::new(LiveTriggersImpl(state.clone())));
 
+    // Wire the Inbox's one answer path into the assistant's `inbox` tool
+    // (late, like the rail above): a card it answers on the owner's word is
+    // answered exactly as his tap would.
+    state.tools.set_inbox_answers(Arc::new(handlers::notification::InboxAnswerer(state.clone())));
+
+    // The assistant writes the morning brief every day, on the owner's
+    // clock: one schedule, made once (the owner's edits to it stand).
+    handlers::notification::ensure_morning_brief(&state.store);
+
     // Restart workers that have DB channel bindings (they were started before the
     // channel dispatcher was wired, so channels didn't start).
     {
@@ -3484,6 +3493,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 action_url: None,
                 agent_id: None,
                 loud: true,
+                ..Default::default()
             },
         );
     }
@@ -4528,6 +4538,7 @@ fn notify_skipped_workflows(
                 action_url: Some(&action_url),
                 agent_id: Some(agent_id),
                 loud: false,
+                ..Default::default()
             },
         );
     }

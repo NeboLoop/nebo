@@ -292,6 +292,7 @@ fn tell_owner(state: &AppState, artifact_id: &str, payload: &serde_json::Value, 
         action_url: action_url.as_deref(),
         agent_id: None,
         loud: true,
+        ..Default::default()
     };
     tools::owner_notify::emit(&state.store, Some(&|ev, p| state.hub.broadcast(ev, p)), &n);
     crate::codes::push_inbox(state, n.hub_item(serde_json::json!({})));

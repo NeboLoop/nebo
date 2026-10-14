@@ -2180,6 +2180,7 @@ pub(crate) fn notify_binding_need(
         action_url: Some(&notice.link),
         agent_id: Some(agent_id),
         loud: false,
+        ..Default::default()
     };
     let broadcast = |ev: &str, payload: serde_json::Value| hub.broadcast(ev, payload);
     if fresh {
@@ -2328,6 +2329,7 @@ pub(crate) fn notify_workflow_failure(
             action_url: Some(&action_url),
             agent_id: Some(agent_id),
             loud: false,
+            ..Default::default()
         },
     );
 }
@@ -3390,6 +3392,7 @@ async fn workflow_tuning_sweep(
                             action_url: None,
                             agent_id: Some(&agent.id),
                             loud: false,
+                            ..Default::default()
                         },
                     );
                     info!(agent = %agent.name, binding, "tuning pass applied edit (auto)");
@@ -3404,6 +3407,7 @@ async fn workflow_tuning_sweep(
             // change it would make and its Approve and Reject, wherever the
             // owner taps it.
             let (id, title) = (format!("learn:{}", pending_id), format!("{} proposes a workflow change", agent.name));
+            let options = tools::owner_notify::proposal_options();
             let n = tools::owner_notify::OwnerNotification {
                 id: &id,
                 kind: "approval",
@@ -3412,6 +3416,9 @@ async fn workflow_tuning_sweep(
                 action_url: None,
                 agent_id: Some(&agent.id),
                 loud: false,
+                needs_you: true,
+                options: &options,
+                ..Default::default()
             };
             tools::owner_notify::emit(store, Some(&|ev, payload| hub.broadcast(ev, payload)), &n);
             // Mirror the staged proposal to the owner's web inbox with its
@@ -3629,7 +3636,7 @@ mod run_end_tests {
         let hub = ClientHub::new();
         notify_workflow_failure(&store, &hub, "emp", "run-1", "intake", "boom");
         let user = store.ensure_local_user_id().unwrap();
-        let rows = store.list_user_notifications(&user, 10, 0).unwrap();
+        let rows = store.list_user_notifications(&user, db::models::InboxView::All, None, 10, 0).unwrap();
         let row = rows.iter().find(|n| n.id == "wf-fail:run-1").unwrap();
         assert_eq!(row.action_url.as_deref(), Some("/emp/runs/run-1"));
     }

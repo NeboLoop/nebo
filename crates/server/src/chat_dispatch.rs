@@ -109,8 +109,8 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
             }),
         );
     }
-    let delivered = tx.send(value).is_ok();
-    crate::handlers::asks::question_settled(state, request_id).await;
+    let delivered = tx.send(value.clone()).is_ok();
+    crate::handlers::asks::question_settled(state, request_id, Some(&value)).await;
     delivered
 }
 
@@ -121,12 +121,17 @@ pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String
 /// false when nothing was waiting on that request id.
 pub(crate) async fn answer_approval(state: &AppState, request_id: &str, decision: &str) -> bool {
     let pending = state.approval_channels.lock().await.remove(request_id);
-    // A relayed approval's push is resolved with it.
+    // A relayed approval's Inbox item is settled and its push resolved with it.
     if pending.as_ref().and_then(|p| p.card.as_ref()).is_some_and(crate::handlers::asks::approval_is_relayed) {
-        crate::codes::push_inbox(
-            state,
-            serde_json::json!({ "id": crate::handlers::asks::approval_push_id(request_id), "resolved": true }),
+        let id = crate::handlers::asks::approval_push_id(request_id);
+        tools::owner_notify::settle(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &id,
+            crate::handlers::asks::approval_answer_label(decision),
+            None,
         );
+        crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
     }
     state.hub.broadcast(
         "approval_resolved",
@@ -216,7 +221,7 @@ pub(crate) async fn finish_turn(state: &AppState, run: &RunHandle, end: TurnEnd<
         // question the run can no longer act on, and nothing shows it as
         // waiting any more.
         state.ask_channels.lock().await.remove(&ask.request_id);
-        crate::handlers::asks::question_settled(state, &ask.request_id).await;
+        crate::handlers::asks::question_settled(state, &ask.request_id, None).await;
     }
     // An approval the run asked for stays open past the turn when something
     // still waits on it (a suggested goal is decided whenever the owner gets

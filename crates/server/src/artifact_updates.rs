@@ -434,6 +434,10 @@ pub(crate) fn notify_updates_available(state: &AppState) {
         );
         // Settings → Updates, at this package, with its Update button.
         let action_url = tools::owner_notify::link::update(&a.artifact_id);
+        let options = [
+            db::models::ItemOption { label: "Update now".into(), value: "yes".into() },
+            db::models::ItemOption { label: "Later".into(), value: "no".into() },
+        ];
         let n = tools::owner_notify::OwnerNotification {
             id: &notif_id,
             kind: "info",
@@ -442,7 +446,20 @@ pub(crate) fn notify_updates_available(state: &AppState) {
             action_url: Some(&action_url),
             agent_id: None,
             loud: false,
+            needs_you: true,
+            options: &options,
+            ..Default::default()
         };
+        // Only the version on offer waits: an older notice for the same
+        // package is settled by this one.
+        let older = format!("artifact-update:{}:{}:", a.artifact_type, a.artifact_id);
+        tools::owner_notify::settle_all(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &older,
+            Some(&notif_id),
+            "Superseded",
+        );
         tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n);
         // Mirror to the owner's web inbox (informational — no action
         // buttons; applying an update stays a bot-UI decision). The hub
@@ -504,6 +521,14 @@ pub(crate) async fn apply_claimed_update(
                     "type": atype,
                     "version": artifact.remote_version,
                 }),
+            );
+            // Its Inbox notices are settled: the update is in.
+            tools::owner_notify::settle_all(
+                &state.store,
+                Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+                &format!("artifact-update:{atype}:{id}:"),
+                None,
+                "Updated",
             );
             info!(artifact = %id, version = %artifact.remote_version, "applied artifact update");
         }

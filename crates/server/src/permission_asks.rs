@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use tracing::{info, warn};
 
-use agent::harness::permissions::{Answer, Ask, AskKind, AskSurfaces};
+use agent::harness::permissions::{Answer, Ask, AskKind, AskStatus, AskSurfaces};
 
 use crate::handlers::permissions::{PermissionAskCard, card};
 use crate::state::AppState;
@@ -140,6 +140,10 @@ fn with_item<R>(
     // a workflow, another employee's run) is relayed to the assistant's
     // chat, and opens there.
     let (id, title, body) = (inbox_id(&c.id), title(c), body(c));
+    let options: Vec<db::models::ItemOption> = offered(c)
+        .into_iter()
+        .map(|(label, answer)| db::models::ItemOption { label: label.to_string(), value: answer.as_str().to_string() })
+        .collect();
     let chat_id = c.chat_id.clone();
     let link = if chat_id.is_empty() {
         tools::owner_notify::link::assistant()
@@ -154,6 +158,9 @@ fn with_item<R>(
         action_url: Some(&link),
         agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
         loud: true,
+        needs_you: true,
+        options: &options,
+        ..Default::default()
     };
     let mut hub_only = serde_json::json!({
         "chatId": chat_id,
@@ -232,10 +239,16 @@ impl AskSurfaces for OwnerSurfaces {
         let state = &self.state;
         let c = card(state, ask);
         let id = inbox_id(&c.id);
-        let user_id = state.store.ensure_local_user_id().unwrap_or_default();
-        if let Err(e) = state.store.mark_notification_read(&id, &user_id) {
-            warn!(ask = %c.id, error = %e, "ask's Inbox row not marked read");
-        }
+        // The Inbox item moves to History with the answer, wherever it was
+        // given; a withdrawn ask says so.
+        let (answer, via) = match ask.status {
+            AskStatus::Answered { answer, via } => (
+                offered(&c).into_iter().find(|(_, a)| *a == answer).map_or(answer.as_str(), |(label, _)| label),
+                via.map(|v| v.as_str()),
+            ),
+            _ => ("Withdrawn", None),
+        };
+        tools::owner_notify::settle(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &id, answer, via);
         crate::codes::push_inbox(state, serde_json::json!({ "id": id, "resolved": true }));
         crate::ask_push::global(state).settled(&c.id);
         state.hub.broadcast("permission_ask_resolved", serde_json::to_value(&c).unwrap_or_default());
