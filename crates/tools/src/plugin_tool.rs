@@ -2408,16 +2408,28 @@ pub fn notify_plugin_needs_reauth(
     broadcast: impl Fn(&str, serde_json::Value),
     p: &db::PluginAccountProfile,
 ) {
-    // Fresh id per occurrence: the `reauth_notified` flag (reset on recovery) is
-    // the once-per-spell guard, so a unique id lets a *future* expiry notify again
-    // rather than being suppressed by a stale, already-read notification.
-    let notif_id = uuid::Uuid::new_v4().to_string();
-    let title = format!("Reconnect {}", p.account_label);
+    // One Inbox item per connection, ever: its id is the account's. The
+    // `reauth_notified` flag is the once-per-spell guard, and only the
+    // owner's reconnect resets it (`upsert_plugin_account_profile`), so a
+    // health probe that flaps (every account read as expired right after a
+    // wake, then recovered: nine "Reconnect Primary" items in three days,
+    // 2026-10-12) never files a second item. A break after a reconnect
+    // brings the same item back to the top, unread, in place.
+    let notif_id = format!("reauth:{}", p.id);
+    // Every connection is labelled "Primary" unless the owner names it: the
+    // plugin is what tells two of them apart.
+    let title = format!("Reconnect {} ({})", p.plugin_slug, p.account_label);
     let body = format!(
         "{}'s connection to {} expired. Reconnect it in the agent's Settings, Plugins.",
         p.account_label, p.plugin_slug
     );
     let action_url = crate::owner_notify::link::accounts(&p.agent_id, Some(&p.plugin_slug));
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    if store.get_notification(&notif_id, &user_id).ok().flatten().is_some()
+        && let Err(e) = store.resurface_notification(&notif_id, &user_id)
+    {
+        tracing::warn!(id = %notif_id, error = %e, "reconnect notice not brought back");
+    }
     crate::owner_notify::emit(
         store,
         Some(&|ev, payload| broadcast(ev, payload)),
@@ -2795,6 +2807,55 @@ mod tests {
         let rows = store.list_user_notifications(&user, 10, 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].action_url.as_deref(), Some("/emp/settings/accounts?plugin=quickbooks"));
+    }
+
+    /// One reconnect notice per broken connection: a probe that reads it
+    /// expired again (or reads it recovered and then expired, as every
+    /// account did after a wake on 2026-10-12) files no second item. Only
+    /// the owner's reconnect lets a later break notify, and that brings the
+    /// same item back, unread.
+    #[test]
+    fn the_reconnect_notice_is_not_repeated_while_unresolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        let user = store.ensure_local_user_id().unwrap();
+        store.upsert_plugin_account_profile("emp:hubspot:Primary", "emp", "hubspot", "Primary", "/tmp/h").unwrap();
+        let profile = || store.resolve_plugin_account_profile("emp", "hubspot", None).unwrap().unwrap();
+        // What the refresher (and the mid-run path) does on an expired read.
+        let detect = || {
+            store.set_plugin_account_reauth("emp:hubspot:Primary", true).unwrap();
+            let p = profile();
+            if !p.reauth_notified {
+                notify_plugin_needs_reauth(&store, |_, _| {}, &p);
+                store.mark_plugin_account_reauth_notified(&p.id).unwrap();
+            }
+        };
+        let items = || -> Vec<db::models::Notification> {
+            store.list_user_notifications(&user, 50, 0).unwrap().into_iter().filter(|n| n.id.starts_with("reauth:")).collect()
+        };
+
+        detect();
+        detect();
+        // Recovered on the probe's own say-so, then expired again.
+        store.set_plugin_account_reauth("emp:hubspot:Primary", false).unwrap();
+        assert!(!profile().needs_reauth, "the badge clears");
+        detect();
+        let rows = items();
+        assert_eq!(rows.len(), 1, "one notice, not three: {rows:?}");
+        assert_eq!(rows[0].title, "Reconnect hubspot (Primary)", "names the plugin, not only the label");
+        // Even a direct second call files no second item.
+        notify_plugin_needs_reauth(&store, |_, _| {}, &profile());
+        assert_eq!(items().len(), 1);
+
+        // The owner read it, then reconnected; a later break brings the same
+        // item back, unread.
+        store.mark_notification_read(&rows[0].id, &user).unwrap();
+        store.upsert_plugin_account_profile("emp:hubspot:Primary", "emp", "hubspot", "Primary", "/tmp/h").unwrap();
+        assert!(!profile().reauth_notified && !profile().needs_reauth);
+        detect();
+        let rows = items();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].read_at.is_none(), "a break after a reconnect is news again");
     }
 
     #[test]

@@ -100,9 +100,11 @@ impl Store {
         Ok(out)
     }
 
-    /// Record an account's OAuth health. When healthy again (`needs_reauth =
-    /// false`), the one-time-notification flag is also reset so a future failure
-    /// notifies again. Keyed by the profile's stable `id`.
+    /// Record an account's OAuth health (the "Expired" badge). Healthy again
+    /// leaves the one-time-notification flag set: a probe that reads expired
+    /// and then recovered on its own is the same broken spell, not a new one,
+    /// and only the owner's reconnect ([`Self::upsert_plugin_account_profile`])
+    /// lets a later break notify again. Keyed by the profile's stable `id`.
     pub fn set_plugin_account_reauth(
         &self,
         id: &str,
@@ -119,7 +121,7 @@ impl Store {
         } else {
             conn.execute(
                 "UPDATE plugin_account_profiles
-                 SET needs_reauth = 0, reauth_notified = 0, updated_at = unixepoch()
+                 SET needs_reauth = 0, updated_at = unixepoch()
                  WHERE id = ?1",
                 params![id],
             )
@@ -171,8 +173,10 @@ impl Store {
         Ok(profiles.into_iter().next())
     }
 
-    /// Insert or update an account profile. If this profile is the agent's
-    /// first for the plugin, it is marked primary automatically.
+    /// Insert or update an account profile: the owner connected (or
+    /// reconnected) it. If this profile is the agent's first for the plugin,
+    /// it is marked primary automatically. A reconnect clears the "Expired"
+    /// badge and the one-time-notification flag, so a later break notifies.
     pub fn upsert_plugin_account_profile(
         &self,
         id: &str,
@@ -189,7 +193,8 @@ impl Store {
                  (id, agent_id, plugin_slug, account_label, config_dir, is_primary)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(agent_id, plugin_slug, account_label)
-             DO UPDATE SET config_dir = excluded.config_dir, updated_at = unixepoch()",
+             DO UPDATE SET config_dir = excluded.config_dir, needs_reauth = 0, reauth_notified = 0,
+                           updated_at = unixepoch()",
             params![id, agent_id, plugin_slug, account_label, config_dir, is_primary as i32],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

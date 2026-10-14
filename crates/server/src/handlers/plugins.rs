@@ -827,7 +827,8 @@ fn spawn_plugin_login(
                     // A successful reconnect means the token is healthy again —
                     // clear needs_reauth NOW so the "Expired" badge disappears
                     // immediately, instead of lingering until the next refresher
-                    // tick. (reauth_notified is reset too, so a future expiry re-notifies.)
+                    // tick. (The upsert above reset reauth_notified, so a future
+                    // expiry re-notifies.)
                     let _ = profile_store.set_plugin_account_reauth(&id, false);
 
                     // Lifecycle event: a specific account was connected. Per-account onboarding
