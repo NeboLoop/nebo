@@ -961,26 +961,52 @@ mod tests {
         std::fs::write(dir.join("appdata/plugins/ballast/ballast.db"), b"the index NEBO_DATA_DIR holds").unwrap();
     }
 
-    /// The state a bot commits now leaves its plugin packages out: the
-    /// restored bot has the plugin's data and no package (its default pass
-    /// fetches that), and the commit is smaller by the package.
+    /// The state a bot commits holds each installed plugin version as an
+    /// object of its own, and no `.napp`: the restored bot has the plugin
+    /// and its data on disk at boot, with nothing to fetch or extract. The
+    /// version is uploaded once: a commit after a change elsewhere in the
+    /// `nebo` tree reuses it, and so does one after the restore.
     #[tokio::test]
-    async fn a_restore_brings_back_plugin_data_and_not_the_package() {
-        let (url, _hub) = fake_hub().await;
+    async fn a_restore_brings_back_each_plugin_version_and_its_data() {
+        let (url, hub) = fake_hub().await;
         let api = NeboAIApi::new(url, BOT.into(), "test-token".into());
         let src = bot_dir();
         with_plugin(src.path());
         let m = commit_as(&api, src.path(), Role::State).await.unwrap();
         let nebo = m.objects.iter().find(|o| o.root == "nebo").unwrap();
-        assert!(nebo.bytes < 64 << 10, "the package is not in the state: {} bytes", nebo.bytes);
+        assert!(nebo.bytes < 64 << 10, "the package is not in the nebo object: {} bytes", nebo.bytes);
+        let version = m.objects.iter().find(|o| o.root == "nebo/plugins/ballast/0.2.0").unwrap().clone();
+
+        // A plugin's data changes: the nebo object is packed again, the
+        // version is not.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(src.path().join("nebo/plugins/ballast/ballast.db"), b"the index, grown").unwrap();
+        let uploads = hub.lock().unwrap().uploads;
+        let m2 = commit_as(&api, src.path(), Role::State).await.unwrap();
+        assert_eq!(hub.lock().unwrap().uploads, uploads + 1, "only the nebo object");
+        assert_eq!(m2.objects.iter().find(|o| o.root == version.root), Some(&version));
 
         let dst = tempfile::tempdir().unwrap();
         restore(&api, None, dst.path(), Some(KEY)).await.unwrap();
-        for f in ["nebo/plugins/ballast/ballast.db", "appdata/plugins/ballast/ballast.db", "nebo/plugin-profiles/gws/creds.json"] {
+        for f in [
+            "nebo/plugins/ballast/0.2.0/ballast",
+            "nebo/plugins/ballast/0.2.0/plugin.json",
+            "nebo/plugins/ballast/ballast.db",
+            "appdata/plugins/ballast/ballast.db",
+            "nebo/plugin-profiles/gws/creds.json",
+        ] {
             assert_eq!(read(&dst.path().join(f)), read(&src.path().join(f)), "{f}");
         }
-        assert!(!dst.path().join("nebo/plugins/ballast/0.2.0").exists(), "the package is fetched, not restored");
-        assert!(!dst.path().join("nebo/plugins/ballast/0.2.0.napp").exists());
+        assert!(!dst.path().join("nebo/plugins/ballast/0.2.0.napp").exists(), "a .napp is never state");
+
+        // The restored bot's next commit names the same version chunks: a
+        // restore keeps mtimes to the second, so the version is packed
+        // again, but it is the same bytes and nothing is uploaded for it.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dst.path().join("files/docs/a.txt"), b"changed after the restore").unwrap();
+        let m3 = commit_as(&api, dst.path(), Role::State).await.unwrap();
+        let again = m3.objects.iter().find(|o| o.root == version.root).unwrap();
+        assert_eq!((&again.sha256, &again.chunks), (&version.sha256, &version.chunks));
     }
 
     /// A generation committed before packages were left out still restores,
@@ -1028,10 +1054,12 @@ mod tests {
         }
         assert_eq!(db::backup::integrity_of(&dst.path().join(pack::DATABASE_PATH)).unwrap(), "ok");
 
-        // The next commit from the restored bot leaves the package out.
+        // The next commit from the restored bot holds the version apart
+        // and leaves the `.napp` out.
         let next = commit_as(&api, dst.path(), Role::State).await.unwrap();
         let nebo = next.objects.iter().find(|o| o.root == "nebo").unwrap();
         assert!(nebo.bytes < 64 << 10, "{} bytes", nebo.bytes);
+        assert!(next.objects.iter().any(|o| o.root == "nebo/plugins/ballast/0.2.0"));
     }
 
     /// Two writers from the same head: the second is refused and the head
