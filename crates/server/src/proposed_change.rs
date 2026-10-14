@@ -571,6 +571,8 @@ mod tests {
             status: "pending".into(),
             created_at: 0,
             resolved_at: None,
+            resolved_via: None,
+            resolved_tz: None,
         }
     }
 

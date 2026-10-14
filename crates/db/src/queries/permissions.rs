@@ -395,7 +395,7 @@ impl Store {
     ) -> Result<String, NeboError> {
         let id = uuid::Uuid::new_v4().to_string();
         let (before, after) = (serde_json::to_string(before).map_err(db_err)?, serde_json::to_string(after).map_err(db_err)?);
-        self.record_applied_write(&id, agent_id, "rule", event, rule_id, Some(&after), gist, "", Some(&before))?;
+        self.record_applied_write(&id, agent_id, "rule", event, rule_id, Some(&after), gist, "", Some(&before), None)?;
         self.stamp_pending_write(&id, via, time_zone)?;
         Ok(id)
     }

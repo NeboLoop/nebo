@@ -274,7 +274,7 @@ fn offer(state: &AppState, pattern: &Pattern) -> Result<String, NeboError> {
     let id = uuid::Uuid::new_v4().to_string();
     let words = pattern.words(pattern.ceiling_cents);
     let content = offer_content(pattern, &words)?;
-    state.store.create_pending_write(&id, &pattern.agent_id, RULE, OFFER, &pattern.target(), Some(&content), &words.covers, "", None)?;
+    state.store.create_pending_write(&id, &pattern.agent_id, RULE, OFFER, &pattern.target(), Some(&content), &words.covers, "", None, None)?;
     let item = format!("learn:{id}");
     let title = format!("Want me to handle these for {}?", pattern.employee);
     let body = format!(
@@ -738,7 +738,7 @@ pub async fn add_learned_rule(
     let tz = time_zone(&state.store);
     state
         .store
-        .record_applied_write(&consent_id, &pattern.agent_id, RULE, OFFER, &pattern.target(), Some(&content), &words.covers, "", None)
+        .record_applied_write(&consent_id, &pattern.agent_id, RULE, OFFER, &pattern.target(), Some(&content), &words.covers, "", None, None)
         .map_err(to_error_response)?;
     state.store.stamp_pending_write(&consent_id, via, tz).map_err(to_error_response)?;
     let rule = turn_on(&state, &pattern, &consent_id, "You added it yourself", via, tz).map_err(to_error_response)?;
