@@ -265,7 +265,7 @@
       </button>
       <p class="text-xs text-base-content/70 mt-0.5">
         {#if n.status === 'answered'}
-          {$t('inbox.youAnswered', { values: { answer: n.answer ?? '' } })}{#if surfaceKey(n.answeredVia)} · {$t(surfaceKey(n.answeredVia)!)}{/if}
+          {$t('inbox.youAnswered', { values: { answer: n.answer ?? '' } })}{#if surfaceKey(n.answeredVia)}{' · '}{$t(surfaceKey(n.answeredVia)!)}{/if}
         {:else}
           {$t('inbox.putAway')}
         {/if}

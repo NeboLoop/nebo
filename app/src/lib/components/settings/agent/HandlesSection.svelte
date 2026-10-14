@@ -52,7 +52,7 @@
     ceiling = dollars(r.ceilingCents);
   }
 
-  const moment = (c: { at: number; timeZone: string; zoneAbbr?: string; offsetSeconds?: number }) => formatMoment(c, $locale ?? undefined);
+  const moment = (c: RuleEvent) => formatMoment(c, $locale ?? undefined);
   const eventKey: Record<string, string> = {
     turned_on: 'handles.eventTurnedOn',
     edited: 'handles.eventEdited',
@@ -66,7 +66,7 @@
   <AgentAvatar {name} size="md" />
   <div class="min-w-0">
     <div class="text-sm font-semibold">{$t('handles.title', { values: { name } })}</div>
-    <div class="text-xs text-base-content/70">{$t('handles.blurb', { values: { bot: $botName || name } })}</div>
+    <div class="text-xs text-base-content/70">{$t('handles.blurb', { values: { bot: data?.rules[0]?.bot || $botName || name } })}</div>
   </div>
 </div>
 
@@ -94,19 +94,19 @@
       {#if r.does}<p class="text-sm text-base-content/80">{r.does}</p>{/if}
       {#if r.cantUndo}<p class="inbox-cant-undo">{$t('inbox.cantUndo')}</p>{/if}
       <p class="rule-meta">
-        <b>{$t('handles.youSaidYes')}</b> {moment(r.consent)}{#if surfaceKey(r.consent.via)} · {$t(surfaceKey(r.consent.via)!)}{/if}
+        <b>{$t('handles.youSaidYes')}</b> {moment(r.consent)}{#if surfaceKey(r.consent.via)}{' · '}{$t(surfaceKey(r.consent.via)!)}{/if}
       </p>
       {#if r.paused && pausedAt(r)}
         <p class="rule-meta"><b>{$t('handles.youPaused')}</b> {moment(pausedAt(r)!)}</p>
       {/if}
       <p class="rule-meta">
-        {$t('handles.used', { values: { n: r.uses } })}{#if r.lastUsedAt} · {$t('handles.lastUsed', { values: { when: formatRelative(r.lastUsedAt) } })}{/if}
+        {$t('handles.used', { values: { n: r.uses } })}{#if r.lastUsedAt}{' · '}{$t('handles.lastUsed', { values: { when: formatRelative(r.lastUsedAt) } })}{/if}
       </p>
       {#if r.history.length > 0}
         <ol class="rule-history">
           {#each r.history as e, i (i)}
             <li>
-              <span class="font-mono">{moment(e)}</span>
+              <span class="text-base-content/50">{moment(e)}</span>
               <span>{$t(eventKey[e.event] ?? 'handles.eventEdited', { values: { name } })}{#if e.detail}: {e.detail}{/if}</span>
             </li>
           {/each}

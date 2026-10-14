@@ -38,7 +38,7 @@
   {:else if rule === null}
     <p>{$t('inbox.ruleGone')}</p>
   {:else}
-    <p>{$t('inbox.yourRule', { values: { rule: rule.covers } })}{#if rule.does} {rule.does}{/if}</p>
+    <p>{$t('inbox.yourRule', { values: { rule: rule.covers } })}{#if rule.does}{' '}{rule.does}{/if}</p>
     <p>
       {$t('inbox.youSaidYes', { values: { when: formatMoment(rule.consent, $locale ?? undefined) } })}{#if surfaceKey(rule.consent.via)}, {$t(surfaceKey(rule.consent.via)!)}{/if}
     </p>
