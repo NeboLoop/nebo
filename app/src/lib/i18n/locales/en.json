@@ -681,7 +681,6 @@
 		"takeAction": "View",
 		"markAsRead": "Mark as read",
 		"viewAll": "View all notifications",
-		"closeNotification": "Close notification",
 		"overflow": "99+"
 	},
 	"slashPicker": {

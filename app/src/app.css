@@ -911,7 +911,10 @@
   @apply flex flex-col rounded-2xl border border-base-300 bg-base-100 px-3 py-3;
 }
 .inbox-update {
-  @apply relative flex items-start gap-2.5 border-t border-base-content/10 py-2.5 first-of-type:border-t-0;
+  @apply relative flex items-start gap-2.5 py-2.5;
+}
+.inbox-update + .inbox-update {
+  @apply border-t border-base-content/10;
 }
 .inbox-update-main {
   @apply flex w-full min-w-0 cursor-pointer items-baseline gap-2 border-none bg-transparent p-0 text-start text-base-content;

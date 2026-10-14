@@ -27,6 +27,7 @@ import {
 
 const item = (id: string, over: Partial<InboxItem> = {}): InboxItem => ({
 	id,
+	userId: 'u',
 	type: 'info',
 	title: id,
 	body: '',

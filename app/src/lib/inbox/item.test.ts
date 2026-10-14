@@ -37,10 +37,10 @@ import {
 
 const opts = (...v: string[]) => v.map((value) => ({ label: value, value }));
 function update(id: string, agentId: string, createdAt = 1, over: Partial<InboxItem> = {}): InboxItem {
-	return { id, type: 'info', title: id, body: '', agentId, createdAt, needsYou: false, options: [], status: 'update', ...over };
+	return { id, userId: 'u', type: 'info', title: id, body: '', agentId, createdAt, needsYou: false, options: [], status: 'update', ...over };
 }
 function open(id: string, over: Partial<InboxItem> = {}): InboxItem {
-	return { id, type: 'info', title: id, body: '', createdAt: 1, needsYou: true, options: opts('a', 'b'), status: 'open', ...over };
+	return { id, userId: 'u', type: 'info', title: id, body: '', createdAt: 1, needsYou: true, options: opts('a', 'b'), status: 'open', ...over };
 }
 
 describe('kinds', () => {
