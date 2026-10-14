@@ -910,7 +910,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                         Some("failed"),
                         None,
                         None,
-                        Some("no AI provider available"),
+                        Some(agent::harness::model_call::NOT_SIGNED_IN_TEXT),
                         None,
                     ) {
                         warn!(run_id = %run_id_clone, error = %e, "failed to update workflow run status");
@@ -921,14 +921,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                         &wf_id,
                         &run_id_clone,
                         &wf_id,
-                        "no AI provider available",
+                        agent::harness::model_call::NOT_SIGNED_IN_TEXT,
                     );
                     hub.broadcast(
                         "workflow_run_failed",
                         serde_json::json!({
                             "workflowId": wf_id,
                             "runId": run_id_clone,
-                            "error": "no AI provider available",
+                            "error": agent::harness::model_call::NOT_SIGNED_IN_TEXT,
                         }),
                     );
                     return;
@@ -1614,7 +1614,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                         Some("failed"),
                         None,
                         None,
-                        Some("no AI provider available"),
+                        Some(agent::harness::model_call::NOT_SIGNED_IN_TEXT),
                         None,
                     );
                     // Post failure to agent chat
@@ -1623,8 +1623,10 @@ impl WorkflowManager for WorkflowManagerImpl {
                         &hub,
                         &chat_session,
                         &format!(
-                            "**Automation failed** — {} ({}): no AI provider available",
-                            binding_name, trigger
+                            "**Automation failed** — {} ({}): {}",
+                            binding_name,
+                            trigger,
+                            agent::harness::model_call::NOT_SIGNED_IN_TEXT
                         ),
                     );
 
@@ -1643,7 +1645,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             &agent_id_owned,
                             &run_id_clone,
                             &binding_name,
-                            "no AI provider available",
+                            agent::harness::model_call::NOT_SIGNED_IN_TEXT,
                         );
                     }
 
@@ -1653,7 +1655,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             "agentId": agent_id_owned,
                             "runId": run_id_clone,
                             "bindingName": binding_name,
-                            "error": "no AI provider available",
+                            "error": agent::harness::model_call::NOT_SIGNED_IN_TEXT,
                         }),
                     );
                     let now = chrono::Utc::now().to_rfc3339();

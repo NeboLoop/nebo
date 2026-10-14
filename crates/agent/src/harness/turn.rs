@@ -334,12 +334,11 @@ impl TurnExit {
 /// Admit `req` on its session and drive it on its own task. A busy
 /// session takes the input as a mid-turn row, and the handle carries only
 /// the typed `QUEUED_INTO_RUNNING_TURN` stop: no words, nothing announced.
+///
+/// A bot with no AI at all is admitted like any other: its model call ends
+/// the turn on the typed `not_signed_in` stop (`model_call::NOT_SIGNED_IN`),
+/// the one way the owner hears it.
 pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle, HarnessError> {
-    if h.providers.read().await.is_empty() {
-        return Err(HarnessError::Failed(
-            "No AI providers configured. Add API keys in Settings > Providers.".into(),
-        ));
-    }
     if req.session_key.is_empty() {
         req.session_key = "default".into();
     }
@@ -4015,6 +4014,24 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("the turn never released its session");
+    }
+
+    /// A bot with no AI at all (signed out of NeboAI, nothing else set up)
+    /// is admitted like any other turn and ends on the one typed
+    /// `not_signed_in` stop, with the one plain sentence: never a refusal at
+    /// the door in words about providers and settings.
+    #[tokio::test]
+    async fn a_bot_with_no_ai_at_all_ends_on_the_typed_not_signed_in_stop() {
+        let h = harness(&Scripted::new(vec![])).await;
+        h.providers.write().await.clear();
+        let events = run_turn(&h, owner("Hi")).await;
+        let said = events
+            .iter()
+            .find(|e| e.stop_reason.as_deref() == Some(super::model_call::NOT_SIGNED_IN) && e.event_type != ai::StreamEventType::Done)
+            .expect("the typed stop reaches the owner");
+        assert_eq!(said.error.as_deref(), Some(super::model_call::NOT_SIGNED_IN_TEXT));
+        let all: String = events.iter().map(|e| format!("{} {}", e.text, e.error.clone().unwrap_or_default())).collect();
+        assert!(!all.to_lowercase().contains("provider"), "{all}");
     }
 
     fn exit_of(events: &[StreamEvent]) -> String {
