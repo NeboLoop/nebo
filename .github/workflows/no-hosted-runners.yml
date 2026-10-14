@@ -1,0 +1,36 @@
+name: No GitHub-hosted runners
+
+# Every NeboLoop workflow runs on our own machines (the stadium Mac mini's
+# runners, the house Windows box, or a per-run DigitalOcean droplet): the
+# org's GitHub Actions budget is capped. Fails a PR whose workflows name a
+# GitHub-hosted label (ubuntu-*, macos-*, windows-*). The same check as
+# NeboLoop/stadium-runners' reusable no-hosted-runners.yml, inlined because a
+# public repo cannot call a workflow in a private one. Only .github/ is checked
+# out and nothing from the PR is executed.
+on:
+  pull_request:
+    paths: [".github/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, ARM64, neboloop-orch]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+      - name: Workflows use our runners only
+        run: |
+          shopt -s nullglob
+          bad=$(for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            sed 's/#.*//' "$f" | grep -nE '\b(ubuntu|macos|windows)-(latest|slim|[0-9])' | sed "s|^|$f:|"
+          done)
+          if [ -n "$bad" ]; then
+            echo "::error::GitHub-hosted runners are not used in NeboLoop. Use [self-hosted, Linux, ARM64, neboloop] (light), neboloop-orch (orchestration), stadium-mac, stadium-win, or a per-run droplet."
+            echo "$bad"
+            exit 1
+          fi
+          echo "no GitHub-hosted runner labels"

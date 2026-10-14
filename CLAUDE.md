@@ -243,6 +243,11 @@ house machines are faster, ours, and already set up.
   box, runner `stadium-win-1`, set up by `scripts/setup-windows-runner.ps1`). Its runner runs as NETWORK
   SERVICE under a Restricted machine execution policy; the jobs' "Runner prep" cmd step handles that
   without admin. `.github/workflows/windows-runner-check.yml` proves the box before a tag.
+- Every other job, in every workflow, also runs on our machines (the org's Actions budget is
+  capped): orchestration (droplet up/down, notices, cancels) on `[self-hosted, Linux, ARM64,
+  neboloop-orch]`, light work (frontend, release packaging, APT) on `neboloop`, CI's cargo
+  workspace tests on a per-run droplet. `no-hosted-runners.yml` fails a PR that names
+  `ubuntu-*`, `macos-*` or `windows-*`.
 - `scripts/check-release-runners.py` enforces this in CI (`release-runners` job). Do not weaken
   or delete the check; if a runner is down, fix the runner (`ssh stadium`), don't reroute the build.
 - Signing and notarization credentials come from GitHub secrets and work on any runner.
