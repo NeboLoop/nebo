@@ -158,6 +158,29 @@ impl SkillCore {
         ))
     }
 
+    /// Why a new learned skill `name` is not proposed, when it is a lesson
+    /// the employee already has: a skill it sees under a name that is the
+    /// same lesson ([`same_lesson`]), or one the owner declined in the last
+    /// [`DECLINED_LESSON_SECS`].
+    async fn known_lesson(&self, scope: Scope<'_>, owner: &str, name: &str) -> Option<String> {
+        if let Some(skill) = self.loader.list(scope.agent).await.into_iter().find(|s| same_lesson(&s.name, name)) {
+            return Some(format!(
+                "Not proposed: the skill '{}' already holds this lesson. To add to it, load it with use_skill and save it under its own name.",
+                skill.name
+            ));
+        }
+        let store = self.store.as_ref()?;
+        let declined = store
+            .declined_pending_writes(owner, "skill", "create", DECLINED_LESSON_SECS)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| same_lesson(&p.target, name))?;
+        Some(format!(
+            "Not proposed: the owner already declined this lesson as '{}'. Do not propose it again.",
+            declined.target
+        ))
+    }
+
     /// Record an auto-mode learned write that was ALREADY applied to disk, as an
     /// approved audit row (+ an `info` Inbox notification). This is the revert
     /// anchor for `learning_mode = "auto"`: without it, auto-applied learned
@@ -547,6 +570,16 @@ impl SkillCore {
             format!("---\nname: {}\ndescription: {}\n---\n{}", name, name, content)
         };
 
+        // One proposal per lesson: a lesson the employee already has as a
+        // skill, or one the owner declined, is not proposed again. One it
+        // has waiting on the owner is restated in place
+        // (`stage_learned_write`).
+        if let Some(owner) = scope.learned_owner
+            && let Some(why) = self.known_lesson(scope, owner, name).await
+        {
+            return ToolResult::error(why);
+        }
+
         // Staged learning: the create becomes a pending write for the owner
         // to approve from the Inbox.
         if ctx.learned_write_staged
@@ -922,24 +955,60 @@ struct Scope<'a> {
 /// Whether a learned write the employee proposes is one it already has
 /// open (`open` is that proposal's skill name). An update or a delete is
 /// the same proposal only on the same skill. A new skill is the same one
-/// under the same name, or a name that runs on from it: one name's words
-/// are the other's first words, three or more of them
-/// (`verify-shell-permissions-before-command` and
-/// `verify-shell-permissions-before-command-execution`).
+/// when it is the same lesson ([`same_lesson`]).
 fn same_proposal(action: &str, open: &str, proposed: &str) -> bool {
-    if open == proposed {
+    open == proposed || (action == "create" && same_lesson(open, proposed))
+}
+
+/// Words a lesson's name carries that say nothing about what it is about:
+/// filler, and the verbs every lesson starts with.
+const LESSON_FILLER: &[&str] = &[
+    "a", "an", "the", "and", "or", "for", "of", "to", "in", "on", "into", "with", "before", "after", "by",
+    "from", "when", "at", "per", "vs", "handle", "handling", "use", "using", "avoid", "ensure", "check",
+    "verify", "optimize", "fix", "prevent", "manage", "improve", "always", "never",
+];
+
+/// What a learned skill's name is about: its words without
+/// [`LESSON_FILLER`], each cut to a rough stem ("gathering" and "gather",
+/// "steps" and "step").
+fn lesson_words(name: &str) -> std::collections::BTreeSet<String> {
+    name.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| !w.is_empty() && !LESSON_FILLER.contains(&w.as_str()))
+        .map(|w| {
+            if w.len() > 5 && w.ends_with("ing") {
+                w[..w.len() - 3].to_string()
+            } else if w.len() > 4 && w.ends_with("ed") {
+                w[..w.len() - 2].to_string()
+            } else if w.len() > 3 && w.ends_with('s') && !w.ends_with("ss") {
+                w[..w.len() - 1].to_string()
+            } else {
+                w
+            }
+        })
+        .collect()
+}
+
+/// Whether two learned-skill names are the same lesson: at least two of
+/// what they are about in common, and that is half or more of the shorter
+/// one's. The owner saw fourteen "token budget" skills under
+/// fourteen names, and `split-gather-signals-into-individual-steps` beside
+/// `split-data-gathering-steps`. Names are what a proposal always has;
+/// embeddings are not (the review fork runs with no embedder, and the
+/// embedding service may be refusing calls), so this is the one test.
+fn same_lesson(a: &str, b: &str) -> bool {
+    if a == b {
         return true;
     }
-    if action != "create" {
-        return false;
-    }
-    let words = |name: &str| -> Vec<String> {
-        name.split(['-', '_', ' ']).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
-    };
-    let (a, b) = (words(open), words(proposed));
-    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    short.len() >= 3 && long.starts_with(&short)
+    let (a, b) = (lesson_words(a), lesson_words(b));
+    let shared = a.intersection(&b).count();
+    let shorter = a.len().min(b.len());
+    shared >= 2 && shared * 2 >= shorter
 }
+
+/// How long a lesson the owner declined (turned down, let lapse, or undid)
+/// keeps the employee from proposing it again.
+const DECLINED_LESSON_SECS: i64 = 30 * 24 * 3600;
 
 /// `content` as a whole SKILL.md: bare instructions get the skill's existing
 /// name and description as frontmatter.
@@ -1418,13 +1487,86 @@ mod tests {
         assert_eq!(now_open.len(), 2);
     }
 
+    /// One proposal per lesson: the same lesson under another name restates
+    /// the open proposal, and once the owner declines it, or the employee
+    /// has it as a skill, it is not proposed again. The owner's Inbox held
+    /// `split-gather-signals-into-individual-steps` and
+    /// `split-data-gathering-steps` two seconds apart, and fourteen
+    /// token-budget skills.
+    #[tokio::test]
+    async fn a_second_proposal_of_the_same_lesson_is_suppressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let loader = Arc::new(
+            Loader::new(dir.path().join("installed"), dir.path().join("user")).with_learned_dir(dir.path().join("learned")),
+        );
+        let family = tools(SkillCore::new(loader.clone()).with_store(store.clone()));
+        let save = tool(&family, "save_skill");
+        let mut ctx = ToolContext::new(crate::origin::Origin::System);
+        ctx.learned_write_agent = Some("mom".into());
+        ctx.learned_write_staged = true;
+        let propose = |name: &'static str| {
+            let ctx = &ctx;
+            async move {
+                save.execute_dyn(ctx, json!({"name": name, "content": format!("---\nname: {name}\ndescription: d\n---\nbody")})).await
+            }
+        };
+        let open = || store.open_pending_writes("mom", "skill", "create").unwrap();
+
+        assert!(propose("split-gather-signals-into-individual-steps").await.content.starts_with("Staged"));
+        let again = propose("split-data-gathering-steps").await;
+        assert!(again.content.starts_with("The proposal already waiting"), "{}", again.content);
+        assert_eq!(open().len(), 1, "one proposal per lesson");
+
+        // Declined: the same lesson under a third name is not proposed.
+        store.resolve_pending_write(&open()[0].id, "rejected").unwrap();
+        let declined = propose("split-signal-gathering-steps").await;
+        assert!(declined.is_error && declined.content.contains("declined"), "{}", declined.content);
+        assert!(open().is_empty());
+
+        // Already a skill: not proposed either.
+        let learned = dir.path().join("learned").join("mom").join("token-budget-realism");
+        std::fs::create_dir_all(&learned).unwrap();
+        std::fs::write(learned.join("SKILL.md"), "---\nname: token-budget-realism\ndescription: d\n---\nbody").unwrap();
+        loader.reload_from_disk().await;
+        let held = propose("token-budget-reallocation").await;
+        assert!(held.is_error && held.content.contains("'token-budget-realism' already holds"), "{}", held.content);
+        assert!(open().is_empty());
+
+        // A different lesson is its own proposal.
+        assert!(propose("quickbooks-date-format").await.content.starts_with("Staged"));
+    }
+
+    #[test]
+    fn the_same_lesson_under_other_names() {
+        let tokens = [
+            "optimize-token-budget-for-inventory-scope",
+            "optimize-token-budget-for-kill-or-fund",
+            "token-budget-aware-step-sizing",
+            "token-budget-oversight-in-multi-step-sweep",
+            "token-budget-overestimation",
+            "token-budget-realism",
+            "token-budget-reallocation",
+            "token-budget-allocation",
+        ];
+        for a in tokens {
+            for b in tokens {
+                assert!(same_lesson(a, b), "{a} / {b}");
+            }
+        }
+        assert!(same_lesson("daily-books-sweep-token-overrun", "daily-books-sweep-token-budget"));
+        assert!(same_lesson("split-gather-signals-into-individual-steps", "split-data-gathering-steps"));
+        assert!(!same_lesson("quickbooks-troubleshooting", "quickbooks-query-workarounds"));
+        assert!(!same_lesson("bookkeeper-quickbooks-setup", "financial-statement-interpretation"));
+    }
+
     #[test]
     fn the_same_proposal_is_the_same_skill() {
         assert!(same_proposal("create", "a-b-c", "a-b-c"));
         assert!(same_proposal("create", "verify-shell-permissions-before-command", "verify-shell-permissions-before-command-execution"));
         assert!(same_proposal("create", "verify-shell-permissions-before-command-execution", "verify-shell-permissions-before-command"));
-        assert!(!same_proposal("create", "handle-queue", "handle-queue-pause"), "two shared words are not enough");
-        assert!(!same_proposal("create", "token-budget-realism", "token-budget-overestimation"));
+        assert!(!same_proposal("create", "handle-queue", "handle-queue-pause"), "one word of substance is not enough");
+        assert!(same_proposal("create", "token-budget-realism", "token-budget-overestimation"), "the same lesson, the owner's call");
         assert!(!same_proposal("update", "a-b-c", "a-b-c-d"), "an update is on one skill");
         assert!(same_proposal("update", "a-b-c", "a-b-c"));
     }

@@ -133,6 +133,32 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// An employee's proposals of one kind and action the owner turned down,
+    /// let lapse unanswered, or undid, in the last `within_secs`, newest
+    /// first.
+    pub fn declined_pending_writes(
+        &self,
+        agent_id: &str,
+        kind: &str,
+        action: &str,
+        within_secs: i64,
+    ) -> Result<Vec<PendingWrite>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM pending_writes
+                 WHERE agent_id = ?1 AND kind = ?2 AND action = ?3
+                   AND status IN ('rejected', 'expired', 'reverted')
+                   AND COALESCE(resolved_at, created_at) > unixepoch() - ?4
+                 ORDER BY COALESCE(resolved_at, created_at) DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![agent_id, kind, action, within_secs], row_to_pending_write)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Replace what an open proposal would write with the employee's newer
     /// proposal of the same thing, and date it now. False when the row was
     /// decided meanwhile (nothing is changed then).

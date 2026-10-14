@@ -230,6 +230,10 @@ pub struct Report {
     pub disconnected: Vec<String>,
     /// Model calls this workflow's audits made.
     pub model_calls: u32,
+    /// The engine limits its runs ran into ([`record_run_limit`]): one per
+    /// step (`None`: the run as a whole), also listed among `issues`. They
+    /// stand while the definition is the one they were met under.
+    pub run_limits: Vec<Issue>,
 }
 
 /// What one employee needs for its workflows' signals: its plugins and
@@ -441,15 +445,83 @@ fn merged_report(
             fixes.push(fix.clone());
         }
     }
+    let prior_hash = prior["definitionHash"].as_str().unwrap_or("");
+    let run_limits: Vec<Issue> = if prior_hash.is_empty() || prior_hash == hash {
+        run_limits_of(&prior).into_iter().filter(|i| i.activity.as_ref().is_none_or(|s| ids.contains(s))).collect()
+    } else {
+        Vec::new()
+    };
+    let mut issues = audit.issues.clone();
+    issues.extend(run_limits.iter().cloned());
     Report {
         definition_hash: hash.to_string(),
         depth: depth.label(),
         steps,
         fixes,
         unresolved: audit.unresolved.clone(),
-        issues: audit.issues.clone(),
+        issues,
         disconnected,
         model_calls: prior["modelCalls"].as_u64().unwrap_or(0) as u32 + model_calls,
+        run_limits,
+    }
+}
+
+/// The run limits a kept report holds.
+fn run_limits_of(report: &Value) -> Vec<Issue> {
+    report["runLimits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| {
+            Some(Issue {
+                severity: workflow_check::Severity::Warning,
+                workflow: i["workflow"].as_str()?.to_string(),
+                activity: i["step"].as_str().map(str::to_string),
+                message: i["message"].as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// A run of an employee's workflow ran into one of the engine's limits: a
+/// step used every model turn it had, or the run went over its token
+/// budget. That is the workflow's shape, not something the employee
+/// learned, so it is kept in the workflow's audit report (one finding per
+/// step, the newest words), where the owner sees what is wrong with the
+/// workflow — never proposed as a learned skill. Before this, every such
+/// run filed another "wants to learn something new" item about token
+/// budgets or splitting steps (fourteen of them, 2026-10-01 to 10-14).
+pub fn record_run_limit(store: &db::Store, agent_id: &str, binding: &str, step: Option<&str>, message: &str) {
+    let prior = store.workflow_audit(agent_id, binding).ok().flatten();
+    let mut report: Value = prior.as_ref().and_then(|p| serde_json::from_str(&p.report).ok()).unwrap_or_else(|| {
+        serde_json::json!({
+            "definitionHash": "", "depth": Depth::Programmatic.label(), "steps": [], "fixes": [],
+            "unresolved": [], "issues": [], "disconnected": [], "modelCalls": 0,
+        })
+    });
+    let old = run_limits_of(&report);
+    let mut limits: Vec<Issue> = old.iter().filter(|i| i.activity.as_deref() != step).cloned().collect();
+    limits.push(Issue {
+        severity: workflow_check::Severity::Warning,
+        workflow: binding.to_string(),
+        activity: step.map(str::to_string),
+        message: message.to_string(),
+    });
+    let issue_json = |i: &Issue| serde_json::to_value(i).unwrap_or(Value::Null);
+    let old_json: Vec<Value> = old.iter().map(issue_json).collect();
+    let mut issues: Vec<Value> = report["issues"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !old_json.contains(i))
+        .collect();
+    issues.extend(limits.iter().map(issue_json));
+    report["issues"] = Value::Array(issues);
+    report["runLimits"] = Value::Array(limits.iter().map(issue_json).collect());
+    let hash = prior.as_ref().map(|p| p.definition_hash.clone()).unwrap_or_default();
+    if let Err(e) = store.save_workflow_audit(agent_id, binding, &hash, &report.to_string()) {
+        warn!(agent = agent_id, binding, error = %e, "workflow audit: the run limit was not kept");
     }
 }
 
@@ -824,6 +896,36 @@ mod tests {
         let report: Value = serde_json::from_str(&s.workflow_audit("emp", "unbilled-sweep").unwrap().unwrap().report).unwrap();
         assert_eq!(report["disconnected"], serde_json::json!(["plugin__quickbooks"]));
         assert_eq!(report["modelCalls"], 0);
+    }
+
+    /// A run that ran out of model turns or over its token budget is kept in
+    /// the workflow's audit report, one finding per step, and lasts through
+    /// the next audit of the same definition; it is never a learned-skill
+    /// proposal.
+    #[tokio::test]
+    async fn a_run_limit_is_kept_in_the_audit_not_proposed() {
+        let (_d, s) = store();
+        employee(&s, "emp", sweep());
+        let over = workflow::WorkflowError::BudgetExceeded { activity_id: "workflow".into(), used: 10849, limit: 7000 };
+        let (step, message) = crate::workflow_manager::run_limit(&over).expect("a budget overrun is a run limit");
+        assert_eq!(step, None, "the whole run");
+        record_run_limit(&s, "emp", "unbilled-sweep", step.as_deref(), &message);
+        let turns = workflow::WorkflowError::MaxIterations { activity_id: "research".into(), step: Some((1, 4)), turns: 2 };
+        let (step, message) = crate::workflow_manager::run_limit(&turns).unwrap();
+        record_run_limit(&s, "emp", "unbilled-sweep", step.as_deref(), &message);
+        record_run_limit(&s, "emp", "unbilled-sweep", step.as_deref(), &message);
+        assert!(crate::workflow_manager::run_limit(&workflow::WorkflowError::Provider("x".into())).is_none());
+
+        let report = || -> Value { serde_json::from_str(&s.workflow_audit("emp", "unbilled-sweep").unwrap().unwrap().report).unwrap() };
+        assert_eq!(report()["runLimits"].as_array().unwrap().len(), 2, "one per step");
+        assert_eq!(report()["issues"].as_array().unwrap().len(), 2);
+        assert!(report()["issues"][0]["message"].as_str().unwrap().contains("10849 output tokens"));
+
+        // The next audit of the same workflow keeps them.
+        audit_employee(&s, &catalog(), None, None, "emp", Depth::Programmatic, Write::Apply, false).await;
+        assert_eq!(report()["runLimits"].as_array().unwrap().len(), 2);
+        assert!(report()["issues"].as_array().unwrap().iter().any(|i| i["step"] == "research"));
+        assert!(s.open_pending_writes("emp", "skill", "create").unwrap().is_empty(), "no skill proposal");
     }
 
     #[test]
