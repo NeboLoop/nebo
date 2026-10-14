@@ -362,25 +362,26 @@ pub struct AccountStatusResponse {
     pub plan: Option<String>,
 }
 
-pub async fn account_status(State(state): State<AppState>) -> HandlerResult<AccountStatusResponse> {
+/// Who the NeboAI account on this bot belongs to.
+pub(crate) struct AccountIdentity {
+    pub profile_id: String,
+    pub owner_id: Option<String>,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub janus_provider: bool,
+}
+
+/// The account on this bot, or `None` when it has none. Cloud bots: the
+/// provisioner seeds the profile with credentials only, so the first read
+/// asks NeboAI who the credentials belong to and persists it into the
+/// profile metadata — one fetch, then it's served locally forever. The
+/// account card and the guided first-run chat's greeting both read it here.
+pub(crate) async fn account_identity(state: &AppState) -> Option<AccountIdentity> {
     let profiles = state
         .store
         .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
-
-    if profiles.is_empty() {
-        return Ok(Json(AccountStatusResponse {
-            connected: false,
-            janus_provider: false,
-            profile_id: None,
-            owner_id: None,
-            email: None,
-            display_name: None,
-            plan: None,
-        }));
-    }
-
-    let profile = &profiles[0];
+    let profile = profiles.first()?;
     let mut owner_id = None;
     let mut email = None;
     let mut display_name = None;
@@ -395,12 +396,8 @@ pub async fn account_status(State(state): State<AppState>) -> HandlerResult<Acco
         }
     }
 
-    // Cloud bots: the provisioner seeds this profile with credentials only, so
-    // the card would say "Connected" without saying WHOSE account. Ask NeboAI
-    // who the credentials belong to and persist it into the profile metadata —
-    // one fetch, then it's served locally forever.
     if email.is_none() {
-        if let Ok(api) = crate::codes::build_api_client(&state) {
+        if let Ok(api) = crate::codes::build_api_client(state) {
             if let Ok(me) = api.owner_me().await {
                 email = me.get("email").and_then(|v| v.as_str()).map(String::from);
                 display_name = me
@@ -432,6 +429,27 @@ pub async fn account_status(State(state): State<AppState>) -> HandlerResult<Acco
             }
         }
     }
+    Some(AccountIdentity {
+        profile_id: profile.id.clone(),
+        owner_id,
+        email,
+        display_name,
+        janus_provider,
+    })
+}
+
+pub async fn account_status(State(state): State<AppState>) -> HandlerResult<AccountStatusResponse> {
+    let Some(account) = account_identity(&state).await else {
+        return Ok(Json(AccountStatusResponse {
+            connected: false,
+            janus_provider: false,
+            profile_id: None,
+            owner_id: None,
+            email: None,
+            display_name: None,
+            plan: None,
+        }));
+    };
 
     let plan = state.plan_tier.read().await.clone();
     let plan = if plan.is_empty() || plan == "free" {
@@ -442,11 +460,11 @@ pub async fn account_status(State(state): State<AppState>) -> HandlerResult<Acco
 
     Ok(Json(AccountStatusResponse {
         connected: true,
-        janus_provider,
-        profile_id: Some(profile.id.clone()),
-        owner_id,
-        email,
-        display_name,
+        janus_provider: account.janus_provider,
+        profile_id: Some(account.profile_id),
+        owner_id: account.owner_id,
+        email: account.email,
+        display_name: account.display_name,
         plan,
     }))
 }

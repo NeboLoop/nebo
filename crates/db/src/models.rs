@@ -108,6 +108,11 @@ pub struct UserProfile {
     /// JSON array of "Approve Always" shell-command prefixes (e.g. ["mv","git push"]).
     /// The approval gate auto-approves commands matching these (via tools::policy).
     pub approved_commands: Option<String>,
+    /// The guided first-run chat: what the owner wants help with most
+    /// (store, content, clients, team, home).
+    pub onboarding_focus: Option<String>,
+    /// The employee hired in the guided first-run chat (local agent id).
+    pub onboarding_hire: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

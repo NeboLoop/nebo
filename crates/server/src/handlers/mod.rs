@@ -23,6 +23,7 @@ pub mod memory;
 pub mod neboai;
 pub mod learned_rules;
 pub mod notification;
+pub mod onboarding;
 pub mod openai;
 pub mod permissions;
 pub mod phone_location;

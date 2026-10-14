@@ -345,6 +345,29 @@ pub fn port_suffix(operation: &str) -> String {
     }
 }
 
+/// Whether `slug` is installed, not switched off, and connected here: for a
+/// plugin that keeps an account per employee, some employee has one;
+/// otherwise the plugin is ready. The ONE answer to "is it connected", for
+/// the retired-bundle check and the guided first-run chat's Connect step.
+pub fn plugin_connected(plugin_store: &napp::plugin::PluginStore, db_store: &db::Store, slug: &str) -> bool {
+    if !installed_plugin_slugs(plugin_store, db_store).iter().any(|s| s == slug) {
+        return false;
+    }
+    let per_employee = plugin_store
+        .get_manifest(slug)
+        .and_then(|m| m.auth)
+        .is_some_and(|a| a.profile_dir_env.is_some());
+    if per_employee {
+        db_store
+            .list_all_plugin_account_profiles()
+            .unwrap_or_default()
+            .iter()
+            .any(|p| p.plugin_slug == slug)
+    } else {
+        plugin_store.is_ready(slug)
+    }
+}
+
 /// Every plugin the owner has installed and not disabled — what EXISTS.
 /// This is the model-facing set: the tool description, the `resource` enum,
 /// and the "not installed" error all read from it, so a plugin that is

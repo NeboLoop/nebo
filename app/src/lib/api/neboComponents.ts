@@ -1160,6 +1160,23 @@ export interface OauthConnection {
 	updated_at: number
 }
 
+export interface OnboardingStarted {
+	status: OnboardingStatus
+	threadId?: string
+}
+
+export interface OnboardingStatus {
+	step: string
+	ownerName?: string
+	assistantName: string
+	focus?: string
+	googleConnected: boolean
+	briefDaily: boolean
+	hired?: string
+	zone?: string
+	checklist: string[]
+}
+
 export interface OutcomeCount {
 	outcome: string
 	count: number
@@ -1712,6 +1729,8 @@ export interface UserProfile {
 	termsAcceptedAt?: number
 	accountType?: string
 	approvedCommands?: string
+	onboardingFocus?: string
+	onboardingHire?: string
 }
 
 export interface View {

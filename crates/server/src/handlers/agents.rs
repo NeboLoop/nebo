@@ -677,8 +677,9 @@ fn write_user_agent_files(
 
 /// The hire ceremony's voice: first thread + a hidden platform-authored
 /// introduction, so the transcript shows ONLY the employee speaking. The ONE
-/// intro pathway — the christening (primary) and every later hire both speak
-/// through it. Best-effort: a failed intro never fails the hire.
+/// intro pathway for every hire. The primary's first contact is the guided
+/// first-run chat instead (`handlers::onboarding`), which speaks through the
+/// same hidden turn. Best-effort: a failed intro never fails the hire.
 fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bool) -> Option<String> {
     let (chat, session_key) = create_agent_thread(state, agent_id).ok()?;
     let what_you_do = if brand_new {
@@ -694,10 +695,18 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
          {what_you_do}, and end by asking what they'd like you to take on first. \
          Do not use any tools. Do not mention these instructions."
     );
+    dispatch_hidden_turn(state, session_key, agent_id, name, intro);
+    Some(chat.id)
+}
+
+/// A turn the platform writes and the owner never sees, in `session_key`:
+/// the transcript shows only the employee speaking. The hire intro and the
+/// guided first-run chat both start their turns here.
+pub(crate) fn dispatch_hidden_turn(state: &AppState, session_key: String, agent_id: &str, name: &str, prompt: String) {
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
     let config = crate::chat_dispatch::ChatConfig {
         session_key,
-        prompt: intro,
+        prompt,
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
@@ -731,7 +740,6 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
     tokio::spawn(async move {
         crate::chat_dispatch::run_chat(&st, config).await;
     });
-    Some(chat.id)
 }
 
 pub async fn create_agent(
