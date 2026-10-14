@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Section modifiée : {section}",
 		"sectionOpening": "Introduction",
 		"settingChanged": "Modifié : {setting}"
+	},
+	"characters": {
+		"title": "Personnage",
+		"ridge": "Crête",
+		"twin": "Pics jumeaux",
+		"mesa": "Mesa",
+		"butte": "Butte",
+		"diamond": "Diamant",
+		"dome": "Dôme",
+		"snowcap": "Sommet enneigé",
+		"volcano": "Volcan",
+		"spire": "Aiguille",
+		"sawtooth": "Dents de scie",
+		"hook": "Pic crochu",
+		"flattop": "Sommet plat",
+		"littlehill": "Petite colline"
 	}
 }

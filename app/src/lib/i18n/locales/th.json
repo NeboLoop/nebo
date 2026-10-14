@@ -4306,5 +4306,21 @@
 		"sectionChanged": "ส่วนเปลี่ยน: {section}",
 		"sectionOpening": "บทนำ",
 		"settingChanged": "เปลี่ยน: {setting}"
+	},
+	"characters": {
+		"title": "ตัวละคร",
+		"ridge": "สันเขา",
+		"twin": "ยอดคู่",
+		"mesa": "เมซา",
+		"butte": "บิวต์",
+		"diamond": "เพชร",
+		"dome": "โดม",
+		"snowcap": "ยอดหิมะ",
+		"volcano": "ภูเขาไฟ",
+		"spire": "ยอดแหลม",
+		"sawtooth": "ฟันเลื่อย",
+		"hook": "ยอดตะขอ",
+		"flattop": "ยอดแบน",
+		"littlehill": "เนินเล็ก"
 	}
 }

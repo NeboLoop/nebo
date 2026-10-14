@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Seção alterada: {section}",
 		"sectionOpening": "Introdução",
 		"settingChanged": "Alterado: {setting}"
+	},
+	"characters": {
+		"title": "Personagem",
+		"ridge": "Cume",
+		"twin": "Picos gêmeos",
+		"mesa": "Mesa",
+		"butte": "Morro",
+		"diamond": "Diamante",
+		"dome": "Cúpula",
+		"snowcap": "Pico nevado",
+		"volcano": "Vulcão",
+		"spire": "Agulha",
+		"sawtooth": "Dente de serra",
+		"hook": "Pico em gancho",
+		"flattop": "Topo plano",
+		"littlehill": "Colina"
 	}
 }

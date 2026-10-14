@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Bagian diubah: {section}",
 		"sectionOpening": "Pembuka",
 		"settingChanged": "Diubah: {setting}"
+	},
+	"characters": {
+		"title": "Karakter",
+		"ridge": "Punggung bukit",
+		"twin": "Puncak kembar",
+		"mesa": "Mesa",
+		"butte": "Butte",
+		"diamond": "Berlian",
+		"dome": "Kubah",
+		"snowcap": "Puncak bersalju",
+		"volcano": "Gunung api",
+		"spire": "Menara",
+		"sawtooth": "Gigi gergaji",
+		"hook": "Puncak kait",
+		"flattop": "Puncak datar",
+		"littlehill": "Bukit kecil"
 	}
 }

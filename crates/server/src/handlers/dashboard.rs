@@ -154,6 +154,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             id: a.id.clone(),
             name: a.name.clone(),
             color: a.color.clone(),
+            shape: types::character::shape_of(&a.id, a.shape.as_deref(), &a.name, a.department.as_deref(), &a.description).to_string(),
             status: status.into(),
             task,
             activity,

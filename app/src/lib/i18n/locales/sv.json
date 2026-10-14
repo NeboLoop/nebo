@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Avsnitt ändrat: {section}",
 		"sectionOpening": "Inledning",
 		"settingChanged": "Ändrat: {setting}"
+	},
+	"characters": {
+		"title": "Figur",
+		"ridge": "Ås",
+		"twin": "Tvillingtoppar",
+		"mesa": "Platåberg",
+		"butte": "Butte",
+		"diamond": "Diamant",
+		"dome": "Kupol",
+		"snowcap": "Snötopp",
+		"volcano": "Vulkan",
+		"spire": "Spira",
+		"sawtooth": "Sågtand",
+		"hook": "Kroktopp",
+		"flattop": "Platt topp",
+		"littlehill": "Liten kulle"
 	}
 }

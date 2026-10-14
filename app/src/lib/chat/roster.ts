@@ -15,6 +15,7 @@ export function toMentionAgent(a: AgentListEntry): AgentInfo {
 		initial: a.name.charAt(0).toUpperCase(),
 		status: a.isEnabled ? 'online' : 'paused',
 		color: agentColorName(a.id, a.color),
+		shape: a.shape,
 		isApp: a.isApp ?? false
 	};
 }

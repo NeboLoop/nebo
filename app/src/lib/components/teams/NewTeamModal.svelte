@@ -16,7 +16,7 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 
   let { roster, team = null, onclose, oncreated }: {
-    roster: { id: string; name: string; color?: string; isApp?: boolean }[];
+    roster: { id: string; name: string; color?: string; shape?: string; isApp?: boolean }[];
     /** Edit this team instead of creating one. */
     team?: Team | null;
     onclose: () => void;
@@ -108,7 +108,7 @@
         {@const on = picked.includes(a.id)}
         <label class="flex items-center gap-3 px-3 py-2 rounded-box cursor-pointer select-none {on ? 'bg-primary/10' : 'hover:bg-base-200'}">
           <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" checked={on} onchange={() => toggle(a.id)} />
-          <AgentAvatar name={a.name} color={a.color} size="sm" />
+          <AgentAvatar name={a.name} color={a.color} shape={a.shape} size="sm" />
           <span class="text-sm truncate min-w-0 flex-1">{a.name}</span>
           {#if on}
             <!-- One lead per team; the choice only shows on checked rows. -->

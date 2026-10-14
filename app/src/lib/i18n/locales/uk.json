@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Розділ змінено: {section}",
 		"sectionOpening": "Вступ",
 		"settingChanged": "Змінено: {setting}"
+	},
+	"characters": {
+		"title": "Персонаж",
+		"ridge": "Хребет",
+		"twin": "Подвійна вершина",
+		"mesa": "Меса",
+		"butte": "Останець",
+		"diamond": "Ромб",
+		"dome": "Купол",
+		"snowcap": "Снігова вершина",
+		"volcano": "Вулкан",
+		"spire": "Шпиль",
+		"sawtooth": "Пилка",
+		"hook": "Гак",
+		"flattop": "Пласка вершина",
+		"littlehill": "Пагорбок"
 	}
 }

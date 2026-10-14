@@ -4306,5 +4306,21 @@
 		"sectionChanged": "भाग बदला: {section}",
 		"sectionOpening": "शुरुआत",
 		"settingChanged": "बदला: {setting}"
+	},
+	"characters": {
+		"title": "पात्र",
+		"ridge": "रिज",
+		"twin": "जुड़वां चोटियाँ",
+		"mesa": "मेसा",
+		"butte": "ब्यूट",
+		"diamond": "हीरा",
+		"dome": "गुंबद",
+		"snowcap": "बर्फीली चोटी",
+		"volcano": "ज्वालामुखी",
+		"spire": "शिखर",
+		"sawtooth": "आरी-दाँत",
+		"hook": "हुक चोटी",
+		"flattop": "सपाट चोटी",
+		"littlehill": "छोटी पहाड़ी"
 	}
 }

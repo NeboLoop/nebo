@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Phần đã đổi: {section}",
 		"sectionOpening": "Mở đầu",
 		"settingChanged": "Đã đổi: {setting}"
+	},
+	"characters": {
+		"title": "Nhân vật",
+		"ridge": "Sống núi",
+		"twin": "Đỉnh đôi",
+		"mesa": "Núi bàn",
+		"butte": "Đồi sót",
+		"diamond": "Kim cương",
+		"dome": "Mái vòm",
+		"snowcap": "Đỉnh tuyết",
+		"volcano": "Núi lửa",
+		"spire": "Đỉnh nhọn",
+		"sawtooth": "Răng cưa",
+		"hook": "Đỉnh móc",
+		"flattop": "Đỉnh bằng",
+		"littlehill": "Đồi nhỏ"
 	}
 }

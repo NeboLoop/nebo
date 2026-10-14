@@ -457,6 +457,7 @@
           initial: a.name.charAt(0).toUpperCase(),
           status: activeIds.has(a.id) ? 'online' : 'paused',
           color: colors[a.id],
+          shape: a.shape,
           handle: a.handle,
           // A linked employee's persona is the linked bot's: read there, not edited here.
           editable: !a.nappPath && a.kind !== 'linked',
@@ -1728,7 +1729,7 @@
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
                 </div>
               {:else}
-                <AgentAvatar name={a.name} color={a.color} />
+                <AgentAvatar name={a.name} color={a.color} shape={a.shape} />
               {/if}
               <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
             </div>

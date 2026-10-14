@@ -422,6 +422,13 @@ fn roster(
             .to_string();
         let color = db_row.and_then(|r| r.color.clone());
         let handle = db_row.and_then(|r| r.handle.clone());
+        let shape = types::character::shape_of(
+            &agent_id,
+            db_row.and_then(|r| r.shape.as_deref()),
+            &name,
+            db_row.and_then(|r| r.department.as_deref()),
+            &description,
+        );
 
         // Compute a display name: window title > first # heading from body > name
         let display_name = loaded
@@ -451,6 +458,7 @@ fn roster(
             "displayName": display_name,
             "description": description,
             "color": color,
+            "shape": shape,
             "handle": handle,
             "source": source,
             "version": loaded.version,
@@ -553,6 +561,7 @@ fn roster(
             "displayName": r.name,
             "description": r.description,
             "color": r.color,
+            "shape": types::character::shape_of(&r.id, r.shape.as_deref(), &r.name, r.department.as_deref(), &r.description),
             "handle": r.handle,
             "source": "user",
             "version": serde_json::Value::Null,
@@ -1131,6 +1140,7 @@ pub async fn get_agent(
                 "id": agent.id,
                 "name": agent.name,
                 "description": agent.description,
+                "shape": types::character::shape_of(&agent.id, agent.shape.as_deref(), &agent.name, agent.department.as_deref(), &agent.description),
                 "isApp": true,
                 "isEnabled": agent.is_enabled,
                 "kind": agent.kind,
@@ -1153,6 +1163,13 @@ pub async fn get_agent(
             "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
         })))
     } else {
+        // The character it wears, resolved: the owner's pick, its role's or
+        // its id's (`types::character`), never the bare stored column.
+        let mut agent = agent;
+        agent.shape = Some(
+            types::character::shape_of(&agent.id, agent.shape.as_deref(), &agent.name, agent.department.as_deref(), &agent.description)
+                .to_string(),
+        );
         Ok(Json(serde_json::json!({
             "agent": agent,
             "displayName": display_name,
@@ -1436,6 +1453,18 @@ pub async fn update_agent(
     // package's: the store locks the column on this write.
     let department = body.get("department").map(|v| v.as_str().unwrap_or(""));
     let reports_to = body.get("reportsTo").map(|v| v.as_str().unwrap_or(""));
+    // The character the owner picked: one of the employee shapes, or blank to
+    // go back to the one its role or id gives it. The assistant's is its own.
+    let shape = match body.get("shape") {
+        None => None,
+        Some(v) => {
+            let s = v.as_str().unwrap_or("").trim();
+            if !s.is_empty() && !types::character::is_employee_shape(s) {
+                return Err(to_error_response(types::NeboError::Validation(format!("unknown shape '{s}'"))));
+            }
+            Some((!s.is_empty()).then(|| s.to_string()))
+        }
+    };
     let exposure_changed =
         loop_exposed.is_some_and(|exposed| exposed != (existing.loop_exposed != 0));
 
@@ -1459,6 +1488,9 @@ pub async fn update_agent(
             reports_to,
         )
         .map_err(to_error_response)?;
+    if let Some(shape) = shape {
+        state.store.set_agent_shape(&id, shape.as_deref()).map_err(to_error_response)?;
+    }
 
     let updated = state
         .store
@@ -6520,6 +6552,7 @@ mod linked_hire_tests {
             context_stamp: None,
             reports_to: None,
             department_locked: 0,
+            shape: None,
         }
     }
 

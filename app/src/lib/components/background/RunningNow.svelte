@@ -11,7 +11,7 @@
   import BackgroundTranscript from './BackgroundTranscript.svelte';
   import type { BackgroundTask } from '$lib/api/neboComponents';
 
-  let { colors = {} }: { colors?: Record<string, string> } = $props();
+  let { colors = {}, shapes = {} }: { colors?: Record<string, string>; shapes?: Record<string, string> } = $props();
 
   let now = $state(Math.floor(Date.now() / 1000));
   const tick = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
@@ -66,9 +66,9 @@
     <div class="bg-panel bg-panel-empty">{$t('background.nothingRunning')}</div>
   {:else}
     <div class="grid gap-3 md:grid-cols-3 min-w-0">
-      <BackgroundPanel tasks={working} finished={$backgroundFinished} {now} title={$t('background.group.running')} showEmployee {colors} ontranscript={(task) => (transcript = task)} />
-      <BackgroundPanel tasks={timers} {now} title={$t('background.group.scheduled')} showEmployee {colors} ontranscript={(task) => (transcript = task)} />
-      <BackgroundPanel tasks={watches} {now} title={$t('background.group.watching')} showEmployee {colors} />
+      <BackgroundPanel tasks={working} finished={$backgroundFinished} {now} title={$t('background.group.running')} showEmployee {colors} {shapes} ontranscript={(task) => (transcript = task)} />
+      <BackgroundPanel tasks={timers} {now} title={$t('background.group.scheduled')} showEmployee {colors} {shapes} ontranscript={(task) => (transcript = task)} />
+      <BackgroundPanel tasks={watches} {now} title={$t('background.group.watching')} showEmployee {colors} {shapes} />
     </div>
   {/if}
 </section>

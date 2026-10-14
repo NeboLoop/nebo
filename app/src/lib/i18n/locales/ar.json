@@ -4306,5 +4306,21 @@
 		"sectionChanged": "قسم تغيّر: {section}",
 		"sectionOpening": "المقدمة",
 		"settingChanged": "تغيّر: {setting}"
+	},
+	"characters": {
+		"title": "الشخصية",
+		"ridge": "حافة",
+		"twin": "قمتان توأم",
+		"mesa": "ميسا",
+		"butte": "تل منعزل",
+		"diamond": "ماسة",
+		"dome": "قبة",
+		"snowcap": "قمة مثلجة",
+		"volcano": "بركان",
+		"spire": "مستدقة",
+		"sawtooth": "أسنان المنشار",
+		"hook": "قمة معقوفة",
+		"flattop": "قمة مسطحة",
+		"littlehill": "تلة صغيرة"
 	}
 }

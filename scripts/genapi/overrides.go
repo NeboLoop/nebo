@@ -236,6 +236,8 @@ export interface RunDisplay {
 	/** The latest thread was cut by a server restart; latestPreview is the status before it. */
 	restarted?: boolean
 	color?: string
+	/** The character it wears: assistant for the primary, else a mountain shape (types::character). */
+	shape: string
 	handle?: string
 	source: string
 	version?: string

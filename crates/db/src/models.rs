@@ -1044,6 +1044,10 @@ pub struct Agent {
     /// overwrite a locked department (owner wins, same contract as `name_locked`).
     #[serde(default)]
     pub department_locked: i64,
+    /// The mountain shape the owner picked (`types::character`); None until
+    /// they pick one. The roster sends the resolved shape, never this alone.
+    #[serde(default)]
+    pub shape: Option<String>,
 }
 
 fn default_input_values() -> String {

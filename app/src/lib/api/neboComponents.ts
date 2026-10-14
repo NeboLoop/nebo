@@ -92,6 +92,7 @@ export interface Agent {
 	contextStamp?: string
 	reportsTo?: string
 	departmentLocked?: number
+	shape?: string
 }
 
 export interface AgentProfile {
@@ -651,6 +652,7 @@ export interface DashboardEmployee {
 	id: string
 	name: string
 	color?: string
+	shape: string
 	status: string
 	task: string
 	activity: string
@@ -3098,6 +3100,8 @@ export interface AgentListEntry {
 	/** The latest thread was cut by a server restart; latestPreview is the status before it. */
 	restarted?: boolean
 	color?: string
+	/** The character it wears: assistant for the primary, else a mountain shape (types::character). */
+	shape: string
 	handle?: string
 	source: string
 	version?: string

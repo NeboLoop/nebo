@@ -20,6 +20,7 @@
     now,
     showEmployee = false,
     color = null,
+    shape = null,
     outcome = null,
     depth = 0,
     onstopped,
@@ -31,6 +32,7 @@
     /** Name the employee it belongs to (a list across employees). */
     showEmployee?: boolean;
     color?: string | null;
+    shape?: string | null;
     /** How it ended, for a finished row; null while it runs. */
     outcome?: FinishedTask['outcome'] | null;
     /** How deep it is under the work that started it (a helper's helper). */
@@ -100,7 +102,7 @@
   <div class="bg-row-line">
     <button type="button" class="bg-row-main" onclick={toggle} aria-expanded={open}>
       <span class="bg-row-icon" aria-hidden="true">
-        {#if task.kind === 'loop'}<Clock class="w-3.5 h-3.5" />{:else if task.kind === 'shell'}<Terminal class="w-3.5 h-3.5" />{:else if showEmployee}<AgentAvatar name={task.employee} {color} size="xs" />{:else}<Bot class="w-3.5 h-3.5" />{/if}
+        {#if task.kind === 'loop'}<Clock class="w-3.5 h-3.5" />{:else if task.kind === 'shell'}<Terminal class="w-3.5 h-3.5" />{:else if showEmployee}<AgentAvatar name={task.employee} {color} {shape} size="xs" />{:else}<Bot class="w-3.5 h-3.5" />{/if}
       </span>
       <span class="bg-row-text">
         <span class="bg-row-title">

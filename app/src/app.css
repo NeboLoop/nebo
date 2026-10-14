@@ -517,6 +517,33 @@
   50% { box-shadow: 0 0 0 10px transparent; }
 }
 
+/* The mountain family (AgentAvatar, $lib/characters): eyes blink, the
+   volcano's steam puffs, the assistant's spark twinkles. Each name blinks on
+   its own beat so a roster never blinks in unison. */
+.character { overflow: visible; display: block; }
+.character-eye { animation: character-blink 4.5s infinite; transform-box: fill-box; transform-origin: center; }
+.character-beat-1 { animation-delay: -0.9s; }
+.character-beat-2 { animation-delay: -1.8s; }
+.character-beat-3 { animation-delay: -2.7s; }
+.character-beat-4 { animation-delay: -3.6s; }
+.character-steam { animation: character-steam 3.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+.character-twinkle { animation: character-twinkle 3s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes character-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+@keyframes character-steam {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 0.9; }
+  50% { transform: translateY(-5px) scale(1.15); opacity: 0.5; }
+}
+@keyframes character-twinkle {
+  0%, 100% { opacity: 0.5; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .character-eye, .character-steam, .character-twinkle { animation: none; }
+}
+
 /* The chat scroller anchors its own scroll position when older history is
    prepended (ChatPane). The browser must not anchor as well: WebKit does now,
    and the two adjustments together jumped the view a page past the reader. */

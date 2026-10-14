@@ -4306,5 +4306,21 @@
 		"sectionChanged": "Bölüm değişti: {section}",
 		"sectionOpening": "Giriş",
 		"settingChanged": "Değişti: {setting}"
+	},
+	"characters": {
+		"title": "Karakter",
+		"ridge": "Sırt",
+		"twin": "İkiz tepeler",
+		"mesa": "Masa dağ",
+		"butte": "Tepe",
+		"diamond": "Elmas",
+		"dome": "Kubbe",
+		"snowcap": "Karlı zirve",
+		"volcano": "Yanardağ",
+		"spire": "Sivri tepe",
+		"sawtooth": "Testere dişi",
+		"hook": "Kanca zirve",
+		"flattop": "Düz tepe",
+		"littlehill": "Küçük tepe"
 	}
 }
