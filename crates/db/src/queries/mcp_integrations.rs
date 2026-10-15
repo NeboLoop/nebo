@@ -164,6 +164,9 @@ impl Store {
     }
 
     /// Save OAuth flow state (PKCE verifier, endpoints, client creds) during OAuth initiation.
+    /// `resource` is the RFC 8707 indicator discovery found (None: none);
+    /// `client_redirect_uri` is the redirect_uri the client was registered
+    /// with (None: a pre-registered client the owner supplied).
     pub fn set_mcp_oauth_state(
         &self,
         id: &str,
@@ -174,6 +177,8 @@ impl Store {
         authorization_endpoint: &str,
         token_endpoint: &str,
         redirect_uri: &str,
+        resource: Option<&str>,
+        client_redirect_uri: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -185,6 +190,8 @@ impl Store {
                 oauth_authorization_endpoint = ?5,
                 oauth_token_endpoint = ?6,
                 oauth_redirect_uri = ?8,
+                oauth_resource = ?9,
+                oauth_client_redirect_uri = ?10,
                 updated_at = unixepoch()
              WHERE id = ?7",
             params![
@@ -195,7 +202,9 @@ impl Store {
                 authorization_endpoint,
                 token_endpoint,
                 id,
-                redirect_uri
+                redirect_uri,
+                resource,
+                client_redirect_uri
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -211,7 +220,7 @@ impl Store {
         match conn.query_row(
             "SELECT id, name, server_url, auth_type, oauth_state, oauth_pkce_verifier,
                     oauth_client_id, oauth_client_secret, oauth_token_endpoint,
-                    oauth_redirect_uri
+                    oauth_redirect_uri, oauth_resource
              FROM mcp_integrations WHERE oauth_state = ?1",
             params![state],
             |row| {
@@ -226,6 +235,7 @@ impl Store {
                     oauth_client_secret: row.get(7)?,
                     oauth_token_endpoint: row.get(8)?,
                     oauth_redirect_uri: row.get(9)?,
+                    oauth_resource: row.get(10)?,
                 })
             },
         ) {
@@ -256,20 +266,25 @@ impl Store {
         expires_at: Option<i64>,
         scopes: Option<&str>,
     ) -> Result<(), NeboError> {
-        let conn = self.conn()?;
+        let mut conn = self.conn()?;
         let id = uuid::Uuid::new_v4().to_string();
-        // Delete existing credentials of this type for this integration
-        conn.execute(
+        // One transaction: a rotated refresh token is the only live copy of
+        // the sign-in, so the old row is never gone without the new one.
+        let tx = conn
+            .transaction()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.execute(
             "DELETE FROM mcp_integration_credentials WHERE integration_id = ?1 AND credential_type = ?2",
             params![integration_id, credential_type],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO mcp_integration_credentials (id, integration_id, credential_type, credential_value, refresh_token, expires_at, scopes)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![id, integration_id, credential_type, credential_value, refresh_token, expires_at, scopes],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -336,14 +351,16 @@ impl Store {
         }
     }
 
-    /// Get OAuth config needed for token refresh (client_id, client_secret, token_endpoint).
+    /// Get the stored OAuth client: what a refresh needs (client, token
+    /// endpoint, resource) and what a new sign-in checks to reuse it.
     pub fn get_mcp_oauth_config(
         &self,
         integration_id: &str,
     ) -> Result<Option<McpOAuthConfig>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(
-            "SELECT oauth_client_id, oauth_client_secret, oauth_token_endpoint
+            "SELECT oauth_client_id, oauth_client_secret, oauth_token_endpoint,
+                    oauth_resource, oauth_client_redirect_uri, oauth_state IS NOT NULL
              FROM mcp_integrations WHERE id = ?1",
             params![integration_id],
             |row| {
@@ -351,6 +368,9 @@ impl Store {
                     oauth_client_id: row.get(0)?,
                     oauth_client_secret: row.get(1)?,
                     oauth_token_endpoint: row.get(2)?,
+                    oauth_resource: row.get(3)?,
+                    oauth_client_redirect_uri: row.get(4)?,
+                    sign_in_pending: row.get(5)?,
                 })
             },
         ) {

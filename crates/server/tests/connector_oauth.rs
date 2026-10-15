@@ -25,19 +25,41 @@ const ACCESS_TOKEN: &str = "test-access-token";
 struct Seen {
     registered_redirects: Vec<String>,
     exchanged_redirects: Vec<String>,
+    /// The `resource` each code exchange presented ("" when none).
+    exchanged_resources: Vec<String>,
 }
 
 type Shared = Arc<Mutex<Seen>>;
 
 /// A loopback MCP server that signs in with OAuth (RFC 8414 discovery,
 /// Dynamic Client Registration, PKCE code exchange) and lists two tools only
-/// to a caller holding its token. With `open`, it lists them to anyone.
-async fn fake_server(open: bool) -> (String, Shared) {
+/// to a caller holding its token. With `open`, it lists them to anyone. With
+/// `resource_metadata`, it also publishes RFC 9728 protected-resource
+/// metadata naming its resource and scope.
+async fn fake_server(open: bool, resource_metadata: bool) -> (String, Shared) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let seen: Shared = Arc::default();
     let meta_origin = origin.clone();
+    let prm_origin = origin.clone();
     let app = Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            axum::routing::get(move || {
+                let o = prm_origin.clone();
+                async move {
+                    if !resource_metadata {
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
+                    Json(json!({
+                        "resource": format!("{o}/mcp"),
+                        "authorization_servers": [o],
+                        "scopes_supported": ["mcp:read"],
+                    }))
+                    .into_response()
+                }
+            }),
+        )
         .route(
             "/.well-known/oauth-authorization-server",
             axum::routing::get(move || {
@@ -51,6 +73,7 @@ async fn fake_server(open: bool) -> (String, Shared) {
                         "authorization_endpoint": format!("{o}/authorize"),
                         "token_endpoint": format!("{o}/token"),
                         "registration_endpoint": format!("{o}/register"),
+                        "scopes_supported": ["mcp:read", "offline_access"],
                     }))
                     .into_response()
                 }
@@ -71,7 +94,9 @@ async fn fake_server(open: bool) -> (String, Shared) {
                     assert_eq!(form.get("grant_type").map(String::as_str), Some("authorization_code"));
                     assert_eq!(form.get("code").map(String::as_str), Some("the-code"));
                     assert!(form.get("code_verifier").is_some_and(|v| !v.is_empty()), "PKCE verifier sent");
-                    seen.lock().unwrap().exchanged_redirects.push(form.get("redirect_uri").cloned().unwrap_or_default());
+                    let mut seen = seen.lock().unwrap();
+                    seen.exchanged_redirects.push(form.get("redirect_uri").cloned().unwrap_or_default());
+                    seen.exchanged_resources.push(form.get("resource").cloned().unwrap_or_default());
                     Json(json!({
                         "access_token": ACCESS_TOKEN,
                         "refresh_token": "test-refresh",
@@ -135,7 +160,7 @@ async fn a_connector_added_by_url_signs_in_from_the_phone_through_the_public_cal
     std::fs::create_dir_all(config::data_dir().unwrap()).unwrap();
     config::write_bot_id(bot_id).unwrap();
     let server = TestServer::boot().await;
-    let (mcp_url, seen) = fake_server(false).await;
+    let (mcp_url, seen) = fake_server(false, false).await;
 
     // Add custom connector: a name and a URL. The server says it signs in
     // with OAuth.
@@ -213,7 +238,7 @@ async fn a_connector_that_needs_no_sign_in_is_added_as_open() {
         return;
     }
     let server = TestServer::boot().await;
-    let (mcp_url, _) = fake_server(true).await;
+    let (mcp_url, _) = fake_server(true, false).await;
     let created = json(server.post_json("/integrations", &json!({
         "name": "Open Docs", "serverUrl": mcp_url, "authType": "auto",
     })).await).await;
@@ -230,7 +255,7 @@ async fn a_sign_in_on_this_machine_returns_to_its_own_callback() {
         return;
     }
     let server = TestServer::boot().await;
-    let (mcp_url, _) = fake_server(false).await;
+    let (mcp_url, _) = fake_server(false, false).await;
     let created = json(server.post_json("/integrations", &json!({
         "name": "Edge Ops", "serverUrl": mcp_url, "authType": "auto",
     })).await).await;
@@ -242,4 +267,42 @@ async fn a_sign_in_on_this_machine_returns_to_its_own_callback() {
     let redirect = query_param(&auth_url, "redirect_uri");
     assert!(redirect.starts_with("http://localhost:"), "{redirect}");
     assert!(redirect.ends_with("/api/v1/integrations/oauth/callback"), "{redirect}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_naming_its_resource_gets_it_and_keeps_one_registration() {
+    if !common::in_own_process().await {
+        return;
+    }
+    let server = TestServer::boot().await;
+    let (mcp_url, seen) = fake_server(false, true).await;
+    let created = json(server.post_json("/integrations", &json!({
+        "name": "Edge Ops", "serverUrl": mcp_url, "authType": "auto",
+    })).await).await;
+    let id = created["integration"]["id"].as_str().unwrap().to_string();
+
+    for round in 0..2 {
+        let auth_url = json(server.get(&format!("/integrations/{id}/oauth-url")).await).await["authUrl"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // RFC 8707: the resource the server named; the scope it advertises,
+        // plus offline_access so a refresh token is issued.
+        assert_eq!(query_param(&auth_url, "resource"), mcp_url);
+        assert_eq!(query_param(&auth_url, "scope"), "mcp:read offline_access");
+        let state = query_param(&auth_url, "state");
+        let done = server
+            .get(&format!(
+                "/integrations/oauth/callback?code=the-code&state={}",
+                urlencoding::encode(&state)
+            ))
+            .await;
+        assert_eq!(done.status(), 200, "round {round}");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.exchanged_resources.last().map(String::as_str), Some(mcp_url.as_str()));
+        // Signing in again reuses the client the server registered.
+        assert_eq!(seen.registered_redirects.len(), 1, "round {round}");
+    }
+    let row = json(server.get(&format!("/integrations/{id}")).await).await;
+    assert_eq!(row["connectionStatus"], "connected", "{row}");
 }

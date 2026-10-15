@@ -169,11 +169,6 @@ impl DynTool for McpProxyTool {
     }
 }
 
-/// Check if a stored OAuth token is expired (with 60s buffer).
-pub fn is_token_expired(expires_at: Option<i64>) -> bool {
-    token_expires_within(expires_at, 60)
-}
-
 /// Whether a stored OAuth token expires within `secs` from now. The proactive
 /// refresher uses a wide window so tokens are renewed well before expiry and
 /// never reach a 401 at connect time.
@@ -186,7 +181,9 @@ pub fn token_expires_within(expires_at: Option<i64>, secs: i64) -> bool {
                 .as_secs() as i64;
             now >= (exp - secs)
         }
-        None => false, // no expiry info = assume valid
+        // Stored before every token got an expiry (`mcp::oauth::token_expiry`):
+        // used until the server refuses it, and that 401 renews it.
+        None => false,
     }
 }
 
@@ -194,16 +191,54 @@ pub fn token_expires_within(expires_at: Option<i64>, secs: i64) -> bool {
 pub enum TokenResolution {
     /// Connect with this token. `None` = non-OAuth / no token needed.
     Ready(Option<String>),
-    /// Token is expired and could not be refreshed (refresh failed, no refresh
-    /// token, or no stored token). Surface "needs reauth" — do NOT connect with a
-    /// stale token, which would 401 and silently drop the server.
+    /// The sign-in is gone: the token endpoint refused it, or there is no
+    /// stored token (or refresh token) to renew. Surface "needs reauth" — do
+    /// NOT connect with a stale token, which would 401 and silently drop the
+    /// server.
     NeedsReauth,
+    /// The sign-in is intact, but the server could not renew it just now
+    /// (5xx, 429, timeout, network). Keep the connector; the refresher
+    /// retries and reconnects it. Never a reason to ask the owner to sign in.
+    Unavailable(String),
 }
+
+/// What the caller of [`refresh_mcp_token`] needs.
+pub enum Freshness {
+    /// A token valid for at least this many more seconds.
+    ValidFor(i64),
+    /// A token other than the one stored as this (encrypted) credential value,
+    /// which the server just refused with a 401.
+    Replacing(String),
+}
+
+/// Why [`refresh_mcp_token`] has no token to give.
+#[derive(Debug)]
+pub enum RefreshError {
+    /// The sign-in is dead (refused by the token endpoint, or nothing to
+    /// renew it with). The integration is already marked `needs_reauth`.
+    Reauth(String),
+    /// The server could not renew it right now; the sign-in is kept.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for RefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Reauth(e) => write!(f, "sign-in needs renewing: {e}"),
+            Self::Unavailable(e) => write!(f, "sign-in server unavailable: {e}"),
+        }
+    }
+}
+
+/// Seconds of validity a connect or a call needs from its token.
+const CALL_MARGIN_SECS: i64 = 60;
+/// Token requests per refresh before a transient failure is given up on
+/// (1 s, then 2 s between them), as Claude Code does.
+const REFRESH_ATTEMPTS: u32 = 3;
 
 /// Resolve the access token to connect an MCP integration with — the single
 /// canonical path for startup reconnect, manual connect, sync, and the test
-/// button. Refreshes an expired token when possible; on failure returns
-/// `NeedsReauth` instead of falling through to the stale token.
+/// button. Renews an expiring token through [`refresh_mcp_token`].
 pub async fn resolve_mcp_token(
     store: &db::Store,
     client: &mcp::McpClient,
@@ -233,155 +268,196 @@ pub async fn resolve_mcp_token(
     if integration.auth_type != "oauth" {
         return TokenResolution::Ready(None);
     }
-    let cred = match store.get_mcp_credential_full(&integration.id, "oauth_token") {
-        Ok(Some(c)) => c,
-        _ => return TokenResolution::NeedsReauth, // OAuth but no stored token
-    };
-    if !is_token_expired(cred.expires_at) {
-        return match client.decrypt_token(&cred.credential_value) {
-            Ok(t) => TokenResolution::Ready(Some(t)),
-            Err(_) => TokenResolution::NeedsReauth,
-        };
-    }
-    if cred.refresh_token.is_none() {
-        return TokenResolution::NeedsReauth;
-    }
-    match refresh_mcp_token(store, client, &integration.id).await {
-        Ok(new_token) => TokenResolution::Ready(Some(new_token)),
-        Err(e) => {
-            warn!(integration = %integration.id, error = %e, "MCP token refresh failed — needs reauth");
+    match refresh_mcp_token(
+        store,
+        client,
+        &integration.id,
+        Freshness::ValidFor(CALL_MARGIN_SECS),
+    )
+    .await
+    {
+        Ok(token) => TokenResolution::Ready(Some(token)),
+        Err(RefreshError::Reauth(e)) => {
+            warn!(integration = %integration.id, error = %e, "MCP sign-in refused — needs reauth");
             TokenResolution::NeedsReauth
+        }
+        Err(RefreshError::Unavailable(e)) => {
+            warn!(integration = %integration.id, error = %e, "MCP sign-in server unavailable — keeping the sign-in");
+            TokenResolution::Unavailable(e)
         }
     }
 }
 
-/// Refresh an MCP integration's OAuth token. Orchestrates DB read → decrypt → HTTP refresh →
-/// encrypt → DB write → session update. Returns the new plaintext access_token.
+/// The ONE refresh coordinator for an OAuth MCP integration's token. Every
+/// caller (connect, the proactive refresher, a tool call, a 401) comes here:
+///
+/// 1. One refresh per integration at a time (`McpClient::refresh_lock`), and
+///    the stored token is re-read under the lock, so a caller that queued
+///    behind a refresh takes its result instead of spending the refresh
+///    token again — a server that rotates refresh tokens revokes the old
+///    one on use, and a second request with it is refused for good.
+/// 2. Transient failures (5xx, 429, timeout, network) are retried with
+///    backoff and never end the sign-in; only a definitive refusal from the
+///    token endpoint (`invalid_grant`, `invalid_client`, a 401) marks the
+///    integration `needs_reauth`.
+/// 3. The new access and refresh tokens are persisted, in one transaction,
+///    before anything uses them.
+///
+/// Returns a plaintext access token that satisfies `need`.
 pub async fn refresh_mcp_token(
     store: &db::Store,
     client: &mcp::McpClient,
     integration_id: &str,
-) -> Result<String, String> {
-    // 1. Read OAuth config from integration row
-    let oauth_config = store
+    need: Freshness,
+) -> Result<String, RefreshError> {
+    let lock = client.refresh_lock(integration_id);
+    let _one_at_a_time = lock.lock().await;
+
+    let read = || {
+        store
+            .get_mcp_credential_full(integration_id, "oauth_token")
+            .map_err(|e| RefreshError::Unavailable(format!("read credential: {e}")))
+    };
+    let decrypt = |enc: &str| {
+        client
+            .decrypt_token(enc)
+            .map_err(|e| reauth(store, integration_id, format!("decrypt stored token: {e}")))
+    };
+    let Some(cred) = read()? else {
+        return Err(reauth(store, integration_id, "no stored sign-in".into()));
+    };
+    let satisfied = match &need {
+        Freshness::ValidFor(secs) => !token_expires_within(cred.expires_at, *secs),
+        Freshness::Replacing(rejected) => &cred.credential_value != rejected,
+    };
+    if satisfied {
+        return decrypt(&cred.credential_value);
+    }
+
+    let Some(encrypted_refresh) = cred.refresh_token.clone() else {
+        return Err(reauth(store, integration_id, "no refresh token stored".into()));
+    };
+    let refresh_token = decrypt(&encrypted_refresh)?;
+    let config = store
         .get_mcp_oauth_config(integration_id)
-        .map_err(|e| format!("read oauth config: {e}"))?
-        .ok_or("no oauth config found")?;
-
-    let token_endpoint = oauth_config
-        .oauth_token_endpoint
-        .ok_or("no token_endpoint on integration")?;
-    let client_id = oauth_config
-        .oauth_client_id
-        .ok_or("no client_id on integration")?;
-
-    // Decrypt client_secret if present
-    let client_secret = oauth_config
+        .map_err(|e| RefreshError::Unavailable(format!("read oauth config: {e}")))?
+        .ok_or_else(|| reauth(store, integration_id, "no oauth config".into()))?;
+    let (Some(token_endpoint), Some(client_id)) =
+        (config.oauth_token_endpoint.as_deref(), config.oauth_client_id.as_deref())
+    else {
+        return Err(reauth(store, integration_id, "no token endpoint or client".into()));
+    };
+    let client_secret = config
         .oauth_client_secret
         .as_deref()
         .and_then(|enc| client.decrypt_token(enc).ok());
-
-    // 2. Read credential with refresh_token
-    let cred = store
-        .get_mcp_credential_full(integration_id, "oauth_token")
-        .map_err(|e| format!("read credential: {e}"))?
-        .ok_or("no credential found")?;
-
-    let encrypted_refresh = cred.refresh_token.ok_or("no refresh_token stored")?;
-    let refresh_token = client
-        .decrypt_token(&encrypted_refresh)
-        .map_err(|e| format!("decrypt refresh_token: {e}"))?;
-
-    // 3. Call refresh endpoint
-    let result = client
-        .refresh_token(
-            &token_endpoint,
-            &client_id,
-            client_secret.as_deref(),
-            &refresh_token,
-        )
-        .await
-        .map_err(|e| format!("refresh request failed: {e}"))?;
-
-    // 4. Encrypt and store new tokens
-    let new_encrypted_access = client
-        .encrypt_token(&result.access_token)
-        .map_err(|e| format!("encrypt new access_token: {e}"))?;
-
-    // Use rotated refresh_token if server provided one, otherwise keep old
-    let new_encrypted_refresh = match &result.refresh_token {
-        Some(new_rt) => Some(
-            client
-                .encrypt_token(new_rt)
-                .map_err(|e| format!("encrypt new refresh_token: {e}"))?,
-        ),
-        None => Some(encrypted_refresh.clone()),
+    let token_client = mcp::oauth::TokenClient {
+        token_endpoint,
+        client_id,
+        client_secret: client_secret.as_deref(),
+        resource: config.oauth_resource.as_deref(),
     };
 
-    let new_expires_at = result.expires_in.map(|secs| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64
-            + secs
-    });
+    let mut attempt = 1;
+    let tokens = loop {
+        match client
+            .request_token(&token_client, mcp::oauth::TokenGrant::RefreshToken(&refresh_token))
+            .await
+        {
+            Ok(t) => break t,
+            Err(mcp::McpError::TokenRejected(why)) => {
+                // Another process may have renewed it with this same refresh
+                // token first: if the store now holds a newer, valid token, use it.
+                if let Ok(Some(now)) = read()
+                    && now.refresh_token != cred.refresh_token
+                    && !token_expires_within(now.expires_at, CALL_MARGIN_SECS)
+                {
+                    return decrypt(&now.credential_value);
+                }
+                return Err(reauth(store, integration_id, why));
+            }
+            Err(e) if attempt < REFRESH_ATTEMPTS => {
+                let wait = std::time::Duration::from_secs(1 << (attempt - 1));
+                warn!(integration = integration_id, error = %e, attempt, "MCP token refresh failed, retrying");
+                tokio::time::sleep(wait).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(RefreshError::Unavailable(e.to_string())),
+        }
+    };
 
+    let encrypt = |plain: &str| {
+        client
+            .encrypt_token(plain)
+            .map_err(|e| RefreshError::Unavailable(format!("encrypt token: {e}")))
+    };
+    let new_access = encrypt(&tokens.access_token)?;
+    // A rotated refresh token replaces the old one; otherwise the old one stays.
+    let new_refresh = match tokens.refresh_token.as_deref() {
+        Some(rt) => encrypt(rt)?,
+        None => encrypted_refresh,
+    };
+    let scope = tokens.scope.clone().or(cred.scopes);
     store
         .store_mcp_credentials(
             integration_id,
             "oauth_token",
-            &new_encrypted_access,
-            new_encrypted_refresh.as_deref(),
-            new_expires_at,
-            result.scope.as_deref(),
+            &new_access,
+            Some(&new_refresh),
+            Some(tokens.expires_at),
+            scope.as_deref(),
         )
-        .map_err(|e| format!("store new credentials: {e}"))?;
+        .map_err(|e| {
+            tracing::error!(integration = integration_id, error = %e, "renewed MCP sign-in could not be saved");
+            RefreshError::Unavailable(format!("save renewed sign-in: {e}"))
+        })?;
 
-    // 5. Update in-memory session
-    let plain_refresh = result.refresh_token.unwrap_or(refresh_token);
     client
         .update_session_token(
             integration_id,
             mcp::OAuthTokens {
-                access_token: result.access_token.clone(),
-                refresh_token: Some(plain_refresh),
-                expires_at: new_expires_at,
-                scope: result.scope,
+                access_token: tokens.access_token.clone(),
+                refresh_token: Some(tokens.refresh_token.unwrap_or(refresh_token)),
+                expires_at: Some(tokens.expires_at),
+                scope,
             },
         )
         .await;
-
-    Ok(result.access_token)
+    info!(integration = integration_id, "MCP token refreshed");
+    Ok(tokens.access_token)
 }
 
-/// Attempt proactive token refresh if an integration's OAuth token is expired.
-/// Returns true if a refresh happened. Shared by the per-tool MCP proxies.
-async fn maybe_refresh_token(store: &db::Store, bridge: &mcp::Bridge, integration_id: &str) -> bool {
-    let integration = match store.get_mcp_integration(integration_id) {
-        Ok(Some(i)) if i.auth_type == "oauth" => i,
-        _ => return false,
-    };
+/// Mark an integration's sign-in dead and say why: one state for one
+/// condition, whichever caller found it.
+fn reauth(store: &db::Store, integration_id: &str, why: String) -> RefreshError {
+    let _ = store.set_mcp_connection_status(integration_id, "needs_reauth", 0, None);
+    RefreshError::Reauth(why)
+}
 
-    let cred = match store.get_mcp_credential_full(&integration.id, "oauth_token") {
-        Ok(Some(c)) => c,
-        _ => return false,
-    };
-
-    if !is_token_expired(cred.expires_at) || cred.refresh_token.is_none() {
-        return false;
+/// Before a call: renew an OAuth integration's token if it is about to
+/// expire, and return the stored credential the call will present, so a 401
+/// can ask the coordinator for a token other than that one. `None` for
+/// integrations without a stored OAuth token.
+async fn token_for_call(store: &db::Store, bridge: &mcp::Bridge, integration_id: &str) -> Option<String> {
+    match store.get_mcp_integration(integration_id) {
+        Ok(Some(i)) if i.auth_type == "oauth" => {}
+        _ => return None,
     }
-
-    info!(integration = integration_id, "MCP token expired, attempting refresh");
-    match refresh_mcp_token(store, bridge.client(), integration_id).await {
-        Ok(_) => {
-            info!(integration = integration_id, "MCP token refreshed");
-            true
-        }
-        Err(e) => {
-            warn!(integration = integration_id, error = %e, "MCP token refresh failed");
-            false
-        }
+    if let Err(e) = refresh_mcp_token(
+        store,
+        bridge.client(),
+        integration_id,
+        Freshness::ValidFor(CALL_MARGIN_SECS),
+    )
+    .await
+    {
+        warn!(integration = integration_id, error = %e, "MCP token refresh before call failed");
     }
+    store
+        .get_mcp_credential_full(integration_id, "oauth_token")
+        .ok()
+        .flatten()
+        .map(|c| c.credential_value)
 }
 
 /// Repair model-stringified structured args against the tool's input schema.
@@ -528,7 +604,7 @@ pub async fn call_mcp_tool_scoped(
     call_once(store, bridge, integration_id, tool_name, input, matter).await
 }
 
-/// One call: proactive token refresh, the call, and one retry on a 401.
+/// One call: renew an expiring token, the call, and one retry on a 401.
 async fn call_once(
     store: &db::Store,
     bridge: &mcp::Bridge,
@@ -537,61 +613,74 @@ async fn call_once(
     input: serde_json::Value,
     matter: Option<&str>,
 ) -> ToolResult {
-    // Proactive refresh: if the token is expired, refresh before calling.
-    maybe_refresh_token(store, bridge, integration_id).await;
+    let presented = token_for_call(store, bridge, integration_id).await;
+    let as_result = |r: mcp::McpToolResult| {
+        if r.is_error {
+            ToolResult::error(r.content)
+        } else {
+            ToolResult::ok(r.content)
+        }
+    };
 
-    match bridge.call_tool_scoped(integration_id, tool_name, input.clone(), matter).await {
-        Ok(result) => {
-            if result.is_error {
-                ToolResult::error(result.content)
-            } else {
-                ToolResult::ok(result.content)
-            }
+    let err = match bridge
+        .call_tool_scoped(integration_id, tool_name, input.clone(), matter)
+        .await
+    {
+        Ok(result) => return as_result(result),
+        Err(e) => e,
+    };
+    let mcp::McpError::Unauthorized(_) = err else {
+        return ToolResult::error(format!("Connector {}/{} failed: {}", integration_id, tool_name, err));
+    };
+
+    // 401: the server refused the token before its expiry (revoked, or
+    // renewed elsewhere). An OAuth sign-in gets one renewal and one retry.
+    let Some(presented) = presented else {
+        let _ = store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
+        // Shared memory has no Connectors entry to send the owner to: the
+        // website manages it.
+        let shared = store
+            .get_mcp_integration(integration_id)
+            .ok()
+            .flatten()
+            .is_some_and(|i| is_shared_memory(&i));
+        if shared {
+            return ToolResult::error(
+                "Shared memory isn't available to this Nebo right now. Carry on without it.",
+            );
         }
-        Err(e) => {
-            let err_str = e.to_string();
-            // Retry once on 401 (token may have been revoked server-side before expiry).
-            if err_str.contains("401") || err_str.contains("Unauthorized") {
-                info!(integration = %integration_id, "MCP 401, attempting token refresh");
-                match refresh_mcp_token(store, bridge.client(), integration_id).await {
-                    Ok(_) => match bridge.call_tool(integration_id, tool_name, input).await {
-                        Ok(result) => {
-                            if result.is_error {
-                                ToolResult::error(result.content)
-                            } else {
-                                ToolResult::ok(result.content)
-                            }
-                        }
-                        Err(retry_err) => ToolResult::error(format!(
-                            "Connector {}/{} failed after token refresh: {}",
-                            integration_id, tool_name, retry_err
-                        )),
-                    },
-                    Err(refresh_err) => {
-                        let _ =
-                            store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
-                        // Shared memory has no Connectors entry to send the
-                        // owner to: the website manages it.
-                        let shared = store
-                            .get_mcp_integration(integration_id)
-                            .ok()
-                            .flatten()
-                            .is_some_and(|i| is_shared_memory(&i));
-                        if shared {
-                            return ToolResult::error(
-                                "Shared memory isn't available to this Nebo right now. Carry on without it.",
-                            );
-                        }
-                        ToolResult::error(format!(
-                            "Connector {}/{}: sign-in expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
-                            integration_id, tool_name, refresh_err
-                        ))
-                    }
-                }
-            } else {
-                ToolResult::error(format!("Connector {}/{} failed: {}", integration_id, tool_name, e))
-            }
-        }
+        return ToolResult::error(format!(
+            "Connector {}/{} refused its sign-in ({}). Ask the owner to reconnect it in Settings > Connectors.",
+            integration_id, tool_name, err
+        ));
+    };
+    info!(integration = %integration_id, "MCP 401, renewing the sign-in");
+    match refresh_mcp_token(
+        store,
+        bridge.client(),
+        integration_id,
+        Freshness::Replacing(presented),
+    )
+    .await
+    {
+        Ok(_) => match bridge
+            .call_tool_scoped(integration_id, tool_name, input, matter)
+            .await
+        {
+            Ok(result) => as_result(result),
+            Err(retry_err) => ToolResult::error(format!(
+                "Connector {}/{} failed after renewing its sign-in: {}",
+                integration_id, tool_name, retry_err
+            )),
+        },
+        Err(RefreshError::Reauth(why)) => ToolResult::error(format!(
+            "Connector {}/{}: sign-in expired ({}). Ask the owner to reconnect it in Settings > Connectors.",
+            integration_id, tool_name, why
+        )),
+        Err(RefreshError::Unavailable(why)) => ToolResult::error(format!(
+            "Connector {}/{} couldn't renew its sign-in just now ({}). Try again in a few minutes.",
+            integration_id, tool_name, why
+        )),
     }
 }
 
@@ -963,5 +1052,225 @@ mod refresh_tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the tools were not listed again after list_changed");
+    }
+}
+
+#[cfg(test)]
+mod refresh_coordinator_tests {
+    use super::{Freshness, RefreshError, refresh_mcp_token};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A token endpoint that rotates refresh tokens and revokes each on use,
+    /// like cascade-ops: a refresh token works once. `mode` scripts failures.
+    #[derive(Clone, Copy)]
+    enum Mode {
+        Rotate,
+        Status(u16),
+    }
+
+    #[derive(Default)]
+    struct Server {
+        valid_refresh: String,
+        requests: Vec<String>,
+        issued: u32,
+    }
+
+    async fn token_server(mode: Mode, first_refresh: &str) -> (String, Arc<Mutex<Server>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let shared = Arc::new(Mutex::new(Server {
+            valid_refresh: first_refresh.to_string(),
+            ..Default::default()
+        }));
+        let state = shared.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let body = loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).to_string();
+                        if let Some(end) = text.find("\r\n\r\n") {
+                            let len = text[..end]
+                                .lines()
+                                .find_map(|l| {
+                                    let l = l.to_ascii_lowercase();
+                                    l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= end + 4 + len {
+                                break text[end + 4..end + 4 + len].to_string();
+                            }
+                        }
+                    };
+                    let form: std::collections::HashMap<String, String> =
+                        url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+                    let presented = form.get("refresh_token").cloned().unwrap_or_default();
+                    // Widen the window a racing second refresher would hit.
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    let (status, reply) = {
+                        let mut s = state.lock().unwrap();
+                        s.requests.push(presented.clone());
+                        match mode {
+                            Mode::Status(code) => (code, String::new()),
+                            Mode::Rotate if presented == s.valid_refresh => {
+                                s.issued += 1;
+                                let n = s.issued;
+                                s.valid_refresh = format!("refresh-{n}");
+                                (
+                                    200,
+                                    serde_json::json!({
+                                        "access_token": format!("access-{n}"),
+                                        "refresh_token": format!("refresh-{n}"),
+                                        "expires_in": 3600,
+                                        "token_type": "Bearer",
+                                    })
+                                    .to_string(),
+                                )
+                            }
+                            Mode::Rotate => (
+                                400,
+                                r#"{"error":"invalid_grant","error_description":"Invalid refresh token"}"#
+                                    .to_string(),
+                            ),
+                        }
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (url, shared)
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        store: db::Store,
+        client: mcp::McpClient,
+    }
+
+    const ID: &str = "int-1";
+
+    /// An OAuth integration whose access token has expired, holding
+    /// `refresh` as its refresh token.
+    fn fixture(token_endpoint: &str, refresh: &str) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let client = mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate()));
+        store
+            .create_mcp_integration(ID, "Ops", "http", Some("https://ops.example/mcp"), "oauth", None, None)
+            .unwrap();
+        store
+            .set_mcp_oauth_state(ID, "s", "v", "client-1", None, "https://a", token_endpoint, "https://r", None, None)
+            .unwrap();
+        store.clear_mcp_oauth_state(ID).unwrap();
+        store.set_mcp_connection_status(ID, "connected", 1, None).unwrap();
+        let access = client.encrypt_token("access-0").unwrap();
+        let rt = client.encrypt_token(refresh).unwrap();
+        store
+            .store_mcp_credentials(ID, "oauth_token", &access, Some(&rt), Some(1), None)
+            .unwrap();
+        Fixture { _dir: dir, store, client }
+    }
+
+    fn stored_refresh(f: &Fixture) -> String {
+        let c = f.store.get_mcp_credential_full(ID, "oauth_token").unwrap().unwrap();
+        f.client.decrypt_token(&c.refresh_token.unwrap()).unwrap()
+    }
+
+    fn status(f: &Fixture) -> Option<String> {
+        f.store.get_mcp_integration(ID).unwrap().unwrap().connection_status
+    }
+
+    #[tokio::test]
+    async fn concurrent_refreshers_make_one_token_request() {
+        let (url, server) = token_server(Mode::Rotate, "refresh-0").await;
+        let f = Arc::new(fixture(&url, "refresh-0"));
+        // Startup connect, the proactive refresher and a tool call, at once.
+        let runs = (0..4).map(|_| {
+            let f = f.clone();
+            tokio::spawn(async move {
+                refresh_mcp_token(&f.store, &f.client, ID, Freshness::ValidFor(60)).await
+            })
+        });
+        for r in futures::future::join_all(runs).await {
+            assert_eq!(r.unwrap().unwrap(), "access-1");
+        }
+        assert_eq!(server.lock().unwrap().requests, vec!["refresh-0".to_string()]);
+        assert_eq!(status(&f).as_deref(), Some("connected"));
+    }
+
+    #[tokio::test]
+    async fn a_rotated_refresh_token_is_persisted_and_used_next() {
+        let (url, server) = token_server(Mode::Rotate, "refresh-0").await;
+        let f = fixture(&url, "refresh-0");
+        refresh_mcp_token(&f.store, &f.client, ID, Freshness::ValidFor(60)).await.unwrap();
+        assert_eq!(stored_refresh(&f), "refresh-1");
+
+        // The server refuses access-1 (a 401): the next refresh presents the
+        // rotated token, never the spent one.
+        let presented = f.store.get_mcp_credential_full(ID, "oauth_token").unwrap().unwrap().credential_value;
+        let t = refresh_mcp_token(&f.store, &f.client, ID, Freshness::Replacing(presented.clone()))
+            .await
+            .unwrap();
+        assert_eq!(t, "access-2");
+        assert_eq!(stored_refresh(&f), "refresh-2");
+        assert_eq!(server.lock().unwrap().requests, vec!["refresh-0", "refresh-1"]);
+
+        // A second 401 for the same, already replaced token renews nothing.
+        let t = refresh_mcp_token(&f.store, &f.client, ID, Freshness::Replacing(presented))
+            .await
+            .unwrap();
+        assert_eq!(t, "access-2");
+        assert_eq!(server.lock().unwrap().requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn server_errors_keep_the_sign_in() {
+        for code in [502, 503] {
+            let (url, server) = token_server(Mode::Status(code), "refresh-0").await;
+            let f = fixture(&url, "refresh-0");
+            let r = refresh_mcp_token(&f.store, &f.client, ID, Freshness::ValidFor(60)).await;
+            assert!(matches!(r, Err(RefreshError::Unavailable(_))), "{code}: {r:?}");
+            assert_eq!(server.lock().unwrap().requests.len(), 3, "{code}: retried with backoff");
+            assert_eq!(status(&f).as_deref(), Some("connected"), "{code}: never needs_reauth");
+            assert_eq!(stored_refresh(&f), "refresh-0", "{code}: sign-in kept");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_keeps_the_sign_in() {
+        // Nothing listens here: connection refused, like a timeout or a
+        // network drop, is transient.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let f = fixture(&format!("http://127.0.0.1:{port}/token"), "refresh-0");
+        let r = refresh_mcp_token(&f.store, &f.client, ID, Freshness::ValidFor(60)).await;
+        assert!(matches!(r, Err(RefreshError::Unavailable(_))), "{r:?}");
+        assert_eq!(status(&f).as_deref(), Some("connected"));
+        assert_eq!(stored_refresh(&f), "refresh-0");
+    }
+
+    #[tokio::test]
+    async fn invalid_grant_needs_reauth() {
+        let (url, server) = token_server(Mode::Rotate, "refresh-live").await;
+        let f = fixture(&url, "refresh-spent");
+        let r = refresh_mcp_token(&f.store, &f.client, ID, Freshness::ValidFor(60)).await;
+        assert!(matches!(r, Err(RefreshError::Reauth(_))), "{r:?}");
+        assert_eq!(server.lock().unwrap().requests.len(), 1, "a refusal is not retried");
+        assert_eq!(status(&f).as_deref(), Some("needs_reauth"));
     }
 }

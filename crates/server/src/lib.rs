@@ -2089,6 +2089,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                             warn!(name = %i.name, "MCP token needs reauth on startup — skipping connect");
                             continue;
                         }
+                        tools::mcp_tool::TokenResolution::Unavailable(e) => {
+                            // The sign-in is kept; the refresher renews it and reconnects.
+                            let _ = store_init.set_mcp_connection_status(
+                                &i.id,
+                                "error",
+                                0,
+                                Some(crate::handlers::integrations::SIGN_IN_UNAVAILABLE),
+                            );
+                            warn!(name = %i.name, error = %e, "MCP sign-in server unavailable on startup — will retry");
+                            continue;
+                        }
                     };
                     let tool_prefix = i
                         .name
