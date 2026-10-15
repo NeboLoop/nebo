@@ -401,7 +401,7 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     metadata[tool_surface::LOADED_TOOLS_KEY] = serde_json::json!(
         tool_surface::loaded(&stored)
             .iter()
-            .map(|t| tools::find_tools::function_entry(&t.declared))
+            .map(|t| ai::function_entry(&t.declared))
             .collect::<Vec<_>>()
     );
     let text = boundary_text(&summary, head_cut, why);

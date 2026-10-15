@@ -613,7 +613,7 @@ fn tools_triggered_row(defs: &[ai::ToolDefinition]) -> Option<Attachment> {
     let mut data = serde_json::Map::new();
     data.insert(
         super::tool_surface::LOADED_TOOLS_KEY.into(),
-        defs.iter().map(tools::find_tools::function_entry).collect::<Vec<_>>().into(),
+        defs.iter().map(ai::function_entry).collect::<Vec<_>>().into(),
     );
     Some(Attachment {
         kind: "tools_triggered",
