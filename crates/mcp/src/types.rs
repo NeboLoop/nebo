@@ -14,6 +14,15 @@ pub enum McpError {
     NotFound(String),
     #[error("auth error: {0}")]
     Auth(String),
+    /// The token endpoint definitively refused the grant (`invalid_grant`,
+    /// `invalid_client`, `unauthorized_client`, or a 401): the stored sign-in
+    /// is dead and only the owner signing in again revives it. Every other
+    /// token-endpoint failure (5xx, 429, timeouts, network) is transient.
+    #[error("sign-in rejected: {0}")]
+    TokenRejected(String),
+    /// The MCP server answered 401: it refused the bearer token.
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     #[error("{0}")]
     Other(String),
 }
@@ -127,15 +136,32 @@ pub struct OAuthTokens {
     pub scope: Option<String>,
 }
 
-/// Result of a successful OAuth token refresh.
+/// Tokens a token endpoint issued (code exchange or refresh). `expires_at` is
+/// always set: `expires_in` is clamped to 60 s..24 h, and a server that omits
+/// it is taken to mean one hour, so no stored token is ever "valid forever".
 #[derive(Debug, Clone)]
-pub struct RefreshResult {
+pub struct TokenSet {
     pub access_token: String,
+    /// A rotated refresh token, when the server issued one. `None` means the
+    /// server kept the old one valid; the caller keeps it.
     pub refresh_token: Option<String>,
-    pub expires_in: Option<i64>,
+    pub expires_at: i64,
     pub scope: Option<String>,
 }
 
+/// Where and how a server signs in, from discovery.
+#[derive(Debug, Clone)]
+pub struct OAuthDiscovery {
+    pub metadata: OAuthMetadata,
+    /// RFC 8707 resource indicator, sent on authorize, code exchange and
+    /// refresh. Set only when the server publishes RFC 9728
+    /// protected-resource metadata, as the MCP SDK does.
+    pub resource: Option<String>,
+    /// The scope to request: the server's advertised scopes (RFC 9728
+    /// `scopes_supported`), plus `offline_access` when its authorization
+    /// server offers it. `None` when the server advertises none.
+    pub scope: Option<String>,
+}
 /// OAuth metadata from a well-known endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthMetadata {
@@ -145,6 +171,8 @@ pub struct OAuthMetadata {
     pub registration_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revocation_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes_supported: Option<Vec<String>>,
 }
 
 #[cfg(test)]

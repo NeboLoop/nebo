@@ -8,10 +8,11 @@ use tracing::{info, warn};
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
 
-/// The one OAuth scope string for MCP servers — used identically in Dynamic
-/// Client Registration and the authorization request. `offline_access` must be
-/// REQUESTED (not just registered) or many servers never issue a refresh token,
-/// which leaves the integration unable to recover from access-token expiry.
+/// The OAuth scope for an MCP server that advertises none (no RFC 9728
+/// `scopes_supported`) — used identically in Dynamic Client Registration and
+/// the authorization request. `offline_access` must be REQUESTED (not just
+/// registered) or many servers never issue a refresh token, which leaves the
+/// integration unable to recover from access-token expiry.
 const MCP_OAUTH_SCOPE: &str = "mcp:full offline_access";
 
 /// Derive the public base URL a browser can reach this server on, from the
@@ -363,70 +364,89 @@ pub(crate) async fn sync_bridge(state: &AppState) {
         if i.is_enabled.unwrap_or(0) == 0 {
             continue;
         }
-        // Remote servers need a URL; stdio servers carry a command in metadata.
-        // A row with neither is the legacy shape fix_server_type flags — write
-        // the same error here too, since sync runs at startup before any list
-        // view triggers the heal, and a silent skip leaves stale status behind.
-        let server_url = i.server_url.clone().unwrap_or_default();
-        if server_url.is_empty() && !metadata_is_stdio(i.metadata.as_deref()) {
-            if is_unlaunchable_stdio(&i.server_type, i.server_url.as_deref(), i.metadata.as_deref())
-                && i.connection_status.as_deref() != Some("error")
-            {
-                let _ = state.store.set_mcp_connection_status(
-                    &i.id,
-                    "error",
-                    0,
-                    Some(MISSING_LAUNCH_SPEC_ERROR),
-                );
-            }
-            continue;
+        connect_one(state, i).await;
+    }
+}
+
+/// Connect one enabled integration with its resolved token, recording the
+/// outcome as its status. Shared by sync and the token refresher (which
+/// reconnects a server whose sign-in it just renewed).
+async fn connect_one(state: &AppState, i: &db::models::McpIntegration) {
+    // Remote servers need a URL; stdio servers carry a command in metadata.
+    // A row with neither is the legacy shape fix_server_type flags — write
+    // the same error here too, since sync runs at startup before any list
+    // view triggers the heal, and a silent skip leaves stale status behind.
+    let server_url = i.server_url.clone().unwrap_or_default();
+    if server_url.is_empty() && !metadata_is_stdio(i.metadata.as_deref()) {
+        if is_unlaunchable_stdio(&i.server_type, i.server_url.as_deref(), i.metadata.as_deref())
+            && i.connection_status.as_deref() != Some("error")
+        {
+            let _ = state.store.set_mcp_connection_status(
+                &i.id,
+                "error",
+                0,
+                Some(MISSING_LAUNCH_SPEC_ERROR),
+            );
         }
-        if i.auth_type == "oauth" && i.connection_status.is_none() {
-            continue;
+        return;
+    }
+    if i.auth_type == "oauth" && i.connection_status.is_none() {
+        return;
+    }
+    let access_token = match tools::mcp_tool::resolve_mcp_token(
+        &state.store,
+        state.bridge.client(),
+        i,
+    )
+    .await
+    {
+        tools::mcp_tool::TokenResolution::Ready(t) => t,
+        tools::mcp_tool::TokenResolution::NeedsReauth => {
+            // Don't connect with a stale token (it would 401 and drop).
+            let _ = state.store.set_mcp_connection_status(&i.id, "needs_reauth", 0, None);
+            warn!(name = %i.name, "MCP token needs reauth during sync — skipping connect");
+            return;
         }
-        let access_token = match tools::mcp_tool::resolve_mcp_token(
-            &state.store,
-            state.bridge.client(),
-            i,
+        tools::mcp_tool::TokenResolution::Unavailable(e) => {
+            // The sign-in is kept; the refresher renews it and reconnects.
+            let _ = state
+                .store
+                .set_mcp_connection_status(&i.id, "error", 0, Some(SIGN_IN_UNAVAILABLE));
+            warn!(name = %i.name, error = %e, "MCP sign-in server unavailable during sync — will retry");
+            return;
+        }
+    };
+    let tool_prefix = mcp::bridge::tool_name_prefix(&i.name);
+    match state
+        .bridge
+        .connect(
+            &i.id,
+            &tool_prefix,
+            &server_url,
+            access_token.as_deref(),
+            i.metadata.as_deref(),
         )
         .await
-        {
-            tools::mcp_tool::TokenResolution::Ready(t) => t,
-            tools::mcp_tool::TokenResolution::NeedsReauth => {
-                // Don't connect with a stale token (it would 401 and drop). Surface
-                // needs_reauth; the proactive refresher will retry on its next tick.
-                let _ = state.store.set_mcp_connection_status(&i.id, "needs_reauth", 0, None);
-                warn!(name = %i.name, "MCP token needs reauth during sync — skipping connect");
-                continue;
-            }
-        };
-        let tool_prefix = mcp::bridge::tool_name_prefix(&i.name);
-        match state
-            .bridge
-            .connect(
+    {
+        Ok(tools_list) => {
+            let _ = state.store.set_mcp_connection_status(
                 &i.id,
-                &tool_prefix,
-                &server_url,
-                access_token.as_deref(),
-                i.metadata.as_deref(),
-            )
-            .await
-        {
-            Ok(tools_list) => {
-                let _ = state.store.set_mcp_connection_status(
-                    &i.id,
-                    "connected",
-                    tools_list.len() as i64,
-                    None,
-                );
-            }
-            Err(e) => {
-                let _ = state.store.set_mcp_connection_status(&i.id, "error", 0, None);
-                warn!(name = %i.name, error = %e, "MCP reconnect failed during sync");
-            }
+                "connected",
+                tools_list.len() as i64,
+                None,
+            );
+        }
+        Err(e) => {
+            let _ = state.store.set_mcp_connection_status(&i.id, "error", 0, None);
+            warn!(name = %i.name, error = %e, "MCP reconnect failed during sync");
         }
     }
 }
+
+/// What the owner reads on a connector whose server couldn't renew its
+/// sign-in for a moment. The sign-in is kept and retried; nothing to do.
+pub(crate) const SIGN_IN_UNAVAILABLE: &str =
+    "Couldn't reach the server to renew its sign-in. Trying again automatically.";
 
 /// Spawn a background task that keeps OAuth MCP tokens fresh — refreshing any token
 /// expiring within the window so it never reaches expiry (and never 401s / drops a
@@ -455,28 +475,38 @@ pub fn spawn_mcp_token_refresher(state: AppState, wake: std::sync::Arc<tokio::sy
                 }
             };
             for i in &integrations {
-                if i.auth_type != "oauth" || i.is_enabled.unwrap_or(0) == 0 {
+                // A refused sign-in waits for the owner; retrying it is noise.
+                if i.auth_type != "oauth"
+                    || i.is_enabled.unwrap_or(0) == 0
+                    || i.connection_status.as_deref() == Some("needs_reauth")
+                {
                     continue;
                 }
-                let cred = match state.store.get_mcp_credential_full(&i.id, "oauth_token") {
-                    Ok(Some(c)) => c,
-                    _ => continue,
-                };
-                if cred.refresh_token.is_some()
-                    && tools::mcp_tool::token_expires_within(cred.expires_at, REFRESH_WINDOW_SECS)
+                let renewable = matches!(
+                    state.store.get_mcp_credential_full(&i.id, "oauth_token"),
+                    Ok(Some(ref c)) if c.refresh_token.is_some()
+                        && tools::mcp_tool::token_expires_within(c.expires_at, REFRESH_WINDOW_SECS)
+                );
+                if !renewable {
+                    continue;
+                }
+                match tools::mcp_tool::refresh_mcp_token(
+                    &state.store,
+                    state.bridge.client(),
+                    &i.id,
+                    tools::mcp_tool::Freshness::ValidFor(REFRESH_WINDOW_SECS),
+                )
+                .await
                 {
-                    match tools::mcp_tool::refresh_mcp_token(
-                        &state.store,
-                        state.bridge.client(),
-                        &i.id,
-                    )
-                    .await
-                    {
-                        Ok(_) => info!(name = %i.name, "proactively refreshed MCP OAuth token"),
-                        Err(e) => {
-                            warn!(name = %i.name, error = %e, "proactive MCP token refresh failed")
+                    Ok(_) => {
+                        info!(name = %i.name, "proactively refreshed MCP OAuth token");
+                        // A server skipped while its sign-in couldn't be
+                        // renewed comes back now.
+                        if !state.bridge.connected_ids().await.contains(&i.id) {
+                            connect_one(&state, i).await;
                         }
                     }
+                    Err(e) => warn!(name = %i.name, error = %e, "proactive MCP token refresh failed"),
                 }
             }
         }
@@ -958,6 +988,16 @@ pub async fn test_integration(
                 "message": "Authentication expired — re-authorize this server (click the key / Reconnect).",
             })));
         }
+        tools::mcp_tool::TokenResolution::Unavailable(_) => {
+            let _ = state
+                .store
+                .set_mcp_connection_status(&id, "error", 0, Some(SIGN_IN_UNAVAILABLE));
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "integration": integration.name,
+                "message": SIGN_IN_UNAVAILABLE,
+            })));
+        }
     };
 
     let tool_prefix = mcp::bridge::tool_name_prefix(&integration.name);
@@ -1026,6 +1066,15 @@ pub async fn connect_integration(
                 "success": false,
                 "needsReauth": true,
                 "message": "Authentication expired — re-authorize this server (click the key / Reconnect).",
+            })));
+        }
+        tools::mcp_tool::TokenResolution::Unavailable(_) => {
+            let _ = state
+                .store
+                .set_mcp_connection_status(&id, "error", 0, Some(SIGN_IN_UNAVAILABLE));
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "message": SIGN_IN_UNAVAILABLE,
             })));
         }
     };
@@ -1320,64 +1369,108 @@ async fn start_oauth_flow(
         ),
     };
 
-    let (authorization_endpoint, token_endpoint, client_id, client_secret, scope, pre_registered) =
-        match pre {
-            Some(p) => {
-                info!(integration = %integration.id, "MCP OAuth: using pre-registered client");
-                (
-                    p.authorization_endpoint,
-                    p.token_endpoint,
-                    p.client_id,
-                    p.client_secret,
-                    p.scopes.unwrap_or_else(|| MCP_OAUTH_SCOPE.to_string()),
-                    true,
-                )
-            }
-            None => {
-                let metadata = state
-                    .bridge
-                    .client()
-                    .discover_oauth(server_url)
-                    .await
-                    .map_err(|e| {
-                        warn!(
-                            integration = %integration.id,
-                            server_url = %server_url,
-                            error = %e,
-                            "OAuth discovery failed"
-                        );
-                        oauth_discovery_error(&integration.name, &e)
+    let (
+        authorization_endpoint,
+        token_endpoint,
+        client_id,
+        client_secret,
+        scope,
+        pre_registered,
+        resource,
+        client_redirect_uri,
+    ) = match pre {
+        Some(p) => {
+            info!(integration = %integration.id, "MCP OAuth: using pre-registered client");
+            (
+                p.authorization_endpoint,
+                p.token_endpoint,
+                p.client_id,
+                p.client_secret,
+                p.scopes.unwrap_or_else(|| MCP_OAUTH_SCOPE.to_string()),
+                true,
+                None,
+                None,
+            )
+        }
+        None => {
+            let discovery = state
+                .bridge
+                .client()
+                .discover_oauth(server_url)
+                .await
+                .map_err(|e| {
+                    warn!(
+                        integration = %integration.id,
+                        server_url = %server_url,
+                        error = %e,
+                        "OAuth discovery failed"
+                    );
+                    oauth_discovery_error(&integration.name, &e)
+                })?;
+            let metadata = discovery.metadata;
+            let scope = discovery.scope.unwrap_or_else(|| MCP_OAUTH_SCOPE.to_string());
+            info!(
+                integration = %integration.id,
+                auth_endpoint = %metadata.authorization_endpoint,
+                token_endpoint = %metadata.token_endpoint,
+                registration = ?metadata.registration_endpoint,
+                resource = ?discovery.resource,
+                scope = %scope,
+                "discovered MCP OAuth metadata"
+            );
+            // Reuse the client this server registered for this Nebo, when it
+            // was registered at the same token endpoint for the same return
+            // address and the last sign-in with it finished. Otherwise
+            // register one (RFC 7591) — never a made-up client id.
+            let reusable = state
+                .store
+                .get_mcp_oauth_config(&integration.id)
+                .ok()
+                .flatten()
+                .filter(|c| {
+                    !c.sign_in_pending
+                        && c.oauth_token_endpoint.as_deref() == Some(metadata.token_endpoint.as_str())
+                        && c.oauth_client_redirect_uri.as_deref() == Some(redirect_uri.as_str())
+                })
+                .and_then(|c| {
+                    let secret = c
+                        .oauth_client_secret
+                        .as_deref()
+                        .and_then(|enc| state.bridge.client().decrypt_token(enc).ok());
+                    c.oauth_client_id.map(|id| (id, secret))
+                });
+            let (client_id, client_secret) = match reusable {
+                Some(pair) => pair,
+                None => {
+                    let reg_endpoint = metadata.registration_endpoint.as_deref().ok_or_else(|| {
+                        types::NeboError::Validation(format!(
+                            "{} doesn't let Nebo register for sign-in. Add its OAuth client settings when adding the server.",
+                            integration.name
+                        ))
                     })?;
-                info!(
-                    integration = %integration.id,
-                    auth_endpoint = %metadata.authorization_endpoint,
-                    token_endpoint = %metadata.token_endpoint,
-                    registration = ?metadata.registration_endpoint,
-                    "discovered MCP OAuth metadata"
-                );
-                let (client_id, client_secret) = if let Some(ref reg_endpoint) =
-                    metadata.registration_endpoint
-                {
-                    match do_client_registration(state, reg_endpoint, &redirect_uri).await {
-                        Ok(pair) => pair,
-                        Err(e) => {
-                            warn!("DCR failed, using fallback client_id: {e}");
-                            (format!("nebo-agent-{}", integration.id), None)
-                        }
-                    }
-                } else {
-                    (format!("nebo-agent-{}", integration.id), None)
-                };
-                (
-                    metadata.authorization_endpoint,
-                    metadata.token_endpoint,
-                    client_id,
-                    client_secret,
-                    MCP_OAUTH_SCOPE.to_string(),
-                    false,
-                )
-            }
-        };
+                    do_client_registration(state, reg_endpoint, &redirect_uri, &scope)
+                        .await
+                        .map_err(|e| {
+                            warn!(integration = %integration.id, error = %e, "MCP Dynamic Client Registration failed");
+                            types::NeboError::Upstream(format!(
+                                "Couldn't start sign-in for {}. Try again.",
+                                integration.name
+                            ))
+                        })?
+                }
+            };
+            (
+                metadata.authorization_endpoint,
+                metadata.token_endpoint,
+                client_id,
+                client_secret,
+                scope,
+                false,
+                discovery.resource,
+                Some(redirect_uri.clone()),
+            )
+        }
+    };
 
     let code_verifier = generate_code_verifier();
     let code_challenge = compute_code_challenge(&code_verifier);
@@ -1407,6 +1500,8 @@ async fn start_oauth_flow(
         &authorization_endpoint,
         &token_endpoint,
         &redirect_uri,
+        resource.as_deref(),
+        client_redirect_uri.as_deref(),
     )?;
 
     let mut auth_url = format!(
@@ -1418,6 +1513,9 @@ async fn start_oauth_flow(
         urlencoding::encode(&code_challenge),
         urlencoding::encode(&scope),
     );
+    if let Some(resource) = &resource {
+        auth_url.push_str(&format!("&resource={}", urlencoding::encode(resource)));
+    }
     if pre_registered {
         // Google issues a refresh token only with access_type=offline and
         // re-issues it only under prompt=consent; other providers must ignore
@@ -1457,6 +1555,7 @@ async fn do_client_registration(
     _state: &AppState,
     registration_endpoint: &str,
     redirect_uri: &str,
+    scope: &str,
 ) -> Result<(String, Option<String>), String> {
     let body = serde_json::json!({
         "client_name": "Nebo Agent",
@@ -1464,7 +1563,7 @@ async fn do_client_registration(
         "token_endpoint_auth_method": "none",
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "scope": MCP_OAUTH_SCOPE
+        "scope": scope
     });
 
     let resp = tls::http_client()
@@ -1606,15 +1705,24 @@ async fn finish_oauth(state: &AppState, params: &OAuthCallbackQuery, headers: &H
         .unwrap_or_else(|| oauth_redirect_uri(headers, state.config.port));
 
     // 3. Exchange code for tokens
-    let tokens = match exchange_mcp_code(
+    let token_client = mcp::oauth::TokenClient {
         token_endpoint,
-        code,
-        &code_verifier,
-        &redirect_uri,
         client_id,
-        client_secret.as_deref(),
-    )
-    .await
+        client_secret: client_secret.as_deref(),
+        resource: integration.oauth_resource.as_deref(),
+    };
+    let tokens = match state
+        .bridge
+        .client()
+        .request_token(
+            &token_client,
+            mcp::oauth::TokenGrant::AuthorizationCode {
+                code,
+                code_verifier: &code_verifier,
+                redirect_uri: &redirect_uri,
+            },
+        )
+        .await
     {
         Ok(t) => t,
         Err(e) => {
@@ -1625,32 +1733,27 @@ async fn finish_oauth(state: &AppState, params: &OAuthCallbackQuery, headers: &H
 
     info!(integration = %integration.id, "MCP OAuth token exchange successful");
 
-    // 4. Encrypt and store tokens
-    let encrypted_access = match state.bridge.client().encrypt_token(&tokens.access_token) {
+    // 4. Encrypt and store tokens — before anything uses them.
+    let encrypt = |plain: &str| state.bridge.client().encrypt_token(plain);
+    let encrypted_access = match encrypt(&tokens.access_token) {
         Ok(v) => v,
         Err(e) => return (false, format!("Encryption failed: {e}")),
     };
-    let encrypted_refresh = tokens
-        .refresh_token
-        .as_deref()
-        .and_then(|rt| state.bridge.client().encrypt_token(rt).ok());
-
-    let expires_at = tokens.expires_in.map(|secs| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64
-            + secs
-    });
-
-    let _ = state.store.store_mcp_credentials(
+    let encrypted_refresh = match tokens.refresh_token.as_deref().map(encrypt).transpose() {
+        Ok(v) => v,
+        Err(e) => return (false, format!("Encryption failed: {e}")),
+    };
+    if let Err(e) = state.store.store_mcp_credentials(
         &integration.id,
         "oauth_token",
         &encrypted_access,
         encrypted_refresh.as_deref(),
-        expires_at,
+        Some(tokens.expires_at),
         tokens.scope.as_deref(),
-    );
+    ) {
+        warn!(integration = %integration.id, error = %e, "MCP OAuth: saving the sign-in failed");
+        return (false, "Couldn't save the sign-in. Try again.".to_string());
+    }
 
     // 5. Clear flow state
     let _ = state.store.clear_mcp_oauth_state(&integration.id);
@@ -1700,58 +1803,6 @@ async fn finish_oauth(state: &AppState, params: &OAuthCallbackQuery, headers: &H
 fn oauth_result_page(success: bool, message: &str) -> axum::response::Html<String> {
     let heading = if success { "All set" } else { "Couldn't connect" };
     super::auth_page::auth_result_page(success, heading, message)
-}
-
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    expires_in: Option<i64>,
-    #[serde(default)]
-    scope: Option<String>,
-}
-
-/// Exchange an OAuth authorization code for tokens at the MCP server's token endpoint.
-async fn exchange_mcp_code(
-    token_endpoint: &str,
-    code: &str,
-    code_verifier: &str,
-    redirect_uri: &str,
-    client_id: &str,
-    client_secret: Option<&str>,
-) -> Result<TokenResponse, String> {
-    let mut params = vec![
-        ("grant_type", "authorization_code"),
-        ("code", code),
-        ("redirect_uri", redirect_uri),
-        ("client_id", client_id),
-        ("code_verifier", code_verifier),
-    ];
-    if let Some(secret) = client_secret {
-        params.push(("client_secret", secret));
-    }
-
-    let resp = tls::http_client()
-        .build()
-        .map_err(|e| format!("token request failed: {e}"))?
-        .post(token_endpoint)
-        .form(&params)
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await
-        .map_err(|e| format!("token request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("token endpoint returned {status}: {text}"));
-    }
-
-    resp.json::<TokenResponse>()
-        .await
-        .map_err(|e| format!("decode token response: {e}"))
 }
 
 /// GET /api/v1/integrations/registry

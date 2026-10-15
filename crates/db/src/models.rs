@@ -664,12 +664,20 @@ pub struct McpCredentialFull {
     pub scopes: Option<String>,
 }
 
-/// OAuth config needed for token refresh (from the integration row).
+/// The stored OAuth client of an integration (from the integration row).
 #[derive(Debug, Clone)]
 pub struct McpOAuthConfig {
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
     pub oauth_token_endpoint: Option<String>,
+    /// RFC 8707 resource indicator, sent on every token request.
+    pub oauth_resource: Option<String>,
+    /// The redirect_uri the client was registered with (None: pre-registered
+    /// or registered before this was recorded).
+    pub oauth_client_redirect_uri: Option<String>,
+    /// A sign-in was started and never finished (its flow state is still
+    /// set): the client may be unknown to the server, so don't reuse it.
+    pub sign_in_pending: bool,
 }
 
 /// OAuth flow state for an MCP integration (used during callback).
@@ -687,6 +695,8 @@ pub struct McpIntegrationOAuth {
     /// The redirect_uri the flow STARTED with — the token exchange must present
     /// this exact value (RFC 6749), never one recomputed from the callback.
     pub oauth_redirect_uri: Option<String>,
+    /// RFC 8707 resource indicator for the code exchange.
+    pub oauth_resource: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::crypto::Encryptor;
 use crate::stdio::StdioSession;
-use crate::{McpError, McpToolDef, McpToolResult, OAuthMetadata, OAuthTokens, RefreshResult};
+use crate::{McpError, McpToolDef, McpToolResult, OAuthTokens};
 
 /// MCP client for connecting to external MCP servers.
 /// Handles OAuth 2.0 flows, token management, and tool invocation.
@@ -18,7 +18,7 @@ use crate::{McpError, McpToolDef, McpToolResult, OAuthMetadata, OAuthTokens, Ref
 /// (a long-lived child process each). `call_tool`/`close_session` route by
 /// which map an integration lives in.
 pub struct McpClient {
-    http: reqwest::Client,
+    pub(crate) http: reqwest::Client,
     encryptor: Arc<Encryptor>,
     sessions: RwLock<HashMap<String, Session>>,
     stdio_sessions: RwLock<HashMap<String, Arc<StdioSession>>>,
@@ -27,6 +27,8 @@ pub struct McpClient {
     /// (`Bridge::watch_tool_changes`) and lists the server's tools again.
     tools_changed: mpsc::UnboundedSender<String>,
     tools_changed_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    /// One refresh lock per integration (`McpClient::refresh_lock`).
+    pub(crate) refresh_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 struct Session {
@@ -49,6 +51,7 @@ impl McpClient {
             stdio_sessions: RwLock::new(HashMap::new()),
             tools_changed,
             tools_changed_rx: std::sync::Mutex::new(Some(tools_changed_rx)),
+            refresh_locks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -100,36 +103,6 @@ impl McpClient {
         Ok(tools)
     }
 
-    /// Discover OAuth metadata from a server's well-known endpoint.
-    /// Per RFC 8414, the well-known URL is relative to the server's origin, not the MCP path.
-    pub async fn discover_oauth(&self, server_url: &str) -> Result<OAuthMetadata, McpError> {
-        // Extract origin (scheme + host + port) from server URL.
-        // e.g. "https://monument.sh/mcp" → "https://monument.sh"
-        let origin = {
-            let trimmed = server_url.trim_end_matches('/');
-            if let Some(pos) = trimmed.find("://") {
-                let after_scheme = &trimmed[pos + 3..];
-                // Find the first '/' after the host (if any)
-                match after_scheme.find('/') {
-                    Some(slash) => trimmed[..pos + 3 + slash].to_string(),
-                    None => trimmed.to_string(),
-                }
-            } else {
-                trimmed.to_string()
-            }
-        };
-        let well_known = format!("{}/.well-known/oauth-authorization-server", origin);
-        let resp = self.http.get(&well_known).send().await?;
-        if !resp.status().is_success() {
-            return Err(McpError::Auth(format!(
-                "OAuth discovery returned {}",
-                resp.status()
-            )));
-        }
-        let metadata: OAuthMetadata = resp.json().await?;
-        Ok(metadata)
-    }
-
     /// List tools from an external MCP server (JSON-RPC 2.0 over Streamable HTTP).
     /// All requests go to the MCP endpoint URL directly, not sub-paths.
     pub async fn list_tools(
@@ -166,11 +139,16 @@ impl McpClient {
         let resp_text = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(McpError::Other(format!(
+            let detail = format!(
                 "tools/list returned {} — {}",
                 status,
                 resp_text.chars().take(200).collect::<String>()
-            )));
+            );
+            return Err(if status == reqwest::StatusCode::UNAUTHORIZED {
+                McpError::Unauthorized(detail)
+            } else {
+                McpError::Other(detail)
+            });
         }
 
         // Parse response — could be raw JSON or SSE (event: message\ndata: {...})
@@ -286,12 +264,17 @@ impl McpClient {
         let resp_text = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(McpError::Other(format!(
+            let detail = format!(
                 "tools/call {} returned {} — {}",
                 tool_name,
                 status,
                 resp_text.chars().take(200).collect::<String>()
-            )));
+            );
+            return Err(if status == reqwest::StatusCode::UNAUTHORIZED {
+                McpError::Unauthorized(detail)
+            } else {
+                McpError::Other(detail)
+            });
         }
 
         // Parse response — raw JSON or SSE
@@ -350,65 +333,6 @@ impl McpClient {
     pub fn decrypt_token(&self, encrypted: &str) -> Result<String, McpError> {
         let bytes = self.encryptor.decrypt_b64(encrypted)?;
         String::from_utf8(bytes).map_err(|e| McpError::Crypto(e.to_string()))
-    }
-
-    /// Refresh an OAuth access token using the refresh_token grant type (RFC 6749 §6).
-    /// Takes plaintext (decrypted) values. Caller handles encrypt/decrypt and persistence.
-    pub async fn refresh_token(
-        &self,
-        token_endpoint: &str,
-        client_id: &str,
-        client_secret: Option<&str>,
-        refresh_token: &str,
-    ) -> Result<RefreshResult, McpError> {
-        let mut params = vec![
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-        ];
-        if let Some(secret) = client_secret {
-            params.push(("client_secret", secret));
-        }
-
-        let resp = self
-            .http
-            .post(token_endpoint)
-            .form(&params)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(McpError::Auth(format!(
-                "token refresh returned {status}: {}",
-                text.chars().take(200).collect::<String>()
-            )));
-        }
-
-        #[derive(serde::Deserialize)]
-        struct TokenResponse {
-            access_token: String,
-            #[serde(default)]
-            refresh_token: Option<String>,
-            #[serde(default)]
-            expires_in: Option<i64>,
-            #[serde(default)]
-            scope: Option<String>,
-        }
-
-        let t: TokenResponse = resp
-            .json()
-            .await
-            .map_err(|e| McpError::Auth(format!("decode refresh response: {e}")))?;
-
-        Ok(RefreshResult {
-            access_token: t.access_token,
-            refresh_token: t.refresh_token,
-            expires_in: t.expires_in,
-            scope: t.scope,
-        })
     }
 
     /// Update the access token in an existing session (after a refresh).
