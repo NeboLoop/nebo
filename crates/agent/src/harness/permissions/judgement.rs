@@ -19,8 +19,17 @@
 //! (`cases.rs`). The judgement runs in shadow (its verdicts are recorded,
 //! the code's answer stands) until the company setting switches it to
 //! enforce.
+//!
+//! **When it runs** (`tool_round`): once the reply is in, the round's
+//! undecided calls are asked about in one [`judge_round`]. In enforce the
+//! calls wait for it; in shadow it runs in the background and never delays
+//! a call: each verdict lands on its call's activity record when it comes.
+//! A call whose question changed before it ran (a pre-execute hook rewrote
+//! it), or one that started while the reply was still streaming, is asked
+//! about alone, the same way.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ai::{ChatRequest, DecideClient, RequestTrace, StreamEventType};
@@ -63,24 +72,26 @@ const SECRET_KEY_MARKERS: &[&str] = &[
 const REDACTED: &str = "[redacted]";
 
 /// What the judges read beside the questions: the clients, and what the
-/// run is doing.
-pub struct JudgeCx<'a> {
-    pub decide: Option<&'a DecideClient>,
+/// run is doing. Owned, so a shadow judgement can run in the background.
+#[derive(Clone)]
+pub struct JudgeCx {
+    pub decide: Option<Arc<DecideClient>>,
     /// The run's background route (`model_call::Housekeeper`): where the
     /// questions Jev didn't settle are classified. `None`: nowhere.
-    pub aux: Option<&'a crate::harness::model_call::Route>,
-    /// The trace each side call carries (its purpose and the agent).
-    pub trace: &'a (dyn Fn(&'static str) -> RequestTrace + Sync),
+    pub aux: Option<crate::harness::model_call::Route>,
+    /// The trace each side call carries (purpose `permission_judgement`,
+    /// the agent).
+    pub trace: RequestTrace,
     /// What the run is for: the session's task, or the workflow step.
-    pub objective: &'a str,
+    pub objective: String,
     /// The owner's latest message, or the step's work order.
-    pub last_message: &'a str,
+    pub last_message: String,
 }
 
 /// One verdict per question, in order: Jev first (one batched call, with a
 /// deadline); the questions it didn't settle go to one aux classifier call;
 /// [`Verdict::Unjudged`] where neither answered.
-pub async fn judge_round(cx: &JudgeCx<'_>, questions: &[Question]) -> Vec<Verdict> {
+pub async fn judge_round(cx: &JudgeCx, questions: &[Question]) -> Vec<Verdict> {
     if questions.is_empty() {
         return Vec::new();
     }
@@ -114,21 +125,20 @@ fn jev_question(id: &str) -> ai::Question {
 /// Jev's answer per question: the verdict and its confidence, or `None`
 /// for every question when Jev is unavailable, times out or answers
 /// incompletely.
-async fn jev_round(cx: &JudgeCx<'_>, questions: &[Question]) -> Vec<Option<(Verdict, f32)>> {
+async fn jev_round(cx: &JudgeCx, questions: &[Question]) -> Vec<Option<(Verdict, f32)>> {
     let none = || vec![None; questions.len()];
-    let Some(client) = cx.decide else {
+    let Some(client) = cx.decide.as_deref() else {
         debug!(site = "permission_judgement", "no decide client; Jev unavailable");
         return none();
     };
     let ids: Vec<String> = (0..questions.len()).map(|i| format!("c{i}")).collect();
     let state = serde_json::json!({
         "calls": questions.iter().zip(&ids).map(|(q, id)| call_state(id, q)).collect::<Vec<_>>(),
-        "objective": clip_or_none(cx.objective, OBJECTIVE_CAP),
+        "objective": clip_or_none(&cx.objective, OBJECTIVE_CAP),
         "last_user_message": ai::decide::clip(cx.last_message.trim(), USER_MESSAGE_CAP),
     });
     let asked: BTreeMap<&str, ai::Question> = ids.iter().map(|id| (id.as_str(), jev_question(id))).collect();
-    let trace = (cx.trace)("permission_judgement");
-    let decision = match tokio::time::timeout(JEV_DEADLINE, client.decide(&trace, &state, &asked)).await {
+    let decision = match tokio::time::timeout(JEV_DEADLINE, client.decide(&cx.trace, &state, &asked)).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             debug!(site = "permission_judgement", error = %e, "Jev failed");
@@ -183,12 +193,12 @@ Give exactly one verdict per call. \"ask\": true means it reaches someone outsid
 /// One classifier call on the run's background route for the questions Jev didn't
 /// settle. `None` when no model answered in time or the answer wasn't the
 /// JSON asked for (every question needs its verdict).
-async fn aux_classify(cx: &JudgeCx<'_>, questions: &[&Question]) -> Option<Vec<Verdict>> {
-    let route = cx.aux?;
+async fn aux_classify(cx: &JudgeCx, questions: &[&Question]) -> Option<Vec<Verdict>> {
+    let route = cx.aux.as_ref()?;
     let (provider, model) = (&route.provider, route.model.clone());
     let ids: Vec<String> = (0..questions.len()).map(|i| format!("c{i}")).collect();
     let body = serde_json::json!({
-        "objective": clip_or_none(cx.objective, OBJECTIVE_CAP),
+        "objective": clip_or_none(&cx.objective, OBJECTIVE_CAP),
         "last_user_message": ai::decide::clip(cx.last_message.trim(), USER_MESSAGE_CAP),
         "calls": questions.iter().zip(&ids).map(|(q, id)| call_state(id, q)).collect::<Vec<_>>(),
     });
@@ -197,7 +207,7 @@ async fn aux_classify(cx: &JudgeCx<'_>, questions: &[&Question]) -> Option<Vec<V
         max_tokens: AUX_MAX_TOKENS,
         system: AUX_SYSTEM.to_string(),
         model,
-        ..ChatRequest::new((cx.trace)("permission_judgement"))
+        ..ChatRequest::new(cx.trace.clone())
     };
     let answer = tokio::time::timeout(AUX_DEADLINE, async {
         let mut rx = provider.stream(&req).await.ok()?;

@@ -18,7 +18,7 @@ pub mod rules;
 
 use std::sync::Arc;
 
-use tools::{GateVerdict, PermissionGate, ResolvedCall, ToolContext, ToolResult};
+use tools::{GateVerdict, Judgement, PermissionGate, ResolvedCall, ToolContext, ToolResult};
 use types::permissions::{AskCase, CallEffects, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
 
 pub use ask::{Answer, AnsweredVia, Ask, AskError, AskKind, AskStatus, AskSurfaces, Asks, Handled, send_check_id};
@@ -116,7 +116,7 @@ impl PermissionGate for Check {
         };
         let cx = CheckCx { ctx, input: call.input, grant, store: &self.store };
         let t = &call.target;
-        let (mut decision, judged) = decide_judged(&cx, t);
+        let (mut decision, judging) = decide_judged(&cx, t);
         // The owner already said no to this same call in this session: it
         // is refused without a card.
         if matches!(decision, Decision::Ask { .. })
@@ -182,10 +182,18 @@ impl PermissionGate for Check {
             activity: call.tool.describe(call.input),
             decision: &decision,
             ask_id: ask_id.as_deref(),
-            judged: judged.as_ref(),
+            judged: match &judging {
+                Judging::Applied(j) => Some(j),
+                Judging::None | Judging::Pending(_) => None,
+            },
         };
-        if let Err(e) = activity::record(&self.store, &cx, t, &entry) {
-            tracing::warn!(tool = %t.tool, error = %e, "permission decision not recorded");
+        match activity::record(&self.store, &cx, t, &entry) {
+            Ok(id) => {
+                if let Judging::Pending(verdict) = judging {
+                    activity::judged_later(self.store.clone(), id, verdict);
+                }
+            }
+            Err(e) => tracing::warn!(tool = %t.tool, error = %e, "permission decision not recorded"),
         }
         match decision {
             Decision::Allow { why } => {
@@ -284,17 +292,30 @@ pub fn decide(cx: &CheckCx<'_>, t: &Target) -> Decision {
     decide_judged(cx, t).0
 }
 
-/// The decision, and the judgement it applied when the call carried one.
+/// What the check did with a call's judgement.
+enum Judging {
+    /// The code decided the call, or no judge was asked.
+    None,
+    /// The verdict was in: acted on (enforce) or recorded (shadow).
+    Applied(Judged),
+    /// Shadow, still being judged: the code's answer stands, and the verdict
+    /// lands on the call's record when it comes.
+    Pending(tokio::sync::watch::Receiver<Option<Verdict>>),
+}
+
+/// The decision, and what it did with the judgement the call carried.
 /// Shadow records the verdict and keeps the code's answer; enforce acts on
 /// it. With no verdict on the call (no judge was asked: a door outside the
 /// tool round) the code's answer stands.
-fn decide_judged(cx: &CheckCx<'_>, t: &Target) -> (Decision, Option<Judged>) {
+fn decide_judged(cx: &CheckCx<'_>, t: &Target) -> (Decision, Judging) {
     let code = match decide_code(cx, t) {
-        Outcome::Decided(d) => return (d, None),
+        Outcome::Decided(d) => return (d, Judging::None),
         Outcome::Undecided { code, .. } => code,
     };
-    let Some(verdict) = cx.ctx.judgement.clone() else {
-        return (code, None);
+    let verdict = match &cx.ctx.judgement {
+        None => return (code, Judging::None),
+        Some(Judgement::Pending(verdict)) => return (code, Judging::Pending(verdict.clone())),
+        Some(Judgement::Decided(verdict)) => verdict.clone(),
     };
     let mode = cx.store.permission_judgement_mode().unwrap_or_default();
     let decision = match (mode, &verdict) {
@@ -307,7 +328,7 @@ fn decide_judged(cx: &CheckCx<'_>, t: &Target) -> (Decision, Option<Judged>) {
             Decision::Allow { why: Why::Unreviewed { reason: types::permissions::UNREVIEWED_REASON.to_string() } }
         }
     };
-    (decision, Some(Judged { mode, verdict }))
+    (decision, Judging::Applied(Judged { mode, verdict }))
 }
 
 /// The code's decision for one call, in the fixed order (§2.12.3).

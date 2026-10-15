@@ -26,13 +26,15 @@ fn question(tool: &str, untrusted: Option<&str>) -> Question {
 enum Jev {
     /// Every decision comes back with these Nouls (`c0`, `c1`, …).
     Answers(Vec<f64>),
+    /// As `Answers`, after this long.
+    Slow(Duration, Vec<f64>),
     /// Accepts and never answers.
     Hangs,
 }
 
 /// A Jev served by a local listener; counts the decisions it was asked for
 /// and keeps each request's question keys.
-async fn jev(behaviour: Jev) -> (DecideClient, Arc<AtomicUsize>, Arc<Mutex<Vec<Vec<String>>>>) {
+async fn jev(behaviour: Jev) -> (Arc<DecideClient>, Arc<AtomicUsize>, Arc<Mutex<Vec<Vec<String>>>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -70,9 +72,16 @@ async fn jev(behaviour: Jev) -> (DecideClient, Arc<AtomicUsize>, Arc<Mutex<Vec<V
                 let keys: Vec<String> =
                     req["questions"].as_object().map(|q| q.keys().cloned().collect()).unwrap_or_default();
                 asked.lock().unwrap().push(keys);
-                let Jev::Answers(nouls) = behaviour else {
-                    tokio::time::sleep(Duration::from_secs(3600)).await;
-                    return;
+                let nouls = match behaviour {
+                    Jev::Answers(nouls) => nouls,
+                    Jev::Slow(after, nouls) => {
+                        tokio::time::sleep(after).await;
+                        nouls
+                    }
+                    Jev::Hangs => {
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                        return;
+                    }
                 };
                 let answers: serde_json::Map<String, serde_json::Value> = nouls
                     .iter()
@@ -89,7 +98,7 @@ async fn jev(behaviour: Jev) -> (DecideClient, Arc<AtomicUsize>, Arc<Mutex<Vec<V
             });
         }
     });
-    let client = DecideClient::new(&format!("http://{addr}"), || Some(ai::Bearer { token: "t".into(), bot_id: None }));
+    let client = Arc::new(DecideClient::new(&format!("http://{addr}"), || Some(ai::Bearer { token: "t".into(), bot_id: None })));
     (client, calls, asked)
 }
 
@@ -132,13 +141,15 @@ impl Provider for Aux {
     }
 }
 
-fn trace(purpose: &'static str) -> RequestTrace {
-    RequestTrace::new(purpose)
-}
-
-async fn judge(decide: Option<&DecideClient>, aux: &Arc<Aux>, questions: &[Question]) -> Vec<Verdict> {
+async fn judge(decide: Option<&Arc<DecideClient>>, aux: &Arc<Aux>, questions: &[Question]) -> Vec<Verdict> {
     let route = crate::harness::model_call::Route { provider: aux.clone(), model: String::new(), window_tokens: 200_000 };
-    let cx = JudgeCx { decide, aux: Some(&route), trace: &trace, objective: "file the report", last_message: "send it" };
+    let cx = JudgeCx {
+        decide: decide.cloned(),
+        aux: Some(route),
+        trace: RequestTrace::new("permission_judgement"),
+        objective: "file the report".into(),
+        last_message: "send it".into(),
+    };
     judge_round(&cx, questions).await
 }
 
@@ -153,6 +164,36 @@ async fn undecidable_goes_to_one_batched_judgement() {
     assert!(matches!(v[0], Verdict::Allow { by: JudgedBy::Jev, .. }));
     assert!(matches!(&v[1], Verdict::Ask { case: AskCase::NewCounterparty { .. }, by: JudgedBy::Jev, .. }));
     assert!(matches!(v[2], Verdict::Allow { by: JudgedBy::Jev, .. }));
+}
+
+/// The wait a round of three undecided calls puts on its calls: asked one
+/// call at a time (before), or once for the round (enforce). Shadow puts
+/// none on them: the same round runs in the background. With Jev at its
+/// usual pace (200 ms here) and Jev down (its 1.5 s deadline, then the
+/// classifier).
+#[tokio::test]
+async fn one_judgement_per_round_waits_once() {
+    let qs = [question("browser", None), question("http_request", None), question("run_command", None)];
+    let aux = Aux::new(Some(r#"{"verdicts":[{"id":"c0","ask":false,"reason":"x"}]}"#));
+    for (label, behaviour, floor) in [
+        ("jev 200 ms", Jev::Slow(Duration::from_millis(200), vec![0.02, 0.97, 0.05]), Duration::from_millis(200)),
+        ("jev down", Jev::Hangs, JEV_DEADLINE),
+    ] {
+        let (client, calls, _) = jev(behaviour).await;
+        let started = std::time::Instant::now();
+        for q in &qs {
+            judge(Some(&client), &aux, std::slice::from_ref(q)).await;
+        }
+        let per_call = started.elapsed();
+        let started = std::time::Instant::now();
+        let v = judge(Some(&client), &aux, &qs).await;
+        let per_round = started.elapsed();
+        assert_eq!(v.len(), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 4, "{label}: three single asks, then one for the round");
+        assert!(per_call >= floor * 3, "{label}: {per_call:?}");
+        assert!(per_round < per_call, "{label}: {per_round:?} vs {per_call:?}");
+        println!("{label}: per call {per_call:?}, per round {per_round:?}, shadow 0");
+    }
 }
 
 #[tokio::test]
@@ -186,7 +227,7 @@ async fn jev_down_falls_back_to_aux_with_the_same_questions() {
         ]
     );
     // ...and a client whose Janus refuses (no bearer).
-    let refusing = DecideClient::new("http://127.0.0.1:9", || None);
+    let refusing = Arc::new(DecideClient::new("http://127.0.0.1:9", || None));
     let v2 = judge(Some(&refusing), &aux, &qs).await;
     assert_eq!(v2, v);
     assert_eq!(aux.calls(), 2);
