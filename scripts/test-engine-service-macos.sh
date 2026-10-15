@@ -49,7 +49,17 @@ fi
 
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAILS=$((FAILS + 1)); }
-verb() { NEBO_HOME="$HOME_DIR" NEBO_MCP_API_KEY="$KEY" "$APP/Contents/MacOS/nebo" --engine-service "$1" --label "$LABEL" --port "$PORT"; }
+# The verbs run as the app does: launched through LaunchServices, so the app
+# is its own responsible process. SMAppService refuses a register from an
+# executable started by another process (the runner, a terminal) with "No
+# such process".
+verb() {
+  local out="$WORK/verb-$1.out"
+  : > "$out"
+  open -W -n --stdout "$out" --stderr "$out" --env NEBO_HOME="$HOME_DIR" --env NEBO_MCP_API_KEY="$KEY" \
+    "$APP" --args --engine-service "$1" --label "$LABEL" --port "$PORT"
+  cat "$out"
+}
 health() { curl -fsS --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null; }
 engine_pid() { launchctl print "$SERVICE" 2>/dev/null | awk -F' = ' '/^\tpid = /{print $2; exit}'; }
 last_exit() { launchctl print "$SERVICE" 2>/dev/null | awk -F' = ' '/^\tlast exit code = /{print $2; exit}'; }
