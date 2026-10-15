@@ -542,6 +542,38 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+/// A definition as the model reads it in text: the encoding of the tools
+/// array (`description`, `name`, `parameters`).
+pub fn function_entry(def: &ToolDefinition) -> serde_json::Value {
+    serde_json::json!({
+        "description": def.description,
+        "name": def.name,
+        "parameters": def.input_schema,
+    })
+}
+
+/// The definition a [`function_entry`] carries; `None` without a name.
+pub fn definition_of(entry: &serde_json::Value) -> Option<ToolDefinition> {
+    Some(ToolDefinition {
+        name: entry.get("name")?.as_str()?.to_string(),
+        description: entry.get("description").and_then(|d| d.as_str()).unwrap_or_default().to_string(),
+        input_schema: entry.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({})),
+    })
+}
+
+/// `definitions` in a `<functions>` block, one `<function>` line each: how a
+/// result that loads deferred tools shows them in text. A provider that
+/// loads tools by reference (Anthropic's `tool_reference`) sends the result
+/// without it.
+pub fn functions_block<'a>(definitions: impl IntoIterator<Item = &'a ToolDefinition>) -> String {
+    let mut out = String::from("<functions>\n");
+    for def in definitions {
+        out.push_str(&format!("<function>{}</function>\n", function_entry(def)));
+    }
+    out.push_str("</functions>");
+    out
+}
+
 /// How the model may use the offered tools on a request.
 /// `Auto` (default) is omitted on the wire, so existing requests stay byte-identical.
 /// `Any`/`Tool`/`None` are mapped per-provider; providers that can't force tool calls

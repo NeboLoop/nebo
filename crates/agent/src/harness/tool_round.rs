@@ -630,7 +630,7 @@ pub(crate) async fn run_tool_round(
             is_error: result.is_error,
             image_url: result.image_url,
             payload: result.payload,
-            loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
+            loaded_tools: result.loads.iter().map(ai::function_entry).collect(),
         };
         let tr_json = serde_json::json!([row]).to_string();
 
