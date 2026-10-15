@@ -701,10 +701,12 @@ impl Store {
     }
 
     /// Move a run between states. `running` stamps started_at; the terminal
-    /// states stamp ended_at. Returns false when the row is not there.
+    /// states stamp ended_at; every end closes the run's checklist
+    /// ([`Store::close_run_task_items`]). Returns false when the row is not
+    /// there.
     pub fn engine_set_run_state(&self, id: &str, state: &str, now: i64, error: Option<&str>) -> Result<bool, NeboError> {
-        let conn = self.conn()?;
-        let n = conn
+        let n = self
+            .conn()?
             .execute(
                 "UPDATE engine_runs
                  SET state = ?2,
@@ -721,6 +723,11 @@ impl Store {
                 params![id, state, now, error],
             )
             .db_err("engine_set_run_state")?;
+        // Any state but a live one is an end: done, failed, cancelled, and
+        // `stopped` at the owner's spending limit.
+        if n == 1 && !matches!(state, "queued" | "running" | "waiting" | "interrupted") {
+            self.close_run_task_items(id)?;
+        }
         Ok(n == 1)
     }
 
@@ -1154,13 +1161,18 @@ impl Store {
         if resumed == 1 {
             return Ok(true);
         }
-        conn.execute(
-            "UPDATE engine_runs SET state = 'failed', ended_at = ?2,
-                    error = 'interrupted again during resume — not retried (poison-run protection)'
-             WHERE id = ?1 AND state = 'interrupted'",
-            params![id, now],
-        )
-        .db_err("engine_resume_once poison")?;
+        let failed = conn
+            .execute(
+                "UPDATE engine_runs SET state = 'failed', ended_at = ?2,
+                        error = 'interrupted again during resume — not retried (poison-run protection)'
+                 WHERE id = ?1 AND state = 'interrupted'",
+                params![id, now],
+            )
+            .db_err("engine_resume_once poison")?;
+        drop(conn);
+        if failed == 1 {
+            self.close_run_task_items(id)?;
+        }
         Ok(false)
     }
 

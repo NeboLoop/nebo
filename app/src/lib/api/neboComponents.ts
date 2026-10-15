@@ -2312,8 +2312,8 @@ export interface GetStatsResponse {
 export interface GetStatusResponse {
 	status: string
 	reason: string
-	activeTasks: PendingTask[]
-	queuedTasks: PendingTask[]
+	activeTasks: number
+	queuedTasks: number
 	providers: unknown
 	tools: number
 }

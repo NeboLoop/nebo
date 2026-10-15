@@ -2306,7 +2306,7 @@ async fn app_halted(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
     }
     let has_active_task = h
         .store
-        .list_task_items(&format!("session:{}", cx.session_id))
+        .list_task_items(&db::conversation_task_list(&cx.request.session_key, &cx.session_id), true)
         .unwrap_or_default()
         .iter()
         .any(|t| t.status == "pending" || t.status == "in_progress");
@@ -2744,7 +2744,7 @@ async fn checkpoint(
 /// reminder and a checkpoint's restore show it.
 fn task_list(h: &Harness, cx: &TurnContext) -> Vec<events::WorkTaskLine> {
     h.store
-        .list_task_items(&format!("session:{}", cx.session_id))
+        .list_task_items(&db::conversation_task_list(&cx.request.session_key, &cx.session_id), true)
         .unwrap_or_default()
         .into_iter()
         .map(|t| events::WorkTaskLine { subject: t.description.unwrap_or(t.prompt), status: t.status })

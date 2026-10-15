@@ -113,6 +113,31 @@ fn workflow_runs_show_their_step_turns_and_wait() {
     assert_eq!(run.launched_from, None, "a scheduled run is no chat's");
 }
 
+/// The status counts work, not checklist items: a live run with an open
+/// list of nine steps is one running piece of work, the lists ended runs
+/// left open are nothing, and queued means turns waiting for a lane.
+/// Seen live: 1,034 "queued" and 3 "active" with nothing executing.
+#[test]
+fn status_counts_work_never_checklist_items() {
+    let (s, _d) = store();
+    s.create_workflow_run("r-live", "agent:ava", "schedule", Some("scan"), None, None, None).unwrap();
+    let steps = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    let live = s.seed_task_list(&db::run_task_list("r-live", "scan"), &steps, false).unwrap();
+    s.start_task_item(&live[0].id).unwrap();
+    // Lists of runs that ended before their end closed them.
+    for id in ["r-old-1", "r-old-2"] {
+        s.create_workflow_run(id, "agent:ava", "schedule", Some("scan"), None, None, None).unwrap();
+        s.complete_workflow_run(id, "exited", 0, Some("nothing to do"), None, None).unwrap();
+        let left = s.seed_task_list(&db::run_task_list(id, "scan"), &steps, false).unwrap();
+        s.start_task_item(&left[0].id).unwrap();
+    }
+
+    let tasks = workflows(s.list_live_workflow_runs().unwrap(), |_| None, |_| None, &|_| None);
+    let lanes = [("main".to_string(), 0, 0, 1), ("events".to_string(), 1, 2, 1)];
+    assert_eq!(work_counts(&tasks, &lanes), (1, 2), "the live run is one piece of work; two turns wait on a lane");
+    assert_eq!(work_counts(&[], &[]), (0, 0));
+}
+
 fn snapshot(run_id: &str, session_key: &str, entity_id: &str, origin: &str) -> crate::run_registry::RunSnapshot {
     crate::run_registry::RunSnapshot {
         run_id: run_id.into(),

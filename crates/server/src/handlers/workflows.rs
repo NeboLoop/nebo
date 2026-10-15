@@ -286,8 +286,8 @@ pub async fn get_run(
     let mut task_items_by_activity: serde_json::Map<String, serde_json::Value> =
         serde_json::Map::new();
     for act in &activities {
-        let list_id = format!("run:{}:{}", run_id, act.activity_id);
-        if let Ok(items) = state.store.list_task_items(&list_id) {
+        let list_id = db::run_task_list(&run_id, &act.activity_id);
+        if let Ok(items) = state.store.list_task_items(&list_id, false) {
             if !items.is_empty() {
                 task_items_by_activity.insert(
                     act.activity_id.clone(),
