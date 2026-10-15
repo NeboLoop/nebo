@@ -43,11 +43,11 @@ const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_384;
 /// Escalated output token cap after a max_tokens truncation.
 const ESCALATED_MAX_OUTPUT_TOKENS: i32 = 65_536;
-/// Empty replies retried before the turn gives up with "(empty)".
-pub(crate) const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
 /// Replies in a row that write a call out as text before the turn stops
-/// asking for the call and ends on what the reply said.
-const MAX_TEXT_CALL_RETRIES: usize = 2;
+/// asking for the call and ends on what the reply said: one. The step it
+/// adds either makes the call (real work, and the count starts over) or the
+/// turn ends, so it can never loop without progress.
+const MAX_TEXT_CALL_RETRIES: usize = 1;
 /// How long a cancel waits for a `cancel_is_async` provider's stream to
 /// actually end (its own cancel handshake, e.g. the linked provider's ACP
 /// `session/cancel` round trip) before giving up on it and freeing the slot
@@ -208,7 +208,6 @@ pub struct CallState {
     /// parsed tool calls (payload lost between proxy and parser). Retried, not
     /// trusted — ending the turn silently strands the user mid-task.
     pub lost_toolcall_retries: usize,
-    pub empty_content_retries: usize,
     /// Replies in a row, since the last real call, that wrote a call out as
     /// text instead of making it.
     pub text_call_retries: usize,
@@ -1135,22 +1134,6 @@ pub(crate) fn output_cutoff(
         return Some(StepRetry::Resume);
     }
     None
-}
-
-/// Empty response retry: true while retries remain (the step is taken
-/// again), false once `MAX_EMPTY_CONTENT_RETRIES` are spent.
-pub(crate) fn retry_empty_reply(st: &mut CallState, iteration: usize, session_id: &str) -> bool {
-    if st.empty_content_retries < MAX_EMPTY_CONTENT_RETRIES {
-        st.empty_content_retries += 1;
-        warn!(
-            iteration,
-            session_id,
-            retry = st.empty_content_retries,
-            "empty response — retrying"
-        );
-        return true;
-    }
-    false
 }
 
 /// A reply that wrote a call out as text: true while the turn goes on for

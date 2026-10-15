@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Wat {name} zelfstandig mag doen. Voor al het andere vraagt hij het je eerst.",
 		"loadError": "Deze machtigingen konden niet worden geladen.",
 		"saveError": "Die wijziging is niet opgeslagen. Probeer het opnieuw.",
+		"finishChecksTitle": "Controleren voor het afronden",
+		"finishChecksDesc": "Als je een medewerker vraagt iets op te slaan of een opdracht uit te voeren, controleert hij of dat gebeurd is voordat hij zijn antwoord afrondt. Elke controle voegt hooguit één stap toe.",
 		"modeTitle": "Zo werkt het",
 		"modeCompany": "Zelfde als de standaardinstellingen van het bedrijf",
 		"modeCompanyDesc": "Volgt de bedrijfsinstelling: {mode}.",

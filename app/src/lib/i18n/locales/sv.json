@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Vad {name} får göra på egen hand. För allt annat frågar den dig först.",
 		"loadError": "Det gick inte att läsa in dessa behörigheter.",
 		"saveError": "Den ändringen sparades inte. Försök igen.",
+		"finishChecksTitle": "Dubbelkolla innan du avslutar",
+		"finishChecksDesc": "När du ber en medarbetare spara något eller köra ett kommando ser den till att det är gjort innan den avslutar sitt svar. Varje kontroll lägger till högst ett steg.",
 		"modeTitle": "Så här fungerar det",
 		"modeCompany": "Samma som företagets standard",
 		"modeCompanyDesc": "Följer företagets inställning: {mode}.",

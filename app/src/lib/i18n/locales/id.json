@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Yang boleh dilakukan {name} sendiri. Selain itu, ia akan bertanya dulu kepada Anda.",
 		"loadError": "Izin ini tidak dapat dimuat.",
 		"saveError": "Perubahan itu tidak tersimpan. Coba lagi.",
+		"finishChecksTitle": "Periksa ulang sebelum selesai",
+		"finishChecksDesc": "Saat Anda meminta karyawan menyimpan sesuatu atau menjalankan perintah, ia memastikan sudah melakukannya sebelum mengakhiri balasannya. Setiap pemeriksaan menambah paling banyak satu langkah.",
 		"modeTitle": "Cara kerjanya",
 		"modeCompany": "Sama seperti default perusahaan",
 		"modeCompanyDesc": "Mengikuti pengaturan perusahaan: {mode}.",

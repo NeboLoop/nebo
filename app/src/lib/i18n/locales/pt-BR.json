@@ -3281,6 +3281,8 @@
 		"employeeDescription": "O que {name} pode fazer por conta própria. Para tudo o mais, ele pergunta a você primeiro.",
 		"loadError": "Não foi possível carregar essas permissões.",
 		"saveError": "Essa alteração não foi salva. Tente novamente.",
+		"finishChecksTitle": "Conferir antes de terminar",
+		"finishChecksDesc": "Quando você pede a um funcionário para salvar algo ou executar um comando, ele confere se fez isso antes de terminar a resposta. Cada conferência adiciona no máximo uma etapa.",
 		"modeTitle": "Como funciona",
 		"modeCompany": "Igual ao padrão da empresa",
 		"modeCompanyDesc": "Segue a configuração da empresa: {mode}.",

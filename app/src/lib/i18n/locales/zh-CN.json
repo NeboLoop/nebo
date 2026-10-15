@@ -3281,6 +3281,8 @@
 		"employeeDescription": "{name} 可以自行决定做的事。其余的事，它都会先问你。",
 		"loadError": "无法加载这些权限。",
 		"saveError": "该更改未保存。请重试。",
+		"finishChecksTitle": "完成前再检查一次",
+		"finishChecksDesc": "当你让员工保存内容或运行命令时，它会在结束回复前确认已经做到。每次检查最多增加一步。",
 		"modeTitle": "工作原理",
 		"modeCompany": "与公司默认设置相同",
 		"modeCompanyDesc": "遵循公司设置：{mode}。",

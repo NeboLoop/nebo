@@ -3281,6 +3281,8 @@
 		"employeeDescription": "{name} 可以自行決定做的事。其餘的事，它都會先詢問你。",
 		"loadError": "無法載入這些權限。",
 		"saveError": "此變更未儲存。請再試一次。",
+		"finishChecksTitle": "完成前再檢查一次",
+		"finishChecksDesc": "當你請員工儲存內容或執行指令時，它會在結束回覆前確認已經做到。每次檢查最多增加一個步驟。",
 		"modeTitle": "運作方式",
 		"modeCompany": "與公司預設相同",
 		"modeCompanyDesc": "依照公司設定：{mode}。",

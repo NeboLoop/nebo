@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Co {name} może robić samodzielnie. We wszystkim innym najpierw pyta ciebie.",
 		"loadError": "Nie udało się wczytać tych uprawnień.",
 		"saveError": "Ta zmiana nie została zapisana. Spróbuj ponownie.",
+		"finishChecksTitle": "Sprawdź przed zakończeniem",
+		"finishChecksDesc": "Gdy poprosisz pracownika o zapisanie czegoś lub uruchomienie polecenia, przed zakończeniem odpowiedzi upewnia się, że to zrobił. Każde sprawdzenie dodaje najwyżej jeden krok.",
 		"modeTitle": "Jak to działa",
 		"modeCompany": "Tak samo jak domyślne ustawienia firmy",
 		"modeCompanyDesc": "Stosuje ustawienie firmy: {mode}.",

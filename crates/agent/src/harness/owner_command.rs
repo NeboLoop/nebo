@@ -38,7 +38,9 @@
 //!
 //! Switch: `NEBO_DECIDE_COMMAND` — `0` turns it off (the question is not
 //! asked), `shadow` decides and logs `would_force` / `would_correct` without
-//! acting; unset (or anything else) is on.
+//! acting; unset (or anything else) is on. The owner's "Double-check before
+//! finishing" (Settings → Permissions, `Store::finish_checks`) turns the end
+//! check's step off.
 
 use ai::{Decision, Question};
 use tracing::{info, warn};

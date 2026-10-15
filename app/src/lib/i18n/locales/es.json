@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Lo que {name} puede hacer por su cuenta. Para todo lo demás, te pregunta primero.",
 		"loadError": "No se pudieron cargar estos permisos.",
 		"saveError": "Ese cambio no se guardó. Inténtalo de nuevo.",
+		"finishChecksTitle": "Comprobar antes de terminar",
+		"finishChecksDesc": "Cuando pides a un empleado que guarde algo o ejecute un comando, se asegura de haberlo hecho antes de terminar su respuesta. Cada comprobación añade como mucho un paso.",
 		"modeTitle": "Cómo funciona",
 		"modeCompany": "Igual que los valores predeterminados de la empresa",
 		"modeCompanyDesc": "Sigue la configuración de la empresa: {mode}.",

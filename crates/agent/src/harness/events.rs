@@ -98,8 +98,6 @@ pub enum TurnEvent {
     CutCall(String),
     /// The connection dropped while the last reply streamed.
     StreamCut,
-    /// The last reply had no visible output.
-    EmptyReply,
     /// The last reply wrote a call to this tool out as text: it was cut
     /// there, and the call did not run (`reminders::NoteFence`).
     TextCall(String),
@@ -236,7 +234,6 @@ pub const NAMES: &[&str] = &[
     "cutoff_resume",
     "cut_call",
     "stream_cut",
-    "empty_reply",
     "text_call",
     "mid_turn_message",
     "mid_turn_answered",
@@ -459,10 +456,6 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::StreamCut => (
             "stream_cut",
             "Your last reply was cut off mid-stream by the connection. Resume directly from where it stopped, with no recap.".to_string(),
-        ),
-        TurnEvent::EmptyReply => (
-            "empty_reply",
-            "Your last reply had no visible output. Continue.".to_string(),
         ),
         TurnEvent::TextCall(tool) => (
             "text_call",
@@ -1334,7 +1327,6 @@ mod tests {
             TurnEvent::AgentsListing(lined.clone()),
             TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
-            TurnEvent::EmptyReply,
             TurnEvent::TextCall("read_file".into()),
             TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Stop },
             TurnEvent::MidTurnAnswered(OwnerIntent::Aside),

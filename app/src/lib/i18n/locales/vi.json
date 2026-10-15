@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Những gì {name} được tự làm. Mọi việc khác, nó sẽ hỏi bạn trước.",
 		"loadError": "Không thể tải các quyền này.",
 		"saveError": "Thay đổi đó chưa được lưu. Hãy thử lại.",
+		"finishChecksTitle": "Kiểm tra lại trước khi kết thúc",
+		"finishChecksDesc": "Khi bạn yêu cầu nhân viên lưu một thứ gì đó hoặc chạy một lệnh, nhân viên sẽ đảm bảo đã làm xong trước khi kết thúc câu trả lời. Mỗi lần kiểm tra thêm tối đa một bước.",
 		"modeTitle": "Cách hoạt động",
 		"modeCompany": "Giống mặc định của công ty",
 		"modeCompanyDesc": "Theo cài đặt của công ty: {mode}.",

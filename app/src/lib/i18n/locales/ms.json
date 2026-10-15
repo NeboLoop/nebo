@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Apa yang {name} boleh buat sendiri. Untuk yang lain, ia akan bertanya kepada anda dahulu.",
 		"loadError": "Kebenaran ini tidak dapat dimuatkan.",
 		"saveError": "Perubahan itu tidak disimpan. Cuba lagi.",
+		"finishChecksTitle": "Semak semula sebelum selesai",
+		"finishChecksDesc": "Apabila anda meminta pekerja menyimpan sesuatu atau menjalankan arahan, ia memastikan ia sudah melakukannya sebelum menamatkan balasannya. Setiap semakan menambah paling banyak satu langkah.",
 		"modeTitle": "Cara ia berfungsi",
 		"modeCompany": "Sama seperti tetapan lalai syarikat",
 		"modeCompanyDesc": "Mengikut tetapan syarikat: {mode}.",

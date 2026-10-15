@@ -159,6 +159,36 @@ impl Store {
         matches!(self.get_settings(), Ok(Some(s)) if s.app_developer_mode != 0 && s.developer_mode != 0)
     }
 
+    /// "Double-check before finishing": whether a chat turn's end checks
+    /// (an unanswered save, an unrun command) may take their one more step.
+    /// On when the row can't be read: it is the default.
+    pub fn finish_checks(&self) -> bool {
+        let read = self.conn().and_then(|conn| {
+            conn.query_row("SELECT finish_checks FROM settings WHERE id = 1", [], |r| r.get::<_, i64>(0))
+                .optional()
+                .map_err(|e| NeboError::Database(e.to_string()))
+        });
+        match read {
+            Ok(v) => v.is_none_or(|v| v != 0),
+            Err(e) => {
+                tracing::warn!(error = %e, "finish checks: settings unreadable; on, the default");
+                true
+            }
+        }
+    }
+
+    pub fn set_finish_checks(&self, on: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", [])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE settings SET finish_checks = ?1, updated_at = unixepoch() WHERE id = 1",
+            params![on as i64],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// The bot's Location, or `None` when the owner has not set one.
     pub fn bot_location(&self) -> Result<Option<BotLocation>, NeboError> {
         let conn = self.conn()?;
@@ -426,6 +456,17 @@ mod tests {
             .unwrap();
         let s = store.get_settings().unwrap().unwrap();
         assert_eq!(s.auto_install_deps, 1);
+    }
+
+    /// Double-check before finishing is on by default and turns off and on.
+    #[test]
+    fn finish_checks_round_trip() {
+        let store = temp_store();
+        assert!(store.finish_checks(), "on by default");
+        store.set_finish_checks(false).unwrap();
+        assert!(!store.finish_checks());
+        store.set_finish_checks(true).unwrap();
+        assert!(store.finish_checks());
     }
 
     /// App Developer mode is off by default, turns on alone, and the

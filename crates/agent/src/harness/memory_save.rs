@@ -63,7 +63,9 @@
 //! Switch: `NEBO_DECIDE_SAVE` — `0` turns it off (no decision is asked, so
 //! a Confidential employee's saves all stay in their conversations),
 //! `shadow` decides and logs `would_correct` without ever correcting; unset
-//! (or anything else) is on.
+//! (or anything else) is on. The owner's "Double-check before finishing"
+//! (Settings → Permissions, `Store::finish_checks`) turns the end check's
+//! step off; the decision still says whether a save may be shared.
 
 use std::time::Duration;
 
