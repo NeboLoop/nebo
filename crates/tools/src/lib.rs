@@ -205,7 +205,7 @@ pub use orchestrator::{
     FollowUp, OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
 pub use origin::{
-    ApprovalCard, ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, PendingApproval,
+    ApprovalCard, ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Judgement, Origin, PendingApproval,
     ToolContext, Waiting,
     workflow_session_key,
 };

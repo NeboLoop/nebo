@@ -547,9 +547,9 @@ pub fn updating(data_dir: &std::path::Path) -> bool {
 /// The desktop feed's switch for how the app runs its engine (`engineMode`
 /// in `version.json`: `"service"` or `"in_process"`), when the feed sets one.
 /// One value for every OS, or one per OS keyed as `platforms` is
-/// (`{"darwin": "service", "linux": "in_process"}`), so the rollout can turn
-/// it on one OS at a time. The app keeps the last value it read; unset
-/// leaves the engine the app's own child.
+/// (`{"darwin": "service", "linux": "in_process"}`), so the kill switch can
+/// turn it off one OS at a time. The app keeps the last value it read; unset
+/// runs the engine as the OS's service (the default).
 pub fn engine_mode(version_json: &serde_json::Value) -> Option<String> {
     let os = match std::env::consts::OS {
         "macos" => "darwin",

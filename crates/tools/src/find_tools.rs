@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use ai::functions_block;
 use serde_json::json;
 
 use crate::origin::ToolContext;
@@ -326,35 +327,6 @@ fn name_parts(name: &str) -> Vec<String> {
         parts.push(cur);
     }
     parts
-}
-
-/// A definition as the model reads it in text: the encoding of the tools
-/// array (`description`, `name`, `parameters`).
-pub fn function_entry(def: &ai::ToolDefinition) -> serde_json::Value {
-    json!({
-        "description": def.description,
-        "name": def.name,
-        "parameters": def.input_schema,
-    })
-}
-
-/// The definition a [`function_entry`] carries; `None` without a name.
-pub fn definition_of(entry: &serde_json::Value) -> Option<ai::ToolDefinition> {
-    Some(ai::ToolDefinition {
-        name: entry.get("name")?.as_str()?.to_string(),
-        description: entry.get("description").and_then(|d| d.as_str()).unwrap_or_default().to_string(),
-        input_schema: entry.get("parameters").cloned().unwrap_or_else(|| json!({})),
-    })
-}
-
-/// `definitions` in a `<functions>` block, one `<function>` line each.
-pub fn functions_block<'a>(definitions: impl IntoIterator<Item = &'a ai::ToolDefinition>) -> String {
-    let mut out = String::from("<functions>\n");
-    for def in definitions {
-        out.push_str(&format!("<function>{}</function>\n", function_entry(def)));
-    }
-    out.push_str("</functions>");
-    out
 }
 
 #[cfg(test)]

@@ -711,17 +711,11 @@ pub async fn apply(state: &crate::state::AppState, root: &Path) -> Result<Import
     if outcome.mcp_servers > 0 {
         crate::handlers::integrations::sync_bridge(state).await;
     }
-    // Vector the imported memories through the SAME backfill boot runs —
-    // batched and rate-limited inside. Without a configured embedding
-    // provider FTS recall still works immediately; vectors arrive when a
-    // provider is configured and the next boot backfill runs.
+    // Vector the imported memories through the ONE embedding sweep, woken
+    // now instead of at its next hourly look. Without a configured embedding
+    // provider no sweep runs; FTS recall still works immediately.
     if outcome.memories > 0 {
-        if let Some(ep) = state.embedding_provider.clone() {
-            let store = state.store.clone();
-            tokio::spawn(async move {
-                agent::memory::backfill_missing_embeddings(store, ep).await;
-            });
-        }
+        state.embedding_sweep.request();
     }
     Ok(outcome)
 }

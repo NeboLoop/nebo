@@ -14,17 +14,21 @@
 //! signal): "Quit Nebo" needs no unregistering. The engine comes back at the
 //! next login (`RunAtLoad`) or when the app opens again (`kickstart`).
 //!
-//! Off by default: the app registers the engine only when the desktop update
-//! feed's `engineMode` (or `NEBO_ENGINE_MODE`) says `service`. Otherwise, in
-//! development, or when the owner switched Nebo off in Login Items, the
-//! engine runs as the app's own child (`engine::supervise`).
+//! On by default: every install registers the engine when the app opens,
+//! existing installs included (their first open after the update). The
+//! owner's "Keep Nebo working when the app is closed" switch
+//! ([`Saved::start_at_login`]) turns it off, and the desktop update feed's
+//! `engineMode` (or `NEBO_ENGINE_MODE`) set to anything but `service` is the
+//! kill switch. Then, in development, or when the owner switched Nebo off in
+//! Login Items, the engine runs as the app's own child (`engine::supervise`).
 //!
 //! Windows (`windows`): a per-user Task Scheduler task started at logon runs
 //! `nebo.exe --engine-supervisor`, the engine's parent that starts it again
 //! after a non-zero exit (Task Scheduler itself only retries a failed start).
 //!
 //! `nebo --engine-service <install|uninstall|status|kickstart> [--label L]
-//! [--port P]` are the same operations for installers, `make` and tests.
+//! [--port P]` are the same operations for installers, `make` and tests;
+//! `plan` is their dry run: what the app would do when it opens.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -87,7 +91,8 @@ pub enum Job {
 // ── Mode and plan ───────────────────────────────────────────────────────
 
 /// How the app runs its engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Mode {
     /// Registered with the OS, which keeps it running.
     Service,
@@ -96,24 +101,30 @@ pub enum Mode {
 }
 
 /// The mode the app is asked for: `NEBO_ENGINE_MODE` first, then the desktop
-/// update feed's last `engineMode`. Anything but `service` (unset included)
-/// is the child: the service is switched on from the feed, never by default.
+/// update feed's last `engineMode`. Unset is the service (the default);
+/// anything else but `service` (the feed's `in_process`) is the kill switch
+/// and runs the engine as the app's child.
 pub fn wanted_mode(env: Option<&str>, feed: Option<&str>) -> Mode {
-    let pick = env.map(str::trim).filter(|s| !s.is_empty()).or(feed.map(str::trim));
+    let pick = env.map(str::trim).filter(|s| !s.is_empty()).or(feed.map(str::trim).filter(|s| !s.is_empty()));
     match pick {
-        Some("service") => Mode::Service,
-        _ => Mode::Child,
+        None | Some("service") => Mode::Service,
+        Some(_) => Mode::Child,
     }
 }
 
-/// The service is switched on for this app: `NEBO_ENGINE_MODE`, else the
-/// feed's last `engineMode`.
+/// This app's mode: `NEBO_ENGINE_MODE`, else the feed's last `engineMode`.
+pub fn mode() -> Mode {
+    wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), load().engine_mode.as_deref())
+}
+
+/// The service is switched on for this app (the kill switch is not set).
 pub fn switched_on() -> bool {
-    wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), load().engine_mode.as_deref()) == Mode::Service
+    mode() == Mode::Service
 }
 
 /// What the app knows when it opens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Facts {
     /// `cargo tauri dev`: never registers or unregisters anything.
     pub dev: bool,
@@ -126,8 +137,25 @@ pub struct Facts {
     pub status: Status,
 }
 
+impl Facts {
+    /// What this app knows about `target` as it opens. Development asks the
+    /// OS nothing: it never registers or unregisters.
+    pub fn gather(target: &Target, dev: bool) -> Self {
+        let saved = load();
+        let exe = std::env::current_exe().unwrap_or_default();
+        Self {
+            dev,
+            mode: mode(),
+            start_at_login: saved.start_at_login,
+            transient_path: is_transient(&exe),
+            status: if dev { Status::Unsupported } else { status(target) },
+        }
+    }
+}
+
 /// What the app does with its engine when it opens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "do")]
 pub enum Plan {
     /// Run the engine as the app's child. `banner`: the owner switched Nebo
     /// off in Login Items, so say how to keep it working after Quit.
@@ -387,6 +415,12 @@ pub fn run_verb(args: &[String]) -> ! {
     }
     let result = match verb.as_deref() {
         Some("status") => Ok(serde_json::json!({ "status": status(&target), "job": job(&target) })),
+        // The dry run: what this app would do with its engine when it opens
+        // (the facts it reads and the plan), changing nothing.
+        Some("plan") => {
+            let facts = Facts::gather(&target, false);
+            Ok(serde_json::json!({ "facts": facts, "plan": plan(&facts) }))
+        }
         Some("install") => install(&target).map(|s| serde_json::json!({ "status": s, "job": job(&target) })),
         Some("uninstall") => uninstall(&target, app_removed).map(|()| serde_json::json!({ "status": status(&target) })),
         Some("kickstart") => kickstart(&target, false).map(|()| serde_json::json!({ "job": job(&target) })),
@@ -394,8 +428,7 @@ pub fn run_verb(args: &[String]) -> ! {
         // with no window opened; otherwise the engine gets the session's
         // display.
         Some("login") => {
-            let mode = wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), load().engine_mode.as_deref());
-            if mode == Mode::Child {
+            if mode() == Mode::Child {
                 uninstall(&target, false).map(|()| serde_json::json!({ "status": status(&target) }))
             } else {
                 kickstart(&target, false).map(|()| serde_json::json!({ "job": job(&target) }))
@@ -406,7 +439,7 @@ pub fn run_verb(args: &[String]) -> ! {
         // seconds.
         Some("health") => crate::engine::wait_for_engine_version(target.port, env!("CARGO_PKG_VERSION"), Duration::from_secs(within))
             .map(|()| serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
-        _ => Err("usage: nebo --engine-service <install|uninstall|status|kickstart|login|health> [--label L] [--port P] [--app-removed]".into()),
+        _ => Err("usage: nebo --engine-service <install|uninstall|status|plan|kickstart|login|health> [--label L] [--port P] [--app-removed]".into()),
     };
     match result {
         Ok(v) => {
@@ -431,15 +464,31 @@ mod tests {
     }
 
     #[test]
-    fn the_service_is_off_unless_asked_for() {
-        assert_eq!(wanted_mode(None, None), Mode::Child);
-        assert_eq!(wanted_mode(None, Some("in_process")), Mode::Child);
+    fn the_service_is_on_unless_the_kill_switch_says_otherwise() {
+        assert_eq!(wanted_mode(None, None), Mode::Service);
+        assert_eq!(wanted_mode(None, Some("")), Mode::Service);
         assert_eq!(wanted_mode(None, Some("service")), Mode::Service);
         assert_eq!(wanted_mode(Some("service"), None), Mode::Service);
+        assert_eq!(wanted_mode(None, Some("in_process")), Mode::Child);
+        assert_eq!(wanted_mode(Some("in_process"), None), Mode::Child);
         // The local override wins over the feed, either way.
         assert_eq!(wanted_mode(Some("in_process"), Some("service")), Mode::Child);
         assert_eq!(wanted_mode(Some("service"), Some("in_process")), Mode::Service);
-        assert_eq!(wanted_mode(Some(""), Some("service")), Mode::Service);
+        assert_eq!(wanted_mode(Some(""), Some("in_process")), Mode::Child);
+    }
+
+    /// An install from before the service (no `engine-service.json`, or one
+    /// with no `engineMode`) registers the engine at its first open after
+    /// the update, and attaches to it from then on.
+    #[test]
+    fn an_existing_install_moves_to_the_service_on_update() {
+        let files = [r#"{}"#, r#"{"startAtLogin":true}"#].map(|b| serde_json::from_str::<Saved>(b).unwrap());
+        for (before, saved) in std::iter::once(("no file", Saved::default())).chain(files.into_iter().map(|s| ("a file", s))) {
+            let mode = wanted_mode(None, saved.engine_mode.as_deref());
+            let f = Facts { dev: false, mode, start_at_login: saved.start_at_login, transient_path: false, status: Status::NotRegistered };
+            assert_eq!(plan(&f), Plan::Register, "from {before:?}");
+            assert_eq!(plan(&Facts { status: Status::Enabled, ..f }), Plan::Service);
+        }
     }
 
     #[test]

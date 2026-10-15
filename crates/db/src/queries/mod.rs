@@ -22,6 +22,7 @@ mod employee_drafts;
 mod engine;
 mod event_dedup;
 mod file_history;
+mod fts;
 mod handoffs;
 mod inbound_mail;
 mod intelligence_packs;

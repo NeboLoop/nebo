@@ -46,42 +46,7 @@ fn scan_mcp(root: &Path, m: &mut ImportManifest) {
     };
 
     for s in parse_mcp_servers_block(&block) {
-        let is_stdio = s.server_type == "stdio";
-        // A local subprocess launch is Code tier (needs confirm); a remote
-        // endpoint is Content (auto), matching the paste-import posture.
-        let tier = if is_stdio {
-            TrustTier::Code
-        } else {
-            TrustTier::Content
-        };
-        let detail = if is_stdio {
-            let cmd = s
-                .metadata
-                .as_deref()
-                .and_then(|md| serde_json::from_str::<serde_json::Value>(md).ok())
-                .and_then(|v| {
-                    v.get("command")
-                        .and_then(|c| c.as_str())
-                        .map(str::to_string)
-                });
-            match cmd {
-                Some(c) => format!("stdio · {c}"),
-                None => "stdio launch".to_string(),
-            }
-        } else {
-            match &s.server_url {
-                Some(url) => format!("{} · {url}", s.server_type),
-                None => s.server_type.clone(),
-            }
-        };
-        m.push(ImportItem {
-            kind: ItemKind::McpServer,
-            tier,
-            name: s.name,
-            detail,
-            target: "Connector",
-            source_path: "config.yaml".into(),
-        });
+        m.push(ImportItem::connector(s, "config.yaml"));
     }
 }
 
@@ -627,6 +592,7 @@ mod tests {
         let m = scan_root(f.path()).unwrap();
         let fs_srv = m.items.iter().find(|i| i.name == "filesystem").unwrap();
         assert_eq!(fs_srv.tier, TrustTier::Code);
+        assert_eq!(fs_srv.detail, "npx -y @modelcontextprotocol/server-filesystem /tmp", "the exact command line");
         let linear = m.items.iter().find(|i| i.name == "linear").unwrap();
         assert_eq!(linear.tier, TrustTier::Content);
         let deploy = m.items.iter().find(|i| i.name == "deploy").unwrap();

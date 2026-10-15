@@ -12,10 +12,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use ai::{RequestTrace, StreamEvent, StreamEventType};
-use tools::{Origin, Registry, ToolContext, ToolResult};
+use tools::{Judgement, Origin, Registry, ToolContext, ToolResult};
+use types::permissions::JudgementMode;
 
 use crate::concurrency::ConcurrencyController;
 use crate::harness::conversation::convert_messages;
+use crate::harness::permissions::cases::Question;
+use crate::harness::permissions::judgement::{JudgeCx, judge_round};
 use crate::harness::session_gate::RunProgress;
 use crate::harness::workflow_turn::{WorkflowMode, WorkflowPark};
 use tools::truncate_str;
@@ -630,7 +633,7 @@ pub(crate) async fn run_tool_round(
             is_error: result.is_error,
             image_url: result.image_url,
             payload: result.payload,
-            loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
+            loaded_tools: result.loads.iter().map(ai::function_entry).collect(),
         };
         let tr_json = serde_json::json!([row]).to_string();
 
@@ -881,6 +884,10 @@ pub(crate) struct ToolExecutor<'a> {
     streaming: bool,
     /// A workflow step parked on the owner: nothing more starts.
     halted: bool,
+    /// The permission judgement's mode for this round.
+    judging: JudgementMode,
+    /// The round's judgement per call (`judge`), taken when the call starts.
+    prejudged: Vec<Option<(Question, Judgement)>>,
 }
 
 impl<'a> ToolExecutor<'a> {
@@ -896,6 +903,8 @@ impl<'a> ToolExecutor<'a> {
             running: FuturesUnordered::new(),
             streaming: true,
             halted: false,
+            judging: cx.scope.sessions.store().permission_judgement_mode().unwrap_or_default(),
+            prejudged: Vec::new(),
         }
     }
 
@@ -935,6 +944,7 @@ impl<'a> ToolExecutor<'a> {
             self.add(tc.clone()).await;
         }
         self.streaming = false;
+        self.judge().await;
         self.pump();
         while !self.running.is_empty() {
             tokio::select! {
@@ -956,7 +966,33 @@ impl<'a> ToolExecutor<'a> {
         self.safe.push(safe);
         self.status.push(Status::Queued);
         self.done.push(None);
+        self.prejudged.push(None);
         self.pump();
+    }
+
+    /// The reply is in: the calls not yet started that the code could not
+    /// decide are asked about together, in one judgement for the round
+    /// (`permissions::judgement`), before any of them runs.
+    async fn judge(&mut self) {
+        let mut asked: Vec<(usize, Question)> = Vec::new();
+        for (idx, tc) in self.calls.iter().enumerate() {
+            if self.status[idx] != Status::Queued {
+                continue;
+            }
+            let input = self.cx.tools.normalize_input(&tc.name, tc.input.clone()).await;
+            if let Some(t) = self.cx.tools.target(&tc.name, &input).await
+                && let Some(q) = question(self.cx, &self.ctx, &tc.name, &input, &t).await
+            {
+                asked.push((idx, q));
+            }
+        }
+        if asked.is_empty() {
+            return;
+        }
+        let judgements = judge(self.cx, self.judging, asked.iter().map(|(_, q)| q.clone()).collect()).await;
+        for ((idx, q), judgement) in asked.into_iter().zip(judgements) {
+            self.prejudged[idx] = Some((q, judgement));
+        }
     }
 
     fn complete(&mut self, ran: Ran) {
@@ -977,7 +1013,8 @@ impl<'a> ToolExecutor<'a> {
         for idx in startable(&view, self.streaming) {
             self.status[idx] = Status::Running;
             let cx = self.cx;
-            let run = run_call(cx, self.ctx.clone(), self.pool.clone(), idx, self.calls[idx].clone());
+            let prejudged = self.prejudged[idx].take();
+            let run = run_call(cx, self.ctx.clone(), self.pool.clone(), idx, self.calls[idx].clone(), self.judging, prejudged);
             self.running.push(Box::pin(run));
         }
     }
@@ -1013,29 +1050,21 @@ fn startable(calls: &[(Status, bool)], streaming: bool) -> Vec<usize> {
 /// for a call whose outward effect the code could not decide, the tool
 /// under its own timeout, then the post-execute hooks. Its result event
 /// goes out as it completes.
+///
+/// `prejudged`: the round's judgement of this call (`ToolExecutor::judge`),
+/// used when the call's question is still the one asked; `judging`: the
+/// judgement's mode for the round.
 async fn run_call(
     cx: &RoundContext<'_>,
     mut ctx: ToolContext,
     pool: Arc<tokio::sync::Semaphore>,
     idx: usize,
     mut tc: ai::ToolCall,
+    judging: JudgementMode,
+    prejudged: Option<(Question, Judgement)>,
 ) -> Ran {
-    let RoundContext {
-        scope,
-        tools,
-        concurrency,
-        hooks,
-        user_prompt,
-        workflow_mode,
-        decide,
-        active_task,
-        turn_mode,
-        side_trace,
-        housekeeper,
-        chosen,
-        ..
-    } = *cx;
-    let RunToolScope { sessions, tx, session_id, run_cwd, .. } = *scope;
+    let RoundContext { scope, tools, concurrency, hooks, turn_mode, .. } = *cx;
+    let RunToolScope { tx, session_id, run_cwd, .. } = *scope;
     let _slot = pool.acquire_owned().await;
 
     // tool.pre_execute filter hooks: may refuse the call, rewrite its
@@ -1100,40 +1129,18 @@ async fn run_call(
 
     // The permission judgement (permissions::judgement): a call whose
     // outward effect the code could not decide (whether it publishes, or
-    // speaks for the owner outside) is asked about, Jev first, the aux
-    // classifier for what it didn't settle. The verdict rides to the
-    // permission check, which records it (shadow) or acts on it (enforce).
-    if let Some(t) = &target {
-        let question = {
-            let check = crate::harness::permissions::CheckCx {
-                ctx: &ctx,
-                input: &tc.input,
-                grant: scope.grant,
-                store: sessions.store(),
-            };
-            crate::harness::permissions::question_for(&check, t)
+    // speaks for the owner outside) carries its judgement to the permission
+    // check, which records it (shadow) or acts on it (enforce). The round
+    // asked about it already unless its question changed since (a hook
+    // rewrote it) or it started while the reply streamed: then it is asked
+    // about alone.
+    if let Some(t) = &target
+        && let Some(q) = question(cx, &ctx, &tc.name, &tc.input, t).await
+    {
+        ctx.judgement = match prejudged {
+            Some((asked, judgement)) if asked == q => Some(judgement),
+            _ => judge(cx, judging, vec![q]).await.pop(),
         };
-        if let Some(mut q) = question {
-            q.activity = tools.describe(&tc.name, &tc.input).await;
-            // A workflow turn has no session objective and an empty
-            // prompt; its task is the step it was given.
-            let (objective, last_message) = match workflow_mode {
-                Some(m) => (m.objective.as_str(), m.instruction.as_str()),
-                None => (active_task.as_str(), user_prompt),
-            };
-            let aux = housekeeper.route(chosen).await;
-            let judge = crate::harness::permissions::judgement::JudgeCx {
-                decide: decide.map(|d| d.as_ref()),
-                aux: aux.as_ref(),
-                trace: side_trace,
-                objective,
-                last_message,
-            };
-            ctx.judgement = crate::harness::permissions::judgement::judge_round(&judge, std::slice::from_ref(&q))
-                .await
-                .into_iter()
-                .next();
-        }
     }
 
     let _permit = concurrency.acquire_tool_permit().await;
@@ -1206,6 +1213,60 @@ async fn run_call(
         })
         .await;
     Ran { idx, tc, target, result, duration_ms: Some(duration_ms), hook_noted }
+}
+
+/// The question the judgement is asked about a call as it will run, when
+/// the code can't decide it (`permissions::question_for`).
+async fn question(
+    cx: &RoundContext<'_>,
+    ctx: &ToolContext,
+    name: &str,
+    input: &serde_json::Value,
+    t: &types::permissions::Target,
+) -> Option<Question> {
+    let check = crate::harness::permissions::CheckCx {
+        ctx,
+        input,
+        grant: cx.scope.grant,
+        store: cx.scope.sessions.store(),
+    };
+    let mut q = crate::harness::permissions::question_for(&check, t)?;
+    q.activity = cx.tools.describe(name, input).await;
+    Some(q)
+}
+
+/// Ask the judges about `questions` in one judgement, Jev first, the aux
+/// classifier for what it didn't settle. Enforce waits for the verdicts;
+/// shadow leaves them answering in the background, so no call waits on a
+/// verdict that changes nothing.
+async fn judge(cx: &RoundContext<'_>, mode: JudgementMode, questions: Vec<Question>) -> Vec<Judgement> {
+    // A workflow turn has no session objective and an empty prompt; its
+    // task is the step it was given.
+    let (objective, last_message) = match cx.workflow_mode {
+        Some(m) => (m.objective.clone(), m.instruction.clone()),
+        None => (cx.active_task.clone(), cx.user_prompt.to_string()),
+    };
+    let judges = JudgeCx {
+        decide: cx.decide.cloned(),
+        aux: cx.housekeeper.route(cx.chosen).await,
+        trace: (cx.side_trace)("permission_judgement"),
+        objective,
+        last_message,
+    };
+    match mode {
+        JudgementMode::Enforce => judge_round(&judges, &questions).await.into_iter().map(Judgement::Decided).collect(),
+        JudgementMode::Shadow => {
+            let (senders, verdicts): (Vec<_>, Vec<_>) = questions.iter().map(|_| tokio::sync::watch::channel(None)).unzip();
+            tokio::spawn(async move {
+                for (sender, verdict) in senders.into_iter().zip(judge_round(&judges, &questions).await) {
+                    // No receiver left: the call's check never ran (the run
+                    // was cancelled), so there is no record to write to.
+                    let _ = sender.send(Some(verdict));
+                }
+            });
+            verdicts.into_iter().map(Judgement::Pending).collect()
+        }
+    }
 }
 
 /// A shell command that IS a project check. Running one resets the edit

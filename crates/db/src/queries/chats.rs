@@ -94,28 +94,22 @@ fn conversation_filter(session_name_prefix: &str, q: &ConversationQuery) -> (Str
         sql.push_str(" AND c.pinned_at IS NOT NULL");
     }
     if let Some(search) = q.search.map(str::trim).filter(|s| !s.is_empty()) {
-        // The title as typed, or every word in what was said (each as the
-        // start of a word: the list narrows while he types).
+        // The title as typed, or every word anywhere in what was said (the
+        // list narrows while he types).
         let like = search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-        let words = search
-            .split_whitespace()
-            .map(|w| format!("\"{}\"*", w.replace('"', "")))
-            .filter(|w| w != "\"\"*")
-            .collect::<Vec<_>>()
-            .join(" ");
         values.push(Value::Text(format!("%{like}%")));
         let title = format!("c.title LIKE ?{} ESCAPE '\\'", values.len());
-        if words.is_empty() {
+        let said = super::fts::Terms::parse(search).every_word("chat_messages_fts", "m.content", &mut values);
+        if said.is_empty() {
             sql.push_str(&format!(" AND {title}"));
         } else {
-            values.push(Value::Text(words));
             sql.push_str(&format!(
                 " AND ({title} OR c.id IN (
                      SELECT m.chat_id FROM chat_messages_fts
                      JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
-                     WHERE chat_messages_fts MATCH ?{}
+                     WHERE {}
                        AND m.role IN ('user', 'assistant')))",
-                values.len()
+                said.join(" AND ")
             ));
         }
     }
@@ -1634,34 +1628,35 @@ impl Store {
     /// Full-text search across every chat's messages (FTS5, ranked), or only
     /// `chat_id`'s when given. Distinct from search_chat_messages, which is
     /// the in-chat find (one chat, LIKE, full rows). Tool/system rows are
-    /// excluded — this searches the conversation, not tool output. Terms are
-    /// quoted so user text can't break FTS syntax.
+    /// excluded — this searches the conversation, not tool output. Every word
+    /// must appear, anywhere in the message (`fts::Terms`); words are quoted
+    /// so user text can't break FTS syntax.
     pub fn search_chats(&self, query: &str, limit: i64, chat_id: Option<&str>) -> Result<Vec<ChatSearchHit>, NeboError> {
-        let fts_query = query
-            .split_whitespace()
-            .map(|t| format!("\"{}\"", t.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if fts_query.is_empty() {
+        use rusqlite::types::Value;
+        let terms = super::fts::Terms::parse(query);
+        if terms.is_empty() {
             return Ok(Vec::new());
         }
+        let mut values = vec![Value::Integer(limit), chat_id.map_or(Value::Null, |c| Value::Text(c.to_string()))];
+        let said = terms.every_word("chat_messages_fts", "m.content", &mut values);
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT m.id, m.chat_id, COALESCE(c.title, '') AS chat_title, m.role, m.created_at,
                         snippet(chat_messages_fts, 0, '\u{ab}', '\u{bb}', '\u{2026}', 16) AS snip
                  FROM chat_messages_fts
                  JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
                  LEFT JOIN chats c ON c.id = m.chat_id
-                 WHERE chat_messages_fts MATCH ?1
+                 WHERE {}
                    AND m.role IN ('user', 'assistant')
-                   AND (?3 IS NULL OR m.chat_id = ?3)
-                 ORDER BY rank
-                 LIMIT ?2",
-            )
+                   AND (?2 IS NULL OR m.chat_id = ?2)
+                 ORDER BY rank, m.created_at DESC
+                 LIMIT ?1",
+                said.join(" AND ")
+            ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![fts_query, limit, chat_id], |row| {
+            .query_map(rusqlite::params_from_iter(values), |row| {
                 Ok(ChatSearchHit {
                     message_id: row.get(0)?,
                     chat_id: row.get(1)?,
@@ -1718,7 +1713,8 @@ impl Store {
              CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
                  content,
                  content='chat_messages',
-                 content_rowid='rowid'
+                 content_rowid='rowid',
+                 tokenize='trigram'
              );
 
              INSERT INTO chat_messages_fts(rowid, content)
@@ -2620,6 +2616,48 @@ mod tests {
             walked.extend(ids(page));
         }
         assert_eq!(walked, vec!["b", "f", "d", "c", "e", "a"]);
+    }
+
+    /// A word is found anywhere inside a message, in languages written
+    /// without spaces between words (Japanese, Chinese, Thai) and with
+    /// particles attached (Korean), two-character words included; English
+    /// finds whole words as before, and every word must be there.
+    #[test]
+    fn search_finds_a_word_inside_a_sentence_in_any_language() {
+        let (_dir, store) = store();
+        store.ensure_fts_healthy().unwrap();
+        store.create_chat_for_session("c", "agent:nm:thread:c", "Notes", None).unwrap();
+        let said = [
+            ("ja", "明日の午後に会議の資料を送ってください"),
+            ("ko", "내일 회의가 세 시에 있어요"),
+            ("zh", "我们下周讨论预算问题"),
+            ("th", "พรุ่งนี้มีประชุมตอนบ่ายสามโมง"),
+            ("en", "Please send the quarterly report to Dana"),
+        ];
+        for (id, text) in said {
+            store.create_chat_message(id, "c", "user", text, None).unwrap();
+        }
+        let found = |q: &str| store.search_chats(q, 10, None).unwrap().into_iter().map(|h| h.message_id).collect::<Vec<_>>();
+        for (q, id) in [
+            ("会議", "ja"),
+            ("資料を送", "ja"),
+            ("회의", "ko"),
+            ("预算", "zh"),
+            ("讨论预算", "zh"),
+            ("ประชุม", "th"),
+            ("quarterly", "en"),
+            ("QUARTERLY report", "en"),
+            ("to Dana", "en"),
+        ] {
+            assert_eq!(found(q), [id], "{q}");
+        }
+        assert!(found("report 会議").is_empty(), "every word must be there");
+        assert!(found("invoice").is_empty());
+        let hit = &store.search_chats("ประชุม", 10, None).unwrap()[0];
+        assert!(hit.snippet.contains("\u{ab}ประชุม\u{bb}"), "{}", hit.snippet);
+        // The conversation list's search finds it the same way.
+        let query = ConversationQuery { whose: Conversations::Owners, search: Some("회의"), ..Default::default() };
+        assert_eq!(store.count_conversations("agent:nm:", &query).unwrap(), 1);
     }
 
     /// A search narrows the list to the conversations whose title, or

@@ -1212,7 +1212,7 @@ impl Registry {
             result.content.push_str(&format!(
                 "\n{name} wasn't loaded, so its definition was never sent. This error loads it: its \
                  definition is below, and your next call can use it.\n{}",
-                crate::find_tools::functions_block([&definition])
+                ai::functions_block([&definition])
             ));
             result.loads.push(definition);
         }
@@ -2506,7 +2506,7 @@ pub(crate) mod tests {
             assert_eq!(bad.loads.len(), 1, "{input}: {}", bad.content);
             assert_eq!(serde_json::to_string(&bad.loads[0]).unwrap(), serde_json::to_string(&echo).unwrap());
             assert!(bad.content.contains("This error loads it"), "{}", bad.content);
-            assert!(bad.content.ends_with(&crate::find_tools::functions_block([&echo])), "the definition it loads is the one shown: {}", bad.content);
+            assert!(bad.content.ends_with(&ai::functions_block([&echo])), "the definition it loads is the one shown: {}", bad.content);
             assert!(!bad.content.contains("find_tools"), "no second step: {}", bad.content);
         }
         // A tool this run may not load stays unloaded.

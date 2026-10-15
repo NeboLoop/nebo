@@ -254,7 +254,7 @@ impl WorkflowTurns {
             image_url: None,
             payload: None,
             duration_ms: None,
-            loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
+            loaded_tools: result.loads.iter().map(ai::function_entry).collect(),
         };
         let tr = serde_json::json!([row]).to_string();
         let _ = self.harness.sessions.append_message(session_id, "tool", "", None, Some(&tr), None);

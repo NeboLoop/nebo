@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
 use tools::registry::DynTool;
-use tools::{Origin, Registry, ToolContext, ToolResult};
+use tools::{Judgement, Origin, Registry, ToolContext, ToolResult};
 use types::permissions::{
     AskCase, CallEffects, Effect, JudgedBy, JudgementMode, Knowable, MoneyLimit, Rule, RuleField, RuleKey,
     RuleSource, Scope, Verdict, Writer,
@@ -652,7 +652,7 @@ async fn shadow_judgement_records_and_never_blocks() {
         by: JudgedBy::Jev,
         reason: "posts to a public page".into(),
     };
-    let judged = ToolContext { judgement: Some(ask.clone()), ..ctx(&store, "e") };
+    let judged = ToolContext { judgement: Some(Judgement::Decided(ask.clone())), ..ctx(&store, "e") };
     assert_eq!(store.permission_judgement_mode().unwrap(), JudgementMode::Shadow, "shadow is the default");
     assert_eq!(reg.execute(&judged, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
     let row = &last_activity(&store, "e");
@@ -670,6 +670,49 @@ async fn shadow_judgement_records_and_never_blocks() {
     assert_eq!(r.content, "RAN");
 }
 
+/// Shadow, still being judged: the call runs at once on the code's
+/// answer, and the verdict lands on its record when the judges answer; a
+/// judgement dropped without one is recorded unreviewed.
+#[tokio::test]
+async fn a_pending_shadow_judgement_never_holds_the_call() {
+    let (_d, store) = store();
+    let (post, ran) = Act::new("post", None);
+    let reg = registry(&store, vec![post]).await;
+    let (verdict, pending) = tokio::sync::watch::channel(None);
+    let c = ToolContext { judgement: Some(Judgement::Pending(pending)), ..ctx(&store, "e") };
+    assert_eq!(reg.execute(&c, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "ran before any verdict");
+    assert_eq!(last_activity(&store, "e").judgement, None, "no verdict yet");
+
+    let ask = Verdict::Ask {
+        case: AskCase::NewCounterparty { who: super::PUBLIC.into() },
+        by: JudgedBy::AuxClassifier,
+        reason: "posts to a public page".into(),
+    };
+    verdict.send(Some(ask)).unwrap();
+    let landed = |store: &db::Store| last_activity(store, "e").judgement;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while landed(&store).is_none() {
+        assert!(std::time::Instant::now() < deadline, "the verdict never landed");
+        tokio::task::yield_now().await;
+    }
+    let row = last_activity(&store, "e");
+    assert_eq!(row.decision, "allow", "shadow: the code's answer stands");
+    let j: serde_json::Value = serde_json::from_str(row.judgement.as_deref().unwrap()).unwrap();
+    assert_eq!(j, json!({ "mode": "shadow", "verdict": "ask", "by": "aux_classifier", "reason": "posts to a public page" }));
+    assert!(!row.unreviewed);
+
+    let (verdict, pending) = tokio::sync::watch::channel(None);
+    let c = ToolContext { judgement: Some(Judgement::Pending(pending)), ..ctx(&store, "e") };
+    assert_eq!(reg.execute(&c, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
+    drop(verdict);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !last_activity(&store, "e").unreviewed {
+        assert!(std::time::Instant::now() < deadline, "the dropped judgement was never recorded");
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn activity_records_which_judge_decided() {
     let (_d, store) = store();
@@ -677,7 +720,7 @@ async fn activity_records_which_judge_decided() {
     let (post, _) = Act::new("post", None);
     let reg = registry(&store, vec![post]).await;
     let allowed = Verdict::Allow { by: JudgedBy::AuxClassifier, reason: "saves a draft to the owner's account".into() };
-    let c = ToolContext { judgement: Some(allowed), ..ctx(&store, "e") };
+    let c = ToolContext { judgement: Some(Judgement::Decided(allowed)), ..ctx(&store, "e") };
     assert_eq!(reg.execute(&c, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
     let row = &last_activity(&store, "e");
     let why: types::permissions::Why = serde_json::from_str(&row.why).unwrap();
@@ -698,7 +741,7 @@ async fn both_down_proceeds_marked_unreviewed() {
     let reg = registry(&store, vec![post]).await;
     for mode in [JudgementMode::Shadow, JudgementMode::Enforce] {
         store.set_permission_judgement_mode(mode).unwrap();
-        let c = ToolContext { judgement: Some(Verdict::Unjudged), door: types::permissions::Door::Heartbeat, ..ctx(&store, "e") };
+        let c = ToolContext { judgement: Some(Judgement::Decided(Verdict::Unjudged)), door: types::permissions::Door::Heartbeat, ..ctx(&store, "e") };
         assert_eq!(reg.execute(&c, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
         let row = &last_activity(&store, "e");
         assert!(row.unreviewed, "{mode:?}");

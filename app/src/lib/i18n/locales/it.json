@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Licenze open source",
 		"contactSupport": "Contatta l'assistenza",
 		"contactSupportBlurb": "Domande o problemi? Scrivici e una persona ti risponde entro un giorno lavorativo.",
-		"startAtLogin": "Avvia al login",
-		"startAtLoginHint": "Nebo continua a lavorare dopo che chiudi l'app e si avvia quando accedi.",
+		"startAtLogin": "Fai lavorare Nebo anche ad app chiusa",
+		"startAtLoginHint": "Programmazioni, flussi di lavoro e messaggi dei tuoi dipendenti continuano dopo che esci dall'app, e Nebo si avvia quando accedi. Disattiva questa opzione per fermare Nebo quando esci.",
 		"keepAfterLogout": "Continua dopo la disconnessione",
-		"keepAfterLogoutHint": "I tuoi dipendenti continuano a lavorare mentre sei disconnesso da questo computer.",
+		"keepAfterLogoutHint": "I tuoi dipendenti continuano a lavorare mentre sei disconnesso.",
 		"keepAfterLogoutConfirmTitle": "Lasciare Nebo in esecuzione dopo la disconnessione?",
-		"keepAfterLogoutConfirmMessage": "Nebo continua a lavorare su questo computer dopo la disconnessione, finché non disattivi questa opzione o spegni il computer.",
+		"keepAfterLogoutConfirmMessage": "Nebo continua a lavorare dopo che ti disconnetti, finché non disattivi questa opzione o spegni.",
 		"keepAfterLogoutConfirmButton": "Continua",
 		"keepAfterLogoutFailed": "Impossibile modificare questa impostazione. Riprova."
 	},
@@ -1483,7 +1483,8 @@
 		"skills": "skill",
 		"mcpServers": "connettori",
 		"memoryFiles": "file di memoria",
-		"runLocally": "girano in locale"
+		"runLocally": "girano in locale",
+		"localCommands": "Questi connettori avviano un programma qui quando i tuoi dipendenti li usano:"
 	},
 	"settingsImport": {
 		"title": "Importa",
@@ -3281,6 +3282,8 @@
 		"employeeDescription": "Ciò che {name} può fare da solo. Per tutto il resto, ti chiede prima il permesso.",
 		"loadError": "Non è stato possibile caricare queste autorizzazioni.",
 		"saveError": "Questa modifica non è stata salvata. Riprova.",
+		"finishChecksTitle": "Ricontrolla prima di finire",
+		"finishChecksDesc": "Quando chiedi a un dipendente di salvare qualcosa o eseguire un comando, si assicura di averlo fatto prima di terminare la risposta. Ogni controllo aggiunge al massimo un passaggio.",
 		"modeTitle": "Come funziona",
 		"modeCompany": "Come le impostazioni predefinite dell'azienda",
 		"modeCompanyDesc": "Segue l'impostazione dell'azienda: {mode}.",
@@ -4018,7 +4021,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo funziona solo mentre l'app è aperta. Per farlo continuare dopo la chiusura, attiva Nebo in Elementi login.",
 		"open": "Apri Elementi login",
-		"unavailable": "Nebo funziona solo quando l'app è aperta. Questo computer non può mantenere Nebo in esecuzione dopo che esci dall'app."
+		"unavailable": "Nebo funziona solo mentre l'app è aperta. Continuare a lavorare dopo l'uscita non è disponibile qui."
 	},
 	"background": {
 		"title": "Attività in background",

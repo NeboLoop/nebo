@@ -984,12 +984,12 @@
 		"openSourceLicenses": "開放原始碼授權",
 		"contactSupport": "聯絡支援",
 		"contactSupportBlurb": "有問題或遇到狀況？寄封電子郵件給我們，會有專人在一個工作天內回覆。",
-		"startAtLogin": "登入時啟動",
-		"startAtLoginHint": "結束 App 後 Nebo 仍會繼續工作，並在你登入時啟動。",
+		"startAtLogin": "關閉 App 後讓 Nebo 繼續工作",
+		"startAtLoginHint": "結束 App 後，員工的排程、工作流程和訊息會繼續進行，登入時 Nebo 會啟動。關閉此項後，結束 App 時 Nebo 會停止。",
 		"keepAfterLogout": "登出後繼續執行",
-		"keepAfterLogoutHint": "你登出這台電腦後，你的員工仍會繼續工作。",
+		"keepAfterLogoutHint": "你登出期間，員工會繼續工作。",
 		"keepAfterLogoutConfirmTitle": "登出後讓 Nebo 繼續執行嗎？",
-		"keepAfterLogoutConfirmMessage": "登出後 Nebo 會繼續在這台電腦上工作，直到你關閉此選項或關機。",
+		"keepAfterLogoutConfirmMessage": "登出後，Nebo 會繼續工作，直到你關閉此項或關機。",
 		"keepAfterLogoutConfirmButton": "繼續執行",
 		"keepAfterLogoutFailed": "無法變更此設定。請再試一次。"
 	},
@@ -1483,7 +1483,8 @@
 		"skills": "技能",
 		"mcpServers": "連接器",
 		"memoryFiles": "記憶檔案",
-		"runLocally": "本機執行"
+		"runLocally": "本機執行",
+		"localCommands": "員工使用這些連接器時，它們會在這裡啟動一個程式："
 	},
 	"settingsImport": {
 		"title": "匯入",
@@ -3281,6 +3282,8 @@
 		"employeeDescription": "{name} 可以自行決定做的事。其餘的事，它都會先詢問你。",
 		"loadError": "無法載入這些權限。",
 		"saveError": "此變更未儲存。請再試一次。",
+		"finishChecksTitle": "完成前再檢查一次",
+		"finishChecksDesc": "當你請員工儲存內容或執行指令時，它會在結束回覆前確認已經做到。每次檢查最多增加一個步驟。",
 		"modeTitle": "運作方式",
 		"modeCompany": "與公司預設相同",
 		"modeCompanyDesc": "依照公司設定：{mode}。",
@@ -4018,7 +4021,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo 只會在 App 開啟時執行。若要在結束後繼續工作，請在「登入項目」中開啟 Nebo。",
 		"open": "打開登入項目",
-		"unavailable": "Nebo 只在應用程式開啟時執行。結束應用程式後，這台電腦無法讓 Nebo 繼續執行。"
+		"unavailable": "Nebo 只在 App 開啟時執行。這裡無法在結束 App 後繼續工作。"
 	},
 	"background": {
 		"title": "背景工作",

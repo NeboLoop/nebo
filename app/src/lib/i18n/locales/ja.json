@@ -984,12 +984,12 @@
 		"openSourceLicenses": "オープンソースライセンス",
 		"contactSupport": "サポートに問い合わせ",
 		"contactSupportBlurb": "ご質問や問題がありますか？メールをいただければ、1営業日以内に担当者が返信します。",
-		"startAtLogin": "ログイン時に起動",
-		"startAtLoginHint": "アプリを終了しても Nebo は動き続け、ログイン時に起動します。",
+		"startAtLogin": "アプリを閉じても Nebo の作業を続ける",
+		"startAtLoginHint": "アプリを終了しても、従業員のスケジュール、ワークフロー、メッセージは続き、ログイン時に Nebo が起動します。終了時に Nebo を止めるには、これをオフにしてください。",
 		"keepAfterLogout": "ログアウト後も実行を続ける",
-		"keepAfterLogoutHint": "このコンピュータからログアウトしている間も、従業員は作業を続けます。",
+		"keepAfterLogoutHint": "ログアウトしている間も、従業員は作業を続けます。",
 		"keepAfterLogoutConfirmTitle": "ログアウト後も Nebo を実行し続けますか？",
-		"keepAfterLogoutConfirmMessage": "ログアウト後も、この設定をオフにするかコンピュータをシャットダウンするまで、Nebo はこのコンピュータで作業を続けます。",
+		"keepAfterLogoutConfirmMessage": "ログアウト後も、この設定をオフにするかシャットダウンするまで、Nebo は作業を続けます。",
 		"keepAfterLogoutConfirmButton": "実行を続ける",
 		"keepAfterLogoutFailed": "この設定を変更できませんでした。もう一度お試しください。"
 	},
@@ -1483,7 +1483,8 @@
 		"skills": "スキル",
 		"mcpServers": "コネクタ",
 		"memoryFiles": "メモリファイル",
-		"runLocally": "ローカルで実行"
+		"runLocally": "ローカルで実行",
+		"localCommands": "これらのコネクタは、従業員が使うときにここでプログラムを起動します："
 	},
 	"settingsImport": {
 		"title": "インポート",
@@ -3281,6 +3282,8 @@
 		"employeeDescription": "{name}が自分の判断で行えること。それ以外は必ず先に確認します。",
 		"loadError": "権限を読み込めませんでした。",
 		"saveError": "この変更は保存されませんでした。もう一度お試しください。",
+		"finishChecksTitle": "終える前に確認する",
+		"finishChecksDesc": "従業員に何かの保存やコマンドの実行を頼むと、返信を終える前にそれを実行したことを確認します。確認ごとに追加されるのは最大 1 ステップです。",
 		"modeTitle": "仕組み",
 		"modeCompany": "会社の初期設定と同じ",
 		"modeCompanyDesc": "会社の設定に従います：{mode}。",
@@ -4018,7 +4021,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo はアプリが開いている間だけ動作します。終了後も動かし続けるには、ログイン項目で Nebo をオンにしてください。",
 		"open": "ログイン項目を開く",
-		"unavailable": "Nebo はアプリが開いている間だけ実行されます。このコンピュータでは、アプリを終了した後に Nebo を実行し続けることができません。"
+		"unavailable": "Nebo はアプリが開いている間だけ実行されます。ここでは、アプリを終了した後に作業を続けることはできません。"
 	},
 	"background": {
 		"title": "バックグラウンドのタスク",

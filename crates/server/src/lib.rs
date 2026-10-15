@@ -1921,20 +1921,15 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Err(e) => tracing::warn!(error = %e, "could not check employee names for duplicates"),
     }
 
-    // Background boot maintenance for vector recall, skipped entirely when no
-    // embedding provider exists:
-    // 1. backfill memories that have no embeddings (victims of the
-    //    migration-0113 dangling-FK bug plus rows stored before all write
-    //    paths embedded) — batched + rate-limited inside;
-    // 2. pre-warm the embedding provider and per-user ANN indexes (runs even
-    //    when the backfill had nothing to do) so the first chat's recall
-    //    doesn't pay the cold-provider + lazy-index-build cost.
+    // Background vector-recall maintenance, skipped entirely when no
+    // embedding provider exists: the embedding sweep backfills memories that
+    // have no embeddings (failed or interrupted embeds, rows stored before
+    // all write paths embedded), pre-warms the provider and per-user ANN
+    // indexes after its first pass, then keeps looking hourly and resumes
+    // after a provider refusal.
+    let embedding_sweep = Arc::new(agent::memory::EmbeddingSweep::default());
     if let Some(ep) = embedding_provider.clone() {
-        let store_boot = store.clone();
-        tokio::spawn(async move {
-            agent::memory::backfill_missing_embeddings(store_boot.clone(), ep.clone()).await;
-            agent::search_adapter::prewarm(&store_boot, ep.as_ref()).await;
-        });
+        tokio::spawn(agent::memory::keep_memories_embedded(store.clone(), ep, embedding_sweep.clone()));
     }
 
     // Initialize napp package registry
@@ -2702,6 +2697,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         config: cfg.clone(),
         store,
         embedding_provider: embedding_provider.clone(),
+        embedding_sweep,
         auth: auth_service,
         hub,
         harness,

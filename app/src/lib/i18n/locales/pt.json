@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Licenças de código aberto",
 		"contactSupport": "Contactar o apoio",
 		"contactSupportBlurb": "Dúvidas ou problemas? Escreva-nos e uma pessoa responde num dia útil.",
-		"startAtLogin": "Abrir ao iniciar sessão",
-		"startAtLoginHint": "O Nebo continua a trabalhar depois de fechar a app e abre quando inicia sessão.",
+		"startAtLogin": "Manter o Nebo a trabalhar com a app fechada",
+		"startAtLoginHint": "Os horários, fluxos de trabalho e mensagens dos seus funcionários continuam depois de sair da app, e o Nebo inicia quando inicia sessão. Desative para o Nebo parar quando sair.",
 		"keepAfterLogout": "Continuar a funcionar depois de terminar sessão",
-		"keepAfterLogoutHint": "Os seus funcionários continuam a trabalhar enquanto tem a sessão terminada neste computador.",
+		"keepAfterLogoutHint": "Os seus funcionários continuam a trabalhar enquanto tem a sessão terminada.",
 		"keepAfterLogoutConfirmTitle": "Manter o Nebo a funcionar depois de terminar sessão?",
-		"keepAfterLogoutConfirmMessage": "O Nebo continua a trabalhar neste computador depois de terminar sessão, até desativar esta opção ou desligar o computador.",
+		"keepAfterLogoutConfirmMessage": "O Nebo continua a trabalhar depois de terminar a sessão, até desativar esta opção ou encerrar.",
 		"keepAfterLogoutConfirmButton": "Continuar a funcionar",
 		"keepAfterLogoutFailed": "Não foi possível alterar esta definição. Tente novamente."
 	},
@@ -1483,7 +1483,8 @@
 		"skills": "skills",
 		"mcpServers": "conectores",
 		"memoryFiles": "ficheiros de memória",
-		"runLocally": "correm localmente"
+		"runLocally": "correm localmente",
+		"localCommands": "Estes conectores iniciam um programa aqui quando os seus funcionários os usam:"
 	},
 	"settingsImport": {
 		"title": "Importar",
@@ -3281,6 +3282,8 @@
 		"employeeDescription": "O que o {name} pode fazer por conta própria. Para tudo o resto, pergunta-lhe primeiro.",
 		"loadError": "Não foi possível carregar estas permissões.",
 		"saveError": "Essa alteração não foi guardada. Tente novamente.",
+		"finishChecksTitle": "Verificar antes de terminar",
+		"finishChecksDesc": "Quando pede a um funcionário para guardar algo ou executar um comando, ele confirma que o fez antes de terminar a resposta. Cada verificação acrescenta no máximo um passo.",
 		"modeTitle": "Como funciona",
 		"modeCompany": "Igual às predefinições da empresa",
 		"modeCompanyDesc": "Segue a definição da empresa: {mode}.",
@@ -4018,7 +4021,7 @@
 	"loginItemsBanner": {
 		"text": "O Nebo só funciona enquanto a app está aberta. Para continuar a trabalhar depois de a fechar, ative o Nebo em Elementos de início de sessão.",
 		"open": "Abrir Elementos de início de sessão",
-		"unavailable": "O Nebo só funciona enquanto a app está aberta. Este computador não consegue manter o Nebo a funcionar depois de sair da app."
+		"unavailable": "O Nebo só funciona enquanto a app está aberta. Continuar a trabalhar depois de sair não está disponível aqui."
 	},
 	"background": {
 		"title": "Tarefas em segundo plano",

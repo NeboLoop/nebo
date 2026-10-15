@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Giấy phép mã nguồn mở",
 		"contactSupport": "Liên hệ hỗ trợ",
 		"contactSupportBlurb": "Có câu hỏi hay vướng mắc? Hãy gửi email cho chúng tôi, sẽ có người trả lời trong một ngày làm việc.",
-		"startAtLogin": "Mở khi đăng nhập",
-		"startAtLoginHint": "Nebo tiếp tục làm việc sau khi bạn thoát ứng dụng và khởi động khi bạn đăng nhập.",
+		"startAtLogin": "Giữ Nebo làm việc khi đóng ứng dụng",
+		"startAtLoginHint": "Lịch, quy trình và tin nhắn của nhân viên vẫn tiếp tục sau khi bạn thoát ứng dụng, và Nebo khởi động khi bạn đăng nhập. Tắt mục này để Nebo dừng khi bạn thoát.",
 		"keepAfterLogout": "Tiếp tục chạy sau khi tôi đăng xuất",
-		"keepAfterLogoutHint": "Nhân viên của bạn vẫn tiếp tục làm việc khi bạn đã đăng xuất khỏi máy tính này.",
+		"keepAfterLogoutHint": "Nhân viên của bạn vẫn làm việc khi bạn đã đăng xuất.",
 		"keepAfterLogoutConfirmTitle": "Giữ Nebo chạy sau khi bạn đăng xuất?",
-		"keepAfterLogoutConfirmMessage": "Nebo tiếp tục làm việc trên máy tính này sau khi bạn đăng xuất, cho đến khi bạn tắt tùy chọn này hoặc tắt máy tính.",
+		"keepAfterLogoutConfirmMessage": "Nebo vẫn làm việc sau khi bạn đăng xuất, cho đến khi bạn tắt mục này hoặc tắt máy.",
 		"keepAfterLogoutConfirmButton": "Tiếp tục chạy",
 		"keepAfterLogoutFailed": "Không thể thay đổi cài đặt này. Hãy thử lại."
 	},
@@ -1483,7 +1483,8 @@
 		"skills": "kỹ năng",
 		"mcpServers": "trình kết nối",
 		"memoryFiles": "tệp bộ nhớ",
-		"runLocally": "chạy tại máy"
+		"runLocally": "chạy tại máy",
+		"localCommands": "Các trình kết nối này khởi chạy một chương trình tại đây khi nhân viên của bạn dùng chúng:"
 	},
 	"settingsImport": {
 		"title": "Nhập",
@@ -3281,6 +3282,8 @@
 		"employeeDescription": "Những gì {name} được tự làm. Mọi việc khác, nó sẽ hỏi bạn trước.",
 		"loadError": "Không thể tải các quyền này.",
 		"saveError": "Thay đổi đó chưa được lưu. Hãy thử lại.",
+		"finishChecksTitle": "Kiểm tra lại trước khi kết thúc",
+		"finishChecksDesc": "Khi bạn yêu cầu nhân viên lưu một thứ gì đó hoặc chạy một lệnh, nhân viên sẽ đảm bảo đã làm xong trước khi kết thúc câu trả lời. Mỗi lần kiểm tra thêm tối đa một bước.",
 		"modeTitle": "Cách hoạt động",
 		"modeCompany": "Giống mặc định của công ty",
 		"modeCompanyDesc": "Theo cài đặt của công ty: {mode}.",
@@ -4018,7 +4021,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo chỉ chạy khi ứng dụng đang mở. Để Nebo tiếp tục làm việc sau khi thoát, hãy bật Nebo trong Mục đăng nhập.",
 		"open": "Mở Mục đăng nhập",
-		"unavailable": "Nebo chỉ chạy khi ứng dụng đang mở. Máy tính này không thể giữ Nebo chạy sau khi bạn thoát ứng dụng."
+		"unavailable": "Nebo chỉ chạy khi ứng dụng đang mở. Tại đây không thể tiếp tục làm việc sau khi bạn thoát."
 	},
 	"background": {
 		"title": "Tác vụ nền",

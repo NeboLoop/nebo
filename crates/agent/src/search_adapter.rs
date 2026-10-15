@@ -67,8 +67,8 @@ async fn sync_scope(store: &Arc<Store>, model: &str, user_id: &str) -> Arc<Vecto
 ///    recall; steady-state calls are ~hundreds of ms), and
 /// 2. an eager load of every scope with stored embeddings into the model's
 ///    ANN index (otherwise loaded lazily inside the scope's first search).
-/// Called after the boot backfill completes — including when the backfill had
-/// nothing to do.
+/// Called by the embedding sweep after its first pass — including when that
+/// pass had nothing to do or the provider refused it.
 pub async fn prewarm(store: &Arc<Store>, provider: &dyn ai::EmbeddingProvider) {
     // Unique text each boot: the DB-backed embedding cache would otherwise
     // short-circuit the call and never touch (warm) the actual provider.
@@ -254,7 +254,8 @@ mod tests {
             &[("tacit/general".to_string(), "fact/alpha".to_string())],
             user_id,
         )
-        .await;
+        .await
+        .unwrap();
         let results = adapter.search("alpha", user_id, 10, Some(0.0)).await;
         assert!(!results.is_empty(), "seed search should find memory A");
 
@@ -275,7 +276,8 @@ mod tests {
             &[("tacit/general".to_string(), "fact/locker".to_string())],
             user_id,
         )
-        .await;
+        .await
+        .unwrap();
         let b = store
             .get_memory_by_key_and_user("tacit/general", "fact/locker", user_id)
             .unwrap()
@@ -323,7 +325,8 @@ mod tests {
             &[("tacit/general".to_string(), key.to_string())],
             user_id,
         )
-        .await;
+        .await
+        .unwrap();
         let mem = store
             .get_memory_by_key_and_user("tacit/general", key, user_id)
             .unwrap()

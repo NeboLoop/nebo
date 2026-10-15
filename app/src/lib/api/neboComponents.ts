@@ -2285,6 +2285,7 @@ export interface GetSessionMessagesResponse {
 export interface GetSettingsResponse {
 	settings: Setting
 	permissionJudgement: unknown
+	finishChecks: unknown
 }
 
 export interface GetSkillResponse {
@@ -2994,6 +2995,7 @@ export interface UpdateResponse {
 export interface UpdateSettingsResponse {
 	settings: Setting
 	permissionJudgement: unknown
+	finishChecks: unknown
 }
 
 export interface UpdateSkillResponse {

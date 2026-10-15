@@ -128,7 +128,11 @@ pub async fn get_settings(State(state): State<AppState>) -> HandlerResult<serde_
         s.full_access = (mode == Some(types::permissions::Mode::FullAccess)) as i64;
     }
     let judgement = state.store.permission_judgement_mode().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
+    Ok(Json(serde_json::json!({
+        "settings": settings,
+        "permissionJudgement": judgement.as_str(),
+        "finishChecks": state.store.finish_checks(),
+    })))
 }
 
 /// PUT /api/v1/agent/settings
@@ -172,9 +176,19 @@ pub async fn update_settings(
         state.store.set_permission_judgement_mode(mode).map_err(to_error_response)?;
     }
 
+    // Double-check before finishing: a chat reply's end checks (an
+    // unanswered save, an unrun command) may take their one more step.
+    if let Some(on) = body["finishChecks"].as_bool() {
+        state.store.set_finish_checks(on).map_err(to_error_response)?;
+    }
+
     let settings = state.store.get_settings().map_err(to_error_response)?;
     let judgement = state.store.permission_judgement_mode().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
+    Ok(Json(serde_json::json!({
+        "settings": settings,
+        "permissionJudgement": judgement.as_str(),
+        "finishChecks": state.store.finish_checks(),
+    })))
 }
 
 /// The longest Location label taken: an address, not a document.

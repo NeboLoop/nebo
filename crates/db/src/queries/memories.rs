@@ -677,7 +677,8 @@ impl Store {
              CREATE VIRTUAL TABLE memories_fts USING fts5(
                  key, value, tags,
                  content='memories',
-                 content_rowid='id'
+                 content_rowid='id',
+                 tokenize='trigram'
              );
 
              INSERT INTO memories_fts(rowid, key, value, tags)

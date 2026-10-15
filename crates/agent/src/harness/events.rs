@@ -98,8 +98,6 @@ pub enum TurnEvent {
     CutCall(String),
     /// The connection dropped while the last reply streamed.
     StreamCut,
-    /// The last reply had no visible output.
-    EmptyReply,
     /// The last reply wrote a call to this tool out as text: it was cut
     /// there, and the call did not run (`reminders::NoteFence`).
     TextCall(String),
@@ -147,6 +145,9 @@ pub enum TurnEvent {
     FilesMade(Vec<String>),
     /// After a checkpoint: work started before it that is still running.
     RunningWork(super::compact::restore::RunningWork),
+    /// After a checkpoint: the task list as it stands, while anything on it
+    /// is still open.
+    TaskList(Vec<WorkTaskLine>),
 }
 
 /// What a session knows about itself outside the conversation. Nothing here
@@ -195,6 +196,11 @@ pub struct WorkTaskLine {
     pub status: String,
 }
 
+/// A task list as the task reminder and a checkpoint's restore show it.
+fn task_lines(tasks: &[WorkTaskLine]) -> String {
+    tasks.iter().map(|t| format!("- [{}] {}", t.status, t.subject)).collect::<Vec<_>>().join("\n")
+}
+
 /// A limit the turn is nearing: the number only, never an instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Threshold {
@@ -223,6 +229,7 @@ pub const NAMES: &[&str] = &[
     "files_changed",
     "diagnostics",
     "task_reminder",
+    "task_list",
     "plan_mode",
     "goal_set",
     "goal_check",
@@ -236,7 +243,6 @@ pub const NAMES: &[&str] = &[
     "cutoff_resume",
     "cut_call",
     "stream_cut",
-    "empty_reply",
     "text_call",
     "mid_turn_message",
     "mid_turn_answered",
@@ -391,8 +397,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::TasksIdle(tasks) => {
             let mut text = "The task list hasn't been touched in a while. If it still applies, update it; if not, ignore this.".to_string();
             if !tasks.is_empty() {
-                let lines: Vec<String> = tasks.iter().map(|t| format!("- [{}] {}", t.status, t.subject)).collect();
-                text.push_str(&format!(" Current tasks:\n{}", lines.join("\n")));
+                text.push_str(&format!(" Current tasks:\n{}", task_lines(tasks)));
             }
             ("task_reminder", text)
         }
@@ -459,10 +464,6 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::StreamCut => (
             "stream_cut",
             "Your last reply was cut off mid-stream by the connection. Resume directly from where it stopped, with no recap.".to_string(),
-        ),
-        TurnEvent::EmptyReply => (
-            "empty_reply",
-            "Your last reply had no visible output. Continue.".to_string(),
         ),
         TurnEvent::TextCall(tool) => (
             "text_call",
@@ -583,6 +584,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             });
         }
         TurnEvent::RunningWork(work) => ("running_work", work.text()),
+        TurnEvent::TaskList(tasks) => (
+            "task_list",
+            format!(
+                "Your task list, carried over from before the checkpoint. Keep working from it and keep it up to date:\n{}",
+                task_lines(tasks)
+            ),
+        ),
     };
     Some(Attachment {
         kind,
@@ -620,7 +628,7 @@ fn tools_triggered_row(defs: &[ai::ToolDefinition]) -> Option<Attachment> {
     let mut data = serde_json::Map::new();
     data.insert(
         super::tool_surface::LOADED_TOOLS_KEY.into(),
-        defs.iter().map(tools::find_tools::function_entry).collect::<Vec<_>>().into(),
+        defs.iter().map(ai::function_entry).collect::<Vec<_>>().into(),
     );
     Some(Attachment {
         kind: "tools_triggered",
@@ -1334,7 +1342,6 @@ mod tests {
             TurnEvent::AgentsListing(lined.clone()),
             TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
-            TurnEvent::EmptyReply,
             TurnEvent::TextCall("read_file".into()),
             TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Stop },
             TurnEvent::MidTurnAnswered(OwnerIntent::Aside),
@@ -1384,6 +1391,7 @@ mod tests {
                 description: "research".into(),
                 kind: crate::harness::compact::restore::WorkKind::Helper,
             }),
+            TurnEvent::TaskList(vec![WorkTaskLine { subject: "draft the letter".into(), status: "in_progress".into() }]),
             TurnEvent::TurnTime("It is 2:05 PM (America/Denver, UTC-06:00) on Thursday, September 24, 2026.".into()),
             TurnEvent::PhoneLocation(Some(crate::phone_location::SharedPosition {
                 text: "The owner's phone is at 40.000000, -111.000000.".into(),

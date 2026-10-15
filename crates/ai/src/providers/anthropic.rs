@@ -38,10 +38,26 @@ impl AnthropicProvider {
     }
 
     /// The request as the API receives it, cache markers placed.
+    ///
+    /// A deferred tool a result loaded (`find_tools`, or the error for a call
+    /// made without its definition) is sent with `defer_loading`, and that
+    /// result names it with a `tool_reference` block where its text showed
+    /// the definition: the API leaves deferred tools out of the cached
+    /// prefix and shows the definition where the reference is, so a load
+    /// appends to the conversation and the cache before it stays whole.
+    /// Without this a load grew the tools array, the head of the prefix, and
+    /// the whole conversation was written to the cache again.
     fn api_request(&self, req: &ChatRequest) -> AnthropicApiRequest {
-        let (mut messages, system_prompt) = self.build_messages(req);
-
         let model = if req.model.is_empty() { self.model.clone() } else { req.model.clone() };
+        let referable: std::collections::HashSet<&str> = if reads_tool_references(&model) {
+            req.tools.iter().map(|t| t.name.as_str()).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let (mut messages, system_prompt, referenced) = self.build_messages(req, &referable);
+        // At least one tool is loaded up front, or the API refuses the
+        // request; a reference to a tool that isn't deferred still resolves.
+        let deferred = if referenced.len() < req.tools.len() { referenced } else { Default::default() };
 
         let budget = thinking_budget(req.effort);
         let max_tokens = if req.max_tokens > 0 {
@@ -118,18 +134,30 @@ impl AnthropicProvider {
             None
         };
 
-        // Build tools with cache_control on the last tool for definition caching
+        // Tools a result loaded go deferred. The last tool loaded up front
+        // carries a cache marker, so a tool appended after it (one a request's
+        // words loaded) keeps the tools before it cached, when the system
+        // prompt's markers and the last message's leave one free.
+        let system_markers = system_blocks.iter().flatten().filter(|b| b.cache_control.is_some()).count();
         let tools: Option<Vec<AnthropicTool>> = if req.tools.is_empty() {
             None
         } else {
+            let last_loaded = req
+                .tools
+                .iter()
+                .rposition(|t| !deferred.contains(&t.name))
+                .filter(|_| system_markers + 2 <= MAX_CACHE_MARKERS);
             let tool_list: Vec<AnthropicTool> = req
                 .tools
                 .iter()
-                .map(|t| {
+                .enumerate()
+                .map(|(i, t)| {
                     let schema = t.input_schema.as_object().cloned().unwrap_or_default();
                     AnthropicTool {
                         name: t.name.clone(),
                         description: t.description.clone(),
+                        defer_loading: deferred.contains(&t.name),
+                        cache_control: (Some(i) == last_loaded).then(|| CacheControl { cache_type: "ephemeral".to_string() }),
                         input_schema: AnthropicInputSchema {
                             schema_type: "object".to_string(),
                             properties: schema.get("properties").cloned(),
@@ -149,8 +177,7 @@ impl AnthropicProvider {
 
         // Exactly one message marker, on the last message: a plain-text
         // message becomes a text block to carry it, so each step reads the
-        // previous step's whole prefix from the cache. The tools carry none:
-        // they come before the system prompt, whose marker covers them.
+        // previous step's whole prefix from the cache.
         mark_last_message(&mut messages);
 
         // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
@@ -180,8 +207,16 @@ impl AnthropicProvider {
         }
     }
 
-    /// Build Anthropic API messages from our generic format.
-    fn build_messages(&self, req: &ChatRequest) -> (Vec<AnthropicMessage>, String) {
+    /// Build Anthropic API messages from our generic format. A result that
+    /// loaded tools in `referable` names them by `tool_reference` in place of
+    /// their definitions' text; the names it referenced come back with the
+    /// messages.
+    fn build_messages(
+        &self,
+        req: &ChatRequest,
+        referable: &std::collections::HashSet<&str>,
+    ) -> (Vec<AnthropicMessage>, String, std::collections::HashSet<String>) {
+        let mut referenced = std::collections::HashSet::new();
         let mut system_prompt = req.system.clone();
         let mut messages = Vec::new();
 
@@ -310,9 +345,10 @@ impl AnthropicProvider {
                             {
                                 continue;
                             }
+                            let content = result_content(&r, referable, &mut referenced);
                             blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: r.tool_call_id,
-                                content: r.content,
+                                content,
                                 is_error: r.is_error,
                                 cache_control: None,
                             });
@@ -329,7 +365,7 @@ impl AnthropicProvider {
             }
         }
 
-        (messages, system_prompt)
+        (messages, system_prompt, referenced)
     }
 
     /// Handle the SSE stream from Anthropic.
@@ -567,12 +603,16 @@ impl Provider for AnthropicProvider {
             "sending Anthropic request"
         );
 
-        let response = self
+        let mut request = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if api_req.tools.iter().flatten().any(|t| t.defer_loading) {
+            request = request.header("anthropic-beta", TOOL_REFERENCE_BETA);
+        }
+        let response = request
             .json(&api_req)
             .send()
             .await
@@ -649,6 +689,57 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
+    /// The deferred tools this result loaded, as their definitions' entries
+    /// (`function_entry`); its text shows them in a `<functions>` block.
+    #[serde(default, rename = "loadedTools")]
+    loaded_tools: Vec<serde_json::Value>,
+}
+
+/// The beta a request with deferred tools and `tool_reference` blocks names.
+const TOOL_REFERENCE_BETA: &str = "advanced-tool-use-2025-11-20";
+
+/// The cache markers one request may carry.
+const MAX_CACHE_MARKERS: usize = 4;
+
+/// Whether `model` reads `tool_reference` blocks and `defer_loading` tools:
+/// every Claude model from the 4.5 generation on. Older ones get the
+/// definitions in text and in the tools array.
+fn reads_tool_references(model: &str) -> bool {
+    const BEFORE: [&str; 6] = [
+        "claude-3",
+        "claude-opus-4-0",
+        "claude-opus-4-1",
+        "claude-opus-4-2025",
+        "claude-sonnet-4-0",
+        "claude-sonnet-4-2025",
+    ];
+    !BEFORE.iter().any(|old| model.starts_with(old))
+}
+
+/// A tool result's content. One that loaded tools the request may reference
+/// sends its text without their `<functions>` block, then one
+/// `tool_reference` per tool: the API shows each definition there. One whose
+/// text was cleared since still references its tools. Any other result is
+/// sent as stored.
+fn result_content(
+    r: &SessionToolResult,
+    referable: &std::collections::HashSet<&str>,
+    referenced: &mut std::collections::HashSet<String>,
+) -> ToolResultContent {
+    let loaded: Vec<ToolDefinition> = r.loaded_tools.iter().filter_map(definition_of).collect();
+    if loaded.is_empty() || !loaded.iter().all(|d| referable.contains(d.name.as_str())) {
+        return ToolResultContent::Text(r.content.clone());
+    }
+    let text = r.content.replacen(&functions_block(&loaded), "", 1);
+    let mut blocks = Vec::new();
+    if !text.trim().is_empty() {
+        blocks.push(ToolResultBlock::Text { text: text.trim().to_string() });
+    }
+    for def in loaded {
+        referenced.insert(def.name.clone());
+        blocks.push(ToolResultBlock::ToolReference { tool_name: def.name });
+    }
+    ToolResultContent::Blocks(blocks)
 }
 
 #[derive(Debug, Serialize)]
@@ -740,12 +831,30 @@ enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolResultContent,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+}
+
+/// A tool result's content: its text, or blocks when it references tools.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<ToolResultBlock>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum ToolResultBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    /// A deferred tool's definition, shown here by the API.
+    #[serde(rename = "tool_reference")]
+    ToolReference { tool_name: String },
 }
 
 /// Put the one message cache marker on the last block of the last message.
@@ -778,6 +887,11 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: AnthropicInputSchema,
+    /// Loaded by a result's `tool_reference`: out of the cached prefix.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    defer_loading: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Serialize)]
@@ -924,16 +1038,15 @@ mod tests {
         }
     }
 
-    /// Cache marker placement: the system prompt's marker, and exactly one
-    /// on the last message, which a plain-text message carries as a text
-    /// block. Before: none when the last row was plain text, and one on the
-    /// last tool.
+    /// Cache marker placement: the system prompt's marker, the last tool
+    /// loaded up front, and exactly one on the last message, which a
+    /// plain-text message carries as a text block.
     #[test]
     fn one_marker_on_the_last_message_even_when_it_is_plain_text() {
         let body = sent(&request(vec![user("Hi"), Message { role: "assistant".into(), content: "Hello.".into(), ..Default::default() }, user("<system-reminder>\nIt is noon.\n</system-reminder>")]));
-        assert_eq!(markers(&body), 2, "the system prompt and the last message: {body}");
+        assert_eq!(markers(&body), 3, "the system prompt, the tools and the last message: {body}");
         assert!(body["system"][0]["cache_control"].is_object());
-        assert!(body["tools"][0].get("cache_control").is_none(), "the tools carry none");
+        assert!(body["tools"][0]["cache_control"].is_object(), "{body}");
         let last = body["messages"].as_array().unwrap().last().unwrap();
         assert_eq!(last["content"][0]["text"], "<system-reminder>\nIt is noon.\n</system-reminder>");
         assert!(last["content"][0]["cache_control"].is_object(), "{last}");
@@ -953,9 +1066,139 @@ mod tests {
             ..Default::default()
         };
         let body = sent(&request(vec![user("Read it"), call, result]));
-        assert_eq!(markers(&body), 2, "{body}");
+        assert_eq!(markers(&body), 3, "{body}");
         let last = body["messages"].as_array().unwrap().last().unwrap();
         assert!(last["content"][0]["cache_control"].is_object(), "{last}");
+    }
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: format!("The {name} tool."),
+            input_schema: serde_json::json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+        }
+    }
+
+    /// A session whose second step loaded `vm` with `find_tools`: the
+    /// requests of step one and step two, as the loop sends them (the core,
+    /// then the loaded tool).
+    fn load_steps(model: &str) -> (serde_json::Value, serde_json::Value) {
+        let core = vec![tool("find_tools"), tool("read_file")];
+        let first = vec![user("Start a VM")];
+        let mut second = first.clone();
+        second.push(Message {
+            role: "assistant".into(),
+            tool_calls: Some(serde_json::json!([{"id": "f1", "name": "find_tools", "input": {"query": "select:vm"}}])),
+            ..Default::default()
+        });
+        let vm = tool("vm");
+        second.push(Message {
+            role: "tool".into(),
+            tool_results: Some(serde_json::json!([{
+                "tool_call_id": "f1",
+                "content": format!("{}\nLoaded: vm. Call them directly.", functions_block([&vm])),
+                "loadedTools": [function_entry(&vm)],
+            }])),
+            ..Default::default()
+        });
+        let provider = AnthropicProvider::new("key".into(), model.into());
+        let body = |messages, tools| {
+            let req = ChatRequest { messages, tools, ..request(Vec::new()) };
+            serde_json::to_value(provider.api_request(&req)).unwrap()
+        };
+        let mut loaded = core.clone();
+        loaded.push(vm);
+        (body(first, core), body(second, loaded))
+    }
+
+    /// A request as the API renders it for the cache: markers aside, and a
+    /// message's string content the text block it stands for.
+    fn without_markers(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(o) => o
+                .iter()
+                .filter(|(k, _)| *k != "cache_control")
+                .map(|(k, v)| match (k.as_str(), v) {
+                    ("content", serde_json::Value::String(text)) if o.contains_key("role") => {
+                        (k.clone(), serde_json::json!([{"type": "text", "text": text}]))
+                    }
+                    _ => (k.clone(), without_markers(v)),
+                })
+                .collect(),
+            serde_json::Value::Array(a) => a.iter().map(without_markers).collect(),
+            other => other.clone(),
+        }
+    }
+
+    /// A result that loaded a tool names it by `tool_reference` in place of
+    /// its definition's text, and the tool goes deferred.
+    #[test]
+    fn a_loaded_tool_is_referenced_by_its_result_and_deferred() {
+        let (_, body) = load_steps("claude-sonnet-4-6");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools[2]["name"], "vm");
+        assert_eq!(tools[2]["defer_loading"], true);
+        assert!(tools[2].get("cache_control").is_none(), "a deferred tool can't carry a marker");
+        assert!(tools[0].get("defer_loading").is_none());
+        assert!(tools[1]["cache_control"].is_object(), "the last tool loaded up front carries it: {body}");
+        let result = &body["messages"][2]["content"][0];
+        assert_eq!(
+            result["content"],
+            serde_json::json!([{"type": "text", "text": "Loaded: vm. Call them directly."}, {"type": "tool_reference", "tool_name": "vm"}])
+        );
+    }
+
+    /// The cache survives a load: the request after it starts with the
+    /// request before it, byte for byte (markers aside), in the order the
+    /// API reads it: the tools loaded up front, the system prompt, the
+    /// messages. Before, the tools array grew at its head of the prefix.
+    #[test]
+    fn a_load_keeps_the_cached_prefix() {
+        let (before, after) = load_steps("claude-opus-4-8");
+        let up_front = |b: &serde_json::Value| {
+            b["tools"].as_array().unwrap().iter().filter(|t| t.get("defer_loading").is_none()).map(without_markers).collect::<Vec<_>>()
+        };
+        assert_eq!(up_front(&before), up_front(&after));
+        assert_eq!(without_markers(&before["system"]), without_markers(&after["system"]));
+        let n = before["messages"].as_array().unwrap().len();
+        assert_eq!(
+            without_markers(&before["messages"]),
+            serde_json::Value::Array(after["messages"].as_array().unwrap()[..n].iter().map(without_markers).collect())
+        );
+    }
+
+    /// A model from before tool references gets the definition in text and
+    /// in the tools array, as it always did.
+    #[test]
+    fn an_older_model_keeps_definitions_in_text() {
+        let (_, body) = load_steps("claude-3-7-sonnet-latest");
+        assert!(body["tools"][2].get("defer_loading").is_none());
+        assert!(body["messages"][2]["content"][0]["content"].as_str().unwrap().starts_with("<functions>"));
+        assert!(!reads_tool_references("claude-opus-4-1-20250805"));
+        assert!(!reads_tool_references("claude-sonnet-4-20250514"));
+        assert!(reads_tool_references("claude-haiku-4-5"));
+        assert!(reads_tool_references("claude-opus-5"));
+    }
+
+    /// A result cleared since it loaded its tools (its text saved away)
+    /// still references them: the tool stays deferred, the cache whole.
+    #[test]
+    fn a_cleared_result_still_references_its_tools() {
+        let vm = tool("vm");
+        let call = Message {
+            role: "assistant".into(),
+            tool_calls: Some(serde_json::json!([{"id": "f1", "name": "find_tools", "input": {}}])),
+            ..Default::default()
+        };
+        let result = Message {
+            role: "tool".into(),
+            tool_results: Some(serde_json::json!([{"tool_call_id": "f1", "content": "saved:1", "loadedTools": [function_entry(&vm)]}])),
+            ..Default::default()
+        };
+        let req = ChatRequest { tools: vec![tool("find_tools"), vm], ..request(vec![user("go"), call, result]) };
+        let body = sent(&req);
+        assert_eq!(body["tools"][1]["defer_loading"], true);
+        assert_eq!(body["messages"][2]["content"][0]["content"][1], serde_json::json!({"type": "tool_reference", "tool_name": "vm"}));
     }
 
     /// A thinking turn goes back with its blocks first, each unchanged:

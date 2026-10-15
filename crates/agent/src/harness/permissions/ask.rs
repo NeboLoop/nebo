@@ -2197,15 +2197,15 @@ mod tests {
 
     /// 2026-10-04: an employee with no recording tool ran `screencapture -x`
     /// 90 times on the owner's display, with nothing asking. Capturing his
-    /// screen asks in every mode, Full Access included, in Nebo's own words
-    /// whatever the description says. "Allow always" keeps it for that
-    /// employee, so the next capture runs unasked, a scheduled one too;
-    /// another employee is still asked.
+    /// screen asks in Ask and Automatic, in Nebo's own words whatever the
+    /// description says. "Allow always" keeps it for that employee, so the
+    /// next capture runs unasked, a scheduled one too; another employee is
+    /// still asked. Full Access is the owner's own yes: it runs.
     #[tokio::test]
     async fn capturing_the_screen_asks_and_allow_always_keeps_it_for_the_employee() {
         let r = rig().await;
         let ran = r.shell().await;
-        for (agent, mode) in [("auto", Mode::Automatic), ("asker", Mode::Ask), ("emp", Mode::FullAccess)] {
+        for (agent, mode) in [("asker", Mode::Ask), ("emp", Mode::Automatic)] {
             r.mode(agent, mode);
             let parked = r.reg.execute(&ctx(&format!("agent:{agent}:web"), Door::Chat), "run_command", command("screencapture -x /tmp/a.png")).await;
             let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{mode:?}: {}", parked.content));
@@ -2243,9 +2243,13 @@ mod tests {
         assert_eq!(cron.content, "RAN");
         assert_eq!(ran.lock().unwrap().len(), 3);
         // Another employee is still asked.
-        r.mode("other", Mode::FullAccess);
+        r.mode("other", Mode::Automatic);
         let other = r.reg.execute(&ctx("agent:other:web", Door::Chat), "run_command", command("screencapture -x /tmp/d.png")).await;
         assert!(other.parked_ask.is_some(), "{}", other.content);
+        // An employee in Full Access is never asked: the owner said so.
+        r.mode("full", Mode::FullAccess);
+        let full = r.reg.execute(&ctx("agent:full:web", Door::Chat), "run_command", command("screencapture -x /tmp/e.png")).await;
+        assert_eq!((full.content.as_str(), full.parked_ask.is_none()), ("RAN", true));
     }
 
     /// No: it doesn't run, the employee is told plainly, and the same call
@@ -2254,7 +2258,7 @@ mod tests {
     async fn no_blocks_capturing_the_screen_with_a_plain_message() {
         let r = rig().await;
         let ran = r.shell().await;
-        r.mode("emp", Mode::FullAccess);
+        r.mode("emp", Mode::Automatic);
         let shot = command("screencapture -x /tmp/a.png");
         let parked = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", shot.clone()).await;
         r.answer(&parked.parked_ask.unwrap(), Answer::No, AnsweredVia::Chat).await.unwrap();
@@ -2281,7 +2285,7 @@ mod tests {
     async fn driving_an_app_asks_and_ordinary_commands_do_not() {
         let r = rig().await;
         let ran = r.shell().await;
-        r.mode("emp", Mode::FullAccess);
+        r.mode("emp", Mode::Automatic);
         for c in [
             r#"osascript -e 'tell application "Safari" to do JavaScript "location.href = 1" in document 1'"#,
             "open -a Safari https://example.com",
@@ -2291,6 +2295,8 @@ mod tests {
             let ask = r.asks.get(&id).unwrap().unwrap();
             assert_eq!((ask.sentence.as_str(), ask.reason()), ("controlling Safari", "It would act in your apps as you."), "{c}");
         }
+        // In Full Access, where a command outside its job runs too.
+        r.mode("emp", Mode::FullAccess);
         for c in ["grep screencapture notes.txt", "echo osascript", "open file.pdf"] {
             let t = r.reg.target("run_command", &command(c)).await.unwrap();
             assert_eq!(t.effects.reaches_owner, None, "{c}");
@@ -2372,9 +2378,9 @@ mod tests {
 
     /// Bake-off 2026-10-10: a test employee's unattended workflow read the
     /// owner's Calendar through `os` and tried Mail and Messages, with
-    /// nothing asking. Each of his apps now waits for his OK, in every
-    /// mode, Full Access included, a workflow step too; "Allow always" grants
-    /// that one call to that employee, and another employee is still asked.
+    /// nothing asking. Each of his apps now waits for his OK in Ask and
+    /// Automatic, a workflow step too; "Allow always" grants that one call
+    /// to that employee, and another employee is still asked.
     #[tokio::test]
     async fn the_owners_apps_wait_for_his_ok_and_allow_always_grants_that_employee() {
         let r = rig().await;
@@ -2388,7 +2394,7 @@ mod tests {
             ("message", json!({ "resource": "sms", "action": "send", "phone": "+15550142", "text": "hi" }), "Messages"),
         ];
         for agent in ["emp", "other"] {
-            r.mode(agent, Mode::FullAccess);
+            r.mode(agent, Mode::Automatic);
         }
         for (tool, input, app) in &calls {
             let t = r.reg.target(tool, input).await.unwrap();
@@ -2419,6 +2425,53 @@ mod tests {
         // Not his mail, and not another employee's calendar.
         assert!(r.reg.execute(&workflow_ctx("emp"), "os", calls[1].1.clone()).await.parked_ask.is_some());
         assert!(r.reg.execute(&workflow_ctx("other"), "os", calls[0].1.clone()).await.parked_ask.is_some());
+    }
+
+    /// 2026-10-15: the owner's company is in Full Access, and Bookkeeper's
+    /// workflow step "queue-review" parked on a card for searching his
+    /// texts. Full Access is his own yes to everything: his apps run from a
+    /// workflow step and from a chat without a card, and the audit still
+    /// records the step's undeclared tool.
+    #[tokio::test]
+    async fn full_access_uses_the_owners_apps_without_asking() {
+        let r = rig().await;
+        let ran = r.owner_apps().await;
+        r.mode("emp", Mode::FullAccess);
+        let calls = [
+            ("message", json!({ "action": "search", "query": "question bookkeeper accounting decision needed" })),
+            ("message", json!({ "resource": "sms", "action": "send", "phone": "+15550142", "text": "hi" })),
+            ("os", json!({ "resource": "calendar", "action": "today" })),
+        ];
+        for (tool, input) in &calls {
+            for c in [workflow_ctx("emp"), ctx("agent:emp:web", Door::Chat)] {
+                let done = r.reg.execute(&c, tool, input.clone()).await;
+                assert_eq!((done.content.as_str(), done.parked_ask.is_none()), ("RAN", true), "{tool} {input}");
+            }
+        }
+        assert_eq!(ran.lock().unwrap().len(), 6);
+        assert_eq!(r.seen.cards(), 0, "no card");
+        assert!(r.asks.open(None).unwrap().is_empty());
+        // An ask rule the owner wrote still asks, Full Access or not.
+        let rule = r
+            .store
+            .write_permission_rule(
+                &Rule {
+                    id: String::new(),
+                    scope: Scope::Employee("emp".into()),
+                    key: RuleKey::Tool("sms_search".into()),
+                    field: None,
+                    effect: Effect::Ask,
+                    money: None,
+                    source: RuleSource::Owner,
+                    locked: false,
+                    created_at: 0,
+                },
+                &Writer::Owner,
+            )
+            .unwrap();
+        let asked = r.reg.execute(&workflow_ctx("emp"), "message", calls[0].1.clone()).await;
+        let id = asked.parked_ask.unwrap_or_else(|| panic!("{}", asked.content));
+        assert_eq!(r.asks.get(&id).unwrap().unwrap().case, AskCase::AskRule { rule_id: rule.id });
     }
 
     /// What isn't his app doesn't ask: a file search, listing what runs,

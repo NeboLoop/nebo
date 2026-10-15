@@ -1,7 +1,8 @@
 //! What a checkpoint re-attaches after its boundary: the files read most
 //! recently (re-read fresh from disk), the skills loaded with their
 //! instructions, the files tool results reported making (their lines word
-//! for word), the agreed goal, the work still running and plan mode. Each
+//! for word), the agreed goal, the work still running, the task list and
+//! plan mode. Each
 //! is a turn event, so it reaches the conversation the one way every
 //! attachment does (`events::attachment_for`, `Reminders::write`). The
 //! conversation before the boundary is where the files and skills are
@@ -11,7 +12,7 @@ use std::collections::HashSet;
 
 use db::models::ChatMessage;
 
-use crate::harness::events::TurnEvent;
+use crate::harness::events::{TurnEvent, WorkTaskLine};
 use crate::harness::goal::{AgreedGoal, GoalStatus};
 
 /// Most files re-attached.
@@ -90,11 +91,15 @@ impl RunningWork {
 pub struct RestoreState<'a> {
     pub goal: Option<&'a AgreedGoal>,
     pub running: &'a [RunningWork],
+    /// The session's task list. Restored while an item on it is still open,
+    /// right after the checkpoint (Claude Code re-attaches its todo list the
+    /// same way), not when the task reminder next comes due.
+    pub tasks: &'a [WorkTaskLine],
     pub plan_mode: bool,
 }
 
 /// The restore list, in order: files newest first, skills, files made, the
-/// goal, running work, plan mode. `before` is the conversation the checkpoint summarized,
+/// goal, running work, the task list, plan mode. `before` is the conversation the checkpoint summarized,
 /// as stored.
 pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEvent> {
     let mut events = Vec::new();
@@ -141,6 +146,10 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEven
 
     for work in state.running {
         events.push(TurnEvent::RunningWork(work.clone()));
+    }
+
+    if state.tasks.iter().any(|t| matches!(t.status.as_str(), "pending" | "in_progress")) {
+        events.push(TurnEvent::TaskList(state.tasks.to_vec()));
     }
 
     if state.plan_mode {

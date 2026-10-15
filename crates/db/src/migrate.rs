@@ -361,6 +361,43 @@ mod tests {
         assert_eq!(name, "0235_inbox_items.sql");
     }
 
+    /// 0243 rebuilds the full-text indexes of an existing database with the
+    /// trigram tokenizer, from the rows already there: a word inside an
+    /// earlier Japanese message or memory is found after the update.
+    #[test]
+    fn the_trigram_migration_reindexes_what_is_already_there() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_to(&conn, 240).unwrap();
+        // The chat index as the startup check built it before 0243.
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE chat_messages_fts USING fts5(content, content='chat_messages', content_rowid='rowid');
+             INSERT INTO chats (id, title, created_at, updated_at) VALUES ('c', 'Notes', 1, 1);
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('m', 'c', 'user', '明日の会議の資料を送って', 1);
+             INSERT INTO chat_messages_fts(rowid, content) SELECT rowid, content FROM chat_messages;
+             INSERT INTO memories (namespace, key, value, user_id, created_at, updated_at)
+                 VALUES ('tacit', 'k', '毎週月曜日に定例会議があります', 'owner', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+        )
+        .unwrap();
+        let finds = |table: &str, word: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?1"), [format!("\"{word}\"")], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(finds("chat_messages_fts", "資料を送"), 0, "the old index can't find it");
+        run_migrations(&conn).unwrap();
+        for table in ["chat_messages_fts", "memories_fts", "memory_chunks_fts"] {
+            let sql: String = conn
+                .query_row("SELECT sql FROM sqlite_master WHERE name = ?1", [table], |r| r.get(0))
+                .unwrap();
+            assert!(sql.contains("tokenize='trigram'"), "{table}: {sql}");
+        }
+        assert_eq!(finds("chat_messages_fts", "資料を送"), 1);
+        assert_eq!(finds("memories_fts", "定例会議"), 1);
+        // The sync triggers came back with it.
+        conn.execute("UPDATE chat_messages SET content = '来週の予算の話' WHERE id = 'm'", []).unwrap();
+        assert_eq!(finds("chat_messages_fts", "予算の話"), 1);
+        assert_eq!(finds("chat_messages_fts", "資料を送"), 0);
+    }
+
     #[test]
     fn test_run_migrations_in_memory() {
         let conn = Connection::open_in_memory().unwrap();

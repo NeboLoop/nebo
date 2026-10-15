@@ -506,7 +506,9 @@ impl Store {
         Ok(())
     }
 
-    pub fn record_permission_activity(&self, row: &PermissionActivityRow) -> Result<(), NeboError> {
+    /// Record one decision; returns its id (a shadow judgement still
+    /// answering lands on it later: [`Self::set_permission_activity_judgement`]).
+    pub fn record_permission_activity(&self, row: &PermissionActivityRow) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO permission_activity
@@ -527,6 +529,18 @@ impl Store {
                 row.judgement,
                 row.created_at,
             ],
+        )
+        .map_err(db_err)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// A shadow judgement's verdict, on the decision it was asked about
+    /// (recorded when the call ran, before the judges answered).
+    pub fn set_permission_activity_judgement(&self, id: i64, judgement: &str, unreviewed: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE permission_activity SET judgement = ?2, unreviewed = ?3 WHERE id = ?1",
+            params![id, judgement, unreviewed as i64],
         )
         .map_err(db_err)?;
         Ok(())
