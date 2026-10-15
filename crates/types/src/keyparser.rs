@@ -147,6 +147,13 @@ pub fn is_subagent_key(key: &str) -> bool {
     key.starts_with("subagent:")
 }
 
+/// The parent session and task id of a helper's session key, `None` for
+/// any other session. A task id never holds a colon; it is the helper's
+/// engine run id.
+pub fn split_helper_key(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("subagent:")?.rsplit_once(':')
+}
+
 /// Returns true if the key represents an ACP session.
 pub fn is_acp_key(key: &str) -> bool {
     key.starts_with("acp:")

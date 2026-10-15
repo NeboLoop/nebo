@@ -221,11 +221,7 @@ pub fn depth_of(key: &str) -> u8 {
     key.matches("subagent:").count().min(u8::MAX as usize) as u8
 }
 
-/// The parent session and task id of a helper's session key, `None` for
-/// any other session. A task id never holds a colon.
-pub fn split_helper_key(key: &str) -> Option<(&str, &str)> {
-    key.strip_prefix("subagent:")?.rsplit_once(':')
-}
+pub use types::keyparser::split_helper_key;
 
 /// The session at the top of the helper tree `key` belongs to: `key`
 /// itself for any session that is not a helper's.

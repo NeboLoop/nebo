@@ -38,6 +38,15 @@ pub fn spawn(
         // definition, fail the unresumable with a narrated reason.
         state.workflow_manager.recover_interrupted_runs().await;
 
+        // Checklist items whose run is no longer live (ended, or gone) are
+        // closed: left by builds that did not close a run's lists at its
+        // end, or by a process that died first. Status only; rows stay.
+        match state.store.close_orphaned_task_items() {
+            Ok(0) => {}
+            Ok(n) => info!(count = n, "checklist items left open by ended runs closed"),
+            Err(e) => warn!(error = %e, "checklist items left open by ended runs not swept"),
+        }
+
         // Session wakes persisted but not delivered before a crash (session
         // wake rail, R1): redeliver on boot.
         crate::wake::recover_pending_wakes(&state).await;

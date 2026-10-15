@@ -44,9 +44,9 @@ impl Tasks {
             .collect()
     }
 
-    /// Items live on the conversation's own list.
+    /// Items live on the conversation's own list; a helper's is its run's.
     fn list_id(ctx: &ToolContext) -> String {
-        format!("session:{}", ctx.session_id)
+        db::conversation_task_list(&ctx.session_key, &ctx.session_id)
     }
 
     fn create(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
@@ -106,7 +106,7 @@ impl Tasks {
     }
 
     fn list(&self, ctx: &ToolContext) -> ToolResult {
-        match self.store.list_task_items(&Self::list_id(ctx)) {
+        match self.store.list_task_items(&Self::list_id(ctx), true) {
             Ok(tasks) if tasks.is_empty() => ToolResult::ok("No tasks."),
             Ok(tasks) => {
                 let lines: Vec<String> = tasks
@@ -590,7 +590,7 @@ mod tests {
             "{}",
             created.content
         );
-        let id = rig.store.list_task_items("session:s1").unwrap()[0]
+        let id = rig.store.list_task_items("session:s1", true).unwrap()[0]
             .id
             .clone();
         assert!(

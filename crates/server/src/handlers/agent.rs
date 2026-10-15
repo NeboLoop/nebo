@@ -299,17 +299,10 @@ pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_js
     let provider_count = state.harness.provider_count();
     let tool_names = state.tools.get_tool_names().await;
 
-    // Get real task counts from the DB
-    let active_tasks = state
-        .store
-        .get_pending_tasks_by_status("in_progress")
-        .map(|t| t.len())
-        .unwrap_or(0);
-    let queued_tasks = state
-        .store
-        .get_pending_tasks_by_status("pending")
-        .map(|t| t.len())
-        .unwrap_or(0);
+    // Work running now and turns waiting for a lane, from the owner's
+    // background list and the lanes: never a run's checklist items.
+    let (active_tasks, queued_tasks) =
+        crate::background::work_counts(&crate::background::collect(&state, None).await, &state.lanes.status());
 
     // Surface a status string AND a human-readable reason so the UI can tell the
     // user *what* is wrong (and how to fix it) instead of a bare "Degraded".

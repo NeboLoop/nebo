@@ -285,6 +285,16 @@ pub async fn collect(state: &AppState, agent_id: Option<&str>) -> Vec<Background
     tasks
 }
 
+/// What the status line counts: the work running now, every kind on the
+/// background list, and the turns queued for a lane slot. A workflow run's
+/// checklist items are its steps, never work of their own; the run is
+/// counted once, as the run.
+pub(crate) fn work_counts(tasks: &[BackgroundTask], lanes: &[(String, usize, usize, usize)]) -> (usize, usize) {
+    let running = tasks.iter().filter(|t| t.status == Status::Running).count();
+    let queued = lanes.iter().map(|(_, _, queued, _)| queued).sum();
+    (running, queued)
+}
+
 /// Running and waiting work first, oldest first; then what fires next.
 fn order(tasks: &mut [BackgroundTask]) {
     let rank = |t: &BackgroundTask| match t.status {

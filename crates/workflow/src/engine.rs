@@ -956,12 +956,13 @@ pub async fn execute_activity(
     }
 
     // --- Per-step execution ---
-    let list_id = format!("run:{}:{}", run_id, activity.id);
+    let list_id = db::run_task_list(run_id, &activity.id);
     let step_strs: Vec<&str> = activity.steps.iter().map(|s| s.as_str()).collect();
 
-    // Seed task_items for all steps
+    // This pass's checklist items: the parked pass when resuming at a step,
+    // else a new pass (an earlier attempt's open items closed).
     let task_items = store
-        .seed_task_list(&list_id, &step_strs)
+        .seed_task_list(&list_id, &step_strs, resume.and_then(|r| r.step_index).is_some())
         .map_err(|e| WorkflowError::Database(e.to_string()))?;
 
     // Build the instructions WITHOUT steps (they'll come as individual user messages)
@@ -2257,6 +2258,84 @@ mod engine_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().starts_with("Stopped: Step 1/2 of \"run\" used its 50 model turns"), "{err}");
+    }
+
+    /// A loop whose second step ends the way `end` says; every other step
+    /// finishes.
+    struct EndsAtStepTwo {
+        end: fn() -> WorkflowError,
+    }
+
+    #[async_trait::async_trait]
+    impl ActivityLoop for EndsAtStepTwo {
+        async fn run_turn(&self, turn: LoopTurn<'_>) -> Result<crate::LoopOutcome, WorkflowError> {
+            if turn.step_index == Some(1) {
+                return Err((self.end)());
+            }
+            Ok(crate::LoopOutcome { text: "done".into(), total_tokens: 1, output_tokens: 1, tainted: false, steps: 1 })
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
+        }
+        fn cleanup(&self, _run_id: &str) {}
+        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+            800_000
+        }
+    }
+
+    /// However a stepped run ends — exited, blocked, failed, cancelled, out
+    /// of turns, or finished — none of its checklist is left open: the step
+    /// it stopped on, the steps after it, and the activity it never reached
+    /// are all closed with it. Seen live: 1,034 steps left `pending`.
+    #[tokio::test]
+    async fn a_step_run_leaves_no_open_checklist_however_it_ends() {
+        let ends: [(&str, fn() -> WorkflowError); 6] = [
+            ("exited", || WorkflowError::Exited("nothing to do".into())),
+            ("blocked", || WorkflowError::Blocked("no store connected".into(), None)),
+            ("failed", || WorkflowError::ActivityFailed("scan".into(), "boom".into())),
+            ("cancelled", || WorkflowError::Cancelled),
+            ("out of turns", || WorkflowError::RunMaxIterations(150)),
+            ("finished", || unreachable!()),
+        ];
+        for (how, end) in ends {
+            let store = turn_store();
+            let run_id = format!("run-{how}");
+            store.create_workflow_run(&run_id, "w", "manual", None, None, None, None).unwrap();
+            let def = r#"{"version":"1.0","id":"w","name":"w","activities":[
+                {"id":"scan","intent":"scan","tools":["web"],"steps":["one","two","three","four"]},
+                {"id":"report","intent":"report","tools":["web"],"steps":["write"]}]}"#;
+            let def = crate::parser::parse_workflow(def).unwrap();
+            let looper = EndsAtStepTwo { end };
+            let finishes = how == "finished";
+            let looper_ref: &dyn ActivityLoop = if finishes { &TurnHog::new(1) } else { &looper };
+            let _ = execute_workflow(
+                &def, "", "owner", false, serde_json::json!({}), "manual", None, &store, None, looper_ref, &[],
+                Some(&run_id), None, None, None, Vec::new(), None, None, None,
+            )
+            .await;
+            for activity in ["scan", "report"] {
+                let open: Vec<_> = store
+                    .list_task_items(&db::run_task_list(&run_id, activity), false)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|t| matches!(t.status.as_str(), "pending" | "in_progress"))
+                    .map(|t| (t.seq, t.status))
+                    .collect();
+                assert!(open.is_empty(), "{how}: {activity} left open {open:?}");
+            }
+            let scan: Vec<String> = store
+                .list_task_items(&db::run_task_list(&run_id, "scan"), false)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.status)
+                .collect();
+            if finishes {
+                assert_eq!(scan, ["completed"; 4], "{how}");
+            } else {
+                assert_eq!(scan[0], "completed", "{how}: the step it finished stays finished");
+                assert_eq!(&scan[2..], ["exited", "exited"], "{how}: the steps it never reached");
+            }
+        }
     }
 
     /// An activity that explicitly gives one step more than a run's total
