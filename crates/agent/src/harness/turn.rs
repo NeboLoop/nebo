@@ -672,15 +672,20 @@ pub(crate) struct TurnModel {
 }
 
 /// The lane a turn runs in, which a pack can pin to a level: heartbeat, a
-/// schedule, a helper's run, a workflow's step that names no model of its
-/// own, or a message from a channel.
-fn lane_of(seat: &super::SeatRequest) -> Option<types::packs::Lane> {
+/// schedule, a helper's run (an Explore helper's always on the Instant
+/// level), a workflow's step that names no model of its own, or a message
+/// from a channel.
+fn lane_of(req: &TurnRequest) -> Option<types::packs::Lane> {
     use types::packs::Lane;
     use types::permissions::Door;
+    let seat = &req.seat;
     match (&seat.door, seat.origin) {
         (Door::Workflow, _) if seat.model_override.trim().is_empty() => Some(Lane::Workflow),
         (Door::Heartbeat, _) => Some(Lane::Heartbeat),
         (Door::Schedule, _) => Some(Lane::Scheduled),
+        (Door::Helper, _) if matches!(req.mode, TurnMode::Helper { kind: super::delegation::HelperKind::Explore, .. }) => {
+            Some(Lane::Explore)
+        }
         (Door::Helper, _) => Some(Lane::Helpers),
         (_, tools::Origin::Comm) => Some(Lane::Communication),
         _ => None,
@@ -1182,7 +1187,7 @@ pub(crate) async fn prepare(
     let builder = build.is_some()
         && (types::keyparser::parse_session_key(&req.session_key).rest == types::keyparser::WORKFLOW_BUILDER
             || h.builds_session(&req.session_key));
-    let lane = if builder { Some(types::packs::Lane::Build) } else { lane_of(&req.seat) };
+    let lane = if builder { Some(types::packs::Lane::Build) } else { lane_of(&req) };
     let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort, ran_on } = turn_model(h.resolver(), &model, lane)?;
     // A workflow run records what it ran on, as its page shows it: once, at
     // its first step.
@@ -3830,11 +3835,25 @@ mod tests {
         assert!(build_model(h.resolver(), "janus/nebo-1", false).is_none(), "a raw model is not a pack");
         assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", None).unwrap().model, "janus/nebo-1", "a chat stays on Auto");
 
-        let mut seat = owner("x").seat;
-        seat.door = types::permissions::Door::Workflow;
-        assert_eq!(lane_of(&seat), Some(Lane::Workflow));
-        seat.model_override = "janus/nebo-1-medium".into();
-        assert_eq!(lane_of(&seat), None, "the step's own model");
+        let mut req = owner("x");
+        req.seat.door = types::permissions::Door::Workflow;
+        assert_eq!(lane_of(&req), Some(Lane::Workflow));
+        req.seat.model_override = "janus/nebo-1-medium".into();
+        assert_eq!(lane_of(&req), None, "the step's own model");
+
+        // An Explore helper searches on Fast; any other helper keeps the
+        // helpers' lane.
+        let helper = |kind| {
+            let mut req = owner("x");
+            req.seat.door = types::permissions::Door::Helper;
+            req.mode = TurnMode::Helper { parent_session_key: "agent:x:main".into(), kind, depth: 1, answer: None };
+            req
+        };
+        use crate::harness::delegation::HelperKind;
+        assert_eq!(lane_of(&helper(HelperKind::Explore)), Some(Lane::Explore));
+        assert_eq!(lane_of(&helper(HelperKind::General)), Some(Lane::Helpers));
+        let explore = turn_model(h.resolver(), "pack/nebo-ai", lane_of(&helper(HelperKind::Explore))).unwrap();
+        assert_eq!(explore.model, "janus/nebo-1-flash", "Explore on Fast");
     }
 
     /// Background build work (a workflow tune) runs on the build lane like a
