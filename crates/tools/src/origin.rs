@@ -232,6 +232,17 @@ impl Drop for WaitGuard {
     }
 }
 
+/// The permission judgement of one call the code could not decide.
+#[derive(Debug, Clone)]
+pub enum Judgement {
+    /// The verdict, in before the call runs (enforce).
+    Decided(types::permissions::Verdict),
+    /// Still being judged, in the background (shadow): the call never waits
+    /// for it, and the verdict lands on the call's activity record when it
+    /// comes. A sender dropped without a verdict counts as unjudged.
+    Pending(tokio::sync::watch::Receiver<Option<types::permissions::Verdict>>),
+}
+
 /// Context carried through tool execution for origin tracking and session info.
 #[derive(Debug, Clone, Default)]
 pub struct ToolContext {
@@ -274,10 +285,10 @@ pub struct ToolContext {
     /// started by an inbound payload). A catalog-gated operation asks, the
     /// same as for an untrusted origin.
     pub untrusted_input: bool,
-    /// The judgement's verdict for this call, when the tool round asked the
-    /// judges about it (a call whose outward effects the code could not
-    /// decide). `None`: no judge was asked; the code's answer stands.
-    pub judgement: Option<types::permissions::Verdict>,
+    /// The judgement for this call, when the tool round asked the judges
+    /// about it (a call whose outward effects the code could not decide).
+    /// `None`: no judge was asked; the code's answer stands.
+    pub judgement: Option<Judgement>,
     /// Dispatch-time tool whitelist for restricted internal runs (the
     /// self-improvement review fork). `Some` = only these tool names may
     /// execute; everything else is denied with a corrective error at the ONE
