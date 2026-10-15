@@ -120,6 +120,10 @@ pub enum Lane {
     /// tool summaries, permission and goal checks. Always the pack's
     /// Instant level.
     Housekeeping,
+    /// An Explore helper's wide read-only search: many quick reads whose
+    /// findings the helper that asked weighs. Always the pack's Instant
+    /// level, as Claude Code runs its Explore agent on its fast model.
+    Explore,
 }
 
 impl PackLanes {
@@ -132,7 +136,7 @@ impl PackLanes {
             Lane::Helpers => self.helpers,
             Lane::Build => self.build,
             Lane::Workflow => self.workflow,
-            Lane::Housekeeping => Some(Effort::Instant),
+            Lane::Housekeeping | Lane::Explore => Some(Effort::Instant),
         }
     }
 }
@@ -380,6 +384,8 @@ mod tests {
         assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run on Fast");
         assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.lanes.level(Lane::Heartbeat), None, "the rest: the work chooses");
+        assert_eq!(nebo.lanes.level(Lane::Explore), Some(Effort::Instant), "an Explore helper on Fast");
+        assert_eq!(PackLanes { helpers: Some(Effort::Max), ..PackLanes::default() }.level(Lane::Explore), Some(Effort::Instant));
         let mine = byo(PackLevels {
             low: Some("a/low".into()),
             medium: Some("a/mid".into()),
