@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Licenser för öppen källkod",
 		"contactSupport": "Kontakta support",
 		"contactSupportBlurb": "Frågor eller problem? Mejla oss så svarar en människa inom en arbetsdag.",
-		"startAtLogin": "Starta vid inloggning",
-		"startAtLoginHint": "Nebo fortsätter arbeta när du har avslutat appen och startar när du loggar in.",
+		"startAtLogin": "Låt Nebo arbeta när appen är stängd",
+		"startAtLoginHint": "Dina medarbetares scheman, arbetsflöden och meddelanden fortsätter efter att du avslutat appen, och Nebo startar när du loggar in. Stäng av detta så stannar Nebo när du avslutar.",
 		"keepAfterLogout": "Fortsätt köra efter utloggning",
-		"keepAfterLogoutHint": "Dina medarbetare fortsätter arbeta medan du är utloggad från den här datorn.",
+		"keepAfterLogoutHint": "Dina medarbetare fortsätter arbeta medan du är utloggad.",
 		"keepAfterLogoutConfirmTitle": "Låta Nebo köra vidare efter utloggning?",
-		"keepAfterLogoutConfirmMessage": "Nebo fortsätter arbeta på den här datorn efter att du loggat ut, tills du stänger av det här eller stänger av datorn.",
+		"keepAfterLogoutConfirmMessage": "Nebo fortsätter arbeta efter att du loggat ut, tills du stänger av detta eller stänger av.",
 		"keepAfterLogoutConfirmButton": "Fortsätt köra",
 		"keepAfterLogoutFailed": "Det gick inte att ändra inställningen. Försök igen."
 	},
@@ -4018,7 +4018,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo körs bara medan appen är öppen. Slå på Nebo under Inloggningsobjekt för att det ska fortsätta efter att du avslutat.",
 		"open": "Öppna Inloggningsobjekt",
-		"unavailable": "Nebo körs bara medan appen är öppen. Den här datorn kan inte hålla Nebo igång efter att du avslutat appen."
+		"unavailable": "Nebo körs bara medan appen är öppen. Att fortsätta arbeta efter att du avslutat finns inte här."
 	},
 	"background": {
 		"title": "Bakgrundsuppgifter",

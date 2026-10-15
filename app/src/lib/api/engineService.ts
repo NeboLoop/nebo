@@ -6,7 +6,7 @@
  */
 
 export interface EngineService {
-	/** The OS service is on offer: Settings shows Start at login. */
+	/** The OS service is on offer (on by default): Settings shows "Keep Nebo working when the app is closed". */
 	offered: boolean;
 	startAtLogin: boolean;
 	/** The OS runs the engine. */

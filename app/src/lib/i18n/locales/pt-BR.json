@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Licenças de Código Aberto",
 		"contactSupport": "Falar com o suporte",
 		"contactSupportBlurb": "Dúvidas ou problemas? Escreva para a gente e uma pessoa responde em um dia útil.",
-		"startAtLogin": "Abrir ao iniciar sessão",
-		"startAtLoginHint": "O Nebo continua trabalhando depois que você fecha o app e abre quando você inicia sessão.",
+		"startAtLogin": "Manter o Nebo trabalhando com o app fechado",
+		"startAtLoginHint": "Os horários, fluxos de trabalho e mensagens dos seus funcionários continuam depois que você sai do app, e o Nebo inicia quando você faz login. Desative para o Nebo parar quando você sair.",
 		"keepAfterLogout": "Continuar funcionando depois de sair",
-		"keepAfterLogoutHint": "Seus funcionários continuam trabalhando enquanto você está desconectado deste computador.",
+		"keepAfterLogoutHint": "Seus funcionários continuam trabalhando enquanto você está desconectado.",
 		"keepAfterLogoutConfirmTitle": "Manter o Nebo funcionando depois de sair?",
-		"keepAfterLogoutConfirmMessage": "O Nebo continua trabalhando neste computador depois que você sai, até você desativar esta opção ou desligar o computador.",
+		"keepAfterLogoutConfirmMessage": "O Nebo continua trabalhando depois que você sai da sessão, até você desativar esta opção ou desligar.",
 		"keepAfterLogoutConfirmButton": "Continuar funcionando",
 		"keepAfterLogoutFailed": "Não foi possível alterar esta configuração. Tente novamente."
 	},
@@ -4018,7 +4018,7 @@
 	"loginItemsBanner": {
 		"text": "O Nebo só funciona enquanto o app está aberto. Para que continue trabalhando depois de fechar, ative o Nebo em Itens de Início.",
 		"open": "Abrir Itens de Início",
-		"unavailable": "O Nebo só funciona enquanto o app está aberto. Este computador não consegue manter o Nebo funcionando depois que você fecha o app."
+		"unavailable": "O Nebo só funciona enquanto o app está aberto. Continuar trabalhando depois de sair não está disponível aqui."
 	},
 	"background": {
 		"title": "Tarefas em segundo plano",

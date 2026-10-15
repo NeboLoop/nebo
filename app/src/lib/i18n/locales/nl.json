@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Opensourcelicenties",
 		"contactSupport": "Contact met support",
 		"contactSupportBlurb": "Vragen of problemen? Mail ons en een mens antwoordt binnen één werkdag.",
-		"startAtLogin": "Starten bij inloggen",
-		"startAtLoginHint": "Nebo blijft werken nadat je de app afsluit en start wanneer je inlogt.",
+		"startAtLogin": "Nebo laten doorwerken als de app gesloten is",
+		"startAtLoginHint": "De planningen, workflows en berichten van je medewerkers gaan door nadat je de app hebt afgesloten, en Nebo start wanneer je inlogt. Zet dit uit om Nebo te stoppen wanneer je afsluit.",
 		"keepAfterLogout": "Blijven draaien na uitloggen",
-		"keepAfterLogoutHint": "Je medewerkers blijven werken terwijl je bent uitgelogd op deze computer.",
+		"keepAfterLogoutHint": "Je medewerkers blijven werken terwijl je bent afgemeld.",
 		"keepAfterLogoutConfirmTitle": "Nebo laten draaien na het uitloggen?",
-		"keepAfterLogoutConfirmMessage": "Nebo blijft op deze computer werken nadat je uitlogt, totdat je dit uitzet of de computer afsluit.",
+		"keepAfterLogoutConfirmMessage": "Nebo blijft werken nadat je je afmeldt, totdat je dit uitzet of afsluit.",
 		"keepAfterLogoutConfirmButton": "Laten draaien",
 		"keepAfterLogoutFailed": "Deze instelling kon niet worden gewijzigd. Probeer het opnieuw."
 	},
@@ -4018,7 +4018,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo werkt alleen zolang de app open is. Zet Nebo aan bij Inloggen om het te laten doorwerken na het afsluiten.",
 		"open": "Inlogonderdelen openen",
-		"unavailable": "Nebo draait alleen zolang de app open is. Deze computer kan Nebo niet laten draaien nadat je de app afsluit."
+		"unavailable": "Nebo werkt alleen terwijl de app open is. Doorwerken nadat je afsluit is hier niet beschikbaar."
 	},
 	"background": {
 		"title": "Achtergrondtaken",

@@ -299,14 +299,14 @@ async fn pick_folder() -> Option<String> {
         .map(|f| f.path().to_string_lossy().into_owned())
 }
 
-/// How the app runs its engine, for Settings' Start at login and the Login
-/// Items banner.
+/// How the app runs its engine, for Settings' "Keep Nebo working when the
+/// app is closed" and the Login Items banner.
 #[tauri::command]
 fn engine_service() -> engine::ServiceView {
     engine::service_view()
 }
 
-/// Settings' Start at login switch.
+/// Settings' "Keep Nebo working when the app is closed" switch.
 #[tauri::command]
 async fn set_start_at_login(on: bool) -> Result<engine::ServiceView, String> {
     // Registering waits on the OS, and a handover on the engine's stop.
@@ -336,7 +336,8 @@ fn open_login_items() {
     service::open_login_items();
 }
 
-/// The tray's Start at login item, shown while the service is on offer.
+/// The tray's "Keep Working When Closed" item, shown while the service is on
+/// offer.
 static START_AT_LOGIN_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> = std::sync::OnceLock::new();
 
 fn sync_start_at_login_item(view: engine::ServiceView) {
@@ -1067,10 +1068,10 @@ fn main() {
             engine::supervise(app.handle().clone());
             engine::attach(app.handle().clone(), frontend_url(app.handle()));
 
-            // Build tray: a status line first, then Start at login while the
-            // OS service is on offer.
+            // Build tray: a status line first, then "Keep Working When
+            // Closed" (the engine as the OS's service) while it is on offer.
             let status = MenuItemBuilder::with_id("status", engine::status_line()).enabled(false).build(app)?;
-            let start_at_login = tauri::menu::CheckMenuItemBuilder::with_id("start_at_login", "Start at Login")
+            let start_at_login = tauri::menu::CheckMenuItemBuilder::with_id("start_at_login", "Keep Working When Closed")
                 .checked(engine::service_view().start_at_login)
                 .build(app)?;
             let sep0 = PredefinedMenuItem::separator(app)?;

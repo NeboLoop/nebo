@@ -182,7 +182,7 @@ fn apply_app_bundle(_new_path: &Path, _data_dir: &Path) -> Result<(), UpdateErro
 /// atomically swaps it in (move-aside → move-in → codesign verify → rollback on fail).
 ///
 /// When launchd runs the engine as the OS's service (`NEBO_SUPERVISED=launchd`;
-/// off by default) the helper also waits for the app's window process, starts
+/// on by default) the helper also waits for the app's window process, starts
 /// the new engine (`launchctl kickstart`), and keeps the new app only once its
 /// `/health` reports the new app's version within [`HEALTH_GATE`]; otherwise
 /// it puts the previous app back, starts its engine and writes the rollback
@@ -459,7 +459,7 @@ exit 0
 /// Nebo again: the engine's task when one is registered, and the app.
 ///
 /// When the engine runs as the OS's service (its Windows task's supervisor,
-/// `NEBO_SUPERVISED=taskscheduler`; off by default) the helper also holds the
+/// `NEBO_SUPERVISED=taskscheduler`; on by default) the helper also holds the
 /// new version to a health gate: the engine must answer `/health` as a
 /// version other than this one within [`HEALTH_GATE`]; the update marker
 /// ([`crate::UPDATING_MARKER`]) tells the app's window process meanwhile that
@@ -722,7 +722,7 @@ fn apply_app_bundle(appimage_path: &Path, data_dir: &Path) -> Result<(), UpdateE
     let (marker, log) = (marker_path(data_dir), log_path(data_dir));
     let spawned = match linux_service_unit() {
         // The engine runs as a `systemd --user` unit (the engine service,
-        // off by default): the helper restarts the unit and holds the new
+        // on by default): the helper restarts the unit and holds the new
         // version to a health gate.
         Some(unit) => {
             let updating = data_dir.join(crate::UPDATING_MARKER);

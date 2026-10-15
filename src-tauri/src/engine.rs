@@ -12,9 +12,12 @@
 //! shell goes, however it goes, the engine stops the graceful way.
 //!
 //! When the OS runs the engine as a service (`service`: a LaunchAgent on
-//! macOS, switched on from the update feed), the shell starts nothing itself:
-//! it attaches, asks launchd to start a stopped engine, and falls back to the
-//! child when the owner switched Nebo off in Login Items.
+//! macOS, a logon task on Windows, a `systemd --user` unit on Linux; on by
+//! default), the shell starts nothing itself: it attaches, asks the OS to
+//! start a stopped engine, and falls back to the child when the owner
+//! switched Nebo off in Login Items. Quitting the app then closes only the
+//! app: the engine keeps the employees' schedules, workflows and messages
+//! going.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -47,11 +50,13 @@ static HANDOVER: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceView {
-    /// The OS service is on offer here (asked for by the update feed or
-    /// `NEBO_ENGINE_MODE`, on an OS that has one): Settings and the tray
-    /// show Start at login.
+    /// The OS service is on offer here (on by default, unless the feed's or
+    /// `NEBO_ENGINE_MODE`'s kill switch says otherwise, on an OS that has
+    /// one): Settings and the tray show "Keep Nebo working when the app is
+    /// closed".
     pub offered: bool,
-    /// The owner's Start at login switch.
+    /// The owner's "Keep Nebo working when the app is closed" switch: the
+    /// OS starts the engine at login and keeps it running.
     pub start_at_login: bool,
     /// The OS runs the engine; otherwise it is this app's child.
     pub supervised: bool,
@@ -323,28 +328,20 @@ enum Run {
 /// registration part of it.
 fn start() -> Run {
     let target = service::Target::app();
-    let saved = service::load();
     let dev = tauri::is_dev();
-    let mode = service::wanted_mode(std::env::var("NEBO_ENGINE_MODE").ok().as_deref(), saved.engine_mode.as_deref());
-    // A child-only app (the default, and dev) asks nothing of the OS beyond
-    // whether a registration is left to remove.
-    let status = if dev { service::Status::Unsupported } else { service::status(&target) };
-    let exe = std::env::current_exe().unwrap_or_default();
-    let facts = service::Facts {
-        dev,
-        mode,
-        start_at_login: saved.start_at_login,
-        transient_path: service::is_transient(&exe),
-        status,
-    };
+    let facts = service::Facts::gather(&target, dev);
+    let service::Facts { mode, status, start_at_login, .. } = facts;
+    if dev {
+        yield_installed_engine(&target);
+    }
     let plan = service::plan(&facts);
-    tracing::info!(?mode, ?status, ?plan, start_at_login = saved.start_at_login, "how the engine runs");
+    tracing::info!(?mode, ?status, ?plan, start_at_login, "how the engine runs");
     let offered = !dev
         && mode == service::Mode::Service
         && !matches!(status, service::Status::Unsupported | service::Status::Unavailable);
     set_view(|v| {
         v.offered = offered;
-        v.start_at_login = saved.start_at_login;
+        v.start_at_login = start_at_login;
         v.unavailable = !dev && mode == service::Mode::Service && status == service::Status::Unavailable;
         v.keep_after_logout = if offered { service::keep_after_logout() } else { None };
     });
@@ -385,6 +382,18 @@ fn start() -> Run {
             set_view(|v| v.supervised = true);
             Run::Service
         }
+    }
+}
+
+/// `make dev` serves on the installed app's port and Nebo folder, so it can
+/// never run beside an installed Nebo's engine. One the OS runs (the service
+/// is on by default) is asked to stop the graceful way: it exits 0, so the
+/// OS leaves it down until the next login or until the installed app opens.
+/// Its registration stays as it is.
+fn yield_installed_engine(target: &service::Target) {
+    if let service::Job::Running(pid) = service::job(target) {
+        tracing::info!(pid, "an installed Nebo's engine holds the port; stopping it so this development build's engine runs");
+        quit_engine(target.port);
     }
 }
 
@@ -808,11 +817,32 @@ pub fn window_state(state: &'static str) {
     });
 }
 
-/// "Quit Nebo": when work is in flight, ask first; then the engine stops
-/// the graceful way, and the shell exits once it has (or after
+/// What "Quit Nebo" stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitPlan {
+    /// The OS runs the engine: only the app closes, and the employees'
+    /// schedules, workflows and messages go on.
+    AppOnly,
+    /// The engine is the app's child: it stops with the app.
+    AppAndEngine,
+}
+
+fn quit_plan(view: &ServiceView) -> QuitPlan {
+    if view.supervised { QuitPlan::AppOnly } else { QuitPlan::AppAndEngine }
+}
+
+/// "Quit Nebo". When the OS runs the engine, the app closes and the engine
+/// keeps working. Otherwise, when work is in flight, ask first; then the
+/// engine stops the graceful way, and the shell exits once it has (or after
 /// [`QUIT_WAIT`]). Runs off the main thread.
 pub fn quit(app: tauri::AppHandle) {
     std::thread::spawn(move || {
+        if quit_plan(&service_view()) == QuitPlan::AppOnly {
+            tracing::info!("closing the app; the engine keeps working");
+            QUITTING.store(true, Ordering::SeqCst);
+            app.exit(0);
+            return;
+        }
         let working = call("GET", "/api/v1/runs/active")
             .call()
             .ok()
@@ -900,6 +930,17 @@ mod tests {
         assert_eq!(h(serde_json::json!({"role": "engine", "version": me, "status": "stalled"})), Health::None);
         // An in-process Nebo (0.16.x) says no role: not an engine to restart.
         assert_eq!(h(serde_json::json!({"version": "0.16.14", "status": "ok"})), Health::None);
+    }
+
+    #[test]
+    fn quitting_the_app_leaves_a_service_engine_running() {
+        let service = ServiceView { offered: true, start_at_login: true, supervised: true, ..Default::default() };
+        assert_eq!(quit_plan(&service), QuitPlan::AppOnly);
+        // Switched off, or Nebo off in Login Items: the engine is the app's child.
+        let child = ServiceView { offered: true, start_at_login: false, ..Default::default() };
+        assert_eq!(quit_plan(&child), QuitPlan::AppAndEngine);
+        let needs_approval = ServiceView { offered: true, start_at_login: true, needs_approval: true, ..Default::default() };
+        assert_eq!(quit_plan(&needs_approval), QuitPlan::AppAndEngine);
     }
 
     #[test]

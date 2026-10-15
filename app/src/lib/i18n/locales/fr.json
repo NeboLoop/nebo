@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Licences open source",
 		"contactSupport": "Contacter le support",
 		"contactSupportBlurb": "Des questions ou des soucis ? Écrivez-nous et une personne vous répond sous un jour ouvré.",
-		"startAtLogin": "Lancer à l'ouverture de session",
-		"startAtLoginHint": "Nebo continue de travailler après la fermeture de l'app et démarre à l'ouverture de session.",
+		"startAtLogin": "Laisser Nebo travailler quand l'app est fermée",
+		"startAtLoginHint": "Les plannings, workflows et messages de vos employés continuent après avoir quitté l'app, et Nebo démarre à l'ouverture de session. Désactivez cette option pour arrêter Nebo quand vous quittez.",
 		"keepAfterLogout": "Continuer après la déconnexion",
-		"keepAfterLogoutHint": "Vos employés continuent de travailler pendant que vous êtes déconnecté de cet ordinateur.",
+		"keepAfterLogoutHint": "Vos employés continuent de travailler pendant que vous êtes déconnecté.",
 		"keepAfterLogoutConfirmTitle": "Laisser Nebo fonctionner après la déconnexion ?",
-		"keepAfterLogoutConfirmMessage": "Nebo continue de travailler sur cet ordinateur après votre déconnexion, jusqu'à ce que vous désactiviez cette option ou éteigniez l'ordinateur.",
+		"keepAfterLogoutConfirmMessage": "Nebo continue de travailler après votre déconnexion, jusqu'à ce que vous désactiviez cette option ou éteigniez.",
 		"keepAfterLogoutConfirmButton": "Continuer",
 		"keepAfterLogoutFailed": "Impossible de modifier ce réglage. Réessayez."
 	},
@@ -4018,7 +4018,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo ne fonctionne que lorsque l'app est ouverte. Pour qu'il continue après la fermeture, activez Nebo dans Ouverture.",
 		"open": "Ouvrir les éléments d'ouverture",
-		"unavailable": "Nebo ne fonctionne que lorsque l'app est ouverte. Cet ordinateur ne peut pas laisser Nebo fonctionner une fois l'app quittée."
+		"unavailable": "Nebo ne fonctionne que lorsque l'app est ouverte. Continuer après avoir quitté l'app n'est pas disponible ici."
 	},
 	"background": {
 		"title": "Tâches en arrière-plan",
