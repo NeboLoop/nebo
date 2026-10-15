@@ -44,9 +44,9 @@ describe('IntroScreens', () => {
 
 	it('draws the assistant and the team from the character spec', () => {
 		const body = html();
-		expect(body).toContain('M50 6 L95 92 L5 92 Z'); // the assistant
-		expect(body).toContain('M4 92 L24 52 L38 66 L60 22 L96 92 Z'); // Store Manager, ridge
-		expect(body).toContain('fill-[var(--agent-peach-ink)]'); // Content, volcano
+		expect(body).toContain('L62 22 Q64 18 66 22'); // the assistant, twin peaks
+		expect(body).toContain('L60 42 Q62 39 64 42'); // Store Manager, ridge
+		expect(body).toContain('character-peach'); // Content, volcano
 		const words = text(body);
 		for (const s of ['Aspen · Assistant', 'Store Manager', 'Weekly standup', 'Reordered 40 units from Lumen', 'Sent 3 invoice reminders']) {
 			expect(words).toContain(s);
