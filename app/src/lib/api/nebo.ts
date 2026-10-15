@@ -1672,6 +1672,20 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Get onboarding"
+ */
+export function getOnboarding() {
+	return webapi.get<components.OnboardingStatus>(`/api/v1/onboarding`)
+}
+
+/**
+ * @description "Start onboarding"
+ */
+export function startOnboarding(req: Record<string, unknown> = {}) {
+	return webapi.post<components.OnboardingStarted>(`/api/v1/onboarding/start`, req)
+}
+
+/**
  * @description "Install org"
  */
 export function installOrg(req: Record<string, unknown> = {}) {

@@ -284,7 +284,10 @@ pub(crate) const MORNING_BRIEF_ASK: &str = "Write today's morning brief. Load th
      read the Inbox with read_inbox(since_hours: 24), \
      then write it with write_brief: two or three plain sentences, what \
      needs the owner first (and who is waiting), then what went well. Name employees by name, never twice \
-     in a row. Don't message the owner; the brief is the message.";
+     in a row. When you have the owner's email and calendar connected, the brief also gives today's \
+     meetings with their times, the emails that need the owner (at most 3, each with a reply drafted and \
+     saved as a draft, never sent), and the bills, renewals and deadlines coming up. Don't message the \
+     owner; the brief is the message.";
 
 /// Make the assistant's daily brief schedule when it is missing: a
 /// `cron_jobs` row the engine fires like every schedule. Made once; the

@@ -22,7 +22,6 @@
 //! nothing on the bot could say which plugin replaces which of its areas.
 //! Another retired bundle is one more row.
 
-use std::collections::HashSet;
 
 /// A retired bundle and, for each area it covered, the plugin that
 /// replaces it. An area is the bundle's own word for the service: its
@@ -64,32 +63,9 @@ pub fn taken_over(
     let Some(retired) = RETIRED.iter().find(|r| r.bundle == slug) else {
         return Vec::new();
     };
-    let installed = crate::plugin_tool::installed_plugin_slugs(plugin_store, db_store);
-    let mut with_accounts: Option<HashSet<String>> = None;
     let mut out = Vec::new();
     for &(area, successor) in retired.areas {
-        if !installed.iter().any(|s| s == successor) {
-            continue;
-        }
-        let per_employee = plugin_store
-            .get_manifest(successor)
-            .and_then(|m| m.auth)
-            .is_some_and(|a| a.profile_dir_env.is_some());
-        let connected = if per_employee {
-            with_accounts
-                .get_or_insert_with(|| {
-                    db_store
-                        .list_all_plugin_account_profiles()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|p| p.plugin_slug)
-                        .collect()
-                })
-                .contains(successor)
-        } else {
-            plugin_store.is_ready(successor)
-        };
-        if connected {
+        if crate::plugin_tool::plugin_connected(plugin_store, db_store, successor) {
             out.push(TakenOver { area, successor });
         }
     }

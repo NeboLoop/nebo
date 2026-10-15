@@ -897,6 +897,8 @@ mod tests {
             terms_accepted_at: None,
             account_type: None,
             approved_commands: None,
+            onboarding_focus: None,
+            onboarding_hire: None,
         };
 
         let ctx = DBContext {

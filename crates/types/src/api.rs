@@ -244,3 +244,36 @@ pub struct DashboardEmployeeRuns {
     pub agent_name: String,
     pub runs: u32,
 }
+
+/// The guided first-run chat (`GET /onboarding`): the step it is on and what
+/// the apps show around it. `step` is one of intro, name, focus, connect,
+/// plate, day, daily, hire, set, done.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingStatus {
+    pub step: String,
+    /// The owner's first name, from the account, for the greeting.
+    pub owner_name: Option<String>,
+    pub assistant_name: String,
+    /// store, content, clients, team or home, once answered.
+    pub focus: Option<String>,
+    /// Gmail and Google Calendar are both connected.
+    pub google_connected: bool,
+    /// The morning brief runs every morning.
+    pub brief_daily: bool,
+    /// The employee hired in the chat, by name.
+    pub hired: Option<String>,
+    /// The owner's time zone, detected (IANA), when known.
+    pub zone: Option<String>,
+    /// What is done, at the end ("set" and "done").
+    pub checklist: Vec<String>,
+}
+
+/// `POST /onboarding/start`: where the chat is, and the assistant's thread
+/// it runs in (none once it is done).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingStarted {
+    pub status: OnboardingStatus,
+    pub thread_id: Option<String>,
+}

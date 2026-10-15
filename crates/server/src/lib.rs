@@ -2755,6 +2755,15 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         sheets: Default::default(),
     };
 
+    // The assistant's side of the guided first-run chat: it reads the step
+    // and reports each answer through the same state the apps read.
+    state
+        .tools
+        .register(Box::new(tools::onboarding_tool::OnboardingTool::new(Arc::new(
+            handlers::onboarding::ServerFirstRun::new(state.clone()),
+        ))))
+        .await;
+
     // An ask's card and its answers reach the owner through the hub, the
     // Inbox and the wake rail.
     permission_asks.attach(Arc::new(permission_asks::OwnerSurfaces { state: state.clone() }));
