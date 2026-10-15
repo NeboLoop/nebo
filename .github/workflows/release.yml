@@ -1191,7 +1191,7 @@ jobs:
           def keep(name, built):
               return built or pp.get(name) or prev.get("version") or os.environ["TAG"]
           tag = os.environ["TAG"]
-          print(json.dumps({
+          out = {
               "version": tag,
               "release_url": f"https://github.com/NeboLoop/nebo/releases/tag/{tag}",
               "published_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1200,7 +1200,12 @@ jobs:
                   "linux": keep("linux", os.environ["LINUX"]),
                   "windows": keep("windows", os.environ["WINDOWS"]),
               },
-          }, indent=2))
+          }
+          # The engine service's kill switch (`engineMode`, set by hand on
+          # the pointer) outlives a release: a release never turns it back on.
+          if "engineMode" in prev:
+              out["engineMode"] = prev["engineMode"]
+          print(json.dumps(out, indent=2))
           EOFP
           cat version.json
 

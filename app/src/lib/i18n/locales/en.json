@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Open Source Licenses",
 		"contactSupport": "Contact support",
 		"contactSupportBlurb": "Questions or problems? Email us and a person replies within one business day.",
-		"startAtLogin": "Start at login",
-		"startAtLoginHint": "Nebo keeps working after you quit the app, and starts when you log in.",
+		"startAtLogin": "Keep Nebo working when the app is closed",
+		"startAtLoginHint": "Your employees' schedules, workflows and messages keep going after you quit the app, and Nebo starts when you log in. Turn this off to stop Nebo when you quit.",
 		"keepAfterLogout": "Keep running after I log out",
-		"keepAfterLogoutHint": "Your employees keep working while you're logged out of this computer.",
+		"keepAfterLogoutHint": "Your employees keep working while you're logged out.",
 		"keepAfterLogoutConfirmTitle": "Keep Nebo running after you log out?",
-		"keepAfterLogoutConfirmMessage": "Nebo keeps working on this computer after you log out, until you turn this off or shut the computer down.",
+		"keepAfterLogoutConfirmMessage": "Nebo keeps working after you log out, until you turn this off or shut down.",
 		"keepAfterLogoutConfirmButton": "Keep running",
 		"keepAfterLogoutFailed": "Couldn't change this setting. Try again."
 	},
@@ -4018,7 +4018,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo runs only while the app is open. To keep it working after you quit, turn on Nebo in Login Items.",
 		"open": "Open Login Items",
-		"unavailable": "Nebo runs only while the app is open. This computer can't keep Nebo running after you quit."
+		"unavailable": "Nebo runs only while the app is open. Keeping it working after you quit isn't available here."
 	},
 	"background": {
 		"title": "Background tasks",

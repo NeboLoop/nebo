@@ -17,7 +17,8 @@
   let licensesText = $state('');
   let showLicenses = $state(false);
   let checkingUpdate = $state(false);
-  // Start at login: shown in the desktop app while the OS service is on offer.
+  // "Keep Nebo working when the app is closed": shown in the desktop app while
+  // the OS service is on offer (on by default).
   let service = $state<EngineService | null>(null);
   let savingStartAtLogin = $state(false);
 

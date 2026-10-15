@@ -984,12 +984,12 @@
 		"openSourceLicenses": "Licencje open source",
 		"contactSupport": "Skontaktuj się z pomocą",
 		"contactSupportBlurb": "Pytania albo problemy? Napisz do nas, a człowiek odpowie w ciągu jednego dnia roboczego.",
-		"startAtLogin": "Uruchamiaj przy logowaniu",
-		"startAtLoginHint": "Nebo działa dalej po zamknięciu aplikacji i uruchamia się po zalogowaniu.",
+		"startAtLogin": "Nebo pracuje, gdy aplikacja jest zamknięta",
+		"startAtLoginHint": "Harmonogramy, przepływy pracy i wiadomości Twoich pracowników działają dalej po zamknięciu aplikacji, a Nebo uruchamia się po zalogowaniu. Wyłącz to, aby Nebo zatrzymywał się po zamknięciu aplikacji.",
 		"keepAfterLogout": "Działaj po wylogowaniu",
-		"keepAfterLogoutHint": "Twoi pracownicy pracują dalej, gdy jesteś wylogowany z tego komputera.",
+		"keepAfterLogoutHint": "Twoi pracownicy pracują dalej, gdy jesteś wylogowany.",
 		"keepAfterLogoutConfirmTitle": "Czy Nebo ma działać po wylogowaniu?",
-		"keepAfterLogoutConfirmMessage": "Nebo pracuje dalej na tym komputerze po wylogowaniu, dopóki tego nie wyłączysz lub nie wyłączysz komputera.",
+		"keepAfterLogoutConfirmMessage": "Nebo pracuje dalej po wylogowaniu, dopóki tego nie wyłączysz lub nie wyłączysz zasilania.",
 		"keepAfterLogoutConfirmButton": "Działaj dalej",
 		"keepAfterLogoutFailed": "Nie udało się zmienić tego ustawienia. Spróbuj ponownie."
 	},
@@ -4018,7 +4018,7 @@
 	"loginItemsBanner": {
 		"text": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Aby działało po jej zamknięciu, włącz Nebo w Rzeczach otwieranych podczas logowania.",
 		"open": "Otwórz rzeczy otwierane podczas logowania",
-		"unavailable": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Ten komputer nie może utrzymać działania Nebo po zamknięciu aplikacji."
+		"unavailable": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Dalsza praca po zamknięciu aplikacji nie jest tu dostępna."
 	},
 	"background": {
 		"title": "Zadania w tle",
