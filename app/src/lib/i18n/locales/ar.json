@@ -1483,7 +1483,8 @@
 		"skills": "مهارات",
 		"mcpServers": "موصلات",
 		"memoryFiles": "ملفات ذاكرة",
-		"runLocally": "تعمل محليًا"
+		"runLocally": "تعمل محليًا",
+		"localCommands": "تشغّل هذه الموصلات برنامجًا هنا عندما يستخدمها موظفوك:"
 	},
 	"settingsImport": {
 		"title": "الاستيراد",

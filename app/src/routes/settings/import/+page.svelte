@@ -155,7 +155,8 @@
             {#each group.items as item}
               <div class="flex items-center gap-2.5 py-1.5 px-3 rounded-lg hover:bg-base-200/50">
                 <span class="text-sm font-medium">{item.name}</span>
-                <span class="text-xs text-base-content/70 flex-1 truncate">{item.detail}</span>
+                <!-- A connector that runs here shows its whole command line: the owner reviews what will run. -->
+                <span class="text-xs text-base-content/70 flex-1 {item.kind === 'mcp_server' && item.tier === 'code' ? 'font-mono break-all' : 'truncate'}">{item.detail}</span>
                 {#if item.tier === 'code'}
                   <span class="badge badge-warning badge-sm gap-1">
                     <TriangleAlert class="w-3 h-3" />

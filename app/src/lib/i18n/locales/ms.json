@@ -1483,7 +1483,8 @@
 		"skills": "kemahiran",
 		"mcpServers": "penyambung",
 		"memoryFiles": "fail ingatan",
-		"runLocally": "berjalan secara setempat"
+		"runLocally": "berjalan secara setempat",
+		"localCommands": "Penyambung ini memulakan program di sini apabila pekerja anda menggunakannya:"
 	},
 	"settingsImport": {
 		"title": "Import",

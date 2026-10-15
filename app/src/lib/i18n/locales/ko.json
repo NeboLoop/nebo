@@ -1483,7 +1483,8 @@
 		"skills": "스킬",
 		"mcpServers": "커넥터",
 		"memoryFiles": "기억 파일",
-		"runLocally": "로컬 실행"
+		"runLocally": "로컬 실행",
+		"localCommands": "이 커넥터는 직원이 사용할 때 여기에서 프로그램을 실행합니다:"
 	},
 	"settingsImport": {
 		"title": "가져오기",

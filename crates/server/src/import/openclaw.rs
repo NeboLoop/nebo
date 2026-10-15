@@ -32,36 +32,7 @@ pub fn scan(root: &Path) -> ImportManifest {
     let mut discard = ImportOutcome::default();
     if let Some(block) = mcp_block(&cfg, &mut discard) {
         for s in crate::handlers::integrations::parse_mcp_servers_block(&block) {
-            let is_stdio = s.server_type == "stdio";
-            let tier = if is_stdio {
-                TrustTier::Code
-            } else {
-                TrustTier::Content
-            };
-            let detail = if is_stdio {
-                let cmd = s
-                    .metadata
-                    .as_deref()
-                    .and_then(|md| serde_json::from_str::<serde_json::Value>(md).ok())
-                    .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(str::to_string));
-                match cmd {
-                    Some(c) => format!("stdio · {c}"),
-                    None => "stdio launch".to_string(),
-                }
-            } else {
-                match &s.server_url {
-                    Some(url) => format!("{} · {url}", s.server_type),
-                    None => s.server_type.clone(),
-                }
-            };
-            m.push(ImportItem {
-                kind: ItemKind::McpServer,
-                tier,
-                name: s.name,
-                detail,
-                target: "Connector",
-                source_path: "openclaw.json".into(),
-            });
+            m.push(ImportItem::connector(s, "openclaw.json"));
         }
     }
     for note in discard.skipped {

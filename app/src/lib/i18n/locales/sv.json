@@ -1483,7 +1483,8 @@
 		"skills": "färdigheter",
 		"mcpServers": "kopplingar",
 		"memoryFiles": "minnesfiler",
-		"runLocally": "körs lokalt"
+		"runLocally": "körs lokalt",
+		"localCommands": "De här anslutningarna startar ett program här när dina medarbetare använder dem:"
 	},
 	"settingsImport": {
 		"title": "Importera",

@@ -5,6 +5,8 @@
 
 use serde::Serialize;
 
+use crate::handlers::integrations::ParsedMcpServer;
+
 /// Which foreign agent system an install directory belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +70,55 @@ pub struct ImportItem {
     pub source_path: String,
 }
 
+impl ImportItem {
+    /// A connector from an install's MCP block, as both walkers report it.
+    /// One that runs on this device (stdio) is Code tier, and its detail is
+    /// the exact command line it starts, so the owner reviews what will run
+    /// before importing (as Claude Desktop's config review shows it). Its
+    /// environment is named, never its values: they are often keys. A
+    /// remote one is Content tier: its transport and address.
+    pub(super) fn connector(s: ParsedMcpServer, source_path: &str) -> Self {
+        let local = s.server_type == "stdio";
+        let detail = if local {
+            let spec = s.metadata.as_deref().and_then(|md| serde_json::from_str::<serde_json::Value>(md).ok());
+            spec.as_ref().map(command_line).unwrap_or_else(|| "a program on this device".to_string())
+        } else {
+            match &s.server_url {
+                Some(url) => format!("{} · {url}", s.server_type),
+                None => s.server_type.clone(),
+            }
+        };
+        Self {
+            kind: ItemKind::McpServer,
+            tier: if local { TrustTier::Code } else { TrustTier::Content },
+            name: s.name,
+            detail,
+            target: "Connector",
+            source_path: source_path.into(),
+        }
+    }
+}
+
+/// A stdio connector's launch spec (`{command, args, env}`) as one command
+/// line: each word quoted the way a shell reads it when it has to be, then
+/// the names of the variables it sets.
+fn command_line(spec: &serde_json::Value) -> String {
+    let words = std::iter::once(&spec["command"])
+        .chain(spec["args"].as_array().into_iter().flatten())
+        .map(|w| w.as_str().map(str::to_string).unwrap_or_else(|| w.to_string()))
+        .map(|w| shell_word(&w))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let env: Vec<&str> = spec["env"].as_object().into_iter().flatten().map(|(k, _)| k.as_str()).collect();
+    if env.is_empty() { words } else { format!("{words} · sets {}", env.join(", ")) }
+}
+
+fn shell_word(w: &str) -> String {
+    let plain = !w.is_empty()
+        && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@+,%~".contains(c));
+    if plain { w.to_string() } else { format!("'{}'", w.replace('\'', "'\\''")) }
+}
+
 /// The dry-run result: everything found in an install and what it maps to.
 ///
 /// Building a manifest never writes to Nebo and never modifies the source.
@@ -110,5 +161,26 @@ impl ImportManifest {
         self.items
             .iter()
             .any(|i| !matches!(i.tier, TrustTier::Content))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connector that runs here shows the whole command line it starts,
+    /// quoted where a shell would need it, and names what it sets without
+    /// its values.
+    #[test]
+    fn a_local_connector_shows_its_exact_command() {
+        let spec = serde_json::json!({
+            "command": "/opt/My Tools/server",
+            "args": ["--root", "it's here", "-v"],
+            "env": { "API_KEY": "sk-never-shown", "REGION": "us" },
+        });
+        let line = command_line(&spec);
+        assert_eq!(line, "'/opt/My Tools/server' --root 'it'\\''s here' -v · sets API_KEY, REGION");
+        assert!(!line.contains("sk-never-shown"));
+        assert_eq!(command_line(&serde_json::json!({ "command": "uvx", "args": [] , "env": {} })), "uvx");
     }
 }

@@ -1483,7 +1483,8 @@
 		"skills": "כישורים",
 		"mcpServers": "מחברים",
 		"memoryFiles": "קובצי זיכרון",
-		"runLocally": "פועלים מקומית"
+		"runLocally": "פועלים מקומית",
+		"localCommands": "המחברים האלה מפעילים כאן תוכנה כשהעובדים שלך משתמשים בהם:"
 	},
 	"settingsImport": {
 		"title": "ייבוא",

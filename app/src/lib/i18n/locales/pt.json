@@ -1483,7 +1483,8 @@
 		"skills": "skills",
 		"mcpServers": "conectores",
 		"memoryFiles": "ficheiros de memória",
-		"runLocally": "correm localmente"
+		"runLocally": "correm localmente",
+		"localCommands": "Estes conectores iniciam um programa aqui quando os seus funcionários os usam:"
 	},
 	"settingsImport": {
 		"title": "Importar",

@@ -1483,7 +1483,8 @@
 		"skills": "beceri",
 		"mcpServers": "bağlayıcı",
 		"memoryFiles": "bellek dosyası",
-		"runLocally": "yerel olarak çalışır"
+		"runLocally": "yerel olarak çalışır",
+		"localCommands": "Bu bağlayıcılar, çalışanlarınız kullandığında burada bir program başlatır:"
 	},
 	"settingsImport": {
 		"title": "İçe aktar",
