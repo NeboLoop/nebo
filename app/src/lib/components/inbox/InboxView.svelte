@@ -287,7 +287,7 @@
             {#if brief}
               <div class="inbox-brief" data-testid="inbox-brief">
                 <div class="inbox-card-meta">
-                  <AgentAvatar name={assistantName} color={roster[ASSISTANT_ID]?.color} shape={roster[ASSISTANT_ID]?.shape} size="sm" />
+                  <AgentAvatar id={ASSISTANT_ID} name={assistantName} color={roster[ASSISTANT_ID]?.color} shape={roster[ASSISTANT_ID]?.shape} size="sm" />
                   <span>{$t('inbox.yourAssistant', { values: { name: assistantName } })}</span>
                 </div>
                 <p class="text-sm text-base-content">{brief.body || brief.title}</p>
@@ -316,7 +316,7 @@
               {#each split.shown as g (g.agentId)}
                 <div class="inbox-group">
                   <div class="flex items-center gap-2.5 pb-1">
-                    <AgentAvatar name={who(g.agentId).name} color={who(g.agentId).color} shape={who(g.agentId).shape} size="md" />
+                    <AgentAvatar id={g.agentId} name={who(g.agentId).name} color={who(g.agentId).color} shape={who(g.agentId).shape} size="md" />
                     <div class="min-w-0">
                       <div class="text-sm font-medium truncate">{who(g.agentId).name}</div>
                       <div class="text-xs text-base-content/70">

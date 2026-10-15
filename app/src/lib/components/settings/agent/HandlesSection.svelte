@@ -25,11 +25,14 @@
   } from '$lib/inbox/rules';
 
   let {
+    id = '',
     name,
     color = null,
     shape = null,
     highlight = null
   }: {
+    /** The assistant's id. */
+    id?: string;
     name: string;
     color?: string | null;
     shape?: string | null;
@@ -111,7 +114,7 @@
 </script>
 
 <div class="flex items-start gap-3" data-testid="handles-section" bind:this={section}>
-  <AgentAvatar {name} {color} {shape} size="md" />
+  <AgentAvatar {id} {name} {color} {shape} size="md" />
   <div class="min-w-0">
     <div class="text-sm font-semibold">{$t('handles.title', { values: { name } })}</div>
     <div class="text-xs text-base-content/70">{$t('handles.blurb', { values: { bot: data?.rules[0]?.bot || $botName || name } })}</div>

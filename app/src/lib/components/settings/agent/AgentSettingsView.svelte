@@ -1293,7 +1293,7 @@
         {:else if part === 'channels'}{@render channelsPart()}
         {:else if part === 'accounts'}{@render accountsPart('accounts')}
         {:else if part === 'permissions'}{@render permissionsPart()}
-        {:else if part === 'handles'}<HandlesSection name={agent?.name ?? ''} color={agent?.color} shape={agent?.shape} highlight={rule} />
+        {:else if part === 'handles'}<HandlesSection id={agentId} name={agent?.name ?? ''} color={agent?.color} shape={agent?.shape} highlight={rule} />
         {:else if part === 'webhooks'}{@render webhooksPart()}
         {:else if part === 'api'}{@render apiPart()}
         {:else if part === 'memory'}{@render memoryPart()}

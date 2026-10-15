@@ -110,7 +110,7 @@
 
 <div class="inbox-card {offer && open ? 'inbox-card-offer' : ''}" data-testid="needs-you-card">
   <div class="inbox-card-meta">
-    <AgentAvatar {name} {color} {shape} size="sm" />
+    <AgentAvatar id={current.agentId ?? ''} {name} {color} {shape} size="sm" />
     <span class="truncate">{offer ? $t('inbox.yourAssistant', { values: { name: assistantName || name } }) : name}</span>
     <span class="shrink-0">· {formatRelative(current.createdAt, 'short')}</span>
   </div>
