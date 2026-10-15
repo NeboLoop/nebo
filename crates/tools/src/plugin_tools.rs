@@ -270,6 +270,10 @@ impl DynTool for PluginCliTool {
                     "type": "string",
                     "description": "One plain sentence the owner reads if this command needs their approval, with real names and amounts."
                 },
+                "reason": {
+                    "type": "string",
+                    "description": "One short line the owner reads if this command needs their approval: why you need it now."
+                },
                 "employee": {
                     "type": "string",
                     "description": "With `auth login` only: the employee (name) whose own account to connect, when the plugin keeps one per employee and it is not for you."
@@ -352,6 +356,11 @@ impl DynTool for PluginCliTool {
 
     fn describe(&self, input: &serde_json::Value) -> String {
         display(input).unwrap_or_else(|| format!("using {}", self.service))
+    }
+
+    /// A plugin's values are its flags (`args`).
+    fn details(&self, input: &serde_json::Value) -> Vec<crate::humanize::Detail> {
+        crate::humanize::details(input.get("args").unwrap_or(&serde_json::Value::Null))
     }
 
     /// A file on this result is one the plugin made for the owner (its
@@ -811,6 +820,18 @@ triggers:
             tool.describe(&serde_json::json!({"display": "Send invoice 1041"})),
             "Send invoice 1041"
         );
+        // The owner's card previews its flags and carries the employee's
+        // own line about why.
+        let send = serde_json::json!({
+            "command": "invoice send",
+            "args": {"to": "ap@acme.com", "amount": "420.00", "currency": "USD"},
+            "display": "Send invoice 1041 to ACME",
+            "reason": "ACME asked for it before Friday's payment run.",
+        });
+        let shown: Vec<(String, String)> = tool.details(&send).into_iter().map(|d| (d.kind, d.value)).collect();
+        assert_eq!(shown, vec![("to".into(), "ap@acme.com".into()), ("amount".into(), "420.00 USD".into())]);
+        assert_eq!(crate::humanize::stated_reason(&send).as_deref(), Some("ACME asked for it before Friday's payment run."));
+        assert!(tool.schema()["properties"]["reason"].is_object(), "the model can say why");
         assert_eq!(tool.rule_key(&serde_json::json!({})), "plugin__ledgerly");
     }
 

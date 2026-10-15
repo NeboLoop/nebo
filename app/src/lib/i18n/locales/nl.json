@@ -3274,7 +3274,22 @@
 		"failed": "Je antwoord kon niet worden verzonden. Probeer het opnieuw.",
 		"sendCheckTitle": "Is het bericht van {name} verstuurd?",
 		"sent": "Het is verstuurd",
-		"notSent": "Het is niet verstuurd"
+		"notSent": "Het is niet verstuurd",
+		"why": "Waarom:",
+		"saidBy": "{name} zegt:",
+		"showDetails": "Details tonen",
+		"detail": {
+			"to": "Aan",
+			"from": "Van",
+			"subject": "Onderwerp",
+			"body": "Bericht",
+			"amount": "Bedrag",
+			"when": "Wanneer",
+			"link": "Link",
+			"file": "Bestand",
+			"search": "Zoekt naar",
+			"command": "Opdracht"
+		}
 	},
 	"permissions": {
 		"title": "Machtigingen",

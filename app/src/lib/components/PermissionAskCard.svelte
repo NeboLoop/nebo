@@ -4,8 +4,10 @@
   A `send_check` card asks instead whether a send whose outcome never came
   back went out: It went out · It didn't go out.
   The same card sits in the chat whose own flow raised it, the Inbox and the
-  dashboard; the first answer anywhere wins. A shell command's exact words
-  sit under the sentence on one line, in full when tapped. Open, it is a tinted ask card
+  dashboard; the first answer anywhere wins. The bot words it all: what it
+  would do, why (the task it was on, and its own line), what about it needs
+  the owner, a preview of what would go out under "Show details", and what
+  "Allow always" would cover. Open, it is a tinted ask card
   (.ask-card); answered, it collapses in place to a muted one-line receipt:
   Allowed · always, Allowed · this once, Declined, or No longer needed,
   followed by what was asked. Tapping the receipt shows the ask read-only.
@@ -22,7 +24,8 @@
   let failed = $state(false);
   let settled = $state<PermissionAskCard | null>(null);
   const shown = $derived(settled ?? ask);
-  const sentence = $derived(shown.sentence.charAt(0).toUpperCase() + shown.sentence.slice(1));
+  const sentence = $derived(shown.what);
+  const details = $derived(shown.details);
   const sendCheck = $derived(shown.kind === 'send_check');
   const title = $derived($t(sendCheck ? 'permissionAsk.sendCheckTitle' : 'permissionAsk.title', { values: { name: shown.employee } }));
   /** How a settled ask ended, as its receipt's lead. */
@@ -50,11 +53,7 @@
 
 {#if shown.status === 'open'}
   <div class="ask-card permission-ask-card">
-    <p class="permission-ask-title">{title}</p>
-    <p class="permission-ask-sentence">{sentence}. <span class="permission-ask-reason">{shown.reason}</span></p>
-    {#if shown.command}
-      <details class="permission-ask-command"><summary class="permission-ask-command-line">{shown.command}</summary></details>
-    {/if}
+    {@render explained()}
     {#if sendCheck}
       <div class="permission-ask-actions">
         <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} onclick={() => answer('sent')}>{$t('permissionAsk.sent')}</button>
@@ -63,7 +62,7 @@
     {:else}
       <div class="permission-ask-actions">
         {#if shown.allowAlways}
-          <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} onclick={() => answer('allow_always')}>{$t('permissionAsk.allowAlways')}</button>
+          <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} title={shown.allowAlwaysCovers} onclick={() => answer('allow_always')}>{$t('permissionAsk.allowAlways')}</button>
         {/if}
         {#if shown.thisOnce}
           <button type="button" class="btn btn-sm rounded-full" disabled={busy} onclick={() => answer('this_once')}>{$t('permissionAsk.thisOnce')}</button>
@@ -71,13 +70,44 @@
         <button type="button" class="btn btn-ghost btn-sm rounded-full" disabled={busy} onclick={() => answer('no')}>{$t('permissionAsk.no')}</button>
       </div>
     {/if}
+    {#if shown.allowAlways && shown.allowAlwaysCovers}
+      <p class="permission-ask-covers">{shown.allowAlwaysCovers}</p>
+    {/if}
     {#if failed}
       <p class="permission-ask-error">{$t('permissionAsk.failed')}</p>
     {/if}
   </div>
 {:else}
   <AskReceipt lead={$t(receipt)} subject={sentence}>
-    <p class="permission-ask-title">{title}</p>
-    <p class="permission-ask-sentence">{sentence}. <span class="permission-ask-reason">{shown.reason}</span></p>
+    {@render explained()}
   </AskReceipt>
 {/if}
+
+<!-- Who wants to do what, why, what about it needs the owner, and what
+     would go out. -->
+{#snippet explained()}
+  <p class="permission-ask-title">{title}</p>
+  <p class="permission-ask-sentence">{sentence}</p>
+  {#if shown.why}
+    <p class="permission-ask-why"><span class="permission-ask-label">{$t('permissionAsk.why')}</span> {shown.why}</p>
+  {/if}
+  {#if shown.statedReason}
+    <p class="permission-ask-why"><span class="permission-ask-label">{$t('permissionAsk.saidBy', { values: { name: shown.employee } })}</span> {shown.statedReason}</p>
+  {/if}
+  <p class="permission-ask-reason">{shown.reason}</p>
+  {#if details.length}
+    <details class="permission-ask-details">
+      <summary class="approval-ask-more">{$t('permissionAsk.showDetails')}</summary>
+      <div class="approval-ask-facts">
+        {#each details as d (d.kind)}
+          <div class="approval-ask-fact">
+            <span class="approval-ask-fact-label permission-ask-detail-label">{$t(`permissionAsk.detail.${d.kind}`)}</span>
+            <span class="permission-ask-detail-value">{d.value}</span>
+          </div>
+        {/each}
+      </div>
+    </details>
+  {:else if shown.command}
+    <details class="permission-ask-command"><summary class="permission-ask-command-line">{shown.command}</summary></details>
+  {/if}
+{/snippet}

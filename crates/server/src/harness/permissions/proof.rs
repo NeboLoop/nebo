@@ -131,8 +131,10 @@ async fn heartbeat_ask_parks_only_that_step() {
         .unwrap()
         .expect("the card is in the Inbox");
     assert_eq!(inbox.notification_type, "permission_ask");
-    assert!(inbox.title.ends_with(" wants your OK"), "{}", inbox.title);
-    assert_eq!(inbox.body.as_deref(), Some("Texting +15550142. It's outside this employee's job."));
+    // Who wants to do what; then why: a heartbeat says no task, so what
+    // about it needs the owner.
+    assert!(inbox.title.ends_with(": Texting +15550142"), "{}", inbox.title);
+    assert_eq!(inbox.body.as_deref(), Some("It's outside this employee's job."));
 
     // The owner answers from the phone: that step resumes and completes.
     let answered = nebo
@@ -898,12 +900,12 @@ async fn a_workflow_ask_never_lands_in_the_chat_the_owner_is_in() {
     assert!(!ok && said.contains("never on this call"), "{said}");
     assert_eq!(nebo.store().get_permission_ask(&ask_id).unwrap().unwrap().status, "open", "Flip-Flap decided nothing");
 
-    // Its Inbox item: who is waiting on him, opening the assistant's chat,
+    // Its Inbox item: who wants to do what, opening the assistant's chat,
     // where it is relayed. The app's loud signal is its blocking notice, so
     // the row itself is quiet.
     let user = nebo.store().ensure_local_user_id().unwrap();
     let inbox = nebo.store().get_notification(&format!("permission-ask:{ask_id}"), &user).unwrap().expect("the Inbox has it");
-    assert!(inbox.title.ends_with(" is waiting on you"), "{}", inbox.title);
+    assert!(inbox.title.ends_with(": Texting +15550142"), "{}", inbox.title);
     assert_eq!(inbox.action_url.as_deref(), Some("/assistant"));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut quiet = false;

@@ -3274,7 +3274,22 @@
 		"failed": "Yanıtın gönderilemedi. Tekrar dene.",
 		"sendCheckTitle": "{name} adlı çalışanın mesajı gitti mi?",
 		"sent": "Gitti",
-		"notSent": "Gitmedi"
+		"notSent": "Gitmedi",
+		"why": "Neden:",
+		"saidBy": "{name} diyor ki:",
+		"showDetails": "Ayrıntıları göster",
+		"detail": {
+			"to": "Alıcı",
+			"from": "Gönderen",
+			"subject": "Konu",
+			"body": "Mesaj",
+			"amount": "Tutar",
+			"when": "Ne zaman",
+			"link": "Bağlantı",
+			"file": "Dosya",
+			"search": "Aranan",
+			"command": "Komut"
+		}
 	},
 	"permissions": {
 		"title": "İzinler",

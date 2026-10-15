@@ -3274,7 +3274,22 @@
 		"failed": "Không gửi được câu trả lời. Hãy thử lại.",
 		"sendCheckTitle": "Tin nhắn của {name} đã được gửi chưa?",
 		"sent": "Đã gửi",
-		"notSent": "Chưa gửi"
+		"notSent": "Chưa gửi",
+		"why": "Lý do:",
+		"saidBy": "{name} cho biết:",
+		"showDetails": "Xem chi tiết",
+		"detail": {
+			"to": "Đến",
+			"from": "Từ",
+			"subject": "Tiêu đề",
+			"body": "Tin nhắn",
+			"amount": "Số tiền",
+			"when": "Khi nào",
+			"link": "Liên kết",
+			"file": "Tệp",
+			"search": "Đang tìm",
+			"command": "Lệnh"
+		}
 	},
 	"permissions": {
 		"title": "Quyền",

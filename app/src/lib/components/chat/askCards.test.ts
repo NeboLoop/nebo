@@ -50,6 +50,9 @@ const permission = {
 	employee: 'Bookkeeper',
 	sessionKey: 's',
 	sentence: 'send the invoice to the client',
+	what: 'Send the invoice to the client',
+	why: '',
+	details: [],
 	reason: 'It goes outside the company.',
 	allowAlways: true,
 	thisOnce: true,
@@ -124,6 +127,43 @@ describe('ask cards', () => {
 			expect(summary(html)).toBe(`${lead} · Send the invoice to the client`);
 			expect(html.slice(html.indexOf('</summary>'))).not.toContain('<button');
 		}
+	});
+
+	// Live 2026-10-15: the card read "Bookkeeper wants your OK · Using message.
+	// It would act in your apps as you." with no reason. It says what, why,
+	// what about it needs the owner, previews what would go out under "Show
+	// details", and says what Allow always covers; never a tool's name.
+	it('a permission ask says what, why, the details and what Allow always covers', () => {
+		const card = {
+			...permission,
+			sentence: 'texting +13855550100',
+			what: 'Texting +13855550100',
+			why: 'Workflow "Month-end close", activity "Queue review": Find the questions waiting on you.',
+			statedReason: 'Dana asked for the total by text.',
+			details: [
+				{ kind: 'to', value: '+13855550100' },
+				{ kind: 'body', value: 'Your invoice is ready.\nTotal: $420' }
+			],
+			reason: 'It would use your Messages app as you.',
+			allowAlwaysCovers: 'Always let Bookkeeper send texts'
+		};
+		const html = render(PermissionAskCard, { props: { ask: card, via: 'chat' } }).body;
+		const shown = text(html);
+		expect(shown).toContain('Bookkeeper wants your OK');
+		expect(shown).toContain('Texting +13855550100');
+		expect(shown).toContain('Why: Workflow "Month-end close", activity "Queue review"');
+		expect(shown).toContain('Bookkeeper says: Dana asked for the total by text.');
+		expect(shown).toContain('It would use your Messages app as you.');
+		expect(summary(html)).toBe('Show details');
+		expect(shown).toContain('To +13855550100');
+		expect(shown).toContain('Message Your invoice is ready.');
+		expect(shown).toContain('Always let Bookkeeper send texts');
+		expect(shown).not.toMatch(/\bmessage\b|Using/);
+
+		// Nothing to say leaves the lines out: no empty "Why", no details fold.
+		const plain = text(render(PermissionAskCard, { props: { ask: permission, via: 'chat' } }).body);
+		expect(plain).toContain('Send the invoice to the client');
+		expect(plain).not.toMatch(/Why:|Show details/);
 	});
 
 	it('an approval matches: tinted while open, a receipt once decided', () => {

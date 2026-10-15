@@ -207,6 +207,13 @@ impl OperationTool {
                     "description": "One plain sentence the owner reads if this needs their approval."
                 }),
             );
+            properties.insert(
+                "reason".into(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "One short line the owner reads if this needs their approval: why you need it now."
+                }),
+            );
         }
         if !read_only {
             properties.insert(
@@ -381,6 +388,7 @@ impl DynTool for OperationTool {
             if let Some(obj) = input.as_object_mut() {
                 obj.remove("provider");
                 obj.remove("display");
+                obj.remove("reason");
             }
             provider.perform(ctx, &self.operation, input).await
         })

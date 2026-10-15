@@ -5,7 +5,10 @@
 //!   only name a thread, a live chip, a helper line or a team row shows.
 //! - The model, and the owner's approval card, read what a call does as a
 //!   sentence: [`crate::registry::DynTool::describe`], whose default is
-//!   [`sentence`] ("reading reminders", "using send invoice").
+//!   [`sentence`] ("reading reminders", "using send invoice for ACME").
+//! - The approval card previews what a call would send or change by
+//!   [`details`]: the call's own values under a `kind` every client words
+//!   in the owner's language, as [`call`] does.
 
 /// "google-search-console" → "Google Search Console" — service slugs render
 /// as the service's own name (the only vocabulary the owner should see).
@@ -48,13 +51,15 @@ pub fn strap_verb(action: &str) -> Option<(&'static str, &'static str)> {
 
 /// The generic sentence for what a call does, the default of every tool's
 /// `DynTool::describe` (a tool with better words says them itself): MCP
-/// tools (`mcp__slug__tool`) read from their slug and tool name, a
-/// `resource`/`action` signature reads as verb + noun, anything else names
-/// the tool as it is.
+/// tools (`mcp__slug__tool`) read from their service and tool name, a
+/// `resource`/`action` signature reads as verb + noun, anything else as the
+/// tool's name in words. Each names what the call acts on ([`subject`])
+/// when it says, so the owner reads more than a tool's name.
 pub fn sentence(tool_name: &str, input: &serde_json::Value) -> String {
-    // MCP: mcp__github__create_issue → "using github (create issue)".
+    let on = subject(input).map(|s| format!(": {s}")).unwrap_or_default();
+    // MCP: mcp__github__create_issue → "using Github to create issue".
     if let Some((slug, tool)) = tool_name.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")) {
-        return format!("using {slug} ({})", tool.replace('_', " "));
+        return format!("using {} to {}{on}", service_name(slug), tool.replace('_', " "));
     }
     // STRAP: toolName(resource, action, …).
     let resource = input.get("resource").and_then(|v| v.as_str());
@@ -62,12 +67,113 @@ pub fn sentence(tool_name: &str, input: &serde_json::Value) -> String {
     if let (Some(resource), Some(action)) = (resource, action) {
         let noun = resource.replace('_', " ");
         return match strap_verb(action) {
-            Some((_, gerund)) => format!("{gerund} {noun}"),
+            Some((_, gerund)) => format!("{gerund} {noun}{on}"),
             // Unknown verb: the signature as it is, never a guess.
-            None => format!("running {action} on {noun}"),
+            None => format!("running {action} on {noun}{on}"),
         };
     }
-    format!("using {}", tool_name.replace('_', " "))
+    format!("using {}{on}", tool_name.replace('_', " "))
+}
+
+/// What a call acts on, from its most telling value (a recipient, a
+/// subject, a path, a URL, a query, a name), quoted when it is free text.
+fn subject(input: &serde_json::Value) -> Option<String> {
+    const KEYS: [&str; 10] = ["to", "recipient", "phone", "channel", "subject", "title", "path", "url", "query", "name"];
+    let value = KEYS.into_iter().find_map(|k| detail_text(input.get(k)?))?;
+    Some(match value.contains(' ') {
+        true => format!("\u{201c}{}\u{201d}", cap(&value, DESCRIPTION_CAP)),
+        false => cap(&value, DESCRIPTION_CAP),
+    })
+}
+
+/// One thing the owner's approval card previews about a call: what it
+/// would send or change, under a `kind` every client words in the owner's
+/// language. Kinds: `to` (who it goes to), `from` (the account or line it
+/// goes out from), `subject`, `body` (the first lines of what it says),
+/// `amount`, `when`, `link`, `file`, `search` (what it looks for),
+/// `command`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Detail {
+    pub kind: String,
+    pub value: String,
+}
+
+/// The most a detail's value shows, in graphemes: the card is a preview,
+/// never the whole message.
+pub const DETAIL_CAP: usize = 280;
+
+/// The lines of a body a detail shows.
+const BODY_LINES: usize = 4;
+
+/// What a call would send or change, from its own values: the default of
+/// every tool's `DynTool::details`. Reads the arguments calls name these
+/// by across Nebo's tools, plugins and connectors. Nothing secret shows:
+/// every value goes through the one redactor ([`types::redact::redact`]).
+pub fn details(input: &serde_json::Value) -> Vec<Detail> {
+    const KINDS: [(&str, &[&str]); 10] = [
+        ("to", &["to", "recipient", "recipients", "phone", "email", "channel", "cc"]),
+        ("from", &["from", "sender", "account"]),
+        ("subject", &["subject", "title"]),
+        ("body", &["body", "text", "message", "content", "html"]),
+        ("amount", &["amount", "total", "price"]),
+        ("when", &["when", "at", "start", "date", "due_date"]),
+        ("link", &["url"]),
+        ("file", &["path", "file", "paths"]),
+        ("search", &["query", "q"]),
+        ("command", &["command"]),
+    ];
+    let Some(obj) = input.as_object() else { return Vec::new() };
+    let currency = obj.get("currency").and_then(detail_text);
+    KINDS
+        .iter()
+        .filter_map(|(kind, keys)| {
+            let raw = keys.iter().find_map(|k| obj.get(*k).and_then(detail_text))?;
+            let value = match *kind {
+                "body" => first_lines(&raw),
+                "amount" => match &currency {
+                    Some(c) => format!("{raw} {c}"),
+                    None => raw,
+                },
+                _ => cap(&raw, DETAIL_CAP),
+            };
+            (!value.is_empty()).then(|| Detail { kind: kind.to_string(), value: types::redact::redact(&value) })
+        })
+        .collect()
+}
+
+/// The line the employee wrote for the owner about why it makes a call:
+/// a call's `reason` argument (plugins and operations take one beside
+/// their `display`), when it wrote one.
+pub fn stated_reason(input: &serde_json::Value) -> Option<String> {
+    input.get("reason").and_then(detail_text).map(|r| types::redact::redact(&cap(&r, DETAIL_CAP)))
+}
+
+/// A value as a detail shows it: text as it is, a number as written, a
+/// list of texts joined. Anything else is not shown.
+fn detail_text(v: &serde_json::Value) -> Option<String> {
+    let text = match v {
+        serde_json::Value::String(s) => s.trim().to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Array(items) => {
+            items.iter().filter_map(|i| i.as_str()).map(str::trim).filter(|i| !i.is_empty()).collect::<Vec<_>>().join(", ")
+        }
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+/// The first lines of a body, each on its own line, cut at [`DETAIL_CAP`].
+fn first_lines(body: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut shown = lines.iter().take(BODY_LINES).map(|l| cap(l, DETAIL_CAP)).collect::<Vec<_>>().join("\n");
+    if lines.len() > BODY_LINES && !shown.ends_with('…') {
+        shown.push('…');
+    }
+    match shown.grapheme_indices(true).nth(DETAIL_CAP) {
+        Some((cut, _)) => format!("{}…", shown[..cut].trim_end()),
+        None => shown,
+    }
 }
 
 
@@ -288,14 +394,112 @@ mod tests {
     }
 
     /// The sentence the model and the approval card read: MCP tools from
-    /// slug and tool name, STRAP signatures as verb + noun (an unknown verb
-    /// as the signature itself), anything else named as it is.
+    /// their service and tool name, STRAP signatures as verb + noun (an
+    /// unknown verb as the signature itself), anything else as its name in
+    /// words; each with what it acts on when the call says.
     #[test]
     fn a_call_reads_as_a_sentence() {
-        assert_eq!(sentence("mcp__github__create_issue", &json!({})), "using github (create issue)");
+        assert_eq!(sentence("mcp__github__create_issue", &json!({})), "using Github to create issue");
+        assert_eq!(
+            sentence("mcp__github__create_issue", &json!({"title": "Login fails on Safari"})),
+            "using Github to create issue: \u{201c}Login fails on Safari\u{201d}"
+        );
         assert_eq!(sentence("os", &json!({"resource": "reminders", "action": "read"})), "reading reminders");
         assert_eq!(sentence("os", &json!({"resource": "reminders", "action": "frobnicate"})), "running frobnicate on reminders");
         assert_eq!(sentence("send_invoice", &json!({})), "using send invoice");
+        assert_eq!(sentence("send_invoice", &json!({"to": "ap@acme.com"})), "using send invoice: ap@acme.com");
+    }
+
+    /// Live 2026-10-15: the owner's card read "Using message". A call with
+    /// no words of its own reads from its name in words and its most
+    /// telling value: never a tool's id, and never empty.
+    #[test]
+    fn a_fallback_never_shows_a_tool_id() {
+        for (name, input) in [
+            ("mcp__google-drive__share_file", json!({"path": "/Q3/plan.pdf", "email": "pat@acme.com"})),
+            ("use_skill", json!({"name": "quarterly-close"})),
+            ("crm_contact_upsert", json!({"name": "Dana Lee"})),
+        ] {
+            let said = sentence(name, &input);
+            assert!(!said.contains(name) && !said.contains('_'), "{name}: {said}");
+            assert!(said.split(' ').count() >= 3, "{name}: {said}");
+        }
+    }
+
+    /// The card's preview: who it goes to, the subject, the first lines of
+    /// the body, the amount with its currency, under kinds the clients
+    /// word; nothing secret, and never the whole message.
+    #[test]
+    fn details_preview_what_would_go_out_and_nothing_secret() {
+        let body = (1..=8).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\n");
+        let got = super::details(&json!({
+            "to": ["dana@acme.com", "pat@acme.com"],
+            "subject": "Q3 quote",
+            "text": body,
+            "amount": 420.5,
+            "currency": "USD",
+            "api_key": "sk-live-123",
+            "url": "https://hooks.example.com/x?token=abc123",
+        }));
+        let kinds: Vec<(&str, &str)> = got.iter().map(|d| (d.kind.as_str(), d.value.as_str())).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("to", "dana@acme.com, pat@acme.com"),
+                ("subject", "Q3 quote"),
+                ("body", "Line 1\nLine 2\nLine 3\nLine 4…"),
+                ("amount", "420.5 USD"),
+                ("link", "https://hooks.example.com/x?token=[redacted]"),
+            ]
+        );
+        assert!(!format!("{got:?}").contains("sk-live"), "no secret: {got:?}");
+        let long = "word ".repeat(200);
+        let one = super::details(&json!({ "body": long }));
+        assert!(one[0].value.chars().count() <= super::DETAIL_CAP + 1 && one[0].value.ends_with('…'));
+        assert_eq!(super::stated_reason(&json!({"reason": "  The client asked for it today. "})).as_deref(), Some("The client asked for it today."));
+        assert_eq!(super::stated_reason(&json!({})), None);
+    }
+
+    /// The calls that most often ask the owner (an email, a text, a
+    /// calendar event, a web request, a file, the browser, a payment) say
+    /// what they do with the values that matter, never a tool's name.
+    #[tokio::test]
+    async fn the_common_calls_say_what_they_do() {
+        use crate::registry::DynTool;
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let message = crate::MessageTool::new(store);
+        let web = |name: &str| crate::web_tool::tools(crate::web_tool::WebCore::new()).into_iter().find(|t| t.name() == name).unwrap();
+        let machine = std::sync::Arc::new(crate::file_tools::Machine::new(std::sync::Arc::new(crate::ProcessRegistry::new()), None));
+        let write = crate::file_tools::WriteFileTool(machine);
+        let os = |input: serde_json::Value| crate::os_tool::OsTool::sentence(&input);
+        let cases = [
+            (
+                os(json!({"resource": "mail", "action": "send", "to": "dana@acme.com", "subject": "Q3 quote", "text": "Hi Dana"})),
+                "sending an email to dana@acme.com about \u{201c}Q3 quote\u{201d}",
+            ),
+            (message.describe(&json!({"resource": "sms", "action": "send", "phone": "+13855550100", "text": "On my way"})), "texting +13855550100"),
+            (
+                message.describe(&json!({"action": "search", "query": "question bookkeeper accounting decision needed"})),
+                "searching your texts for \u{201c}question bookkeeper accounting decision needed\u{201d}",
+            ),
+            (os(json!({"resource": "calendar", "action": "create", "title": "Site visit"})), "adding \u{201c}Site visit\u{201d} to your calendar"),
+            (os(json!({"resource": "calendar", "action": "today"})), "reading your calendar"),
+            (web("http_request").describe(&json!({"method": "POST", "url": "https://api.example.com/v1"})), "sending POST to api.example.com"),
+            (write.describe(&json!({"path": "/Users/me/notes.md", "content": "x"})), "writing notes.md"),
+            (web("browser_open").describe(&json!({"url": "https://example.com/pricing"})), &web("browser_open").describe(&json!({"url": "https://example.com/pricing"}))),
+        ];
+        for (said, want) in &cases {
+            assert_eq!(said, want);
+            for id in ["message", "os", "http_request", "write_file", "browser_open", "mcp__"] {
+                assert!(!said.contains(id), "{said} names {id}");
+            }
+        }
+        assert!(cases[7].0.contains("example.com"), "{}", cases[7].0);
+        // A payment says what the employee wrote for the owner, and its
+        // details carry the amount.
+        let pay = json!({"display": "Pay ACME invoice 1041", "amount": "420.00", "currency": "USD"});
+        assert_eq!(super::details(&pay), vec![super::Detail { kind: "amount".into(), value: "420.00 USD".into() }]);
     }
 
     /// The pairs of a call's params, for comparing.

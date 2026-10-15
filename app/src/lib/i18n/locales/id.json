@@ -3274,7 +3274,22 @@
 		"failed": "Jawabanmu tidak terkirim. Coba lagi.",
 		"sendCheckTitle": "Apakah pesan {name} terkirim?",
 		"sent": "Sudah terkirim",
-		"notSent": "Tidak terkirim"
+		"notSent": "Tidak terkirim",
+		"why": "Alasan:",
+		"saidBy": "{name} berkata:",
+		"showDetails": "Lihat detail",
+		"detail": {
+			"to": "Kepada",
+			"from": "Dari",
+			"subject": "Subjek",
+			"body": "Pesan",
+			"amount": "Jumlah",
+			"when": "Kapan",
+			"link": "Tautan",
+			"file": "File",
+			"search": "Mencari",
+			"command": "Perintah"
+		}
 	},
 	"permissions": {
 		"title": "Izin",

@@ -3274,7 +3274,22 @@
 		"failed": "Deine Antwort konnte nicht gesendet werden. Versuch es erneut.",
 		"sendCheckTitle": "Ist die Nachricht von {name} rausgegangen?",
 		"sent": "Sie ist rausgegangen",
-		"notSent": "Sie ist nicht rausgegangen"
+		"notSent": "Sie ist nicht rausgegangen",
+		"why": "Warum:",
+		"saidBy": "{name} sagt:",
+		"showDetails": "Details anzeigen",
+		"detail": {
+			"to": "An",
+			"from": "Von",
+			"subject": "Betreff",
+			"body": "Nachricht",
+			"amount": "Betrag",
+			"when": "Wann",
+			"link": "Link",
+			"file": "Datei",
+			"search": "Sucht nach",
+			"command": "Befehl"
+		}
 	},
 	"permissions": {
 		"title": "Berechtigungen",

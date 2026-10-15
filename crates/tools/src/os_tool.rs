@@ -154,9 +154,56 @@ impl OsTool {
                 Some(format!("capturing {what}"))
             }
             "activate" | "launch" if !app.is_empty() => Some(format!("opening {app}")),
-            _ => None,
+            _ => Self::owners_app_sentence(input),
         };
         said.unwrap_or_else(|| crate::humanize::sentence("os", input))
+    }
+
+    /// A call on the owner's mail, calendar, reminders or contacts, in his
+    /// words: who an email goes to and about what, which event it adds.
+    fn owners_app_sentence(input: &serde_json::Value) -> Option<String> {
+        let text = |k: &str| match input.get(k) {
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(serde_json::Value::Array(items)) => {
+                items.iter().filter_map(|v| v.as_str()).map(str::trim).collect::<Vec<_>>().join(", ")
+            }
+            _ => String::new(),
+        };
+        let quoted = |s: String| format!("\u{201c}{}\u{201d}", crate::humanize::cap(&s, crate::humanize::DESCRIPTION_CAP));
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        Some(match (Self::resolved_resource(input), action) {
+            ("mail", "send") => {
+                let to = text("to");
+                let about = match text("subject") {
+                    s if s.is_empty() => String::new(),
+                    s => format!(" about {}", quoted(s)),
+                };
+                if to.is_empty() { format!("sending an email{about}") } else { format!("sending an email to {to}{about}") }
+            }
+            ("mail", "unread" | "read") => "reading your email".to_string(),
+            ("mail", "search") => match text("query") {
+                q if q.is_empty() => "searching your email".to_string(),
+                q => format!("searching your email for {}", quoted(q)),
+            },
+            ("calendar", "create") => match text("title") {
+                t if t.is_empty() => "adding an event to your calendar".to_string(),
+                t => format!("adding {} to your calendar", quoted(t)),
+            },
+            ("calendar", "update") => "changing an event on your calendar".to_string(),
+            ("calendar", "delete") => "cancelling an event on your calendar".to_string(),
+            ("calendar", _) => "reading your calendar".to_string(),
+            ("reminders", "create") => match text("title") {
+                t if t.is_empty() => "adding a reminder".to_string(),
+                t => format!("adding the reminder {}", quoted(t)),
+            },
+            ("reminders", "complete" | "delete") => "changing your reminders".to_string(),
+            ("reminders", _) => "reading your reminders".to_string(),
+            ("contacts", _) => match text("query") {
+                q if q.is_empty() => "looking in your contacts".to_string(),
+                q => format!("looking up {} in your contacts", quoted(q)),
+            },
+            _ => return None,
+        })
     }
 
     /// Resolve the effective resource of an os call — THE canonical chain:

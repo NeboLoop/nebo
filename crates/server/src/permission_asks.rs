@@ -16,34 +16,33 @@ pub(crate) fn inbox_id(ask_id: &str) -> String {
     format!("permission-ask:{ask_id}")
 }
 
-/// The card's headline: "{Employee} wants your OK", or for a held send
-/// "Did {Employee}'s message go out?". An ask a run is parked on is
-/// "{Employee} is waiting on you".
+/// The item's headline, the push's title: who wants to do what,
+/// "Bookkeeper: Searching your texts for “…”", or for a held send "Did
+/// {Employee}'s message go out?".
 fn title(c: &PermissionAskCard) -> String {
     if c.kind == AskKind::SendCheck.as_str() {
         return format!("Did {}'s message go out?", c.employee);
     }
-    if c.blocking {
-        return crate::handlers::asks::waiting_on_you(&c.employee);
-    }
-    format!("{} wants your OK", c.employee)
+    format!("{}: {}", c.employee, tools::humanize::cap(&c.what, SHORT_SENTENCE))
 }
 
-/// The most of what it wants to do a blocking ask's notice says; the card
-/// holds the rest.
+/// The most of what it wants to do a headline says; the card holds the rest.
 const SHORT_SENTENCE: usize = 120;
 
-/// What it wants to do and why it asked. A blocking ask's notice says only
-/// the short question: "OK to go ahead with …?".
+/// The item's text, the push's body: why it is doing this (the task it was
+/// working on, else its own line about the call), else what about it needs
+/// the owner. A held send says what went and to check.
 fn body(c: &PermissionAskCard) -> String {
-    if c.blocking && c.kind != AskKind::SendCheck.as_str() {
-        return short_question(c);
+    if c.kind == AskKind::SendCheck.as_str() {
+        return format!("{}. {}", c.what, c.reason);
     }
-    let mut sentence = c.sentence.clone();
-    if let Some(first) = sentence.get(..1) {
-        sentence.replace_range(..1, &first.to_uppercase());
-    }
-    format!("{sentence}. {}", c.reason)
+    [Some(&c.why), c.stated_reason.as_ref(), Some(&c.reason)]
+        .into_iter()
+        .flatten()
+        .map(|s| s.trim())
+        .find(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The answers a card offers, in order, with their labels.
@@ -73,16 +72,6 @@ pub(crate) fn question(c: &PermissionAskCard) -> String {
     format!("OK to go ahead with {sentence}? {}", c.reason.trim())
 }
 
-/// "OK to go ahead with …?", what it wants clipped to [`SHORT_SENTENCE`].
-pub(crate) fn short_question(c: &PermissionAskCard) -> String {
-    let sentence = c.sentence.trim().trim_end_matches('.');
-    let short = match sentence.char_indices().nth(SHORT_SENTENCE) {
-        Some((cut, _)) => format!("{}…", sentence[..cut].trim_end()),
-        None => sentence.to_string(),
-    };
-    format!("OK to go ahead with {short}?")
-}
-
 /// The card as a message in the owner's loop or phone conversation, which
 /// can't show a card: what it wants, why it asked, and the answers it
 /// takes, as reply options. It goes as `kind: ask` — the conversation's
@@ -95,7 +84,16 @@ pub(crate) fn conversation_card(c: &PermissionAskCard) -> (String, HashMap<Strin
         [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
         [] => String::new(),
     };
-    let text = format!("{}: {} Reply {replies}.", title(c), body(c));
+    let text = match c.kind == AskKind::SendCheck.as_str() {
+        true => format!("{}: {} Reply {replies}.", title(c), body(c)),
+        false => {
+            let why = match c.why.trim() {
+                "" => String::new(),
+                why => format!(" Why: {}.", why.trim_end_matches('.')),
+            };
+            format!("{} wants your OK: {}.{why} {} Reply {replies}.", c.employee, c.what, c.reason)
+        }
+    };
     let mut meta = HashMap::new();
     meta.insert("kind".to_string(), "ask".to_string());
     meta.insert("ask_id".to_string(), c.id.clone());
@@ -330,9 +328,14 @@ mod tests {
             employee: "Ava".into(),
             session_key: "agent:ava:neboai".into(),
             sentence: "sending an email to pat@example.com".into(),
+            what: "Sending an email to pat@example.com".into(),
+            why: String::new(),
+            stated_reason: None,
+            details: Vec::new(),
             reason: "It's the first time it would contact them.".into(),
             command: None,
             allow_always,
+            allow_always_covers: None,
             this_once,
             status: "open".into(),
             answer: None,
@@ -367,23 +370,31 @@ mod tests {
     }
 
     /// Live 2026-10-02: Bookkeeper's workflow step parked on the owner's OK
-    /// while he was in Flip-Flap's chat. A blocking ask's item says who is
-    /// waiting on him and the short question, carries its three answers for
-    /// the lock screen, asks for the time-sensitive level, and opens the
-    /// assistant's chat, where it is relayed (no chat raised it), never
-    /// Flip-Flap's chat.
+    /// while he was in Flip-Flap's chat. A blocking ask's item carries its
+    /// three answers for the lock screen, asks for the time-sensitive level,
+    /// and opens the assistant's chat, where it is relayed (no chat raised
+    /// it), never Flip-Flap's chat. Live 2026-10-15 ("zero explanation of
+    /// why it wants what it wants"): its title says who wants to do what,
+    /// and its body why, never a tool's name.
     #[test]
-    fn a_blocking_ask_says_who_is_waiting_and_answers_from_the_notification() {
+    fn a_blocking_ask_says_what_and_why_and_answers_from_the_notification() {
         let mut c = card(true, true);
         c.employee = "Bookkeeper".into();
         c.blocking = true;
-        c.sentence = format!("draft: debit Ask Client $17,519.79 {}", "and credit the offset ".repeat(10));
+        c.what = format!("Draft: debit Ask Client $17,519.79 {}", "and credit the offset ".repeat(10));
+        c.why = "Workflow \"Month-end close\", activity \"Queue review\": Find the questions waiting on the owner.".into();
         c.reason = "This needs your OK every time.".into();
         let (link, item) = with_item(&c, |n, extra| (n.link(), n.hub_item(extra)));
-        assert_eq!(item["title"], "Bookkeeper is waiting on you");
-        let body = item["body"].as_str().unwrap();
-        assert!(body.starts_with("OK to go ahead with draft: debit Ask Client $17,519.79") && body.ends_with("…?"), "{body}");
-        assert!(body.chars().count() < 160, "short: {body}");
+        let title = item["title"].as_str().unwrap();
+        assert!(title.starts_with("Bookkeeper: Draft: debit Ask Client $17,519.79") && title.ends_with('…'), "{title}");
+        assert!(title.chars().count() < 160, "short: {title}");
+        assert_eq!(item["body"], c.why.as_str());
+        // With no task to name, its own line, then what needs the owner.
+        c.why.clear();
+        c.stated_reason = Some("The client asked for the refund today.".into());
+        assert_eq!(with_item(&c, |n, _| n.body.unwrap().to_string()), "The client asked for the refund today.");
+        c.stated_reason = None;
+        assert_eq!(with_item(&c, |n, _| n.body.unwrap().to_string()), "This needs your OK every time.");
         assert_eq!(item["blocking"], true);
         assert_eq!(item["interruptionLevel"], "time-sensitive");
         let labels: Vec<&str> =
@@ -393,7 +404,7 @@ mod tests {
 
         // One nothing is parked on keeps its card's words and its burst.
         let (_, quiet) = with_item(&card(true, true), |n, extra| (n.link(), n.hub_item(extra)));
-        assert_eq!(quiet["title"], "Ava wants your OK");
+        assert_eq!(quiet["title"], "Ava: Sending an email to pat@example.com");
         assert!(quiet.get("blocking").is_none() && quiet.get("interruptionLevel").is_none());
     }
 
@@ -405,6 +416,9 @@ mod tests {
             "Ava wants your OK: Sending an email to pat@example.com. It's the first time it would contact them. \
              Reply Allow always, This once, or No."
         );
+        let mut why = card(true, true);
+        why.why = "You asked: \u{201c}Send Pat the quote\u{201d}".into();
+        assert!(conversation_card(&why).0.contains(". Why: You asked: \u{201c}Send Pat the quote\u{201d}. It's the first"));
         assert_eq!(
             meta["kind"], "ask",
             "the conversation's question with answer chips"

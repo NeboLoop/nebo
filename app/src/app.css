@@ -1001,7 +1001,25 @@
   @apply m-0 text-sm text-base-content;
 }
 .permission-ask-reason {
-  @apply text-base-content/70;
+  @apply m-0 text-sm text-base-content/70;
+}
+.permission-ask-why {
+  @apply m-0 text-sm text-base-content;
+}
+.permission-ask-label {
+  @apply font-medium text-base-content/70;
+}
+.permission-ask-details {
+  @apply flex flex-col gap-1;
+}
+.permission-ask-detail-label {
+  @apply shrink-0;
+}
+.permission-ask-detail-value {
+  @apply min-w-0 text-sm font-medium whitespace-pre-line break-words text-start;
+}
+.permission-ask-covers {
+  @apply m-0 text-xs text-base-content/70;
 }
 .permission-ask-command-line {
   @apply cursor-pointer list-none truncate font-mono text-xs text-base-content/70;

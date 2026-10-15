@@ -144,6 +144,26 @@ fn repeat(times: usize, is_error: bool, read_only: bool, attended: bool) -> Repe
     }
 }
 
+/// The most of the run's task an ask's card shows, in graphemes.
+const PURPOSE_CAP: usize = 240;
+
+/// The run's task as the owner reads it on an ask's card
+/// (`ToolContext::purpose`): the workflow step the run works on, else the
+/// goal it works toward, else what he asked for in this turn. Empty when
+/// none says why (a schedule, a coworker's request).
+fn purpose(step: &str, goal: &str, asked: &str) -> String {
+    let cap = |s: &str| tools::humanize::cap(s.trim(), PURPOSE_CAP);
+    if !step.trim().is_empty() {
+        cap(step)
+    } else if !goal.trim().is_empty() {
+        format!("Working toward: {}", cap(goal))
+    } else if !asked.trim().is_empty() {
+        format!("You asked: \u{201c}{}\u{201d}", cap(asked))
+    } else {
+        String::new()
+    }
+}
+
 /// A call that lets time pass on purpose: a shell command that sleeps or
 /// waits, or a tool's wait action.
 fn waits(input: &serde_json::Value) -> bool {
@@ -262,6 +282,7 @@ impl RunToolScope<'_> {
             answered_ask: None,
             untrusted_input,
             judgement: None,
+            purpose: String::new(),
             // The permission check sets it per call (`GateVerdict::Run`).
             reach: Default::default(),
             // A turn's asks park: the owner answers the card.
@@ -1127,6 +1148,14 @@ async fn run_call(
         return Ran { idx, tc, target, result, duration_ms: None, hook_noted: false };
     }
 
+    // What the run is doing, as the owner reads it on the card of a call
+    // that asks him: the step a workflow turn was given, else the session's
+    // goal, else what he asked in this turn.
+    ctx.purpose = match cx.workflow_mode {
+        Some(m) => purpose(&m.purpose, "", ""),
+        None => purpose("", cx.active_task, if scope.owner_request { cx.user_prompt } else { "" }),
+    };
+
     // The permission judgement (permissions::judgement): a call whose
     // outward effect the code could not decide (whether it publishes, or
     // speaks for the owner outside) carries its judgement to the permission
@@ -1297,6 +1326,18 @@ pub(crate) fn desktop_evidence(result: &str) -> String {
 mod tests {
     use super::*;
     use types::permissions::{CallEffects, RuleField, Target};
+
+    /// What an ask's card says the run is doing: the workflow step, else the
+    /// goal, else what the owner asked in this turn; nothing for a run he
+    /// didn't start with words.
+    #[test]
+    fn the_runs_purpose_is_its_step_goal_or_the_owners_words() {
+        let step = "Workflow \"Month-end close\", activity \"Queue review\"";
+        assert_eq!(super::purpose(step, "Close March", "hey"), step);
+        assert_eq!(super::purpose("", "Every March invoice sent", "hey"), "Working toward: Every March invoice sent");
+        assert_eq!(super::purpose("", "", "Send Dana the Q3 quote"), "You asked: \u{201c}Send Dana the Q3 quote\u{201d}");
+        assert_eq!(super::purpose(" ", "", ""), "");
+    }
 
     fn call(name: &str, input: serde_json::Value) -> ai::ToolCall {
         ai::ToolCall { id: "c1".into(), name: name.into(), input }

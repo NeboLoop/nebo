@@ -41,7 +41,20 @@ pub struct PermissionAskCard {
     pub session_key: String,
     /// What it wants to do, as its activity line ("sending a text to …").
     pub sentence: String,
-    /// Why it asked, in plain words.
+    /// The same, as the card's headline: "Sending a text to …".
+    pub what: String,
+    /// The task the employee was working on when it asked: the workflow
+    /// step, its goal, or what the owner asked for. Empty when none says.
+    pub why: String,
+    /// The line the employee wrote for the owner about this call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stated_reason: Option<String>,
+    /// What the call would send or change, for "Show details": each value
+    /// under a kind the clients word (`to`, `from`, `subject`, `body`,
+    /// `amount`, `when`, `link`, `file`, `search`, `command`).
+    pub details: Vec<AskDetail>,
+    /// What it would do that needs the owner, in plain words (the
+    /// consequence line): "It would use your Messages app as you."
     pub reason: String,
     /// The command a shell ask would run, exactly: the card shows it when
     /// the owner opens it.
@@ -49,6 +62,10 @@ pub struct PermissionAskCard {
     pub command: Option<String>,
     /// Whether "Allow always" is offered (a locked must-ask can't be loosened).
     pub allow_always: bool,
+    /// What "Allow always" would let it do from now on, in plain words:
+    /// "Always let Bookkeeper search your texts". Present when it is offered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_always_covers: Option<String>,
     /// Whether "This once" is offered (an employee's extra needs are granted
     /// for good or not at all).
     pub this_once: bool,
@@ -68,6 +85,14 @@ pub struct PermissionAskCard {
     pub created_at: i64,
 }
 
+/// One thing an ask's card previews about its call (`tools::humanize::Detail`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskDetail {
+    pub kind: String,
+    pub value: String,
+}
+
 /// The card for `ask`.
 pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
     let (status, answer) = match ask.status {
@@ -77,19 +102,26 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         AskStatus::Answered { answer, .. } => ("allowed", Some(answer)),
         AskStatus::Withdrawn => ("withdrawn", None),
     };
+    let employee = employee_name(state, &ask.agent_id);
+    let allow_always = ask.allow_always_offered(&state.store);
     PermissionAskCard {
         id: ask.id.clone(),
         kind: ask.kind().as_str().to_string(),
         agent_id: ask.agent_id.clone(),
-        employee: employee_name(state, &ask.agent_id),
         session_key: ask.session_key.clone(),
         sentence: ask.sentence.clone(),
-        reason: ask.reason().to_string(),
+        what: sentence_case(ask.sentence.trim().trim_end_matches('.')),
+        why: ask.brief.why.clone(),
+        stated_reason: ask.brief.stated_reason.clone(),
+        details: ask.brief.details.iter().map(|d| AskDetail { kind: d.kind.clone(), value: d.value.clone() }).collect(),
+        reason: ask.reason(),
+        allow_always_covers: if allow_always { allow_always_covers(&state.store, ask, &employee) } else { None },
+        employee,
         command: match &ask.target.field {
             Some(RuleField::CommandPrefix(c)) => Some(c.clone()),
             _ => None,
         },
-        allow_always: ask.allow_always_offered(&state.store),
+        allow_always,
         this_once: ask.this_once_offered(),
         status: status.to_string(),
         answer: answer.map(|a| a.as_str().to_string()),
@@ -99,6 +131,14 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         blocking: ask.run_id.is_some() || matches!(ask.door, types::permissions::Door::Workflow),
         created_at: ask.created_at,
     }
+}
+
+/// What "Allow always" on `ask` would let `employee` do from now on: the
+/// rules it would save, in the Permissions page's own words.
+fn allow_always_covers(store: &db::Store, ask: &Ask, employee: &str) -> Option<String> {
+    let rules = agent::harness::permissions::ask::allow_always_rules(store, ask)?;
+    let phrases: Vec<String> = rules.iter().map(|r| lower_first(&rule_phrase(r))).filter(|p| !p.is_empty()).collect();
+    (!phrases.is_empty()).then(|| format!("Always let {employee} {}", phrases.join(" and ")))
 }
 
 /// The employee's name; the main assistant goes by the bot's own name.
@@ -1354,6 +1394,18 @@ fn key_phrase(key: &str) -> String {
         "desktop_click" | "desktop_move_mouse" | "desktop_drag" | "desktop_scroll" => "Use the mouse",
         "desktop_key" | "desktop_type" | "desktop_paste" => "Type on the keyboard",
         "browser" => "Use the web browser",
+        // The owner's own apps (`os`, `message`).
+        "sms_message_send" => "Send texts",
+        "sms_read" | "sms_conversations" => "Read your texts",
+        "sms_search" => "Search your texts",
+        "mail_message_send" => "Send email from your Mail app",
+        "mail_inbox_read" | "mail_accounts" => "Read your email",
+        "mail_inbox_search" => "Search your email",
+        "calendar_event_list" | "calendar_event_get" | "calendar_availability_get" => "Read your calendar",
+        "calendar_event_create" | "calendar_event_update" | "calendar_event_cancel" => "Change your calendar",
+        "contacts_search" => "Look up your contacts",
+        "reminders_list" | "reminders_lists" => "Read your reminders",
+        "reminders_create" | "reminders_complete" | "reminders_delete" => "Change your reminders",
         _ => return sentence_case(&words(k)),
     };
     s.to_string()

@@ -189,6 +189,20 @@ pub struct StoredCall {
     pub input: serde_json::Value,
 }
 
+/// What an ask's card says beyond the call itself, kept as it was when the
+/// employee asked: the task it was working on, the line it wrote for the
+/// owner, and a preview of what the call would send or change.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Brief {
+    /// The run's task in the owner's words (`ToolContext::purpose`): the
+    /// workflow step, the goal, or what he asked for. Empty when none says.
+    pub why: String,
+    /// The employee's own line about the call ([`tools::humanize::stated_reason`]).
+    pub stated_reason: Option<String>,
+    /// What the call would send or change (`DynTool::details`).
+    pub details: Vec<tools::humanize::Detail>,
+}
+
 /// One ask, as stored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ask {
@@ -199,6 +213,8 @@ pub struct Ask {
     pub case: AskCase,
     /// The tool's activity line for the call ("sending a text to …").
     pub sentence: String,
+    /// Why, and what exactly: the card's task line and preview.
+    pub brief: Brief,
     pub target: Target,
     pub call: StoredCall,
     pub seat: SeatSnapshot,
@@ -233,6 +249,12 @@ impl Ask {
             agent_id: row.agent_id,
             session_key: row.session_key,
             sentence: row.sentence,
+            brief: Brief {
+                why: row.why,
+                stated_reason: row.stated_reason.filter(|r| !r.trim().is_empty()),
+                // A row from before the preview has none.
+                details: serde_json::from_str(&row.details).unwrap_or_default(),
+            },
             status,
             run_id: row.run_id,
             chat_id: row.chat_id.filter(|c| !c.is_empty()),
@@ -276,14 +298,15 @@ impl Ask {
     }
 
     /// Why it asked, in plain words for the card.
-    pub fn reason(&self) -> &'static str {
+    pub fn reason(&self) -> String {
         reason_of(&self.case)
     }
 }
 
-/// Why a call asks, in plain words.
-pub fn reason_of(case: &AskCase) -> &'static str {
-    match case {
+/// Why a call asks, in plain words: what it would do that needs the owner,
+/// as specific as the case knows it (the app it would use as him).
+pub fn reason_of(case: &AskCase) -> String {
+    let words = match case {
         AskCase::Money { .. } => "It's over this employee's money limit.",
         AskCase::CompanyMoney { .. } => {
             "It's over what the company may spend unattended today."
@@ -300,13 +323,16 @@ pub fn reason_of(case: &AskCase) -> &'static str {
             OwnerReach::Screen => "It would see what's on your screen.",
             OwnerReach::Microphone => "It would hear what your microphone picks up.",
             OwnerReach::Camera => "It would see what your camera sees.",
-            OwnerReach::App { .. } | OwnerReach::Input => "It would act in your apps as you.",
+            OwnerReach::App { app: Some(app) } => return format!("It would use your {app} app as you."),
+            OwnerReach::App { app: None } => "It would use your other apps as you.",
+            OwnerReach::Input => "It would use your mouse and keyboard as you.",
         },
         AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
         AskCase::UnconfirmedSend { .. } => {
             "Nebo couldn't confirm it went out. Check the sent items, then say whether it did."
         }
-    }
+    };
+    words.to_string()
 }
 
 /// Where the card goes and where answers are delivered. The server
@@ -419,6 +445,11 @@ impl Asks {
             door: cx.ctx.door.clone(),
             case: case.clone(),
             sentence: call.tool.describe(call.input),
+            brief: Brief {
+                why: cx.ctx.purpose.clone(),
+                stated_reason: tools::humanize::stated_reason(call.input),
+                details: call.tool.details(call.input),
+            },
             target: call.target.clone(),
             call: StoredCall { name: call.name().to_string(), input: call.input.clone() },
             seat: SeatSnapshot {
@@ -451,6 +482,9 @@ impl Asks {
             door: json(&ask.door),
             ask_case: json(&ask.case),
             sentence: ask.sentence.clone(),
+            why: ask.brief.why.clone(),
+            stated_reason: ask.brief.stated_reason.clone(),
+            details: json(&ask.brief.details),
             target: json(&ask.target),
             call: json(&ask.call),
             seat: json(&ask.seat),
@@ -484,6 +518,7 @@ impl Asks {
             door: Door::Chat,
             case: AskCase::CreatedExtras { capabilities },
             sentence,
+            brief: Brief::default(),
             target: Target {
                 tool: String::new(),
                 key: String::new(),
@@ -774,6 +809,7 @@ impl Asks {
             door,
             case: AskCase::UnconfirmedSend { effect_id: effect.id },
             sentence,
+            brief: Brief::default(),
             target: Target {
                 tool: String::new(),
                 key: String::new(),
@@ -1524,6 +1560,7 @@ mod tests {
             door: Door::Chat,
             case: AskCase::NewCounterparty { who: "+15550142".into() },
             sentence: "texting +15550142".into(),
+            brief: Brief::default(),
             target: target("+15550142"),
             call: StoredCall { name: "text".into(), input: json!({}) },
             seat: SeatSnapshot {
@@ -1557,6 +1594,7 @@ mod tests {
             door: Door::Chat,
             case,
             sentence: format!("running {cmd}"),
+            brief: Brief::default(),
             target: Target {
                 tool: "run_command".into(),
                 key: "run_command".into(),
@@ -2212,7 +2250,7 @@ mod tests {
             assert!(parked.content.starts_with("Waiting for the owner to allow: capturing your screen."), "{}", parked.content);
             let ask = r.asks.get(&id).unwrap().unwrap();
             assert_eq!(ask.case, AskCase::ReachesOwner { reach: OwnerReach::Screen });
-            assert_eq!((ask.sentence.as_str(), ask.reason()), ("capturing your screen", "It would see what's on your screen."));
+            assert_eq!((ask.sentence.as_str(), ask.reason().as_str()), ("capturing your screen", "It would see what's on your screen."));
             assert!(ask.allow_always_offered(&r.store) && ask.this_once_offered(), "{mode:?}: all three answers");
         }
         assert!(ran.lock().unwrap().is_empty(), "nothing ran before the owner answered");
@@ -2293,7 +2331,7 @@ mod tests {
             let parked = r.reg.execute(&ctx(KEY, Door::Chat), "run_command", command(c)).await;
             let id = parked.parked_ask.clone().unwrap_or_else(|| panic!("{c}: {}", parked.content));
             let ask = r.asks.get(&id).unwrap().unwrap();
-            assert_eq!((ask.sentence.as_str(), ask.reason()), ("controlling Safari", "It would act in your apps as you."), "{c}");
+            assert_eq!((ask.sentence.as_str(), ask.reason().as_str()), ("controlling Safari", "It would use your Safari app as you."), "{c}");
         }
         // In Full Access, where a command outside its job runs too.
         r.mode("emp", Mode::FullAccess);
@@ -2472,6 +2510,33 @@ mod tests {
         let asked = r.reg.execute(&workflow_ctx("emp"), "message", calls[0].1.clone()).await;
         let id = asked.parked_ask.unwrap_or_else(|| panic!("{}", asked.content));
         assert_eq!(r.asks.get(&id).unwrap().unwrap().case, AskCase::AskRule { rule_id: rule.id });
+    }
+
+    /// Live 2026-10-15: Bookkeeper's card read "Using message" and gave no
+    /// reason. The ask keeps what the run was doing for the owner (the
+    /// workflow step, `ToolContext::purpose`) and what the call would send,
+    /// and reads them back the same; the consequence names the app it would
+    /// use as him. (The employee's own line rides on the calls that take one,
+    /// a plugin's or an operation's `reason`.)
+    #[tokio::test]
+    async fn an_ask_says_what_why_and_what_would_go_out() {
+        let r = rig().await;
+        let _ran = r.owner_apps().await;
+        r.mode("emp", Mode::Automatic);
+        let mut c = workflow_ctx("emp");
+        c.purpose = "Daily books sweep, Queue review, step 3 of 3: List unanswered review items oldest first".into();
+        let input = json!({ "resource": "sms", "action": "send", "phone": "+15550142", "text": "Your invoice is ready.\nTotal: $420" });
+        let parked = r.reg.execute(&c, "message", input).await;
+        let ask = r.asks.get(&parked.parked_ask.clone().unwrap_or_else(|| panic!("{}", parked.content))).unwrap().unwrap();
+        assert_eq!(ask.sentence, "texting +15550142");
+        assert_eq!(ask.brief.why, c.purpose);
+        let details: Vec<(&str, &str)> = ask.brief.details.iter().map(|d| (d.kind.as_str(), d.value.as_str())).collect();
+        assert_eq!(details, vec![("to", "+15550142"), ("body", "Your invoice is ready.\nTotal: $420")]);
+        assert_eq!(ask.reason(), "It would use your Messages app as you.");
+        // A run with nothing to say leaves the line out; the card is not padded.
+        let quiet = r.reg.execute(&workflow_ctx("emp"), "message", json!({ "resource": "sms", "action": "read", "phone": "+15550142" })).await;
+        let quiet = r.asks.get(&quiet.parked_ask.unwrap()).unwrap().unwrap();
+        assert_eq!((quiet.brief.why.as_str(), quiet.brief.stated_reason.is_none()), ("", true));
     }
 
     /// What isn't his app doesn't ask: a file search, listing what runs,

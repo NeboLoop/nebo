@@ -3274,7 +3274,22 @@
 		"failed": "לא ניתן לשלוח את התשובה. נסה שוב.",
 		"sendCheckTitle": "האם ההודעה של {name} נשלחה?",
 		"sent": "היא נשלחה",
-		"notSent": "היא לא נשלחה"
+		"notSent": "היא לא נשלחה",
+		"why": "למה:",
+		"saidBy": "{name} אומר:",
+		"showDetails": "הצגת פרטים",
+		"detail": {
+			"to": "אל",
+			"from": "מאת",
+			"subject": "נושא",
+			"body": "הודעה",
+			"amount": "סכום",
+			"when": "מתי",
+			"link": "קישור",
+			"file": "קובץ",
+			"search": "מחפש",
+			"command": "פקודה"
+		}
 	},
 	"permissions": {
 		"title": "הרשאות",

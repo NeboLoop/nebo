@@ -3274,7 +3274,22 @@
 		"failed": "Impossible d'envoyer ta réponse. Réessaie.",
 		"sendCheckTitle": "Le message de {name} est-il parti ?",
 		"sent": "Il est parti",
-		"notSent": "Il n'est pas parti"
+		"notSent": "Il n'est pas parti",
+		"why": "Pourquoi:",
+		"saidBy": "{name} dit:",
+		"showDetails": "Afficher les détails",
+		"detail": {
+			"to": "À",
+			"from": "De",
+			"subject": "Objet",
+			"body": "Message",
+			"amount": "Montant",
+			"when": "Quand",
+			"link": "Lien",
+			"file": "Fichier",
+			"search": "Recherche",
+			"command": "Commande"
+		}
 	},
 	"permissions": {
 		"title": "Autorisations",

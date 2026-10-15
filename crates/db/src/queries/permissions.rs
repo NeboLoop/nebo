@@ -140,10 +140,17 @@ pub struct PermissionAskRow {
     pub answered_at: Option<i64>,
     /// The workflow run parked on this ask, when one is.
     pub run_id: Option<String>,
+    /// The task the employee was working on when it asked, in the owner's
+    /// words; empty when none says.
+    pub why: String,
+    /// The line the employee wrote for the owner about the call.
+    pub stated_reason: Option<String>,
+    /// What the call would send or change: JSON `[{kind, value}]`.
+    pub details: String,
 }
 
 const ASK_COLUMNS: &str = "id, agent_id, session_key, chat_id, door, ask_case, sentence, target, call, seat,
-     status, answer, answered_via, created_at, answered_at, run_id";
+     status, answer, answered_via, created_at, answered_at, run_id, why, stated_reason, details";
 
 fn row_to_ask(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionAskRow> {
     Ok(PermissionAskRow {
@@ -163,6 +170,9 @@ fn row_to_ask(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionAskRow> {
         created_at: row.get(13)?,
         answered_at: row.get(14)?,
         run_id: row.get(15)?,
+        why: row.get(16)?,
+        stated_reason: row.get(17)?,
+        details: row.get(18)?,
     })
 }
 
@@ -735,8 +745,8 @@ impl Store {
         tx.execute(
             "INSERT INTO permission_asks
                (id, agent_id, session_key, chat_id, door, ask_case, sentence, target, call, seat,
-                status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                status, created_at, why, stated_reason, details)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 row.id,
                 row.agent_id,
@@ -750,6 +760,9 @@ impl Store {
                 row.seat,
                 row.status,
                 row.created_at,
+                row.why,
+                row.stated_reason,
+                row.details,
             ],
         )
         .map_err(db_err)?;
