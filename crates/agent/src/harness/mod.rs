@@ -387,6 +387,17 @@ impl Harness {
             .is_some_and(|live| !session_gate::turn_is_closing(&self.active_turns, &live))
     }
 
+    /// Whether `key` holds input — a notification, a message queued into
+    /// a turn — stored after `heard_through`, the last row a run heard (its
+    /// `Done` event's [`ai::StreamEvent::heard_through`]). Such a row was
+    /// stored after that run's last check for input, so the run never read
+    /// it and a turn after it does.
+    pub fn input_after(&self, key: &str, heard_through: &str) -> bool {
+        self.sessions
+            .resolve_session_id_by_key(key)
+            .is_ok_and(|session_id| turn::input_landed_after(self, &session_id, Some(heard_through)))
+    }
+
     /// The running turn's live counters on `key`, if one is running.
     pub fn active_turn_status(&self, key: &str) -> Option<types::api::ActiveTurnStatus> {
         session_gate::active_turn_status(&self.active_turns, key)

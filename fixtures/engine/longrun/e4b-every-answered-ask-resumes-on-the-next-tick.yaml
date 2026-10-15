@@ -1,0 +1,10 @@
+id: e4b-every-answered-ask-resumes-on-the-next-tick
+name: "E4b — A dozen answers, one tick"
+description: |
+  E4b — The owner clears a dozen cards at once. Each answer is the signal
+  that wakes its ask's wait, and the next tick resumes every one of them:
+  applying an answer is not a turn, so none waits behind the others. Must
+  never: an answer that waits a tick for every few answered before it.
+target_component: engine
+proof: engine::proof::longrun::e4b_every_answered_ask_resumes_on_the_next_tick
+conversation: []

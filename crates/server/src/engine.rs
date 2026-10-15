@@ -60,6 +60,9 @@ const CLAIM_BATCH: i64 = 50;
 const TRANSIENT_TTL_SECS: i64 = 7 * 24 * 3600;
 /// Turns started per tick, so one flood cannot starve everything else.
 const TURNS_PER_TICK: i64 = 5;
+/// The limit that takes every queued run (a negative LIMIT is none, in
+/// SQLite): for work that starts no turn.
+const EVERY_QUEUED_RUN: i64 = -1;
 /// A scheduled fire this late still runs (one missed occurrence, at most);
 /// later than this it is skipped and noted. Design: catch-up window.
 pub const CATCH_UP_SECS: i64 = 3600;
@@ -1305,9 +1308,15 @@ fn held_send_sentence(e: &db::EngineEffect) -> String {
 /// due: each goes to the asks, which apply an answer once, or bring the card
 /// back to the owner and wait again. Returns the tasks running allowed
 /// calls. An ask that could not be read stays queued for the next tick.
+///
+/// Every woken ask, each tick: applying an answer is not a turn, and the
+/// owner answered each one. Taken five a tick like turns, an answer waited
+/// one five-second tick for every five answered before it (CI 2026-10-15: a
+/// heartbeat's step was still parked ten seconds after the owner's answer,
+/// behind the asks answered just before it).
 pub fn resume_asks(store: &Store, asks: &agent::harness::permissions::Asks, registry: &Arc<tools::Registry>, t: i64) -> Vec<tokio::task::JoinHandle<()>> {
     let mut running = Vec::new();
-    for run in store.engine_queued_runs_of_kind("ask", TURNS_PER_TICK).unwrap_or_default() {
+    for run in store.engine_queued_runs_of_kind("ask", EVERY_QUEUED_RUN).unwrap_or_default() {
         match asks.resume(registry, &run.id, t) {
             Ok(Some(task)) => running.push(task),
             Ok(None) => {}

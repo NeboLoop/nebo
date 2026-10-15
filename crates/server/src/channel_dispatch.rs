@@ -227,6 +227,9 @@ pub(crate) struct ChannelReply {
     /// channel never hears it; the coworker rail says it where a reply that
     /// never came would have gone.
     pub error: Option<String>,
+    /// The last conversation row the run heard (its Done event's
+    /// `heard_through`); `None` for a run that reports none.
+    pub heard_through: Option<String>,
 }
 
 /// `owner`: when the run happens on the LOCAL machine for the local owner
@@ -256,6 +259,7 @@ pub(crate) async fn collect_channel_reply(
     // caller so the coworker rail can label tainted replies.
     let mut reply_provenance: Vec<types::provenance::ProvenanceClass> = Vec::new();
     let mut error: Option<String> = None;
+    let mut heard_through: Option<String> = None;
     let mut work_started = false;
     while let Some(event) = rx.recv().await {
         if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
@@ -321,6 +325,7 @@ pub(crate) async fn collect_channel_reply(
                 if let Some(p) = &event.provenance {
                     reply_provenance = p.clone();
                 }
+                heard_through = event.heard_through().map(str::to_string);
             }
             _ => {} // ToolCall, ToolResult, Usage — skip
         }
@@ -334,7 +339,7 @@ pub(crate) async fn collect_channel_reply(
         Some(notice) if reply.is_empty() => notice.trim().to_string(),
         _ => reply,
     };
-    ChannelReply { text, provenance: reply_provenance, queued, error }
+    ChannelReply { text, provenance: reply_provenance, queued, error, heard_through }
 }
 
 #[cfg(test)]

@@ -666,7 +666,7 @@ pub(crate) async fn run_in_thread(
         // runtime's own words — never silence.
         let error = reply.error.filter(|_| reply.text.is_empty());
         let said = if reply.text.is_empty() { error.clone().unwrap_or_default() } else { reply.text };
-        deliver_reply(&state, &route, &thread_key, said.clone(), reply.provenance).await;
+        deliver_reply(&state, &route, &thread_key, said.clone(), reply.provenance, reply.heard_through.as_deref()).await;
         crate::handoff::turn_ended(&state, &thread_key, &said, error.as_deref(), run_started);
     });
     Ok(())
@@ -678,13 +678,15 @@ pub(crate) async fn run_in_thread(
 /// as the answer (`addressing::turn_ended`): the one answer reaches whoever
 /// asked, together with every other answer it waits for; progress and
 /// anything after the answer reach no one. The depth continues the
-/// sender's chain (R6).
+/// sender's chain (R6). `heard_through`: the last row of the thread the run
+/// heard.
 async fn deliver_reply(
     state: &AppState,
     route: &CoworkerRoute,
     thread_key: &str,
     reply: String,
     provenance: Vec<types::provenance::ProvenanceClass>,
+    heard_through: Option<&str>,
 ) {
     let depth = route.sender_depth.saturating_add(1);
     if !reply.is_empty() {
@@ -712,7 +714,7 @@ async fn deliver_reply(
             None => record_reply(state, route.mirror_key.as_deref(), &route.to_name, &reply),
         }
     }
-    crate::addressing::turn_ended(state, thread_key, &reply, &provenance, depth);
+    crate::addressing::turn_ended(state, thread_key, &reply, &provenance, depth, heard_through);
 }
 
 /// Forwarding surface handed to `collect_channel_reply` for runs that happen

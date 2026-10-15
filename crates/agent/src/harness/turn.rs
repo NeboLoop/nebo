@@ -589,6 +589,7 @@ async fn run(
     let mut taint = BTreeSet::new();
     let mut exit = TurnExit::Answered;
     let mut carried = 0;
+    let mut heard_through = None;
     while let Some(next) = req.take() {
         let (cx, mut st) = match prepare(&h, next, &session_id, progress.clone(), tx.clone()).await {
             Ok(prepared) => prepared,
@@ -610,9 +611,10 @@ async fn run(
         // closes first: input arriving from here on waits for it and starts
         // its own turn, so everything before is visible now.
         guard.close();
+        heard_through = st.seen.last().map(|m| m.id.clone());
         if exit == TurnExit::Cancelled {
             carried = conversation::carry_past_stop(&h.sessions, &h.store, &session_id, &st.seen);
-        } else if input_landed_after(&h, &session_id, &st.seen) {
+        } else if input_landed_after(&h, &session_id, st.seen.last().map(|m| m.id.as_str())) {
             info!(session_id, "input arrived after the last step: the next turn hears it");
             guard.reopen();
             req = Some(follow_up(cx.request));
@@ -621,7 +623,11 @@ async fn run(
     // The slot is closing, so no row is written into this turn from here:
     // what the owner sent while it ran is in the thread now.
     let _ = tx
-        .send(StreamEvent::done_with_reason(exit.label()).with_provenance(taint.into_iter().collect()))
+        .send(
+            StreamEvent::done_with_reason(exit.label())
+                .with_provenance(taint.into_iter().collect())
+                .with_heard_through(heard_through),
+        )
         .await;
     drop(guard);
     if carried > 0 {
@@ -988,16 +994,16 @@ fn pause_goal_for_the_owner(cx: &TurnContext) {
     info!(session_id = %cx.session_id, "the owner ended the work: the goal is paused");
 }
 
-/// Whether a mid-turn or notification row landed after `seen`.
-fn input_landed_after(h: &Harness, session_id: &str, seen: &[ChatMessage]) -> bool {
+/// Whether a mid-turn or notification row landed after `heard_through`,
+/// the last row a call was built from.
+pub(super) fn input_landed_after(h: &Harness, session_id: &str, heard_through: Option<&str>) -> bool {
     let Ok(fresh) = h.sessions.get_messages_since_checkpoint(session_id) else {
         return false;
     };
-    let last_seen = seen.last().map(|m| m.id.as_str());
     fresh
         .iter()
         .rev()
-        .take_while(|m| last_seen != Some(m.id.as_str()))
+        .take_while(|m| heard_through != Some(m.id.as_str()))
         .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || queued_row(m)))
 }
 
@@ -1864,7 +1870,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // the next step heard it (proof run 36256264330: the owner's "stop"
         // landed 3 ms before the request left, and a read ran past it).
         // Take the step again with it.
-        if input_landed_after(h, sid, &conversation) {
+        if input_landed_after(h, sid, conversation.last().map(|m| m.id.as_str())) {
             info!(session_id = sid, step = st.step, "input was queued while the step was built: taking the step with it");
             st.step -= 1;
             continue;

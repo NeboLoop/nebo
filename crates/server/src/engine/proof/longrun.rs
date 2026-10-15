@@ -164,6 +164,33 @@ async fn e4_an_ask_waits_four_days_across_a_restart_and_the_answer_resumes_it() 
     assert_eq!((ran.load(Ordering::SeqCst), p.reminded()), (1, 1));
 }
 
+/// E4b — The owner clears a dozen cards at once. Each answer resumes its
+/// step on the next tick, the last as soon as the first: answers are not
+/// turns, and none waits behind the others. Must never: an answer that
+/// waits a tick for every few answered before it.
+#[tokio::test]
+async fn e4b_every_answered_ask_resumes_on_the_next_tick() {
+    let path = std::env::temp_dir().join(format!("nebo-proof-{}.db", uuid::Uuid::new_v4()));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let p = Process::boot(&path, &ran).await;
+    let mut ctx = ToolContext::new(Origin::System).with_session("agent:ops:heartbeat", "s1");
+    ctx.door = Door::Heartbeat;
+    let mut ids = Vec::new();
+    for n in 0..12 {
+        let parked = p.reg.execute(&ctx, "text", serde_json::json!({ "to": format!("+1555010{n:02}") })).await;
+        ids.push(parked.parked_ask.expect("the step outside the job asks"));
+    }
+    for id in &ids {
+        p.asks.answer(id, Answer::ThisOnce, AnsweredVia::Inbox).unwrap();
+    }
+    let t = p.asks.get(&ids[0]).unwrap().unwrap().created_at + 30;
+    assert_eq!(p.tick(t).await.resumed, 12, "every answer woke its ask's wait");
+    assert_eq!(ran.load(Ordering::SeqCst), 12, "every answered step ran on that tick");
+    for id in &ids {
+        assert_eq!(p.store.engine_get_run(id).unwrap().unwrap().state, "done");
+    }
+}
+
 /// E13 — A temporary workflow's outcome reaches the owner, once, before it
 /// is deleted. Its one run has ended: the outcome is written to the owner's
 /// Inbox and the session that started the work is told, with the run named
