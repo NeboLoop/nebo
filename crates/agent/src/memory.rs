@@ -949,6 +949,8 @@ pub fn load_scored_memories(
 /// Spawn a background task to chunk and embed recently stored memories,
 /// identified by `(namespace, key)` pairs for `user_id`.
 /// This is fire-and-forget: failures are logged but don't affect the caller.
+/// A memory whose embed fails stays unembedded until the next sweep
+/// ([`keep_memories_embedded`]) picks it up.
 pub fn embed_memories_async(
     store: Arc<Store>,
     embedding_provider: Arc<dyn EmbeddingProvider>,
@@ -956,7 +958,12 @@ pub fn embed_memories_async(
     user_id: String,
 ) {
     tokio::spawn(async move {
-        embed_memories(&store, embedding_provider.as_ref(), &keys, &user_id).await;
+        if embed_memories(&store, embedding_provider.as_ref(), &keys, &user_id)
+            .await
+            .is_err()
+        {
+            return;
+        }
         debug!(count = keys.len(), "background embedding complete");
         // Write-time contradiction micro-check (Phase 2,
         // docs/plans/memory-rock-solid.md): every NEW-write path funnels
@@ -965,6 +972,7 @@ pub fn embed_memories_async(
         // is compared against its scope. The boot backfill deliberately calls
         // embed_memories directly — old rows are never re-litigated. Runs
         // after the caller already returned: it can never slow or fail a store.
+        // It compares vectors, so it runs only once the new ones exist.
         crate::memory_consolidation::check_new_memories(
             &store,
             embedding_provider.as_ref(),
@@ -977,56 +985,63 @@ pub fn embed_memories_async(
 
 /// Chunk and embed the memories at `(namespace, key)` for `user_id` — the ONE
 /// chunk+embed pathway, shared by auto-extraction, explicit tool stores, the
-/// flush path (all via [`embed_memories_async`]), and the boot backfill (which
-/// awaits it directly to control batching).
+/// flush path (all via [`embed_memories_async`]), and the backfill sweep.
+///
+/// Every chunk of every memory goes to the provider in ONE call (the provider
+/// splits it into batched requests), so it is all-or-nothing: on an error no
+/// memory changes and the error comes back. On success, the number of
+/// memories embedded.
 pub async fn embed_memories(
     store: &Store,
     embedding_provider: &dyn EmbeddingProvider,
     keys: &[(String, String)],
     user_id: &str,
-) {
-    let mut inserted_any = false;
+) -> Result<usize, ai::ProviderError> {
+    let model = embedding_provider.id().to_string();
+    let dims = embedding_provider.dimensions() as i64;
+
+    let mut pending = Vec::new();
+    let mut texts = Vec::new();
     for (namespace, key) in keys {
-        // Look up the memory we just stored
         let mem = match store.get_memory_by_key_and_user(namespace, key, user_id) {
             Ok(Some(m)) => m,
             _ => continue,
         };
-
-        let text = format!("{}: {}", mem.key, mem.value);
-        let chunks = chunking::chunk_text_default(&text);
-        let model = embedding_provider.id().to_string();
-        let dims = embedding_provider.dimensions() as i64;
-
-        // Collect chunk texts for batch embedding
-        let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        if chunk_texts.is_empty() {
+        let chunks = chunking::chunk_text_default(&format!("{}: {}", mem.key, mem.value));
+        if chunks.is_empty() {
             continue;
         }
+        texts.extend(chunks.iter().map(|c| c.text.clone()));
+        pending.push((mem, chunks));
+    }
+    if texts.is_empty() {
+        return Ok(0);
+    }
 
-        let embeddings = match embedding_provider.embed(&chunk_texts).await {
-            Ok(e) => e,
-            Err(e) => {
-                debug!(
-                    key = %key,
-                    error = %e,
-                    "failed to embed memory"
-                );
-                continue;
-            }
-        };
+    let embeddings = match embedding_provider.embed(&texts).await {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(memories = pending.len(), error = %e, "failed to embed memories");
+            return Err(e);
+        }
+    };
 
+    let mut vectors = embeddings.iter();
+    let mut embedded = 0usize;
+    for (mem, chunks) in &pending {
         // Replace, don't accumulate: an upsert-updated (or curator-merged)
         // memory would otherwise keep its previous chunks/vectors alongside
         // the new ones — ghost values that stale-match vector recall and the
         // write-time contradiction check. Clearing only AFTER a successful
         // embed keeps the failure mode unchanged: a failed embed leaves the
-        // old vectors in place until the boot backfill retries.
+        // old vectors in place until the sweep retries.
         if let Err(e) = store.delete_chunks_for_memory(mem.id) {
             debug!(memory_id = mem.id, error = %e, "failed to clear stale chunks before re-embed");
         }
 
-        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+        let mut inserted = false;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let Some(embedding) = vectors.next() else { break };
             let chunk_id = match store.insert_memory_chunk(
                 Some(mem.id),
                 i as i64,
@@ -1049,8 +1064,11 @@ pub async fn embed_memories(
             if let Err(e) = store.insert_memory_embedding(chunk_id, &model, dims, &blob) {
                 debug!(error = %e, "failed to insert memory embedding");
             } else {
-                inserted_any = true;
+                inserted = true;
             }
+        }
+        if inserted {
+            embedded += 1;
         }
     }
 
@@ -1058,53 +1076,44 @@ pub async fn embed_memories(
     // see the new vectors (stale caches made fresh memories invisible until
     // restart). This is the ONE hook point — every write path (auto-extract,
     // explicit store, flush, backfill) funnels through this function.
-    if inserted_any {
+    if embedded > 0 {
         crate::search_adapter::invalidate_index(user_id);
     }
+    Ok(embedded)
 }
 
-/// How many memories to embed per backfill batch, and the pause between
-/// batches. Each memory is one embedding-provider call, so 16 per batch with a
-/// 500ms gap keeps the backfill well under typical provider rate limits while
-/// still clearing thousands of rows within minutes of boot.
-const BACKFILL_BATCH_SIZE: usize = 16;
-const BACKFILL_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+/// How many memories go to the provider together in one backfill call.
+const BACKFILL_BATCH_SIZE: usize = 64;
 
-/// Boot-time backfill: embed every memory that has no vector embedding —
-/// victims of the migration-0113 dangling-FK bug (chunk inserts succeeded,
-/// embedding inserts silently failed for months) plus rows written before all
-/// write paths embedded. Runs in batches through the canonical
-/// [`embed_memories`] pathway. Callers must skip this entirely when no
-/// embedding provider is configured.
+/// Embed every memory that has no vector embedding, in batches through the
+/// canonical [`embed_memories`] pathway. What is done is recorded by the
+/// vectors themselves: an embedded memory leaves the missing list, so a later
+/// pass picks up exactly where this one stopped and never embeds a memory
+/// twice. It stops at the first refusal the provider may lift (a rate limit,
+/// an outage) and returns it, so a refusing provider gets one call, not one
+/// per memory; a batch the provider rejects outright is retried a memory at
+/// a time so one bad memory cannot hold the rest back. Callers must skip this
+/// entirely when no embedding provider is configured.
 pub async fn backfill_missing_embeddings(
-    store: Arc<Store>,
-    embedding_provider: Arc<dyn EmbeddingProvider>,
-) {
+    store: &Store,
+    embedding_provider: &dyn EmbeddingProvider,
+) -> Result<usize, ai::ProviderError> {
     let missing = match store.list_memories_missing_embeddings() {
         Ok(m) => m,
         Err(e) => {
             warn!(error = %e, "embedding backfill: failed to list unembedded memories");
-            return;
+            return Ok(0);
         }
     };
     if missing.is_empty() {
-        return;
+        return Ok(0);
     }
-
-    tracing::info!(count = missing.len(), "embedding backfill starting");
-
-    // The 0113 bug left chunks WITHOUT embeddings behind; re-embedding through
-    // the canonical pathway inserts fresh chunks, so clear the orphans first
-    // (selection guarantees these memories have no embedded chunk to lose).
-    for mem in &missing {
-        if let Err(e) = store.delete_chunks_for_memory(mem.id) {
-            debug!(memory_id = mem.id, error = %e, "embedding backfill: failed to clear orphan chunks");
-        }
-    }
+    let total = missing.len();
+    tracing::info!(count = total, "embedding backfill starting");
 
     // embed_memories is scoped per user_id, so group first, then batch.
-    let mut by_user: std::collections::HashMap<String, Vec<(String, String)>> =
-        std::collections::HashMap::new();
+    let mut by_user: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
     for mem in missing {
         by_user
             .entry(mem.user_id)
@@ -1115,13 +1124,88 @@ pub async fn backfill_missing_embeddings(
     let mut embedded = 0usize;
     for (user_id, keys) in by_user {
         for batch in keys.chunks(BACKFILL_BATCH_SIZE) {
-            embed_memories(&store, embedding_provider.as_ref(), batch, &user_id).await;
-            embedded += batch.len();
-            tokio::time::sleep(BACKFILL_BATCH_DELAY).await;
+            match embed_memories(store, embedding_provider, batch, &user_id).await {
+                Ok(n) => embedded += n,
+                Err(e) if e.is_retryable() => {
+                    warn!(embedded, remaining = total - embedded, error = %e, "embedding backfill paused");
+                    return Err(e);
+                }
+                Err(_) => {
+                    for key in batch {
+                        if let Ok(n) =
+                            embed_memories(store, embedding_provider, std::slice::from_ref(key), &user_id).await
+                        {
+                            embedded += n;
+                        }
+                    }
+                }
+            }
         }
     }
 
     tracing::info!(count = embedded, "embedding backfill complete");
+    Ok(embedded)
+}
+
+/// How often the sweep looks for unembedded memories once it is caught up.
+/// A look is one local query; the provider is called only when something
+/// is missing.
+const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// The first wait after a refused backfill; it doubles up to the interval.
+const SWEEP_RETRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The handle that wakes the embedding sweep early (an import just added
+/// memories). Created once at boot and shared through `AppState`; with no
+/// embedding provider no sweep runs and a wake is a no-op.
+#[derive(Default)]
+pub struct EmbeddingSweep {
+    wake: tokio::sync::Notify,
+}
+
+impl EmbeddingSweep {
+    /// Ask the sweep to look for unembedded memories now.
+    pub fn request(&self) {
+        self.wake.notify_one();
+    }
+}
+
+/// The ONE background owner of missing vectors, started at boot when an
+/// embedding provider exists: backfills, then pre-warms recall, then looks
+/// again every [`SWEEP_INTERVAL`] (or on [`EmbeddingSweep::request`]). After a
+/// refusal it waits out the provider's `Retry-After` or its own doubling
+/// backoff before resuming.
+pub async fn keep_memories_embedded(
+    store: Arc<Store>,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
+    sweep: Arc<EmbeddingSweep>,
+) {
+    let mut retry = SWEEP_RETRY;
+    let mut prewarmed = false;
+    loop {
+        let wait = match backfill_missing_embeddings(&store, embedding_provider.as_ref()).await {
+            Ok(_) => {
+                retry = SWEEP_RETRY;
+                SWEEP_INTERVAL
+            }
+            Err(e) => {
+                let asked = match e {
+                    ai::ProviderError::RateLimit { retry_after_secs: Some(s) } => std::time::Duration::from_secs(s),
+                    _ => std::time::Duration::ZERO,
+                };
+                let wait = retry.max(asked);
+                retry = (retry * 2).min(SWEEP_INTERVAL);
+                wait
+            }
+        };
+        if !prewarmed {
+            crate::search_adapter::prewarm(&store, embedding_provider.as_ref()).await;
+            prewarmed = true;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = sweep.wake.notified() => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1168,6 +1252,100 @@ mod tests {
         assert!(!text.contains("<system-reminder>"), "the platform's rows are not the conversation");
         let small = build_conversation_text(&rows, 5_000);
         assert!(small.contains("Ship it Friday.") && !small.contains("Dana Ruiz"), "the newest first, to half the window");
+    }
+
+    /// Counts its calls and texts; refuses (as a rate limit, or a rejection
+    /// for any text containing "poison") while told to.
+    struct ScriptedEmbedder {
+        calls: std::sync::atomic::AtomicUsize,
+        texts: std::sync::atomic::AtomicUsize,
+        refuse: std::sync::atomic::AtomicBool,
+    }
+
+    impl ScriptedEmbedder {
+        fn new() -> Self {
+            Self {
+                calls: Default::default(),
+                texts: Default::default(),
+                refuse: Default::default(),
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ai::EmbeddingProvider for ScriptedEmbedder {
+        fn id(&self) -> &str {
+            "scripted-test-embed"
+        }
+        fn dimensions(&self) -> usize {
+            4
+        }
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ai::ProviderError> {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.calls.fetch_add(1, SeqCst);
+            self.texts.fetch_add(texts.len(), SeqCst);
+            if self.refuse.load(SeqCst) {
+                return Err(ai::ProviderError::RateLimit { retry_after_secs: Some(300) });
+            }
+            if texts.iter().any(|t| t.contains("poison")) {
+                return Err(ai::ProviderError::Api { code: "400".into(), message: "rejected".into(), retryable: false });
+            }
+            Ok(texts.iter().map(|_| vec![1.0; 4]).collect())
+        }
+    }
+
+    fn backfill_store(name: &str, memories: usize) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join(name).to_string_lossy()).unwrap();
+        for i in 0..memories {
+            store
+                .upsert_memory("tacit/general", &format!("fact/{i}"), &format!("fact number {i}"), None, None, "backfill-u")
+                .unwrap();
+        }
+        (dir, store)
+    }
+
+    #[tokio::test]
+    async fn the_backfill_batches_memories_and_never_repeats_them() {
+        let (_dir, store) = backfill_store("backfill-once.db", 70);
+        let ep = ScriptedEmbedder::new();
+        assert_eq!(backfill_missing_embeddings(&store, &ep).await.unwrap(), 70);
+        assert_eq!(ep.calls(), 2, "70 memories = two batched calls, not 70");
+        assert!(store.list_memories_missing_embeddings().unwrap().is_empty());
+
+        assert_eq!(backfill_missing_embeddings(&store, &ep).await.unwrap(), 0);
+        assert_eq!(ep.calls(), 2, "a second pass finds nothing to embed and calls nobody");
+    }
+
+    #[tokio::test]
+    async fn a_refused_backfill_stops_at_one_call_and_resumes_later() {
+        let (_dir, store) = backfill_store("backfill-resume.db", 70);
+        let ep = ScriptedEmbedder::new();
+        ep.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = backfill_missing_embeddings(&store, &ep).await.unwrap_err();
+        assert!(matches!(err, ai::ProviderError::RateLimit { retry_after_secs: Some(300) }));
+        assert_eq!(ep.calls(), 1, "a refusing provider gets one call, not one per memory");
+        assert_eq!(store.list_memories_missing_embeddings().unwrap().len(), 70, "nothing half-written");
+
+        ep.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(backfill_missing_embeddings(&store, &ep).await.unwrap(), 70);
+        assert!(store.list_memories_missing_embeddings().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_rejected_memory_does_not_hold_the_rest_back() {
+        let (_dir, store) = backfill_store("backfill-poison.db", 5);
+        store
+            .upsert_memory("tacit/general", "fact/bad", "poison text", None, None, "backfill-u")
+            .unwrap();
+        let ep = ScriptedEmbedder::new();
+        assert_eq!(backfill_missing_embeddings(&store, &ep).await.unwrap(), 5);
+        let left = store.list_memories_missing_embeddings().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].key, "fact/bad");
     }
 
     #[test]
