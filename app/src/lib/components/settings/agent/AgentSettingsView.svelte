@@ -20,6 +20,7 @@
   import Volume2 from 'lucide-svelte/icons/volume-2';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import PermissionsSection from './PermissionsSection.svelte';
+  import HandlesSection from './HandlesSection.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import RunLimitControls from '$lib/components/settings/RunLimitControls.svelte';
@@ -49,8 +50,8 @@
   // modal, not by a route, so it must not read the URL itself. A page is
   // built from parts (sections.ts); `focus` names the part an old deep link
   // asked for, scrolled into view on open.
-  let { tab = 'general', focus = null }: { tab?: string; focus?: AgentSettingsPart | null } = $props();
-  const parts = $derived(visibleParts(tab, $devMode));
+  let { tab = 'general', focus = null, rule = null }: { tab?: string; focus?: AgentSettingsPart | null; rule?: string | null } = $props();
+  const parts = $derived(visibleParts(tab, $devMode, agentId === PRIMARY_ID));
   const has = (p: AgentSettingsPart) => parts.includes(p);
 
   function scrollToPart(p: AgentSettingsPart) {
@@ -1292,6 +1293,7 @@
         {:else if part === 'channels'}{@render channelsPart()}
         {:else if part === 'accounts'}{@render accountsPart('accounts')}
         {:else if part === 'permissions'}{@render permissionsPart()}
+        {:else if part === 'handles'}<HandlesSection id={agentId} name={agent?.name ?? ''} color={agent?.color} shape={agent?.shape} highlight={rule} />
         {:else if part === 'webhooks'}{@render webhooksPart()}
         {:else if part === 'api'}{@render apiPart()}
         {:else if part === 'memory'}{@render memoryPart()}

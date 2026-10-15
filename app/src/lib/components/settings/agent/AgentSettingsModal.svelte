@@ -22,6 +22,7 @@
     open,
     agentId = '',
     section = 'general',
+    rule = null,
     agentName = '',
     agentRole = '',
     isPrimary = false,
@@ -35,6 +36,8 @@
     agentId?: string;
     /** The requested page: a tab id, or an old per-section name. */
     section?: string;
+    /** A rule of what the assistant handles to show (the Inbox's Why?). */
+    rule?: string | null;
     agentName?: string;
     /** The employee's role, the title's second line. */
     agentRole?: string;
@@ -131,7 +134,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           {$t(currentLabel)}
         </button>
-        <AgentSettingsView tab={resolved.tab} focus={resolved.focus} />
+        <AgentSettingsView tab={resolved.tab} focus={resolved.focus} {rule} />
       </div>
     </div>
   </div>

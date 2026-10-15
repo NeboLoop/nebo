@@ -1,204 +1,48 @@
+<!--
+  The Inbox: where the employees leave updates for the owner, and the
+  decisions that need him. Two kinds of item, both the server's rows:
+  a decision (Needs you), answered right on its card, which moves to History
+  once answered; and an update (a title, one sentence, a link to the work),
+  grouped by employee, with a dot while unread. The assistant's morning brief
+  sits at the top, with the way into its chat. History holds what was
+  answered and what was put away; nothing is deleted.
+
+  An item about no other place opens here, in the reader (its full text, a
+  proposal's staged change, a failed run's trail). Selection is owned by
+  whoever mounts this (the shelf keeps it in `?m=`).
+-->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { parseMarkdown } from '$lib/markdown';
-  import CheckCircle2 from 'lucide-svelte/icons/check-circle-2';
   import SearchIcon from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
   import Copy from 'lucide-svelte/icons/copy';
   import Check from 'lucide-svelte/icons/check';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
+  import Archive from 'lucide-svelte/icons/archive';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
-  import Mail from 'lucide-svelte/icons/mail';
   import ExternalLink from 'lucide-svelte/icons/external-link';
+  import MoreHorizontal from 'lucide-svelte/icons/more-horizontal';
+  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Undo2 from 'lucide-svelte/icons/undo-2';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
+  import NeedsYouCard from './NeedsYouCard.svelte';
+  import UpdateRow from './UpdateRow.svelte';
+  import ProposedChange, { type Learning } from './ProposedChange.svelte';
   import {
-    notifications, unreadCount, hasMore, loadNotifications, loadMore, markAsRead, markAllRead, removeNotification, type Notification,
-    approvalStatuses, setApprovalStatus, ensureApprovalStatuses, approvalRef as idApprovalRef,
+    notifications, history, inboxCounts, hasMore, loadNotifications, loadMore, loadHistory,
+    markAsRead, markAllRead, removeNotification,
   } from '$lib/stores/notifications';
-  import { openAsks } from '$lib/stores/permissionAsks';
-  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
-  import ProposedChange, { type Learning } from '$lib/components/inbox/ProposedChange.svelte';
-
-  import Hand from 'lucide-svelte/icons/hand';
-  import { applyUpdate, getLearning, getRun, resolveLearning, revertLearning } from '$lib/api/nebo';
+  import {
+    ASSISTANT_ID, canRevertLearning, groupUpdates, isAssistant, learningIdOf,
+    sectionOf, splitGroups, surfaceKey, topNeedsYou, type InboxItem,
+  } from '$lib/inbox/item';
+  import { rulesPath } from '$lib/inbox/rules';
+  import { currentUser } from '$lib/stores/auth';
+  import { formatRelative, greetingKey } from '$lib/time';
+  import { getLearning, getRun, revertLearning } from '$lib/api/nebo';
   import type { GetRunResponse, PendingTask } from '$lib/api/neboComponents';
 
-  let copied = $state(false);
-  let filter = $state<'all' | 'agent' | 'system' | 'warning' | 'error'>('all');
-  let employeeFilter = $state('all');
-  let departmentFilter = $state('all');
-  let search = $state('');
-  let sentinel = $state<HTMLElement | null>(null);
-  let loadingMore = false;
-  // id → {name, department} for attribution rows and the Employee/Department filters
-  let roster = $state<Record<string, { name: string; department?: string }>>({});
-
-  onMount(async () => {
-    loadNotifications();
-    try {
-      const { listAgents } = await import('$lib/api/nebo');
-      const res = await listAgents(200);
-      const map: Record<string, { name: string; department?: string }> = {};
-      const agents = (res.agents || []) as Array<{ id: string; name: string; department?: string | null }>;
-      for (const a of agents) map[a.id] = { name: a.name, department: a.department || undefined };
-      roster = map;
-    } catch { /* roster is progressive enhancement */ }
-  });
-
-  // Infinite scroll: when the sentinel row at the bottom of the list scrolls
-  // into view, pull the next page.
-  $effect(() => {
-    if (!sentinel) return;
-    const io = new IntersectionObserver(async (entries) => {
-      if (entries.some(e => e.isIntersecting) && !loadingMore) {
-        loadingMore = true;
-        await loadMore();
-        loadingMore = false;
-      }
-    });
-    io.observe(sentinel);
-    return () => io.disconnect();
-  });
-
-  const typeColors: Record<string, string> = {
-    agent: 'bg-success', system: 'bg-info', warning: 'bg-warning', error: 'bg-error', approval: 'bg-warning',
-  };
-
-  // ── Approvals: a pending decision is a task, not mail. Pending approvals
-  // live in a pinned band above the chronological stream; once resolved they
-  // fall back into the stream with a status chip. Three kinds share the ONE
-  // band: `permission-ask:<ask_id>` (a step of an employee's work waiting on
-  // the owner — it shows the one ask card), `learn:<pending_id>` (staged
-  // self-improvement writes), and `artifact-update:<type>:<artifact_id>:<version>`
-  // (pending updates — Update-now calls the same applyUpdate endpoint
-  // Settings → Updates uses).
-  const approvalRef = (n: Notification) => idApprovalRef(n.id);
-  /** The open ask card behind an ask row, once the asks have loaded. */
-  const askCard = (n: Notification) =>
-    approvalRef(n)?.kind === 'ask' ? $openAsks.find((a) => `permission-ask:${a.id}` === n.id) ?? null : null;
-
-  // Status/deciding maps are keyed by the full notification id (unique across kinds).
-  // The status map lives in the notifications store: the sidebar badge counts
-  // pending approvals from the same map this band renders from.
-  const approvalRunId = (n: Notification): string | null => (approvalRef(n) ? n.id : null);
-
-  let deciding = $state<Record<string, boolean>>({});
-
-  $effect(() => {
-    if ($notifications.length) void ensureApprovalStatuses();
-  });
-
-  const pendingApprovals = $derived(
-    [...$notifications]
-      .filter(n => { const r = approvalRunId(n); return r && $approvalStatuses[r] === 'pending'; })
-      .sort((a, b) => b.createdAt - a.createdAt)
-  );
-
-  /** Resolved-state chip label key for an approval row, or null. */
-  function approvalChip(n: Notification): string | null {
-    const r = approvalRunId(n);
-    if (!r) return null;
-    const s = $approvalStatuses[r];
-    if (s === 'approved') return 'inbox.approved';
-    if (s === 'withdrawn') return 'permissionAsk.withdrawn';
-    if (s === 'denied' || s === 'rejected') return 'inbox.denied';
-    if (s === 'conflict') return 'inbox.conflict';
-    if (s === 'applied') return 'inbox.updated';
-    if (s === 'reverted') return 'inbox.reverted';
-    return null;
-  }
-
-  /** An applied learned adjustment (skill or workflow tuning) can be undone —
-   *  its restore point is written back through the same pathway that applied it. */
-  function canRevert(n: Notification): boolean {
-    const ref = approvalRef(n);
-    return !!ref && ref.kind === 'learning' && $approvalStatuses[n.id] === 'approved';
-  }
-
-  async function revert(n: Notification) {
-    const ref = approvalRef(n);
-    if (!ref || ref.kind !== 'learning' || deciding[n.id]) return;
-    deciding = { ...deciding, [n.id]: true };
-    try {
-      // May come back 'conflict' (the target changed since it was applied).
-      const r = await revertLearning(ref.id);
-      setApprovalStatus(n.id, (r as { status?: string }).status ?? 'reverted');
-    } finally {
-      deciding = { ...deciding, [n.id]: false };
-    }
-  }
-
-  async function decide(n: Notification, approved: boolean) {
-    const ref = approvalRef(n);
-    if (!ref || deciding[n.id]) return;
-    deciding = { ...deciding, [n.id]: true };
-    try {
-      let status = approved ? 'approved' : 'rejected';
-      if (ref.kind === 'learning') {
-        // Approve may come back 'conflict' (skill changed since staging).
-        const r = await resolveLearning(ref.id, { approved });
-        status = (r as { status?: string }).status ?? status;
-      } else if (approved) {
-        // Same apply pathway Settings → Updates uses. "not found" means the
-        // update is no longer pending — applied from Settings, or superseded
-        // by a newer version — which is the same settled state.
-        try {
-          await applyUpdate(ref.id);
-        } catch (e) {
-          if (!/not found/i.test(e instanceof Error ? e.message : String(e))) throw e;
-        }
-        status = 'applied';
-      } else {
-        // "Later" — drop out of the band; the update stays in Settings → Updates.
-        status = 'dismissed';
-      }
-      setApprovalStatus(n.id, status);
-      markAsRead(n.id);
-    } finally {
-      deciding = { ...deciding, [n.id]: false };
-    }
-  }
-  const filters = [
-    { id: 'all', label: 'inbox.filterAll' },
-    { id: 'agent', label: 'inbox.filterAgent' },
-    { id: 'system', label: 'inbox.filterSystem' },
-    { id: 'warning', label: 'inbox.filterWarning' },
-    { id: 'error', label: 'inbox.filterError' },
-  ] as const;
-
-  // Employees that actually appear in the loaded notifications; departments come
-  // from those employees' marketplace metadata.
-  const employees = $derived(
-    [...new Set($notifications.map(n => n.agentId).filter((id): id is string => !!id))]
-      .map(id => ({ id, name: roster[id]?.name ?? $t('inbox.formerEmployee') }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  );
-  const departments = $derived(
-    [...new Set(employees.map(e => roster[e.id]?.department).filter((d): d is string => !!d))].sort()
-  );
-
-  const sorted = $derived(
-    [...$notifications]
-      .filter(n => filter === 'all' || n.type === filter)
-      .filter(n => employeeFilter === 'all' || n.agentId === employeeFilter)
-      .filter(n => departmentFilter === 'all' || (n.agentId && roster[n.agentId]?.department === departmentFilter))
-      .filter(n => {
-        if (!search.trim()) return true;
-        const q = search.toLowerCase();
-        return n.title.toLowerCase().includes(q) || n.message.toLowerCase().includes(q);
-      })
-      .sort((a, b) => b.createdAt - a.createdAt)
-      // Pending approvals live in the pinned band, not the stream.
-      .filter(n => { const r = approvalRunId(n); return !(r && $approvalStatuses[r] === 'pending'); })
-  );
-
-  const deptLabel = (slug: string) => slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  // Selection lives in the URL (?m=<id>) so mobile gets a real screen: the
-  // OS back gesture / browser back returns to the list. Desktop replaces the
-  // entry instead so flipping through messages doesn't pile up history.
-  // Selection is owned by whoever mounts this — the /inbox route keeps it in
-  // the URL, the modal keeps it in its own param — so the view itself makes no
-  // assumption about which surface it is on.
   let {
     selectedId = null,
     embedded = false,
@@ -211,277 +55,346 @@
     onselect: (id: string | null) => void;
     onnavigate: (link: string) => void;
   } = $props();
-  // Search ALL notifications (not the filtered stream) so band rows open too.
-  const selected = $derived($notifications.find(n => n.id === selectedId) ?? null);
 
-  // ── Reader detail: the one-line body is a headline, not the evidence.
-  // A staged learning shows what the change is (ProposedChange); a failed
-  // run shows its full error and the activity trail. Fetched once per id.
+  // id → {name, colour, character} for every card's who-line and the
+  // employee filters.
+  type Who = { name: string; color?: string | null; shape?: string | null };
+  let roster = $state<Record<string, Who>>({});
+  onMount(async () => {
+    loadNotifications();
+    try {
+      const { listAgents } = await import('$lib/api/nebo');
+      const res = await listAgents(200);
+      const map: Record<string, Who> = {};
+      for (const a of res.agents || []) map[a.id] = { name: a.name, color: a.color, shape: a.shape };
+      roster = map;
+    } catch { /* names are progressive enhancement */ }
+  });
+
+  const assistantName = $derived(roster[ASSISTANT_ID]?.name ?? '');
+  const who = (agentId?: string | null): Who =>
+    isAssistant(agentId) ? roster[ASSISTANT_ID] ?? { name: assistantName } : agentId ? roster[agentId] ?? { name: $t('inbox.formerEmployee') } : { name: $t('inbox.fromNebo') };
+
+  // ── Filters: one part of the Inbox, or one employee's items. ──
+  type Filter = 'all' | 'needs_you' | 'updates' | 'history' | `agent:${string}`;
+  let filter = $state<Filter>('all');
+  let search = $state('');
+  let moreNeeds = $state(false);
+  let moreGroups = $state(false);
+
+  function pick(f: Filter) {
+    filter = filter === f ? 'all' : f;
+    if (filter === 'history') void loadHistory();
+  }
+
+  const matches = (n: InboxItem) => {
+    const q = search.trim().toLowerCase();
+    return !q || n.title.toLowerCase().includes(q) || (n.body ?? '').toLowerCase().includes(q);
+  };
+  const agentFilter = $derived(filter.startsWith('agent:') ? filter.slice('agent:'.length) : null);
+  const inView = $derived(
+    $notifications.filter(matches).filter((n) => !agentFilter || (isAssistant(agentFilter) ? isAssistant(n.agentId) : n.agentId === agentFilter))
+  );
+
+  const brief = $derived($notifications.find((n) => sectionOf(n) === 'brief') ?? null);
+  const needs = $derived(topNeedsYou(inView, moreNeeds || filter !== 'all'));
+  const groups = $derived(groupUpdates(inView));
+  const split = $derived(splitGroups(groups, moreGroups || filter !== 'all'));
+  const pastItems = $derived($history.filter(matches));
+
+  /** Employees with something in the Inbox, for their own filter. */
+  const employees = $derived(
+    [...new Set($notifications.filter((n) => sectionOf(n) !== 'history' && n.agentId).map((n) => (isAssistant(n.agentId) ? ASSISTANT_ID : n.agentId!)))]
+      .map((id) => ({ id, name: who(id).name }))
+      .filter((e) => e.name)
+      .sort((a, b) => a.name.localeCompare(b.name))
+  );
+
+  const firstName = $derived($currentUser?.name?.split(' ')[0] ?? '');
+  const greeting = $derived(
+    firstName ? $t('chat.greetingWithName', { values: { greeting: $t(greetingKey()), name: firstName } }) : $t(greetingKey())
+  );
+
+  // ── Infinite scroll: the sentinel under the updates pulls the next page. ──
+  let sentinel = $state<HTMLElement | null>(null);
+  let loadingMore = false;
+  $effect(() => {
+    if (!sentinel) return;
+    const io = new IntersectionObserver(async (entries) => {
+      if (entries.some((e) => e.isIntersecting) && !loadingMore) {
+        loadingMore = true;
+        await loadMore();
+        loadingMore = false;
+      }
+    });
+    io.observe(sentinel);
+    return () => io.disconnect();
+  });
+
+  /** Whether a link names a place other than the Inbox itself. */
+  const elsewhere = (link?: string): link is string =>
+    !!link && !link.startsWith('/inbox') && !link.startsWith('/dashboard?inbox');
+
+  /** An update opens the place it is about; one about no other place opens
+   *  here, in the reader. */
+  function open(n: InboxItem) {
+    markAsRead(n.id);
+    if (elsewhere(n.actionUrl)) {
+      onnavigate(n.actionUrl);
+      return;
+    }
+    copied = false;
+    onselect(n.id);
+  }
+
+  function putAway(id: string) {
+    removeNotification(id);
+    if (selectedId === id) onselect(null);
+  }
+
+  let busy = $state<Record<string, boolean>>({});
+  /** An approved proposal undone from History, through the path that applied it. */
+  async function revert(n: InboxItem) {
+    const id = learningIdOf(n);
+    if (!id || busy[n.id]) return;
+    busy = { ...busy, [n.id]: true };
+    try {
+      const r = await revertLearning(id);
+      reverted = { ...reverted, [n.id]: (r as { status?: string }).status ?? 'reverted' };
+    } finally {
+      busy = { ...busy, [n.id]: false };
+    }
+  }
+  let reverted = $state<Record<string, string>>({});
+
+  // ── The reader: the full text, and the evidence behind it (what a
+  // proposal changes, ProposedChange; a failed run's trail). Fetched once
+  // per id. ──
+  let copied = $state(false);
+  const selected = $derived($notifications.find((n) => n.id === selectedId) ?? $history.find((n) => n.id === selectedId) ?? null);
   type Detail = { kind: 'learning'; data: Learning } | { kind: 'run'; data: GetRunResponse } | { kind: 'gone' };
   let details = $state<Record<string, Detail>>({});
   const detailFetched = new Set<string>();
   $effect(() => {
     const n = selected;
     if (!n || detailFetched.has(n.id)) return;
-    const ref = approvalRef(n);
-    const fetch: Promise<Detail> | null =
-      ref?.kind === 'learning'
-        ? getLearning(ref.id).then(r => ({ kind: 'learning', data: r as Learning }))
-        : n.id.startsWith('wf-fail:') && n.agentId
-          ? getRun(`agent:${n.agentId}`, n.id.slice('wf-fail:'.length)).then(r => ({ kind: 'run', data: r }))
-          : null;
+    const learning = n.type === 'rule_offer' ? null : learningIdOf(n);
+    const fetch: Promise<Detail> | null = learning
+      ? getLearning(learning).then((r) => ({ kind: 'learning', data: r as Learning }))
+      : n.id.startsWith('wf-fail:') && n.agentId
+        ? getRun(`agent:${n.agentId}`, n.id.slice('wf-fail:'.length)).then((r) => ({ kind: 'run', data: r }))
+        : null;
     if (!fetch) return;
     detailFetched.add(n.id);
     // A 404 is an answer, not a retry: the run row goes when its employee
-    // is removed, and the reader should say so instead of showing nothing.
-    fetch.then(d => { details = { ...details, [n.id]: d }; }).catch(() => { details = { ...details, [n.id]: { kind: 'gone' } }; });
+    // is removed, and the reader says so instead of showing nothing.
+    fetch.then((d) => { details = { ...details, [n.id]: d }; }).catch(() => { details = { ...details, [n.id]: { kind: 'gone' } }; });
   });
   const detail = $derived(selected ? details[selected.id] ?? null : null);
 
-  /** Whether a link names a place other than the Inbox itself (an item about
-   *  no other place links to itself here, `/inbox?m=<id>`; rows filed before
-   *  that say `/dashboard?inbox=1`). */
-  const elsewhere = (link?: string): link is string =>
-    !!link && !link.startsWith('/inbox') && !link.startsWith('/dashboard?inbox');
-
-  /** A row opens the place it is about — where its native banner and its
-   *  phone push open; an item about no other place opens here, in the reader. */
-  function open(n: Notification) {
-    markAsRead(n.id);
-    if (elsewhere(n.link)) {
-      onnavigate(n.link);
-      return;
-    }
-    copied = false;
-    onselect(n.id);
-  }
-  function closeReader() {
-    onselect(null);
-  }
-  function remove(id: string) {
-    removeNotification(id);
-    if (selectedId === id) onselect(null);
-  }
-  async function copyBody(n: Notification) {
-    await navigator.clipboard.writeText(n.message);
+  async function copyBody(n: InboxItem) {
+    await navigator.clipboard.writeText(n.body ?? '');
     copied = true;
     setTimeout(() => (copied = false), 1500);
   }
 </script>
 
-
-<!-- ONE row template for the whole list. The band above the stream holds
-     pending decisions and the stream holds mail, but a row is a row: the
-     `pending` parameter is the only difference, and there is no third
-     template. The leading unread indicator is always laid out — read rows
-     keep the slot and only lose the dot's colour — so every row's text
-     starts on the same left edge whatever its kind or read state. -->
-{#snippet row(n: Notification, pending: boolean)}
-  {@const runId = approvalRunId(n)}
-  {@const chip = pending ? null : approvalChip(n)}
-  {@const isUpdate = approvalRef(n)?.kind === 'update'}
-  {@const strong = pending || !n.read}
-  {@const tone = selectedId === n.id
-    ? `bg-base-100 ${pending ? 'border-s-warning' : 'border-s-primary'}`
-    : `border-s-transparent ${pending ? 'hover:bg-warning/10' : 'hover:bg-base-200'}`}
-  <div
-    class="group relative flex items-start gap-2.5 pe-4 ps-[14px] border-s-2 cursor-pointer transition-colors {pending ? 'py-2.5' : 'py-3 border-b border-base-content/10'} {tone}"
-    onclick={() => open(n)}
-    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); } }}
-    role="button"
-    tabindex="0"
-  >
-    <div class="w-2 h-2 rounded-full mt-1.5 shrink-0 {n.read ? 'bg-transparent' : typeColors[n.type] || 'bg-info'}"></div>
-    <div class="flex-1 min-w-0">
-      <div class="flex items-baseline gap-2">
-        {#if n.agentId && roster[n.agentId]}
-          <span class="text-xs shrink-0 {strong ? 'text-base-content/70 font-medium' : 'text-base-content/50'}">{roster[n.agentId].name}</span>
-        {/if}
-        <span class="text-sm truncate {strong ? 'font-semibold text-base-content' : 'font-normal text-base-content/70'}">{n.title}</span>
-        {#if chip}
-          <span class="badge badge-sm shrink-0 {chip === 'inbox.approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(chip)}</span>
-        {/if}
-        {#if canRevert(n)}
-          <button
-            class="btn btn-xs btn-ghost border border-base-content/15 shrink-0"
-            disabled={!!deciding[n.id]}
-            onclick={(e) => { e.stopPropagation(); revert(n); }}
-          >{$t('inbox.revert')}</button>
-        {/if}
-        <span class="text-xs text-base-content/50 font-mono shrink-0 ms-auto">{n.time}</span>
-      </div>
-      <p class="text-xs mt-0.5 {pending ? 'text-base-content/70' : 'text-base-content/60 truncate'}">{n.message}</p>
-      {#if pending}
-        <div class="flex items-center gap-2 mt-2">
-          <button
-            class="btn btn-xs btn-success"
-            disabled={!!(runId && deciding[runId])}
-            onclick={(e) => { e.stopPropagation(); decide(n, true); }}
-          >{$t(isUpdate ? 'inbox.updateNow' : 'inbox.approve')}</button>
-          <button
-            class="btn btn-xs btn-ghost border border-base-content/15"
-            disabled={!!(runId && deciding[runId])}
-            onclick={(e) => { e.stopPropagation(); decide(n, false); }}
-          >{$t(isUpdate ? 'inbox.later' : 'inbox.deny')}</button>
-        </div>
-      {/if}
-    </div>
-    {#if !pending}
-      <button
-        onclick={(e) => { e.stopPropagation(); remove(n.id); }}
-        class="absolute end-2 bottom-2 p-1 rounded hover:bg-base-content/10 transition-opacity cursor-pointer bg-base-200 border-none opacity-0 group-hover:opacity-100"
-        aria-label={$t('notifications.closeNotification')}
-      >
-        <Trash2 class="w-3 h-3 text-base-content/40" />
-      </button>
-    {/if}
-  </div>
+{#snippet card(n: InboxItem)}
+  <NeedsYouCard item={n} name={who(n.agentId).name} color={who(n.agentId).color} shape={who(n.agentId).shape} {assistantName} onopen={onnavigate} />
 {/snippet}
 
-<div class="flex-1 flex min-h-0 min-w-0 bg-base-100">
-  <!-- Message list (email-style rows). On mobile the list and reading pane swap full-screen. -->
-  <div class="w-full min-w-0 md:w-80 lg:w-96 md:shrink-0 border-e border-base-300 bg-base-200/50 flex-col min-h-0 {selected ? 'hidden md:flex' : 'flex'}">
-    <div class="flex items-center justify-between h-12 px-4 border-b border-base-content/10 shrink-0">
-      {#if !embedded}<h1 class="text-base font-semibold">{$t('inbox.title')}</h1>{/if}
-      {#if $unreadCount > 0}
-        <button class="btn btn-ghost btn-xs text-base-content/70" onclick={markAllRead}>
-          {$t('notifications.markAllRead')}
-        </button>
-      {/if}
-    </div>
-    <div class="px-4 py-2.5 border-b border-base-content/10 shrink-0 flex flex-col gap-2">
-      <div class="flex items-center h-8 rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100">
-        <SearchIcon class="w-3 h-3 text-base-content/50 shrink-0" />
-        <input
-          type="text"
-          bind:value={search}
-          placeholder={$t('common.search')}
-          class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0"
-        />
-        {#if search}
-          <button type="button" class="p-0 bg-transparent border-none cursor-pointer shrink-0" onclick={() => (search = '')} aria-label={$t('common.close')}>
-            <X class="w-3 h-3 text-base-content/50" />
-          </button>
+
+{#snippet past(n: InboxItem)}
+  <div class="inbox-update group">
+    <span class="inbox-dot"></span>
+    <div class="flex-1 min-w-0">
+      <button type="button" class="inbox-update-main" onclick={() => open(n)}>
+        <span class="text-xs text-base-content/70 shrink-0">{who(n.agentId).name}</span>
+        <span class="text-sm font-medium truncate">{n.title}</span>
+        <span class="text-xs text-base-content/50 font-mono shrink-0 ms-auto">{formatRelative(n.answeredAt ?? n.archivedAt ?? n.createdAt, 'short')}</span>
+      </button>
+      <p class="text-xs text-base-content/70 mt-0.5">
+        {#if n.status === 'answered'}
+          {$t('inbox.youAnswered', { values: { answer: n.answer ?? '' } })}{#if surfaceKey(n.answeredVia)}{' · '}{$t(surfaceKey(n.answeredVia)!)}{/if}
+        {:else}
+          {$t('inbox.putAway')}
         {/if}
-      </div>
-      <div class="flex items-center gap-1 overflow-x-auto">
-        {#each filters as f (f.id)}
-          <button
-            class="btn btn-xs whitespace-nowrap {filter === f.id ? 'btn-neutral' : 'btn-ghost text-base-content/60'}"
-            onclick={() => (filter = f.id)}
-          >
-            {$t(f.label)}
-          </button>
-        {/each}
-      </div>
-      {#if employees.length > 0}
-        <div class="flex items-center gap-1.5">
-          <select class="select select-xs flex-1 min-w-0 bg-base-100 border-base-300" bind:value={employeeFilter} aria-label={$t('inbox.byEmployee')}>
-            <option value="all">{$t('inbox.byEmployee')}: {$t('inbox.filterAll')}</option>
-            {#each employees as e (e.id)}
-              <option value={e.id}>{e.name}</option>
-            {/each}
-          </select>
-          {#if departments.length > 0}
-            <select class="select select-xs flex-1 min-w-0 bg-base-100 border-base-300" bind:value={departmentFilter} aria-label={$t('inbox.byDepartment')}>
-              <option value="all">{$t('inbox.byDepartment')}: {$t('inbox.filterAll')}</option>
-              {#each departments as d (d)}
-                <option value={d}>{deptLabel(d)}</option>
-              {/each}
-            </select>
+      </p>
+      {#if canRevertLearning(n)}
+        <div class="mt-1.5">
+          {#if reverted[n.id]}
+            <span class="text-xs text-base-content/60">{$t(reverted[n.id] === 'conflict' ? 'inbox.conflict' : 'inbox.reverted')}</span>
+          {:else}
+            <button type="button" class="inbox-link" disabled={!!busy[n.id]} onclick={() => revert(n)}><Undo2 class="w-3 h-3" />{$t('inbox.revert')}</button>
           {/if}
         </div>
       {/if}
     </div>
-    <div class="flex-1 overflow-y-auto">
-      <!-- Pinned "Needs your approval" band — pending decisions are tasks,
-           not mail; they sit above the chronological stream with inline
-           Approve/Deny and fall back into the stream once resolved. -->
-      {#if pendingApprovals.length > 0}
-        <div class="border-b border-warning/20 bg-warning/5">
-          <div class="flex items-center gap-1.5 px-4 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-warning">
-            <Hand class="w-3 h-3" />
-            {$t('inbox.needsApproval')}
-          </div>
-          {#each pendingApprovals as n (n.id)}
-            {@const card = askCard(n)}
-            {#if card}
-              <div class="px-3 py-2"><PermissionAskCard ask={card} via="inbox" /></div>
-            {:else if approvalRef(n)?.kind !== 'ask'}
-              {@render row(n, true)}
+  </div>
+{/snippet}
+
+<div class="flex-1 flex min-h-0 min-w-0 bg-base-100">
+  {#if !selected}
+    <div class="flex-1 min-w-0 overflow-y-auto">
+      <div class="inbox-feed">
+        <div class="flex items-center gap-2">
+          {#if !embedded}<h1 class="text-base font-semibold">{$t('inbox.title')}</h1>{/if}
+          <div class="flex-1 min-w-0 flex items-center h-8 rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100">
+            <SearchIcon class="w-3 h-3 text-base-content/50 shrink-0" />
+            <input type="text" bind:value={search} placeholder={$t('common.search')} class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0" />
+            {#if search}
+              <button type="button" class="p-0 bg-transparent border-none cursor-pointer shrink-0" onclick={() => (search = '')} aria-label={$t('common.close')}>
+                <X class="w-3 h-3 text-base-content/50" />
+              </button>
             {/if}
+          </div>
+          <div class="dropdown dropdown-end shrink-0">
+            <button type="button" class="btn btn-ghost btn-sm btn-square" aria-label={$t('inbox.more')} title={$t('inbox.more')}>
+              <MoreHorizontal class="w-4 h-4" />
+            </button>
+            <ul class="dropdown-content menu z-20 mt-1 w-60 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
+              <li><button type="button" onclick={markAllRead}>{$t('notifications.markAllRead')}</button></li>
+              <li><button type="button" onclick={() => onnavigate(rulesPath())}>{$t('inbox.whatHandles', { values: { name: assistantName } })}</button></li>
+              <li><button type="button" onclick={() => pick('history')}>{$t('inbox.history')}</button></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1 overflow-x-auto pb-0.5">
+          {#each [['needs_you', 'inbox.needsYou'], ['updates', 'inbox.updates'], ['history', 'inbox.history']] as [id, label] (id)}
+            <button type="button" class="btn btn-xs whitespace-nowrap {filter === id ? 'btn-neutral' : 'btn-ghost text-base-content/70'}" onclick={() => pick(id as Filter)}>{$t(label)}</button>
+          {/each}
+          {#each employees as e (e.id)}
+            <button type="button" class="btn btn-xs whitespace-nowrap {filter === `agent:${e.id}` ? 'btn-neutral' : 'btn-ghost text-base-content/70'}" onclick={() => pick(`agent:${e.id}`)}>{e.name}</button>
           {/each}
         </div>
-      {/if}
-      {#if sorted.length === 0 && pendingApprovals.length === 0}
-        <div class="flex flex-col items-center justify-center text-center py-24 gap-2 px-4">
-          <CheckCircle2 class="w-8 h-8 text-success/60" />
-          <div class="text-sm font-medium">{$t('inbox.empty')}</div>
-          <div class="text-xs text-base-content/50">{$t('inbox.emptyDesc')}</div>
-        </div>
-      {:else}
-        {#each sorted as n (n.id)}
-          {@render row(n, false)}
-        {/each}
-        {#if $hasMore}
-          <div bind:this={sentinel} class="flex justify-center py-3">
-            <span class="loading loading-dots loading-xs text-base-content/40"></span>
+
+        {#if filter === 'history'}
+          <section class="flex flex-col">
+            <div class="inbox-section-head"><h2>{$t('inbox.history')}</h2></div>
+            {#each pastItems as n (n.id)}
+              {@render past(n)}
+            {:else}
+              <p class="text-xs text-base-content/60 py-6 text-center">{$t('inbox.historyEmpty')}</p>
+            {/each}
+          </section>
+        {:else}
+          {#if filter === 'all' && !search}
+            <div>
+              <div class="text-xl font-semibold tracking-tight">{greeting}</div>
+              <div class="text-sm text-base-content/70 mt-0.5">{$t('inbox.counts', { values: { needs: $inboxCounts.needsYou, updates: $inboxCounts.unread } })}</div>
+            </div>
+            {#if brief}
+              <div class="inbox-brief" data-testid="inbox-brief">
+                <div class="inbox-card-meta">
+                  <AgentAvatar id={ASSISTANT_ID} name={assistantName} color={roster[ASSISTANT_ID]?.color} shape={roster[ASSISTANT_ID]?.shape} size="sm" />
+                  <span>{$t('inbox.yourAssistant', { values: { name: assistantName } })}</span>
+                </div>
+                <p class="text-sm text-base-content">{brief.body || brief.title}</p>
+                <button type="button" class="inbox-ask" onclick={() => { markAsRead(brief.id); onnavigate('/assistant'); }}>
+                  {$t('inbox.askAbout', { values: { name: assistantName } })}
+                </button>
+              </div>
+            {/if}
+          {/if}
+
+          {#if filter !== 'updates' && needs.shown.length > 0}
+            <section class="flex flex-col gap-2.5">
+              <div class="inbox-section-head"><h2>{$t('inbox.needsYou')}</h2><span>{needs.shown.length + needs.more}</span></div>
+              {#each needs.shown as n (n.id)}
+                {@render card(n)}
+              {/each}
+              {#if needs.more > 0}
+                <button type="button" class="inbox-more" onclick={() => (moreNeeds = true)}>{$t('inbox.showMore', { values: { n: needs.more } })}</button>
+              {/if}
+            </section>
+          {/if}
+
+          {#if filter !== 'needs_you' && groups.length > 0}
+            <section class="flex flex-col gap-2.5">
+              <div class="inbox-section-head"><h2>{$t('inbox.updates')}</h2><span>{$t('inbox.updatesByEmployee')}</span></div>
+              {#each split.shown as g (g.agentId)}
+                <div class="inbox-group">
+                  <div class="flex items-center gap-2.5 pb-1">
+                    <AgentAvatar id={g.agentId} name={who(g.agentId).name} color={who(g.agentId).color} shape={who(g.agentId).shape} size="md" />
+                    <div class="min-w-0">
+                      <div class="text-sm font-medium truncate">{who(g.agentId).name}</div>
+                      <div class="text-xs text-base-content/70">
+                        {g.handled === g.items.length ? $t('inbox.handledCount', { values: { n: g.handled } }) : $t('inbox.updateCount', { values: { n: g.items.length } })}
+                      </div>
+                    </div>
+                  </div>
+                  {#each g.items as n (n.id)}
+                    <UpdateRow item={n} {assistantName} onopen={open} {onnavigate} onputaway={putAway} />
+                  {/each}
+                </div>
+              {/each}
+              {#if split.rest.length > 0}
+                <button type="button" class="inbox-more" onclick={() => (moreGroups = true)}>
+                  <ChevronDown class="w-3.5 h-3.5" />
+                  {$t('inbox.moreEmployees', { values: { name: who(split.rest[0].agentId).name, n: split.rest.length - 1 } })}
+                </button>
+              {/if}
+              {#if $hasMore}
+                <div bind:this={sentinel} class="flex justify-center py-3">
+                  <span class="loading loading-dots loading-xs text-base-content/40"></span>
+                </div>
+              {/if}
+            </section>
+          {/if}
+
+          <div class="inbox-caught-up">
+            {#if needs.shown.length === 0}<span>{$t('inbox.caughtUp')}</span><span aria-hidden="true">·</span>{/if}
+            <button type="button" class="inbox-link" onclick={() => pick('history')}>{$t('inbox.history')}</button>
           </div>
         {/if}
-      {/if}
+      </div>
     </div>
-  </div>
-
-  <!-- Reading pane -->
-  <div class="flex-1 min-w-0 flex-col min-h-0 {selected ? 'flex' : 'hidden md:flex'}">
-    {#if selected}
+  {:else}
+    <!-- The reader -->
+    <div class="flex-1 min-w-0 flex flex-col min-h-0">
       <div class="flex items-center gap-2 h-12 px-4 border-b border-base-content/10 shrink-0">
-        <button class="md:hidden p-1.5 rounded hover:bg-base-200 cursor-pointer bg-transparent border-none" onclick={closeReader} aria-label={$t('common.close')}>
+        <button class="p-1.5 rounded hover:bg-base-200 cursor-pointer bg-transparent border-none" onclick={() => onselect(null)} aria-label={$t('common.back')}>
           <ArrowLeft class="w-4 h-4 text-base-content/70" />
         </button>
-        <div class="w-2 h-2 rounded-full shrink-0 {typeColors[selected.type] || 'bg-info'}"></div>
         <span class="text-sm font-medium truncate min-w-0">{selected.title}</span>
-        {#if selected.agentId && roster[selected.agentId]}
-          <span class="badge badge-ghost badge-sm shrink-0">{roster[selected.agentId].name}{roster[selected.agentId].department ? ` · ${deptLabel(roster[selected.agentId].department!)}` : ''}</span>
-        {/if}
-        <span class="text-xs text-base-content/50 font-mono shrink-0">{selected.time}</span>
+        <span class="badge badge-ghost badge-sm shrink-0">{who(selected.agentId).name}</span>
+        <span class="text-xs text-base-content/50 font-mono shrink-0">{formatRelative(selected.createdAt, 'short')}</span>
         <div class="ms-auto flex items-center gap-1 shrink-0">
-          <!-- Open goes somewhere else — a run, a thread. A link back to the
-               inbox itself is not a destination, so it gets no button. -->
-          {#if elsewhere(selected.link)}
-            <button class="btn btn-ghost btn-xs gap-1.5" onclick={() => selected?.link && onnavigate(selected.link)}>
+          {#if elsewhere(selected.actionUrl)}
+            <button class="btn btn-ghost btn-xs gap-1.5" onclick={() => selected?.actionUrl && onnavigate(selected.actionUrl)}>
               <ExternalLink class="w-3.5 h-3.5" />
-              {$t('common.open')}
+              {selected.linkLabel || $t('common.open')}
             </button>
           {/if}
           <button class="btn btn-ghost btn-xs gap-1.5" onclick={() => selected && copyBody(selected)}>
             {#if copied}<Check class="w-3.5 h-3.5 text-success" />{:else}<Copy class="w-3.5 h-3.5" />{/if}
             {$t('common.copy')}
           </button>
-          <button class="btn btn-ghost btn-xs" onclick={() => selected && remove(selected.id)} aria-label={$t('common.delete')}>
-            <Trash2 class="w-3.5 h-3.5 text-base-content/50" />
-          </button>
+          {#if sectionOf(selected) !== 'history'}
+            <button class="btn btn-ghost btn-xs" onclick={() => selected && putAway(selected.id)} aria-label={$t('inbox.putAwayAction')} title={$t('inbox.putAwayAction')}>
+              <Archive class="w-3.5 h-3.5 text-base-content/50" />
+            </button>
+          {/if}
         </div>
       </div>
-      <!-- The headline and label hold still; the evidence below them scrolls in
-           its own box; the decision bar under that never leaves the screen. -->
-      <div class="flex-1 min-h-0 flex flex-col">
-        <div class="max-w-2xl w-full mx-auto px-6 pt-6 shrink-0">
-          <div class="prose prose-sm max-w-none [&>:first-child]:mt-0">
-            {@html parseMarkdown(selected.message)}
-          </div>
-        </div>
-        <div class="flex-1 min-h-0 max-w-2xl w-full mx-auto px-6 pb-6 flex flex-col">
-          {#if detail?.kind === 'learning'}
-            <div class="mt-6 pt-4 border-t border-base-content/10 flex-1 min-h-0 overflow-y-auto">
-              <ProposedChange learning={detail.data} />
+      <div class="flex-1 min-h-0 overflow-y-auto">
+        <div class="max-w-2xl w-full mx-auto px-6 py-6 flex flex-col gap-6">
+          {#if sectionOf(selected) === 'needs_you' || selected.status === 'answered'}
+            {@render card(selected)}
+          {:else}
+            <div class="prose prose-sm max-w-none [&>:first-child]:mt-0">
+              {@html parseMarkdown(selected.body ?? '')}
             </div>
+          {/if}
+          {#if detail?.kind === 'learning'}
+            <ProposedChange learning={detail.data} />
           {:else if detail?.kind === 'gone'}
-            <div class="mt-6 pt-4 border-t border-base-content/10 text-xs text-base-content/70">{$t('inbox.recordGone')}</div>
+            <div class="text-xs text-base-content/70">{$t('inbox.recordGone')}</div>
           {:else if detail?.kind === 'run'}
             {@const run = detail.data.run}
             {@const steps = Object.values((detail.data.taskItems ?? {}) as Record<string, PendingTask[]>).flat()}
-            <div class="mt-6 pt-4 border-t border-base-content/10 space-y-4 flex-1 min-h-0 overflow-y-auto">
+            <div class="space-y-4">
               {#if run.error}
                 <div>
                   <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{run.errorActivity ? $t('inbox.failedAt', { values: { activity: run.errorActivity } }) : $t('inbox.whatHappened')}</div>
@@ -515,35 +428,6 @@
           {/if}
         </div>
       </div>
-      {#if approvalRunId(selected)}
-        {@const runId = approvalRunId(selected)!}
-        {@const status = $approvalStatuses[runId]}
-        <div class="shrink-0 border-t border-base-content/10 bg-base-100">
-          <div class="max-w-2xl mx-auto px-6 py-3">
-            {#if status === 'pending' && askCard(selected)}
-              <PermissionAskCard ask={askCard(selected)!} via="inbox" />
-            {:else if status === 'pending' && approvalRef(selected)?.kind !== 'ask'}
-              <div class="flex items-center gap-2">
-                <button class="btn btn-sm btn-success" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, true)}>{$t('inbox.approve')}</button>
-                <button class="btn btn-sm btn-ghost border border-base-content/15" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, false)}>{$t('inbox.deny')}</button>
-              </div>
-            {:else if status === 'approved' || status === 'denied' || status === 'rejected'}
-              <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
-            {:else if status === 'withdrawn'}
-              <span class="badge badge-ghost text-base-content/60">{$t('permissionAsk.withdrawn')}</span>
-            {:else if status === 'conflict'}
-              <span class="badge badge-warning badge-outline">{$t('inbox.conflict')}</span>
-            {:else if status}
-              <span class="badge badge-ghost text-base-content/60">{status}</span>
-            {/if}
-          </div>
-        </div>
-      {/if}
-    {:else}
-      <div class="flex-1 flex flex-col items-center justify-center text-center gap-2 text-base-content/40">
-        <Mail class="w-8 h-8" />
-        <div class="text-xs">{$t('inbox.emptyDesc')}</div>
-      </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>

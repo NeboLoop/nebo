@@ -1,0 +1,94 @@
+// What the assistant handles for the owner: the rules he said yes to (each
+// with when and where he said it, and its history), the kinds he said never
+// to offer again, and the candidates he can turn into a rule himself. One
+// store, loaded from the server's one list; every change goes through the
+// server and the list is read again.
+
+import { writable, get } from 'svelte/store';
+import type { LearnedRule, LearnedRulesResponse, NeverOffer, RuleCandidate, RuleEvent } from '$lib/api/neboComponents';
+import { answerVia, ASSISTANT_ID, type InboxItem } from './item';
+
+export type { LearnedRule, NeverOffer, RuleCandidate, RuleEvent };
+export type LearnedRules = LearnedRulesResponse;
+
+export const learnedRules = writable<LearnedRules | null>(null);
+
+/** Where the rules list lives: a section of the assistant's own settings;
+ *  with `ruleId`, at that rule. */
+export const rulesPath = (ruleId?: string): string =>
+	`/${ASSISTANT_ID}/settings/handles${ruleId ? `?rule=${encodeURIComponent(ruleId)}` : ''}`;
+
+export async function loadLearnedRules(): Promise<LearnedRules> {
+	const api = await import('$lib/api/nebo');
+	const res = await api.listLearnedRules();
+	const rules = { rules: res.rules ?? [], neverOffer: res.neverOffer ?? [], candidates: res.candidates ?? [] };
+	learnedRules.set(rules);
+	return rules;
+}
+
+/** The rule with `id`, loading the list once when it isn't here yet. */
+export async function ruleById(id: string): Promise<LearnedRule | null> {
+	const have = get(learnedRules) ?? (await loadLearnedRules());
+	return have.rules.find((r) => r.id === id) ?? null;
+}
+
+/** What the assistant handled under a rule, newest first. */
+export async function handledUnder(id: string, limit = 20): Promise<{ items: InboxItem[]; total: number }> {
+	const api = await import('$lib/api/nebo');
+	const res = await api.listRuleHandled(id, limit, 0);
+	return { items: res.notifications ?? [], total: res.total ?? 0 };
+}
+
+/** Stop or restart a rule. Nothing is deleted: a paused rule keeps its history. */
+export async function setRulePaused(id: string, paused: boolean): Promise<void> {
+	const api = await import('$lib/api/nebo');
+	const via = answerVia();
+	await (paused ? api.pauseLearnedRule(id, { via }) : api.resumeLearnedRule(id, { via }));
+	await loadLearnedRules();
+}
+
+/** Change a rule's ceiling (in cents; null = no ceiling). */
+export async function editRule(id: string, ceilingCents: number | null): Promise<void> {
+	const api = await import('$lib/api/nebo');
+	await api.updateLearnedRule(id, { ceilingCents, via: answerVia() });
+	await loadLearnedRules();
+}
+
+/** Turn one of the owner's own recent answers into a rule. */
+export async function addRule(candidateId: string, ceilingCents: number | null): Promise<void> {
+	const api = await import('$lib/api/nebo');
+	await api.addLearnedRule({ candidateId, ceilingCents, via: answerVia() });
+	await loadLearnedRules();
+}
+
+/** Take a kind off the "Never offer again" list. */
+export async function offerAgain(id: string): Promise<void> {
+	const api = await import('$lib/api/nebo');
+	await api.offerAgain(id);
+	await loadLearnedRules();
+}
+
+/** A moment on the owner's clock then: "Wed, Oct 14, 2026, 9:02 AM MDT".
+ *  The clock is the offset the server recorded with it, so the words never
+ *  depend on this browser's zone. */
+export function formatMoment(c: Pick<RuleEvent, 'at' | 'timeZone' | 'zoneAbbr' | 'offsetSeconds'>, locale?: string): string {
+	const shifted = new Date((c.at + (c.offsetSeconds ?? 0)) * 1000);
+	const when = new Intl.DateTimeFormat(locale, {
+		weekday: 'short',
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit',
+		timeZone: 'UTC'
+	}).format(shifted);
+	return `${when} ${c.zoneAbbr || c.timeZone || ''}`.trim();
+}
+
+/** Dollars from cents, for the ceiling field. */
+export const dollars = (cents?: number | null): string => (cents == null ? '' : String(cents / 100));
+/** Cents from what the owner typed; empty is no ceiling. */
+export function cents(text: string): number | null {
+	const n = Number(text.replace(/[$,\s]/g, ''));
+	return text.trim() === '' || !Number.isFinite(n) || n < 0 ? null : Math.round(n * 100);
+}

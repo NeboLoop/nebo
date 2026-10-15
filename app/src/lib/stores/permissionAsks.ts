@@ -5,7 +5,6 @@
 
 import { writable } from 'svelte/store';
 import type { PermissionAskCard } from '$lib/api/neboComponents';
-import { askBandStatus, askNotificationId, setApprovalStatus } from './notifications';
 
 /** A permission card's answers, or a held send's (did it go out?). */
 export type AskAnswer = 'allow_always' | 'this_once' | 'no' | 'sent' | 'not_sent';
@@ -41,7 +40,6 @@ export function chatAsksOf(
 /** A new ask was raised. */
 export function askRaised(card: PermissionAskCard): void {
   openAsks.update((list) => (list.some((a) => a.id === card.id) ? list : [...list, card]));
-  setApprovalStatus(askNotificationId(card.id), 'pending');
 }
 
 /** An ask was answered (here or anywhere else), or withdrawn because the
@@ -49,7 +47,6 @@ export function askRaised(card: PermissionAskCard): void {
 export function askSettled(card: PermissionAskCard): void {
   openAsks.update((list) => list.filter((a) => a.id !== card.id));
   settledAsks.update((list) => [...list.filter((a) => a.id !== card.id), card]);
-  setApprovalStatus(askNotificationId(card.id), askBandStatus(card.status));
 }
 
 /** Answer an ask. Returns the card as it was settled: when someone else

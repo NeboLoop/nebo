@@ -1,39 +1,95 @@
-import { describe, it, expect } from 'vitest';
+// The Inbox store holds the server's rows as they are: status and answers
+// come from the server, and an answer from anywhere moves a decision to
+// History everywhere (`notification_settled`). The badge is the server's
+// counts.
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { notifications, approvalStatuses, setApprovalStatus, unreadCount, approvalRef, askBandStatus, askNotificationId, type Notification } from './notifications';
 
-const row = (id: string, read: boolean, type: Notification['type'] = 'system'): Notification => ({
-	id, type, title: id, message: '', time: 'now', createdAt: 1, read,
+const counts = { count: 3, needsYou: 1, unread: 2 };
+vi.mock('$lib/api/nebo', () => ({
+	unreadCount: vi.fn(async () => counts),
+	deleteNotification: vi.fn(async () => ({ success: true })),
+	markRead: vi.fn(async () => ({})),
+	markAllRead: vi.fn(async () => ({}))
+}));
+
+import {
+	notifications,
+	history,
+	inboxCounts,
+	unreadCount,
+	pushNotification,
+	settleNotification,
+	upsertItem,
+	removeNotification,
+	type InboxItem
+} from './notifications';
+
+const item = (id: string, over: Partial<InboxItem> = {}): InboxItem => ({
+	id,
+	userId: 'u',
+	type: 'info',
+	title: id,
+	body: '',
+	createdAt: 100,
+	needsYou: false,
+	options: [],
+	status: 'update',
+	...over
 });
 
-describe('unreadCount', () => {
-	it('counts unread rows and approvals still pending, however many times they were read', () => {
-		notifications.set([
-			row('learn:a', true),        // read, but the decision is still open
-			row('learn:b', true),        // read, already approved
-			row('wf-fail:1', false, 'error'),
-			row('wf-fail:2', true, 'error'),
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+beforeEach(() => {
+	notifications.set([]);
+	history.set([]);
+	inboxCounts.set({ needsYou: 0, unread: 0 });
+});
+
+describe('the Inbox store', () => {
+	it('upserts a pushed item by id and keeps the newest first', () => {
+		pushNotification(item('a', { createdAt: 1 }));
+		pushNotification(item('b', { createdAt: 2 }));
+		pushNotification(item('a', { createdAt: 1, title: 'restated' }));
+		expect(get(notifications).map((n) => [n.id, n.title])).toEqual([
+			['b', 'b'],
+			['a', 'restated']
 		]);
-		approvalStatuses.set({ 'learn:a': 'pending', 'learn:b': 'approved' });
-		expect(get(unreadCount)).toBe(2);
-		// Deciding from the inbox settles it for the badge too.
-		setApprovalStatus('learn:a', 'approved');
-		expect(get(unreadCount)).toBe(1);
 	});
 
-	it('recognizes the three approval id shapes and nothing else', () => {
-		expect(approvalRef('permission-ask:ask-1')).toEqual({ kind: 'ask', id: 'ask-1' });
-		expect(approvalRef('learn:p-1')).toEqual({ kind: 'learning', id: 'p-1' });
-		expect(approvalRef('artifact-update:skill:art-1:1.2.0')).toEqual({ kind: 'update', id: 'art-1', version: '1.2.0' });
-		expect(approvalRef('wf-fail:run-1')).toBeNull();
-		expect(approvalRef('wf-approval:run-1')).toBeNull();
+	it('reads an older payload: message and link, and a needs-you item is open', () => {
+		const n = pushNotification({ id: 'q:1', title: 'Which supplier?', message: 'Stock runs out', link: '/store', needsYou: true });
+		expect([n.body, n.actionUrl, n.status, n.options]).toEqual(['Stock runs out', '/store', 'open', []]);
 	});
 
-	it('reads an ask as pending until it is settled anywhere', () => {
-		expect(askBandStatus('open')).toBe('pending');
-		expect(askBandStatus('allowed')).toBe('approved');
-		expect(askBandStatus('declined')).toBe('denied');
-		expect(askBandStatus('withdrawn')).toBe('withdrawn');
-		expect(askNotificationId('ask-1')).toBe('permission-ask:ask-1');
+	it('settles a decision answered anywhere: History, with the answer and the surface', () => {
+		notifications.set([item('q:1', { needsYou: true, status: 'open' })]);
+		settleNotification({ id: 'q:1', answer: 'Lumen · $14.20', answeredVia: 'mobile', status: 'answered' });
+		const n = get(notifications)[0];
+		expect([n.status, n.answer, n.answeredVia]).toEqual(['answered', 'Lumen · $14.20', 'mobile']);
+		expect(n.answeredAt).toBeTruthy();
+		expect(n.readAt).toBeTruthy();
+		expect(get(history).map((h) => h.id)).toEqual(['q:1']);
+	});
+
+	it('takes the server copy of an answered item', () => {
+		notifications.set([item('q:1', { needsYou: true, status: 'open' })]);
+		upsertItem(item('q:1', { needsYou: true, status: 'answered', answer: 'Yes' }));
+		expect(get(notifications)[0].status).toBe('answered');
+		expect(get(history)[0].answer).toBe('Yes');
+	});
+
+	it('puts an item away into History; nothing is deleted', () => {
+		notifications.set([item('u:1')]);
+		removeNotification('u:1');
+		expect(get(notifications)).toEqual([]);
+		expect(get(history).map((h) => [h.id, h.status])).toEqual([['u:1', 'archived']]);
+	});
+
+	it("badges the server's counts: decisions still open and updates not read", async () => {
+		pushNotification(item('x'));
+		await flush();
+		expect(get(inboxCounts)).toEqual({ needsYou: 1, unread: 2 });
+		expect(get(unreadCount)).toBe(3);
 	});
 });

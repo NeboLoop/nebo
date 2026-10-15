@@ -19,8 +19,9 @@ export interface EngineService {
 	keepAfterLogout: boolean | null;
 }
 
+// Whether this page runs inside the desktop app (Tauri), not a browser.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const inDesktopApp = () => typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+export const inDesktopApp = (): boolean => typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
 	if (!inDesktopApp()) return null;

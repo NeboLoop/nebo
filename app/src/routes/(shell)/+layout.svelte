@@ -129,6 +129,8 @@
   });
 
   const settingsSection = $derived($page.url.searchParams.get('settings'));
+  // A rule of what the assistant handles, opened from the Inbox's Why?.
+  const settingsRule = $derived($page.url.searchParams.get('rule'));
   const runsOpen = $derived($page.url.searchParams.has('runs'));
   const openRunId = $derived($page.url.searchParams.get('run'));
   // Keep `runs` in place: the run detail stacks OVER the run list, so its
@@ -363,7 +365,7 @@
   const closeRuns = () => setParams((p) => { p.delete('runs'); p.delete('agent'); });
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
   const openSettings = () => setParams((p) => p.set('settings', 'general'));
-  const closeSettings = () => setParams((p) => p.delete('settings'));
+  const closeSettings = () => setParams((p) => { p.delete('settings'); p.delete('rule'); });
   // Section-to-section is not a history step; Escape should close the modal,
   // not walk back through eleven sections.
   const selectSection = (id: string) => setParams((p) => p.set('settings', id), true);
@@ -1959,6 +1961,7 @@
   open={settingsSection !== null}
   {agentId}
   section={settingsSection ?? 'general'}
+  rule={settingsRule}
   agentName={agent?.name ?? ''}
   agentRole={agent?.role ?? ''}
   isPrimary={agent?.id === 'assistant'}

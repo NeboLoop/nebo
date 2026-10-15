@@ -41,3 +41,12 @@ export function formatRelative(date: string | number | Date, style: 'long' | 'sh
 	if (days < 30) return $t('time.daysAgo', { values: { n: days } });
 	return $t('time.monthsAgo', { values: { n: Math.floor(days / 30) } });
 }
+
+/** The greeting for the hour, as an i18n key ("Good morning"): the one rule
+ *  the new chat page and the Inbox greet the owner by. */
+export function greetingKey(now: Date = new Date()): string {
+	const hour = now.getHours();
+	if (hour < 12) return 'chat.goodMorning';
+	if (hour < 17) return 'chat.goodAfternoon';
+	return 'chat.goodEvening';
+}

@@ -843,6 +843,133 @@
   @apply self-start cursor-pointer border-none bg-transparent p-0 text-xs font-medium text-primary hover:underline;
 }
 
+/* ── The Inbox (InboxView, NeedsYouCard, RuleWhy): one column of cards.
+   A decision is a card answered in place; an update is a row under its
+   employee with a dot while unread. The same NeedsYouCard is the
+   assistant's chat card. */
+.inbox-feed {
+  @apply mx-auto flex w-full max-w-2xl flex-col gap-5 px-4 py-4 md:px-6 md:py-6;
+}
+.inbox-section-head {
+  @apply flex items-baseline justify-between gap-2;
+}
+.inbox-section-head h2 {
+  @apply m-0 text-base font-semibold;
+}
+.inbox-section-head span {
+  @apply text-xs text-base-content/50;
+}
+.inbox-card {
+  @apply flex flex-col gap-2 rounded-2xl border border-base-300 bg-base-200/60 p-4;
+}
+.inbox-card-offer {
+  @apply border-primary/50 bg-base-100;
+}
+.inbox-card-meta {
+  @apply flex min-w-0 items-center gap-2 text-xs text-base-content/70;
+}
+.inbox-card-title {
+  @apply text-sm font-semibold text-base-content;
+}
+.inbox-card-body {
+  @apply m-0 text-sm text-base-content/70;
+}
+.inbox-facts {
+  @apply m-0 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 rounded-xl bg-base-200/60 p-3 text-sm;
+}
+.inbox-facts dt {
+  @apply text-xs font-semibold uppercase tracking-wider text-base-content/50;
+}
+.inbox-facts dd {
+  @apply m-0 text-base-content;
+}
+.inbox-cant-undo {
+  @apply m-0 text-xs font-medium text-warning;
+}
+.inbox-answered {
+  @apply m-0 text-xs text-base-content/60;
+}
+.inbox-chip {
+  @apply cursor-pointer rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50;
+}
+.inbox-chip-quiet {
+  @apply border-base-content/15 bg-base-100 text-base-content/70 hover:bg-base-200;
+}
+.inbox-link {
+  @apply inline-flex cursor-pointer items-center gap-1 rounded-full border border-transparent bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50;
+}
+.inbox-link-danger {
+  @apply bg-error/10 text-error hover:bg-error/20;
+}
+.inbox-brief {
+  @apply flex flex-col gap-2.5 rounded-2xl bg-primary/10 p-4;
+}
+.inbox-ask {
+  @apply w-full cursor-pointer rounded-full border border-base-300 bg-base-100 px-4 py-2 text-start text-sm text-base-content/50 transition-colors hover:text-base-content/70;
+}
+.inbox-group {
+  @apply flex flex-col rounded-2xl border border-base-300 bg-base-100 px-3 py-3;
+}
+.inbox-update {
+  @apply relative flex items-start gap-2.5 py-2.5;
+}
+.inbox-update + .inbox-update {
+  @apply border-t border-base-content/10;
+}
+.inbox-update-main {
+  @apply flex w-full min-w-0 cursor-pointer items-baseline gap-2 border-none bg-transparent p-0 text-start text-base-content;
+}
+.inbox-dot {
+  @apply mt-1.5 h-2 w-2 shrink-0 rounded-full bg-transparent;
+}
+.inbox-dot-unread {
+  @apply bg-primary;
+}
+.inbox-put-away {
+  @apply cursor-pointer rounded border-none bg-transparent p-1 text-base-content/50 opacity-0 transition-opacity hover:bg-base-content/10 group-hover:opacity-100 focus-visible:opacity-100;
+}
+.inbox-why {
+  @apply mt-2 flex flex-col gap-1 rounded-xl bg-base-200/70 p-3 text-xs text-base-content/80;
+}
+.inbox-why p {
+  @apply m-0;
+}
+.inbox-more {
+  @apply inline-flex cursor-pointer items-center gap-1.5 self-start border-none bg-transparent p-0 text-xs font-medium text-primary hover:underline;
+}
+.inbox-caught-up {
+  @apply flex items-center justify-center gap-2 py-2 text-xs text-base-content/60;
+}
+.inbox-chat-card {
+  @apply my-2.5 max-w-xl;
+}
+
+/* ── What the assistant handles (HandlesSection): one card per rule. */
+.rule-card {
+  @apply flex flex-col gap-1.5 rounded-xl border border-base-300 bg-base-200/50 p-3;
+}
+.rule-card-paused {
+  @apply opacity-70;
+}
+.rule-card-picked {
+  @apply border-primary/50 bg-primary/5;
+}
+.rule-card-highlight {
+  @apply border-primary ring-2 ring-primary/30;
+}
+.rule-did {
+  @apply flex flex-col rounded-lg bg-base-100 px-2;
+}
+.rule-meta {
+  @apply m-0 text-xs text-base-content/70;
+}
+.rule-history {
+  @apply m-0 flex list-none flex-col gap-1 border-s-2 border-base-300 ps-3 text-xs text-base-content/70;
+}
+.rule-history li {
+  @apply flex flex-col;
+}
+
 /* The consent line: what an employee will be able to do, in plain words,
    above Hire and Create and inline in the chat. The owner consents to jobs,
    not actions; each builder item is removable before Create. */
