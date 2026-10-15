@@ -3281,6 +3281,8 @@
 		"employeeDescription": "{name}が自分の判断で行えること。それ以外は必ず先に確認します。",
 		"loadError": "権限を読み込めませんでした。",
 		"saveError": "この変更は保存されませんでした。もう一度お試しください。",
+		"finishChecksTitle": "終える前に確認する",
+		"finishChecksDesc": "従業員に何かの保存やコマンドの実行を頼むと、返信を終える前にそれを実行したことを確認します。確認ごとに追加されるのは最大 1 ステップです。",
 		"modeTitle": "仕組み",
 		"modeCompany": "会社の初期設定と同じ",
 		"modeCompanyDesc": "会社の設定に従います：{mode}。",

@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Was {name} eigenständig tun darf. Bei allem anderen fragt er dich zuerst.",
 		"loadError": "Diese Berechtigungen konnten nicht geladen werden.",
 		"saveError": "Diese Änderung wurde nicht gespeichert. Versuch es erneut.",
+		"finishChecksTitle": "Vor dem Abschluss prüfen",
+		"finishChecksDesc": "Wenn du einen Mitarbeiter bittest, etwas zu speichern oder einen Befehl auszuführen, prüft er vor dem Ende seiner Antwort, dass er es getan hat. Jede Prüfung fügt höchstens einen Schritt hinzu.",
 		"modeTitle": "So funktioniert es",
 		"modeCompany": "Wie die Firmenvorgabe",
 		"modeCompanyDesc": "Folgt der Firmeneinstellung: {mode}.",

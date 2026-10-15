@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Ce que {name} peut faire seul. Pour tout le reste, il vous demande d'abord.",
 		"loadError": "Impossible de charger ces autorisations.",
 		"saveError": "Ce changement n'a pas été enregistré. Réessayez.",
+		"finishChecksTitle": "Vérifier avant de terminer",
+		"finishChecksDesc": "Quand vous demandez à un employé d'enregistrer quelque chose ou d'exécuter une commande, il s'assure de l'avoir fait avant de terminer sa réponse. Chaque vérification ajoute au plus une étape.",
 		"modeTitle": "Comment ça marche",
 		"modeCompany": "Comme les valeurs par défaut de l'entreprise",
 		"modeCompanyDesc": "Suit le paramètre de l'entreprise : {mode}.",

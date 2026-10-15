@@ -3281,6 +3281,8 @@
 		"employeeDescription": "O que o {name} pode fazer por conta própria. Para tudo o resto, pergunta-lhe primeiro.",
 		"loadError": "Não foi possível carregar estas permissões.",
 		"saveError": "Essa alteração não foi guardada. Tente novamente.",
+		"finishChecksTitle": "Verificar antes de terminar",
+		"finishChecksDesc": "Quando pede a um funcionário para guardar algo ou executar um comando, ele confirma que o fez antes de terminar a resposta. Cada verificação acrescenta no máximo um passo.",
 		"modeTitle": "Como funciona",
 		"modeCompany": "Igual às predefinições da empresa",
 		"modeCompanyDesc": "Segue a definição da empresa: {mode}.",

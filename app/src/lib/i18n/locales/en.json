@@ -3281,6 +3281,8 @@
 		"employeeDescription": "What {name} may do on its own. Anything else asks you first.",
 		"loadError": "Couldn't load these permissions.",
 		"saveError": "That change didn't save. Try again.",
+		"finishChecksTitle": "Double-check before finishing",
+		"finishChecksDesc": "When you ask an employee to save something or run a command, it makes sure it did before it ends its reply. Each check adds at most one step.",
 		"modeTitle": "How it works",
 		"modeCompany": "Same as company defaults",
 		"modeCompanyDesc": "Follows the company setting: {mode}.",

@@ -3281,6 +3281,8 @@
 		"employeeDescription": "Ciò che {name} può fare da solo. Per tutto il resto, ti chiede prima il permesso.",
 		"loadError": "Non è stato possibile caricare queste autorizzazioni.",
 		"saveError": "Questa modifica non è stata salvata. Riprova.",
+		"finishChecksTitle": "Ricontrolla prima di finire",
+		"finishChecksDesc": "Quando chiedi a un dipendente di salvare qualcosa o eseguire un comando, si assicura di averlo fatto prima di terminare la risposta. Ogni controllo aggiunge al massimo un passaggio.",
 		"modeTitle": "Come funziona",
 		"modeCompany": "Come le impostazioni predefinite dell'azienda",
 		"modeCompanyDesc": "Segue l'impostazione dell'azienda: {mode}.",

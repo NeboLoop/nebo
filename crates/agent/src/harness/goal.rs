@@ -600,6 +600,23 @@ pub struct GoalCheck {
 }
 
 impl GoalCheck {
+    /// Whether the session has an active goal to check at the end of this
+    /// turn. None (or unreadable): its check-ins start over, and the turn
+    /// builds no check.
+    pub fn active_for(sessions: &SessionManager, session_id: &str, check_ins: &CheckIns) -> bool {
+        match GoalStore::new(sessions, session_id).active() {
+            Ok(Some(_)) => true,
+            Ok(None) => {
+                check_ins.reset(session_id);
+                false
+            }
+            Err(e) => {
+                warn!(session_id, error = %e, "goal: loading the goal failed");
+                false
+            }
+        }
+    }
+
     fn goals(&self) -> GoalStore<'_> {
         GoalStore::new(&self.sessions, &self.session_id)
     }

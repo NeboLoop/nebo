@@ -2242,24 +2242,18 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.step -= 1;
             continue;
         }
+        // A reply with no calls and no words ends the turn, as Claude Code's
+        // does (`query.ts`: the loop ends on no tool calls). It is never
+        // answered with a prompt the owner didn't write: a "Continue." sent
+        // back up to three times cost three more model calls a time and
+        // pushed a model that meant to stop to keep talking. The step after
+        // the owner's answer, with nothing more to say, ends on that answer.
         if text.trim().is_empty() {
-            // The step after the owner's answer, with nothing more to say:
-            // the turn ends on that answer.
-            if after_owner_answer {
-                return TurnExit::Answered;
+            if !after_owner_answer {
+                warn!(session_id = sid, step = st.step, "the reply had no words and no calls; the turn ends on it");
             }
-            if model_call::retry_empty_reply(&mut st.call, st.step as usize, sid) {
-                st.reminders.add(&TurnEvent::EmptyReply);
-                st.transition = Transition::TransientRetry {
-                    attempt: st.call.empty_content_retries as u8,
-                };
-                st.step -= 1;
-                continue;
-            }
-            let _ = cx.tx.send(StreamEvent::error("The model returned an empty reply.")).await;
-            return TurnExit::ProviderFailed("empty reply".into());
+            return TurnExit::Answered;
         }
-        st.call.empty_content_retries = 0;
 
         // Turn end: every end check may continue the turn or end it.
         if let Some(next) = end_checks(cx, st).await {
@@ -3001,8 +2995,10 @@ async fn correct(
 /// another step, `Err` to end it with that exit.
 async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), TurnExit>> {
     let h = &cx.harness;
+    // The goal check, only while the session has an agreed goal: a turn
+    // without one routes no judge and reads no transcript.
     let goal = match (&cx.request.mode, h.goal_observer()) {
-        (TurnMode::Chat, Some(observer)) => Some(goal::GoalCheck {
+        (TurnMode::Chat, Some(observer)) if goal::GoalCheck::active_for(&h.sessions, &cx.session_id, &h.goal_check_ins) => Some(goal::GoalCheck {
             sessions: h.sessions.clone(),
             session_id: cx.session_id.clone(),
             judge: h.housekeeper().route(&cx.model).await.map(goal::DoneJudge::from),
@@ -3013,9 +3009,15 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         _ => None,
     };
     let workflow_contract = cx.workflow().map(|m| m.contract.clone());
-    settle_opening(st, super::memory_save::DECIDE_TIMEOUT).await;
-    let unsaved_memory = st.saves.due();
-    let unrun_command = st.commands.due();
+    // The harness's own checks of a chat reply (an unanswered save, an
+    // unrun command) run while the owner's "Double-check before finishing"
+    // is on; each takes at most one more step a turn.
+    let (unsaved_memory, unrun_command) = if matches!(cx.request.mode, TurnMode::Chat) && h.store.finish_checks() {
+        settle_opening(st, super::memory_save::DECIDE_TIMEOUT).await;
+        (st.saves.due(), st.commands.due())
+    } else {
+        (None, None)
+    };
     let checks = turn_end::registry(
         &cx.request.mode,
         turn_end::EndChecks { goal, workflow_contract, unsaved_memory, unrun_command },
@@ -4211,14 +4213,27 @@ mod tests {
             Step::Narrated("Let me check the first file.", "echo"),
             Step::Narrated("Now the second file, which holds the rest of the invoices.", "echo"),
             Step::Say(""),
-            Step::Say(""),
-            Step::Say(""),
-            Step::Say(""),
         ]);
         let h = harness(&model).await;
         let events = run_turn(&h, owner("Check the invoices")).await;
         assert_eq!(verdicts(&events), vec![(0, "shown".to_string()), (1, "shown".to_string())]);
         assert_eq!(stored_folds(&h), vec!["shown", "shown"]);
+    }
+
+    /// A reply with no words and no calls ends the turn, as Claude Code's
+    /// does: never a "Continue." the owner didn't write, and no error. It
+    /// took four model calls and ended on "The model returned an empty
+    /// reply." before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_empty_reply_ends_the_turn_with_no_hidden_prompt() {
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say(""), Step::Say("Pushed on.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Echo something")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the call, then the empty reply that ends the turn");
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(!events.iter().any(|e| e.event_type == ai::StreamEventType::Error), "no error for an empty reply");
+        assert!(calls.iter().all(|c| texts(c).iter().all(|t| !t.contains("Continue."))), "no prompt the owner didn't write");
     }
 
     /// A linked bot's stand-in: answers every turn and records it, or, when
@@ -6260,7 +6275,7 @@ mod tests {
         let model = Scripted::new(vec![slip(), slip(), slip()]);
         let h = harness(&model).await;
         let events = run_turn(&h, owner("Check it.")).await;
-        assert_eq!(model.calls().len(), 3, "two more steps for the call, then the turn ends");
+        assert_eq!(model.calls().len(), 2, "one more step for the call, then the turn ends (three calls before)");
         assert_eq!(exit_of(&events), "text_response");
         let shown = shown_text(&events);
         assert!(shown.contains("Checking now.") && !shown.contains("<function_name>"), "{shown}");
@@ -9178,6 +9193,30 @@ mod tests {
             "the added step is told why"
         );
         assert!(texts(&calls[0]).iter().all(|t| !t.contains("none has run in this turn")));
+    }
+
+    /// The owner's "Double-check before finishing" off: neither end check
+    /// adds a step. The command check took one more model call, the save
+    /// check another, before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finish_checks_off_adds_no_step() {
+        let model = Scripted::new(vec![
+            Step::Say("There is no such tool; running it would result in command not found."),
+            Step::Say("Unused."),
+        ]);
+        let (jev, _) = jev_commanding(true).await;
+        let h = harness_with(&model, run_command_tool()).await.with_decide(jev);
+        h.store.set_finish_checks(false).unwrap();
+        let events = run_turn(&h, owner(RUN_IT)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 1, "the answer ends the turn");
+
+        use crate::harness::memory_save::Scope;
+        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Say("Unused.")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(Some(Scope::Local)).await);
+        h.store.set_finish_checks(false).unwrap();
+        run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(model.calls().len(), 1, "no correction step");
     }
 
     /// No command given, or no decision: nothing is forced or added.

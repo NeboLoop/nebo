@@ -3281,6 +3281,8 @@
 		"employeeDescription": "{name} kendi başına neler yapabilir. Bunun dışındaki her şey için önce size sorar.",
 		"loadError": "Bu izinler yüklenemedi.",
 		"saveError": "Bu değişiklik kaydedilmedi. Tekrar deneyin.",
+		"finishChecksTitle": "Bitirmeden önce kontrol et",
+		"finishChecksDesc": "Bir çalışandan bir şeyi kaydetmesini veya bir komut çalıştırmasını istediğinizde, yanıtını bitirmeden önce bunu yaptığından emin olur. Her kontrol en fazla bir adım ekler.",
 		"modeTitle": "Nasıl çalışır",
 		"modeCompany": "Şirket varsayılanlarıyla aynı",
 		"modeCompanyDesc": "Şirket ayarını izler: {mode}.",
