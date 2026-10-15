@@ -105,9 +105,9 @@ impl DynTool for MessageTool {
     /// The owner's Messages app: every read is his own chat history, and a
     /// send that names no texting line (`from`) goes out from his Messages
     /// when the employee has no line. Like any app of his, the one
-    /// permission check asks him for it in every mode until he allows it
-    /// always for that employee (`CallEffects::reaches_owner`); no schedule
-    /// or workflow texts from his Messages by default. A send from a texting
+    /// permission check asks him for it in Ask and Automatic until he allows
+    /// it always for that employee (`CallEffects::reaches_owner`); Full
+    /// Access runs it, as the owner set it to. A send from a texting
     /// line is NeboAI's phone service, not his app.
     fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
         let mut effects = if self.read_only(input) {
