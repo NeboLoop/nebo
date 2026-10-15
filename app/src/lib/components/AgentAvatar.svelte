@@ -44,4 +44,4 @@
   );
 </script>
 
-{@html characterSvg(shape ?? '', id || name, c.fillClass, `${SIZES[size]} ${cls}`)}
+{@html characterSvg(shape ?? '', id || name, c.characterClass, `${SIZES[size]} ${cls}`)}

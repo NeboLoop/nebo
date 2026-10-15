@@ -27,6 +27,6 @@ export function renderMentionChips(escapedHtml: string, agents: MentionAgent[]):
 		if (!agent)
 			return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/70 align-baseline">@unknown</span>`;
 		const c = AGENT_COLORS_MAP[agent.color || 'teal'] || AGENT_COLORS_MAP['teal'];
-		return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium align-baseline ${c.bgClass} ${c.inkClass}">${characterSvg(agent.shape ?? '', agent.id || agent.name, c.fillClass, 'w-4 h-4')}<span>${agent.name}</span></span>`;
+		return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium align-baseline ${c.bgClass} ${c.inkClass}">${characterSvg(agent.shape ?? '', agent.id || agent.name, c.characterClass, 'w-4 h-4')}<span>${agent.name}</span></span>`;
 	});
 }

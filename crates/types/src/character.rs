@@ -1,6 +1,6 @@
 //! The mountain family: which character an employee wears.
 //!
-//! Every employee is a mountain shape with blinking eyes, in its colour. The
+//! Every employee is a mountain shape with a face (eyes that blink and a small smile), shaded from its colour. The
 //! primary is the assistant, a character of its own in brand blue that no
 //! employee wears. The shape is decided HERE and nowhere else: the roster
 //! sends the resolved shape, and the web app and the mobile app only draw it
@@ -24,7 +24,6 @@ pub const EMPLOYEE_SHAPES: &[&str] = &[
     "dome",
     "snowcap",
     "volcano",
-    "spire",
     "sawtooth",
     "hook",
     "flattop",
@@ -41,10 +40,10 @@ const ROLES: &[(&[&str], &str)] = &[
     (&["sales", "lead", "growth", "prospect", "deal"], "twin"),
     (&["research", "analyst", "analytics", "data", "insight"], "diamond"),
     (&["home", "family", "support", "customer", "care", "reception", "concierge"], "dome"),
-    (&["legal", "law", "lawyer", "compliance", "contract", "paralegal"], "spire"),
+    (&["legal", "law", "lawyer", "compliance", "contract", "paralegal"], "flattop"),
     (&["engineer", "developer", "code", "coding", "devops", "tech", "it"], "sawtooth"),
     (&["writer", "writing", "editor", "copy", "blog", "newsletter"], "hook"),
-    (&["assistant", "admin", "office", "schedul", "calendar", "inbox", "email"], "flattop"),
+    (&["assistant", "admin", "office", "schedul", "calendar", "inbox", "email"], "dome"),
     (&["recruit", "hiring", "hr", "people", "talent"], "snowcap"),
     (&["design", "creative", "art", "photo"], "littlehill"),
 ];
@@ -110,7 +109,9 @@ mod tests {
 
     #[test]
     fn the_owners_pick_wins_and_the_assistant_is_not_a_pick() {
-        assert_eq!(shape_of("e1", Some("spire"), "Store Manager", None, ""), "spire");
+        assert_eq!(shape_of("e1", Some("hook"), "Store Manager", None, ""), "hook");
+        // The spire left the family: a pick of it goes back to the role's.
+        assert_eq!(shape_of("e1", Some("spire"), "Store Manager", None, ""), "ridge");
         assert_eq!(shape_of("e1", Some("assistant"), "Store Manager", None, ""), "ridge");
         assert_eq!(shape_of("e1", Some("nonsense"), "Store Manager", None, ""), "ridge");
         assert!(!is_employee_shape("assistant"));
@@ -142,7 +143,7 @@ mod tests {
         // Pinned: the web and the mobile app read these from the roster, so a
         // change here changes every existing employee's character.
         assert_eq!(shape_for_id(""), "ridge");
-        assert_eq!(shape_for_id("a"), "snowcap");
+        assert_eq!(shape_for_id("a"), "twin");
         assert_eq!(shape_for_id("zz"), "diamond");
     }
 
