@@ -1483,7 +1483,8 @@
 		"skills": "umiejętności",
 		"mcpServers": "konektorów",
 		"memoryFiles": "plików pamięci",
-		"runLocally": "działa lokalnie"
+		"runLocally": "działa lokalnie",
+		"localCommands": "Te łączniki uruchamiają tutaj program, gdy Twoi pracownicy z nich korzystają:"
 	},
 	"settingsImport": {
 		"title": "Import",

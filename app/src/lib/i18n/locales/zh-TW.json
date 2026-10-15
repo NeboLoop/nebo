@@ -1483,7 +1483,8 @@
 		"skills": "技能",
 		"mcpServers": "連接器",
 		"memoryFiles": "記憶檔案",
-		"runLocally": "本機執行"
+		"runLocally": "本機執行",
+		"localCommands": "員工使用這些連接器時，它們會在這裡啟動一個程式："
 	},
 	"settingsImport": {
 		"title": "匯入",

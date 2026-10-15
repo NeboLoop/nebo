@@ -102,6 +102,10 @@
   let importRunning = $state(false);
   let importSummary = $state('');
   let importManifest = $state<api.ImportManifest | null>(null);
+  // Connectors that start a program here: listed with their command lines.
+  const localConnectors = $derived(
+    (importManifest?.items ?? []).filter((i) => i.kind === 'mcp_server' && i.tier === 'code'),
+  );
   let importDone = $state(false);
   let importError = $state(false);
   let importDismissed = $state(false);
@@ -649,6 +653,18 @@
           <p class="text-xs text-base-content/70">{$t('onboardingImport.failed')}</p>
         {:else if importManifest}
           <p class="text-xs text-base-content/70 mb-3">{importSummary}</p>
+          {#if localConnectors.length > 0}
+            <!-- What will run here, word for word, before anything is imported. -->
+            <p class="text-xs text-base-content/70 mb-1">{$t('onboardingImport.localCommands')}</p>
+            <ul class="mb-3 flex flex-col gap-1">
+              {#each localConnectors as item}
+                <li class="text-xs">
+                  <span class="font-medium">{item.name}</span>
+                  <code class="block font-mono text-base-content/70 break-all">{item.detail}</code>
+                </li>
+              {/each}
+            </ul>
+          {/if}
           <div class="flex items-center gap-2">
             <button
               onclick={runDetectedImport}

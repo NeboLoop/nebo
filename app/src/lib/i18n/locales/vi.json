@@ -1483,7 +1483,8 @@
 		"skills": "kỹ năng",
 		"mcpServers": "trình kết nối",
 		"memoryFiles": "tệp bộ nhớ",
-		"runLocally": "chạy tại máy"
+		"runLocally": "chạy tại máy",
+		"localCommands": "Các trình kết nối này khởi chạy một chương trình tại đây khi nhân viên của bạn dùng chúng:"
 	},
 	"settingsImport": {
 		"title": "Nhập",

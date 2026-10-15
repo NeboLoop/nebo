@@ -1483,7 +1483,8 @@
 		"skills": "skill",
 		"mcpServers": "konektor",
 		"memoryFiles": "berkas memori",
-		"runLocally": "berjalan secara lokal"
+		"runLocally": "berjalan secara lokal",
+		"localCommands": "Konektor ini menjalankan program di sini saat karyawan Anda menggunakannya:"
 	},
 	"settingsImport": {
 		"title": "Impor",

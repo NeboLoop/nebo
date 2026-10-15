@@ -1483,7 +1483,8 @@
 		"skills": "スキル",
 		"mcpServers": "コネクタ",
 		"memoryFiles": "メモリファイル",
-		"runLocally": "ローカルで実行"
+		"runLocally": "ローカルで実行",
+		"localCommands": "これらのコネクタは、従業員が使うときにここでプログラムを起動します："
 	},
 	"settingsImport": {
 		"title": "インポート",
