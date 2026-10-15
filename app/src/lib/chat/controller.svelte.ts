@@ -473,7 +473,12 @@ export function createChatController(config: ChatControllerConfig) {
     // thread keeps neither the call nor the fold it put on the words before
     // it. The live view no longer matches the thread: read it, once.
     const unrun = aid === agentId && messages.some((m) => m.type === 'assistant' && m.tools?.some((t) => t.status === 'running'));
-    if ((idx === -1 || unrun) && activeSessionKey && data.session_id === activeSessionKey) {
+    // A turn this page joined part way through (it was opened, or its socket
+    // came back, while the turn ran) shows its reply from the join on: live
+    // 2026-10-15, "Hey. What are we getting into today?" read ". What are we
+    // getting into today?". The thread as the bot kept it replaces it.
+    if ((idx === -1 || unrun || joinedMidRun) && activeSessionKey && data.session_id === activeSessionKey) {
+      joinedMidRun = false;
       void loadHistory(historyTarget);
     }
     if (idx !== -1) {
@@ -1086,6 +1091,10 @@ export function createChatController(config: ChatControllerConfig) {
   /** Bumped by every first-page load and by a session switch: an older fetch
    *  still in flight sees the bump and drops its result. */
   let historyGen = 0;
+  /** The last first-page load landed while a turn ran: the live stream
+   *  joined that turn part way through its reply, so the reply on screen
+   *  starts where the join fell. Its end reads the thread again. */
+  let joinedMidRun = false;
 
   /** Loads the transcript through the ONE history door: /chats/{id}/messages
    *  takes a chat id or a session key (resolving its active chat) and carries
@@ -1142,6 +1151,7 @@ export function createChatController(config: ChatControllerConfig) {
       }
       // The thread is still working: show it now, not at the next event.
       const run = resp.activeRun;
+      joinedMidRun = !!run;
       if (run) {
         isLoading = true;
         // The running call's raw tool name is never a word on his screen
