@@ -30,8 +30,64 @@ const PRIMARY: &str = tools::team_tool::PRIMARY_AGENT_ID;
 /// calendar, the successors of the retired `gws` bundle.
 pub(crate) const GOOGLE: [&str; 2] = ["gmail", "google-calendar"];
 
-/// The names offered for the assistant, the default first.
-pub(crate) const NAMES: [&str; 3] = ["Nebo", "Aspen", "Logan"];
+/// The assistant's default name, offered first everywhere. Mount Nebo is a
+/// real mountain too.
+pub(crate) const DEFAULT_NAME: &str = "Nebo";
+
+/// The ONE table of names offered beside the default: two real local
+/// mountains per locale the app speaks, written in the local script where
+/// that is natural. A locale is a language the app speaks, with its region
+/// where the region changes the names (en-GB, es-ES, es-MX; pt-BR, zh-CN
+/// and zh-TW are languages of their own). No politically disputed or sacred
+/// peak (no Ararat, Hermon, Sinai, Kailash, Everest).
+pub(crate) const LOCAL_NAMES: &[(&str, [&str; 2])] = &[
+    ("en-US", ["Shasta", "Rainier"]),
+    ("en-GB", ["Nevis", "Helvellyn"]),
+    ("ja", ["富士", "穂高"]),
+    ("ko", ["한라", "설악"]),
+    ("zh-CN", ["黄山", "庐山"]),
+    ("zh-TW", ["玉山", "阿里山"]),
+    ("de", ["Eiger", "Watzmann"]),
+    ("fr", ["Ventoux", "Sancy"]),
+    ("es-ES", ["Teide", "Aneto"]),
+    ("es-MX", ["Orizaba", "Izta"]),
+    ("es", ["Aconcagua", "Tronador"]),
+    ("it", ["Etna", "Cervino"]),
+    ("pt-BR", ["Itatiaia", "Corcovado"]),
+    ("pt", ["Estrela", "Pico"]),
+    ("ru", ["Эльбрус", "Казбек"]),
+    ("uk", ["Говерла", "Петрос"]),
+    ("pl", ["Rysy", "Giewont"]),
+    ("nl", ["Vaals", "Kemmel"]),
+    ("sv", ["Kebne", "Åre"]),
+    ("tr", ["Erciyes", "Uludağ"]),
+    ("ar", ["توبقال", "شمس"]),
+    ("he", ["כרמל", "גלבוע"]),
+    ("hi", ["नीलगिरि", "कामेट"]),
+    ("bn", ["সান্দাকফু", "কেওক্রাডং"]),
+    ("id", ["Slamet", "Kerinci"]),
+    ("ms", ["Tahan", "Ledang"]),
+    ("th", ["อินทนนท์", "เชียงดาว"]),
+    ("vi", ["Fansipan", "Bạch Mã"]),
+];
+
+/// The names offered for the assistant, the default first: the owner's
+/// locale (the account's full tag when the bot has it, else the language it
+/// speaks), else American English.
+pub(crate) fn name_choices(locale: Option<&str>, language: &str) -> [&'static str; 3] {
+    let tag = locale.filter(|t| !t.trim().is_empty()).unwrap_or(language).trim().replace('_', "-");
+    let region = tag.rsplit('-').next().filter(|r| r.len() == 2 && tag.contains('-')).map(str::to_ascii_uppercase);
+    let lang = types::language::app_language(&tag).or_else(|| types::language::app_language(language)).unwrap_or("en");
+    let key = match (lang, region.as_deref()) {
+        ("en", Some("GB")) => "en-GB",
+        ("en", _) => "en-US",
+        ("es", Some("ES")) => "es-ES",
+        ("es", Some("MX")) => "es-MX",
+        (other, _) => other,
+    };
+    let [a, b] = LOCAL_NAMES.iter().find(|(k, _)| *k == key).map(|(_, n)| *n).unwrap_or(LOCAL_NAMES[0].1);
+    [DEFAULT_NAME, a, b]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
@@ -178,12 +234,16 @@ pub(crate) fn transition(step: Step, value: &str) -> Result<(Step, Effect), Stri
         Step::Focus if skip => Ok((Step::Connect, Effect::None)),
         Step::Focus => Focus::parse(value)
             .map(|f| (Step::Connect, Effect::Focus(f)))
-            .ok_or_else(|| "focus is one of store, content, clients, team, home (or skip).".into()),
+            .ok_or_else(|| {
+                "value is the code for what the owner meant, in any language: store, content, clients, team or \
+                 home (or skip)."
+                    .into()
+            }),
         Step::Connect => match value {
             "connected" => Ok((Step::Day, Effect::Connected)),
             "not_now" => Ok((Step::Plate, Effect::None)),
             _ if skip => Ok((Step::Plate, Effect::None)),
-            _ => Err("connect is connected or not_now.".into()),
+            _ => Err("value is the code for what happened: connected or not_now.".into()),
         },
         Step::Plate | Step::Day => Ok((Step::Daily, Effect::None)),
         Step::Daily => daily(value).map(|d| (Step::Hire, Effect::Daily(d))),
@@ -191,7 +251,7 @@ pub(crate) fn transition(step: Step, value: &str) -> Result<(Step, Effect), Stri
             "hired" => Ok((Step::Set, Effect::Hired)),
             "later" => Ok((Step::Set, Effect::None)),
             _ if skip => Ok((Step::Set, Effect::None)),
-            _ => Err("hire is hired or later.".into()),
+            _ => Err("value is the code for what the owner chose: hired or later.".into()),
         },
         Step::Set => Ok((Step::Done, Effect::None)),
         Step::Done => Err("The first-run chat is finished.".into()),
@@ -212,7 +272,10 @@ fn daily(value: &str) -> Result<Daily, String> {
         .split_once(':')
         .and_then(|(h, m)| Some((h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?)))
         .filter(|(h, m)| *h < 24 && *m < 60)
-        .ok_or_else(|| "daily is weekdays, daily, a time as HH:MM (24-hour), or not_now.".to_string())?;
+        .ok_or_else(|| {
+            "value is the code for what the owner chose: weekdays, daily, a time as HH:MM (24-hour), or not_now."
+                .to_string()
+        })?;
     Ok(Daily::At(format!("0 {m} {h} * * *")))
 }
 
@@ -235,7 +298,7 @@ pub(crate) fn current(store: &db::Store) -> Step {
         return step;
     }
     let christened = store.get_plugin_setting("core", "primary_christened").ok().flatten().is_some()
-        || store.get_agent(PRIMARY).ok().flatten().is_some_and(|a| a.name != NAMES[0]);
+        || store.get_agent(PRIMARY).ok().flatten().is_some_and(|a| a.name != DEFAULT_NAME);
     if christened {
         if let Err(e) = store.set_onboarding(Step::Done.as_str(), None, None) {
             warn!(error = %e, "onboarding: could not record an earlier install as done");
@@ -249,25 +312,43 @@ pub(crate) fn current(store: &db::Store) -> Step {
 /// What the assistant is told to do at `step`: the words to say (in the
 /// owner's language) and the card to show. Pure.
 pub(crate) fn guide(step: Step, f: &Facts) -> String {
+    let body = step_guide(step, f);
+    if matches!(step, Step::Intro | Step::Done) { body } else { format!("{body}\n{IN_THEIR_LANGUAGE}") }
+}
+
+/// The rule every chat step carries, in the guide the turn starts from and
+/// in each answer the tool gives back: the conversation is in the owner's
+/// language. The quoted lines are what to convey, never words to copy;
+/// every option label is written in the owner's language; only the offered
+/// names and the emoji stay as they are. Answers go back as the step's
+/// values, which are codes, whatever language the owner used.
+pub(crate) const IN_THEIR_LANGUAGE: &str = "Language: speak in the owner's language. Every quoted line above \
+     is the meaning to convey, said in your own words in their language, never English copied in. Write \
+     every ask_owner option label in their language too; only the offered names stay exactly as written, \
+     and keep the emoji. Report each answer with the step's value (a code such as store or not_now), \
+     chosen by what the owner meant, whatever language they answered in.";
+
+/// One step's instructions, before the language rule. Pure.
+fn step_guide(step: Step, f: &Facts) -> String {
     let owner = f.owner.as_deref().unwrap_or("there");
     let me = &f.assistant;
-    let names = NAMES.join(", ");
+    let names = f.names.join(", ");
     match step {
         Step::Intro => "The owner is on the intro screens; nothing to say yet.".into(),
         Step::Name => format!(
             "Greet {owner} by first name, warm and short, for example: \"Hi {owner}! 👋 I'm your new assistant. \
              I'll take things off your plate, at work and at home.\" Then ask what they'd like to call you, \
-             saying they can change it any time, with ask_owner and options exactly: {names}, Something else… \
-             ({first} first; it is the default). If they pick Something else…, ask for the name with ask_owner \
-             and no options. Then call onboarding(action: \"answer\", step: \"name\", value: <the name>).",
-            first = NAMES[0]
+             saying they can change it any time, with ask_owner and four options: the names {names}, then one \
+             meaning \"Something else…\" ({first} first; it is the default). If they pick that last one, ask \
+             for the name with ask_owner and no options. Then call onboarding(action: \"answer\", step: \"name\", value: <the name>).",
+            first = DEFAULT_NAME
         ),
         Step::Focus => format!(
             "Say \"{me} it is. Nice to meet you, {owner}.\" Then \"A little about me:\" and exactly three short \
              bullets: I work on my own computer, so I keep going while you're away. / I use your apps, like \
              email and calendar, the way you would. / Nothing goes out without your OK. Then ask \"What should I \
-             help with most?\" with ask_owner and options: 🛍 Run a store, 🎬 Create content, 🤝 Work with \
-             clients, 👥 Lead a team, 🏡 Home and family. Call onboarding(action: \"answer\", step: \"focus\", \
+             help with most?\" with ask_owner and five options meaning: 🛍 run a store, 🎬 create content, 🤝 \
+             work with clients, 👥 lead a team, 🏡 home and family. Call onboarding(action: \"answer\", step: \"focus\", \
              value: store | content | clients | team | home) for the pick (for words of their own, the closest)."
         ),
         Step::Connect => format!(
@@ -297,14 +378,14 @@ pub(crate) fn guide(step: Step, f: &Facts) -> String {
              send); and what's coming up (bills, renewals, deadlines). This is also today's morning brief: write it \
              into the Inbox exactly as the daily brief does (its instructions follow; in this chat you show \
              it as well): {brief} Then offer to send one drafted reply with one tap \
-             (ask_owner with options like \"Send the reply to <who>\" and \"Not now\"); sending goes through \
+             (ask_owner with two options meaning \"send the reply to <who>\" and \"not now\"); sending goes through \
              the usual approval. Then call onboarding(action: \"answer\", step: \"day\", value: \"done\").",
             brief = super::notification::MORNING_BRIEF_ASK
         ),
         Step::Daily => format!(
-            "Ask \"Want this waiting for you every morning?\" with ask_owner and options: Every weekday at \
-             7:30 AM, Every day at 7:00 AM, Pick a time…, Not now (the first is recommended). For Pick a \
-             time…, ask the time. Call onboarding(action: \"answer\", step: \"daily\", value: weekdays | daily \
+            "Ask \"Want this waiting for you every morning?\" with ask_owner and four options meaning: every \
+             weekday at 7:30 AM, every day at 7:00 AM, pick a time…, not now (the first is recommended), with \
+             the times written the way the owner's language writes them. For a picked time, ask the time. Call onboarding(action: \"answer\", step: \"daily\", value: weekdays | daily \
              | HH:MM (24-hour) | not_now). Then confirm in one line: \"Done. You'll find it in your Inbox each \
              morning\" with the time{zone}; or, for not now, \"Sure. Just ask 'what's my day?' any time.\"",
             zone = f.zone.as_deref().map(|z| format!(" and their time zone ({z})")).unwrap_or_default()
@@ -314,7 +395,7 @@ pub(crate) fn guide(step: Step, f: &Facts) -> String {
                 "Say \"One more thing. I can bring in help.\" Since they {phrase}, suggest one first hire: the \
                  marketplace employee '{listing}'. Find it with find_employees(query: \"{listing}\"), say in a \
                  line what it does for them, and offer it with hire_employee (its card is the Hire button); \
-                 \"Maybe later\" is fine. Then call onboarding(action: \"answer\", step: \"hire\", value: hired | \
+                 a \"maybe later\" is fine. Then call onboarding(action: \"answer\", step: \"hire\", value: hired | \
                  later). After a hire: \"Welcome aboard. I'll show them how you like things done.\"",
                 phrase = focus.phrase(),
                 listing = focus.hire_listing()
@@ -339,6 +420,8 @@ pub(crate) fn guide(step: Step, f: &Facts) -> String {
 pub(crate) struct Facts {
     pub owner: Option<String>,
     pub assistant: String,
+    /// The names offered in the naming step, the default first.
+    pub names: [&'static str; 3],
     pub focus: Option<Focus>,
     pub google_connected: bool,
     pub brief_daily: bool,
@@ -353,7 +436,14 @@ impl Facts {
         let first_name = |n: &str| n.split_whitespace().next().map(str::to_string);
         Facts {
             owner: profile.as_ref().and_then(|p| p.display_name.as_deref()).and_then(first_name),
-            assistant: store.get_agent(PRIMARY).ok().flatten().map(|a| a.name).unwrap_or_else(|| NAMES[0].to_string()),
+            assistant: store.get_agent(PRIMARY).ok().flatten().map(|a| a.name).unwrap_or_else(|| DEFAULT_NAME.to_string()),
+            names: {
+                let prefs = store.get_user_preferences().ok().flatten();
+                name_choices(
+                    prefs.as_ref().and_then(|p| p.locale.as_deref()),
+                    prefs.as_ref().map(|p| p.language.as_str()).unwrap_or("en"),
+                )
+            },
             focus: profile.as_ref().and_then(|p| p.onboarding_focus.as_deref()).and_then(Focus::parse),
             google_connected: GOOGLE
                 .iter()
@@ -621,7 +711,7 @@ mod tests {
     fn the_happy_path_goes_through_every_step() {
         let end = walk(&[
             (Step::Intro, "start"),
-            (Step::Name, "Aspen"),
+            (Step::Name, "Shasta"),
             (Step::Focus, "store"),
             (Step::Connect, "connected"),
             (Step::Day, "done"),
@@ -660,7 +750,7 @@ mod tests {
 
     #[test]
     fn answers_carry_their_change() {
-        assert_eq!(transition(Step::Name, " Logan ").unwrap().1, Effect::Name("Logan".into()));
+        assert_eq!(transition(Step::Name, " Rainier ").unwrap().1, Effect::Name("Rainier".into()));
         assert!(transition(Step::Name, "").is_err());
         assert_eq!(transition(Step::Focus, "home").unwrap().1, Effect::Focus(Focus::Home));
         assert!(transition(Step::Focus, "gardening").is_err());
@@ -709,9 +799,9 @@ mod tests {
 
     #[test]
     fn the_guide_says_the_trust_line_before_connecting_and_offers_the_names() {
-        let f = Facts { owner: Some("Alma".into()), assistant: "Nebo".into(), ..Default::default() };
+        let f = Facts { owner: Some("Alma".into()), assistant: "Nebo".into(), names: name_choices(None, "en"), ..Default::default() };
         let name = guide(Step::Name, &f);
-        assert!(name.contains("Hi Alma!") && name.contains("Nebo, Aspen, Logan, Something else…"));
+        assert!(name.contains("Hi Alma!") && name.contains("the names Nebo, Shasta, Rainier"));
         let connect = guide(Step::Connect, &f);
         let trust = connect.find("never send, delete or accept").unwrap();
         let cards = connect.find("connect cards").unwrap();
@@ -738,10 +828,120 @@ mod tests {
         assert!(day.contains(super::super::notification::MORNING_BRIEF_ASK), "the same brief the daily schedule writes");
     }
 
+    /// The guide never hands the assistant English labels to copy: every
+    /// chat step carries the language rule, options are described by
+    /// meaning, and only the offered names stay as they are.
+    #[test]
+    fn the_guide_never_asks_for_english_option_labels() {
+        let f = Facts { owner: Some("Alma".into()), assistant: "Nebo".into(), focus: Some(Focus::Store), ..Default::default() };
+        for step in [Step::Name, Step::Focus, Step::Connect, Step::Plate, Step::Day, Step::Daily, Step::Hire, Step::Set] {
+            let g = guide(step, &f);
+            assert!(g.ends_with(IN_THEIR_LANGUAGE), "{step:?} carries the language rule");
+            assert!(!g.contains("options exactly"), "{step:?}: {g}");
+            for english_label in ["options: 🛍 Run a store", "options: Every weekday", "\"Send the reply to", "\"Not now\"", "\"Maybe later\""] {
+                assert!(!g.contains(english_label), "{step:?} names an English label to copy: {english_label}");
+            }
+        }
+        assert!(IN_THEIR_LANGUAGE.contains("only the offered names stay exactly as written"));
+        assert!(!guide(Step::Done, &f).contains(IN_THEIR_LANGUAGE));
+    }
+
+    /// Answers are codes chosen by meaning, never matched on English words:
+    /// a Spanish or a Japanese chat reports the same codes, a name in any
+    /// script is kept as written, and a label in any language (English
+    /// included) is refused with the codes, so the assistant maps it.
+    #[test]
+    fn answers_are_codes_whatever_language_the_chat_is_in() {
+        // The owner's own name for the assistant, in any script.
+        assert_eq!(transition(Step::Name, "Águila").unwrap().1, Effect::Name("Águila".into()));
+        assert_eq!(transition(Step::Name, "さくら").unwrap().1, Effect::Name("さくら".into()));
+        // "🛍 Tener una tienda" / "🛍 店を運営する" → the assistant passes store.
+        assert_eq!(transition(Step::Focus, "store").unwrap().1, Effect::Focus(Focus::Store));
+        for label in ["🛍 Tener una tienda", "🛍 店を運営する", "🛍 Run a store", "Hogar y familia", "家庭と家族"] {
+            let refused = transition(Step::Focus, label).unwrap_err();
+            assert!(refused.contains("store, content, clients, team or home"), "{refused}");
+        }
+        // "Ahora no" / "今はやめておく" → not_now; "Cada día laborable a las 7:30" → weekdays.
+        assert_eq!(transition(Step::Connect, "not_now").unwrap().0, Step::Plate);
+        assert!(transition(Step::Connect, "Ahora no").is_err());
+        assert!(transition(Step::Connect, "今はやめておく").is_err());
+        assert_eq!(transition(Step::Daily, "weekdays").unwrap().1, Effect::Daily(Daily::At("0 30 7 * * 1-5".into())));
+        assert!(transition(Step::Daily, "Cada día laborable a las 7:30").is_err());
+        assert_eq!(transition(Step::Hire, "later").unwrap().0, Step::Set);
+        assert!(transition(Step::Hire, "Quizás más tarde").is_err());
+    }
+
+    /// The first-run turn is the assistant's own turn, so its system prompt
+    /// carries the owner's language preference like every turn; the turn's
+    /// own words ask for the owner's language too.
+    #[test]
+    fn the_owners_language_reaches_the_first_run_turn() {
+        let (_d, store) = store();
+        store.update_user_preferences(None, Some("es"), None, None, None, None).unwrap();
+        let ctx = agent::db_context::load_db_context(&store, "", PRIMARY, &[]);
+        let system = agent::db_context::format_for_system_prompt(&ctx, "Nebo");
+        assert!(system.contains("Always respond in this language"), "{system}");
+        assert!(system.contains("Spanish") || system.contains("Español"), "{system}");
+        let turn = turn_prompt(Step::Name, &Facts { assistant: "Nebo".into(), ..Default::default() }, false);
+        assert!(turn.contains(IN_THEIR_LANGUAGE), "{turn}");
+    }
+
+    /// Every locale the app speaks offers two local mountains beside Nebo,
+    /// which is always first; the region picks where it changes the names,
+    /// and anything unknown is American English.
+    #[test]
+    fn every_locale_offers_nebo_and_two_local_mountains() {
+        for (code, _) in types::language::LANGUAGES {
+            let names = name_choices(None, code);
+            assert_eq!(names[0], "Nebo", "{code}");
+            assert!(names[1..].iter().all(|n| !n.is_empty() && *n != "Nebo"), "{code}: {names:?}");
+            assert_ne!(names[1], names[2], "{code}");
+        }
+        for (key, names) in LOCAL_NAMES {
+            assert_eq!(names.len(), 2, "{key}");
+        }
+        let keys: Vec<&str> = LOCAL_NAMES.iter().map(|(k, _)| *k).collect();
+        for code in types::language::LANGUAGES.iter().map(|(c, _)| *c).filter(|c| *c != "en" && *c != "es") {
+            assert!(keys.contains(&code), "{code} has its own pair");
+        }
+        // Japanese: Fuji and Hotaka, in Japanese.
+        assert_eq!(name_choices(None, "ja"), ["Nebo", "富士", "穂高"]);
+        let ja = Facts { owner: Some("さくら".into()), assistant: "Nebo".into(), names: name_choices(Some("ja-JP"), "ja"), ..Default::default() };
+        assert!(guide(Step::Name, &ja).contains("the names Nebo, 富士, 穂高"));
+        // The region picks: the account's full tag first, then the language.
+        assert_eq!(name_choices(Some("en-US"), "en"), ["Nebo", "Shasta", "Rainier"]);
+        assert_eq!(name_choices(Some("en-GB"), "en"), ["Nebo", "Nevis", "Helvellyn"]);
+        assert_eq!(name_choices(Some("en-CA"), "en"), ["Nebo", "Shasta", "Rainier"], "other English: en-US");
+        assert_eq!(name_choices(Some("es-ES"), "es"), ["Nebo", "Teide", "Aneto"]);
+        assert_eq!(name_choices(Some("es_MX"), "es"), ["Nebo", "Orizaba", "Izta"]);
+        assert_eq!(name_choices(Some("es-AR"), "es"), ["Nebo", "Aconcagua", "Tronador"]);
+        assert_eq!(name_choices(None, "es"), ["Nebo", "Aconcagua", "Tronador"]);
+        assert_eq!(name_choices(Some("pt-BR"), "pt-BR"), ["Nebo", "Itatiaia", "Corcovado"]);
+        assert_eq!(name_choices(Some("pt-PT"), "pt"), ["Nebo", "Estrela", "Pico"]);
+        assert_eq!(name_choices(Some("zh-Hant-TW"), "zh-TW"), ["Nebo", "玉山", "阿里山"]);
+        assert_eq!(name_choices(None, ""), ["Nebo", "Shasta", "Rainier"], "unknown: en-US");
+        assert_eq!(name_choices(Some("xx-YY"), "xx"), ["Nebo", "Shasta", "Rainier"]);
+        // No disputed or sacred peak.
+        let all: Vec<&str> = LOCAL_NAMES.iter().flat_map(|(_, n)| n.iter().copied()).collect();
+        for banned in ["Ararat", "Ağrı", "Hermon", "Sinai", "Kailash", "Everest", "Sagarmatha"] {
+            assert!(!all.contains(&banned), "{banned}");
+        }
+    }
+
+    /// The account's region reaches the naming step through the profile the
+    /// bot keeps from the account.
+    #[test]
+    fn the_accounts_region_picks_the_names() {
+        let (_d, store) = store();
+        crate::owner_locale::apply(&store, "Europe/Madrid", "es-ES");
+        let prefs = store.get_user_preferences().unwrap().unwrap();
+        assert_eq!(name_choices(prefs.locale.as_deref(), &prefs.language), ["Nebo", "Teide", "Aneto"]);
+    }
+
     #[test]
     fn the_checklist_says_only_what_is_true() {
-        let mut f = Facts { assistant: "Aspen".into(), ..Default::default() };
-        assert_eq!(f.checklist(), vec!["named your assistant Aspen".to_string()]);
+        let mut f = Facts { assistant: "Shasta".into(), ..Default::default() };
+        assert_eq!(f.checklist(), vec!["named your assistant Shasta".to_string()]);
         f.google_connected = true;
         f.brief_daily = true;
         f.hired = Some("Store Manager".into());

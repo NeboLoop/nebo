@@ -20,7 +20,7 @@ beforeAll(() => {
 });
 
 const text = (html: string) => html.replace(/<!--[^>]*-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-const html = () => render(IntroScreens, { props: { assistantName: 'Aspen', onstarted: () => {} } }).body;
+const html = () => render(IntroScreens, { props: { assistantName: 'Shasta', onstarted: () => {} } }).body;
 
 describe('IntroScreens', () => {
 	it('has the three screens, in order, with one button each', () => {
@@ -48,7 +48,7 @@ describe('IntroScreens', () => {
 		expect(body).toContain('L60 42 Q62 39 64 42'); // Store Manager, ridge
 		expect(body).toContain('character-peach'); // Content, volcano
 		const words = text(body);
-		for (const s of ['Aspen · Assistant', 'Store Manager', 'Weekly standup', 'Reordered 40 units from Lumen', 'Sent 3 invoice reminders']) {
+		for (const s of ['Shasta · Assistant', 'Store Manager', 'Weekly standup', 'Reordered 40 units from Lumen', 'Sent 3 invoice reminders']) {
 			expect(words).toContain(s);
 		}
 	});
