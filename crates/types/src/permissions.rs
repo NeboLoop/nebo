@@ -63,8 +63,8 @@ pub struct CallEffects {
     pub arms_schedule: bool,
     /// The call watches the owner (his screen, microphone or camera) or
     /// drives his other apps: a command such as `screencapture`, `osascript`
-    /// telling an app what to do, or `open -a Safari`. It asks in every
-    /// mode, Full Access included, until the owner allows it always.
+    /// telling an app what to do, or `open -a Safari`. It asks in Ask and
+    /// Automatic until the owner allows it always; Full Access runs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reaches_owner: Option<OwnerReach>,
 }

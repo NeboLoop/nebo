@@ -195,9 +195,10 @@ impl OsTool {
     /// reminders and contacts (their data is his), Shortcuts (a shortcut can
     /// do anything his apps can), and an app it opens, brings forward, hides
     /// or quits. Reads included: what is on his calendar is his. The one
-    /// permission check asks the owner for each, in every mode, until he
-    /// allows it always for that employee (`CallEffects::reaches_owner`), so
-    /// no schedule, workflow or helper runs it by default (bake-off
+    /// permission check asks the owner for each, in Ask and Automatic, until
+    /// he allows it always for that employee (`CallEffects::reaches_owner`),
+    /// so no schedule, workflow or helper of theirs runs it by default; an
+    /// employee in Full Access runs it, as the owner set it to (bake-off
     /// 2026-10-10: a test employee's workflow read the owner's Calendar and
     /// tried Mail and Messages). Listing what is running is not his app.
     pub(crate) fn owner_app(input: &serde_json::Value) -> Option<types::permissions::OwnerReach> {

@@ -366,15 +366,19 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     if t.effects.removes_employee {
         return Ok(Decision::Ask { case: AskCase::RemovesEmployee });
     }
-    // Watching the owner (his screen, microphone or camera) or driving his
-    // other apps through a command is his to allow, in every mode, Full
-    // Access included (2026-10-04: an employee with no recording tool drove
+    // Watching the owner (his screen, microphone or camera) or using his
+    // own apps (Mail, Calendar, Messages, or any app a command drives) is
+    // his to allow (2026-10-04: an employee with no recording tool drove
     // Safari with osascript and ran `screencapture` 90 times on his
     // display). "Allow always" saves it for this employee, so its schedules
-    // and workflows run it from then on. Plan mode refuses it as a change;
-    // an ask rule that names the call asks on its own card below.
+    // and workflows run it from then on. Full Access is the owner's answer
+    // already: he set it to have nothing asked (owner, 10-15), so it runs,
+    // and only an ask or never rule he wrote still stops it. Plan mode
+    // refuses it as a change; an ask rule that names the call asks on its
+    // own card below.
     if let Some(reach) = &t.effects.reaches_owner
         && cx.grant.mode != Mode::Plan
+        && !full_access(cx.grant)
         && !matches!(decided, Some((_, Effect::Ask)))
         && !rules.reach_allowed(t)
     {
