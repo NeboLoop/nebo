@@ -708,16 +708,24 @@ mod neboai_token_tests {
         }
     }
 
-    #[tokio::test]
-    async fn neboai_auth_resolves_live_profile_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+    /// Hermetic: its own NEBO_HOME, never the owner's. `auth::neboai_token`
+    /// prefers `<NEBO_HOME>/neboai_token.cache`, so on a developer's machine
+    /// the real home would hand this test the owner's live NeboAI token.
+    #[test]
+    fn neboai_auth_resolves_live_profile_token() {
+        let _env = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: the crate-wide lock above serializes env mutation across tests.
+        unsafe { std::env::set_var("NEBO_HOME", home.path()) };
+        assert!(config::data_dir().unwrap().starts_with(home.path()), "never the real home");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let store = db::Store::new(home.path().join("t.db").to_str().unwrap()).unwrap();
         let client = mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate()));
 
         // No NeboAI profile → NeedsReauth, never Ready(None) (a tokenless
         // connect to a platform-authed server would 401 and drop the server).
         assert!(matches!(
-            resolve_mcp_token(&store, &client, &kb_integration()).await,
+            rt.block_on(resolve_mcp_token(&store, &client, &kb_integration())),
             TokenResolution::NeedsReauth
         ));
 
@@ -726,10 +734,21 @@ mod neboai_token_tests {
                 "p1", "NeboAI", "neboai", "live-token", None, None, 0, 1, Some("token"), None,
             )
             .unwrap();
-        match resolve_mcp_token(&store, &client, &kb_integration()).await {
+        match rt.block_on(resolve_mcp_token(&store, &client, &kb_integration())) {
             TokenResolution::Ready(Some(t)) => assert_eq!(t, "live-token"),
             _ => panic!("expected the live NeboAI profile token"),
         }
+
+        // A rotated token the comms client cached wins over the profile's.
+        let data = config::data_dir().unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        assert!(data.starts_with(home.path()));
+        std::fs::write(data.join("neboai_token.cache"), "rotated-fixture-token\n").unwrap();
+        match rt.block_on(resolve_mcp_token(&store, &client, &kb_integration())) {
+            TokenResolution::Ready(Some(t)) => assert_eq!(t, "rotated-fixture-token"),
+            _ => panic!("expected the cached rotated token"),
+        }
+        unsafe { std::env::remove_var("NEBO_HOME") };
     }
 }
 
