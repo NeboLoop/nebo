@@ -4,10 +4,11 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import { onMount } from 'svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
-  import { AGENT_COLORS, AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import { AGENT_COLORS } from '$lib/tokens.js';
   import { AGENTS } from '$lib/data.js';
   import { getScheduleAgents, runsPerWeek as storeRunsPerWeek, userScheduleItems } from '$lib/stores/schedule.js';
   import MiniMonth from './MiniMonth.svelte';
+  import AgentAvatar from './AgentAvatar.svelte';
   import type { Agent, Chat } from '$lib/api/neboComponents';
   import { formatRelative } from '$lib/time';
   import { conversationTitle } from '$lib/chat/sessionKey';
@@ -198,9 +199,8 @@
       <div class="px-4 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider">{$t('sidebar.agents')}</div>
       <div class="px-2 flex flex-col gap-px">
         {#each agents.slice(0, 6) as agent}
-          {@const c = AGENT_COLORS_MAP[agent.color]}
           <a href="/chat" class="flex items-center gap-2 py-1 px-2 rounded-md hover:bg-base-content/5 transition-colors">
-            <span class="w-5 h-5 rounded text-sm font-mono font-semibold flex items-center justify-center shrink-0 {c.bgClass} {c.inkClass}">{agent.initial}</span>
+            <AgentAvatar name={agent.name} id={agent.id} color={agent.color} size="xs" />
             <span class="flex-1 text-sm font-medium truncate">{agent.name}</span>
             {#if agent.status === 'running'}
               <span class="w-1.5 h-1.5 rounded-full bg-warning shrink-0"></span>
@@ -217,9 +217,8 @@
           {#each group.chats as chatId}
             {@const chat = chats.find(c => c.id === chatId)}
             {#if chat}
-              {@const c = AGENT_COLORS_MAP[chat.agentColor]}
               <a href="/chat" class="flex items-center gap-2 py-1 px-4 hover:bg-base-content/5 transition-colors {activeChat === chat.id ? 'bg-base-content/5' : ''}">
-                <span class="w-4 h-4 rounded-sm text-sm font-mono font-semibold flex items-center justify-center shrink-0 {c.bgClass} {c.inkClass}">{chat.agent.charAt(0).toUpperCase()}</span>
+                <AgentAvatar name={chat.agent} color={chat.agentColor} size="xs" />
                 <span class="flex-1 text-sm truncate">{chat.title}</span>
                 <span class="font-mono text-xs shrink-0">{chat.updatedAt}</span>
               </a>
@@ -233,8 +232,7 @@
     <div class="py-3 flex flex-col items-center gap-2">
       <button class="w-7 h-7 rounded-md border border-base-content/10 flex items-center justify-center text-sm cursor-pointer hover:bg-base-content/5">+</button>
       {#each agents.slice(0, 6) as agent}
-        {@const c = AGENT_COLORS_MAP[agent.color]}
-        <span class="w-5 h-5 rounded text-sm font-mono font-semibold flex items-center justify-center {c.bgClass} {c.inkClass}" title={agent.name}>{agent.initial}</span>
+        <span title={agent.name}><AgentAvatar name={agent.name} id={agent.id} color={agent.color} size="xs" /></span>
       {/each}
     </div>
   {/if}

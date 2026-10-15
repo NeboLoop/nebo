@@ -20,6 +20,7 @@
     title = '',
     showEmployee = false,
     colors = {},
+    shapes = {},
     collapsible = true,
     ontranscript,
     onclose,
@@ -32,6 +33,8 @@
     showEmployee?: boolean;
     /** Employee colours, by id, for their avatars. */
     colors?: Record<string, string>;
+    /** Employee characters, by id (server-resolved). */
+    shapes?: Record<string, string>;
     collapsible?: boolean;
     /** Open a row's transcript (the chat that holds its steps). */
     ontranscript?: (task: BackgroundTask) => void;
@@ -85,7 +88,7 @@
         {/if}
         {#if collapsible || showRunning}
           {#each visible as { task, depth } (task.id)}
-            <BackgroundRow {task} {now} {depth} {showEmployee} color={colors[task.agentId] ?? null} onstopped={stopped} {ontranscript} />
+            <BackgroundRow {task} {now} {depth} {showEmployee} color={colors[task.agentId] ?? null} shape={shapes[task.agentId] ?? null} onstopped={stopped} {ontranscript} />
           {/each}
           {#if sorted.length > SHOWN}
             <button type="button" class="bg-panel-more" onclick={() => (showAll = !showAll)}>
@@ -100,7 +103,7 @@
           </button>
           {#if showFinished}
             {#each finished as f (f.task.id + f.endedAt)}
-              <BackgroundRow task={f.task} {now} {showEmployee} color={colors[f.task.agentId] ?? null} outcome={f.outcome} {ontranscript} />
+              <BackgroundRow task={f.task} {now} {showEmployee} color={colors[f.task.agentId] ?? null} shape={shapes[f.task.agentId] ?? null} outcome={f.outcome} {ontranscript} />
             {/each}
           {/if}
         {/if}

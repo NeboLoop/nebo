@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Sección cambiada: {section}",
 		"sectionOpening": "Introducción",
 		"settingChanged": "Cambiado: {setting}"
+	},
+	"characters": {
+		"title": "Personaje",
+		"ridge": "Cresta",
+		"twin": "Picos gemelos",
+		"mesa": "Mesa",
+		"butte": "Otero",
+		"diamond": "Diamante",
+		"dome": "Cúpula",
+		"snowcap": "Cumbre nevada",
+		"volcano": "Volcán",
+		"sawtooth": "Diente de sierra",
+		"hook": "Pico curvo",
+		"flattop": "Cima plana",
+		"littlehill": "Colina"
 	}
 }

@@ -4306,5 +4306,20 @@
 		"sectionChanged": "바뀐 섹션: {section}",
 		"sectionOpening": "도입부",
 		"settingChanged": "변경: {setting}"
+	},
+	"characters": {
+		"title": "캐릭터",
+		"ridge": "능선",
+		"twin": "쌍봉",
+		"mesa": "메사",
+		"butte": "뷰트",
+		"diamond": "다이아몬드",
+		"dome": "돔",
+		"snowcap": "설산",
+		"volcano": "화산",
+		"sawtooth": "톱니",
+		"hook": "갈고리봉",
+		"flattop": "평정봉",
+		"littlehill": "작은 언덕"
 	}
 }

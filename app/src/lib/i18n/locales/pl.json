@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Zmieniona sekcja: {section}",
 		"sectionOpening": "Wstęp",
 		"settingChanged": "Zmieniono: {setting}"
+	},
+	"characters": {
+		"title": "Postać",
+		"ridge": "Grań",
+		"twin": "Bliźniacze szczyty",
+		"mesa": "Mesa",
+		"butte": "Ostaniec",
+		"diamond": "Diament",
+		"dome": "Kopuła",
+		"snowcap": "Ośnieżony szczyt",
+		"volcano": "Wulkan",
+		"sawtooth": "Piła",
+		"hook": "Szczyt z hakiem",
+		"flattop": "Płaski szczyt",
+		"littlehill": "Pagórek"
 	}
 }

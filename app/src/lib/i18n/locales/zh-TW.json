@@ -4306,5 +4306,20 @@
 		"sectionChanged": "變更的段落：{section}",
 		"sectionOpening": "開頭",
 		"settingChanged": "已變更：{setting}"
+	},
+	"characters": {
+		"title": "角色",
+		"ridge": "山脊",
+		"twin": "雙峰",
+		"mesa": "方山",
+		"butte": "孤山",
+		"diamond": "菱形",
+		"dome": "圓頂",
+		"snowcap": "雪峰",
+		"volcano": "火山",
+		"sawtooth": "鋸齒",
+		"hook": "鉤峰",
+		"flattop": "平頂",
+		"littlehill": "小山丘"
 	}
 }

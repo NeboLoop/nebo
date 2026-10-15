@@ -11,6 +11,7 @@
   deep-linkable and the back button behaves.
 -->
 <script lang="ts">
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import type { Snippet } from 'svelte';
   import { t } from 'svelte-i18n';
   import X from 'lucide-svelte/icons/x';
@@ -21,9 +22,8 @@
     /** A short second line under the title (a role, a context). Shown only when set. */
     subtitle?: string;
     onclose: () => void;
-    /** Employee identity chip before the title — same avatar/color as the roster row. */
-    avatarInitial?: string;
-    avatarClass?: string;
+    /** The employee before the title — the same avatar as its roster row. */
+    avatar?: { id: string; name: string; color?: string | null; shape?: string | null } | null;
     /** Compact card for single-object editors (a reminder, a field group). */
     narrow?: boolean;
     /** Header content between the title and the close button. */
@@ -31,7 +31,7 @@
     children: Snippet;
   }
 
-  let { open, title, subtitle = '', onclose, avatarInitial = '', avatarClass = '', narrow = false, actions, children }: Props = $props();
+  let { open, title, subtitle = '', onclose, avatar = null, narrow = false, actions, children }: Props = $props();
 
   function onkeydown(e: KeyboardEvent) {
     // defaultPrevented = a stacked shelf already consumed this Escape —
@@ -105,8 +105,8 @@
         </div>
 
         <div class="h-12 max-md:h-10 px-4 border-b border-base-300 flex items-center gap-2">
-        {#if avatarInitial}
-          <span class="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-semibold tracking-wide shrink-0 {avatarClass}">{avatarInitial}</span>
+        {#if avatar}
+          <AgentAvatar name={avatar.name} id={avatar.id} color={avatar.color} shape={avatar.shape} size="sm" />
         {/if}
         {#if subtitle}
           <div class="min-w-0 flex-1 flex flex-col leading-tight">

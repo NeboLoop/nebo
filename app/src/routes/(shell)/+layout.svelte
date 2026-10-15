@@ -5,7 +5,7 @@
   import { t } from 'svelte-i18n';
   import { setContext, onMount, untrack } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { AGENT_COLORS_MAP, assignAgentColors, initialsOf } from '$lib/tokens.js';
+  import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens.js';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import ChristeningModal from '$lib/components/ChristeningModal.svelte';
@@ -236,17 +236,13 @@
       storage.set('sidebar.teamsOpen', teamsOpen ? '1' : '0');
     }
   }
-  // First two members for the row's stacked-avatars glyph, in their roster
-  // colors — the team row previews who's on it.
+  // First two members for the row's stacked-avatars glyph, as their roster
+  // characters — the team row previews who's on it.
   const teamFaces = (team: { members: { agentId: string }[] }) =>
     team.members
       .map((m) => allAgents.find((a) => a.id === m.agentId))
       .filter((a): a is (typeof allAgents)[number] => !!a)
-      .slice(0, 2)
-      .map((a) => {
-        const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal'];
-        return { initial: a.initial, cls: `${ac.bgClass} ${ac.inkClass}` };
-      });
+      .slice(0, 2);
 
   // Team housekeeping: right-click → Remove forgets the team (its
   // conversation history stays); confirm first — it's an audit surface
@@ -457,6 +453,7 @@
           initial: a.name.charAt(0).toUpperCase(),
           status: activeIds.has(a.id) ? 'online' : 'paused',
           color: colors[a.id],
+          shape: a.shape,
           handle: a.handle,
           // A linked employee's persona is the linked bot's: read there, not edited here.
           editable: !a.nappPath && a.kind !== 'linked',
@@ -964,7 +961,6 @@
   const hasMoreRuns = $derived(runs.length < runsTotal);
   const runsLoading = $derived(runsAgentId ? (apiRunsLoading[runsAgentId] ?? false) : false);
   const runsAgent = $derived(allAgents.find(a => a.id === runsAgentId));
-  const runsAgentColor = $derived(runsAgent ? AGENT_COLORS_MAP[runsAgent.color] : null);
   // Over the dashboard nothing else loads that employee's runs: fetch on demand.
   $effect(() => {
     const id = runsAgentId;
@@ -1585,8 +1581,8 @@
               <div class="relative w-8 h-8 shrink-0">
                 {#if faces.length >= 2}
                   {@const extra = room.members.length - 2}
-                  <div class="absolute top-0 start-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
-                  <div class="absolute bottom-0 end-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
+                  <span class="absolute top-0 start-0"><AgentAvatar name={faces[0].name} id={faces[0].id} color={faces[0].color} shape={faces[0].shape} size="xs" /></span>
+                  <span class="absolute bottom-0 end-0"><AgentAvatar name={faces[1].name} id={faces[1].id} color={faces[1].color} shape={faces[1].shape} size="xs" /></span>
                   {#if extra > 0}
                     <!-- The row says "several"; the full roster is the team's member rail. -->
                     <div class="absolute -top-1 -end-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
@@ -1728,7 +1724,7 @@
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
                 </div>
               {:else}
-                <AgentAvatar name={a.name} color={a.color} />
+                <AgentAvatar name={a.name} color={a.color} shape={a.shape} />
               {/if}
               <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
             </div>
@@ -1876,16 +1872,15 @@
       </button>
       {#each sortedAgents as a (a.id)}
         {@const st = agentStatus(a.id)}
-        {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         {@const busy = working[a.id] !== undefined}
         <div class="relative {busy ? 'agent-working' : ''}">
           <button
-            class="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-semibold tracking-wide shrink-0 cursor-pointer transition-colors border-none {ac.solidClass} {agentId === a.id ? 'ring-2 ring-base-content/40' : ''}"
+            class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 cursor-pointer transition-colors border-none bg-transparent p-0 {agentId === a.id ? 'ring-2 ring-base-content/40' : ''}"
             onclick={() => selectAgent(a.id)}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
             title="{a.name} — {busy ? (workingLabel(a.id) || $t('sidebar.working')) : $t(statusLabel(st))}"
-          >{initialsOf(a.name)}</button>
+          ><AgentAvatar name={a.name} id={a.id} color={a.color} shape={a.shape} /></button>
           <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
           {#if !busy && agentUnread(unread, a.id)}
             <!-- Top-start: the bottom-end corner is the status dot, and the top-end
@@ -1968,8 +1963,7 @@
   agentRole={agent?.role ?? ''}
   isPrimary={agent?.id === 'assistant'}
   readOnly={agent ? !agent.editable : false}
-  avatarInitial={agent ? initialsOf(agent.name) : ''}
-  avatarClass={agentColor?.solidClass ?? ''}
+  avatar={agent ?? null}
   onsection={selectSection}
   onclose={closeSettings}
 />
@@ -2035,8 +2029,7 @@
 <ShelfModal
   open={runsOpen}
   title={runsAgent ? `${runsAgent.name} — ${$t('nav.runs')}` : $t('nav.runs')}
-  avatarInitial={runsAgent ? initialsOf(runsAgent.name) : ''}
-  avatarClass={runsAgentColor?.solidClass ?? ''}
+  avatar={runsAgent ?? null}
   onclose={closeRuns}
 >
   <!-- The run detail pushes in over the list, inside this one shelf: list and

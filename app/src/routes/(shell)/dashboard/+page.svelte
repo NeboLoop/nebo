@@ -143,6 +143,8 @@
   // The same assignment the sidebar makes (user-set colour first, then a
   // stable fallback per employee), so a card matches its row.
   const colors = $derived(assignAgentColors(data?.employees ?? []));
+  // The character each one wears, as the server resolved it.
+  const shapes = $derived(Object.fromEntries((data?.employees ?? []).map((e) => [e.id, e.shape])) as Record<string, string>);
   function outcomeClass(outcome: string) {
     return outcome === 'done' ? 'text-success' : outcome === 'stopped' ? 'text-error' : outcome === 'waiting' ? 'text-warning' : outcome === 'skipped' ? 'text-base-content/60' : 'text-success';
   }
@@ -207,6 +209,7 @@
     id: string;
     name: string;
     color: string;
+    shape?: string;
     department: string;
     reportsTo: string;
     depth: number;
@@ -252,6 +255,7 @@
           id: a.id,
           name: a.name,
           color: a.color,
+          shape: a.shape,
           department: (a.department ?? '').trim(),
           reportsTo: managerId,
           depth,
@@ -268,6 +272,7 @@
           id: a.id,
           name: a.name,
           color: a.color,
+          shape: a.shape,
           department: (a.department ?? '').trim(),
           reportsTo: managerOf[a.id] ?? '',
           depth: 0,
@@ -397,7 +402,7 @@
           {:else}
           <section class="rounded-2xl border border-warning/60 bg-warning/10 px-4 py-3 flex flex-wrap items-center gap-3">
             <div class="flex items-center gap-2.5 min-w-0">
-              <AgentAvatar name={a.agentName} color={colors[a.agentId]} size="sm" />
+              <AgentAvatar name={a.agentName} color={colors[a.agentId]} shape={shapes[a.agentId]} size="sm" />
               <p class="m-0 text-[13px]"><b>{$t('dashboard.needsOkay', { values: { name: a.agentName } })}</b> {a.summary} <span class="text-base-content/50">· {formatRelative(a.since * 1000, 'short')}</span></p>
             </div>
             <div class="flex gap-1.5 ms-auto shrink-0">
@@ -410,7 +415,7 @@
         {/each}
 
         <!-- Running now: every employee's background work, live. -->
-        <RunningNow {colors} />
+        <RunningNow {colors} {shapes} />
 
         <!-- Work in progress: temporary workflows and teams, made for one
              piece of work and gone once its outcome has reached the owner. -->
@@ -423,7 +428,7 @@
             <div class="flex flex-col gap-2">
               {#each data.temporaryWork as w (w.kind + w.name)}
                 <div class="rounded-2xl border border-base-300 bg-base-100 px-4 py-3 flex flex-wrap items-center gap-3">
-                  {#if w.agentName}<AgentAvatar name={w.agentName} color={colors[w.agentId]} size="sm" />{/if}
+                  {#if w.agentName}<AgentAvatar name={w.agentName} color={colors[w.agentId]} shape={shapes[w.agentId]} size="sm" />{/if}
                   <div class="min-w-0 flex-1">
                     <div class="text-[13px] font-semibold truncate">{w.name}</div>
                     <div class="text-xs text-base-content/60 truncate">{w.kind === 'team' ? $t('dashboard.temporaryTeam') : $t('dashboard.temporaryWorkflow')}{#if w.agentName} · {w.agentName}{/if} · {w.waitingOn}</div>
@@ -486,7 +491,7 @@
                         <i class="w-[1.15rem] shrink-0 border-s border-base-300" aria-hidden="true"></i>
                       {/each}
                       <div class="flex items-center gap-2.5 min-w-0 flex-1">
-                        <AgentAvatar name={r.name} color={r.color} size="sm" />
+                        <AgentAvatar name={r.name} color={r.color} shape={r.shape} size="sm" />
                         <button class="text-sm font-semibold truncate link link-hover no-underline text-start" onclick={() => goto(`/${r.id}/threads`)}>{r.name}</button>
                         {#if r.department}
                           <span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full bg-base-content/5 text-base-content/60 shrink-0">{r.department}</span>
@@ -531,7 +536,7 @@
                   <div class="flex items-center gap-3 min-w-0">
                     <!-- Name and avatar open the employee, landing where the
                          sidebar's first click does (its latest conversation). -->
-                    <a href={withBase(`/${e.id}`)} class="shrink-0 cursor-pointer" tabindex="-1" aria-hidden="true" data-employee-link><AgentAvatar name={e.name} color={colors[e.id]} /></a>
+                    <a href={withBase(`/${e.id}`)} class="shrink-0 cursor-pointer" tabindex="-1" aria-hidden="true" data-employee-link><AgentAvatar name={e.name} color={colors[e.id]} shape={shapes[e.id]} /></a>
                     <a href={withBase(`/${e.id}`)} class="font-semibold text-[15px] truncate cursor-pointer no-underline text-inherit hover:underline" data-employee-link>{e.name}</a>
                     <!-- No pill means idle: the pill is reserved for a state worth noticing. -->
                     {#if e.status !== 'idle'}
@@ -583,7 +588,7 @@
                 <!-- Real columns: avatar, name, status, detail, actions. Every
                      row's status and detail start on the same x. -->
                 <div class="px-4 py-2.5 grid grid-cols-[36px_minmax(0,1fr)_auto_auto] md:grid-cols-[36px_minmax(0,1.2fr)_5.5rem_minmax(0,2fr)_auto] items-center gap-3 min-w-0 {working ? 'bg-success/5' : ''}">
-                  <a href={withBase(`/${e.id}`)} class="cursor-pointer" tabindex="-1" aria-hidden="true" data-employee-link><AgentAvatar name={e.name} color={colors[e.id]} /></a>
+                  <a href={withBase(`/${e.id}`)} class="cursor-pointer" tabindex="-1" aria-hidden="true" data-employee-link><AgentAvatar name={e.name} color={colors[e.id]} shape={shapes[e.id]} /></a>
                   <a href={withBase(`/${e.id}`)} class="font-semibold text-[15px] truncate min-w-0 cursor-pointer no-underline text-inherit hover:underline" data-employee-link>{e.name}</a>
                   <span class="justify-self-start text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'} {e.status === 'idle' ? 'invisible' : ''}">{$t(`dashboard.status.${e.status}`)}</span>
                   <div class="hidden md:block min-w-0 text-xs truncate text-base-content/70">{working ? `${e.task} · ${e.activity}` : e.lastDetail ? `${e.lastDetail} · ${e.activity}` : e.activity}</div>
@@ -679,7 +684,7 @@
             {#each visibleRuns as r (r.id)}
               <li class="py-2.5 grid gap-1 min-w-0">
                 <div class="flex items-center gap-2 min-w-0">
-                  <AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" />
+                  <AgentAvatar name={r.agentName} color={colors[r.agentId]} shape={shapes[r.agentId]} size="xs" />
                   <span class="text-[13px] font-medium truncate">{r.agentName}</span>
                   <span class="ms-auto text-[11px] text-base-content/50 whitespace-nowrap tabular-nums">{formatTime(r.startedAt * 1000)}</span>
                 </div>
@@ -709,7 +714,7 @@
                   {@const last = i === visibleRuns.length - 1}
                   <tr>
                     <td class="py-2.5 ps-4 pe-2 text-xs text-base-content/60 whitespace-nowrap tabular-nums {last ? '' : 'border-b border-base-300'}">{formatTime(r.startedAt * 1000)}</td>
-                    <td class="py-2.5 pe-2 {last ? '' : 'border-b border-base-300'}"><div class="flex items-center gap-2"><AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" /><span class="truncate">{r.agentName}</span></div></td>
+                    <td class="py-2.5 pe-2 {last ? '' : 'border-b border-base-300'}"><div class="flex items-center gap-2"><AgentAvatar name={r.agentName} color={colors[r.agentId]} shape={shapes[r.agentId]} size="xs" /><span class="truncate">{r.agentName}</span></div></td>
                     <td class="py-2.5 pe-2 truncate max-w-[280px] {last ? '' : 'border-b border-base-300'}">{r.title}</td>
                     <td class="py-2.5 pe-2 text-xs font-medium {outcomeClass(r.outcome)} {last ? '' : 'border-b border-base-300'}">{r.detail}</td>
                     <td class="py-2.5 pe-4 text-end {last ? '' : 'border-b border-base-300'}"><button class="link link-primary no-underline text-xs" onclick={() => openRuns(r.agentId)}>{$t('dashboard.runs')}</button></td>

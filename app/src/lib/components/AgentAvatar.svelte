@@ -1,32 +1,47 @@
 <!--
-  The ONE employee avatar: two initials on a solid chip in the employee's
-  colour. Every roster row, card, header, and settings panel draws this, so
-  an employee looks the same everywhere it appears.
+  The ONE employee avatar. Every roster row, card, header, chip and settings
+  panel draws this, so an employee looks the same everywhere it appears.
+
+  An employee is its mountain character (`$lib/characters`) in its colour,
+  with eyes that blink; the primary is the assistant character in brand
+  blue. The server decides the shape (`shape` on the roster); an employee it
+  sent none for still wears a stable character from its id or name.
 -->
 <script lang="ts">
-  import { AGENT_COLORS_MAP, initialsOf } from '$lib/tokens';
+  import { AGENT_COLORS_MAP, agentColorName } from '$lib/tokens';
+  import { characterSvg } from '$lib/characters';
 
   let {
     name,
+    id = '',
     color = null,
+    shape = null,
     size = 'md',
     class: cls = ''
   }: {
     name: string;
-    /** Colour name from the map; unknown or missing falls back to the brand teal. */
+    /** The employee's id: the stable key when the server sent no shape. */
+    id?: string;
+    /** Colour name from the map. Brand colour belongs to the assistant alone:
+     *  an employee with no colour (or teal) wears its stable palette colour. */
     color?: string | null;
-    size?: 'xs' | 'sm' | 'md' | 'lg';
+    /** The character the server resolved for this employee. */
+    shape?: string | null;
+    size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
     class?: string;
   } = $props();
 
   const SIZES = {
-    xs: 'w-5 h-5 rounded-md text-[9px]',
-    sm: 'w-7 h-7 rounded-lg text-[10px]',
-    md: 'w-9 h-9 rounded-xl text-xs',
-    lg: 'w-12 h-12 rounded-xl text-sm'
+    xs: 'w-5 h-5',
+    sm: 'w-7 h-7',
+    md: 'w-9 h-9',
+    lg: 'w-12 h-12',
+    xl: 'w-24 h-24'
   } as const;
 
-  const c = $derived(AGENT_COLORS_MAP[color ?? ''] ?? AGENT_COLORS_MAP.teal);
+  const c = $derived(
+    (color && color !== 'teal' && AGENT_COLORS_MAP[color]) || AGENT_COLORS_MAP[agentColorName(id || name, null)]
+  );
 </script>
 
-<span class="inline-flex items-center justify-center font-semibold tracking-wide shrink-0 select-none {SIZES[size]} {c.solidClass} {cls}" aria-hidden="true">{initialsOf(name)}</span>
+{@html characterSvg(shape ?? '', id || name, c.characterClass, `${SIZES[size]} ${cls}`)}

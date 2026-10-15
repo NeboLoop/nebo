@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Onderdeel gewijzigd: {section}",
 		"sectionOpening": "Inleiding",
 		"settingChanged": "Gewijzigd: {setting}"
+	},
+	"characters": {
+		"title": "Figuur",
+		"ridge": "Bergkam",
+		"twin": "Tweelingtoppen",
+		"mesa": "Tafelberg",
+		"butte": "Getuigenberg",
+		"diamond": "Diamant",
+		"dome": "Koepel",
+		"snowcap": "Sneeuwtop",
+		"volcano": "Vulkaan",
+		"sawtooth": "Zaagtand",
+		"hook": "Haaktop",
+		"flattop": "Platte top",
+		"littlehill": "Heuveltje"
 	}
 }

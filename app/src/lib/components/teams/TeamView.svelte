@@ -34,7 +34,7 @@
   import TeamWorkSheet from '$lib/components/teams/TeamWorkSheet.svelte';
   import { applyWorkEvent, stopBody, workKey, WORK_EVENTS, type WorkEntry } from '$lib/teams/teamWork';
   import { callWords } from '$lib/chat/callLabel';
-  import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 
   let {
     team,
@@ -42,7 +42,7 @@
   }: {
     team: Team;
     /** The employee roster, for member chips and sender-name resolution. */
-    roster?: { id: string; name: string; initial: string; color?: string; loopAgentId?: string; isApp?: boolean }[];
+    roster?: { id: string; name: string; initial: string; color?: string; shape?: string; loopAgentId?: string; isApp?: boolean }[];
   } = $props();
 
   // The member picker, in edit mode. The server broadcasts team_updated on
@@ -61,12 +61,8 @@
   const asAttachments = (v: unknown): UploadedAttachment[] =>
     Array.isArray(v) ? (v as UploadedAttachment[]) : [];
 
-  // Each employee keeps its roster color in the team, so the owner can tell
-  // who's who at a glance — same palette as the sidebar avatars.
-  const colorClass = (color?: string) => {
-    const ac = AGENT_COLORS_MAP[color ?? ''] ?? AGENT_COLORS_MAP['teal'];
-    return `${ac.bgClass} ${ac.inkClass}`;
-  };
+  // Each employee wears its roster character in the team, so the owner can
+  // tell who's who at a glance — the same avatar as the sidebar.
   const rosterFor = (label: string) =>
     roster.find((a) => a.id === label || a.name === label);
 
@@ -125,7 +121,6 @@
             // recorded when they joined is the only label there is.
             id: m.agentId,
             name: m.name || m.agentId,
-            initial: ((m.name || m.agentId)[0] ?? '?').toUpperCase(),
           }
       )
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -286,7 +281,7 @@
        the team) wears the crown. -->
   {#each members as m (m.id)}
     <div class="flex items-center gap-2.5 px-3 py-1.5 min-w-0">
-      <span class="w-6 h-6 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {colorClass(rosterFor(m.id)?.color)}">{m.initial}</span>
+      <AgentAvatar name={m.name} id={m.id} color={rosterFor(m.id)?.color} shape={rosterFor(m.id)?.shape} size="xs" />
       <span class="text-sm truncate min-w-0">{m.name}</span>
       {#if m.id === team.organizerAgentId}
         <span class="tooltip tooltip-left shrink-0 text-warning/80" data-tip={$t('teams.organizer')}>
@@ -308,7 +303,7 @@
     >
       <span class="flex -space-x-1.5 shrink-0">
         {#each members.slice(0, 3) as m (m.id)}
-          <span class="w-5 h-5 rounded-full border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold {colorClass(rosterFor(m.id)?.color)}">{m.initial}</span>
+          <AgentAvatar name={m.name} id={m.id} color={rosterFor(m.id)?.color} shape={rosterFor(m.id)?.shape} size="xs" />
         {/each}
       </span>
       <span class="text-xs text-base-content/60 shrink-0">{$t('teams.membersCount', { values: { count: members.length } })}</span>
@@ -346,8 +341,7 @@
           <TranscriptMessage
             name={m.mine ? $t('teams.you') : m.from}
             mine={m.mine}
-            initial={sender?.initial ?? ''}
-            avatarClass={sender ? colorClass(sender.color) : ''}
+            avatar={sender ?? null}
             html={renderMentionChips(parseMarkdown(stripAttachmentNotes(m.content)), roster)}
             attachments={m.attachments}
           />

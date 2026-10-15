@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Bahagian diubah: {section}",
 		"sectionOpening": "Pembukaan",
 		"settingChanged": "Diubah: {setting}"
+	},
+	"characters": {
+		"title": "Watak",
+		"ridge": "Rabung",
+		"twin": "Puncak kembar",
+		"mesa": "Mesa",
+		"butte": "Butte",
+		"diamond": "Berlian",
+		"dome": "Kubah",
+		"snowcap": "Puncak bersalji",
+		"volcano": "Gunung berapi",
+		"sawtooth": "Gigi gergaji",
+		"hook": "Puncak cangkuk",
+		"flattop": "Puncak rata",
+		"littlehill": "Bukit kecil"
 	}
 }

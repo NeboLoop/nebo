@@ -4306,5 +4306,20 @@
 		"sectionChanged": "অংশ বদলেছে: {section}",
 		"sectionOpening": "শুরু",
 		"settingChanged": "বদলেছে: {setting}"
+	},
+	"characters": {
+		"title": "চরিত্র",
+		"ridge": "শৈলশিরা",
+		"twin": "যমজ চূড়া",
+		"mesa": "মেসা",
+		"butte": "বিউট",
+		"diamond": "হীরা",
+		"dome": "গম্বুজ",
+		"snowcap": "তুষারচূড়া",
+		"volcano": "আগ্নেয়গিরি",
+		"sawtooth": "করাতদাঁত",
+		"hook": "হুক চূড়া",
+		"flattop": "সমতল চূড়া",
+		"littlehill": "ছোট পাহাড়"
 	}
 }

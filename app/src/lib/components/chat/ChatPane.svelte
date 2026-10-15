@@ -122,7 +122,7 @@
     | { type: 'compactBoundary'; id?: string; time?: string; cleared?: boolean }
     | { type: 'runError'; content: string; time?: string; id?: string; reason?: string };
 
-  type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
+  type AgentInfo = { id: string; name: string; color: string; shape?: string; initial: string; role: string; status: string; isApp?: boolean };
 
   let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', emptyActions, allAgents = [], onteachsent, activityStatus = '', turnStartedAt = 0, helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, ownApp = false, appWindow = null, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled, readOnly = false }: {
     messages?: Message[];
@@ -199,6 +199,8 @@
      *  no composer. */
     readOnly?: boolean;
   } = $props();
+  // The header wears the employee's character, as the roster resolved it.
+  const headerAgent = $derived(allAgents.find((a) => a.id === agentId));
 
   // The employee's background work told while this conversation is open:
   // what finished, failed or stopped, and the timers it made.
@@ -1626,6 +1628,9 @@
         <svg class="rtl:-scale-x-100" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
       {/if}
+      {#if headerAgent && !isApp}
+        <AgentAvatar name={headerAgent.name} color={headerAgent.color} shape={headerAgent.shape} size="sm" />
+      {/if}
       <span class="flex items-baseline gap-2 min-w-0">
         <span class="text-sm font-semibold truncate">{agentName}</span>
         {#if isApp}
@@ -2265,7 +2270,7 @@
             {#if msg.delegateAgentName}
               {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
               <div class="flex items-center gap-1.5 mb-1">
-                <AgentAvatar name={da?.name ?? msg.delegateAgentName} color={da?.color} size="xs" />
+                <AgentAvatar name={da?.name ?? msg.delegateAgentName} color={da?.color} shape={da?.shape} size="xs" />
                 <span class="text-xs font-medium">{msg.delegateAgentName}</span>
               </div>
             {/if}

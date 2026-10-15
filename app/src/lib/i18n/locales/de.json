@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Abschnitt geändert: {section}",
 		"sectionOpening": "Einleitung",
 		"settingChanged": "Geändert: {setting}"
+	},
+	"characters": {
+		"title": "Figur",
+		"ridge": "Grat",
+		"twin": "Zwillingsgipfel",
+		"mesa": "Tafelberg",
+		"butte": "Zeugenberg",
+		"diamond": "Diamant",
+		"dome": "Kuppel",
+		"snowcap": "Schneegipfel",
+		"volcano": "Vulkan",
+		"sawtooth": "Sägezahn",
+		"hook": "Hakengipfel",
+		"flattop": "Flachkuppe",
+		"littlehill": "Kleiner Hügel"
 	}
 }

@@ -7,6 +7,7 @@
   import { get } from 'svelte/store';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
+  import { EMPLOYEE_SHAPES } from '$lib/characters';
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -239,6 +240,10 @@
   let editName = $state('');
   let editRole = $state('');
   let editColor = $state('');
+  // The character it wears. Sent only once the owner picks one, so a save of
+  // the name never pins the shape its role gave it.
+  let editShape = $state('');
+  let shapePicked = $state(false);
   let editVoice = $state('');
   let editLoopExposed = $state(false);
   let editDepartment = $state('');
@@ -302,6 +307,8 @@
       jobCheckedRole = agent.role;
       jobEdit = null;
       editColor = agent.color;
+      editShape = agent.shape ?? '';
+      shapePicked = false;
       editVoice = agent.voice ?? '';
       editLoopExposed = agent.loopExposed ?? false;
       editDepartment = agent.department ?? '';
@@ -342,6 +349,12 @@
     // Clicking the already-selected swatch clears the override back to the
     // default — same toggle interaction as the Approvals controls.
     editColor = editColor === color ? '' : color;
+    debounceIdentitySave();
+  }
+
+  function selectShape(shape: string) {
+    editShape = shape;
+    shapePicked = true;
     debounceIdentitySave();
   }
 
@@ -429,6 +442,7 @@
         name,
         description: editRole,
         color: editColor,
+        ...(shapePicked ? { shape: editShape } : {}),
         voice: editVoice,
         // Structure rides the one employee-field save: setting a department
         // here makes it the owner's, and a later package sync leaves it alone.
@@ -1293,7 +1307,7 @@
     <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.generalBlurb')}</div>
   </div>
   <div class="flex items-start gap-4 pb-5 border-b border-base-300">
-    <AgentAvatar name={agent?.name ?? ''} color={agent?.color} size="lg" />
+    <AgentAvatar name={agent?.name ?? ''} color={editColor || agent?.color} shape={editShape || agent?.shape} size="lg" />
     <div class="flex-1 min-w-0">
       <div class="text-sm font-semibold">{agent?.name}</div>
       <div class="text-xs text-base-content/70">{agent?.role}</div>
@@ -1506,6 +1520,23 @@
       {/if}
     </div>
   </div>
+  {#if agentId !== 'assistant'}
+    <div>
+      <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('characters.title')}</div>
+      <div class="flex flex-wrap gap-1.5 items-center">
+        {#each EMPLOYEE_SHAPES as shape (shape)}
+          <button
+            type="button"
+            class="p-0.5 rounded-lg border-2 bg-transparent cursor-pointer transition-colors {editShape === shape ? 'border-base-content' : 'border-transparent hover:border-base-300'}"
+            title={$t(`characters.${shape}`)}
+            aria-label={$t(`characters.${shape}`)}
+            aria-pressed={editShape === shape}
+            onclick={() => selectShape(shape)}
+          ><AgentAvatar name={agent?.name ?? ''} color={editColor || agent?.color} {shape} size="sm" /></button>
+        {/each}
+      </div>
+    </div>
+  {/if}
   <div class="pt-5 border-t border-base-300 flex flex-col gap-4">
     <div>
       <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.structure')}</div>

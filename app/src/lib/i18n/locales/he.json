@@ -4306,5 +4306,20 @@
 		"sectionChanged": "הסעיף השתנה: {section}",
 		"sectionOpening": "פתיחה",
 		"settingChanged": "השתנה: {setting}"
+	},
+	"characters": {
+		"title": "דמות",
+		"ridge": "רכס",
+		"twin": "פסגות תאומות",
+		"mesa": "מסה",
+		"butte": "גבעת עד",
+		"diamond": "יהלום",
+		"dome": "כיפה",
+		"snowcap": "פסגה מושלגת",
+		"volcano": "הר געש",
+		"sawtooth": "שן מסור",
+		"hook": "פסגת וו",
+		"flattop": "פסגה שטוחה",
+		"littlehill": "גבעה קטנה"
 	}
 }

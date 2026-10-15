@@ -4306,5 +4306,20 @@
 		"sectionChanged": "変更されたセクション: {section}",
 		"sectionOpening": "冒頭",
 		"settingChanged": "変更: {setting}"
+	},
+	"characters": {
+		"title": "キャラクター",
+		"ridge": "尾根",
+		"twin": "双子峰",
+		"mesa": "メサ",
+		"butte": "ビュート",
+		"diamond": "ダイヤ",
+		"dome": "ドーム",
+		"snowcap": "雪山",
+		"volcano": "火山",
+		"sawtooth": "のこぎり山",
+		"hook": "かぎ峰",
+		"flattop": "平頂",
+		"littlehill": "小さな丘"
 	}
 }

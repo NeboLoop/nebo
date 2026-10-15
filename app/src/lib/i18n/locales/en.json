@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Section changed: {section}",
 		"sectionOpening": "Opening",
 		"settingChanged": "Changed: {setting}"
+	},
+	"characters": {
+		"title": "Character",
+		"ridge": "Ridge",
+		"twin": "Twin peaks",
+		"mesa": "Mesa",
+		"butte": "Butte",
+		"diamond": "Diamond",
+		"dome": "Dome",
+		"snowcap": "Snowcap",
+		"volcano": "Volcano",
+		"sawtooth": "Sawtooth",
+		"hook": "Hook peak",
+		"flattop": "Flat-top",
+		"littlehill": "Little hill"
 	}
 }

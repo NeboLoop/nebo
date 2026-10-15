@@ -153,6 +153,8 @@ pub struct DashboardEmployee {
     pub id: String,
     pub name: String,
     pub color: Option<String>,
+    /// The character it wears (`crate::character::shape_of`).
+    pub shape: String,
     pub status: String,
     /// What it is on right now, or what it last did.
     pub task: String,

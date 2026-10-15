@@ -46,6 +46,8 @@ export interface AgentInfo {
   initial: string;
   status: string;
   color: string;
+  /** The character it wears (server-resolved). */
+  shape?: string;
   isApp?: boolean;
 }
 

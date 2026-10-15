@@ -47,7 +47,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -69,7 +69,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -141,7 +141,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
                  FROM agents",
             )
             .db_err("get_agent_by_slug")?;
@@ -204,7 +204,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -485,7 +485,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -572,6 +572,18 @@ impl Store {
     /// employee arrives in "sales", the owner moves it to "Revenue", and the
     /// next sync must leave it there. Exactly the guard `sync_agent_identity`
     /// uses for a locked name; the owner's door is `update_agent`.
+    /// The character the owner picked for this employee (`types::character`),
+    /// or `None` to go back to the one its role or id gives it.
+    pub fn set_agent_shape(&self, id: &str, shape: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET shape = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![shape, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn set_agent_department(&self, id: &str, department: Option<&str>) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -747,7 +759,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked, shape
              FROM agents WHERE loop_agent_id = ?1",
             params![loop_agent_id],
             row_to_agent,
@@ -1216,6 +1228,7 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         context_stamp: row.get(26)?,
         reports_to: row.get(27)?,
         department_locked: row.get(28)?,
+        shape: row.get(29)?,
     })
 }
 

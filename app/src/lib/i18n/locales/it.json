@@ -4306,5 +4306,20 @@
 		"sectionChanged": "Sezione modificata: {section}",
 		"sectionOpening": "Introduzione",
 		"settingChanged": "Modificato: {setting}"
+	},
+	"characters": {
+		"title": "Personaggio",
+		"ridge": "Cresta",
+		"twin": "Picchi gemelli",
+		"mesa": "Mesa",
+		"butte": "Butte",
+		"diamond": "Diamante",
+		"dome": "Cupola",
+		"snowcap": "Vetta innevata",
+		"volcano": "Vulcano",
+		"sawtooth": "Dente di sega",
+		"hook": "Picco a uncino",
+		"flattop": "Cima piatta",
+		"littlehill": "Collinetta"
 	}
 }

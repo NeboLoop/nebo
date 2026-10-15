@@ -139,6 +139,8 @@ export interface AgentDisplay {
 	initial: string
 	status: string
 	color: string
+	/** The character it wears (server-resolved): see AgentAvatar. */
+	shape?: string
 	/** User-editable handle, stored as `bot_<chosen>`. */
 	handle?: string
 	editable?: boolean
