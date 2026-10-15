@@ -1640,20 +1640,11 @@ pub async fn delete_agent(
         None
     };
 
-    let (name, napp_path, source_path) = match (&db_agent, &loaded) {
-        (Some(a), _) => (a.name.clone(), a.napp_path.clone(), None),
-        (None, Some(l)) => (
-            l.agent_def.name.clone(),
-            // Loader napp_path is a PathBuf; the DB's is a String — normalize so the
-            // match arms agree (and Path::new() below works for both sources).
-            l.napp_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string()),
-            Some(l.source_path.clone()),
-        ),
+    let name = match (&db_agent, &loaded) {
+        (Some(a), _) => a.name.clone(),
+        (None, Some(l)) => l.agent_def.name.clone(),
         (None, None) => return Err(to_error_response(types::NeboError::NotFound)),
     };
-    let slug = name.to_lowercase().replace(' ', "-");
 
     // Lifecycle event: agent is being uninstalled. Emitted BEFORE any teardown so a
     // consumer still sees the agent (and its plugins) alive. Note: this same function
@@ -1678,23 +1669,19 @@ pub async fn delete_agent(
     // Unsubscribe event triggers from dispatcher
     state.event_dispatcher.unsubscribe_agent(&id).await;
 
-    // A coding agent Nebo hosted on this computer for this employee stops
-    // with it. Its folder stays: the work in it is the owner's.
-    if let Some(local) = &state.local_host
-        && let Some(model) = state.store.get_entity_config("agent", &id).ok().flatten().and_then(|c| c.model_preference)
-        && let Some((bot, agent)) = ai::LinkedProvider::target(&model)
-        && local.bot_id().as_deref() == Some(bot)
-        && let Err(e) = local.remove(agent).await
-    {
-        warn!(agent = %id, error = %e, "the employee's coding agent was not removed");
-    }
-
     // DB cleanup only when the agent actually had DB rows. agent_workflows are
     // cascade-deleted via FK; chats before sessions (chats reference session names).
     // What goes is the employee's own: its row, configuration, memory,
     // working state. What stays is the business's: cases, turns, sent
     // communications, approvals, the effect ledger — attributed to this id,
     // with the name it had. Purging that is a separate, explicit operation.
+    // The coding agent it ran on is read first: the row goes here.
+    let coding_agent = state
+        .store
+        .get_entity_config("agent", &id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.model_preference);
     if db_agent.is_some() {
         let _ = state.store.tombstone_agent(&id, &name, chrono::Utc::now().timestamp());
         state.store.delete_agent(&id).map_err(to_error_response)?;
@@ -1702,51 +1689,28 @@ pub async fn delete_agent(
         let _ = state.store.delete_agent_sessions(&id);
         let _ = state.store.delete_agent_memories(&id);
     }
-    // A deleted employee must also leave MEMORY: its own scopes are purged
-    // above; memories elsewhere that mention it by name get a deterministic
-    // tombstone so no run ever reports it as existing again (the "five HVAC
-    // agents confirmed active" incident — recalled long after deletion).
-    let note = format!(
-        "NOTE: '{}' was deleted on {}; it no longer exists — do not report it as active",
-        name,
-        chrono::Local::now().format("%Y-%m-%d")
-    );
-    match state.store.tombstone_memories_mentioning(&name, &note) {
-        Ok(n) if n > 0 => info!(agent = %name, memories = n, "tombstoned memories mentioning deleted agent"),
-        Err(e) => warn!(agent = %name, error = %e, "memory tombstone sweep failed (non-fatal)"),
-        _ => {}
-    }
 
-    // Clean up filesystem: the exact directory the loader read from
-    // (source_path) for filesystem-only agents, plus the conventional napp /
-    // installed (nebo/agents) / user (user/agents) locations by slug. Each
-    // goes to the trash (`napp::trash`), kept there for its days and never
-    // removed on the spot: an app's source is the owner's work.
+    // The employee's own folders go to the trash (`napp::trash`), kept there
+    // for its days and never removed on the spot: an app's source is the
+    // owner's work. Only this employee's: the folder the loader read it from
+    // and its package, found by its id — never another folder that happens
+    // to carry its name (the owner's own copy of a marketplace employee
+    // lives in user/agents under the same slug).
+    let own = own_folders(&state, &id, &name, db_agent.as_ref().and_then(|a| a.napp_path.as_deref()), loaded.as_ref()).await;
     let trash = state.agent_loader.trash_dir();
-    let mut gone: Vec<std::path::PathBuf> = Vec::new();
-    gone.extend(source_path.clone());
-    gone.extend(napp_path.as_deref().map(std::path::PathBuf::from));
-    if let Ok(nebo_dir) = config::nebo_dir() {
-        gone.push(nebo_dir.join("agents").join(&slug));
-    }
-    if let Ok(user_dir) = config::user_dir() {
-        gone.push(user_dir.join("agents").join(&slug));
-    }
-    for path in gone {
+    for path in &own {
         if path.exists()
-            && let Err(e) = napp::trash::discard(&path, &trash)
+            && let Err(e) = napp::trash::discard(path, &trash)
         {
             warn!(agent = %id, path = %path.display(), error = %e, "deleted employee's files left in place");
         }
     }
 
-    // Reload the in-memory AgentLoader so the removal is reflected BEFORE the
-    // frontend refreshes. list_agents() enumerates the loader (filesystem source
-    // of truth); without this, the broadcast races ahead of the loader's own
-    // filesystem-watch reload and the frontend refetches a stale roster that
-    // still lists the just-deleted agent — the "requires a hard refresh" bug.
-    // Mirrors the install path (codes.rs), which reloads before broadcasting.
-    state.agent_loader.load_all().await;
+    // The roster reads the loader: it drops this employee now, BEFORE the
+    // broadcast, so the frontend's refetch never sees it (the "requires a
+    // hard refresh" bug). Only this employee's entry leaves — a rescan of
+    // every agent here was most of a remove's wait.
+    state.agent_loader.refresh_one(&own, None).await;
 
     // Notify frontend — the roster is now consistent, so the refetch is correct.
     state.hub.broadcast(
@@ -1754,11 +1718,37 @@ pub async fn delete_agent(
         serde_json::json!({ "agentId": id, "name": name }),
     );
 
-    // Deregister agent from NeboAI (non-blocking, best-effort)
+    // What the roster does not read finishes after the answer: the coding
+    // agent Nebo hosted for this employee (its folder stays: the work in it
+    // is the owner's), the memory tombstones, and the loop.
     {
         let st = state.clone();
+        let agent_id = id.clone();
         let agent_name = name.clone();
         tokio::spawn(async move {
+            if let Some(local) = &st.local_host
+                && let Some(model) = coding_agent
+                && let Some((bot, agent)) = ai::LinkedProvider::target(&model)
+                && local.bot_id().as_deref() == Some(bot)
+                && let Err(e) = local.remove(agent).await
+            {
+                warn!(agent = %agent_id, error = %e, "the employee's coding agent was not removed");
+            }
+            // A deleted employee must also leave MEMORY: its own scopes are
+            // purged above; memories elsewhere that mention it by name get a
+            // deterministic tombstone so no run ever reports it as existing
+            // again (the "five HVAC agents confirmed active" incident —
+            // recalled long after deletion).
+            let note = format!(
+                "NOTE: '{}' was deleted on {}; it no longer exists — do not report it as active",
+                agent_name,
+                chrono::Local::now().format("%Y-%m-%d")
+            );
+            match st.store.tombstone_memories_mentioning(&agent_name, &note) {
+                Ok(n) if n > 0 => info!(agent = %agent_name, memories = n, "tombstoned memories mentioning deleted agent"),
+                Err(e) => warn!(agent = %agent_name, error = %e, "memory tombstone sweep failed (non-fatal)"),
+                _ => {}
+            }
             if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_name).await {
                 warn!(agent = %agent_name, error = %e, "failed to deregister agent from loop");
             }
@@ -1766,6 +1756,55 @@ pub async fn delete_agent(
     }
 
     Ok(Json(serde_json::json!({ "message": "Agent deleted" })))
+}
+
+/// The folders that are this employee's and no one else's: the folder the
+/// loader read it from and its package, by its id (by name only for an
+/// entry that carries no id at all), each widened to its top folder under
+/// the agents roots — a package's `nebo/agents/<slug>`, which holds every
+/// version and its `.napp`, or the owner's `user/agents/<name>`. Removal is
+/// by this local id: a folder another employee was read from never counts.
+async fn own_folders(
+    state: &AppState,
+    id: &str,
+    name: &str,
+    db_napp_path: Option<&str>,
+    loaded: Option<&napp::LoadedAgent>,
+) -> Vec<std::path::PathBuf> {
+    let loaded = match loaded {
+        Some(l) => Some(l.clone()),
+        None => match state.agent_loader.get_by_id(id).await {
+            Some(l) => Some(l),
+            None => state.agent_loader.get_by_name(name).await.filter(|l| l.id.is_none()),
+        },
+    };
+    let roots = [state.agent_loader.installed_dir().to_path_buf(), state.agent_loader.user_dir().to_path_buf()];
+    // A root itself is never an employee's folder.
+    let top = |p: &std::path::Path| -> Option<std::path::PathBuf> {
+        for root in &roots {
+            if let Ok(rest) = p.strip_prefix(root) {
+                return rest.components().next().map(|first| root.join(first));
+            }
+        }
+        Some(p.to_path_buf())
+    };
+    let mut own: Vec<std::path::PathBuf> = Vec::new();
+    let found = db_napp_path
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .chain(loaded.iter().flat_map(|l| {
+            std::iter::once(l.source_path.clone())
+                .chain(l.napp_path.clone())
+                .filter(|p| !p.as_os_str().is_empty())
+        }));
+    for folder in found.filter_map(|p| top(&p)) {
+        if !own.contains(&folder) {
+            own.push(folder);
+        }
+    }
+    own
 }
 
 /// POST /agents/{id}/toggle

@@ -7,6 +7,8 @@
   import BrowseCard from '$lib/components/settings/BrowseCard.svelte';
   import ManageModal from '$lib/components/settings/ManageModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
+  import { removeEmployee } from '$lib/chat/removeEmployee';
+  import { addToast } from '$lib/stores/toast';
 
   type AgentRow = { id: string; name: string; role: string; status: string };
 
@@ -14,7 +16,6 @@
   let search = $state('');
   let selected = $state<AgentRow | null>(null);
   let confirming = $state(false);
-  let removing = $state(false);
 
   const onlineCount = $derived(agents.filter((a) => a.status === 'online').length);
   const filtered = $derived.by(() => {
@@ -38,17 +39,17 @@
     } catch { /* leave list empty on error */ }
   });
 
+  // The row goes the moment the owner confirms; a refusal puts it back.
   async function uninstall() {
     if (!selected) return;
-    removing = true;
+    const { id, name } = selected;
+    selected = null;
+    confirming = false;
     try {
       const api = await import('$lib/api/nebo');
-      await api.deleteAgent(selected.id);
-      agents = agents.filter((a) => a.id !== selected!.id);
-      selected = null;
-      confirming = false;
+      await removeEmployee(agents, id, (rows) => (agents = rows), () => api.deleteAgent(id));
     } catch {
-      removing = false;
+      addToast($t('agentSettings.removeFailed', { values: { name } }), 'error');
     }
   }
 </script>
@@ -138,7 +139,6 @@
       title={$t('common.removeTitle', { values: { name: selected.name } })}
       message={$t('settingsAgents.uninstallMessage')}
       confirmLabel={$t('common.remove')}
-      busy={removing}
       onCancel={() => (confirming = false)}
       onConfirm={uninstall}
     />

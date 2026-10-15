@@ -2126,7 +2126,7 @@
 		"resuming": "Melanjutkan...",
 		"dangerZone": "Zona bahaya",
 		"dangerDesc": "Hapus karyawan ini dan semua datanya secara permanen.",
-		"deleting": "Menghapus...",
+		"removeFailed": "Tidak dapat menghapus {name}. Coba lagi.",
 		"deleteAgent": "Hapus Karyawan",
 		"deleteConfirm": "Apakah Anda yakin ingin menghapus \"{name}\"? Ini akan menghapus karyawan dan semua datanya secara permanen.",
 		"channels": "Kanal",

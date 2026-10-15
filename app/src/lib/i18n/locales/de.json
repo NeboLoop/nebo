@@ -2126,7 +2126,7 @@
 		"resuming": "Wird fortgesetzt...",
 		"dangerZone": "Gefahrenzone",
 		"dangerDesc": "Entferne diesen Mitarbeiter und alle seine Daten dauerhaft.",
-		"deleting": "Wird gelöscht...",
+		"removeFailed": "{name} konnte nicht entfernt werden. Versuche es erneut.",
 		"deleteAgent": "Mitarbeiter löschen",
 		"deleteConfirm": "Möchtest du \"{name}\" wirklich löschen? Dabei werden der Mitarbeiter und alle zugehörigen Daten unwiderruflich entfernt.",
 		"channels": "Kanäle",

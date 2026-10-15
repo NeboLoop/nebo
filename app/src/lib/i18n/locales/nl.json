@@ -2126,7 +2126,7 @@
 		"resuming": "Hervatten...",
 		"dangerZone": "Gevarenzone",
 		"dangerDesc": "Verwijder deze medewerker en alle bijbehorende gegevens permanent.",
-		"deleting": "Verwijderen...",
+		"removeFailed": "{name} kon niet worden verwijderd. Probeer het opnieuw.",
 		"deleteAgent": "Medewerker verwijderen",
 		"deleteConfirm": "Weet je zeker dat je \"{name}\" wilt verwijderen? Dit verwijdert de medewerker en alle bijbehorende gegevens permanent.",
 		"channels": "Kanalen",

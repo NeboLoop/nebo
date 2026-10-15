@@ -2126,7 +2126,7 @@
 		"resuming": "Resuming...",
 		"dangerZone": "Danger zone",
 		"dangerDesc": "Permanently remove this employee and all its data.",
-		"deleting": "Deleting...",
+		"removeFailed": "Could not remove {name}. Try again.",
 		"deleteAgent": "Delete Employee",
 		"deleteConfirm": "Are you sure you want to delete \"{name}\"? This will remove the employee and all its data permanently.",
 		"channels": "Channels",

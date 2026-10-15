@@ -2126,7 +2126,7 @@
 		"resuming": "繼續中...",
 		"dangerZone": "危險區域",
 		"dangerDesc": "永久刪除此員工及其所有資料。",
-		"deleting": "刪除中...",
+		"removeFailed": "無法移除 {name}。請再試一次。",
 		"deleteAgent": "刪除員工",
 		"deleteConfirm": "確定要刪除「{name}」嗎？員工及其所有資料將被永久刪除。",
 		"channels": "頻道",

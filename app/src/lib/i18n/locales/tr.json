@@ -2126,7 +2126,7 @@
 		"resuming": "Devam ettiriliyor...",
 		"dangerZone": "Tehlikeli bölge",
 		"dangerDesc": "Bu çalışanı ve tüm verilerini kalıcı olarak kaldırın.",
-		"deleting": "Siliniyor...",
+		"removeFailed": "{name} kaldırılamadı. Tekrar deneyin.",
 		"deleteAgent": "Çalışanı Sil",
 		"deleteConfirm": "\"{name}\" adlı çalışanı silmek istediğinizden emin misiniz? Bu işlem çalışanı ve tüm verilerini kalıcı olarak kaldıracaktır.",
 		"channels": "Kanallar",

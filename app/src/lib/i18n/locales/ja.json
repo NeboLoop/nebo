@@ -2126,7 +2126,7 @@
 		"resuming": "再開中...",
 		"dangerZone": "危険ゾーン",
 		"dangerDesc": "この社員とすべてのデータを完全に削除します。",
-		"deleting": "削除中...",
+		"removeFailed": "{name} を削除できませんでした。もう一度お試しください。",
 		"deleteAgent": "社員を削除",
 		"deleteConfirm": "「{name}」を削除しますか？社員とすべてのデータが完全に削除されます。",
 		"channels": "チャンネル",

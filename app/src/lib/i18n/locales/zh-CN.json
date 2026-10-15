@@ -2126,7 +2126,7 @@
 		"resuming": "恢复中...",
 		"dangerZone": "危险区域",
 		"dangerDesc": "永久删除此员工及其所有数据。",
-		"deleting": "删除中...",
+		"removeFailed": "无法移除 {name}。请重试。",
 		"deleteAgent": "删除员工",
 		"deleteConfirm": "确定要删除「{name}」吗？员工及其所有数据将被永久删除。",
 		"channels": "频道",
