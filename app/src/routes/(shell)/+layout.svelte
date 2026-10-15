@@ -399,9 +399,14 @@
   }
   import { devMode } from '$lib/stores/devmode.js';
   import { waitingAsks } from '$lib/stores/waitingAsks';
+  import { employeeSetup, trackEmployeeSetup } from '$lib/stores/employeeSetup';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
   import { mapWorkflows, saveWorkflows } from '$lib/utils/workflowApi';
   import type { Agent, AgentRunEntry, ActiveAgent, WorkflowRun } from '$lib/api/neboComponents';
+
+  // An employee's dependencies landing after its install modal is done show
+  // on its row.
+  trackEmployeeSetup();
 
   /** Raw run entries from the API — WorkflowRun is the generated type, but the backend
    *  also populates AgentRunEntry fields. We use a union to cover both shapes. */
@@ -1706,6 +1711,7 @@
         {@const latest = chats[0]}
         {@const isPinned = drilledAgent?.id === a.id}
         {@const isUnread = agentUnread(unread, a.id)}
+        {@const setup = $employeeSetup[a.id]}
         <div
           transition:slide={{ duration: motionMs(200) }}
           class="group/agent flex items-center gap-2.5 pe-2.5 mx-1.5 cursor-pointer text-start {!isPinned && agentId === a.id
@@ -1765,6 +1771,10 @@
                 <!-- Working: the live verb replaces the last line, so the row
                      says what is happening, not what was said. -->
                 <div class="text-xs text-success truncate flex items-center gap-1.5"><span class="loading loading-dots loading-xs shrink-0"></span><span class="truncate">{workingLabel(a.id) || $t('sidebar.working')}</span></div>
+              {:else if setup}
+                <!-- Its dependencies are still landing: the install modal
+                     never waits on them, so the row carries the progress. -->
+                <div class="text-xs text-base-content/60 truncate flex items-center gap-1.5" data-testid="getting-ready"><span class="loading loading-spinner loading-xs shrink-0"></span><span class="truncate">{$t('installFlow.gettingReady', { values: { name: a.name } })} {setup.settled}/{setup.total}</span></div>
               {:else if a.offline}
                 <!-- A linked employee whose linked bot cannot be reached: a
                      state, said plainly, in place of the last line. -->

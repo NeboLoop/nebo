@@ -86,13 +86,9 @@ pub async fn create_workflow(
     // Cascade: resolve workflow deps
     let deps = crate::deps::extract_workflow_deps(&_def);
     let cascade = if !deps.is_empty() {
-        let mut visited = std::collections::HashSet::new();
         // The page that created it renders the cascade's progress.
         let origin = super::ws::EventOrigin::of_request(&headers, String::new());
-        Some(
-            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner, &origin)
-                .await,
-        )
+        Some(crate::deps::resolve_cascade(&state, deps, tools::InstalledBy::Owner, &origin, None).await)
     } else {
         None
     };

@@ -51,6 +51,23 @@ pub struct EmployeeCeilingRow {
 const DRAFT_COLUMNS: &str =
     "id, kind, agent_id, creator_id, chat_id, name, input, needs, line, shown_at, status, created_at";
 
+fn draft_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EmployeeDraftRow> {
+    Ok(EmployeeDraftRow {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        agent_id: row.get(2)?,
+        creator_id: row.get(3)?,
+        chat_id: row.get(4)?,
+        name: row.get(5)?,
+        input: row.get(6)?,
+        needs: row.get(7)?,
+        line: row.get(8)?,
+        shown_at: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
+    })
+}
+
 impl Store {
     pub fn insert_employee_draft(&self, row: &EmployeeDraftRow) -> Result<(), NeboError> {
         let conn = self.conn()?;
@@ -77,22 +94,24 @@ impl Store {
 
     pub fn get_employee_draft(&self, id: &str) -> Result<Option<EmployeeDraftRow>, NeboError> {
         let conn = self.conn()?;
-        conn.query_row(&format!("SELECT {DRAFT_COLUMNS} FROM employee_drafts WHERE id = ?1"), params![id], |row| {
-            Ok(EmployeeDraftRow {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                agent_id: row.get(2)?,
-                creator_id: row.get(3)?,
-                chat_id: row.get(4)?,
-                name: row.get(5)?,
-                input: row.get(6)?,
-                needs: row.get(7)?,
-                line: row.get(8)?,
-                shown_at: row.get(9)?,
-                status: row.get(10)?,
-                created_at: row.get(11)?,
-            })
-        })
+        conn.query_row(&format!("SELECT {DRAFT_COLUMNS} FROM employee_drafts WHERE id = ?1"), params![id], draft_row)
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// The newest open job edit drafted for `agent_id` on the owner's own
+    /// pages: what its page offers to add until the owner adds it.
+    pub fn open_job_edit(&self, agent_id: &str) -> Result<Option<EmployeeDraftRow>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "SELECT {DRAFT_COLUMNS} FROM employee_drafts \
+                 WHERE agent_id = ?1 AND kind = 'edit' AND status = 'open' AND chat_id = '' \
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            ),
+            params![agent_id],
+            draft_row,
+        )
         .optional()
         .map_err(db_err)
     }

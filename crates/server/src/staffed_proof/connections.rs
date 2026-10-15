@@ -375,6 +375,134 @@ async fn a_cascade_carries_the_client_that_asked() {
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
 
+/// Hiring an employee already on the team, at the marketplace's version,
+/// is the same employee: nothing is fetched or written, it is not removed
+/// and installed again, and no "Twice Desk 2" appears beside it. The old
+/// clean reinstall deleted it and ran the whole install a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hiring_an_employee_already_on_the_team_keeps_it() {
+    let nebo = session().await;
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    hub_offers_agent("AGNT-TWCE-0001", "twice-desk", "Twice Desk", json!({ "workflows": {} }));
+
+    nebo.post_ok("/codes", &json!({ "code": "AGNT-TWCE-0001" })).await;
+    let first = nebo.store().get_agent("twice-desk").unwrap().expect("hired");
+    let package = config::nebo_dir().unwrap().join("agents").join("twice-desk");
+    let written = std::fs::metadata(&package).and_then(|m| m.modified()).expect("the package is on disk");
+
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    nebo.post_ok("/codes", &json!({ "code": "AGNT-TWCE-0001" })).await;
+    let second = nebo.store().get_agent("twice-desk").unwrap().expect("still on the team");
+    assert_eq!(second.name, "Twice Desk", "no second copy under another name");
+    assert_eq!(second.updated_at, first.updated_at, "the employee was left as it was");
+    assert_eq!(
+        std::fs::metadata(&package).and_then(|m| m.modified()).unwrap(),
+        written,
+        "its package was not fetched and written again"
+    );
+    let copies = nebo.store().list_agents(1000, 0).unwrap().into_iter().filter(|a| a.name.starts_with("Twice Desk")).count();
+    assert_eq!(copies, 1);
+
+    let _ = nebo.delete("/agents/twice-desk").await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// A plugin already here at the hub's version, with the binary the hub
+/// lists, is not downloaded again by any door: the installer reads the
+/// recorded version and sha256 before it fetches anything. A second hire
+/// that depended on a 43 MB plugin used to fetch it whole, only to find the
+/// same bytes and keep them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plugin_already_in_place_is_not_downloaded_again() {
+    const CODE: &str = "PLUG-SAME-0001";
+    const SLUG: &str = "same-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Same Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    let before = napp_downloads_of(SLUG);
+    nebo.post_ok("/codes", &json!({ "code": CODE })).await;
+    assert_eq!(napp_downloads_of(SLUG) - before, 1, "the first install downloads it");
+
+    let api = crate::codes::build_api_client(&nebo.state).unwrap();
+    let again = crate::codes::fetch_and_install_plugin(&nebo.state, &api, SLUG, "Same Ledger", Some(CODE), crate::codes::Settle::Now)
+        .await
+        .unwrap();
+    assert_eq!(again, crate::codes::PluginFetch::AlreadyInPlace);
+    nebo.post_ok("/codes", &json!({ "code": CODE })).await;
+    assert_eq!(napp_downloads_of(SLUG) - before, 1, "nothing was downloaded again");
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "and it is still installed");
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// A hire's dependencies install side by side, and the skill catalog is
+/// reloaded once for all of them when the cascade ends: one plugin installs
+/// while the other is still downloading, and the whole cascade costs one
+/// full scan. They used to install one after another, each reloading every
+/// skill from disk (15 s for Design Studio's two plugins, 2026-10-10).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hires_dependencies_install_side_by_side_and_reload_once() {
+    let nebo = session().await;
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    hub_offers_plugin("PLUG-SYDE-0001", "side-a", "Side A");
+    hub_offers_plugin("PLUG-SYDE-0002", "side-b", "Side B");
+    hub_offers_agent(
+        "AGNT-SYDE-0001",
+        "side-desk",
+        "Side Desk",
+        json!({ "requires": { "plugins": ["PLUG-SYDE-0001", "PLUG-SYDE-0002"] }, "workflows": {} }),
+    );
+    let mut events = nebo.state.hub.subscribe();
+    let release = hub_holds_download("side-a");
+    let scans = nebo.state.skill_loader.scans();
+
+    // The hire answers before its dependencies land.
+    nebo.post_ok("/codes", &json!({ "code": "AGNT-SYDE-0001" })).await;
+    assert!(nebo.store().get_agent("side-desk").unwrap().is_some(), "on the team at once");
+
+    nebo.wait_until(10, "side-b installs while side-a is still downloading", || {
+        nebo.state.plugin_store.resolve("side-b", "*").is_some()
+    })
+    .await;
+    assert!(nebo.state.plugin_store.resolve("side-a", "*").is_none(), "side-a is still downloading");
+    release();
+
+    let complete = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match events.recv().await {
+                Ok(e) if e.event_type == "dep_cascade_complete" && e.payload["agentId"] == "side-desk" => break e.payload,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(e) => panic!("the hub closed: {e}"),
+            }
+        }
+    })
+    .await
+    .expect("the cascade completes");
+    assert_eq!(complete["installed"], json!(2), "{complete}");
+    assert!(nebo.state.plugin_store.resolve("side-a", "*").is_some());
+    assert_eq!(nebo.state.skill_loader.scans() - scans, 1, "one reload for the whole cascade");
+
+    let _ = nebo.delete("/agents/side-desk").await;
+    for slug in ["side-a", "side-b"] {
+        let _ = nebo.state.plugin_store.remove(slug);
+        let _ = nebo.store().delete_installed_plugin(slug);
+    }
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
 /// An approval stays open past the turn that asked for it, for as long as
 /// it can still be answered, and a client that connects later is shown it.
 /// The employee suggests a goal through the real `suggest_goal` tool (its
@@ -628,8 +756,8 @@ async fn the_hubs_echo_of_a_card_install_installs_nothing_twice() {
 }
 
 /// Two taps on one install card, the second while the first is installing,
-/// are one install: the second is refused with 409 and the plain reason,
-/// and the `.napp` is downloaded once.
+/// are one install: the second joins the first, answers success once it has
+/// ended, and finds the plugin in place, so the `.napp` is downloaded once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_taps_on_one_install_card_start_one_install() {
     const CODE: &str = "PLUG-TW1C-0001";
@@ -655,16 +783,21 @@ async fn two_taps_on_one_install_card_start_one_install() {
         .await;
     assert!(!first.is_finished(), "the first tap ended before its install was seen in flight");
 
-    let second =
-        crate::codes::submit_code(axum::extract::State(nebo.state.clone()), axum::http::HeaderMap::new(), axum::response::Json(json!({ "code": CODE })))
-            .await;
-    let (status, body) = second.err().expect("the second tap is refused");
-    assert_eq!(status, axum::http::StatusCode::CONFLICT);
-    assert_eq!(body.error, format!("{CODE} is already being installed."));
+    let second = {
+        let state = nebo.state.clone();
+        tokio::spawn(async move {
+            crate::codes::submit_code(axum::extract::State(state), axum::http::HeaderMap::new(), axum::response::Json(json!({ "code": CODE })))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!second.is_finished(), "the second tap waits on the install in flight");
 
     release();
     let installed = first.await.unwrap().map_err(|(status, body)| format!("{status}: {}", body.error)).unwrap().0;
     assert_eq!(installed["success"], json!(true), "{installed}");
+    let joined = second.await.unwrap().map_err(|(status, body)| format!("{status}: {}", body.error)).unwrap().0;
+    assert_eq!(joined["success"], json!(true), "the second tap answers what the first installed: {joined}");
     assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the first tap installed the plugin");
     assert_eq!(napp_downloads_of(SLUG) - before, 1, "one download for two taps");
 
@@ -920,8 +1053,8 @@ async fn a_default_the_owner_removed_is_not_reinstalled_at_startup() {
 }
 
 /// Every trigger at once installs a default once: a second pass asked for
-/// while one runs starts nothing, a code door asked for it is refused while
-/// the pass holds the code, and a request that needs it waits for that
+/// while one runs starts nothing, a code door asked for it joins the pass's
+/// install and finds it in place, and a request that needs it waits for that
 /// install and then has it. Its `.napp` is fetched once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_triggers_install_a_default_once() {
@@ -938,8 +1071,10 @@ async fn concurrent_triggers_install_a_default_once() {
         "a second trigger while a pass runs starts nothing"
     );
     let door = Arc::new(crate::channel_dispatch::CodeInstallerImpl::new(nebo.state.clone()));
-    let refused = tools::CodeInstaller::install(door.as_ref(), office.code, tools::InstalledBy::Owner, None).await;
-    assert!(refused.contains(tools::bot_tool::ALREADY_INSTALLING), "{refused}");
+    let joined = {
+        let door = door.clone();
+        tokio::spawn(async move { tools::CodeInstaller::install(door.as_ref(), office.code, tools::InstalledBy::Owner, None).await })
+    };
     let needed = {
         let door = door.clone();
         let plugins = nebo.state.plugin_store.clone();
@@ -953,8 +1088,12 @@ async fn concurrent_triggers_install_a_default_once() {
     };
     tokio::time::sleep(Duration::from_millis(500)).await;
 
+    assert!(!joined.is_finished(), "the code door waits on the pass's install");
+
     release();
     pass.await.unwrap();
+    let line = joined.await.unwrap();
+    assert!(!line.starts_with(crate::codes::INSTALL_FAILED), "the code door answers the install: {line}");
     assert!(needed.await.unwrap(), "the request that needed it has it");
     assert_eq!(napp_downloads_of(office.slug) - before, 1, "one fetch for every trigger");
 

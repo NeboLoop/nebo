@@ -5,7 +5,9 @@
 
   An optional job description is worked out into what the employee will be
   able to do (the one needs step, `POST /agents/needs`), shown above Create
-  in plain words. Each item is removable; Create grants what is left.
+  in plain words. Each item is removable; Create grants what is left. Create
+  never waits on it: tapped before the line is back, the employee is created
+  at once and its page offers the job to add.
 
   Below the name, "Hire from another app" lists the apps on the owner's
   computers (GET /agents/linked), one row per app in one order: Claude Code,
@@ -148,15 +150,24 @@
       .finally(() => (listed = true));
   });
 
+  // Create never waits on the job being worked out. With its line shown,
+  // Create grants what the line says; tapped before it came back, the
+  // employee is created at once with its description, and the job it asks
+  // for is offered on the employee's page to add.
   async function create() {
-    if (!valid || busy || working) return;
+    if (!valid || busy) return;
     busy = true;
     errorMsg = '';
+    const drafted = !working && draftId;
+    // A work-out still running (or about to start) answers no one now.
+    clearTimeout(timer);
+    asked++;
+    working = false;
     try {
       const resp = await createAgent({
         blank: true,
         name: name.trim(),
-        ...(draftId ? { draftId, removed } : {}),
+        ...(drafted ? { draftId, removed } : job.trim() ? { description: job.trim() } : {}),
       });
       oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
@@ -392,7 +403,7 @@
         <button type="button" class="btn btn-ghost rounded-field flex-1" onclick={onclose} disabled={busy}>
           {$t('common.cancel')}
         </button>
-        <button type="button" class="btn btn-primary rounded-field flex-1" disabled={!valid || busy || working} onclick={create}>
+        <button type="button" class="btn btn-primary rounded-field flex-1" disabled={!valid || busy} onclick={create}>
           {#if busy}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}

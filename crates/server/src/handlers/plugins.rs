@@ -4,7 +4,7 @@
 //! auth requirements in their manifest. These handlers run the plugin's own
 //! auth CLI commands and report status via WebSocket events.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 

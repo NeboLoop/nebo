@@ -71,6 +71,9 @@ fixtures:
   - ../fixtures/staffed-company/connections/sc94-a-plugin-fetched-after-startup-runs-with-its-stored-settings.yaml
   - ../fixtures/staffed-company/connections/sc95-a-plugin-copied-in-after-startup-gets-its-stored-settings-sealed.yaml
   - ../fixtures/staffed-company/connections/sc117-the-owners-own-plugin-survives-a-marketplace-plugin-of-its-name.yaml
+  - ../fixtures/staffed-company/connections/sc130-hiring-an-employee-already-on-the-team-keeps-it.yaml
+  - ../fixtures/staffed-company/connections/sc131-a-plugin-already-in-place-is-not-downloaded-again.yaml
+  - ../fixtures/staffed-company/connections/sc132-a-hires-dependencies-install-side-by-side-and-reload-once.yaml
   - ../fixtures/staffed-company/company/sc55-the-point-person-sees-what-everyone-is-doing.yaml
   - ../fixtures/staffed-company/company/sc56-the-point-person-relays-into-a-linked-employees-conversation.yaml
   - ../fixtures/staffed-company/company/sc57-a-busy-linked-conversation-is-never-sent-a-second-prompt.yaml

@@ -177,21 +177,17 @@ async fn fetch_missing_packages(state: &AppState) -> Vec<String> {
             continue;
         }
         let code = default_artifact(&p.slug).filter(|d| d.is_plugin()).map(|d| d.code);
+        // Another door installing it now is joined: the install after it
+        // finds those bytes in place and fetches nothing.
         let claim = match code {
-            Some(code) => match state.codes_in_flight.begin(code) {
-                Some(claim) => Some(claim),
-                // Another door is installing it now.
-                None => {
-                    missing.push(p.slug);
-                    continue;
-                }
-            },
+            Some(code) => Some(state.codes_in_flight.claim(code).await),
             None => None,
         };
         let name = if p.display_name.is_empty() { p.slug.clone() } else { p.display_name.clone() };
         let fetched = match crate::codes::build_api_client(state) {
-            Ok(api) => crate::codes::fetch_and_install_plugin(state, &api, &p.slug, &name, None)
+            Ok(api) => crate::codes::fetch_and_install_plugin(state, &api, &p.slug, &name, None, crate::codes::Settle::Now)
                 .await
+                .map(|_| ())
                 .map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         };
