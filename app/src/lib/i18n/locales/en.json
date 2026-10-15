@@ -780,53 +780,9 @@
 			"description": "Your first AI employee. Let's get you set up in just a minute.",
 			"getStarted": "Get Started"
 		},
-		"terms": {
-			"title": "Privacy & Terms",
-			"description": "Important information about how Nebo handles your data",
-			"dataLocal": "Your Data Stays Local",
-			"dataLocalDesc": "All conversations, memories, and settings are stored locally on your device in a SQLite database. Nothing is sent to Nebo's servers.",
-			"aiProvider": "AI Provider Communication",
-			"aiProviderDesc": "When you chat, your messages are sent to your chosen AI provider (Anthropic, OpenAI, or Google) for processing. Their privacy policies apply to that data.",
-			"apiKeys": "API Keys",
-			"apiKeysDesc": "Your API keys are stored locally in your device's database. They are only used to authenticate with your AI provider.",
-			"systemAccess": "System Access",
-			"systemAccessDesc": "Nebo can access system features (files, shell, contacts, etc.) but only capabilities you explicitly enable. You control what the employee can do.",
-			"noAnalytics": "No Analytics or Telemetry",
-			"noAnalyticsDesc": "Nebo does not collect usage analytics, telemetry, or crash reports. Your usage is completely private.",
-			"consent": "I understand that my conversations are sent to my chosen AI provider for processing, and that I control which system capabilities the employee can access."
-		},
-		"provider": {
-			"title": "Connect Your AI",
-			"subtitle": "Choose how to power Nebo",
-			"janus": "Nebo AI",
-			"recommended": "Recommended",
-			"janusDesc": "AI powered by NeboAI — no API keys needed",
-			"useOwnKey": "Use your own API key or CLI instead",
-			"detectingCli": "Detecting CLI tools...",
-			"ready": "Ready",
-			"needsLogin": "Needs Login",
-			"needsLoginDesc": "Installed but not logged in. Run {cliKey} in terminal to authenticate.",
-			"addApiKey": "Add API Key",
-			"addApiKeyDesc": "Use an API key from Anthropic, OpenAI, or Google.",
-			"settingUp": "Setting up...",
-			"cliClaude": "Use your existing Claude subscription",
-			"cliCodex": "Use your ChatGPT/OpenAI subscription",
-			"cliGemini": "Use your Google AI subscription (FREE)"
-		},
 		"apiKey": {
-			"title": "Enter API Key",
-			"description": "Your key is stored securely and never leaves your device.",
-			"verified": "API key verified successfully!",
-			"providerLabel": "Provider",
-			"anthropic": "Anthropic (Claude) - Recommended",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "API Key",
-			"getKey": "Get an API key",
 			"verifying": "Verifying...",
-			"backToProvider": "← Back to provider selection",
-			"pleaseEnterKey": "Please enter an API key",
-			"validationFailed": "API key validation failed",
 			"saveFailed": "Failed to save API key"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "How memory works",
 		"howItWorksIntro": "This employee remembers across conversations in three layers — and only its own:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "This is where we talk",
-				"bodyPersonal": "Ask me anything, or just tell me what to do — I take it from there.",
-				"bodyBusiness": "Ask me anything, or just tell me what to do — I take it from there."
-			},
-			"agents": {
-				"title": "Your employees live here",
-				"bodyPersonal": "I'm Nebo. You can add specialists anytime — each is great at a different job.",
-				"bodyBusiness": "I'm Nebo. Add specialists anytime — an Executive Assistant, a researcher, and more."
-			},
-			"work": {
-				"title": "Your work shows up here",
-				"bodyPersonal": "Notes, lists, and documents I make for you open in this panel.",
-				"bodyBusiness": "Documents, spreadsheets, and decks I make for you open in this panel."
-			},
-			"schedule": {
-				"title": "Put things on autopilot",
-				"bodyPersonal": "Set reminders and routines — appointments, bills, a morning rundown.",
-				"bodyBusiness": "Automate the recurring work — morning briefings, follow-ups, reports."
-			},
-			"marketplace": {
-				"title": "Add new abilities",
-				"bodyPersonal": "Browse skills and tools — document editing, design, and more.",
-				"bodyBusiness": "Browse skills and tools — document editing, design, an Executive Assistant, and more."
-			},
-			"search": {
-				"title": "Jump anywhere fast",
-				"bodyPersonal": "Press ⌘K to search or run any command in a flash.",
-				"bodyBusiness": "Press ⌘K to search or run any command in a flash."
-			}
-		},
-		"hiTitle": "Hi, I'm Nebo Desktop.",
-		"accountQuestion": "First — who am I mostly here to help?",
-		"personal": "Personal",
-		"personalDesc": "Organize and automate your life.",
-		"business": "Business",
-		"businessDesc": "Organize and automate your work.",
-		"welcomeTitle": "Welcome aboard.",
-		"welcomeBody": "I'm here to help you organize and automate {noun}. Let me give you a quick tour so you know where everything is.",
-		"nounPersonal": "your life",
-		"nounBusiness": "your business",
-		"skipTour": "Skip tour",
-		"startTour": "Start the tour",
-		"skip": "Skip",
-		"finish": "Finish"
-	},
 	"installFlow": {
 		"installedTitle": "{name} Installed",
 		"installFailed": "Install Failed",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Back to Billing"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Your AI workforce, running locally on your machine. Let's get you set up in under a minute.",
+		"welcomeDescription": "Your AI employees, ready to take work off your plate. Let's get you set up in under a minute.",
 		"termsTitle": "Terms & Privacy",
 		"termsBody": "Nebo runs AI employees on your machine. Employees can read files, execute commands, and access the web based on the permissions you grant. By continuing, you agree to the",
 		"termsOfService": "Terms of Service",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo couldn't work out its tools",
 		"auditNotHere": "{tool} isn't connected",
 		"auditUsed": "{step} used {tool}, which it didn't list"
-	},
-	"christen": {
-		"title": "Name your first employee",
-		"lede": "Every hire starts with a name. This one remembers everything you teach it and works for you alone.",
-		"placeholder": "e.g. Jarvis, Piper, Ada…",
-		"create": "Hire them",
-		"creating": "Creating {name}…",
-		"failed": "Couldn't complete the hire. Check your connection and try again."
 	},
 	"newEmployee": {
 		"title": "Hire an employee",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "See what {name} did",
 		"didNothing": "{name} hasn't handled anything under this rule yet.",
 		"didMore": "And {n} more"
+	},
+	"firstRun": {
+		"getStarted": "Get started",
+		"meetTitle": "Meet your assistant",
+		"meetBody": "It learns how you work and takes things off your plate.",
+		"awayTitle": "Works on its own computer, even while you sleep",
+		"awayBody": "Long jobs keep going after you close the app. You wake up to finished work.",
+		"awayClock": "2:14 AM · you're asleep",
+		"teamTitle": "Hand off tasks, on demand or automated",
+		"teamBody": "Build a team of AI employees. Each one does a job, and you approve what matters.",
+		"assistantRole": "{name} · Assistant",
+		"storeManager": "Store Manager",
+		"content": "Content",
+		"invoices": "Invoices",
+		"standup": "Weekly standup",
+		"taskReorder": "Reordered 40 units from Lumen",
+		"taskVideo": "Posted Tuesday's video",
+		"taskInvoices": "Sent 3 invoice reminders"
 	}
 }

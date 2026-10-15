@@ -446,7 +446,7 @@ pub enum TurnInput {
         /// (`conversation::MESSAGE_ID`) and the step that hears it names it.
         message_id: Option<String>,
     },
-    /// A prompt the platform writes and the owner never sees (christening,
+    /// A prompt the platform writes and the owner never sees (a hire's intro,
     /// a phone caller's task).
     Platform { text: String },
     /// A task from the owner's own call: the voice model's restatement of

@@ -62,7 +62,6 @@
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
   import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
-  import OnboardingTour from '$lib/components/onboarding/OnboardingTour.svelte';
   import InstallFlowModal from '$lib/components/install/InstallFlowModal.svelte';
   import ApprovalGate from '$lib/components/ApprovalGate.svelte';
   let { children } = $props();
@@ -256,7 +255,6 @@
     <div class="flex-1 flex min-h-0">
       {@render children()}
     </div>
-    <OnboardingTour />
   </div>
 {/if}
 <!-- Mounted for the embed too: the chat an app frames is the same chat, so a

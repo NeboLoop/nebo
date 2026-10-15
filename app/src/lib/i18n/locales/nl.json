@@ -780,53 +780,9 @@
 			"description": "Je eerste AI-medewerker. Laten we je in een minuut instellen.",
 			"getStarted": "Aan de slag"
 		},
-		"terms": {
-			"title": "Privacy & Voorwaarden",
-			"description": "Belangrijke informatie over hoe Nebo met je gegevens omgaat",
-			"dataLocal": "Je gegevens blijven lokaal",
-			"dataLocalDesc": "Alle gesprekken, herinneringen en instellingen worden lokaal op je apparaat opgeslagen in een SQLite-database. Er wordt niets naar de servers van Nebo verzonden.",
-			"aiProvider": "Communicatie met AI-provider",
-			"aiProviderDesc": "Wanneer je chat, worden je berichten naar je gekozen AI-provider (Anthropic, OpenAI of Google) verzonden voor verwerking. Hun privacybeleid is van toepassing op die gegevens.",
-			"apiKeys": "API-sleutels",
-			"apiKeysDesc": "Je API-sleutels worden lokaal opgeslagen in de database van je apparaat. Ze worden alleen gebruikt om te authenticeren bij je AI-provider.",
-			"systemAccess": "Systeemtoegang",
-			"systemAccessDesc": "Nebo kan systeemfuncties gebruiken (bestanden, shell, contacten, enz.) maar alleen de mogelijkheden die je expliciet inschakelt. Jij bepaalt wat de medewerker kan doen.",
-			"noAnalytics": "Geen analyse of telemetrie",
-			"noAnalyticsDesc": "Nebo verzamelt geen gebruiksanalyses, telemetrie of crashrapporten. Je gebruik is volledig privé.",
-			"consent": "Ik begrijp dat mijn gesprekken naar mijn gekozen AI-provider worden verzonden voor verwerking, en dat ik bepaal welke systeemmogelijkheden de medewerker kan gebruiken."
-		},
-		"provider": {
-			"title": "Verbind je AI",
-			"subtitle": "Kies hoe je Nebo wilt aansturen",
-			"janus": "Nebo AI",
-			"recommended": "Aanbevolen",
-			"janusDesc": "AI aangedreven door NeboAI — geen API-sleutels nodig",
-			"useOwnKey": "Gebruik je eigen API-sleutel of CLI",
-			"detectingCli": "CLI-tools detecteren...",
-			"ready": "Gereed",
-			"needsLogin": "Inloggen vereist",
-			"needsLoginDesc": "Geïnstalleerd maar niet ingelogd. Voer {cliKey} uit in de terminal om te authenticeren.",
-			"addApiKey": "API-sleutel toevoegen",
-			"addApiKeyDesc": "Gebruik een API-sleutel van Anthropic, OpenAI of Google.",
-			"settingUp": "Instellen...",
-			"cliClaude": "Gebruik je bestaande Claude-abonnement",
-			"cliCodex": "Gebruik je ChatGPT/OpenAI-abonnement",
-			"cliGemini": "Gebruik je Google AI-abonnement (GRATIS)"
-		},
 		"apiKey": {
-			"title": "API-sleutel invoeren",
-			"description": "Je sleutel wordt veilig opgeslagen en verlaat nooit je apparaat.",
-			"verified": "API-sleutel succesvol geverifieerd!",
-			"providerLabel": "Provider",
-			"anthropic": "Anthropic (Claude) - Aanbevolen",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "API-sleutel",
-			"getKey": "Een API-sleutel ophalen",
 			"verifying": "Verifiëren...",
-			"backToProvider": "← Terug naar providerselectie",
-			"pleaseEnterKey": "Voer een API-sleutel in",
-			"validationFailed": "Validatie van API-sleutel mislukt",
 			"saveFailed": "Opslaan van API-sleutel mislukt"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Hoe geheugen werkt",
 		"howItWorksIntro": "Deze medewerker onthoudt over gesprekken heen in drie lagen — en alleen zijn eigen:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Hier praten we",
-				"bodyPersonal": "Vraag me van alles, of zeg gewoon wat ik moet doen — ik regel de rest.",
-				"bodyBusiness": "Vraag me van alles, of zeg gewoon wat ik moet doen — ik regel de rest."
-			},
-			"agents": {
-				"title": "Hier wonen je medewerkers",
-				"bodyPersonal": "Ik ben Nebo. Je kunt altijd specialisten toevoegen — elk goed in een andere taak.",
-				"bodyBusiness": "Ik ben Nebo. Voeg wanneer je wilt specialisten toe — een Executive Assistant, een onderzoeker en meer."
-			},
-			"work": {
-				"title": "Je werk verschijnt hier",
-				"bodyPersonal": "Notities, lijsten en documenten die ik voor je maak, openen in dit paneel.",
-				"bodyBusiness": "Documenten, spreadsheets en presentaties die ik voor je maak, openen in dit paneel."
-			},
-			"schedule": {
-				"title": "Zet dingen op de automatische piloot",
-				"bodyPersonal": "Stel herinneringen en routines in — afspraken, rekeningen, een ochtendoverzicht.",
-				"bodyBusiness": "Automatiseer het terugkerende werk — ochtendbriefings, follow-ups, rapporten."
-			},
-			"marketplace": {
-				"title": "Voeg nieuwe vaardigheden toe",
-				"bodyPersonal": "Blader door skills en tools — documentbewerking, design en meer.",
-				"bodyBusiness": "Blader door skills en tools — documentbewerking, design, een Executive Assistant en meer."
-			},
-			"search": {
-				"title": "Spring razendsnel overal heen",
-				"bodyPersonal": "Druk op ⌘K om te zoeken of elk commando in een flits uit te voeren.",
-				"bodyBusiness": "Druk op ⌘K om te zoeken of elk commando in een flits uit te voeren."
-			}
-		},
-		"hiTitle": "Hoi, ik ben Nebo Desktop.",
-		"accountQuestion": "Eerst — wie help ik hier vooral?",
-		"personal": "Persoonlijk",
-		"personalDesc": "Organiseer en automatiseer je leven.",
-		"business": "Zakelijk",
-		"businessDesc": "Organiseer en automatiseer je werk.",
-		"welcomeTitle": "Welkom aan boord.",
-		"welcomeBody": "Ik help je {noun} te organiseren en te automatiseren. Ik geef je een korte rondleiding zodat je weet waar alles is.",
-		"nounPersonal": "je leven",
-		"nounBusiness": "je bedrijf",
-		"skipTour": "Rondleiding overslaan",
-		"startTour": "Start de rondleiding",
-		"skip": "Overslaan",
-		"finish": "Voltooien"
-	},
 	"installFlow": {
 		"installedTitle": "{name} geïnstalleerd",
 		"installFailed": "Installatie mislukt",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Terug naar Facturering"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Je AI-personeel, lokaal op jouw computer. We stellen je in minder dan een minuut in.",
+		"welcomeDescription": "Je AI-medewerkers, klaar om werk van je over te nemen. Je bent binnen een minuut klaar.",
 		"termsTitle": "Voorwaarden & privacy",
 		"termsBody": "Nebo draait AI-medewerkers op jouw computer. Medewerkers kunnen bestanden lezen, commando's uitvoeren en internet gebruiken op basis van de rechten die je verleent. Door verder te gaan, ga je akkoord met de",
 		"termsOfService": "Servicevoorwaarden",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo kon de tools niet bepalen",
 		"auditNotHere": "{tool} is niet verbonden",
 		"auditUsed": "{step} gebruikte {tool}, dat niet in de lijst stond"
-	},
-	"christen": {
-		"title": "Geef je eerste medewerker een naam",
-		"lede": "Elke aanstelling begint met een naam. Deze onthoudt alles wat je hem leert en werkt alleen voor jou.",
-		"placeholder": "bijv. Jarvis, Piper, Ada…",
-		"create": "Neem ze aan",
-		"creating": "{name} wordt aangemaakt…",
-		"failed": "De aanstelling is niet gelukt. Controleer je verbinding en probeer het opnieuw."
 	},
 	"newEmployee": {
 		"title": "Een medewerker aannemen",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "Bekijk wat {name} deed",
 		"didNothing": "{name} heeft onder deze regel nog niets afgehandeld.",
 		"didMore": "En nog {n}"
+	},
+	"firstRun": {
+		"getStarted": "Aan de slag",
+		"meetTitle": "Maak kennis met je assistent",
+		"meetBody": "Hij leert hoe jij werkt en neemt taken van je over.",
+		"awayTitle": "Werkt op een eigen computer, zelfs terwijl jij slaapt",
+		"awayBody": "Lange klussen lopen door nadat je de app sluit. Je wordt wakker met af werk.",
+		"awayClock": "02:14 · je slaapt",
+		"teamTitle": "Geef taken uit handen, op verzoek of automatisch",
+		"teamBody": "Stel een team van AI-medewerkers samen. Ieder doet één taak, en jij keurt goed wat ertoe doet.",
+		"assistantRole": "{name} · Assistent",
+		"storeManager": "Winkelmanager",
+		"content": "Content",
+		"invoices": "Facturen",
+		"standup": "Wekelijkse stand-up",
+		"taskReorder": "40 stuks bijbesteld bij Lumen",
+		"taskVideo": "De video van dinsdag geplaatst",
+		"taskInvoices": "3 betalingsherinneringen verstuurd"
 	}
 }

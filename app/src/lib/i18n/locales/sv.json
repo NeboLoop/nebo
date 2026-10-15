@@ -780,53 +780,9 @@
 			"description": "Din första AI-medarbetare. Låt oss konfigurera dig på bara en minut.",
 			"getStarted": "Kom igång"
 		},
-		"terms": {
-			"title": "Integritet & villkor",
-			"description": "Viktig information om hur Nebo hanterar dina data",
-			"dataLocal": "Din data stannar lokalt",
-			"dataLocalDesc": "Alla konversationer, minnen och inställningar lagras lokalt på din enhet i en SQLite-databas. Inget skickas till Nebos servrar.",
-			"aiProvider": "AI-leverantörskommunikation",
-			"aiProviderDesc": "När du chattar skickas dina meddelanden till din valda AI-leverantör (Anthropic, OpenAI eller Google) för bearbetning. Deras integritetspolicyer gäller för dessa data.",
-			"apiKeys": "API-nycklar",
-			"apiKeysDesc": "Dina API-nycklar lagras lokalt i din enhets databas. De används bara för att autentisera med din AI-leverantör.",
-			"systemAccess": "Systemåtkomst",
-			"systemAccessDesc": "Nebo kan komma åt systemfunktioner (filer, skal, kontakter etc.) men bara funktioner du uttryckligen aktiverar. Du bestämmer vad medarbetaren kan göra.",
-			"noAnalytics": "Ingen analys eller telemetri",
-			"noAnalyticsDesc": "Nebo samlar inte in användningsanalys, telemetri eller kraschrapporter. Din användning är helt privat.",
-			"consent": "Jag förstår att mina konversationer skickas till min valda AI-leverantör för bearbetning, och att jag kontrollerar vilka systemfunktioner medarbetaren kan komma åt."
-		},
-		"provider": {
-			"title": "Anslut din AI",
-			"subtitle": "Välj hur Nebo ska drivas",
-			"janus": "Nebo AI",
-			"recommended": "Rekommenderad",
-			"janusDesc": "AI drivet av NeboAI — inga API-nycklar behövs",
-			"useOwnKey": "Använd din egen API-nyckel eller CLI istället",
-			"detectingCli": "Söker efter CLI-verktyg...",
-			"ready": "Redo",
-			"needsLogin": "Behöver inloggning",
-			"needsLoginDesc": "Installerad men inte inloggad. Kör {cliKey} i terminalen för att autentisera.",
-			"addApiKey": "Lägg till API-nyckel",
-			"addApiKeyDesc": "Använd en API-nyckel från Anthropic, OpenAI eller Google.",
-			"settingUp": "Konfigurerar...",
-			"cliClaude": "Använd din befintliga Claude-prenumeration",
-			"cliCodex": "Använd din ChatGPT/OpenAI-prenumeration",
-			"cliGemini": "Använd din Google AI-prenumeration (GRATIS)"
-		},
 		"apiKey": {
-			"title": "Ange API-nyckel",
-			"description": "Din nyckel lagras säkert och lämnar aldrig din enhet.",
-			"verified": "API-nyckeln har verifierats!",
-			"providerLabel": "Leverantör",
-			"anthropic": "Anthropic (Claude) - Rekommenderad",
-			"openai": "OpenAI (GPT)",
-			"google": "Google (Gemini)",
 			"apiKeyLabel": "API-nyckel",
-			"getKey": "Skaffa en API-nyckel",
 			"verifying": "Verifierar...",
-			"backToProvider": "← Tillbaka till leverantörsval",
-			"pleaseEnterKey": "Vänligen ange en API-nyckel",
-			"validationFailed": "Validering av API-nyckel misslyckades",
 			"saveFailed": "Kunde inte spara API-nyckel"
 		},
 		"capabilities": {
@@ -2825,54 +2781,6 @@
 		"howItWorks": "Så fungerar minnet",
 		"howItWorksIntro": "Denna medarbetare minns över konversationer i tre lager — och bara sina egna:"
 	},
-	"onboardingTour": {
-		"steps": {
-			"chat": {
-				"title": "Här pratar vi",
-				"bodyPersonal": "Fråga mig vad som helst, eller säg bara vad jag ska göra — jag tar det därifrån.",
-				"bodyBusiness": "Fråga mig vad som helst, eller säg bara vad jag ska göra — jag tar det därifrån."
-			},
-			"agents": {
-				"title": "Här bor dina medarbetare",
-				"bodyPersonal": "Jag är Nebo. Du kan lägga till specialister när som helst — var och en är bra på ett eget jobb.",
-				"bodyBusiness": "Jag är Nebo. Lägg till specialister när som helst — en Executive Assistant, en researcher och fler."
-			},
-			"work": {
-				"title": "Ditt arbete dyker upp här",
-				"bodyPersonal": "Anteckningar, listor och dokument jag skapar åt dig öppnas i den här panelen.",
-				"bodyBusiness": "Dokument, kalkylblad och presentationer jag skapar åt dig öppnas i den här panelen."
-			},
-			"schedule": {
-				"title": "Sätt saker på autopilot",
-				"bodyPersonal": "Ställ in påminnelser och rutiner — möten, räkningar, en morgongenomgång.",
-				"bodyBusiness": "Automatisera det återkommande arbetet — morgonbriefingar, uppföljningar, rapporter."
-			},
-			"marketplace": {
-				"title": "Lägg till nya förmågor",
-				"bodyPersonal": "Bläddra bland färdigheter och verktyg — dokumentredigering, design och mer.",
-				"bodyBusiness": "Bläddra bland färdigheter och verktyg — dokumentredigering, design, en Executive Assistant och mer."
-			},
-			"search": {
-				"title": "Hoppa vart som helst, snabbt",
-				"bodyPersonal": "Tryck ⌘K för att söka eller köra valfritt kommando på ett ögonblick.",
-				"bodyBusiness": "Tryck ⌘K för att söka eller köra valfritt kommando på ett ögonblick."
-			}
-		},
-		"hiTitle": "Hej, jag är Nebo Desktop.",
-		"accountQuestion": "Först — vem ska jag främst hjälpa?",
-		"personal": "Privat",
-		"personalDesc": "Organisera och automatisera ditt liv.",
-		"business": "Företag",
-		"businessDesc": "Organisera och automatisera ditt arbete.",
-		"welcomeTitle": "Välkommen ombord.",
-		"welcomeBody": "Jag hjälper dig att organisera och automatisera {noun}. Låt mig ge dig en snabb rundtur så att du vet var allt finns.",
-		"nounPersonal": "ditt liv",
-		"nounBusiness": "ditt företag",
-		"skipTour": "Hoppa över rundturen",
-		"startTour": "Starta rundturen",
-		"skip": "Hoppa över",
-		"finish": "Slutför"
-	},
 	"installFlow": {
 		"installedTitle": "{name} installerad",
 		"installFailed": "Installationen misslyckades",
@@ -2987,7 +2895,7 @@
 		"backToBilling": "Tillbaka till Fakturering"
 	},
 	"onboardingPage": {
-		"welcomeDescription": "Din AI-personalstyrka, som körs lokalt på din dator. Vi får igång dig på under en minut.",
+		"welcomeDescription": "Dina AI-medarbetare, redo att ta saker från ditt bord. Vi gör dig redo på under en minut.",
 		"termsTitle": "Villkor & integritet",
 		"termsBody": "Nebo kör AI-medarbetare på din dator. Medarbetare kan läsa filer, köra kommandon och använda webben utifrån de behörigheter du ger dem. Genom att fortsätta godkänner du",
 		"termsOfService": "Användarvillkoren",
@@ -3185,14 +3093,6 @@
 		"auditUnresolved": "{step}: Nebo kunde inte avgöra vilka verktyg som behövs",
 		"auditNotHere": "{tool} är inte anslutet",
 		"auditUsed": "{step} använde {tool}, som inte fanns i listan"
-	},
-	"christen": {
-		"title": "Ge din första medarbetare ett namn",
-		"lede": "Varje anställning börjar med ett namn. Den här minns allt du lär den och arbetar bara för dig.",
-		"placeholder": "t.ex. Jarvis, Piper, Ada…",
-		"create": "Anställ",
-		"creating": "Skapar {name}…",
-		"failed": "Anställningen kunde inte slutföras. Kontrollera din anslutning och försök igen."
 	},
 	"newEmployee": {
 		"title": "Anställ en medarbetare",
@@ -4368,5 +4268,23 @@
 		"seeWhatDid": "Se vad {name} gjorde",
 		"didNothing": "{name} har inte hanterat något enligt den här regeln än.",
 		"didMore": "Och {n} till"
+	},
+	"firstRun": {
+		"getStarted": "Kom igång",
+		"meetTitle": "Möt din assistent",
+		"meetBody": "Den lär sig hur du jobbar och tar saker från ditt bord.",
+		"awayTitle": "Jobbar på sin egen dator, även medan du sover",
+		"awayBody": "Långa jobb fortsätter efter att du stängt appen. Du vaknar till färdigt arbete.",
+		"awayClock": "02:14 · du sover",
+		"teamTitle": "Lämna över uppgifter, på begäran eller automatiskt",
+		"teamBody": "Bygg ett team av AI-medarbetare. Var och en gör ett jobb, och du godkänner det som spelar roll.",
+		"assistantRole": "{name} · Assistent",
+		"storeManager": "Butikschef",
+		"content": "Innehåll",
+		"invoices": "Fakturor",
+		"standup": "Veckomöte",
+		"taskReorder": "Beställde 40 enheter från Lumen",
+		"taskVideo": "Publicerade tisdagens video",
+		"taskInvoices": "Skickade 3 fakturapåminnelser"
 	}
 }

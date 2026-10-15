@@ -65,7 +65,6 @@ export async function checkOnboardingStatus(): Promise<boolean> {
       // Backend reports a fresh profile (data dir was wiped / first ever run), but
       // browser storage survives that wipe. Clear THIS install's stale UI prefs
       // (base-scoped — never another bot's) so "fresh" is truly fresh.
-      storage.remove('nebo:tour-pending');
       storage.remove('nebo:sidebar-collapsed');
     }
     onboardingComplete.set(complete);
@@ -98,5 +97,54 @@ export async function completeOnboarding(): Promise<void> {
     logger.error('Failed to save onboarding completion to backend', err);
     // Local state is already set — user can proceed.
     // Backend will re-check on next load.
+  }
+}
+
+/**
+ * The guided first-run chat, once setup is complete: what the shell shows
+ * for the server's step (`GET /onboarding`). `intro` is the three intro
+ * screens; every chat step (name … set) is the assistant's own chat, already
+ * under way; `done` (and an older bot without the endpoint) is nothing.
+ */
+export type FirstRunView = 'intro' | 'chat' | 'done';
+
+const CHAT_STEPS = new Set(['name', 'focus', 'connect', 'plate', 'day', 'daily', 'hire', 'set']);
+
+export function firstRunView(step: string | null | undefined): FirstRunView {
+  if (step === 'intro') return 'intro';
+  return step && CHAT_STEPS.has(step) ? 'chat' : 'done';
+}
+
+/**
+ * Read where the first-run chat is, once, when the shell mounts. A chat
+ * step that was cut short (an app closed mid-conversation) resumes:
+ * `POST /onboarding/start` is idempotent and never starts a second turn
+ * while one runs. A bot that cannot answer (an older server: a 404, or the
+ * app page in place of the endpoint) is done.
+ */
+export async function checkFirstRun(): Promise<FirstRunView> {
+  try {
+    const { getOnboarding, startOnboarding } = await import('$lib/api/nebo');
+    const view = firstRunView((await getOnboarding())?.step);
+    if (view === 'chat') await startOnboarding();
+    return view;
+  } catch (err) {
+    logger.warn('First-run status unavailable', { error: String(err) });
+    return 'done';
+  }
+}
+
+/**
+ * Leave the intro screens (Get started or Skip): the server moves to the
+ * first chat step and the assistant starts talking. Returns the assistant's
+ * thread to open, or null when there is none (finished, or an older bot).
+ */
+export async function startFirstRun(): Promise<string | null> {
+  try {
+    const { startOnboarding } = await import('$lib/api/nebo');
+    return (await startOnboarding())?.threadId ?? null;
+  } catch (err) {
+    logger.warn('First-run start unavailable', { error: String(err) });
+    return null;
   }
 }

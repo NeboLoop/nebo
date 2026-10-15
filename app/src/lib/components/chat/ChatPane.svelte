@@ -1570,7 +1570,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div data-tour="chat" class="flex-1 flex min-w-0 min-h-0 overflow-hidden {resizing ? 'select-none' : ''}" bind:this={containerEl}>
+<div class="flex-1 flex min-w-0 min-h-0 overflow-hidden {resizing ? 'select-none' : ''}" bind:this={containerEl}>
 <!-- Chat column -->
 <div
   class="flex-1 flex flex-col bg-base-100 min-w-0 min-h-0 relative"

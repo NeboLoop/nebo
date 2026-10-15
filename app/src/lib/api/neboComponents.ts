@@ -1957,11 +1957,6 @@ export interface CheckUpdatesResponse {
 	status: string
 }
 
-export interface ChristenPrimaryResponse {
-	name: string
-	threadId: string
-}
-
 export interface ClientEventResponse {
 	ok: boolean
 }
@@ -2427,7 +2422,6 @@ export interface ListAgentWorkflowsResponse {
 export interface ListAgentsResponse {
 	agents: AgentListEntry[]
 	total: number
-	primaryChristened: boolean
 	unreadSessions: string[]
 }
 

@@ -28,10 +28,6 @@ pub fn routes() -> Router<AppState> {
             axum::routing::put(handlers::agents::update_agent),
         )
         .route(
-            "/agents/assistant/christen",
-            axum::routing::post(handlers::agents::christen_primary),
-        )
-        .route(
             "/agents/{id}",
             axum::routing::delete(handlers::agents::delete_agent),
         )
