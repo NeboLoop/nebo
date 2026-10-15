@@ -105,8 +105,10 @@ pub async fn rename_employee(
     if let Some(active) = live.write().await.get_mut(id) {
         active.name = new_name.to_string();
     }
-    if moved.is_some() {
-        loader.load_all().await;
+    // The one employee's folder moved: the loader takes it in its new place,
+    // with no rescan of every agent.
+    if let (Some(_), Some(from), Some(to)) = (&moved, &from, &to) {
+        loader.refresh_one(std::slice::from_ref(from), Some(to)).await;
     }
     info!(agent = %id, from = %row.name, to = %new_name, "employee renamed");
     Ok(moved.map(|(_, to)| format!("its folder is now {to}")).unwrap_or_default())

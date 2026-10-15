@@ -2126,7 +2126,7 @@
 		"resuming": "Menyambung semula...",
 		"dangerZone": "Zon bahaya",
 		"dangerDesc": "Buang pekerja ini dan semua datanya secara kekal.",
-		"deleting": "Memadamkan...",
+		"removeFailed": "Tidak dapat mengalih keluar {name}. Cuba lagi.",
 		"deleteAgent": "Padam Pekerja",
 		"deleteConfirm": "Adakah anda pasti mahu memadamkan \"{name}\"? Ini akan membuang pekerja dan semua datanya secara kekal.",
 		"channels": "Saluran",

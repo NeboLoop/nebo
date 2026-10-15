@@ -180,6 +180,32 @@ impl AgentLoader {
         count
     }
 
+    /// Bring the cache up to date for ONE employee's folders instead of
+    /// rescanning every agent (`load_all` reads and parses every package,
+    /// decrypting the sealed ones: 0.2–0.6 s on the owner's desktop, which a
+    /// remove or a rename waited on). Every agent loaded from inside `gone`
+    /// leaves the cache; the user agent in `arrived`, when given, is read and
+    /// takes its place. What this cannot see (a package shadowed by the one
+    /// that left) the watcher's own rescan of the same change restores.
+    pub async fn refresh_one(&self, gone: &[PathBuf], arrived: Option<&Path>) {
+        let inside = |p: &Path| gone.iter().any(|g| p.starts_with(g));
+        let fresh = match arrived {
+            Some(dir) => match load_from_dir(dir, AgentSource::User) {
+                Ok(agent) => Some(agent),
+                Err(e) => {
+                    warn!(dir = %dir.display(), error = %e, "the moved employee could not be read; the watcher's rescan picks it up");
+                    None
+                }
+            },
+            None => None,
+        };
+        let mut agents = self.agents.write().await;
+        agents.retain(|_, a| !inside(&a.source_path) && !a.napp_path.as_deref().is_some_and(inside));
+        if let Some(agent) = fresh {
+            agents.insert(agent.agent_def.name.to_lowercase(), agent);
+        }
+    }
+
     /// Get an agent by name (case-insensitive).
     pub async fn get_by_name(&self, name: &str) -> Option<LoadedAgent> {
         self.agents.read().await.get(&name.to_lowercase()).cloned()
@@ -915,6 +941,34 @@ mod tests {
             matches!(removed.as_slice(), [AgentFsEvent::Removed { name_key, .. }] if *name_key == key),
             "missing key is Removed"
         );
+    }
+
+    // A remove or a rename updates the cache for the one employee it touched,
+    // with no rescan: the removed employee leaves, the others stay, and a
+    // moved folder is read in its new place under its own name. Mutation
+    // check: make `refresh_one` skip the `retain` and the first assertion
+    // fails; skip the insert and the last one does.
+    #[tokio::test]
+    async fn refresh_one_updates_only_the_employee_it_touched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("user");
+        let write = |dir: &Path, name: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), format!("---\nname: {name}\n---\n# {name}")).unwrap();
+        };
+        write(&user.join("Jim"), "Jim");
+        write(&user.join("Pam"), "Pam");
+        let loader = AgentLoader::new(tmp.path().join("installed"), user.clone());
+        loader.load_all().await;
+
+        loader.refresh_one(&[user.join("Jim")], None).await;
+        assert!(loader.get_by_name("Jim").await.is_none(), "the removed employee left the cache");
+        assert!(loader.get_by_name("Pam").await.is_some(), "the others stay");
+
+        std::fs::rename(user.join("Pam"), user.join("Pamela")).unwrap();
+        loader.refresh_one(&[user.join("Pam")], Some(&user.join("Pamela"))).await;
+        let pam = loader.get_by_name("Pam").await.expect("the moved employee is read in its new place");
+        assert_eq!(pam.source_path, user.join("Pamela"));
     }
 
     // An app is an agent with a UI and sidecar. The loader must recognize it

@@ -2126,7 +2126,7 @@
 		"resuming": "Återupptar...",
 		"dangerZone": "Riskzon",
 		"dangerDesc": "Ta bort denna medarbetare och all dess data permanent.",
-		"deleting": "Raderar...",
+		"removeFailed": "Det gick inte att ta bort {name}. Försök igen.",
 		"deleteAgent": "Radera medarbetare",
 		"deleteConfirm": "Är du säker på att du vill radera \"{name}\"? Detta tar bort medarbetaren och all dess data permanent.",
 		"channels": "Kanaler",

@@ -2126,7 +2126,7 @@
 		"resuming": "Wznawianie...",
 		"dangerZone": "Strefa zagrożenia",
 		"dangerDesc": "Trwale usuń tego pracownika i wszystkie jego dane.",
-		"deleting": "Usuwanie...",
+		"removeFailed": "Nie udało się usunąć {name}. Spróbuj ponownie.",
 		"deleteAgent": "Usuń pracownika",
 		"deleteConfirm": "Czy na pewno chcesz usunąć \"{name}\"? Spowoduje to trwałe usunięcie pracownika i wszystkich jego danych.",
 		"channels": "Kanały",

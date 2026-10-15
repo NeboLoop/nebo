@@ -2126,7 +2126,7 @@
 		"resuming": "Reanudando...",
 		"dangerZone": "Zona de peligro",
 		"dangerDesc": "Elimina permanentemente este empleado y todos sus datos.",
-		"deleting": "Eliminando...",
+		"removeFailed": "No se pudo quitar a {name}. Inténtalo de nuevo.",
 		"deleteAgent": "Eliminar empleado",
 		"deleteConfirm": "¿Estás seguro de que quieres eliminar \"{name}\"? Esto eliminará al empleado y todos sus datos permanentemente.",
 		"channels": "Canales",

@@ -31,6 +31,8 @@
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
   import { conversationTitle, teamKey, threadKey } from '$lib/chat/sessionKey';
   import { endsRun } from '$lib/chat/runEnd';
+  import { removeEmployee } from '$lib/chat/removeEmployee';
+  import { addToast } from '$lib/stores/toast';
   import {
     agentUnread, conversationRead, endWork, openNeedsRead, replyArrived, rowMark, seedAgentUnread,
     seedTeamUnread, snapshotWork, startWork, teamWorking, type Open, type Working,
@@ -697,7 +699,12 @@
     onWsEvent('nebo:agent_progress', (data) => {
       working = snapshotWork(working, data?.runs ?? [], wordCall);
     });
-    onWsEvent('nebo:agent_uninstalled', () => loadAgentRoster());
+    // Removed here or on another device: the row goes at once, then the
+    // roster is read again.
+    onWsEvent('nebo:agent_uninstalled', (data) => {
+      if (data?.agentId) allAgents = allAgents.filter((a) => a.id !== data.agentId);
+      loadAgentRoster();
+    });
     onWsEvent('nebo:agent_updated', (data) => {
       // Patch the roster in place from the broadcast payload so the sidebar row
       // and agent header reflect a rename immediately (name + avatar initial +
@@ -1100,27 +1107,24 @@
     } catch { /* clipboard blocked: the name is still visible to select */ }
   }
   const deleteArmed = $derived(!deleteTarget?.managed || deleteTyped.trim() === deleteTarget.name.trim());
-  let deleting = $state(false);
 
+  // The row goes the moment the owner confirms; the server is asked after,
+  // and its agent_uninstalled broadcast reloads the roster once. A refusal
+  // puts the row back and says so.
   async function confirmDeleteAgent() {
-    if (!deleteTarget || deleting || !deleteArmed) return;
-    const targetId = deleteTarget.id;
-    deleting = true;
+    if (!deleteTarget || !deleteArmed) return;
+    const { id: targetId, name: targetName } = deleteTarget;
+    deleteTarget = null;
+    // Viewing the deleted employee: move to the dashboard, which stays
+    // inside this shell. `/` is the startup redirector outside it — going
+    // there unmounted the whole workspace and remounted it, which read as
+    // a full page reload.
+    if (agentId === targetId) goto('/dashboard');
     try {
       const api = await import('$lib/api/nebo');
-      await api.deleteAgent(targetId);
-      deleteTarget = null;
-      deleting = false;
-      // The row goes now; the server's agent_uninstalled broadcast reloads the
-      // roster once. Reloading here as well made the list rebuild twice.
-      allAgents = allAgents.filter((a) => a.id !== targetId);
-      // Viewing the deleted employee: move to the dashboard, which stays
-      // inside this shell. `/` is the startup redirector outside it — going
-      // there unmounted the whole workspace and remounted it, which read as
-      // a full page reload.
-      if (agentId === targetId) goto('/dashboard');
+      await removeEmployee(allAgents, targetId, (rows) => (allAgents = rows), () => api.deleteAgent(targetId));
     } catch {
-      deleting = false;
+      addToast($t('agentSettings.removeFailed', { values: { name: targetName } }), 'error');
     }
   }
 
@@ -1470,7 +1474,7 @@
 <!-- Delete agent confirmation modal -->
 {#if deleteTarget}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={() => { if (!deleting) deleteTarget = null; }} onkeydown={(e) => { if (e.key === 'Escape' && !deleting) deleteTarget = null; }}></div>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="presentation" onclick={() => { deleteTarget = null; }} onkeydown={(e) => { if (e.key === 'Escape') deleteTarget = null; }}></div>
     <div class="relative w-full max-w-sm rounded-2xl bg-base-100 border border-error/30 shadow-2xl overflow-hidden">
       <div class="flex items-center gap-3 px-5 py-4 bg-error/5 border-b border-error/20">
         <div class="w-9 h-9 rounded-full bg-error/15 flex items-center justify-center">
@@ -1504,13 +1508,9 @@
         {/if}
       </div>
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
-        <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }} disabled={deleting}>{$t('common.cancel')}</button>
-        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100" onclick={confirmDeleteAgent} disabled={deleting || !deleteArmed}>
-          {#if deleting}
-            <span class="loading loading-spinner loading-xs"></span>
-          {:else}
-            {$t('agentSettings.deleteAgent')}
-          {/if}
+        <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }}>{$t('common.cancel')}</button>
+        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100" onclick={confirmDeleteAgent} disabled={!deleteArmed}>
+          {$t('agentSettings.deleteAgent')}
         </button>
       </div>
     </div>

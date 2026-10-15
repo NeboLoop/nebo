@@ -99,7 +99,6 @@
 
   // Delete confirmation triggered by ?delete=1 query param or button click
   let showDeleteConfirm = $state(false);
-  let deleting = $state(false);
 
   $effect(() => {
     if ($page.url.searchParams.get('delete') === '1') {
@@ -123,17 +122,21 @@
   let deleteTyped = $state('');
   const deleteArmed = $derived(!managed || deleteTyped.trim() === (agent?.name ?? '').trim());
 
+  // The owner is taken to the dashboard the moment they confirm, and the
+  // server is asked after: the roster drops the row on its
+  // agent_uninstalled answer. A refusal says so; the row was never removed.
   async function handleDeleteAgent() {
-    if (!agentId || deleting || !deleteArmed) return;
-    deleting = true;
+    if (!agentId || !deleteArmed) return;
+    const id = agentId;
+    const name = agent?.name ?? '';
+    // The dashboard stays inside the shell; `/` is the startup redirector
+    // outside it and remounted the whole workspace.
+    goto('/dashboard');
     try {
       const api = await import('$lib/api/nebo');
-      await api.deleteAgent(agentId);
-      // The dashboard stays inside the shell; `/` is the startup redirector
-      // outside it and remounted the whole workspace.
-      goto('/dashboard');
+      await api.deleteAgent(id);
     } catch {
-      deleting = false;
+      addToast($t('agentSettings.removeFailed', { values: { name } }), 'error');
     }
   }
 
@@ -1404,7 +1407,7 @@
             <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>
           {/if}
           <div class="flex items-center gap-2">
-            <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting || !deleteArmed}>{deleting ? $t('agentSettings.deleting') : $t('agentSettings.deleteAgent')}</button>
+            <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={!deleteArmed}>{$t('agentSettings.deleteAgent')}</button>
             <button class="btn btn-ghost btn-sm" onclick={() => { showDeleteConfirm = false; deleteTyped = ''; }}>{$t('common.cancel')}</button>
           </div>
         </div>

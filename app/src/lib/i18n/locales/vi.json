@@ -2126,7 +2126,7 @@
 		"resuming": "Đang tiếp tục...",
 		"dangerZone": "Vùng nguy hiểm",
 		"dangerDesc": "Xóa vĩnh viễn nhân viên này và toàn bộ dữ liệu.",
-		"deleting": "Đang xóa...",
+		"removeFailed": "Không thể xóa {name}. Hãy thử lại.",
 		"deleteAgent": "Xóa nhân viên",
 		"deleteConfirm": "Bạn có chắc chắn muốn xóa \"{name}\" không? Thao tác này sẽ xóa vĩnh viễn nhân viên và toàn bộ dữ liệu.",
 		"channels": "Kênh",
