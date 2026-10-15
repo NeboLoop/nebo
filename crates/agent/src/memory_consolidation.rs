@@ -390,7 +390,8 @@ async fn apply_consolidation_plan(
         // chunks and invalidates the index itself on success)…
         if let Some(ep) = embedding_provider {
             if !updated_keys.is_empty() {
-                crate::memory::embed_memories(store, ep, &updated_keys, user_id).await;
+                // A failure is logged inside; the embedding sweep retries it.
+                let _ = crate::memory::embed_memories(store, ep, &updated_keys, user_id).await;
             }
         }
         // …and deletions must drop the cached index too — their DB rows
@@ -779,7 +780,8 @@ async fn apply_micro_verdict(
                 debug!(id = dropped.id, error = %e, "micro-curation: merge delete failed");
             }
             if let Some(ep) = embedding_provider {
-                crate::memory::embed_memories(
+                // A failure is logged inside; the embedding sweep retries it.
+                let _ = crate::memory::embed_memories(
                     store,
                     ep,
                     &[(target.namespace.clone(), target.key.clone())],
@@ -1091,7 +1093,8 @@ mod tests {
             ],
             scope,
         )
-        .await;
+        .await
+        .unwrap();
 
         // Build + cache the scope's vector index.
         let adapter =

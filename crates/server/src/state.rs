@@ -85,10 +85,11 @@ pub enum CommApproval {
 pub struct AppState {
     pub config: Config,
     pub store: Arc<Store>,
-    /// Embedding provider for memory vectors, when one is configured. The
-    /// boot backfill and the migration importer share it so imported
-    /// memories are vectored through the same pathway as native ones.
+    /// Embedding provider for memory vectors, when one is configured.
     pub embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// Wakes the embedding sweep (the ONE owner of missing memory vectors)
+    /// ahead of its hourly look, e.g. after an import.
+    pub embedding_sweep: Arc<agent::memory::EmbeddingSweep>,
     pub auth: Arc<AuthService>,
     pub hub: Arc<ClientHub>,
     /// The one loop: every turn starts here.
