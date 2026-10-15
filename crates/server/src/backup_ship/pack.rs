@@ -750,14 +750,29 @@ impl<R: Read> Read for HashingReader<R> {
     }
 }
 
+/// A directory an unpack wrote, and the mtime its object recorded for it.
+/// A directory's mtime moves whenever an entry is created in it — by this
+/// object's files, and by another object unpacked inside it (a plugin
+/// version inside the `nebo` tree) — so it is set once everything that
+/// lands in it has landed: [`set_dir_mtimes`], after the last object.
+#[derive(Debug)]
+pub struct DirMtime {
+    path: PathBuf,
+    mtime: u64,
+}
+
 /// Unpack an object's gzip stream (its opened chunks, in order) into
 /// `into`, and prove the tar it held is the one the generation names.
+/// Files get their recorded mtimes as they land; the directories' are
+/// returned, for [`set_dir_mtimes`] once every object is unpacked. Packed
+/// again, the unpacked tree gives the same bytes: the same object, nothing
+/// to upload.
 pub fn unpack_object(
     gz: impl Read,
     into: &Path,
     expected_sha256: &str,
     expected_bytes: u64,
-) -> Result<(), String> {
+) -> Result<Vec<DirMtime>, String> {
     let reader = HashingReader {
         inner: GzDecoder::new(io::BufReader::new(gz)),
         sha: Sha256::new(),
@@ -767,8 +782,42 @@ pub fn unpack_object(
     ar.set_preserve_mtime(true);
     ar.set_preserve_permissions(true);
     ar.set_overwrite(true);
-    ar.unpack(into)
-        .map_err(|e| format!("unpack into {}: {e}", into.display()))?;
+    let unpack_err = |e: io::Error| format!("unpack into {}: {e}", into.display());
+    let mut dirs = Vec::new();
+    {
+        // As `tar::Archive::unpack` does: the directories after the files,
+        // deepest first, so a directory's permissions never stop its
+        // children from landing. The tar crate leaves a directory's mtime
+        // at the time of the unpack; its header holds the recorded one.
+        let mut deferred = Vec::new();
+        for entry in ar.entries().map_err(unpack_err)? {
+            let mut entry = entry.map_err(unpack_err)?;
+            if entry.header().entry_type() == tar::EntryType::Directory {
+                deferred.push(entry);
+            } else {
+                entry.unpack_in(into).map_err(unpack_err)?;
+            }
+        }
+        deferred.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
+        for mut entry in deferred {
+            // `unpack_in` refuses a path that leaves `into`; only one it
+            // unpacked is named here.
+            if !entry.unpack_in(into).map_err(unpack_err)? {
+                continue;
+            }
+            let rel: PathBuf = entry
+                .path()
+                .map_err(unpack_err)?
+                .components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .collect();
+            let mtime = entry.header().mtime().map_err(unpack_err)?;
+            dirs.push(DirMtime {
+                path: into.join(rel),
+                mtime,
+            });
+        }
+    }
     let mut reader = ar.into_inner();
     io::copy(&mut reader, &mut io::sink()).map_err(|e| format!("read object: {e}"))?;
     let got = hex::encode(reader.sha.finalize());
@@ -777,6 +826,18 @@ pub fn unpack_object(
             "object checksum mismatch: expected {expected_sha256} ({expected_bytes} bytes), got {got} ({} bytes)",
             reader.n
         ));
+    }
+    Ok(dirs)
+}
+
+/// Give each unpacked directory the mtime its object recorded. Called once
+/// the last object of a restore is unpacked: setting a directory's times
+/// does not move its parent's, so the order does not matter.
+pub fn set_dir_mtimes(dirs: &[DirMtime]) -> Result<(), String> {
+    for d in dirs {
+        let t = filetime::FileTime::from_unix_time(d.mtime as i64, 0);
+        filetime::set_file_mtime(&d.path, t)
+            .map_err(|e| format!("set the mtime of {}: {e}", d.path.display()))?;
     }
     Ok(())
 }
@@ -875,11 +936,18 @@ pub(super) mod tests {
     }
 
     /// pack → chunks → open → unpack gives back the same bytes, the same
-    /// tree, and the same mtimes.
+    /// tree, and the same mtimes, directories' too: packed again, it is the
+    /// same object.
     #[test]
     fn a_tree_round_trips_byte_for_byte() {
         let src = tempfile::tempdir().unwrap();
         fill(src.path());
+        // Written a while ago: an unpack that left a directory at the time
+        // it ran would show.
+        let then = filetime::FileTime::from_unix_time(1_780_000_000, 0);
+        for d in ["files", "files/deep", "files/deep/er", "files/empty"] {
+            filetime::set_file_mtime(src.path().join(d), then).unwrap();
+        }
         let out = tempfile::tempdir().unwrap();
         let packed = pack_object(
             src.path(),
@@ -896,17 +964,32 @@ pub(super) mod tests {
         let dst = tempfile::tempdir().unwrap();
         let gz = out.path().join("files.gz");
         reassemble(&packed.chunks, &KEY, &gz).unwrap();
-        unpack_object(File::open(&gz).unwrap(), dst.path(), &packed.sha256, packed.bytes).unwrap();
+        let dirs = unpack_object(File::open(&gz).unwrap(), dst.path(), &packed.sha256, packed.bytes).unwrap();
+        set_dir_mtimes(&dirs).unwrap();
         assert_eq!(snapshot(src.path()), snapshot(dst.path()));
-        let m = |d: &Path| {
-            fs::metadata(d.join("files/a.txt"))
+        let secs = |d: &Path, rel: &str| {
+            fs::symlink_metadata(d.join(rel))
                 .unwrap()
                 .modified()
                 .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
         };
-        let secs =
-            |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        assert_eq!(secs(m(src.path())), secs(m(dst.path())), "mtimes survive");
+        for rel in ["files/a.txt", "files", "files/deep", "files/deep/er", "files/empty"] {
+            assert_eq!(secs(src.path(), rel), secs(dst.path(), rel), "{rel}: mtimes survive");
+        }
+        let again = pack_object(
+            dst.path(),
+            &tree_source("files"),
+            None,
+            out.path(),
+            &KEY,
+            &meta(),
+            CHUNK_PLAIN_MAX,
+        )
+        .unwrap();
+        assert_eq!((again.sha256, again.bytes), (packed.sha256, packed.bytes), "the unpacked tree packs to the same object");
     }
 
     /// Unchanged files pack to the same chunks: the hub already has them.

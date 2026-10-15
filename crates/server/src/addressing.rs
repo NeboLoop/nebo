@@ -163,13 +163,41 @@ pub(crate) fn withdraw(state: &AppState, post_id: &str, agent_id: &str) {
 
 /// A turn in `seat_session` ended, saying `reply`. It is the seat's answer
 /// once nothing the seat started is still out — no hand-off unanswered, no
-/// helper running; until then it is progress and reaches no one. The answer
-/// is given once: a later turn (a helper's result, a notification) finds
-/// nothing left to answer.
-pub(crate) fn turn_ended(state: &AppState, seat_session: &str, reply: &str, provenance: &[ProvenanceClass], depth: u8) {
+/// helper running — and the turn heard everything that came back: until
+/// then it is progress and reaches no one. The answer is given once: a
+/// later turn (a helper's result, a notification) finds nothing left to
+/// answer.
+///
+/// An answer can land after the turn's last check for input and before it
+/// ends here: the turn never read it, and a turn after it does (the wake
+/// rail starts one). That turn's reply is the seat's answer, not this one's
+/// — answered with this one, the asker got "Asked the leaf." and the leaf's
+/// result, heard a moment later, reached no one. So the turn is progress
+/// while the seat holds an update not yet written into its thread, or input
+/// stored after `heard_through`, the last row the run heard.
+pub(crate) fn turn_ended(
+    state: &AppState,
+    seat_session: &str,
+    reply: &str,
+    provenance: &[ProvenanceClass],
+    depth: u8,
+    heard_through: Option<&str>,
+) {
     let out = state.store.open_asks(seat_session).unwrap_or(0);
     let helping = state.helpers.list(Some(seat_session)).iter().any(|h| h.running);
     if out > 0 || helping {
+        return;
+    }
+    let pending = state
+        .store
+        .engine_sessions_with_pending()
+        .map(|keys| keys.iter().any(|k| k == seat_session))
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, seat = %seat_session, "addressing: could not read the seat's pending updates");
+            false
+        });
+    let unheard = heard_through.is_some_and(|row| state.harness.input_after(seat_session, row));
+    if pending || unheard {
         return;
     }
     let prov = serde_json::to_string(provenance).unwrap_or_else(|_| "[]".to_string());
@@ -271,8 +299,49 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{NoLead, Post, Room, Said, answer_text, who_is_addressed};
+    use super::{NoLead, Post, Room, Said, answer_text, turn_ended, who_is_addressed};
     use types::provenance::ProvenanceClass;
+
+    /// The leaf's answer lands after Mid's turn made its last check for
+    /// input ("Asked the leaf."): that turn never heard it, so its reply is
+    /// progress, and the turn that hears the answer gives Mid's. While the
+    /// answer is still on its way into the thread (a pending update), no
+    /// turn has heard it either. (CI 2026-10-14: the chain's top hand-off
+    /// ended "done" with "Asked the leaf.", and the leaf's count reached
+    /// no one.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_answer_the_turn_never_heard_is_the_next_turns() {
+        let nebo = crate::staffed_proof::session().await;
+        let (state, store) = (&nebo.state, nebo.store());
+        let run = uuid::Uuid::new_v4().simple().to_string();
+        let (mid, leaf) = (format!("proof:dm:mid-{run}"), format!("proof:dm:leaf-{run}"));
+        let now = chrono::Utc::now().timestamp();
+        // The owner's message addresses Mid ("" asks: he reads the thread);
+        // Mid asked the leaf, and the leaf has answered.
+        store.open_addressing(&format!("top-{run}"), "mid", "", &mid, "", "", now).unwrap();
+        store.open_addressing(&format!("ask-{run}"), "leaf", "", &leaf, &mid, "mid", now).unwrap();
+        store.answer_seat(&leaf, "LEAF-RESULT", "[]", 2, now).unwrap();
+        assert_eq!(store.open_asks(&mid).unwrap(), 0);
+
+        let sessions = state.harness.sessions();
+        let id = sessions.get_or_create(&mid, "").unwrap().id;
+        let asked = sessions.append_message(&id, "user", "MARK-CH1 how many boxes?", None, None, None).unwrap();
+        sessions.append_message(&id, "assistant", "Asked the leaf.", None, None, None).unwrap();
+        let answer = sessions
+            .append_message(&id, "user", "Leaf:\nLEAF-RESULT", None, None, Some(&agent::harness::delegation::notify::row_metadata(&[])))
+            .unwrap();
+
+        turn_ended(state, &mid, "Asked the leaf.", &[], 1, Some(&asked.id));
+        assert_eq!(store.unanswered_in_seat(&mid).unwrap().len(), 1, "a reply that never heard the answer is progress");
+
+        let pending = store.engine_enqueue_wake(&mid, "status", "a later update", "[]", 1).unwrap();
+        turn_ended(state, &mid, "MID-RESULT: the leaf counted 7.", &[], 1, Some(&answer.id));
+        assert_eq!(store.unanswered_in_seat(&mid).unwrap().len(), 1, "an update on its way is not heard yet");
+
+        store.engine_complete_events(&[pending], now).unwrap();
+        turn_ended(state, &mid, "MID-RESULT: the leaf counted 7.", &[], 1, Some(&answer.id));
+        assert!(store.unanswered_in_seat(&mid).unwrap().is_empty(), "the turn that heard everything answers");
+    }
 
     /// A teammate's 5,000-character answer reaches whoever asked intact; one
     /// past the helper-result cap is saved, and the asker reads its start

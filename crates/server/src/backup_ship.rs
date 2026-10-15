@@ -621,9 +621,14 @@ async fn restore(api: &NeboAIApi, generation: Option<i64>, into: &Path, key: Opt
 }
 
 async fn restore_staged(api: &NeboAIApi, manifest: &Manifest, key: &[u8; 32], tree: &Path, into: &Path) -> Result<(), String> {
+    let mut dirs = Vec::new();
     for obj in &manifest.objects {
-        restore_object(api, obj, key, tree).await.map_err(|e| format!("{} {}: {e}", obj.role, obj.root))?;
+        dirs.extend(restore_object(api, obj, key, tree).await.map_err(|e| format!("{} {}: {e}", obj.role, obj.root))?);
     }
+    // Every object is down: no entry lands in a directory any more, so
+    // each takes its recorded mtime now, and the restored bot's next commit
+    // packs an unchanged object to the chunks the hub already has.
+    pack::set_dir_mtimes(&dirs)?;
     let db = tree.join(pack::DATABASE_PATH);
     if db.exists() {
         match db::backup::integrity_of(&db) {
@@ -668,8 +673,8 @@ fn release_restored(restored: Vec<PathBuf>, database: PathBuf) {
 /// is opened in its own buffer and streamed into the unpack, which runs on
 /// a blocking thread. At most two chunks are in memory (the one unpacking,
 /// the next arriving), and the object is written once — never staged whole
-/// as a `.gz` first.
-async fn restore_object(api: &NeboAIApi, obj: &ObjectEntry, key: &[u8; 32], tree: &Path) -> Result<(), String> {
+/// as a `.gz` first. Returns the directories it wrote, for their mtimes.
+async fn restore_object(api: &NeboAIApi, obj: &ObjectEntry, key: &[u8; 32], tree: &Path) -> Result<Vec<pack::DirMtime>, String> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let unpack = {
         let (tree, sha, bytes) = (tree.to_path_buf(), obj.sha256.clone(), obj.bytes);
@@ -1051,6 +1056,12 @@ mod tests {
         std::fs::write(dir.join("nebo/plugins/ballast/0.2.0.napp"), vec![8u8; 256 << 10]).unwrap();
         std::fs::write(dir.join("nebo/plugins/ballast/ballast.db"), b"the customer's whole index").unwrap();
         std::fs::write(dir.join("appdata/plugins/ballast/ballast.db"), b"the index NEBO_DATA_DIR holds").unwrap();
+        // Installed a while ago: a restore that left a directory at the
+        // time it ran would show.
+        let then = filetime::FileTime::from_unix_time(1_780_000_000, 0);
+        for d in ["nebo", "nebo/plugins", "nebo/plugins/ballast", "nebo/plugins/ballast/0.2.0", "appdata", "appdata/plugins", "appdata/plugins/ballast"] {
+            filetime::set_file_mtime(dir.join(d), then).unwrap();
+        }
     }
 
     /// The state a bot commits holds each installed plugin version as an
@@ -1091,14 +1102,20 @@ mod tests {
         }
         assert!(!dst.path().join("nebo/plugins/ballast/0.2.0.napp").exists(), "a .napp is never state");
 
-        // The restored bot's next commit names the same version chunks: a
-        // restore keeps mtimes to the second, so the version is packed
-        // again, but it is the same bytes and nothing is uploaded for it.
+        // The restored bot's next commit names the same chunks for every
+        // object it did not change: a restore keeps mtimes to the second,
+        // directories' too, so an object is packed again, but it is the same
+        // bytes and nothing is uploaded for it. (The database is packed from
+        // a fresh verified copy.)
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dst.path().join("files/docs/a.txt"), b"changed after the restore").unwrap();
         let m3 = commit_as(&api, dst.path(), Role::State).await.unwrap();
         let again = m3.objects.iter().find(|o| o.root == version.root).unwrap();
         assert_eq!((&again.sha256, &again.chunks), (&version.sha256, &version.chunks));
+        let kept = |m: &Manifest| -> Vec<(String, String)> {
+            m.objects.iter().filter(|o| o.root != pack::DATABASE_PATH && o.root != "files").map(|o| (o.root.clone(), o.sha256.clone())).collect()
+        };
+        assert_eq!(kept(&m3), kept(&m2), "the restored tree packs to the objects it came from");
     }
 
     /// A generation committed before packages were left out still restores,

@@ -253,6 +253,22 @@ impl StreamEvent {
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
     }
 
+    /// Attach the last conversation row the run heard (Done events): the
+    /// row its last call was built from. A row stored after it, the run
+    /// never read (`payload`: `{"heardThrough": "<row id>"}`).
+    pub fn with_heard_through(mut self, row_id: Option<String>) -> Self {
+        self.payload = row_id.map(|id| serde_json::json!({ "heardThrough": id }));
+        self
+    }
+
+    /// The last conversation row a run heard, on its Done event.
+    pub fn heard_through(&self) -> Option<&str> {
+        if self.event_type != StreamEventType::Done {
+            return None;
+        }
+        self.payload.as_ref()?.get("heardThrough")?.as_str()
+    }
+
     /// Attach the run's final provenance classes (Done events).
     pub fn with_provenance(mut self, classes: Vec<types::provenance::ProvenanceClass>) -> Self {
         self.provenance = Some(classes);
