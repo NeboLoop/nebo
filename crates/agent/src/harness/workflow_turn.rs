@@ -38,6 +38,10 @@ pub struct WorkflowMode {
     pub objective: String,
     /// The work order this turn was given (the seed's final user message).
     pub instruction: String,
+    /// What the step is doing, in the owner's words, for the card of a call
+    /// that asks him (`ToolContext::purpose`): "Daily books sweep, Queue
+    /// review, step 3 of 3: List unanswered review items…".
+    pub purpose: String,
     /// The activity's tools: the deferred ones among them, `exit` included,
     /// are its deferred listing (context scoping, not security). The tools
     /// it declares are every run's; dispatch resolves through the full
@@ -79,6 +83,7 @@ impl Default for WorkflowMode {
             instructions: String::new(),
             objective: String::new(),
             instruction: String::new(),
+            purpose: String::new(),
             advertised_tools: HashSet::new(),
             tainted: false,
             spend_cap_microcents: 0,
@@ -101,16 +106,19 @@ pub struct WorkflowPark<'a> {
     pub display: String,
 }
 
-/// The step's task in words: `(objective, instruction)`. The objective names
-/// the workflow, the activity (its label, else its id) with its intent, and
-/// the current step's instruction; the instruction is the work order the
-/// model was handed this turn, the seed's final user message.
+/// The step's task in words: `(objective, instruction, purpose)`. The
+/// objective names the workflow, the activity (its label, else its id) with
+/// its intent, and the current step's instruction; the instruction is the
+/// work order the model was handed this turn, the seed's final user
+/// message; the purpose is the same step in the owner's words: the
+/// workflow and activity named as words, which step of how many, and what
+/// it does (the step's instruction, else the activity's intent).
 fn step_task(
     workflow_name: &str,
     activity: &workflow::parser::Activity,
     step_index: Option<i64>,
     seed: &[ai::Message],
-) -> (String, String) {
+) -> (String, String, String) {
     let activity_name = activity
         .label
         .as_deref()
@@ -141,7 +149,18 @@ fn step_task(
         .find(|m| m.role == "user" && !m.content.trim().is_empty())
         .map(|m| m.content.trim().to_string())
         .unwrap_or_default();
-    (objective, instruction)
+    let named = |slug: &str| {
+        let words = slug.trim().replace(['-', '_'], " ");
+        let mut c = words.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+    };
+    let mut purpose = format!("{}, {}", named(workflow_name), named(activity_name));
+    match step {
+        Some((i, step)) => purpose.push_str(&format!(", step {} of {}: {step}", i + 1, activity.steps.len())),
+        None if !intent.is_empty() => purpose.push_str(&format!(": {intent}")),
+        None => {}
+    }
+    (objective, instruction, purpose)
 }
 
 /// `text` with one "Not sent: …" line per delivery in `messages` (the
@@ -372,7 +391,7 @@ impl ActivityLoop for WorkflowTurns {
             warn!(run_id = %turn.trace.run_id, error = %e, "workflow: the mode the run carries is unreadable");
             None
         });
-        let (objective, instruction) = step_task(turn.workflow_name, turn.activity, turn.step_index, &turn.seed_messages);
+        let (objective, instruction, purpose) = step_task(turn.workflow_name, turn.activity, turn.step_index, &turn.seed_messages);
         let req = TurnRequest {
             session_key: key,
             // The seed carries the work order.
@@ -406,6 +425,7 @@ impl ActivityLoop for WorkflowTurns {
                 instructions: turn.instructions.clone(),
                 objective,
                 instruction,
+                purpose,
                 advertised_tools: turn.advertised_tools.iter().cloned().collect(),
                 tainted: turn.checkpoint.map(|c| c.tainted).unwrap_or(false),
                 spend_cap_microcents: turn.spend_cap_microcents,
@@ -646,26 +666,36 @@ mod tests {
             assistant("12 orders."),
             user("Step 2/2: List the products."),
         ];
-        let (objective, instruction) = step_task("Weekly report", &a, Some(1), &seed);
+        let (objective, instruction, purpose) = step_task("Weekly report", &a, Some(1), &seed);
         assert_eq!(
             objective,
             "Workflow \"Weekly report\", activity \"Pull orders\": Collect last week's orders \
              and the products they name. Step 2/2: List the products."
         );
         assert_eq!(instruction, "Step 2/2: List the products.");
+        assert_eq!(purpose, "Weekly report, Pull orders, step 2 of 2: List the products.");
     }
 
     #[test]
     fn a_single_turn_activity_is_its_intent_and_an_unlabelled_one_its_id() {
         let a = activity(serde_json::json!({"id": "send-summary", "intent": "Mail the summary."}));
-        let (objective, instruction) = step_task("Weekly report", &a, None, &[user("Mail the summary.")]);
+        let (objective, instruction, purpose) = step_task("Weekly report", &a, None, &[user("Mail the summary.")]);
         assert_eq!(objective, "Workflow \"Weekly report\", activity \"send-summary\": Mail the summary.");
         assert_eq!(instruction, "Mail the summary.");
+        assert_eq!(purpose, "Weekly report, Send summary: Mail the summary.");
 
         // A typed node with no intent and no seed: the names alone, no instruction.
         let a = activity(serde_json::json!({"id": "fetch", "type": "http", "steps": ["GET the feed."]}));
-        let (objective, instruction) = step_task("Feeds", &a, Some(0), &[]);
+        let (objective, instruction, purpose) = step_task("Feeds", &a, Some(0), &[]);
         assert_eq!(objective, "Workflow \"Feeds\", activity \"fetch\". Step 1/1: GET the feed.");
         assert_eq!(instruction, "");
+        // Live 2026-10-15: Bookkeeper's daily sweep, as its card says why.
+        let sweep = activity(serde_json::json!({
+            "id": "queue-review",
+            "intent": "Look at what is still open.",
+            "steps": ["Count uncategorized transactions", "Pull undeposited funds", "List unanswered review items oldest first; name anything over a week old"],
+        }));
+        let (_, _, why) = step_task("daily-books-sweep", &sweep, Some(2), &[]);
+        assert_eq!(why, "Daily books sweep, Queue review, step 3 of 3: List unanswered review items oldest first; name anything over a week old");
     }
 }

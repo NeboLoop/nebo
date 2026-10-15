@@ -3273,7 +3273,22 @@
 		"failed": "تعذّر إرسال إجابتك. حاول مرة أخرى.",
 		"sendCheckTitle": "هل أُرسلت رسالة {name}؟",
 		"sent": "تم إرسالها",
-		"notSent": "لم تُرسل"
+		"notSent": "لم تُرسل",
+		"why": "السبب:",
+		"saidBy": "{name} يقول:",
+		"showDetails": "عرض التفاصيل",
+		"detail": {
+			"to": "إلى",
+			"from": "من",
+			"subject": "الموضوع",
+			"body": "الرسالة",
+			"amount": "المبلغ",
+			"when": "الموعد",
+			"link": "الرابط",
+			"file": "الملف",
+			"search": "يبحث عن",
+			"command": "الأمر"
+		}
 	},
 	"permissions": {
 		"title": "الصلاحيات",

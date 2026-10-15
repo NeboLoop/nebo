@@ -289,6 +289,11 @@ pub struct ToolContext {
     /// about it (a call whose outward effects the code could not decide).
     /// `None`: no judge was asked; the code's answer stands.
     pub judgement: Option<Judgement>,
+    /// What the run is doing for the owner, in his words, for the card of a
+    /// call that asks him: the workflow step it works on, the goal it works
+    /// toward, or what he asked for. Set by the tool round with the
+    /// judgement; empty when the run has none to say.
+    pub purpose: String,
     /// Dispatch-time tool whitelist for restricted internal runs (the
     /// self-improvement review fork). `Some` = only these tool names may
     /// execute; everything else is denied with a corrective error at the ONE

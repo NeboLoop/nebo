@@ -3273,7 +3273,22 @@
 		"failed": "Nie udało się wysłać odpowiedzi. Spróbuj ponownie.",
 		"sendCheckTitle": "Czy wiadomość od {name} została wysłana?",
 		"sent": "Została wysłana",
-		"notSent": "Nie została wysłana"
+		"notSent": "Nie została wysłana",
+		"why": "Dlaczego:",
+		"saidBy": "{name} pisze:",
+		"showDetails": "Pokaż szczegóły",
+		"detail": {
+			"to": "Do",
+			"from": "Od",
+			"subject": "Temat",
+			"body": "Wiadomość",
+			"amount": "Kwota",
+			"when": "Kiedy",
+			"link": "Link",
+			"file": "Plik",
+			"search": "Szuka",
+			"command": "Polecenie"
+		}
 	},
 	"permissions": {
 		"title": "Uprawnienia",

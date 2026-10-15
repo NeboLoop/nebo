@@ -3273,7 +3273,22 @@
 		"failed": "Ditt svar kunde inte skickas. Försök igen.",
 		"sendCheckTitle": "Gick meddelandet från {name} iväg?",
 		"sent": "Det gick iväg",
-		"notSent": "Det gick inte iväg"
+		"notSent": "Det gick inte iväg",
+		"why": "Varför:",
+		"saidBy": "{name} säger:",
+		"showDetails": "Visa detaljer",
+		"detail": {
+			"to": "Till",
+			"from": "Från",
+			"subject": "Ämne",
+			"body": "Meddelande",
+			"amount": "Belopp",
+			"when": "När",
+			"link": "Länk",
+			"file": "Fil",
+			"search": "Söker efter",
+			"command": "Kommando"
+		}
 	},
 	"permissions": {
 		"title": "Behörigheter",

@@ -211,6 +211,11 @@ export interface ArtifactUpdateSettings {
 	checkIntervalHours: number
 }
 
+export interface AskDetail {
+	kind: string
+	value: string
+}
+
 export interface Assignment {
 	id: string
 	assignerAgentId: string
@@ -1295,9 +1300,14 @@ export interface PermissionAskCard {
 	employee: string
 	sessionKey: string
 	sentence: string
+	what: string
+	why: string
+	statedReason?: string
+	details: AskDetail[]
 	reason: string
 	command?: string
 	allowAlways: boolean
+	allowAlwaysCovers?: string
 	thisOnce: boolean
 	status: string
 	answer?: string

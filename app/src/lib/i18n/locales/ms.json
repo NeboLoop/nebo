@@ -3273,7 +3273,22 @@
 		"failed": "Jawapan anda tidak dapat dihantar. Cuba lagi.",
 		"sendCheckTitle": "Adakah mesej {name} telah dihantar?",
 		"sent": "Telah dihantar",
-		"notSent": "Tidak dihantar"
+		"notSent": "Tidak dihantar",
+		"why": "Sebab:",
+		"saidBy": "{name} berkata:",
+		"showDetails": "Tunjukkan butiran",
+		"detail": {
+			"to": "Kepada",
+			"from": "Daripada",
+			"subject": "Subjek",
+			"body": "Mesej",
+			"amount": "Jumlah",
+			"when": "Bila",
+			"link": "Pautan",
+			"file": "Fail",
+			"search": "Mencari",
+			"command": "Arahan"
+		}
 	},
 	"permissions": {
 		"title": "Kebenaran",

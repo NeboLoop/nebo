@@ -3273,7 +3273,22 @@
 		"failed": "無法送出你的回答。請再試一次。",
 		"sendCheckTitle": "{name} 的訊息送出了嗎？",
 		"sent": "已送出",
-		"notSent": "沒有送出"
+		"notSent": "沒有送出",
+		"why": "原因：",
+		"saidBy": "{name} 說：",
+		"showDetails": "顯示詳細資訊",
+		"detail": {
+			"to": "收件人",
+			"from": "寄件人",
+			"subject": "主旨",
+			"body": "內容",
+			"amount": "金額",
+			"when": "時間",
+			"link": "連結",
+			"file": "檔案",
+			"search": "尋找",
+			"command": "指令"
+		}
 	},
 	"permissions": {
 		"title": "權限",

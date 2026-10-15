@@ -3273,7 +3273,22 @@
 		"failed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
 		"sendCheckTitle": "¿Se envió el mensaje de {name}?",
 		"sent": "Se envió",
-		"notSent": "No se envió"
+		"notSent": "No se envió",
+		"why": "Por qué:",
+		"saidBy": "{name} dice:",
+		"showDetails": "Ver detalles",
+		"detail": {
+			"to": "Para",
+			"from": "De",
+			"subject": "Asunto",
+			"body": "Mensaje",
+			"amount": "Importe",
+			"when": "Cuándo",
+			"link": "Enlace",
+			"file": "Archivo",
+			"search": "Busca",
+			"command": "Comando"
+		}
 	},
 	"permissions": {
 		"title": "Permisos",

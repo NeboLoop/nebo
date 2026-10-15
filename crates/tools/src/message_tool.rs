@@ -122,6 +122,27 @@ impl DynTool for MessageTool {
         effects
     }
 
+    /// What the text does, in the owner's words: who it goes to (and from
+    /// which line, when it names one), or what it reads or looks for in his
+    /// texts.
+    fn describe(&self, input: &serde_json::Value) -> String {
+        let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+        let from = match s("from") {
+            "" => String::new(),
+            line => format!(" from {line}"),
+        };
+        match self.rule_key(input).as_str() {
+            "sms_message_send" if s("phone").is_empty() => format!("sending a text{from}"),
+            "sms_message_send" => format!("texting {}{from}", s("phone")),
+            "sms_search" if s("query").is_empty() => "searching your texts".to_string(),
+            "sms_search" => format!("searching your texts for \u{201c}{}\u{201d}", crate::humanize::cap(s("query"), crate::humanize::DESCRIPTION_CAP)),
+            "sms_conversations" => "listing your text conversations".to_string(),
+            "sms_read" if s("phone").is_empty() => "reading your texts".to_string(),
+            "sms_read" => format!("reading your texts with {}", s("phone")),
+            _ => "using your texts".to_string(),
+        }
+    }
+
     /// SMS reads bring outside people's words into the run.
     fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
         matches!(self.rule_key(input).as_str(), "sms_conversations" | "sms_search" | "sms_read")

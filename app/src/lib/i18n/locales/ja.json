@@ -3273,7 +3273,22 @@
 		"failed": "回答を送信できませんでした。もう一度お試しください。",
 		"sendCheckTitle": "{name}のメッセージは送信されましたか？",
 		"sent": "送信された",
-		"notSent": "送信されていない"
+		"notSent": "送信されていない",
+		"why": "理由：",
+		"saidBy": "{name}より：",
+		"showDetails": "詳細を表示",
+		"detail": {
+			"to": "宛先",
+			"from": "差出人",
+			"subject": "件名",
+			"body": "本文",
+			"amount": "金額",
+			"when": "日時",
+			"link": "リンク",
+			"file": "ファイル",
+			"search": "検索内容",
+			"command": "コマンド"
+		}
 	},
 	"permissions": {
 		"title": "権限",

@@ -3273,7 +3273,22 @@
 		"failed": "无法发送你的回答。请重试。",
 		"sendCheckTitle": "{name} 的消息发出去了吗？",
 		"sent": "已发出",
-		"notSent": "没有发出"
+		"notSent": "没有发出",
+		"why": "原因：",
+		"saidBy": "{name} 说：",
+		"showDetails": "显示详情",
+		"detail": {
+			"to": "收件人",
+			"from": "发件人",
+			"subject": "主题",
+			"body": "内容",
+			"amount": "金额",
+			"when": "时间",
+			"link": "链接",
+			"file": "文件",
+			"search": "查找",
+			"command": "命令"
+		}
 	},
 	"permissions": {
 		"title": "权限",

@@ -303,6 +303,13 @@ pub trait DynTool: Send + Sync {
     fn describe(&self, input: &serde_json::Value) -> String {
         crate::humanize::sentence(self.name(), input)
     }
+    /// What the call would send or change, as the owner's approval card
+    /// previews it under "Show details": the call's own values, nothing
+    /// secret. A tool whose values sit deeper (a plugin's `args`) reads
+    /// them there.
+    fn details(&self, input: &serde_json::Value) -> Vec<crate::humanize::Detail> {
+        crate::humanize::details(input)
+    }
     /// The untrusted-content class the call's result brings into the run.
     fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
         None

@@ -3273,7 +3273,22 @@
 		"failed": "Could not send your answer. Try again.",
 		"sendCheckTitle": "Did {name}'s message go out?",
 		"sent": "It went out",
-		"notSent": "It didn't go out"
+		"notSent": "It didn't go out",
+		"why": "Why:",
+		"saidBy": "{name} says:",
+		"showDetails": "Show details",
+		"detail": {
+			"to": "To",
+			"from": "From",
+			"subject": "Subject",
+			"body": "Message",
+			"amount": "Amount",
+			"when": "When",
+			"link": "Link",
+			"file": "File",
+			"search": "Looking for",
+			"command": "Command"
+		}
 	},
 	"permissions": {
 		"title": "Permissions",
