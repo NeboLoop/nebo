@@ -2414,17 +2414,7 @@ async fn step_events(
 
     let task_tools_declared = declared.iter().any(|d| events::TASK_TOOLS.contains(&d.name.as_str()));
     if task_tools_declared && events::task_reminder_due(conversation) {
-        let tasks = h
-            .store
-            .list_task_items(&format!("session:{}", cx.session_id))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| events::WorkTaskLine {
-                subject: t.description.unwrap_or(t.prompt),
-                status: t.status,
-            })
-            .collect();
-        st.reminders.add(&TurnEvent::TasksIdle(tasks));
+        st.reminders.add(&TurnEvent::TasksIdle(task_list(h, cx)));
     }
 
     if h.hooks.has_subscribers("steering.generate") {
@@ -2709,6 +2699,7 @@ async fn checkpoint(
     }
     let goal = goal::GoalStore::new(&h.sessions, &cx.session_id).active().ok().flatten();
     let running = running_work(cx).await;
+    let tasks = task_list(h, cx);
     let outcome = compact::checkpoint::checkpoint(
         &compact::checkpoint::CheckpointContext {
             sessions: &h.sessions,
@@ -2721,6 +2712,7 @@ async fn checkpoint(
             restore: compact::restore::RestoreState {
                 goal: goal.as_ref(),
                 running: &running,
+                tasks: &tasks,
                 plan_mode: cx.plan_mode(),
             },
             instructions,
@@ -2741,6 +2733,17 @@ async fn checkpoint(
     st.checkpoints_since_progress += 1;
     st.seen.clear();
     Ok(())
+}
+
+/// The session's task list (`create_task`, `update_task`), as the task
+/// reminder and a checkpoint's restore show it.
+fn task_list(h: &Harness, cx: &TurnContext) -> Vec<events::WorkTaskLine> {
+    h.store
+        .list_task_items(&format!("session:{}", cx.session_id))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| events::WorkTaskLine { subject: t.description.unwrap_or(t.prompt), status: t.status })
+        .collect()
 }
 
 /// The work this session started that is still running, told again after a

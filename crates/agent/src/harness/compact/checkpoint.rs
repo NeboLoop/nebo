@@ -1007,6 +1007,10 @@ mod tests {
             last_reason: None,
             declined: vec![],
         };
+        let tasks = [
+            crate::harness::events::WorkTaskLine { subject: "draft the letter".into(), status: "completed".into() },
+            crate::harness::events::WorkTaskLine { subject: "send the letter".into(), status: "pending".into() },
+        ];
         let running = [
             RunningWork { id: "task-7".into(), description: "research the client".into(), kind: WorkKind::Helper },
             RunningWork {
@@ -1022,12 +1026,12 @@ mod tests {
                 &provider,
                 CheckpointReason::Threshold,
                 &[],
-                RestoreState { goal: Some(&goal), running: &running, plan_mode: true },
+                RestoreState { goal: Some(&goal), running: &running, tasks: &tasks, plan_mode: true },
             )
             .await
             .unwrap();
 
-        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "running_work", "plan_mode"]);
+        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "running_work", "task_list", "plan_mode"]);
         let rows = s.conversation();
         let text = |k: &str| rows.iter().find(|m| kind(m) == k).unwrap().content.clone();
         let skills = text("invoked_skills");
@@ -1035,6 +1039,7 @@ mod tests {
         assert!(skills.contains("### invoices\nINVOICES"), "every loaded skill");
         assert!(!skills.contains("broken"), "a failed load stays out");
         assert!(text("goal_set").contains("the letter is sent"));
+        assert!(text("task_list").contains("- [completed] draft the letter\n- [pending] send the letter"), "{}", text("task_list"));
         let running_rows: Vec<String> = rows.iter().filter(|m| kind(m) == "running_work").map(|m| m.content.clone()).collect();
         assert_eq!(running_rows.len(), 2, "one row per piece of running work");
         assert!(running_rows[0].contains("Background helper \"research the client\" (task-7) is still running. Don't start a duplicate"), "{}", running_rows[0]);
