@@ -204,7 +204,7 @@ impl Store {
         let conn = self.conn()?;
         match conn.query_row(
             "SELECT user_id, email_notifications, marketing_emails, timezone,
-                    language, theme, updated_at, inapp_notifications, start_page
+                    language, theme, updated_at, inapp_notifications, start_page, locale
              FROM user_preferences LIMIT 1",
             [],
             |row| {
@@ -218,6 +218,7 @@ impl Store {
                     updated_at: row.get(6)?,
                     inapp_notifications: row.get(7)?,
                     start_page: row.get(8)?,
+                    locale: row.get(9)?,
                 })
             },
         ) {
@@ -225,6 +226,21 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(NeboError::Database(e.to_string())),
         }
+    }
+
+    /// Keep the account's full locale tag ("es-MX"): the region the
+    /// language alone does not carry.
+    pub fn set_user_locale(&self, tag: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let user_id = self.ensure_local_user_id()?;
+        conn.execute("INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?1)", params![user_id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE user_preferences SET locale = ?1, updated_at = unixepoch() WHERE user_id = ?2",
+            params![tag, user_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 
     pub fn update_user_preferences(

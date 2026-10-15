@@ -1708,6 +1708,7 @@ export interface UserPreference {
 	updatedAt: number
 	inappNotifications: boolean
 	startPage: string
+	locale?: string
 }
 
 export interface UserProfile {

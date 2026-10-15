@@ -47,6 +47,15 @@ pub fn apply(store: &Store, timezone: &str, language: &str) {
         }
     }
     if let Some(code) = types::language::app_language(language) {
+        // The full tag too: its region picks local names the language
+        // alone can't (es-MX and es-ES speak the same Spanish).
+        let tag = language.trim().replace('_', "-");
+        let kept = store.get_user_preferences().ok().flatten().and_then(|p| p.locale);
+        if kept.as_deref() != Some(tag.as_str()) {
+            if let Err(e) = store.set_user_locale(&tag) {
+                warn!(error = %e, "could not keep the account's locale");
+            }
+        }
         let current = store
             .get_user_preferences()
             .ok()
@@ -147,6 +156,7 @@ mod tests {
         ));
         assert_eq!(OwnerZone::of(&s).name(), Some("America/Denver"));
         assert_eq!(s.get_user_preferences().unwrap().unwrap().language, "es");
+        assert_eq!(s.get_user_preferences().unwrap().unwrap().locale.as_deref(), Some("es-MX"), "the region is kept");
     }
 
     #[test]

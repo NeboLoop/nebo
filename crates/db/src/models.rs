@@ -82,6 +82,10 @@ pub struct UserPreference {
     pub inapp_notifications: i64,
     /// Where Nebo opens: "chat" (the assistant's latest thread) or "dashboard".
     pub start_page: String,
+    /// The account's full locale tag ("es-MX", "en-GB"), when the account
+    /// has told this bot; `language` is the language Nebo speaks from it.
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
