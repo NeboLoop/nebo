@@ -1,4 +1,7 @@
 use rusqlite::params;
+use rusqlite::types::Value;
+
+use super::fts::{Terms, merge_ranked};
 
 use crate::Store;
 use types::NeboError;
@@ -172,7 +175,8 @@ impl Store {
 
     /// FTS5 search on memories table across a READ scope chain (the exact
     /// scope plus its ancestors, from `memory::memory_scope_chain`). Returns
-    /// (memory_id, rank). An agent-scoped search also surfaces owner-level
+    /// (memory_id, rank): any of the words, found anywhere in the memory
+    /// (`fts::Terms`). An agent-scoped search also surfaces owner-level
     /// facts; writes remain exact-scope.
     pub fn search_memories_fts(
         &self,
@@ -180,48 +184,47 @@ impl Store {
         user_ids: &[String],
         limit: i64,
     ) -> Result<Vec<(i64, f64)>, NeboError> {
-        if user_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let conn = self.conn()?;
-        // FTS5 match query — escape special chars
-        let fts_query = sanitize_fts_query(query);
-        let sql = memories_fts_sql(user_ids.len());
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query, &limit];
-        for uid in user_ids {
-            params_vec.push(uid);
-        }
-        let rows = stmt
-            .query_map(params_vec.as_slice(), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
-            })
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+        self.search_index(&MEMORIES, query, user_ids, limit)
     }
 
-    /// FTS5 search on memory_chunks table. Returns (chunk_id, rank).
+    /// FTS5 search on memory_chunks table. Returns (chunk_id, rank): any of
+    /// the words, found anywhere in the chunk.
     pub fn search_chunks_fts(
         &self,
         query: &str,
         user_id: &str,
         limit: i64,
     ) -> Result<Vec<(i64, f64)>, NeboError> {
+        self.search_index(&CHUNKS, query, &[user_id.to_string()], limit)
+    }
+
+    /// The any-word search of one memory index in `scopes`: the indexed
+    /// words through its FTS5 table (BM25), the short ones with `LIKE`, one
+    /// list best first.
+    fn search_index(&self, index: &Index, query: &str, scopes: &[String], limit: i64) -> Result<Vec<(i64, f64)>, NeboError> {
+        let terms = Terms::parse(query);
+        if scopes.is_empty() || terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scope_values = || scopes.iter().map(|s| Value::Text(s.clone()));
         let conn = self.conn()?;
-        let fts_query = sanitize_fts_query(query);
-        let mut stmt = conn
-            .prepare(CHUNKS_FTS_SQL)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![fts_query, user_id, limit], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
-            })
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+        let indexed = match terms.match_expr(" OR ") {
+            Some(expr) => {
+                let values = [Value::Text(expr), Value::Integer(limit)].into_iter().chain(scope_values());
+                ranked(&conn, &fts_sql(index, scopes.len()), values)?
+            }
+            None => Vec::new(),
+        };
+        let patterns = terms.any_word_patterns();
+        let short = if patterns.is_empty() {
+            Vec::new()
+        } else {
+            let values = std::iter::once(Value::Integer(limit))
+                .chain(patterns.iter().cloned().map(Value::Text))
+                .chain(scope_values());
+            ranked(&conn, &short_sql(index, patterns.len(), scopes.len()), values)?
+        };
+        Ok(merge_ranked(indexed, short, limit))
     }
 
     /// Get a memory chunk's text and source by chunk ID.
@@ -247,6 +250,22 @@ impl Store {
     }
 }
 
+/// A memory index the any-word search reads: its FTS5 table over `table`,
+/// and the three columns it indexes.
+struct Index {
+    fts: &'static str,
+    table: &'static str,
+    columns: [&'static str; 3],
+}
+
+const MEMORIES: Index = Index { fts: "memories_fts", table: "memories", columns: ["key", "value", "tags"] };
+const CHUNKS: Index = Index { fts: "memory_chunks_fts", table: "memory_chunks", columns: ["text", "source", "path"] };
+
+/// `?first..` for `n` values.
+fn placeholders(first: usize, n: usize) -> String {
+    (first..first + n).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ")
+}
+
 // The FTS searches join the index to its rows to keep one scope's hits.
 // They are CROSS JOINs so the match drives: given a plain JOIN, SQLite
 // walked the scope's rows by its user_id index and ran the whole MATCH once
@@ -254,51 +273,50 @@ impl Store {
 // a long prompt over 20k chunks, on the turn's recall (2026-10-09). With the
 // match outermost it runs once, in rank order.
 
-/// Ranked memory hits of `?1` in the scopes `?3..` (one per scope), `?2` at most.
-fn memories_fts_sql(scopes: usize) -> String {
-    let placeholders = (0..scopes)
-        .map(|i| format!("?{}", i + 3))
-        .collect::<Vec<_>>()
-        .join(", ");
+/// Ranked hits of the match `?1` in the scopes `?3..` (one per scope), `?2` at most.
+fn fts_sql(index: &Index, scopes: usize) -> String {
+    let (fts, table) = (index.fts, index.table);
     format!(
         "SELECT m.id, fts.rank
-         FROM memories_fts fts
-         CROSS JOIN memories m ON m.id = fts.rowid
-         WHERE memories_fts MATCH ?1
-           AND m.user_id IN ({placeholders})
+         FROM {fts} fts
+         CROSS JOIN {table} m ON m.id = fts.rowid
+         WHERE {fts} MATCH ?1
+           AND m.user_id IN ({})
          ORDER BY fts.rank
-         LIMIT ?2"
+         LIMIT ?2",
+        placeholders(3, scopes)
     )
 }
 
-/// Ranked chunk hits of `?1` in the scope `?2`, `?3` at most.
-const CHUNKS_FTS_SQL: &str = "SELECT mc.id, fts.rank
-     FROM memory_chunks_fts fts
-     CROSS JOIN memory_chunks mc ON mc.id = fts.rowid
-     WHERE memory_chunks_fts MATCH ?1
-       AND mc.user_id = ?2
-     ORDER BY fts.rank
-     LIMIT ?3";
-
-/// Sanitize a query string for FTS5 MATCH: escape double quotes, strip operators.
-fn sanitize_fts_query(query: &str) -> String {
-    // For simple queries, wrap each word in quotes to avoid FTS syntax issues
-    query
-        .split_whitespace()
-        .map(|word| {
-            let clean: String = word
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if clean.is_empty() {
-                String::new()
-            } else {
-                format!("\"{}\"", clean)
-            }
+/// Rows holding any of the `LIKE` patterns `?2..` in the scopes after
+/// them, `?1` at most, ranked minus how many patterns each holds (so they
+/// order with BM25's negative ranks: more is better).
+fn short_sql(index: &Index, patterns: usize, scopes: usize) -> String {
+    let held = (0..patterns)
+        .map(|i| {
+            let any = index.columns.map(|c| format!("IFNULL(m.{c}, '') LIKE ?{}", i + 2)).join(" OR ");
+            format!("({any})")
         })
-        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join(" OR ")
+        .join(" + ");
+    format!(
+        "SELECT id, rank FROM (
+             SELECT m.id, -({held}) AS rank FROM {table} m WHERE m.user_id IN ({scopes})
+         ) WHERE rank < 0
+         ORDER BY rank
+         LIMIT ?1",
+        table = index.table,
+        scopes = placeholders(2 + patterns, scopes)
+    )
+}
+
+/// The (id, rank) rows of `sql` with `values`.
+fn ranked(conn: &rusqlite::Connection, sql: &str, values: impl IntoIterator<Item = Value>) -> Result<Vec<(i64, f64)>, NeboError> {
+    let mut stmt = conn.prepare(sql).map_err(|e| NeboError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(values), |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)))
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
 }
 
 trait OptionalExt<T> {
@@ -319,6 +337,52 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 mod tests {
     use crate::Store;
 
+    /// A memory or chunk is found by any word inside it, in Japanese,
+    /// Korean, Chinese and Thai as in English, two-character words
+    /// included, and only in the scopes asked for; a memory holding more of
+    /// the words ranks first.
+    #[test]
+    fn memory_search_finds_a_word_inside_a_sentence_in_any_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let facts = [
+            ("ja", "毎週月曜日に会議があります"),
+            ("ko", "회의는 매주 화요일입니다"),
+            ("zh", "预算由财务部负责"),
+            ("th", "ประชุมทุกวันพุธตอนเช้า"),
+            ("en", "Dana owns the quarterly report"),
+        ];
+        for (key, value) in facts {
+            store.upsert_memory("tacit", key, value, None, None, "owner").unwrap();
+        }
+        store.upsert_memory("tacit", "other", "会議 회의 预算", None, None, "someone-else").unwrap();
+        let owner = ["owner".to_string()];
+        let keys = |q: &str| {
+            store
+                .search_memories_fts(q, &owner, 10)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| store.get_memory(id).unwrap().unwrap().key)
+                .collect::<Vec<_>>()
+        };
+        for (q, key) in [("会議", "ja"), ("회의", "ko"), ("预算", "zh"), ("财务部", "zh"), ("ประชุม", "th"), ("quarterly", "en")] {
+            assert_eq!(keys(q), [key], "{q}");
+        }
+        // Any word: both memories, the one with more of the words first.
+        let mut both = keys("会議 회의");
+        both.sort();
+        assert_eq!(both, ["ja", "ko"]);
+        assert_eq!(keys("会議 毎週 月曜日").first().map(String::as_str), Some("ja"));
+        assert!(keys("invoice").is_empty());
+        // A prompt's "a", "of", "to" are no reason to recall every memory.
+        assert_eq!(keys("is it up to a report of Dana"), ["en"]);
+
+        let chunk = store.insert_memory_chunk(None, 0, "来週の会議は東京で行います", "session", "", 0, 13, "m", "owner").unwrap();
+        assert_eq!(store.search_chunks_fts("会議", "owner", 5).unwrap().iter().map(|(id, _)| *id).collect::<Vec<_>>(), [chunk]);
+        assert_eq!(store.search_chunks_fts("東京", "owner", 5).unwrap().len(), 1);
+        assert!(store.search_chunks_fts("会議", "someone-else", 5).unwrap().is_empty());
+    }
+
     /// The match drives each memory search: the FTS index is the outer loop,
     /// read once in rank order, and each hit seeks its row. The other way
     /// round runs the match once per row of the scope.
@@ -327,7 +391,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
         let conn = store.conn().unwrap();
-        for sql in [super::memories_fts_sql(2), super::CHUNKS_FTS_SQL.to_string()] {
+        for sql in [super::fts_sql(&super::MEMORIES, 2), super::fts_sql(&super::CHUNKS, 1)] {
             let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
             let unbound = rusqlite::params_from_iter(vec![rusqlite::types::Null; stmt.parameter_count()]);
             let plan: Vec<String> = stmt
