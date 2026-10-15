@@ -731,13 +731,15 @@ pub async fn create_agent(
     if body.get("blank").and_then(|v| v.as_bool()).unwrap_or(false) {
         let name = body["name"].as_str().filter(|n| !n.trim().is_empty());
         // The builder's Create: the drafted job (`POST /agents/needs`), less
-        // the items the owner removed, named by their words.
+        // the items the owner removed, named by their words. A Create tapped
+        // before the job was worked out carries the description instead.
         let draft_id = body["draftId"].as_str().filter(|d| !d.is_empty());
+        let description = body["description"].as_str().map(str::trim).unwrap_or("");
         let removed: Vec<String> = body["removed"]
             .as_array()
             .map(|a| a.iter().filter_map(|w| w.as_str().and_then(tools::needs::capability_for_words)).collect())
             .unwrap_or_default();
-        return create_blank_agent(state, name, draft_id, &removed).await;
+        return create_blank_agent(state, name, draft_id, description, &removed).await;
     }
     // Hire from a linked bot: the employee's brain is an agent on a linked
     // OpenClaw or Hermes install, driven through the link's chat contract.
@@ -898,22 +900,21 @@ pub async fn create_agent(
         }
     }
 
-    let cascade = if !deps.is_empty() {
-        let mut visited = std::collections::HashSet::new();
-        // The page that created it renders the cascade's progress.
+    // In the background, as a marketplace hire's does: the employee is
+    // created and answered now, and its row shows the dependencies landing
+    // (the `dep_*` events name it). The page that created it renders the
+    // cascade's progress.
+    if !deps.is_empty() {
         let origin = super::ws::EventOrigin::of_request(&headers, String::new());
-        Some(
-            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner, &origin)
-                .await,
-        )
-    } else {
-        None
-    };
+        let (state, id) = (state.clone(), id.clone());
+        tokio::spawn(async move {
+            crate::deps::resolve_cascade(&state, deps, tools::InstalledBy::Owner, &origin, Some(&id)).await;
+        });
+    }
 
     Ok(Json(serde_json::json!({
         "agent": agent,
         "installReport": install_report,
-        "cascade": cascade,
         // Only the blank-create (Hire) branch opens an introduction thread;
         // the key rides both branches so the CONTRACT has one shape.
         "threadId": serde_json::Value::Null,
@@ -1150,6 +1151,13 @@ pub async fn get_agent(
             "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
         })))
     } else {
+        let job_draft = match state.store.open_job_edit(&agent.id) {
+            Ok(draft) => draft.map(|d| serde_json::json!({ "line": d.line, "draftId": d.id })),
+            Err(e) => {
+                warn!(agent = %agent.id, error = %e, "the employee's drafted job could not be read");
+                None
+            }
+        };
         // The character it wears, resolved: the owner's pick, its role's or
         // its id's (`types::character`), never the bare stored column.
         let mut agent = agent;
@@ -1188,6 +1196,9 @@ pub async fn get_agent(
             // memory.mode, read as the runtime enforces it (an agent.json
             // that still carries the old isolation flag included).
             "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
+            // The job its description asks for, drafted and not yet added:
+            // the page offers its line, and adding it grants it.
+            "jobDraft": job_draft,
         })))
     }
 }
@@ -1514,6 +1525,64 @@ pub async fn update_agent(
     Ok(Json(serde_json::json!({ "agent": updated })))
 }
 
+/// A job drafted from a description, for the owner's pages: what the line
+/// above Create (or Save) says, the draft that grants it, and its items and
+/// accounts in plain words.
+pub(crate) struct DraftedJob {
+    pub draft_id: String,
+    pub line: String,
+    pub items: Vec<String>,
+    pub accounts: Vec<String>,
+}
+
+/// Draft the job `description` asks of employee `name`: a new employee's
+/// whole job, or (with `agent_id`) only what it adds to that employee's
+/// job, kept as an edit its page offers to add. The ONE drafting both the
+/// builder (`POST /agents/needs`) and a Create made before its draft came
+/// back ([`create_blank_agent`]) use. One model read.
+pub(crate) async fn draft_job(
+    state: &AppState,
+    name: &str,
+    agent_id: &str,
+    description: &str,
+) -> Result<DraftedJob, types::NeboError> {
+    use tools::needs::{self, Draft, JobSource};
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone());
+    let src = JobSource {
+        name,
+        agent_id,
+        description,
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: None,
+        installed: &installed,
+    };
+    let mut worked_out = needs::work_out_needs(&src, &reader).await;
+    if !agent_id.is_empty() {
+        let before = agent::harness::permissions::consent::job_of(&state.store, agent_id)?;
+        worked_out = needs::added(&before, &worked_out);
+    }
+    let input = serde_json::json!({ "name": name, "description": description });
+    let draft = Draft {
+        kind: if agent_id.is_empty() { "create" } else { "edit" },
+        agent_id,
+        creator_id: "",
+        chat_id: "",
+        name,
+        input: &input,
+        needs: &worked_out,
+    };
+    let (draft_id, line) = needs::save_draft(&state.store, &draft).map_err(types::NeboError::Internal)?;
+    Ok(DraftedJob {
+        draft_id,
+        line,
+        items: worked_out.items().into_iter().map(|t| t.words).collect(),
+        accounts: worked_out.accounts.iter().filter_map(|a| needs::words_of(&a.capability)).map(str::to_string).collect(),
+    })
+}
+
 /// POST /agents/needs — the one needs step for the owner's pages. With
 /// `typeConfig` (a package's agent.json), the line above Hire, read off the
 /// manifest with no model call. With `description`, the line above Create in
@@ -1524,15 +1593,24 @@ pub async fn work_out_agent_needs(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    use tools::needs::{self, DeclaredNeeds, Draft, JobSource};
+    use tools::needs::{self, DeclaredNeeds, JobSource};
     let name = body["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("This employee");
     let description = body["description"].as_str().unwrap_or("");
     let agent_id = body["agentId"].as_str().unwrap_or("");
-    let declared = body
+    let Some(declared) = body
         .get("typeConfig")
         .filter(|v| v.is_object())
         .and_then(|tc| napp::agent::parse_agent_config(&tc.to_string()).ok())
-        .map(|c| DeclaredNeeds::of(&c));
+        .map(|c| DeclaredNeeds::of(&c))
+    else {
+        let job = draft_job(&state, name, agent_id, description).await.map_err(to_error_response)?;
+        return Ok(Json(serde_json::json!({
+            "line": job.line,
+            "items": job.items,
+            "accounts": job.accounts,
+            "draftId": job.draft_id,
+        })));
+    };
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
     let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.housekeeper(), state.store.clone());
     let src = JobSource {
@@ -1542,38 +1620,17 @@ pub async fn work_out_agent_needs(
         skills: &[],
         plugins: &[],
         workflows: &[],
-        declared: declared.as_ref(),
+        declared: Some(&declared),
         installed: &installed,
     };
-    let mut worked_out = needs::work_out_needs(&src, &reader).await;
-    if declared.is_none() && !agent_id.is_empty() {
-        let before = agent::harness::permissions::consent::job_of(&state.store, agent_id).map_err(to_error_response)?;
-        worked_out = needs::added(&before, &worked_out);
-    }
-    let (draft_id, line) = if declared.is_some() {
-        (serde_json::Value::Null, needs::consent_line(name, &worked_out))
-    } else {
-        let input = serde_json::json!({ "name": name, "description": description });
-        let draft = Draft {
-            kind: if agent_id.is_empty() { "create" } else { "edit" },
-            agent_id,
-            creator_id: "",
-            chat_id: "",
-            name,
-            input: &input,
-            needs: &worked_out,
-        };
-        let (id, line) =
-            needs::save_draft(&state.store, &draft).map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
-        (serde_json::Value::String(id), line)
-    };
+    let worked_out = needs::work_out_needs(&src, &reader).await;
     let items: Vec<String> = worked_out.items().into_iter().map(|t| t.words).collect();
     let accounts: Vec<&str> = worked_out.accounts.iter().filter_map(|a| needs::words_of(&a.capability)).collect();
     Ok(Json(serde_json::json!({
-        "line": line,
+        "line": needs::consent_line(name, &worked_out),
         "items": items,
         "accounts": accounts,
-        "draftId": draft_id,
+        "draftId": serde_json::Value::Null,
     })))
 }
 
@@ -1959,10 +2016,19 @@ pub async fn process_agent_bindings(
 }
 
 /// Create a blank agent instance, auto-activate it, and return it.
+///
+/// Create never waits on the model. With the drafted job (`draft_id`), the
+/// owner's Create consents to the line it showed. Tapped before the job was
+/// worked out, it carries the `description`: the employee is created at
+/// once, holding no job yet (it asks before it acts), and the job is drafted
+/// in the background as an edit its page offers to add — the one consent an
+/// edit already has ([`draft_job`], `jobDraft` on GET /agents/{id}). Create
+/// used to stay disabled until the draft came back: 2–5 s, up to 20.
 async fn create_blank_agent(
     state: AppState,
     name: Option<&str>,
     draft_id: Option<&str>,
+    description: &str,
     removed: &[String],
 ) -> HandlerResult<serde_json::Value> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -1974,7 +2040,10 @@ async fn create_blank_agent(
         ),
         None => None,
     };
-    let description = draft.as_ref().and_then(|(_, input, _)| input["description"].as_str()).unwrap_or("").trim();
+    let description = match &draft {
+        Some((_, input, _)) => input["description"].as_str().unwrap_or("").trim(),
+        None => description,
+    };
     let agent_md = format!("---\nname: {:?}\ndescription: {:?}\n---\n", name, description);
 
     let agent = state
@@ -1991,6 +2060,18 @@ async fn create_blank_agent(
             warn!(agent = %id, error = %e, "the builder's job was not granted");
         }
         let _ = state.store.use_employee_draft(&row.id);
+    } else if !description.is_empty() {
+        let (state, id, name, description) = (state.clone(), id.clone(), name.to_string(), description.to_string());
+        tokio::spawn(async move {
+            match draft_job(&state, &name, &id, &description).await {
+                Ok(job) if !job.items.is_empty() => state.hub.broadcast(
+                    "agent_job_drafted",
+                    serde_json::json!({ "agentId": id, "line": job.line, "draftId": job.draft_id }),
+                ),
+                Ok(_) => {}
+                Err(e) => warn!(agent = %id, error = %e, "the new employee's job was not drafted"),
+            }
+        });
     }
 
     activate_hire(&state, &agent).await;
@@ -3044,7 +3125,7 @@ pub async fn apply_agent_update(
     }
 
     let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
-    match tools::persist_agent_from_api(&api, &id, &agent.name, kind, &state.store).await {
+    match tools::persist_agent_from_api(&api, &id, &agent.name, kind, None, &state.store).await {
         Ok(_) => {
             // Re-read updated agent
             let updated = state

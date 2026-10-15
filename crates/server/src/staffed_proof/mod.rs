@@ -796,15 +796,24 @@ pub fn hub_holds_download(slug: &str) -> impl FnOnce() {
     }
 }
 
+/// The binary every plugin the stand-in serves runs: an echo.
+const ECHO_BINARY: &str = "#!/bin/sh\nprintf '%s\\n' \"$@\"\n";
+
+/// The sha256 the stand-in lists for that binary, as the hub lists each
+/// platform binary's.
+fn echo_binary_sha256() -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(ECHO_BINARY.as_bytes()))
+}
+
 /// The `.napp` the stand-in serves: a raw tar.gz of `plugin.json` and the
 /// echo binary, the layout `install_from_napp` extracts.
 fn napp_of(plugin: &HubPlugin) -> Vec<u8> {
-    use sha2::Digest;
-    let binary = "#!/bin/sh\nprintf '%s\\n' \"$@\"\n";
+    let binary = ECHO_BINARY;
     let manifest = json!({
         "id": plugin.slug, "slug": plugin.slug, "name": plugin.name, "version": "0.1.0",
         "platforms": { napp::plugin::current_platform_key(): {
-            "binaryName": plugin.slug, "sha256": hex::encode(sha2::Sha256::digest(binary.as_bytes())),
+            "binaryName": plugin.slug, "sha256": echo_binary_sha256(),
             "signature": "", "size": binary.len(), "downloadUrl": "",
         } },
     })
@@ -911,7 +920,7 @@ fn hub_stand_in() -> String {
         Ok::<_, StatusCode>(axum::Json(json!({
             "id": hub_plugin_id(&p.slug), "slug": p.slug, "name": p.name, "version": "0.1.0",
             "platforms": { platform: {
-                "binaryName": p.slug, "sha256": "", "signature": "", "size": napp.len(),
+                "binaryName": p.slug, "sha256": echo_binary_sha256(), "signature": "", "size": napp.len(),
                 "downloadUrl": format!("/napp/{}", p.slug),
             } },
         })))

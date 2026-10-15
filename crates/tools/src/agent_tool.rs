@@ -2773,6 +2773,7 @@ impl PersonaTool {
                                         agent_id,
                                         &db_agent.name,
                                         db_agent.kind.as_deref().unwrap_or(""),
+                                        None,
                                         &self.store,
                                     )
                                     .await

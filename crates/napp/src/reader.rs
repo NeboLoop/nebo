@@ -106,7 +106,12 @@ pub fn extract_napp_prefix(
 /// Preserves internal structure, creates parent dirs, sets +x on binary/app.
 /// Returns a list of extracted entry names.
 pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, NappError> {
-    let gz = GzDecoder::new(napp_payload_targz(napp_path)?);
+    extract_targz(napp_payload_targz(napp_path)?, dest_dir)
+}
+
+/// Extract every entry of a tar.gz stream to `dest_dir` (see [`extract_all`]).
+fn extract_targz(targz: impl Read, dest_dir: &Path) -> Result<Vec<String>, NappError> {
+    let gz = GzDecoder::new(targz);
     let mut archive = Archive::new(gz);
 
     let mut extracted = Vec::new();
@@ -162,19 +167,49 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
     Ok(extracted)
 }
 
-/// Extract a .napp to its sibling directory (strip .napp extension).
+/// What [`extract_napp_alongside`] made of a `.napp`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unpacked {
+    /// A free package, extracted to this directory.
+    Extracted(PathBuf),
+    /// A sealed (paid) package: it stays sealed on disk, and the loaders read
+    /// it in memory with its license key.
+    Sealed,
+}
+
+/// Extract a .napp to its sibling directory (strip .napp extension), or say
+/// it is sealed. The envelope is verified once, in the one pass that also
+/// tells the two apart: the installs used to verify it to ask "sealed?" and
+/// then again to extract, every byte hashed and checked twice.
 ///
 /// Always re-extracts: removes the existing directory first so updates
 /// replace stale files.
-/// Returns the destination directory path.
-pub fn extract_napp_alongside(napp_path: &Path) -> Result<PathBuf, NappError> {
+pub fn extract_napp_alongside(napp_path: &Path) -> Result<Unpacked, NappError> {
+    let Payload::TarGz(targz) = open_payload(napp_path)? else {
+        return Ok(Unpacked::Sealed);
+    };
     let dest_dir = napp_path.with_extension("");
     if dest_dir.is_dir() {
         std::fs::remove_dir_all(&dest_dir)?;
     }
+    extract_targz(targz, &dest_dir)?;
+    Ok(Unpacked::Extracted(dest_dir))
+}
 
-    extract_all(napp_path, &dest_dir)?;
-    Ok(dest_dir)
+/// Whether every one of `paths` last changed before `began`: a file by its
+/// own modified time, one that is gone by its folder's (a removal touches
+/// it). None of them, or one whose time can't be read, is not. The loaders'
+/// watchers ask it of the paths an event burst names: a change older than
+/// the last full scan is already loaded, and rescanning for it is wasted.
+pub fn changed_before(paths: &[PathBuf], began: std::time::SystemTime) -> bool {
+    !paths.is_empty()
+        && paths.iter().all(|p| {
+            let probe = if p.exists() { Some(p.as_path()) } else { p.parent() };
+            probe
+                .and_then(|p| p.metadata().ok())
+                .and_then(|m| m.modified().ok())
+                .is_some_and(|modified| modified < began)
+        })
 }
 
 /// Walk a directory tree. When a dir contains `marker_file`, call `cb(dir_path)`
@@ -320,19 +355,36 @@ pub fn partial_extract_sealed_napp(
 /// a license key — those are read in memory by the loaders via the sealed
 /// readers below, so this returns an error rather than writing ciphertext.
 fn napp_payload_targz(napp_path: &Path) -> Result<std::fs::File, NappError> {
+    match open_payload(napp_path)? {
+        Payload::TarGz(file) => Ok(file),
+        Payload::Sealed => Err(NappError::Extraction(
+            "sealed .napp requires a license key and cannot be extracted to disk".into(),
+        )),
+    }
+}
+
+/// A `.napp`'s payload, its envelope verified.
+enum Payload {
+    /// Plain tar.gz, positioned at its start.
+    TarGz(std::fs::File),
+    /// Encrypted (sealed/paid) content.
+    Sealed,
+}
+
+/// Open a `.napp` once: a raw tar.gz (bundled/legacy) as it is, a signed
+/// envelope verified (signature + hash, streamed) and unwrapped.
+fn open_payload(napp_path: &Path) -> Result<Payload, NappError> {
     let mut file = std::fs::File::open(napp_path)?;
     // Raw tar.gz (no envelope) — bundled/legacy artifacts.
     if peek_head(&mut file)? == [0x1f, 0x8b] {
-        return Ok(file);
+        return Ok(Payload::TarGz(file));
     }
     // Signed NAPP envelope — verify signature + hash, then unwrap.
     let mut payload = crate::napp::open_napp_payload(napp_path)?;
     if crate::sealed::is_sealed(&peek_head(&mut payload)?) {
-        return Err(NappError::Extraction(
-            "sealed .napp requires a license key and cannot be extracted to disk".into(),
-        ));
+        return Ok(Payload::Sealed);
     }
-    Ok(payload)
+    Ok(Payload::TarGz(payload))
 }
 
 /// The first two bytes `file` reads from here on (fewer at its end); the
@@ -352,26 +404,6 @@ fn write_entry(entry: &mut impl Read, dest: &Path) -> Result<(), NappError> {
     let mut out = std::fs::File::create(dest)?;
     std::io::copy(entry, &mut out).map_err(|e| NappError::Extraction(e.to_string()))?;
     Ok(())
-}
-
-/// Returns `true` if a `.napp` file wraps a sealed (encrypted) payload.
-///
-/// Verifies the `NAPP` envelope (streaming the file), then checks whether
-/// the inner payload is encrypted (sealed/paid content) rather than a plain
-/// tar.gz. Returns `false` for raw tar.gz files and for any file whose envelope
-/// cannot be read or verified — callers treat those as plain and let extraction
-/// surface the underlying error.
-pub fn is_sealed_napp(napp_path: &Path) -> bool {
-    let Ok(mut file) = std::fs::File::open(napp_path) else {
-        return false;
-    };
-    if peek_head(&mut file).is_ok_and(|h| h == [0x1f, 0x8b]) {
-        return false; // raw tar.gz — not sealed
-    }
-    match crate::napp::open_napp_payload(napp_path) {
-        Ok(mut payload) => peek_head(&mut payload).is_ok_and(|h| crate::sealed::is_sealed(&h)),
-        Err(_) => false,
-    }
 }
 
 /// Unseal a .napp file: verify envelope → decrypt → return plain tar.gz bytes.
@@ -669,13 +701,12 @@ mod tests {
         // Properly finalize: into_inner flushes the tar, then finish() the gz
         builder.into_inner().unwrap().finish().unwrap();
 
-        let dest = extract_napp_alongside(&napp_path).unwrap();
-        assert_eq!(dest, skill_dir.join("1.0.0"));
+        let dest = skill_dir.join("1.0.0");
+        assert_eq!(extract_napp_alongside(&napp_path).unwrap(), Unpacked::Extracted(dest.clone()));
         assert!(dest.join("manifest.json").exists());
 
         // Idempotent — second call returns same path without error
-        let dest2 = extract_napp_alongside(&napp_path).unwrap();
-        assert_eq!(dest, dest2);
+        assert_eq!(extract_napp_alongside(&napp_path).unwrap(), Unpacked::Extracted(dest));
     }
 
     #[test]
@@ -740,8 +771,9 @@ mod signed_napp_tests {
         )
         .unwrap();
 
-        assert!(!is_sealed_napp(&napp_path));
-        let dest = extract_napp_alongside(&napp_path).unwrap();
+        let Unpacked::Extracted(dest) = extract_napp_alongside(&napp_path).unwrap() else {
+            panic!("a free package extracts");
+        };
         assert_eq!(std::fs::read(dest.join("ui/models/world.glb")).unwrap(), model);
         assert_eq!(std::fs::read(dest.join("manifest.json")).unwrap(), manifest);
         assert_eq!(read_napp_entry(&napp_path, "ui/index.html").unwrap(), b"<html></html>");
@@ -793,7 +825,8 @@ mod signed_napp_tests {
         let napp_path = tmp.path().join("paid.napp");
         std::fs::write(&napp_path, sealed_napp(&[("manifest.json", b"{}"), ("SKILL.md", b"secret")], &key)).unwrap();
 
-        assert!(is_sealed_napp(&napp_path));
+        assert_eq!(extract_napp_alongside(&napp_path).unwrap(), Unpacked::Sealed);
+        assert!(!tmp.path().join("paid").exists(), "a sealed package is never written out");
         let err = extract_all(&napp_path, &tmp.path().join("out")).unwrap_err();
         assert!(err.to_string().contains("sealed .napp requires a license key"), "{err}");
         assert_eq!(read_sealed_napp_entry(&napp_path, "SKILL.md", &key).unwrap(), b"secret");

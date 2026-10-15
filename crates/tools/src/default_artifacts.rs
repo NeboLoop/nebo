@@ -9,11 +9,10 @@
 //! like any other. Adding a default is one line below.
 
 use std::future::Future;
-use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::bot_tool::{ALREADY_INSTALLING, CodeInstaller, InstalledBy};
+use crate::bot_tool::{CodeInstaller, InstalledBy};
 
 /// A first-party artifact every bot has: its marketplace slug (what its
 /// plugin or skill folder is named) and the code it installs from.
@@ -47,15 +46,12 @@ pub fn default_artifact(slug: &str) -> Option<&'static DefaultArtifact> {
         .find(|d| d.slug.eq_ignore_ascii_case(slug.trim()))
 }
 
-/// How long a request waits for a default another door is installing right
-/// now (the background install, a store tap) to land.
-const INSTALL_WAIT: Duration = Duration::from_secs(300);
-
 /// The safety net: install default `d`, which a request needs and this bot
 /// lacks, on the spot and without asking, so the turn that needed it goes on.
 /// A default the owner removed comes back here too: the request needs it.
-/// When another door is already installing it, this waits for that install
-/// instead of starting a second. `landed` says whether it is installed now.
+/// When another door is already installing it, the door joins that install
+/// (`server::codes::InFlightCodes::claim`) and answers once it has ended.
+/// `landed` says whether it is installed now.
 /// Returns whether it is; a failure is logged, and the caller goes on as it
 /// would for any missing plugin or skill.
 pub async fn install_on_request<F, Fut>(
@@ -69,18 +65,7 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = bool>,
 {
-    let deadline = tokio::time::Instant::now() + INSTALL_WAIT;
-    let mut line = installer.install(d.code, by, platform).await;
-    // Another door holds the code: wait for its install, asking the door
-    // again now and then. Once that install has ended without the default
-    // landing, the door is free and this asks for the install itself.
-    while line.contains(ALREADY_INSTALLING) && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if landed().await {
-            break;
-        }
-        line = installer.install(d.code, by, platform).await;
-    }
+    let line = installer.install(d.code, by, platform).await;
     let installed = landed().await;
     if installed {
         info!(

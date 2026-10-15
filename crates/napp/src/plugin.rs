@@ -2509,6 +2509,13 @@ impl PluginStore {
         })
     }
 
+    /// The binary of the marketplace copy of `slug` at exactly `version`,
+    /// when it is whole on disk. The owner's own plugin of that slug (the
+    /// user folder) is never it.
+    pub fn marketplace_copy(&self, slug: &str, version: &str) -> Option<PathBuf> {
+        self.resolve_in_dir(&self.installed_dir, slug, &format!("={version}"))
+    }
+
     /// Whether any version of `slug` is on disk, in either root: a whole one,
     /// or a quarantined one (a revoked plugin keeps its marker, and is never
     /// fetched again for want of a binary). False is a registered plugin

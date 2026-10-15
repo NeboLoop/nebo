@@ -107,6 +107,9 @@ pub struct AgentLoader {
     /// `.napp` files in memory. Populated from the DB cache at startup and on
     /// license refresh via [`set_license_keys`].
     license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
+    /// When the last full scan began. A change older than that is loaded
+    /// already: the watcher skips the rescan its event would start.
+    scanned_at: Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
 }
 
 impl AgentLoader {
@@ -117,6 +120,7 @@ impl AgentLoader {
             user_dir,
             agents: Arc::new(RwLock::new(HashMap::new())),
             license_keys: Arc::new(RwLock::new(HashMap::new())),
+            scanned_at: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -138,6 +142,7 @@ impl AgentLoader {
     /// Load all agents from embedded bundled, installed, and user directories.
     /// Loading order: embedded → installed → user (user overrides by name).
     pub async fn load_all(&self) -> usize {
+        mark_scan(&self.scanned_at);
         let mut loaded = HashMap::new();
 
         // 0. Load embedded bundled agents (lowest priority — compiled into binary)
@@ -256,6 +261,7 @@ impl AgentLoader {
         let user_dir = self.user_dir.clone();
         let agents = self.agents.clone();
         let license_keys = self.license_keys.clone();
+        let scanned_at = self.scanned_at.clone();
         let bundled = self.bundled;
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgentFsEvent>(32);
 
@@ -302,6 +308,8 @@ impl AgentLoader {
             // meanwhile.
             let mut look_now = true;
             loop {
+                // What the burst names, to tell whether a scan already has it.
+                let mut paths: Vec<PathBuf> = Vec::new();
                 if !std::mem::take(&mut look_now) {
                     let event = match rx.recv().await {
                         None => break,
@@ -335,6 +343,7 @@ impl AgentLoader {
                     if !relevant {
                         continue;
                     }
+                    paths = event.paths;
                 }
 
                 // Coalesce a burst into ONE rescan after it settles. The
@@ -345,10 +354,24 @@ impl AgentLoader {
                 if since < debounce {
                     tokio::time::sleep(debounce - since).await;
                 }
-                while rx.try_recv().is_ok() {}
+                while let Ok(event) = rx.try_recv() {
+                    if let Ok(event) = event {
+                        paths.extend(event.paths);
+                    }
+                }
+                // An install loads the employee it wrote by itself
+                // (`finalize_agent_install`): the events of its writes,
+                // reported after, are older than that scan. Rescanning every
+                // employee for them again was a second full scan per hire.
+                let scan_began = *scanned_at.lock().unwrap_or_else(|e| e.into_inner());
+                if scan_began.is_some_and(|began| crate::reader::changed_before(&paths, began)) {
+                    debug!("agents changes already loaded; no rescan");
+                    continue;
+                }
                 last_reload = std::time::Instant::now();
 
                 debug!("agents directory changed, reloading");
+                mark_scan(&scanned_at);
                 let mut loaded = HashMap::new();
 
                 // Preserve bundled agents (lowest priority)
@@ -402,6 +425,11 @@ impl AgentLoader {
 
         (handle, event_rx)
     }
+}
+
+/// Record that a full scan begins now.
+fn mark_scan(scanned_at: &std::sync::Mutex<Option<std::time::SystemTime>>) {
+    *scanned_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::SystemTime::now());
 }
 
 /// Load an agent from embedded (compiled-in) content strings.

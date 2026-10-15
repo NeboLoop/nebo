@@ -3,7 +3,7 @@
 //! Detects NEBO/SKILL/WORK/ROLE/AGNT/LOOP codes in chat prompts, handles them
 //! before the prompt reaches the agent runner, and broadcasts results to the client.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tracing::{debug, info, warn};
 
@@ -196,17 +196,19 @@ fn install_result(code: &str, code_type: &str, r: &CodeHandlerResult, origin: &E
     })
 }
 
-/// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
 /// The install work in flight right now: the codes being handled, so a code
-/// arriving twice (a second click) never starts a second install of the same
-/// artifact, plus a count of running dependency cascades, which redeem their
-/// deps directly rather than through `handle_code`. Together they answer
-/// "is this device installing anything?" — what the hub's `tool_installed`
-/// echo of our own redeem has to wait on (see `settle`).
+/// arriving twice (a second click, a second door) never runs two installs of
+/// the same artifact at once, plus a count of running dependency cascades,
+/// which redeem their deps directly rather than through `handle_code`.
+/// Together they answer "is this device installing anything?" — what the
+/// hub's `tool_installed` echo of our own redeem has to wait on (see `settle`).
 #[derive(Default)]
 pub struct InFlightCodes {
     codes: std::sync::Mutex<std::collections::HashSet<String>>,
     cascades: std::sync::atomic::AtomicUsize,
+    /// Wakes the doors waiting on a code ([`InFlightCodes::claim`]) when its
+    /// install ends.
+    released: tokio::sync::Notify,
 }
 
 /// Held for the life of one code's handling; the code leaves the set on drop.
@@ -230,13 +232,24 @@ impl InFlightGuard<'_> {
 pub struct CascadeGuard<'a>(&'a InFlightCodes);
 
 impl InFlightCodes {
-    /// Claim a code. `None` means it is already being handled.
-    pub fn begin(&self, code: &str) -> Option<InFlightGuard<'_>> {
-        let mut set = self.codes.lock().unwrap_or_else(|e| e.into_inner());
-        if !set.insert(code.to_string()) {
-            return None;
+    /// Claim a code. A code another door is installing joins that install:
+    /// the claim waits for it to end and is then this door's, and the
+    /// install it runs finds the artifact in place (an employee at that
+    /// version, a plugin with those bytes) and fetches nothing. Two doors
+    /// never run one artifact's install side by side, and the second door
+    /// answers what the first installed instead of refusing.
+    pub async fn claim(&self, code: &str) -> InFlightGuard<'_> {
+        loop {
+            // Registered before the check, so a release between the check
+            // and the wait still wakes this door.
+            let released = self.released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            if self.codes.lock().unwrap_or_else(|e| e.into_inner()).insert(code.to_string()) {
+                return InFlightGuard { set: self, code: code.to_string() };
+            }
+            released.await;
         }
-        Some(InFlightGuard { set: self, code: code.to_string() })
     }
 
     /// Count a dependency cascade as running until the guard drops.
@@ -270,6 +283,7 @@ impl InFlightCodes {
 impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
         self.set.codes.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.code);
+        self.set.released.notify_waiters();
     }
 }
 
@@ -320,11 +334,7 @@ async fn install(
 /// on that client only, and every other client just sees the result.
 /// Returns the line the owner reads about it ([`outcome_line`]).
 pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, origin: &EventOrigin) -> String {
-    let session_id = origin.session_id.as_str();
-    let Some(claim) = state.codes_in_flight.begin(code) else {
-        info!(code, session_id, "code is already being handled; the first run reports the result");
-        return format!("{code} {}", tools::bot_tool::ALREADY_INSTALLING);
-    };
+    let claim = state.codes_in_flight.claim(code).await;
     let code_type_str = code_type_name(code_type);
     let status_message = match code_type {
         CodeType::Nebo => "Connecting to NeboAI...",
@@ -446,9 +456,7 @@ pub async fn handle_code_text(
     by: InstalledBy,
     platform: Option<&str>,
 ) -> String {
-    let Some(claim) = state.codes_in_flight.begin(code) else {
-        return format!("{code} {}", tools::bot_tool::ALREADY_INSTALLING);
-    };
+    let claim = state.codes_in_flight.claim(code).await;
     let code_type_str = match code_type {
         CodeType::Nebo => "NeboAI connection",
         CodeType::Skill => "skill",
@@ -612,25 +620,28 @@ async fn handle_skill_code(
         }
     }
 
-    let (artifact_id, name) = match redeem_result {
-        Ok(resp) => (resp.artifact.id, resp.artifact.name),
+    let (artifact_id, name, redeemed_url) = match redeem_result {
+        Ok(resp) => (resp.artifact.id, resp.artifact.name, resp.download_url),
         Err(redeem_err) => {
             // Redemption failed (likely already redeemed) — look up by code.
             // Not found there either, and the redeem's answer is the reason.
             warn!(code, error = %redeem_err, "skill redeem failed, attempting to look up artifact by code");
             match find_product_by_code(&api, "skill", code).await {
-                Some((id, name, _)) => (id, name),
+                Some((id, name, _)) => (id, name, None),
                 None => return Err(hub_refusal(HubStep::Redeem, "redeem skill code", redeem_err)),
             }
         }
     };
 
-    // Fetch artifact content from NeboAI and persist to filesystem
+    // Fetch artifact content from NeboAI and persist to filesystem. The
+    // skill watcher waits until the install has reloaded the catalog itself.
+    state.skill_loader.pause_watcher();
     let skill_dir = match tools::persist_skill_from_api(
         &api,
         &artifact_id,
         &name,
         code,
+        redeemed_url.as_deref(),
         Some(&state.store),
     )
     .await
@@ -645,7 +656,8 @@ async fn handle_skill_code(
         }
     };
 
-    finalize_skill_install(state, &artifact_id, skill_dir.as_deref()).await;
+    finalize_skill_install(state, &artifact_id, skill_dir.as_deref(), Settle::Now).await;
+    state.skill_loader.resume_watcher();
 
     // Cascade: resolve skill deps (tools[], dependencies[])
     if let Some(skill_dir) = skill_dir {
@@ -657,8 +669,7 @@ async fn handle_skill_code(
                 if let Ok(skill) = tools::skills::parse_skill_md(&data) {
                     let deps = crate::deps::extract_skill_deps(&skill);
                     if !deps.is_empty() {
-                        let mut visited = std::collections::HashSet::new();
-                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by, &origin).await;
+                        crate::deps::resolve_cascade(&state_clone, deps, by, &origin, None).await;
                     }
                 }
             }
@@ -726,8 +737,7 @@ async fn handle_work_code(
             if let Ok(def) = workflow::parser::parse_workflow(&wf.definition) {
                 let deps = crate::deps::extract_workflow_deps(&def);
                 if !deps.is_empty() {
-                    let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by, &origin).await;
+                    crate::deps::resolve_cascade(&state_clone, deps, by, &origin, None).await;
                 }
             }
         }
@@ -861,8 +871,7 @@ async fn handle_collection_code(
     }
 
     // Install every item via the canonical installer.
-    let mut visited = std::collections::HashSet::new();
-    let mut result = crate::deps::resolve_cascade(state, deps, &mut visited, by, origin).await;
+    let mut result = crate::deps::resolve_cascade(state, deps, by, origin, None).await;
     result.installed_count += connectors_installed;
     result.failed_count += connectors_failed;
 
@@ -888,7 +897,7 @@ async fn handle_collection_code(
 
     // Surface installed plugins that still need credentials/config so the modal
     // can show a "Needs setup" section. Same source as the agent-install wizard.
-    let needs_setup = sweep_plugin_auth(state).await;
+    let needs_setup = sweep_plugin_auth(state, None).await;
     if !needs_setup.is_empty() {
         state.hub.broadcast(
             "dep_needs_setup",
@@ -1017,6 +1026,7 @@ pub(crate) async fn finalize_skill_install(
     state: &AppState,
     artifact_id: &str,
     skill_dir: Option<&std::path::Path>,
+    settle: Settle,
 ) {
     if let Some(dir) = skill_dir {
         // Seed artifact update tracking.
@@ -1046,8 +1056,11 @@ pub(crate) async fn finalize_skill_install(
 
     // Reload skill loader so the skill appears in the catalog immediately. Cold
     // reload — load_all()'s warm path trusts the stale manifest and would miss
-    // the just-written skill (see SkillLoader::reload_from_disk).
-    state.skill_loader.reload_from_disk().await;
+    // the just-written skill (see SkillLoader::reload_from_disk). A cascade
+    // reloads once, when it ends.
+    if settle == Settle::Now {
+        state.skill_loader.reload_from_disk().await;
+    }
 }
 
 /// Give an employee's declared `ceiling` effect: the one routine is
@@ -1148,6 +1161,37 @@ pub(crate) async fn hire(state: &AppState, agent_id: &str, by: InstalledBy) {
             )
         }
     }
+}
+
+/// Bring an employee already on the team to the marketplace's version: an
+/// older one goes through the update core (`apply_agent_update_pub`), the
+/// same one is left as it is. Its installed version is the recorded one, as
+/// the update check reads it.
+async fn bring_installed_agent_current(
+    state: &AppState,
+    api: &NeboAIApi,
+    artifact_id: &str,
+    name: &str,
+) -> Result<(), NeboError> {
+    let local = crate::artifact_updates::installed_agent_version(state, artifact_id, name).await;
+    let remote = api
+        .get_skill(artifact_id)
+        .await
+        .map_err(|e| hub_refusal(HubStep::Fetch, &format!("fetch agent detail for {name}"), e))?
+        .item
+        .version;
+    if crate::artifact_updates::has_newer_version(&local, &remote) {
+        info!(agent = %name, id = %artifact_id, from = %local, to = %remote, "already on the team: updating it in place");
+        crate::artifact_updates::apply_agent_update_pub(state, api, artifact_id)
+            .await
+            .map_err(|e| NeboError::Internal(format!("update agent '{name}': {e}")))?;
+        if let Err(e) = state.store.upsert_artifact_update_pref(artifact_id, "agent", &remote) {
+            warn!(agent = %name, error = %e, "the updated employee's version was not recorded");
+        }
+    } else {
+        info!(agent = %name, id = %artifact_id, version = %local, "already on the team at this version: nothing fetched");
+    }
+    Ok(())
 }
 
 /// workflows, and update-tracking bugs. Call only after a successful persist.
@@ -1269,50 +1313,37 @@ async fn handle_agent_code(
         }
     }
 
-    let (artifact_id, artifact_name) = match redeem_result {
-        Ok(resp) => (resp.artifact.id, resp.artifact.name),
+    let (artifact_id, artifact_name, redeemed_url) = match redeem_result {
+        Ok(resp) => (resp.artifact.id, resp.artifact.name, resp.download_url),
         Err(redeem_err) => {
             // Redemption failed (likely already redeemed) — look up by code.
             // Not found there either, and the redeem's answer is the reason.
             warn!(code, error = %redeem_err, "agent redeem failed, attempting to look up artifact by code");
             match find_product_by_code(&api, "agent", code).await {
-                Some((id, name, _)) => (id, name),
+                Some((id, name, _)) => (id, name, None),
                 None => return Err(hub_refusal(HubStep::Redeem, "redeem agent code", redeem_err)),
             }
         }
     };
 
-    // Clean reinstall: if agent already exists, fully remove it first
-    if let Ok(Some(existing)) = state.store.get_agent(&artifact_id) {
-        info!(agent = %artifact_name, id = %artifact_id, "clean reinstall: removing existing agent before re-install");
-        state.agent_workers.stop_agent(&artifact_id).await;
-        state.agent_registry.write().await.remove(&artifact_id);
-        workflow::triggers::unregister_agent_triggers(&artifact_id, &state.store);
-        state.event_dispatcher.unsubscribe_agent(&artifact_id).await;
-        let _ = state.store.delete_agent_workflows(&artifact_id);
-        let _ = state.store.delete_agent(&artifact_id);
-        // Clean filesystem
-        let slug = existing.name.to_lowercase().replace(' ', "-");
-        if let Ok(nebo_dir) = config::nebo_dir() {
-            let dir = nebo_dir.join("agents").join(&slug);
-            if dir.exists() {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-        }
-        // The loop roster follows the local one; the reinstall lands in the
-        // same debounced reconcile pass as the removal.
-        request_agent_reconcile(state, &format!("clean reinstall: {}", existing.name));
-    }
-
-    // Fetch artifact content from NeboAI and persist to DB + filesystem.
-    // A persist failure is an install FAILURE — propagate it so the UI shows the
-    // real error via the code_result event. (This used to be swallowed with a
-    // warn and the handler reported "Installed agent" while nebo/agents/<slug>
-    // sat empty and the marketplace showed the agent as installed.)
-    let persist_result =
-        match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store)
-            .await
-        {
+    // An employee already on the team is never installed over itself: at
+    // the marketplace's version it is the same employee and nothing is
+    // fetched; at an older one the update core moves it to the new version
+    // in place, keeping what the owner built on it. The old "clean
+    // reinstall" deleted the employee and installed it again — a second
+    // door's hire of an employee just hired re-ran the whole install, every
+    // dependency with it, and named the copy "Design Studio 2" beside the
+    // owner's own (2026-10-10).
+    let persist_result = if state.store.get_agent(&artifact_id).ok().flatten().is_some() {
+        bring_installed_agent_current(state, &api, &artifact_id, &artifact_name).await?;
+        None
+    } else {
+        // Fetch artifact content from NeboAI and persist to DB + filesystem.
+        // A persist failure is an install FAILURE — propagate it so the UI shows the
+        // real error via the code_result event. (This used to be swallowed with a
+        // warn and the handler reported "Installed agent" while nebo/agents/<slug>
+        // sat empty and the marketplace showed the agent as installed.)
+        match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, redeemed_url.as_deref(), &state.store).await {
             Ok(result) => Some(result),
             Err(e) => {
                 warn!(code, error = %e, "failed to persist agent artifact after redeem");
@@ -1320,7 +1351,8 @@ async fn handle_agent_code(
                     "install agent '{artifact_name}': {e}"
                 )));
             }
-        };
+        }
+    };
 
     // Shared post-persist finalization — loader reload, update-tracking seed,
     // roster broadcast, and workflow materialization — the ONE routine the cascade
@@ -1329,8 +1361,10 @@ async fn handle_agent_code(
     // re-materialize of the same workflow rows is an idempotent upsert.
     if persist_result.is_some() {
         finalize_agent_install(state, &artifact_id, &artifact_name).await;
-        hire(state, &artifact_id, by).await;
     }
+    // The owner's hire grants what the package declares and the employee
+    // holds no rule on yet, a rehire of one already here included.
+    hire(state, &artifact_id, by).await;
 
     // Cascade: resolve agent deps (plugins, skills) in background — don't block code_result
     {
@@ -1366,10 +1400,10 @@ async fn handle_agent_code(
             if !deps.is_empty() {
                 let bg_state = state.clone();
                 let bg_name = artifact_name.clone();
+                let bg_id = artifact_id.clone();
                 let origin = origin.clone();
                 tokio::spawn(async move {
-                    let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited, by, &origin).await;
+                    crate::deps::resolve_cascade(&bg_state, deps, by, &origin, Some(&bg_id)).await;
                     info!(agent = %bg_name, "cascade: background dep resolution complete");
                 });
             }
@@ -1380,7 +1414,7 @@ async fn handle_agent_code(
     // below (defer activation while a plugin still needs connecting). The frontend
     // discovers what to connect via getAgent().pluginsNeedingAuth (the one canonical
     // pull) — there is intentionally no separate auth event broadcast here.
-    let auth_required = sweep_plugin_auth(state).await;
+    let auth_required = sweep_plugin_auth(state, Some(&artifact_id)).await;
     let has_auth_requirements = !auth_required.is_empty();
     if has_auth_requirements {
         info!(agent = %artifact_name, plugins = auth_required.len(), "agent install: plugins need auth (deferring activation)");
@@ -1556,7 +1590,7 @@ async fn handle_plugin_code(
     let slug = slug_hint;
 
     // ONE plugin installer — resolve binary, download, install, register.
-    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name, Some(code)).await {
+    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name, Some(code), Settle::Now).await {
         state.hub.broadcast(
             "plugin_error",
             origin.stamp(serde_json::json!({ "plugin": name, "error": e.to_string() })),
@@ -1569,6 +1603,7 @@ async fn handle_plugin_code(
     info!(code, plugin = %name, artifact_id = %artifact_id, "installed plugin");
 
     // Cascade plugin-to-plugin dependencies (e.g., digest → ffmpeg).
+    let mut dependencies_installed = false;
     if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
         if !manifest.dependencies.is_empty() {
             let ps = state.plugin_store.clone();
@@ -1607,6 +1642,7 @@ async fn handle_plugin_code(
                         for dep_slug in &installed {
                             info!(plugin = %slug, dep = %dep_slug, "installed dependency plugin");
                         }
+                        dependencies_installed = !installed.is_empty();
                     }
                     Err(e) => {
                         warn!(plugin = %slug, error = %e, "failed to install plugin dependencies");
@@ -1630,8 +1666,11 @@ async fn handle_plugin_code(
 
     // Plugins ship embedded skills (loader step 2.5) — without a reload they
     // stay invisible until the next boot and the model can't discover them
-    // (the nebo-office pptx flail). Same warm-reload rule as skill installs.
-    state.skill_loader.reload_from_disk().await;
+    // (the nebo-office pptx flail). The plugin's own were reloaded as it
+    // installed; the plugins it depends on were installed after that.
+    if dependencies_installed {
+        state.skill_loader.reload_from_disk().await;
+    }
 
     Ok(CodeHandlerResult {
         message: format!("Installed plugin: {}", name),
@@ -1649,6 +1688,28 @@ async fn download_plugin_napp(api: &NeboAIApi, url: &str) -> Result<Vec<u8>, Str
     tokio::fs::read(&path).await.map_err(|e| format!("read .napp: {e}"))
 }
 
+/// When an install makes what it wrote usable. One artifact on its own does
+/// it at once: the skill catalog is reloaded and a plugin activated. A
+/// dependency cascade installs several side by side and does it once, at its
+/// end, for all of them (`deps::resolve_cascade`): each of its installs used
+/// to reload every skill from disk, one to three times, and refresh every
+/// plugin tool, one install after another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Settle {
+    Now,
+    AtCascadeEnd,
+}
+
+/// What [`fetch_and_install_plugin`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PluginFetch {
+    /// The package was downloaded and installed.
+    Installed,
+    /// The marketplace copy here already is that version with those bytes:
+    /// nothing was downloaded.
+    AlreadyInPlace,
+}
+
 /// Download a marketplace plugin's per-platform `.napp` by slug, install it,
 /// register it in the DB, and wire up its tool + hooks.
 ///
@@ -1658,14 +1719,21 @@ async fn download_plugin_napp(api: &NeboAIApi, url: &str) -> Result<Vec<u8>, Str
 /// own surrounding concerns (progress broadcasts, child-dep handling, auth).
 /// `code` is the marketplace code it was installed from, when there is one
 /// (an update keeps the one recorded): an employee that names the plugin by
-/// that code reaches its tool.
+/// that code reaches its tool. `settle` says when the install is made usable
+/// ([`Settle`]); with [`Settle::AtCascadeEnd`] the caller activates it.
+///
+/// The marketplace copy already here at the hub's version, with the binary
+/// the hub lists (its recorded sha256), is not downloaded again: a 43 MB
+/// plugin a second hire depends on was fetched whole, only to be found the
+/// same bytes and kept in place (2026-10-10, 2.8–4.1 s each).
 pub(crate) async fn fetch_and_install_plugin(
     state: &AppState,
     api: &NeboAIApi,
     slug: &str,
     name: &str,
     code: Option<&str>,
-) -> Result<(), NeboError> {
+    settle: Settle,
+) -> Result<PluginFetch, NeboError> {
     let platform = napp::plugin::current_platform_key();
     let detail = api
         .get_plugin::<napp::plugin::PluginManifest>(slug, &platform)
@@ -1682,15 +1750,22 @@ pub(crate) async fn fetch_and_install_plugin(
         NeboError::Internal(format!("plugin {slug} has no binary for platform {platform}"))
     })?;
 
+    if installed_as_listed(state, slug, &version, &platform_binary.sha256) {
+        info!(plugin = %name, version = %version, "the marketplace copy here is this version with these bytes: nothing downloaded");
+        record_plugin_code(state, slug, code);
+        return Ok(PluginFetch::AlreadyInPlace);
+    }
+
     info!(plugin = %name, url = %platform_binary.download_url, "downloading plugin .napp");
     let napp_data = download_plugin_napp(api, &platform_binary.download_url)
         .await
         .map_err(|e| NeboError::Internal(format!("download .napp for {name}: {e}")))?;
 
-    // Pause the skill watcher during extraction to prevent premature reloads.
-    // The previous install is removed inside `install_from_napp`, under its
-    // per-slug lock, never here where a second caller could delete a first
-    // caller's freshly extracted files.
+    // Pause the skill watcher during extraction to prevent premature reloads
+    // (a cascade holds it paused for its whole run). The previous install is
+    // removed inside `install_from_napp`, under its per-slug lock, never here
+    // where a second caller could delete a first caller's freshly extracted
+    // files.
     state.skill_loader.pause_watcher();
     let install = state
         .plugin_store
@@ -1703,8 +1778,11 @@ pub(crate) async fn fetch_and_install_plugin(
     // manifest write persists the loss. Observed live: a nebo-office
     // auto-update orphaned all 21 of its skills and the agent told the user
     // "the pptx-design skill isn't installed" while the files sat on disk.
-    // (The skill-install path 900 lines up documents this same trap.)
-    state.skill_loader.reload_from_disk().await;
+    // (The skill-install path 900 lines up documents this same trap.) A
+    // cascade reloads once, when it ends.
+    if settle == Settle::Now {
+        state.skill_loader.reload_from_disk().await;
+    }
     state.skill_loader.resume_watcher();
     let path = install.map_err(|e| NeboError::Internal(format!("install plugin {slug}: {e}")))?;
     info!(plugin = %name, path = %path.display(), "installed plugin");
@@ -1726,6 +1804,38 @@ pub(crate) async fn fetch_and_install_plugin(
     ) {
         warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
     }
+    record_plugin_code(state, slug, code);
+    let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
+
+    if settle == Settle::Now {
+        activate_plugins(state, &[slug.to_string()]).await;
+    }
+    Ok(PluginFetch::Installed)
+}
+
+/// Is the marketplace copy of `slug` here exactly what the hub lists: the
+/// registry records that version with that binary's sha256, and that
+/// version's binary is whole on disk. The owner's own plugin of the slug
+/// never answers for it.
+fn installed_as_listed(state: &AppState, slug: &str, version: &str, sha256: &str) -> bool {
+    if sha256.is_empty() {
+        return false;
+    }
+    let recorded = match state.store.get_plugin_by_slug(slug) {
+        Ok(Some(row)) => row,
+        Ok(None) => return false,
+        Err(e) => {
+            warn!(plugin = %slug, error = %e, "the plugin registry could not be read");
+            return false;
+        }
+    };
+    recorded.version == version
+        && recorded.manifest_hash.eq_ignore_ascii_case(sha256)
+        && state.plugin_store.marketplace_copy(slug, version).is_some()
+}
+
+/// Record the marketplace code a plugin was installed from.
+fn record_plugin_code(state: &AppState, slug: &str, code: Option<&str>) {
     if let Some(code) = code
         && let Err(e) = state
             .store
@@ -1733,10 +1843,6 @@ pub(crate) async fn fetch_and_install_plugin(
     {
         warn!(plugin = %slug, error = %e, "the plugin's install code was not recorded");
     }
-    let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
-
-    activate_plugin(state, slug).await;
-    Ok(())
 }
 
 /// Load the owner's stored settings for these plugins into the env each
@@ -1745,7 +1851,7 @@ pub(crate) async fn fetch_and_install_plugin(
 /// plugin's own declaration, so a plugin is resealed once its manifest is
 /// on disk. Then every setting is read from the database, the one source of
 /// truth, and decrypted. Startup runs it for every installed plugin, and
-/// `activate_plugin` for each one that arrives later: a restored bot's
+/// `activate_plugins` for each one that arrives later: a restored bot's
 /// plugins are fetched minutes after it starts, and without this ran with
 /// no credentials until the next restart.
 pub(crate) fn load_plugin_settings(
@@ -1778,55 +1884,68 @@ pub(crate) fn load_plugin_settings(
     }
 }
 
-/// Make a plugin that just landed on disk usable: its tool and the
-/// operations it binds, its hooks, the workers running its old binary, and
-/// any chat parked on an install card for it. The ONE path for every way a
-/// plugin arrives: a marketplace install and a copy by hand into the
-/// plugins folder (the filesystem watcher) both end here.
-pub(crate) async fn activate_plugin(state: &AppState, slug: &str) {
-    // It runs with the owner's stored settings, as it would have at startup.
-    load_plugin_settings(&state.store, &state.plugin_store, &[slug.to_string()]);
-    // The new plugin's tool and the operations it binds are usable immediately.
+/// Make plugins that just landed on disk usable: their tools and the
+/// operations they bind, their hooks, the workers running their old binaries,
+/// and any chat parked on an install card for one of them. The ONE path for
+/// every way a plugin arrives: a marketplace install, a dependency cascade
+/// (all its plugins at once, when it ends) and a copy by hand into the
+/// plugins folder (the filesystem watcher) all end here. The plugin tools are
+/// re-derived once for all of them.
+pub(crate) async fn activate_plugins(state: &AppState, slugs: &[String]) {
+    if slugs.is_empty() {
+        return;
+    }
+    // They run with the owner's stored settings, as they would have at startup.
+    load_plugin_settings(&state.store, &state.plugin_store, slugs);
+    // The new plugins' tools and the operations they bind are usable immediately.
     state.tools.refresh_plugin_tools().await;
-    // Its readiness, as startup warms it: a plugin with an auth status probe
+    // Their readiness, as startup warms it: a plugin with an auth status probe
     // reads as not ready until the probe has run, and the probe runs with the
     // settings just loaded. Off this path, as at startup: a probe can take
-    // up to its timeout. The plugin tools are re-derived once it is known.
-    if state.plugin_store.get_manifest(slug).and_then(|m| m.auth).is_some_and(|a| a.commands.status.is_some()) {
+    // up to its timeout. The plugin tools are re-derived once they are known.
+    let probed: Vec<String> = slugs
+        .iter()
+        .filter(|slug| {
+            state.plugin_store.get_manifest(slug).and_then(|m| m.auth).is_some_and(|a| a.commands.status.is_some())
+        })
+        .cloned()
+        .collect();
+    if !probed.is_empty() {
         let ps = state.plugin_store.clone();
         let tools = state.tools.clone();
-        let slug = slug.to_string();
         tokio::spawn(async move {
-            ps.update_auth_status(&slug).await;
+            futures::future::join_all(probed.iter().map(|slug| ps.update_auth_status(slug))).await;
             tools.refresh_plugin_tools().await;
         });
     }
-    if let Some(manifest) = state.plugin_store.get_manifest(slug) {
-        if let Some(binary) = state.plugin_store.resolve(slug, "*") {
-            let count =
-                napp::register_plugin_hooks(&manifest, &binary, &state.hooks, state.plugin_store.clone());
-            if count > 0 {
-                info!(plugin = %slug, hooks = count, "registered plugin hooks");
+    for slug in slugs {
+        if let Some(manifest) = state.plugin_store.get_manifest(slug) {
+            if let Some(binary) = state.plugin_store.resolve(slug, "*") {
+                let count =
+                    napp::register_plugin_hooks(&manifest, &binary, &state.hooks, state.plugin_store.clone());
+                if count > 0 {
+                    info!(plugin = %slug, hooks = count, "registered plugin hooks");
+                }
             }
         }
-    }
 
-    // The old binary may still be running inside per-agent channel/watch bridges or a
-    // shared bridge. Stop the shared bridge and restart every agent worker that uses
-    // this plugin so their loops respawn against the NEW binary. (child_guard's reaper
-    // skips our own registered children, so cancelling+restarting the owning workers is
-    // the lever — the loops already auto-respawn their child on death.)
-    state.agent_workers.shared_bridges().stop(slug).await;
-    for (agent_id, agent_name) in find_agents_using_plugin(&state.store, slug).await {
-        info!(plugin = %slug, agent = %agent_id, "restarting agent worker after plugin update");
-        state
-            .agent_workers
-            .start_agent(&agent_id, &agent_name, None)
-            .await;
+        // The old binary may still be running inside per-agent channel/watch bridges or a
+        // shared bridge. Stop the shared bridge and restart every agent worker that uses
+        // this plugin so their loops respawn against the NEW binary. (child_guard's reaper
+        // skips our own registered children, so cancelling+restarting the owning workers is
+        // the lever — the loops already auto-respawn their child on death.)
+        state.agent_workers.shared_bridges().stop(slug).await;
+        for (agent_id, agent_name) in find_agents_using_plugin(&state.store, slug).await {
+            info!(plugin = %slug, agent = %agent_id, "restarting agent worker after plugin update");
+            state
+                .agent_workers
+                .start_agent(&agent_id, &agent_name, None)
+                .await;
+        }
+        // The plugin is on disk and registered: a chat parked on an install card
+        // for it resumes now, whichever door this install came through.
+        crate::chat_dispatch::release_install_cards(state, slug).await;
     }
-    // The plugin is on disk and registered: a chat parked on an install card
-    // for it resumes now, whichever door this install came through.
-    crate::chat_dispatch::release_install_cards(state, slug).await;
 }
 
 /// True if a watch workflow's trigger config targets this plugin slug.
@@ -1970,15 +2089,9 @@ pub async fn submit_code(
     })?;
 
     // A second tap while the first is installing is one install, not two:
-    // the card's door claims the code like every other door does.
-    let Some(claim) = state.codes_in_flight.begin(validated_code) else {
-        return Err((
-            axum::http::StatusCode::CONFLICT,
-            axum::response::Json(types::api::ErrorResponse {
-                error: format!("{validated_code} {}", tools::bot_tool::ALREADY_INSTALLING),
-            }),
-        ));
-    };
+    // the card's door claims the code like every other door does, and joins
+    // the install in flight.
+    let claim = state.codes_in_flight.claim(validated_code).await;
     // The card that asked renders the install's progress; no other client does.
     let origin = EventOrigin::of_request(&headers, String::new());
     let result = install(&state, code_type, &claim, InstalledBy::Owner, &origin).await;
@@ -2000,12 +2113,35 @@ pub async fn submit_code(
 
 // ── Plugin Auth Sweep ───────────────────────────────────────────────
 
-/// Check all installed plugins for pending authentication requirements.
+/// The plugins an employee's workflows reach by slug: an Event trigger's
+/// `sources` are "{slug}.{event}" and a Watch trigger names its `plugin`.
+fn workflow_plugins(cfg: &napp::agent::AgentConfig) -> HashSet<String> {
+    let mut used = HashSet::new();
+    for binding in cfg.workflows.values() {
+        match &binding.trigger {
+            napp::agent::AgentTrigger::Event { sources } => {
+                used.extend(sources.iter().filter_map(|src| src.split_once('.')).map(|(slug, _)| slug.to_string()));
+            }
+            napp::agent::AgentTrigger::Watch { plugin, .. } => {
+                used.insert(plugin.clone());
+            }
+            _ => {}
+        }
+    }
+    used
+}
+
+/// Check installed plugins for pending authentication requirements: every
+/// one (a collection), or only the ones employee `agent_id` uses (its
+/// `requires.plugins` and the plugins its workflows watch or listen to). A
+/// hire waited on every installed plugin's status probe, one after another,
+/// before it answered, and held back an employee that uses no plugin at all
+/// over some other plugin's sign-in.
 ///
 /// Returns a list of plugins that have auth config but are not yet authenticated.
 /// Used after dependency cascade to determine if the agent install wizard should
 /// prompt the user for OAuth before activating the agent.
-async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
+async fn sweep_plugin_auth(state: &AppState, agent_id: Option<&str>) -> Vec<serde_json::Value> {
     let mut needs_auth = Vec::new();
     let installed = state.plugin_store.list_installed();
 
@@ -2022,23 +2158,7 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
             let Ok(cfg) = napp::agent::parse_agent_config(&agent.frontmatter) else {
                 continue;
             };
-            let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for binding in cfg.workflows.values() {
-                match &binding.trigger {
-                    napp::agent::AgentTrigger::Event { sources } => {
-                        for src in sources {
-                            if let Some((slug, _)) = src.split_once('.') {
-                                used.insert(slug.to_string());
-                            }
-                        }
-                    }
-                    napp::agent::AgentTrigger::Watch { plugin, .. } => {
-                        used.insert(plugin.clone());
-                    }
-                    _ => {}
-                }
-            }
-            for slug in used {
+            for slug in workflow_plugins(&cfg) {
                 let entry = slug_to_agent.entry(slug).or_insert_with(|| agent.id.clone());
                 if *entry == "assistant" && agent.id != "assistant" {
                     *entry = agent.id.clone();
@@ -2047,12 +2167,29 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
         }
     }
 
-    let mut seen = std::collections::HashSet::new();
-    for (slug, _, _, _) in &installed {
-        if !seen.insert(slug.clone()) {
-            continue;
-        }
-        match crate::handlers::plugins::check_plugin_auth(&state.plugin_store, slug).await {
+    // The plugins in question: an employee's own, or every one installed.
+    let used_by = agent_id.map(|id| {
+        let Ok(Some(agent)) = state.store.get_agent(id) else { return HashSet::new() };
+        let Ok(cfg) = napp::agent::parse_agent_config(&agent.frontmatter) else { return HashSet::new() };
+        let mut used = workflow_plugins(&cfg);
+        used.extend(cfg.requires.plugins.iter().filter_map(|r| tools::plugin_tools::plugin_slug_of(&state.store, r)));
+        used
+    });
+    let mut seen = HashSet::new();
+    let slugs: Vec<&String> = installed
+        .iter()
+        .map(|(slug, _, _, _)| slug)
+        .filter(|slug| seen.insert((*slug).clone()))
+        .filter(|slug| used_by.as_ref().is_none_or(|used| used.contains(*slug)))
+        .collect();
+    // Each status is cached once read; the ones not yet read are probed side
+    // by side, never one after another.
+    let statuses = futures::future::join_all(
+        slugs.iter().map(|slug| crate::handlers::plugins::check_plugin_auth(&state.plugin_store, slug)),
+    )
+    .await;
+    for (slug, status) in slugs.into_iter().zip(statuses) {
+        match status {
             Some(false) => {
                 if let Some(manifest) = state.plugin_store.get_manifest(slug) {
                     if let Some(auth) = &manifest.auth {
@@ -2268,7 +2405,7 @@ async fn persist_workflow_artifact(
                 tracing::info!(workflow = name, path = %napp_path.display(), size, "stored sealed .napp");
 
                 match napp::reader::extract_napp_alongside(&napp_path) {
-                    Ok(extract_dir) => {
+                    Ok(napp::reader::Unpacked::Extracted(extract_dir)) => {
                         tracing::info!(workflow = name, dir = %extract_dir.display(), "extracted .napp");
                         // Set napp_path on DB record to the sealed archive
                         if let Err(e) =
@@ -2277,6 +2414,9 @@ async fn persist_workflow_artifact(
                             warn!(workflow = name, error = %e, "failed to set napp_path");
                         }
                         return Ok(());
+                    }
+                    Ok(napp::reader::Unpacked::Sealed) => {
+                        tracing::warn!(workflow = name, "sealed workflow .napp cannot be extracted; falling back to loose files");
                     }
                     Err(e) => {
                         tracing::warn!(workflow = name, error = %e, "failed to extract .napp; falling back to loose files");
@@ -3221,8 +3361,7 @@ mod tests {
     async fn in_flight_counts_codes_and_cascades() {
         let set = InFlightCodes::default();
         assert!(!set.busy());
-        let code = set.begin("SKIL-AAAA-BBBB").expect("first claim wins");
-        assert!(set.begin("SKIL-AAAA-BBBB").is_none());
+        let code = set.claim("SKIL-AAAA-BBBB").await;
         assert!(set.busy());
         drop(code);
         let cascade = set.cascade_begin();
@@ -3622,14 +3761,29 @@ mod tests {
 mod in_flight_tests {
     use super::InFlightCodes;
 
-    #[test]
-    fn in_flight_codes_admit_one_run_at_a_time() {
-        let codes = InFlightCodes::default();
-        let first = codes.begin("PLUG-RYX9-G8HT").expect("first claim");
-        assert!(codes.begin("PLUG-RYX9-G8HT").is_none(), "the echo must not start a second run");
-        assert!(codes.begin("PLUG-OTHER-0000").is_some(), "another code is unaffected");
+    /// A second door for a code in flight joins it: its claim waits while
+    /// the first run holds the code and is granted the moment that run ends,
+    /// so the two never install side by side. Another code is unaffected.
+    /// Mutation check: drop the `notify_waiters` in the guard's drop and the
+    /// joining door never wakes (the timeout fails).
+    #[tokio::test]
+    async fn a_second_door_joins_the_install_in_flight() {
+        let codes = std::sync::Arc::new(InFlightCodes::default());
+        let first = codes.claim("PLUG-RYX9-G8HT").await;
+        let joining = {
+            let codes = codes.clone();
+            tokio::spawn(async move {
+                let _second = codes.claim("PLUG-RYX9-G8HT").await;
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!joining.is_finished(), "the second door waits while the first run holds the code");
+        drop(codes.claim("PLUG-OTHER-0000").await);
         drop(first);
-        assert!(codes.begin("PLUG-RYX9-G8HT").is_some(), "free again once the first run ends");
+        tokio::time::timeout(std::time::Duration::from_secs(2), joining)
+            .await
+            .expect("the second door is granted the code once the first run ends")
+            .unwrap();
     }
 }
 

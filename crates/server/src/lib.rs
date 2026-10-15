@@ -3129,9 +3129,8 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             for frontmatter in agents_needing_cascade {
                 let deps = crate::deps::extract_agent_deps_from_frontmatter(&frontmatter);
                 if !deps.is_empty() {
-                    let mut visited = std::collections::HashSet::new();
                     // The boot-time reconcile: no one's act is behind it.
-                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited, tools::InstalledBy::Other, &handlers::ws::EventOrigin::default()).await;
+                    crate::deps::resolve_cascade(&cascade_state, deps, tools::InstalledBy::Other, &handlers::ws::EventOrigin::default(), None).await;
                 }
             }
         });
@@ -3877,7 +3876,7 @@ async fn handle_plugin_fs_event(state: &AppState, event: napp::plugin::PluginFsE
             let by_hand = binary_path.starts_with(state.plugin_store.user_plugins_dir())
                 || matches!(state.store.get_plugin_by_slug(slug), Ok(None));
             if by_hand {
-                codes::activate_plugin(state, slug).await;
+                codes::activate_plugins(state, std::slice::from_ref(slug)).await;
             }
             info!(slug = %slug, path = %binary_path.display(), action, by_hand, "plugin hot-loaded");
         }
@@ -3990,15 +3989,14 @@ async fn handle_agent_fs_events(
                                     let deps =
                                         crate::deps::extract_agent_deps_from_frontmatter(&fm);
                                     if !deps.is_empty() {
-                                        let mut visited = std::collections::HashSet::new();
                                         // An employee found on disk: its
                                         // dependencies come with no one's act.
                                         crate::deps::resolve_cascade(
                                             &cascade_state,
                                             deps,
-                                            &mut visited,
                                             tools::InstalledBy::Other,
                                             &handlers::ws::EventOrigin::default(),
+                                            None,
                                         )
                                         .await;
                                     }

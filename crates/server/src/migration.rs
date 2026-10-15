@@ -244,13 +244,12 @@ fn extract_napps_recursive(dir: &Path) -> usize {
         if path.is_dir() {
             count += extract_napps_recursive(&path);
         } else if path.extension().is_some_and(|ext| ext == "napp") {
-            // Check if this .napp is sealed (encrypted) — skip if so
-            if napp::reader::is_sealed_napp(&path) {
-                debug!(path = %path.display(), "skipping sealed .napp (paid content)");
-                continue;
-            }
+            // A sealed (encrypted) .napp stays sealed: it is skipped.
             match napp::reader::extract_napp_alongside(&path) {
-                Ok(_) => count += 1,
+                Ok(napp::reader::Unpacked::Extracted(_)) => count += 1,
+                Ok(napp::reader::Unpacked::Sealed) => {
+                    debug!(path = %path.display(), "skipping sealed .napp (paid content)");
+                }
                 Err(e) => {
                     warn!(path = %path.display(), error = %e, "failed to extract .napp archive");
                 }

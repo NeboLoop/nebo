@@ -92,6 +92,44 @@ pub struct CascadeResult {
 
 // ── Core Resolver ───────────────────────────────────────────────────
 
+/// How many dependencies a cascade installs side by side. Each install is
+/// mostly waiting on NeboAI (redeem, detail, download); a few at once keep
+/// the line busy without one hire flooding it.
+const CASCADE_PARALLEL: usize = 4;
+
+/// One cascade's shared state: what it has visited, the bound on installs
+/// side by side, and what it installed that becomes usable once, when it
+/// ends ([`crate::codes::Settle::AtCascadeEnd`]).
+struct Cascade<'a> {
+    state: &'a AppState,
+    by: tools::InstalledBy,
+    origin: &'a EventOrigin,
+    /// The employee the cascade sets up, when it sets one up: every `dep_*`
+    /// event names it, so its row shows the progress wherever it is listed.
+    agent_id: Option<&'a str>,
+    visited: std::sync::Mutex<HashSet<String>>,
+    permits: tokio::sync::Semaphore,
+    plugins: std::sync::Mutex<Vec<String>>,
+    skills_changed: std::sync::atomic::AtomicBool,
+}
+
+impl Cascade<'_> {
+    /// A `dep_*` event for `dep`, stamped for the client that asked.
+    fn announce(&self, event: &str, dep: &DepRef, error: Option<&str>) {
+        let mut payload = serde_json::json!({
+            "depType": format!("{:?}", dep.dep_type),
+            "reference": dep.reference,
+            "name": dep.name,
+            "slug": dep.slug,
+            "agentId": self.agent_id,
+        });
+        if let Some(error) = error {
+            payload["error"] = serde_json::json!(error);
+        }
+        self.state.hub.broadcast(event, self.origin.stamp(payload));
+    }
+}
+
 /// Install every dependency in `deps` and recurse into their transitive deps.
 ///
 /// This is THE cascade. It always installs — there is no "pending/approve"
@@ -99,21 +137,51 @@ pub struct CascadeResult {
 /// flow through here; the boot-time reconcile in `lib.rs` gates the CALL on
 /// `auto_install_deps_enabled`, not the behavior inside.
 ///
+/// Dependencies install side by side, [`CASCADE_PARALLEL`] at a time, with
+/// the skill watcher paused for the whole cascade; what they wrote is made
+/// usable once, at the end: one skill reload and one plugin activation for
+/// all of them. A hire's dependencies used to install one after another,
+/// each reloading every skill from disk one to three times (Design Studio,
+/// 2026-10-10: 15 s for two plugins).
+///
 /// `origin` is who asked for the install the cascade belongs to: every
 /// `dep_*` event carries it, so only that client's install modal renders the
-/// progress (another client's cascade never lands in it).
+/// progress (another client's cascade never lands in it). `agent_id` is the
+/// employee it sets up, when it sets one up.
 pub async fn resolve_cascade(
     state: &AppState,
     deps: Vec<DepRef>,
-    visited: &mut HashSet<String>,
     by: tools::InstalledBy,
     origin: &EventOrigin,
+    agent_id: Option<&str>,
 ) -> CascadeResult {
     // Counted as local install work so the hub's `tool_installed` echo of a
     // dep we redeem here waits for it (codes::InFlightCodes::settle).
     let _cascade = state.codes_in_flight.cascade_begin();
-    announce_cascade_start(state, &deps, origin);
-    let result = resolve_cascade_inner(state, deps, visited, by, origin).await;
+    state.hub.broadcast(
+        "dep_cascade_start",
+        origin.stamp(serde_json::json!({ "total": deps.len(), "agentId": agent_id })),
+    );
+    let cascade = Cascade {
+        state,
+        by,
+        origin,
+        agent_id,
+        visited: std::sync::Mutex::new(HashSet::new()),
+        permits: tokio::sync::Semaphore::new(CASCADE_PARALLEL),
+        plugins: std::sync::Mutex::new(Vec::new()),
+        skills_changed: std::sync::atomic::AtomicBool::new(false),
+    };
+    state.skill_loader.pause_watcher();
+    let result = resolve_level(&cascade, deps).await;
+    let plugins = std::mem::take(&mut *cascade.plugins.lock().unwrap_or_else(|e| e.into_inner()));
+    if !plugins.is_empty() || cascade.skills_changed.load(std::sync::atomic::Ordering::SeqCst) {
+        // COLD reload: what the cascade wrote is on disk, the warm-start
+        // manifest is not (see SkillLoader::reload_from_disk).
+        state.skill_loader.reload_from_disk().await;
+    }
+    state.skill_loader.resume_watcher();
+    crate::codes::activate_plugins(state, &plugins).await;
     // Once, when the whole cascade is done: each level of the recursion used
     // to announce its own end, so the install modal read a child agent's
     // finished (empty) dependency list as the cascade being complete while
@@ -124,145 +192,89 @@ pub async fn resolve_cascade(
             "installed": result.installed_count,
             "pending": result.pending_count,
             "failed": result.failed_count,
+            "agentId": agent_id,
         })),
     );
     result
 }
 
-/// Tell the UI how many top-level dependencies are about to be processed, so the
-/// install modal can render a determinate progress bar instead of a spinner.
-fn announce_cascade_start(state: &AppState, deps: &[DepRef], origin: &EventOrigin) {
-    state.hub.broadcast(
-        "dep_cascade_start",
-        origin.stamp(serde_json::json!({ "total": deps.len() })),
-    );
-}
-
-fn resolve_cascade_inner<'a>(
-    state: &'a AppState,
+/// One level of the cascade: its dependencies side by side, each followed
+/// by its own. Results keep the order the dependencies were declared in.
+fn resolve_level<'a>(
+    cascade: &'a Cascade<'a>,
     deps: Vec<DepRef>,
-    visited: &'a mut HashSet<String>,
-    by: tools::InstalledBy,
-    origin: &'a EventOrigin,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CascadeResult> + Send + 'a>> {
     Box::pin(async move {
-        let mut results = Vec::new();
-        let mut installed_count = 0usize;
-        // Retained for the CascadeResult shape the frontend reads; never
-        // incremented now that the cascade always installs.
-        let pending_count = 0usize;
-        let mut failed_count = 0usize;
-
-        for dep in deps {
-            // Cycle / dedup check
-            let key = format!("{:?}:{}", dep.dep_type, dep.reference);
-            if !visited.insert(key) {
-                continue;
-            }
-
-            // Check if already installed
-            if is_installed(state, &dep).await {
-                // Tell the UI it's present so a row shows installed (e.g. when the
-                // user retries a previously-failed item that's actually installed).
-                state.hub.broadcast(
-                    "dep_installed",
-                    origin.stamp(serde_json::json!({
-                        "depType": format!("{:?}", dep.dep_type),
-                        "reference": dep.reference,
-                        "name": dep.name,
-                        "slug": dep.slug,
-                    })),
-                );
-                installed_count += 1;
-                results.push(DepResult {
-                    dep,
-                    status: DepStatus::AlreadyInstalled,
-                    children: vec![],
-                });
-                continue;
-            }
-
-            // Bare names (no @ prefix, no install code) are built-in tool bindings —
-            // mark unresolvable. EXCEPT plugins: manifests reference plugins by bare
-            // slug (e.g. `gws`, `google-analytics`), which install_plugin resolves to
-            // an install code via the marketplace. Skipping those left every declared
-            // plugin uninstalled (the "0/N, nothing installs" bug).
-            if !is_marketplace_ref(&dep.reference) && !matches!(dep.dep_type, DepType::Plugin) {
-                let reason = format!(
-                    "'{}' is a built-in or simple name, not a marketplace ref",
-                    dep.reference
-                );
-                results.push(DepResult {
-                    dep,
-                    status: DepStatus::Unresolvable { reason },
-                    children: vec![],
-                });
-                continue;
-            }
-
-            // Signal the UI that this dependency is now being installed so it can
-            // render a live per-dependency progress indicator.
-            state.hub.broadcast(
-                "dep_started",
-                origin.stamp(serde_json::json!({
-                    "depType": format!("{:?}", dep.dep_type),
-                    "reference": dep.reference,
-                    "name": dep.name,
-                    "slug": dep.slug,
-                })),
-            );
-            match install_dep(state, &dep, by).await {
-                Ok(child_deps) => {
-                    state.hub.broadcast(
-                        "dep_installed",
-                        origin.stamp(serde_json::json!({
-                            "depType": format!("{:?}", dep.dep_type),
-                            "reference": dep.reference,
-                            "name": dep.name,
-                            "slug": dep.slug,
-                        })),
-                    );
-                    installed_count += 1;
-
-                    // Recurse into child deps
-                    let child_result = resolve_cascade_inner(state, child_deps, visited, by, origin).await;
-                    installed_count += child_result.installed_count;
-                    failed_count += child_result.failed_count;
-
-                    results.push(DepResult {
-                        dep,
-                        status: DepStatus::Installed,
-                        children: child_result.results,
-                    });
-                }
-                Err(e) => {
-                    state.hub.broadcast(
-                        "dep_failed",
-                        origin.stamp(serde_json::json!({
-                            "depType": format!("{:?}", dep.dep_type),
-                            "reference": dep.reference,
-                            "name": dep.name,
-                            "slug": dep.slug,
-                            "error": e,
-                        })),
-                    );
-                    failed_count += 1;
-                    results.push(DepResult {
-                        dep,
-                        status: DepStatus::Failed { error: e },
-                        children: vec![],
-                    });
-                }
-            }
+        let results = futures::future::join_all(deps.into_iter().map(|dep| resolve_one(cascade, dep))).await;
+        let mut level = CascadeResult {
+            results: Vec::new(),
+            installed_count: 0,
+            // Retained for the CascadeResult shape the frontend reads; never
+            // incremented now that the cascade always installs.
+            pending_count: 0,
+            failed_count: 0,
+        };
+        for (result, installed, failed) in results.into_iter().flatten() {
+            level.installed_count += installed;
+            level.failed_count += failed;
+            level.results.push(result);
         }
+        level
+    })
+}
 
-        CascadeResult {
-            results,
-            installed_count,
-            pending_count,
-            failed_count,
+/// One dependency and the ones it brings: its result, and how many installed
+/// and failed in all. `None` when the cascade has seen it already.
+async fn resolve_one(cascade: &Cascade<'_>, dep: DepRef) -> Option<(DepResult, usize, usize)> {
+    // Cycle / dedup check
+    let key = format!("{:?}:{}", dep.dep_type, dep.reference);
+    if !cascade.visited.lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
+        return None;
+    }
+    let state = cascade.state;
+
+    // Check if already installed
+    if is_installed(state, &dep).await {
+        // Tell the UI it's present so a row shows installed (e.g. when the
+        // user retries a previously-failed item that's actually installed).
+        cascade.announce("dep_installed", &dep, None);
+        return Some((DepResult { dep, status: DepStatus::AlreadyInstalled, children: vec![] }, 1, 0));
+    }
+
+    // Bare names (no @ prefix, no install code) are built-in tool bindings —
+    // mark unresolvable. EXCEPT plugins: manifests reference plugins by bare
+    // slug (e.g. `gws`, `google-analytics`), which install_plugin resolves to
+    // an install code via the marketplace. Skipping those left every declared
+    // plugin uninstalled (the "0/N, nothing installs" bug).
+    if !is_marketplace_ref(&dep.reference) && !matches!(dep.dep_type, DepType::Plugin) {
+        let reason = format!("'{}' is a built-in or simple name, not a marketplace ref", dep.reference);
+        return Some((DepResult { dep, status: DepStatus::Unresolvable { reason }, children: vec![] }, 0, 0));
+    }
+
+    // Held only for this dependency's own install: its children take
+    // permits of their own, so a deep tree never waits on itself.
+    let installed = {
+        let _permit = cascade.permits.acquire().await;
+        // Signal the UI that this dependency is now being installed so it can
+        // render a live per-dependency progress indicator.
+        cascade.announce("dep_started", &dep, None);
+        install_dep(cascade, &dep).await
+    };
+    match installed {
+        Ok(child_deps) => {
+            cascade.announce("dep_installed", &dep, None);
+            let children = resolve_level(cascade, child_deps).await;
+            Some((
+                DepResult { dep, status: DepStatus::Installed, children: children.results },
+                1 + children.installed_count,
+                children.failed_count,
+            ))
         }
-    }) // Box::pin
+        Err(e) => {
+            cascade.announce("dep_failed", &dep, Some(&e));
+            Some((DepResult { dep, status: DepStatus::Failed { error: e }, children: vec![] }, 0, 1))
+        }
+    }
 }
 
 // ── Autonomy Check ──────────────────────────────────────────────────
@@ -308,6 +320,16 @@ async fn is_installed(state: &AppState, dep: &DepRef) -> bool {
 /// cascade re-installs it, surfacing a spurious failure for one already present.
 fn is_plugin_installed(state: &AppState, dep: &DepRef) -> bool {
     if state.plugin_store.resolve(&dep.reference, "*").is_some() {
+        return true;
+    }
+    // A plugin named by its install code (`requires.plugins: ["PLUG-…"]`)
+    // is the one the registry recorded that code for. Without this, a
+    // manifest's code-named plugin always looked missing, and every hire
+    // that declared one redeemed and re-fetched it.
+    if dep.reference.starts_with("PLUG-")
+        && let Ok(Some(slug)) = state.store.plugin_slug_for_code(&dep.reference)
+        && state.plugin_store.resolve(&slug, "*").is_some()
+    {
         return true;
     }
     // A qualified marketplace ref (`@neboloop/plugins/gws`) doesn't resolve as a
@@ -455,18 +477,15 @@ fn has_napp_files(dir: &std::path::Path) -> bool {
 
 // ── Install Dispatch ────────────────────────────────────────────────
 
-async fn install_dep(
-    state: &AppState,
-    dep: &DepRef,
-    by: tools::InstalledBy,
-) -> Result<Vec<DepRef>, String> {
+async fn install_dep(cascade: &Cascade<'_>, dep: &DepRef) -> Result<Vec<DepRef>, String> {
+    let state = cascade.state;
     let api = build_api_client(state).map_err(|e| e.to_string())?;
 
     match dep.dep_type {
-        DepType::Skill => install_skill(state, &api, &dep.reference).await,
+        DepType::Skill => install_skill(cascade, &api, &dep.reference).await,
         DepType::Workflow => install_workflow(state, &api, &dep.reference).await,
-        DepType::Plugin => install_plugin(state, &api, &dep.reference).await,
-        DepType::Agent => install_agent(state, &api, &dep.reference, by).await,
+        DepType::Plugin => install_plugin(cascade, &api, &dep.reference).await,
+        DepType::Agent => install_agent(state, &api, &dep.reference, cascade.by).await,
     }
 }
 
@@ -561,7 +580,7 @@ async fn install_agent(
     let name = resp.artifact.name.clone();
 
     if let Err(e) =
-        tools::persist_agent_from_api(api, &artifact_id, &name, reference, &state.store).await
+        tools::persist_agent_from_api(api, &artifact_id, &name, reference, resp.download_url.as_deref(), &state.store).await
     {
         return Err(format!("persist agent {}: {}", name, e));
     }
@@ -584,10 +603,11 @@ async fn install_agent(
 }
 
 async fn install_skill(
-    state: &AppState,
+    cascade: &Cascade<'_>,
     api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
+    let state = cascade.state;
     // Resolve qualified name → code, then redeem with NeboAI to register the install
     let code = resolve_marketplace_code(api, "skill", reference).await?;
     let resp = api
@@ -604,6 +624,7 @@ async fn install_skill(
         &artifact_id,
         &name,
         reference,
+        resp.download_url.as_deref(),
         Some(&state.store),
     )
     .await
@@ -618,7 +639,8 @@ async fn install_skill(
         }
     };
 
-    crate::codes::finalize_skill_install(state, &artifact_id, skill_dir.as_deref()).await;
+    crate::codes::finalize_skill_install(state, &artifact_id, skill_dir.as_deref(), crate::codes::Settle::AtCascadeEnd).await;
+    cascade.skills_changed.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // Extract child deps from the newly installed skill
     if let Some(skill_dir) = skill_dir {
@@ -654,10 +676,11 @@ async fn install_workflow(
 }
 
 async fn install_plugin(
-    state: &AppState,
+    cascade: &Cascade<'_>,
     api: &NeboAIApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
+    let state = cascade.state;
     // Resolve qualified name → code (plugins use the same redeem endpoint)
     let code = resolve_marketplace_code(api, "plugin", reference).await?;
     let resp = api
@@ -678,9 +701,12 @@ async fn install_plugin(
     // Install via the ONE shared plugin installer (resolves the binary via get_plugin,
     // downloads, installs, registers in the DB + tool/hooks). Same code path as the
     // standalone install, so the two can't drift on binary resolution again.
-    crate::codes::fetch_and_install_plugin(state, api, &slug, &name, Some(&code))
+    let fetched = crate::codes::fetch_and_install_plugin(state, api, &slug, &name, Some(&code), crate::codes::Settle::AtCascadeEnd)
         .await
         .map_err(|e| e.to_string())?;
+    if fetched == crate::codes::PluginFetch::Installed {
+        cascade.plugins.lock().unwrap_or_else(|e| e.into_inner()).push(slug.clone());
+    }
 
     // Extract child plugin dependencies from manifest
     let child_deps = state
@@ -903,10 +929,9 @@ pub async fn approve_deps(
     headers: axum::http::HeaderMap,
     Json(body): Json<ApproveRequest>,
 ) -> HandlerResult<serde_json::Value> {
-    let mut visited = HashSet::new();
     // The owner's retry in the install modal: its rows update there alone.
     let origin = EventOrigin::of_request(&headers, String::new());
-    let result = resolve_cascade(&state, body.deps, &mut visited, tools::InstalledBy::Owner, &origin).await;
+    let result = resolve_cascade(&state, body.deps, tools::InstalledBy::Owner, &origin, None).await;
     Ok(Json(serde_json::json!(result)))
 }
 

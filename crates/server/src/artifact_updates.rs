@@ -212,20 +212,16 @@ pub async fn check_one(state: &AppState, artifact_type: &str, key: &str) -> Opti
     }
 }
 
-async fn check_agent(
-    state: &AppState,
-    api: &comm::api::NeboAIApi,
-    agent: &db::models::Agent,
-) -> Option<serde_json::Value> {
-    // The installed version comes from the recorded pref — the SAME source `apply`
-    // writes — so a successful update converges and this check stops re-flagging it.
-    // (Reading the loader's on-disk manifest directly was the re-detection bug: it
-    // never converged to the applied version, unlike plugins/skills/connectors which
-    // read the store `apply` updates.) Fall back to the loader only to SEED a legacy
-    // agent with no pref row yet; the backfill below then records it.
-    let local_version = match state
+/// The version an installed employee is at. It comes from the recorded pref —
+/// the SAME source `apply` writes — so a successful update converges and the
+/// check stops re-flagging it. (Reading the loader's on-disk manifest directly
+/// was the re-detection bug: it never converged to the applied version, unlike
+/// plugins/skills/connectors which read the store `apply` updates.) The loader
+/// only SEEDS a legacy agent with no pref row yet; empty when neither knows.
+pub(crate) async fn installed_agent_version(state: &AppState, agent_id: &str, name: &str) -> String {
+    match state
         .store
-        .get_artifact_update_pref(&agent.id, "agent")
+        .get_artifact_update_pref(agent_id, "agent")
         .ok()
         .flatten()
         .map(|p| p.local_version)
@@ -234,11 +230,19 @@ async fn check_agent(
         Some(v) => v,
         None => state
             .agent_loader
-            .get_by_name(&agent.name)
+            .get_by_name(name)
             .await
             .and_then(|a| a.version)
             .unwrap_or_default(),
-    };
+    }
+}
+
+async fn check_agent(
+    state: &AppState,
+    api: &comm::api::NeboAIApi,
+    agent: &db::models::Agent,
+) -> Option<serde_json::Value> {
+    let local_version = installed_agent_version(state, &agent.id, &agent.name).await;
 
     if local_version.is_empty() {
         return None;
@@ -402,7 +406,7 @@ pub(crate) fn installed_skill_version(skills_dir: &std::path::Path, artifact_id:
 }
 
 /// Compare versions using semver. Falls back to string comparison if parsing fails.
-fn has_newer_version(local: &str, remote: &str) -> bool {
+pub(crate) fn has_newer_version(local: &str, remote: &str) -> bool {
     match (Version::parse(local), Version::parse(remote)) {
         (Ok(l), Ok(r)) => r > l,
         _ => !remote.is_empty() && remote != local,
@@ -749,7 +753,7 @@ pub(crate) async fn apply_agent_update_pub(
         .ok_or_else(|| format!("agent {} not found", agent_id))?;
 
     let kind = agent.kind.as_deref().unwrap_or("");
-    tools::persist_agent_from_api(api, agent_id, &agent.name, kind, &state.store)
+    tools::persist_agent_from_api(api, agent_id, &agent.name, kind, None, &state.store)
         .await
         .map(|_| ())?;
 
@@ -817,8 +821,9 @@ pub(crate) async fn apply_plugin_update_pub(
         .ok()
         .and_then(|ps| ps.into_iter().find(|p| p.slug == slug).map(|p| p.name))
         .unwrap_or_else(|| slug.to_string());
-    crate::codes::fetch_and_install_plugin(state, api, slug, &name, None)
+    crate::codes::fetch_and_install_plugin(state, api, slug, &name, None, crate::codes::Settle::Now)
         .await
+        .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
@@ -831,7 +836,7 @@ pub(crate) async fn apply_skill_update_pub(
     // install path uses (persist_skill_from_api fetches the detail itself), then
     // cold-reload the loader so the new content is live (Rule 8 — no drift from
     // install). `name` is only a dir fallback; the API detail's slug wins.
-    tools::persist_skill_from_api(api, skill_id, skill_id, "", Some(&state.store)).await?;
+    tools::persist_skill_from_api(api, skill_id, skill_id, "", None, Some(&state.store)).await?;
     state.skill_loader.reload_from_disk().await;
     Ok(())
 }

@@ -11,6 +11,7 @@
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
   import { getWebSocketClient } from '$lib/websocket/client';
+  import { onWsEvent } from '$lib/websocket/subscribe';
   import { isSignInFor, openSignInLink } from '$lib/utils/pluginSignIn';
   import { createChatController } from '$lib/chat/controller.svelte';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
@@ -424,6 +425,13 @@
     }
   }
 
+  type JobDraft = { line: string; draftId: string };
+  // A job drafted after the employee was created (a Create tapped before
+  // the builder's line came back) is offered here the moment it is drafted.
+  onWsEvent<JobDraft & { agentId: string }>('agent_job_drafted', (data) => {
+    if (data.agentId === agentId) jobEdit = { line: data.line, draftId: data.draftId };
+  });
+
   async function addJobEdit() {
     if (!agentId || !jobEdit) return;
     try {
@@ -595,6 +603,9 @@
     try {
       const api = await import('$lib/api/nebo');
       const res = await api.getAgent(id);
+      // A job drafted for it and not yet added: offered with its line.
+      const drafted = (res as { jobDraft?: JobDraft | null })?.jobDraft;
+      if (drafted?.draftId) jobEdit = drafted;
       const raw = (res as { inputValues?: unknown })?.inputValues;
       const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {});
       configValues = parsed && typeof parsed === 'object' ? parsed : {};

@@ -258,11 +258,39 @@ pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<St
         .cloned()
 }
 
+/// The URLs a package is fetched from, in order. A redeem's answer comes
+/// first: the hub resolves it for this platform (the per-platform package
+/// when there is a binary, the universal one when there is none), so a
+/// binary-less package is no longer asked for per platform first and refused
+/// (a 404 round trip on every skill and employee). Without one (an update
+/// redeems nothing), the per-platform package is tried first. The detail's
+/// generic URL is the fallback either way; a `{platform}` template is not a
+/// URL anything can fetch.
+fn package_candidates(artifact_id: &str, redeemed: Option<&str>, generic: Option<&str>) -> Vec<String> {
+    let first = match redeemed.filter(|u| !u.is_empty()) {
+        Some(url) => url.to_string(),
+        None => format!("/api/v1/apps/{}/download/{}.napp", artifact_id, napp::plugin::current_platform_key()),
+    };
+    let mut candidates = vec![first];
+    if let Some(generic) = generic.filter(|u| !u.is_empty() && !u.contains("{platform}")) {
+        if !candidates.iter().any(|c| c == generic) {
+            candidates.push(generic.to_string());
+        }
+    }
+    candidates
+}
+
 /// Fetch skill content from NeboAI and persist to nebo/ namespace.
 ///
 /// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
 /// and stores it at `nebo/skills/{slug}/{version}.napp`, then extracts it.
 /// Otherwise falls back to writing loose SKILL.md + manifest.json files.
+///
+/// `download_url` is the package URL a redeem answered with: the hub resolves
+/// it for this platform (the per-platform package when the skill ships a
+/// binary, the universal one when it does not), so it is fetched as is. With
+/// none (an update, which redeems nothing), the per-platform URL is tried
+/// before the detail's generic one.
 ///
 /// Returns the skill directory path on success (for cascade dependency resolution).
 pub async fn persist_skill_from_api(
@@ -270,6 +298,7 @@ pub async fn persist_skill_from_api(
     artifact_id: &str,
     name: &str,
     code: &str,
+    download_url: Option<&str>,
     store: Option<&db::Store>,
 ) -> Result<std::path::PathBuf, String> {
     let detail = api
@@ -291,18 +320,7 @@ pub async fn persist_skill_from_api(
     // generic `/download` serves the universal (binary-less) package. Prefer the
     // per-platform URL and fall back to the resolved generic URL for binary-less
     // skills (which 404 on the per-platform path).
-    let platform = napp::plugin::current_platform_key();
-    let platform_url = format!("/api/v1/apps/{}/download/{}.napp", artifact_id, platform);
-    let download_candidates: Vec<String> = detail
-        .download_url
-        .iter()
-        .cloned()
-        .fold(vec![platform_url], |mut acc, u| {
-            if !acc.contains(&u) {
-                acc.push(u);
-            }
-            acc
-        });
+    let download_candidates = package_candidates(artifact_id, download_url, detail.download_url.as_deref());
     if !download_candidates.is_empty() {
         let napp_dir = nebo_dir.join("skills").join(dir_name);
         std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create skill dir: {e}"))?;
@@ -324,48 +342,49 @@ pub async fn persist_skill_from_api(
             Ok(size) => {
                 tracing::info!(skill = name, path = %napp_path.display(), size, "stored .napp");
 
-                if napp::reader::is_sealed_napp(&napp_path) {
-                    // Sealed (paid) skill — keep it sealed; the loader reads SKILL.md in
-                    // memory via the license key. Seed the key now and partial-extract
-                    // metadata (manifest.json — not the IP) so the loader resolves the
-                    // artifact_id. Do NOT write a loose SKILL.md fallback: a sibling
-                    // SKILL.md would make the loader treat this as free content.
-                    tracing::info!(skill = name, "sealed skill — keeping .napp sealed; seeding license key");
-                    if let Some(store) = store {
-                        match fetch_and_store_license_keys(
-                            api,
-                            store,
-                            &[artifact_id.to_string()],
-                            "skill",
-                        )
-                        .await
-                        {
-                            Ok(keys) => {
-                                if let Some(key) = keys.get(artifact_id) {
-                                    if let Err(e) =
-                                        napp::reader::partial_extract_sealed_napp(&napp_path, key)
-                                    {
-                                        tracing::warn!(skill = name, error = %e, "failed to partial-extract sealed skill metadata");
+                // A free skill is extracted alongside so the skill loader can find
+                // SKILL.md (nebo/skills/my-cloud/1.0.0.napp → nebo/skills/my-cloud/1.0.0/);
+                // a sealed one stays sealed. One pass verifies the envelope and tells
+                // the two apart.
+                match napp::reader::extract_napp_alongside(&napp_path) {
+                    Ok(napp::reader::Unpacked::Sealed) => {
+                        // Sealed (paid) skill — keep it sealed; the loader reads SKILL.md in
+                        // memory via the license key. Seed the key now and partial-extract
+                        // metadata (manifest.json — not the IP) so the loader resolves the
+                        // artifact_id. Do NOT write a loose SKILL.md fallback: a sibling
+                        // SKILL.md would make the loader treat this as free content.
+                        tracing::info!(skill = name, "sealed skill — keeping .napp sealed; seeding license key");
+                        if let Some(store) = store {
+                            match fetch_and_store_license_keys(
+                                api,
+                                store,
+                                &[artifact_id.to_string()],
+                                "skill",
+                            )
+                            .await
+                            {
+                                Ok(keys) => {
+                                    if let Some(key) = keys.get(artifact_id) {
+                                        if let Err(e) =
+                                            napp::reader::partial_extract_sealed_napp(&napp_path, key)
+                                        {
+                                            tracing::warn!(skill = name, error = %e, "failed to partial-extract sealed skill metadata");
+                                        }
+                                    } else {
+                                        tracing::warn!(skill = name, "no license key returned for sealed skill — it will not load until keys refresh");
                                     }
-                                } else {
-                                    tracing::warn!(skill = name, "no license key returned for sealed skill — it will not load until keys refresh");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(skill = name, error = %e, "failed to seed license key for sealed skill");
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!(skill = name, error = %e, "failed to seed license key for sealed skill");
-                            }
+                        } else {
+                            tracing::warn!(skill = name, "no store available to seed sealed skill license key");
                         }
-                    } else {
-                        tracing::warn!(skill = name, "no store available to seed sealed skill license key");
+                        // Sibling dir now holds the partial-extracted manifest.json.
+                        return Ok(napp_path.with_extension(""));
                     }
-                    // Sibling dir now holds the partial-extracted manifest.json.
-                    return Ok(napp_path.with_extension(""));
-                }
-
-                // Free skill — extract alongside so the skill loader can find SKILL.md.
-                // e.g. nebo/skills/my-cloud/1.0.0.napp → nebo/skills/my-cloud/1.0.0/
-                match napp::reader::extract_napp_alongside(&napp_path) {
-                    Ok(extract_dir) => {
+                    Ok(napp::reader::Unpacked::Extracted(extract_dir)) => {
                         tracing::info!(skill = name, dir = %extract_dir.display(), "extracted .napp");
                         // Every version folder carries the marketplace id, an
                         // update's as much as an install's: the update check
@@ -525,11 +544,14 @@ pub async fn fetch_and_store_license_keys(
     Ok(keys)
 }
 
+/// `redeemed_url` is the package URL a redeem answered with, when this
+/// install redeemed one (see [`package_candidates`]).
 pub async fn persist_agent_from_api(
     api: &comm::api::NeboAIApi,
     artifact_id: &str,
     name: &str,
     code: &str,
+    redeemed_url: Option<&str>,
     store: &db::Store,
 ) -> Result<PersistAgentResult, String> {
     // Try agent-specific endpoint first (GET /api/v1/agents/{slug}),
@@ -660,18 +682,10 @@ pub async fn persist_agent_from_api(
         // per-platform (bin/<name> + AGENT.md + agent.json), exactly like a plugin.
         // The generic `/download` endpoint serves the universal (UI-only / binary-less)
         // .napp, which for a sidecar app is missing the binary and the agent files —
-        // that's why app installs landed incomplete. Prefer the per-platform URL and
-        // fall back to the resolved generic URL for binary-less agents (which 404 on
-        // the per-platform path).
-        let platform_url = format!(
-            "/api/v1/apps/{}/download/{}.napp",
-            artifact_id,
-            napp::plugin::current_platform_key()
-        );
-        let mut download_candidates: Vec<String> = vec![platform_url];
-        if !generic_url.contains("{platform}") && !download_candidates.contains(generic_url) {
-            download_candidates.push(generic_url.clone());
-        }
+        // that's why app installs landed incomplete. The redeem's URL is resolved for
+        // this platform; without one the per-platform URL comes first
+        // ([`package_candidates`]).
+        let download_candidates = package_candidates(artifact_id, redeemed_url, Some(generic_url));
 
         let napp_path = staged.path().join(format!("{}.napp", version));
         let mut downloaded: Option<u64> = None;
@@ -694,8 +708,14 @@ pub async fn persist_agent_from_api(
             downloaded.ok_or_else(|| format!("download agent package for {name}: {last_err}"))?;
         tracing::info!(agent = name, path = %napp_path.display(), size, "stored .napp");
 
-        sealed = napp::reader::is_sealed_napp(&napp_path);
-        if sealed {
+        // One pass verifies the envelope, tells a sealed package apart and
+        // extracts a free one.
+        let unpacked = napp::reader::extract_napp_alongside(&napp_path)
+            .map_err(|e| format!("extract agent package for {name}: {e}"))?;
+        sealed = unpacked == napp::reader::Unpacked::Sealed;
+        if let napp::reader::Unpacked::Extracted(extract_dir) = unpacked {
+            tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
+        } else {
             tracing::info!(agent = name, "sealed agent — keeping .napp sealed; seeding license key");
             match fetch_and_store_license_keys(api, store, &[artifact_id.to_string()], "agent")
                 .await
@@ -716,10 +736,6 @@ pub async fn persist_agent_from_api(
                     tracing::warn!(agent = name, error = %e, "failed to seed license key for sealed agent");
                 }
             }
-        } else {
-            let extract_dir = napp::reader::extract_napp_alongside(&napp_path)
-                .map_err(|e| format!("extract agent package for {name}: {e}"))?;
-            tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
         }
     } else {
         // Content-only agent: materialize the loose files the loader reads —
@@ -1044,8 +1060,9 @@ mod staged_install_tests {
         assert_eq!(std::fs::read(&napp_path).unwrap(), package);
         assert!(!root.path().join("1.0.0.napp.part").exists());
 
-        assert!(!napp::reader::is_sealed_napp(&napp_path));
-        let dir = napp::reader::extract_napp_alongside(&napp_path).unwrap();
+        let napp::reader::Unpacked::Extracted(dir) = napp::reader::extract_napp_alongside(&napp_path).unwrap() else {
+            panic!("a free package extracts");
+        };
         assert_eq!(std::fs::read(dir.join("ui/assets/intro.mp4")).unwrap(), film);
         assert!(dir.join("ui/index.html").exists() && dir.join("manifest.json").exists());
     }

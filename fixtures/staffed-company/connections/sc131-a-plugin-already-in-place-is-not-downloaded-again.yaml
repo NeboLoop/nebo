@@ -1,0 +1,9 @@
+id: sc131-a-plugin-already-in-place-is-not-downloaded-again
+name: "SC131 — A plugin already in place is not downloaded again"
+description: |
+  The plugin installer reads the recorded version and sha256 against what
+  the hub lists before it fetches: a plugin already here with those bytes is
+  not downloaded again by any door.
+target_component: staffed-company
+proof: staffed_proof::connections::a_plugin_already_in_place_is_not_downloaded_again
+conversation: []

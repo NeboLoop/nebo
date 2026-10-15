@@ -1,0 +1,9 @@
+id: sc132-a-hires-dependencies-install-side-by-side-and-reload-once
+name: "SC132 — A hire's dependencies install side by side and reload once"
+description: |
+  The hire answers before its dependencies land; one plugin installs while
+  another is still downloading, and the skill catalog is reloaded once for
+  the whole cascade.
+target_component: staffed-company
+proof: staffed_proof::connections::a_hires_dependencies_install_side_by_side_and_reload_once
+conversation: []

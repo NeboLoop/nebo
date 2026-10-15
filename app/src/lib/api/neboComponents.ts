@@ -1993,7 +1993,6 @@ export interface CreateAgentApiKeyResponse {
 export interface CreateAgentResponse {
 	agent: Agent
 	installReport: unknown
-	cascade: unknown
 	threadId: string | null
 }
 
@@ -2193,6 +2192,7 @@ export interface GetAgentResponse {
 	pluginsNeedingAuth: unknown[]
 	needsSetup: unknown
 	memoryMode: unknown
+	jobDraft: unknown
 }
 
 export interface GetAgentSurfacesResponse {

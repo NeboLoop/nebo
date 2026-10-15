@@ -1,0 +1,9 @@
+id: sc130-hiring-an-employee-already-on-the-team-keeps-it
+name: "SC130 — Hiring an employee already on the team keeps it"
+description: |
+  A second hire of an employee on the team, at the marketplace's version,
+  fetches and writes nothing, never removes and reinstalls it, and leaves
+  no second copy under another name.
+target_component: staffed-company
+proof: staffed_proof::connections::hiring_an_employee_already_on_the_team_keeps_it
+conversation: []

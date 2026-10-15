@@ -1092,7 +1092,9 @@
         </div>
       {:else if phase === 'done'}
         <div class="shrink-0 flex justify-end px-5 py-3 border-t border-base-content/10">
-          <button type="button" class="btn btn-sm btn-primary" disabled={cascadePending} onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>{$t('common.done')}</button>
+          <!-- Done never waits on the dependency cascade: the rest lands in
+               the background and the employee's row shows its progress. -->
+          <button type="button" class="btn btn-sm btn-primary" onclick={() => { const id = agentId; close(); oncomplete?.(id || undefined); }}>{$t('common.done')}</button>
         </div>
       {:else if phase === 'inputs'}
         <!-- Pinned, so Save is always in reach however long the questions run. -->

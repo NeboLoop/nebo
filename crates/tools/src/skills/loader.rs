@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 use tokio::sync::RwLock;
@@ -36,9 +36,16 @@ pub struct Loader {
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
     /// Optional DB store for checking plugin enabled/disabled state.
     db_store: Option<Arc<db::Store>>,
-    /// When true, the filesystem watcher skips reload events.
-    /// Set during plugin/skill extraction to prevent premature reloads.
-    watcher_paused: Arc<AtomicBool>,
+    /// While above zero, the filesystem watcher skips reload events: one
+    /// count per extraction (or dependency cascade) in progress, which
+    /// reloads by itself when it is done. A count, not a flag, so one
+    /// install finishing never un-pauses another still writing.
+    watcher_paused: Arc<AtomicUsize>,
+    /// When the last full scan began. A change older than that is in the
+    /// catalog already: the watcher skips the reload its event would start.
+    scanned_at: Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
+    /// How many full scans this loader has run.
+    scans: Arc<std::sync::atomic::AtomicU64>,
     /// Raw content of bundled skills for lazy template loading.
     /// Keyed by skill name, value is the full SKILL.md content from include_str!().
     bundled_raw: HashMap<String, &'static str>,
@@ -65,20 +72,32 @@ impl Loader {
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
             db_store: None,
-            watcher_paused: Arc::new(AtomicBool::new(false)),
+            watcher_paused: Arc::new(AtomicUsize::new(0)),
+            scanned_at: Arc::new(std::sync::Mutex::new(None)),
+            scans: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             bundled_raw,
             license_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Pause the filesystem watcher (call before extraction).
+    /// Pause the filesystem watcher (call before extraction). Every pause
+    /// is matched by one [`Loader::resume_watcher`].
     pub fn pause_watcher(&self) {
-        self.watcher_paused.store(true, Ordering::Relaxed);
+        self.watcher_paused.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Resume the filesystem watcher (call after load_all).
+    /// How many full scans (cold loads) this loader has run: what an
+    /// install costs the catalog, and what a dependency cascade holds to one.
+    pub fn scans(&self) -> u64 {
+        self.scans.load(Ordering::SeqCst)
+    }
+
+    /// Resume the filesystem watcher (call after load_all): the watcher runs
+    /// again once every pause has been resumed.
     pub fn resume_watcher(&self) {
-        self.watcher_paused.store(false, Ordering::Relaxed);
+        let _ = self
+            .watcher_paused
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
     }
 
     /// Set the plugin store for verifying plugin dependencies during load.
@@ -228,6 +247,8 @@ impl Loader {
 
     /// Full filesystem scan — cold start path. Walks all directories, parses SKILL.md files.
     async fn cold_load_all(&self) -> usize {
+        *self.scanned_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::SystemTime::now());
+        self.scans.fetch_add(1, Ordering::SeqCst);
         let mut loaded = HashMap::new();
 
         // 1. Load embedded bundled skills (frontmatter only — template loaded lazily via get())
@@ -1015,6 +1036,7 @@ impl Loader {
         let learned_dir = self.learned_dir.clone();
         let agent_dirs = self.agent_dirs.clone();
         let watcher_paused = self.watcher_paused.clone();
+        let scanned_at = self.scanned_at.clone();
         // The manifest's file names (`SkillManifest::save` writes the `.tmp`
         // one, then renames it over the manifest). Matched by name: the
         // watcher may report the tree by its resolved path (/private/var vs
@@ -1124,6 +1146,68 @@ impl Loader {
             const STORM_THRESHOLD: u32 = 20;
             const STORM_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
 
+            let relevant = |event: &notify::Event| {
+                matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                ) && event.paths.iter().any(|p| {
+                    // The loader's own writes never count: every reload
+                    // rewrites the warm-start manifest inside a watched
+                    // tree, so an event for it would start the next one.
+                    if p.file_name().is_some_and(|n| manifest_names.iter().any(|m| m == n)) {
+                        return false;
+                    }
+                    // Neither do an install's work copies: a plugin
+                    // extracts to `<version>.staging` (and keeps a
+                    // `<version>.prev`), then renames and reloads by
+                    // itself. Hundreds of files land there per install;
+                    // each event became one full reload, run back to
+                    // back for minutes after the install was done.
+                    if p.components().any(|c| {
+                        c.as_os_str().to_str().is_some_and(|n| {
+                            n.ends_with(".staging") || n.ends_with(".prev")
+                        })
+                    }) {
+                        return false;
+                    }
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name.eq_ignore_ascii_case("skill.md") || name.ends_with(".napp") {
+                        return true;
+                    }
+                    // Inside an employee package only what lives under
+                    // skills/ counts. The rest of a package (AGENT.md,
+                    // agent.json, the seat's context) is written by
+                    // other subsystems — and one of the resource-dir
+                    // names below is "agents", which every path in the
+                    // agents tree matches. Without this gate a settings
+                    // save would reload every skill in the install.
+                    if agent_dirs.iter().any(|root| p.starts_with(root))
+                        && !p.ancestors().any(|a| {
+                            a.file_name().and_then(|n| n.to_str()) == Some("skills")
+                        })
+                    {
+                        return false;
+                    }
+                    // Trigger reload when resource files change
+                    p.ancestors().any(|a| {
+                        a.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| {
+                                matches!(
+                                    n,
+                                    "scripts"
+                                        | "references"
+                                        | "assets"
+                                        | "examples"
+                                        | "agents"
+                                        | "core"
+                                )
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+            };
+
             // Setting up the watch is not instant (seconds, on a loaded
             // machine), and nothing written to the trees before it is in
             // place is ever reported: a skill written then stayed out of the
@@ -1133,7 +1217,7 @@ impl Loader {
             // whatever landed meanwhile.
             let mut look_now = true;
             loop {
-                let paths: Vec<std::path::PathBuf> = if std::mem::take(&mut look_now) {
+                let mut paths: Vec<std::path::PathBuf> = if std::mem::take(&mut look_now) {
                     Vec::new()
                 } else {
                     let event = match rx.recv().await {
@@ -1144,78 +1228,14 @@ impl Loader {
                             continue;
                         }
                     };
-                    let dominated = matches!(
-                        event.kind,
-                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                    );
-                    if !dominated {
-                        continue;
-                    }
-
-                    let relevant = event.paths.iter().any(|p| {
-                        // The loader's own writes never count: every reload
-                        // rewrites the warm-start manifest inside a watched
-                        // tree, so an event for it would start the next one.
-                        if p.file_name().is_some_and(|n| manifest_names.iter().any(|m| m == n)) {
-                            return false;
-                        }
-                        // Neither do an install's work copies: a plugin
-                        // extracts to `<version>.staging` (and keeps a
-                        // `<version>.prev`), then renames and reloads by
-                        // itself. Hundreds of files land there per install;
-                        // each event became one full reload, run back to
-                        // back for minutes after the install was done.
-                        if p.components().any(|c| {
-                            c.as_os_str().to_str().is_some_and(|n| {
-                                n.ends_with(".staging") || n.ends_with(".prev")
-                            })
-                        }) {
-                            return false;
-                        }
-                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                        if name.eq_ignore_ascii_case("skill.md") || name.ends_with(".napp") {
-                            return true;
-                        }
-                        // Inside an employee package only what lives under
-                        // skills/ counts. The rest of a package (AGENT.md,
-                        // agent.json, the seat's context) is written by
-                        // other subsystems — and one of the resource-dir
-                        // names below is "agents", which every path in the
-                        // agents tree matches. Without this gate a settings
-                        // save would reload every skill in the install.
-                        if agent_dirs.iter().any(|root| p.starts_with(root))
-                            && !p.ancestors().any(|a| {
-                                a.file_name().and_then(|n| n.to_str()) == Some("skills")
-                            })
-                        {
-                            return false;
-                        }
-                        // Trigger reload when resource files change
-                        p.ancestors().any(|a| {
-                            a.file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|n| {
-                                    matches!(
-                                        n,
-                                        "scripts"
-                                            | "references"
-                                            | "assets"
-                                            | "examples"
-                                            | "agents"
-                                            | "core"
-                                    )
-                                })
-                                .unwrap_or(false)
-                        })
-                    });
-                    if !relevant {
+                    if !relevant(&event) {
                         continue;
                     }
                     event.paths
                 };
 
                 // Skip reload while paused (extraction in progress)
-                if watcher_paused.load(Ordering::Relaxed) {
+                if watcher_paused.load(Ordering::SeqCst) > 0 {
                     continue;
                 }
 
@@ -1231,9 +1251,26 @@ impl Loader {
                 loop {
                     match tokio::time::timeout(debounce, rx.recv()).await {
                         Ok(None) => return,
-                        Ok(Some(_)) if burst_start.elapsed() < MAX_COALESCE => {}
+                        Ok(Some(event)) if burst_start.elapsed() < MAX_COALESCE => {
+                            if let Ok(event) = event
+                                && relevant(&event)
+                            {
+                                paths.extend(event.paths);
+                            }
+                        }
                         _ => break,
                     }
+                }
+
+                // An install reloads by itself once it has written: the
+                // events its writes raise, reported after it un-paused the
+                // watcher, are older than that reload's scan and already in
+                // the catalog. Reloading for them again was a second full
+                // scan per install.
+                let scan_began = *scanned_at.lock().unwrap_or_else(|e| e.into_inner());
+                if scan_began.is_some_and(|began| napp::reader::changed_before(&paths, began)) {
+                    debug!("skills changes already in the catalog; no reload");
+                    continue;
                 }
 
                 // Storm breaker: inside a cooldown, drop events outright.
@@ -1920,6 +1957,7 @@ fn verify_dependencies(
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
