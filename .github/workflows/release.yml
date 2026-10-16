@@ -24,6 +24,18 @@ env:
   TAURI_CLI_VERSION: "2.11.4"
 
 jobs:
+  # ─── The release gate: every test, on the commit being released ──────
+  # ci.yml's full run, the end-to-end proofs and the doctests included —
+  # the same recipe as the nightly (docs/testing.md). It runs beside the
+  # builds, which do not wait for it; everything that publishes does
+  # (`release`, and through it publish-macos, homebrew and the announce;
+  # update-apt directly). A failing test means nothing reaches the CDN,
+  # the GitHub release, APT or Homebrew.
+  tests:
+    uses: ./.github/workflows/ci.yml
+    with:
+      tier: full
+
   # ─── Build frontend (shared by all platform builds) ───────────────────
   frontend:
     runs-on: ubuntu-latest
@@ -1064,7 +1076,7 @@ jobs:
   # `needs:` — they're gated by `WINDOWS_BUILD_ENABLED` and the release
   # step gracefully omits Windows assets when the cache restore misses.
   release:
-    needs: [build-linux, sign-windows]
+    needs: [tests, build-linux, sign-windows]
     # Linux is the required gate. macOS assets are built and published LOCALLY
     # (see `make release-macos` / `make publish-macos`) so they are intentionally
     # not a dependency here; the macOS-restore steps below are best-effort and
@@ -1073,7 +1085,8 @@ jobs:
     # when WINDOWS_BUILD_ENABLED=true (otherwise it races linux and gets dropped).
     # When Windows is disabled, sign-windows is skipped; the explicit
     # build-linux==success check (not success()) lets release run anyway.
-    if: ${{ !cancelled() && needs.build-linux.result == 'success' }}
+    # The release gate is required the same way: no publish without it.
+    if: ${{ !cancelled() && needs.tests.result == 'success' && needs.build-linux.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
@@ -1379,7 +1392,8 @@ jobs:
   # a .deb is ~120 MB and GitHub refuses any file over 100 MB, which is why
   # the old neboloop/apt repo stopped updating after v0.16.9.
   update-apt:
-    needs: build-linux
+    # It publishes, so it waits for the release gate like `release` does.
+    needs: [tests, build-linux]
     runs-on: ubuntu-latest
     env:
       HAS_GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
