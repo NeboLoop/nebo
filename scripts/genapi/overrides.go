@@ -299,6 +299,8 @@ export interface RunDisplay {
 	provider: string
 	connection: string
 	modelId: string
+	/** What the model reads as when its provider names it (a Nebo AI speed: "High and Max"). */
+	name?: string
 	capabilities?: string[]
 	local: boolean
 }`,

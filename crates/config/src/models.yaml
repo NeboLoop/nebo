@@ -44,7 +44,7 @@ providers:
   # sync_janus_models — never from here.
   janus:
     - id: nebo-1
-      displayName: Default
+      displayName: Auto
       capabilities: [vision, tools, streaming, code, reasoning]
       active: true
     - id: nebo-embed-small

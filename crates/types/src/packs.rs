@@ -206,17 +206,17 @@ pub struct Pack {
 /// The built-in pack's id.
 pub const NEBO_AI_ID: &str = "nebo-ai";
 
-/// The built-in Nebo AI pack: Janus's speeds (checked live 2026-10-07:
-/// `nebo-1-flash` Fast, `nebo-1-medium` Balanced, `nebo-1-pro` Deep) and its
-/// Auto alias `nebo-1`, today's default model. Max runs on `nebo-1-pro`
-/// until Janus has a real Max.
+/// The built-in Nebo AI pack: Auto on Janus's `nebo-1` alias, today's
+/// default model, and the five levels on Janus's three speeds: Instant and
+/// Low on `nebo-1-flash`, Medium on `nebo-1-medium`, High and Max on
+/// `nebo-1-pro`. Max runs on `nebo-1-pro` until Janus has a real Max.
 ///
 /// Its lanes are the model bake-off's split (2026-10-09): employees and
-/// workflows are written on Deep, and their workflows run on Fast. A build's
-/// steps reach Janus as the `build` purpose, which Janus serves on its
-/// strongest model when it can, else on Deep, at Deep's rate. Deep at its
-/// own effort, not Max's: Max's thinking budget is more than Nebo's output
-/// cap, which Deep's qwen models refuse (live 2026-10-10).
+/// workflows are written at High, and their workflows run at Instant. A
+/// build's steps reach Janus as the `build` purpose, which Janus serves on
+/// its strongest model when it can, else on `nebo-1-pro`. High, not Max:
+/// Max's thinking budget is more than Nebo's output cap, which the
+/// `nebo-1-pro` qwen models refuse (live 2026-10-10).
 pub fn nebo_ai() -> Pack {
     let janus = |m: &str| Some(format!("janus/{m}"));
     Pack {
@@ -239,8 +239,8 @@ pub fn nebo_ai() -> Pack {
         built_in: true,
         route_through_janus: false,
         lanes: PackLanes { build: Some(Effort::High), workflow: Some(Effort::Instant), ..PackLanes::default() },
-        // Low is Fast with a little thinking; Max is Deep at its highest
-        // effort until Janus has a speed above Deep.
+        // Low is Instant with a little thinking; Max is High at its highest
+        // effort until Janus has a speed above `nebo-1-pro`.
         level_effort: LevelEffort {
             low: Some(ProviderEffort::Low),
             max: Some(ProviderEffort::High),
@@ -377,14 +377,14 @@ mod tests {
         assert_eq!(nebo.model_for_ref(Some(Effort::Instant)), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Medium)), Some("janus/nebo-1-medium"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-pro"));
-        assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Fast, thinking a little");
-        assert_eq!(nebo.effort_for(Effort::High), None, "Deep at its default");
-        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "Deep at its highest");
-        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::High), "built on Deep");
-        assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run on Fast");
+        assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Instant, thinking a little");
+        assert_eq!(nebo.effort_for(Effort::High), None, "nebo-1-pro at its default");
+        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-pro at its highest");
+        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::High), "built at High");
+        assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run at Instant");
         assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.lanes.level(Lane::Heartbeat), None, "the rest: the work chooses");
-        assert_eq!(nebo.lanes.level(Lane::Explore), Some(Effort::Instant), "an Explore helper on Fast");
+        assert_eq!(nebo.lanes.level(Lane::Explore), Some(Effort::Instant), "an Explore helper at Instant");
         assert_eq!(PackLanes { helpers: Some(Effort::Max), ..PackLanes::default() }.level(Lane::Explore), Some(Effort::Instant));
         let mine = byo(PackLevels {
             low: Some("a/low".into()),

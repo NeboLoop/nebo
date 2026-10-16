@@ -1261,7 +1261,7 @@ mod tests {
     }
 
     /// Background work runs on the pack of the work it serves, at its
-    /// Instant level: Nebo AI's Fast, an owner's Janus pack's Instant, a
+    /// Instant level: Nebo AI's Instant, an owner's Janus pack's Instant, a
     /// BYOK pack's own key; a model of the owner's own as chosen; a pack
     /// that can't run and doesn't fall back runs nothing; a provider that
     /// isn't loaded hands the call to the first that takes calls.
@@ -1307,7 +1307,7 @@ mod tests {
         save("empty", None, true);
         save("strict", Some("openai/gpt-x"), false);
         let to = |r: Option<Route>| r.map(|r| format!("{}/{}", r.provider.id(), r.model));
-        assert_eq!(to(hk.route("").await).as_deref(), Some("janus/nebo-1-flash"), "the bot default, Nebo AI: Fast");
+        assert_eq!(to(hk.route("").await).as_deref(), Some("janus/nebo-1-flash"), "the bot default, Nebo AI: Instant");
         assert_eq!(to(hk.route("pack/nebo-ai/high").await).as_deref(), Some("janus/nebo-1-flash"), "whatever level the turn runs at");
         assert_eq!(to(hk.route("pack/janus/high").await).as_deref(), Some("janus/nebo-1-flash"));
         assert_eq!(to(hk.route("pack/byok/high").await).as_deref(), Some("anthropic/claude-small"), "the owner's key");

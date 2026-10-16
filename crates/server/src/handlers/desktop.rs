@@ -484,7 +484,7 @@ async fn learn(
     let briefing = teach_briefing(&rec, rec.dir.join("timeline.md").exists(), narration);
     // Training uses the deepest intelligence: the run, and the turns that
     // follow it in this thread, build from their first step on the build
-    // lane of the employee's pack (Nebo AI's: Deep, which Janus serves on
+    // lane of the employee's pack (Nebo AI's: High, which Janus serves on
     // its strongest model). The owner's own setting is untouched.
     state.harness.build_session(&session_key, TEACH_BUILD_WINDOW);
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);

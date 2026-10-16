@@ -97,8 +97,8 @@ describe('IntelligencePicker', () => {
 	it('an owner\'s pack shows what he set: its name and each level\'s provider and model', () => {
 		const out = text(html('pack/j/high', 'level'));
 		expect(out).toContain('Janus');
-		expect(out).toContain('Janus · nebo-1-pro');
-		expect(out).toContain('Janus · nebo-1-flash');
+		expect(out).toContain('Nebo AI · nebo-1-pro');
+		expect(out).toContain('Nebo AI · nebo-1-flash');
 		expect(out).toContain(`${en.modelPick.levelDesc.medium} · ${en.modelPick.fromNeboAi}`);
 		expect(out).toContain(en.modelPick.autoCustom);
 		expect(text(html('pack/w', 'level'))).toContain('OpenAI · gpt-6.1 · high effort');
