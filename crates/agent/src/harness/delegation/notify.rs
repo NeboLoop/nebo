@@ -38,7 +38,11 @@ pub fn row_metadata(taint: &[types::provenance::ProvenanceClass]) -> String {
 pub fn render_result(c: &Completion) -> String {
     let status = match &c.status {
         CompletionStatus::Done => "done".to_string(),
-        CompletionStatus::Partial { why } => format!("partial ({why}; send_message to continue)"),
+        // The report says where the work stands: the parent decides from
+        // it, never sends the helper on blindly.
+        CompletionStatus::Partial { why } => {
+            format!("partial ({why}; its report is below: send_message only for work it says is still missing)")
+        }
         CompletionStatus::Failed { error } => format!("failed ({error})"),
         CompletionStatus::Stopped => "stopped".to_string(),
     };
@@ -165,7 +169,7 @@ mod tests {
         };
         assert_eq!(
             status_line(CompletionStatus::Partial { why: "budget".into() }),
-            "helper h7 \"read the logs\": partial (budget; send_message to continue)"
+            "helper h7 \"read the logs\": partial (budget; its report is below: send_message only for work it says is still missing)"
         );
         assert_eq!(
             status_line(CompletionStatus::Failed { error: "timeout".into() }),

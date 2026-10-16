@@ -93,6 +93,9 @@ pub enum TurnEvent {
     BackgroundUpdate(String),
     /// The last reply hit the output limit.
     CutoffResume,
+    /// The turn reached its step limit: this step's tools are off and its
+    /// reply is the report.
+    StepLimit,
     /// The output limit cut the last reply inside its call to this tool:
     /// the call's arguments are partial, so no call in the reply ran.
     CutCall(String),
@@ -241,6 +244,7 @@ pub const NAMES: &[&str] = &[
     "helper_types",
     "background_update",
     "cutoff_resume",
+    "step_limit",
     "cut_call",
     "stream_cut",
     "text_call",
@@ -447,6 +451,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 text,
             });
         }
+        TurnEvent::StepLimit => (
+            "step_limit",
+            "This turn has reached the most steps one turn takes, so tools are off for this last step. Write your \
+             report now: what you were asked, what you did and found (with the exact names, paths and values), and \
+             what is still left to do. Don't apologize and don't ask to continue."
+                .to_string(),
+        ),
         TurnEvent::CutoffResume => (
             "cutoff_resume",
             "Your last reply hit the output limit. Resume directly, with no apology and no recap: pick up mid-thought if that is where it stopped, and break the remaining work into smaller pieces.".to_string(),
@@ -1370,6 +1381,7 @@ mod tests {
             TurnEvent::HelperTypes(lined),
             TurnEvent::BackgroundUpdate("the export finished".into()),
             TurnEvent::CutoffResume,
+            TurnEvent::StepLimit,
             TurnEvent::CutCall("write_file".into()),
             TurnEvent::WorkflowContract("call publish once".into()),
             TurnEvent::AnswerShape("no JSON object".into()),

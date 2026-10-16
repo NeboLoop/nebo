@@ -233,6 +233,9 @@ pub struct TurnState {
     round: RoundCarry,
     /// The turn's text segments and their verdicts (`text_fold`).
     folds: text_fold::TurnFolds,
+    /// The turn reached its step limit and this step, tools off, writes its
+    /// report; the turn ends `MaxSteps` on it.
+    reporting: bool,
 }
 
 /// What the tool round keeps from one round to the next within a turn.
@@ -1375,6 +1378,7 @@ pub(crate) async fn prepare(
         trigger: compact::checkpoint::Trigger::default(),
         round: RoundCarry::default(),
         folds: text_fold::TurnFolds::default(),
+        reporting: false,
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
@@ -1667,15 +1671,16 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             warn!(session_id = sid, "event receiver dropped: ending the turn");
             return TurnExit::Cancelled;
         }
-        if st.step >= cx.max_steps {
-            let _ = cx
-                .tx
-                .send(StreamEvent::control_notice(
-                    format!("Stopped after {} steps, the most one turn takes. Ask me to continue and I'll pick it up.", st.step),
-                    "max_steps",
-                ))
-                .await;
-            return TurnExit::MaxSteps { steps: st.step };
+        // At the step limit the turn takes one more step with its tools off,
+        // whose reply is its report (to the owner, or the helper's parent),
+        // and ends there: a turn never stops on a tool call with nothing
+        // said about where the work stands.
+        if st.step >= cx.max_steps && !st.reporting {
+            info!(session_id = sid, steps = st.step, "step limit reached: one last step, tools off, for the report");
+            st.reporting = true;
+            st.reminders.add(&TurnEvent::StepLimit);
+        } else if st.step > cx.max_steps {
+            return step_limit(cx, st).await;
         }
         if let Some(exit) = budget_reached(cx, st).await {
             return exit;
@@ -1851,7 +1856,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             model_name.clear();
         }
         let mut request = build_request(cx, st, &window, surface.declared, &model_name);
-        if reply_in_words {
+        if reply_in_words || st.reporting {
             request.tool_choice = ai::ToolChoice::None;
         } else if st.step == 1 && correcting.is_none() && st.commands.applies() {
             // A command the owner gave is the first step's call: its tool
@@ -2019,7 +2024,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
         // Tools are off for the answer to a stop: nothing streamed starts.
         // A correction's calls run only once the harness has checked them.
-        if reply_in_words || correcting.is_some() {
+        if reply_in_words || correcting.is_some() || st.reporting {
             streamed_calls.close();
         }
         // A correction is the harness's step: nothing the model writes in it
@@ -2168,9 +2173,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // Calls that arrived on a broken stream are not run or stored.
             tool_calls.clear();
         }
-        if reply_in_words {
-            // The answer to a stop went out with tools off: a call the
-            // provider sent anyway is neither run nor stored.
+        if reply_in_words || st.reporting {
+            // The answer to a stop, or the report at the step limit, went
+            // out with tools off: a call the provider sent anyway is
+            // neither run nor stored.
             tool_calls.clear();
             block_order.retain(|b| !matches!(b, Block::Tool(_)));
         }
@@ -2211,6 +2217,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // connect timeout).
         if let Some(error) = stream_error {
             return TurnExit::ProviderFailed(error);
+        }
+        // The report at the step limit is written: the turn ends on it.
+        if st.reporting {
+            return step_limit(cx, st).await;
         }
 
         if !tool_calls.is_empty() {
@@ -2311,6 +2321,20 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
         return TurnExit::Answered;
     }
+}
+
+/// The turn ends at its step limit, on the report its last step wrote (a
+/// helper's parent reads it as the helper's result).
+async fn step_limit(cx: &TurnContext, st: &TurnState) -> TurnExit {
+    let steps = st.step.min(cx.max_steps);
+    let _ = cx
+        .tx
+        .send(StreamEvent::control_notice(
+            format!("Stopped after {steps} steps, the most one turn takes. Ask me to continue and I'll pick it up."),
+            "max_steps",
+        ))
+        .await;
+    TurnExit::MaxSteps { steps }
 }
 
 /// The owner's spending limit, checked before each step.
@@ -7166,6 +7190,37 @@ mod tests {
         assert!(results[0].contains("Next page: from=\""), "page 1 ends with its cursor");
         assert!(results[1].contains("match {\"status\":\"open\"}") && results[1].ends_with("End of the list."), "{}", results[1]);
         assert!(results.iter().all(|r| r.len() <= tools::step_data::PAGE_MAX_CHARS + 300), "every page within the bound");
+    }
+
+    /// At the step limit the turn takes one more step with its tools off,
+    /// told to report, and ends `max_steps` on that report: a call the model
+    /// sends anyway is not run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_step_limit_ends_on_a_report_written_with_tools_off() {
+        let model = Scripted::new(vec![
+            Step::Call("echo", serde_json::json!({"n": 1})),
+            Step::Call("echo", serde_json::json!({"n": 2})),
+            Step::NarratedCall("I read both; the third page is left.", "echo", serde_json::json!({"n": 3})),
+        ]);
+        let h = harness(&model).await;
+        let mut req = owner("Read the pages");
+        req.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            advertised_tools: ["echo".to_string()].into(),
+            max_steps: 2,
+            ..Default::default()
+        }));
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), super::super::delegation::collect::STOP_MAX_STEPS);
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "two steps, then the report");
+        assert_eq!(calls[2].tool_choice, ai::ToolChoice::None, "the report's step has its tools off");
+        let told: String = calls[2].messages.iter().map(|m| m.content.clone()).collect();
+        assert!(told.contains("Write your report now"), "{told}");
+        let ran = events.iter().filter(|e| e.event_type == ai::StreamEventType::ToolResult).count();
+        assert_eq!(ran, 2, "the call sent with the report never runs");
+        let said: String = events.iter().filter(|e| e.event_type == ai::StreamEventType::Text).map(|e| e.text.clone()).collect();
+        assert!(said.contains("the third page is left"), "{said}");
     }
 
     /// The owner's spending limit ends the turn before the next step, with
