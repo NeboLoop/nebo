@@ -444,7 +444,7 @@ async fn a_scheduled_command_meets_its_employee_limits() {
     // Web off: the scheduled curl reaches nothing.
     let (port, hits) = page_server();
     let job = scheduled(&agent, "Morning fetch", format!("curl -s -m 5 http://127.0.0.1:{port}/"));
-    let (_, output, err) = crate::scheduler::execute_job(&nebo.state, &job).await;
+    let (_, output, err) = crate::scheduler::execute_job(&nebo.state, &job, true).await;
     let said = format!("{output}{}", err.unwrap_or_default());
     assert!(!said.contains("Example Domain"), "a web-off employee's scheduled curl got the page: {said}");
     assert!(said.contains("web access is off"), "{said}");
@@ -457,7 +457,7 @@ async fn a_scheduled_command_meets_its_employee_limits() {
     }
     let secret = std::fs::read_to_string(&settings).unwrap();
     let job = scheduled(&agent, "Read settings", format!("cat {}", settings.display()));
-    let (ok, output, err) = crate::scheduler::execute_job(&nebo.state, &job).await;
+    let (ok, output, err) = crate::scheduler::execute_job(&nebo.state, &job, true).await;
     let err = err.unwrap_or_default();
     assert!(!ok && err.contains("Nebo's own files"), "{output}{err}");
     assert!(!output.contains(secret.trim()) && !err.contains(secret.trim()));
@@ -468,7 +468,7 @@ async fn a_scheduled_command_meets_its_employee_limits() {
     own_rule(&nebo, &careful, RuleKey::Tool("run_command".into()), Effect::Ask);
     let marker = nebo.home.join("files").join(format!("{careful}.marker"));
     let job = scheduled(&careful, "Touch a marker", format!("touch {}", marker.display()));
-    let (ok, _, err) = crate::scheduler::execute_job(&nebo.state, &job).await;
+    let (ok, _, err) = crate::scheduler::execute_job(&nebo.state, &job, true).await;
     let err = err.unwrap_or_default();
     assert!(!ok && err.contains("needs the owner's OK"), "{err}");
     assert!(!marker.exists(), "the step that needed an OK ran");

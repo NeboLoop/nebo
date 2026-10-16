@@ -2557,17 +2557,33 @@ pub(crate) fn announce_work_version(
         "version": version.version_number,
         "url": version.url,
     });
+    post_assistant_message(&state.store, &state.hub, &doc.chat_id, session_id, agent_id, content, &[artifact]);
+}
+
+/// An assistant message the server writes on its own, outside any turn (a
+/// restored work version, a schedule's reply): stored in chat `chat_id`,
+/// with the artifacts it carries, and shown at once in every open view of
+/// the conversation (`chat_message`, matched on `session_id`). Returns the
+/// stored message's id, or None when it could not be stored.
+pub(crate) fn post_assistant_message(
+    store: &db::Store,
+    hub: &crate::handlers::ws::ClientHub,
+    chat_id: &str,
+    session_id: Option<&str>,
+    agent_id: &str,
+    content: &str,
+    artifacts: &[serde_json::Value],
+) -> Option<String> {
     let msg_id = uuid::Uuid::new_v4().to_string();
-    let metadata = serde_json::json!({
-        "artifacts": [artifact.clone()]
-    })
-    .to_string();
-    let created_at = state
-        .store
-        .create_chat_message(&msg_id, &doc.chat_id, "assistant", content, Some(&metadata))
-        .map(|m| m.created_at)
-        .unwrap_or(0);
-    state.hub.broadcast(
+    let metadata = (!artifacts.is_empty()).then(|| serde_json::json!({ "artifacts": artifacts }).to_string());
+    let created_at = match store.create_chat_message(&msg_id, chat_id, "assistant", content, metadata.as_deref()) {
+        Ok(m) => m.created_at,
+        Err(e) => {
+            warn!(chat = chat_id, error = %e, "server-written assistant message not stored");
+            return None;
+        }
+    };
+    hub.broadcast(
         "chat_message",
         serde_json::json!({
             "id": msg_id,
@@ -2575,9 +2591,10 @@ pub(crate) fn announce_work_version(
             "createdAt": created_at * 1000,
             "agentId": agent_id,
             "session_id": session_id,
-            "artifacts": [artifact],
+            "artifacts": artifacts,
         }),
     );
+    Some(msg_id)
 }
 
 /// Save a `data:` URI (base64 image) to `<data_dir>/files/` and return the
