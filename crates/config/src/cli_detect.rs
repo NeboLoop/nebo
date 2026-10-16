@@ -52,19 +52,11 @@ pub fn ensure_full_path() {
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_default();
 
-        let mut extra_dirs: Vec<String> = Vec::new();
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let mut extra_dirs = install_dirs(std::env::consts::OS, &home, &appdata, &local_appdata);
 
         if cfg!(target_os = "macos") {
-            // Common macOS CLI install locations
-            extra_dirs.extend([
-                format!("{home}/.npm-global/bin"),
-                format!("{home}/.nvm/versions/node/default/bin"),
-                format!("{home}/.local/bin"),
-                format!("{home}/.cargo/bin"),
-                "/usr/local/bin".into(),
-                "/opt/homebrew/bin".into(),
-                "/opt/homebrew/sbin".into(),
-            ]);
             // Try to get the real shell PATH via login shell
             if let Ok(output) = command::new::<Command>("/bin/zsh", command::Console::Hidden)
                 .args(["-l", "-c", "echo $PATH"])
@@ -82,25 +74,6 @@ pub fn ensure_full_path() {
                     }
                 }
             }
-        } else if cfg!(target_os = "linux") {
-            extra_dirs.extend([
-                format!("{home}/.npm-global/bin"),
-                format!("{home}/.nvm/versions/node/default/bin"),
-                format!("{home}/.local/bin"),
-                format!("{home}/.cargo/bin"),
-                "/usr/local/bin".into(),
-                "/snap/bin".into(),
-            ]);
-        } else if cfg!(target_os = "windows") {
-            // Windows: npm global, cargo, AppData\Local programs
-            let appdata = std::env::var("APPDATA").unwrap_or_default();
-            let local_appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-            extra_dirs.extend([
-                format!("{appdata}\\npm"),
-                format!("{home}\\.cargo\\bin"),
-                format!("{local_appdata}\\Programs\\claude-code\\bin"),
-                format!("{local_appdata}\\Programs\\codex\\bin"),
-            ]);
         }
 
         // Append only dirs not already in PATH
@@ -123,6 +96,42 @@ pub fn ensure_full_path() {
             unsafe { std::env::set_var("PATH", &new_path) };
         }
     });
+}
+
+/// The folders CLI installers put programs in on `os` (`std::env::consts::OS`),
+/// for a user whose home is `home` (Windows: also `%APPDATA%` and
+/// `%LOCALAPPDATA%`). A GUI or service launch's PATH often lacks them.
+fn install_dirs(os: &str, home: &str, appdata: &str, local_appdata: &str) -> Vec<String> {
+    match os {
+        "macos" => vec![
+            format!("{home}/.npm-global/bin"),
+            format!("{home}/.nvm/versions/node/default/bin"),
+            format!("{home}/.local/bin"),
+            format!("{home}/.cargo/bin"),
+            "/usr/local/bin".into(),
+            "/opt/homebrew/bin".into(),
+            "/opt/homebrew/sbin".into(),
+        ],
+        "linux" => vec![
+            format!("{home}/.npm-global/bin"),
+            format!("{home}/.nvm/versions/node/default/bin"),
+            format!("{home}/.local/bin"),
+            format!("{home}/.cargo/bin"),
+            "/usr/local/bin".into(),
+            "/snap/bin".into(),
+        ],
+        // npm's global folder, Claude Code's native installer
+        // (`%USERPROFILE%\.local\bin\claude.exe`), cargo, and the
+        // per-user Programs folders.
+        "windows" => vec![
+            format!("{appdata}\\npm"),
+            format!("{home}\\.local\\bin"),
+            format!("{home}\\.cargo\\bin"),
+            format!("{local_appdata}\\Programs\\claude-code\\bin"),
+            format!("{local_appdata}\\Programs\\codex\\bin"),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// Check if a CLI command is installed via PATH lookup.
@@ -212,5 +221,23 @@ pub fn detect_all_clis() -> AllCliStatuses {
         claude: check_cli_status("claude"),
         codex: check_cli_status("codex"),
         gemini: check_cli_status("gemini"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_dirs;
+
+    /// Claude Code's native Windows installer puts `claude.exe` in
+    /// `%USERPROFILE%\.local\bin`, as it does `~/.local/bin` on macOS and
+    /// Linux: every OS looks there.
+    #[test]
+    fn every_os_looks_in_the_users_local_bin() {
+        let win = install_dirs("windows", r"C:\Users\Jo", r"C:\Users\Jo\AppData\Roaming", r"C:\Users\Jo\AppData\Local");
+        assert!(win.contains(&r"C:\Users\Jo\.local\bin".to_string()), "{win:?}");
+        assert!(win.contains(&r"C:\Users\Jo\AppData\Roaming\npm".to_string()), "{win:?}");
+        assert!(install_dirs("macos", "/Users/jo", "", "").contains(&"/Users/jo/.local/bin".to_string()));
+        assert!(install_dirs("linux", "/home/jo", "", "").contains(&"/home/jo/.local/bin".to_string()));
+        assert!(install_dirs("freebsd", "/home/jo", "", "").is_empty());
     }
 }
