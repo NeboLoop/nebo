@@ -719,11 +719,12 @@ test-error-shapes:
 # matrix.md (each model's pass rate per rule) in target/eval-authoring/<stamp>/.
 # TRACK=run (or both) adds the run track: can a model RUN a lean judge step
 # and a multi-round tool step (fixtures/authoring/steps.json). Billed.
-#   make eval-authoring                                  # MODELS=claude:haiku
+#   make eval-authoring                                  # MODELS=janus:nebo-1-flash
 #   make eval-authoring MODELS=janus:nebo-1-flash,janus:nebo-1-medium,janus:nebo-1-pro TRACK=both
 #   make eval-authoring ONLY=crm-sync,invoice-run
 #   make eval-authoring SCORE=target/eval-authoring/latest   # re-score only
 # janus:<model> needs JANUS_TOKEN (JANUS_URL defaults to Janus); claude:<alias> needs the claude CLI.
+# Janus calls are labeled X-Purpose: eval, X-Bot-ID: $$EVAL_LABEL (default eval-authoring).
 .PHONY: eval-authoring
 eval-authoring:
 	@python3 scripts/eval-authoring.py
