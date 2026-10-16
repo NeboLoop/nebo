@@ -68,6 +68,20 @@ pub(crate) fn post(
         if text.is_empty() {
             return Err("text required".to_string());
         }
+        // The owner writing in a done project reopens it: the lead takes it
+        // up again in the same thread, with all of its context.
+        let project = match project {
+            Some(p) if p.state == "done" && post.by_owner => {
+                let reopened = state
+                    .store
+                    .set_project_state(&p.id, "live", chrono::Utc::now().timestamp())
+                    .map_err(|e| format!("reopen project: {e}"))?
+                    .unwrap_or(p);
+                crate::handlers::teams::announce_project(&state, &reopened);
+                Some(reopened)
+            }
+            other => other,
+        };
         let roster = tools::team::member_roster(&state.store, &team);
         let mut text = tools::team::normalize_mentions(text, &roster);
         // Attachments: the ONE helper a direct chat uses — files are saved
@@ -309,6 +323,67 @@ pub(crate) fn record(
     state.hub.broadcast(event, payload);
     Ok((message, sender_name))
 }
+
+/// Longest wrap-up the done notice carries; the project's thread has it whole.
+const WRAP_UP_NOTICE_CHARS: usize = 1_500;
+
+/// A done project's wrap-up, the lead's words when its run's outcome came
+/// back (`engine::finish_temporary_work` closed the project), delivered
+/// once per close: to the owner's Inbox, loud, linking to the project's
+/// thread, and to his phone.
+pub(crate) fn wrap_up(state: &AppState, project: &db::Project, seat: &str, heard_through: Option<&str>, words: &str) {
+    let words = words.trim();
+    if words.is_empty() || project.state != "done" || !heard_the_outcome(state, project, seat, heard_through) {
+        return;
+    }
+    let id = format!("project:{}:{}", project.id, project.closed_at.unwrap_or_default());
+    let user = state.store.ensure_local_user_id().unwrap_or_default();
+    if matches!(state.store.get_notification(&id, &user), Ok(Some(_))) {
+        return;
+    }
+    let title = format!("{} is done", project.title);
+    let link = tools::owner_notify::link::project(&project.team_id, &project.id);
+    let body: String = words.chars().take(WRAP_UP_NOTICE_CHARS).collect();
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "info",
+        title: &title,
+        body: Some(&body),
+        action_url: Some(&link),
+        agent_id: Some(&project.lead_agent_id),
+        loud: true,
+        link_label: Some("Project"),
+        ..Default::default()
+    };
+    if !tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n) {
+        tracing::warn!(project = %project.id, "project: the done notice was not stored");
+        return;
+    }
+    crate::codes::push_inbox(state, n.hub_item(serde_json::json!({})));
+}
+
+/// Whether the lead's turn in `seat` heard its project's latest run end:
+/// the outcome row (`engine::report_temporary_outcome`, naming the run) is
+/// in what the turn read, up to `heard_through`. Its answer is the wrap-up;
+/// any other answer in a done project (its plan, landing after a run that
+/// was quicker than it) is not.
+fn heard_the_outcome(state: &AppState, project: &db::Project, seat: &str, heard_through: Option<&str>) -> bool {
+    let Some(run) = state.store.latest_project_run(&project.id).ok().flatten() else {
+        return false;
+    };
+    let marker = format!("(run {run})");
+    let sessions = state.harness.sessions();
+    let Ok(sid) = sessions.resolve_session_id_by_key(seat) else {
+        return false;
+    };
+    let rows = sessions.get_messages(&sid).unwrap_or_default();
+    let read = match heard_through.and_then(|id| rows.iter().position(|m| m.id == id)) {
+        Some(at) => &rows[..=at],
+        None => &rows[..],
+    };
+    read.iter().any(|m| m.content.contains(&marker))
+}
+
 
 /// A project's cards as lines in its thread: each change a card goes
 /// through (`workflow::cases::CardChange`, rung by the engine when a

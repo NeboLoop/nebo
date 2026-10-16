@@ -328,6 +328,18 @@ impl Store {
         Ok(())
     }
 
+    /// A project's latest run, by when it started.
+    pub fn latest_project_run(&self, project_id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id FROM workflow_runs WHERE project_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            params![project_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The project a run is the work of (`projects.id`), if it is one's.
     pub fn workflow_run_project(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;

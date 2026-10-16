@@ -113,3 +113,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc133-a-project-is-its-own-thread-and-the-team-thread-stays-as-it-was.yaml
   - ../fixtures/staffed-company/conversation/sc134-a-projects-card-is-handed-out-and-closed-in-its-thread.yaml
   - ../fixtures/staffed-company/conversation/sc135-the-lead-plans-a-project-as-cards-and-wraps-it-up-in-its-thread.yaml
+  - ../fixtures/staffed-company/conversation/sc136-a-done-projects-wrap-up-reaches-the-owner-and-writing-reopens-it.yaml

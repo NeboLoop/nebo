@@ -4784,3 +4784,84 @@ async fn the_lead_plans_a_project_as_cards_and_wraps_it_up_in_its_thread() {
     assert_eq!(cards.len(), 2, "{cards:?}");
     assert!(cards.iter().all(|c| c.status == "done" && c.team_id == TEAM), "{cards:?}");
 }
+
+/// A project's wrap-up is its one done notice (Teams, projects and threads,
+/// 2026-10-16): when its run ends the project is done, and the lead's answer
+/// to the outcome reaches the owner's Inbox once, loud, linking to the
+/// project's thread (no second "workflow finished" item for the same work).
+/// The owner writing in the done project reopens it, and the lead takes it
+/// up again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_done_projects_wrap_up_reaches_the_owner_and_writing_reopens_it() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof WR Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof WR Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-wrap";
+    nebo.store()
+        .create_team(TEAM, "Proof Wrap", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], &lead, None)
+        .unwrap();
+    let project = nebo
+        .store()
+        .create_project(&db::NewProject {
+            id: "proof-project-wrap",
+            team_id: TEAM,
+            lead_agent_id: &lead,
+            title: "PH launch",
+            ask: "launch",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        })
+        .unwrap();
+    fn plans(t: &Thread<'_>) -> Option<Step> {
+        if !(t.opener().contains("MARK-WR") && t.says("You are Proof WR Lead.")) {
+            return None;
+        }
+        let new = t.new_text();
+        if new.contains("Outcome:") {
+            return Some(Step::say("WR-WRAP: hero-30s.md is saved; nothing is open."));
+        }
+        if new.contains("MARK-WR2") {
+            return Some(Step::say("WR-AGAIN: on it."));
+        }
+        let results: String = t.since_last_answer().iter().filter_map(|m| m.tool_results.as_ref()).map(|r| r.to_string()).collect();
+        if results.contains("ph-launch-plan") {
+            return Some(Step::say("WR-PLAN: the Writer scripts it."));
+        }
+        let plan = json!({
+            "activities": [{"id": "script", "type": "expert", "params": {"expert": "Proof WR Writer", "task": "MARK-WRW write the hero script"}}],
+            "connections": [{"from": "__trigger__", "to": "script"}]
+        });
+        Some(Step::call(vec![("create_workflow", json!({ "name": "PH launch plan", "lifetime": "temporary", "definition": plan.to_string() }))]))
+    }
+    let rig = Rig::new(&nebo, vec![Box::new(plans)]).await;
+    rig.answer_background(Box::new(plans));
+    rig.answer_background(Box::new(|t| {
+        (t.req.trace.purpose == "workflow_activity" && t.says("MARK-WRW")).then(|| {
+            Step::say(r#"Done. {"result":{"status":"done","summary":"WR-SCRIPT-RESULT: hero-30s.md saved."},"next":{"action":"close"}}"#)
+        })
+    }));
+
+    nebo.post_ok(&format!("/projects/{}/messages", project.id), &json!({ "text": "MARK-WR launch us on Product Hunt" })).await;
+    rig.until(60, "the wrap-up lands in the thread", || project_rows(&nebo, &project).iter().any(|(_, text)| text.contains("WR-WRAP"))).await;
+    let done = nebo.store().get_project(&project.id).unwrap().unwrap();
+    assert_eq!(done.state, "done");
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let notice = nebo
+        .store()
+        .get_notification(&format!("project:{}:{}", project.id, done.closed_at.unwrap()), &user)
+        .unwrap()
+        .expect("the done notice");
+    assert_eq!(notice.title, "PH launch is done");
+    assert!(notice.body.as_deref().unwrap_or("").contains("WR-WRAP"), "the lead's wrap-up: {:?}", notice.body);
+    assert_eq!(notice.action_url.as_deref(), Some(tools::owner_notify::link::project(TEAM, &project.id).as_str()));
+    let items = nebo.store().list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap();
+    assert!(!items.iter().any(|n| n.id.starts_with("temporary:")), "one notice for the work, not two: {items:?}");
+    assert_eq!(items.iter().filter(|n| n.id.starts_with("project:")).count(), 1, "{items:?}");
+
+    // Writing in it again reopens it.
+    nebo.post_ok(&format!("/projects/{}/messages", project.id), &json!({ "text": "MARK-WR2 one more cut please" })).await;
+    let reopened = nebo.store().get_project(&project.id).unwrap().unwrap();
+    assert_eq!((reopened.state.as_str(), reopened.closed_at), ("live", None));
+    rig.until(30, "the lead takes it up again", || project_rows(&nebo, &reopened).iter().any(|(_, text)| text.contains("WR-AGAIN"))).await;
+}

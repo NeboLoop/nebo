@@ -746,6 +746,15 @@ async fn deliver_reply(
                 if let Err(e) = crate::team::post(state.clone(), post).await {
                     tracing::warn!(error = %e, to = %route.to_agent_id, "team: failed to post member reply");
                 }
+                // A done project's lead answering is its wrap-up.
+                if let Some(project) = leg
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| state.store.get_project(id).ok().flatten())
+                    .filter(|p| p.lead_agent_id == route.to_agent_id)
+                {
+                    crate::team::wrap_up(state, &project, thread_key, heard_through, &reply);
+                }
             }
             None => record_reply(state, route.mirror_key.as_deref(), &route.to_name, &reply),
         }
