@@ -249,13 +249,13 @@
             {/if}
           </div>
           <div class="dropdown dropdown-end shrink-0">
-            <button type="button" class="btn btn-ghost btn-sm btn-square" aria-label={$t('inbox.more')} title={$t('inbox.more')}>
+            <button type="button" tabindex="0" class="btn btn-ghost btn-sm btn-square" aria-label={$t('inbox.more')} title={$t('inbox.more')}>
               <MoreHorizontal class="w-4 h-4" />
             </button>
             <ul class="dropdown-content menu z-20 mt-1 w-60 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
-              <li><button type="button" onclick={markAllRead}>{$t('notifications.markAllRead')}</button></li>
-              <li><button type="button" onclick={() => onnavigate(rulesPath())}>{$t('inbox.whatHandles', { values: { name: assistantName } })}</button></li>
-              <li><button type="button" onclick={() => pick('history')}>{$t('inbox.history')}</button></li>
+              <li><button type="button" onclick={() => { (document.activeElement as HTMLElement | null)?.blur(); markAllRead(); }}>{$t('notifications.markAllRead')}</button></li>
+              <li><button type="button" onclick={() => { (document.activeElement as HTMLElement | null)?.blur(); onnavigate(rulesPath()); }}>{$t('inbox.whatHandles', { values: { name: assistantName } })}</button></li>
+              <li><button type="button" onclick={() => { (document.activeElement as HTMLElement | null)?.blur(); pick('history'); }}>{$t('inbox.history')}</button></li>
             </ul>
           </div>
         </div>
