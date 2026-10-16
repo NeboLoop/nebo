@@ -2163,7 +2163,7 @@ pub(crate) async fn upload_local_file(
 }
 
 /// Infer a MIME type from a file extension for outbound comm attachments.
-fn mime_from_extension(path: &std::path::Path) -> String {
+pub(crate) fn mime_from_extension(path: &std::path::Path) -> String {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

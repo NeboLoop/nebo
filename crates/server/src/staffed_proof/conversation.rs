@@ -2783,6 +2783,72 @@ async fn the_owners_team_post_carries_his_authority_and_a_coworkers_message_does
     assert!(!coworkers_file.exists(), "nothing is written for a colleague");
 }
 
+/// A file a team member hands the owner reaches him wherever he reads the
+/// team (live 2026-10-16: the PH Launch Team's marketer shared a Word and a
+/// PDF package, and no interface showed either). The member's team post
+/// carries both, landed through the one upload path, and its own thread
+/// keeps them as the cards a direct chat shows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_a_team_member_hands_over_rides_its_team_post() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof TF Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof TF Member", json!({ "workflows": {} })).await;
+    nebo.store()
+        .set_permission_mode(&types::permissions::Scope::Employee(lead.clone()), types::permissions::Mode::FullAccess)
+        .unwrap();
+    const TEAM: &str = "proof-team-tf";
+    nebo.store()
+        .create_team(TEAM, "Proof TF Team", "launch it", &[db::TeamMember::local(&lead), db::TeamMember::local(&member)], &lead, None)
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let (doc, pdf) = (out.path().join("launch-package.md"), out.path().join("launch-package.pdf"));
+    std::fs::write(&doc, "# Launch package\n").unwrap();
+    std::fs::write(&pdf, b"%PDF-1.4 launch package").unwrap();
+    let paths = vec![doc.to_string_lossy().to_string(), pdf.to_string_lossy().to_string()];
+    let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![Box::new(move |t| {
+        if !(t.opener().contains("MARK-TF") && t.says("You are Proof TF Lead.")) {
+            return None;
+        }
+        Some(match steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Step::call(vec![("share_file", json!({ "paths": paths.clone() }))]),
+            _ => Step::say("TF-DONE: here is the package."),
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({ "text": "MARK-TF hand me the package" })).await;
+    let posted = || {
+        nebo.store()
+            .list_team_messages(&db::team_thread_key(TEAM), 100)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.content.contains("TF-DONE"))
+    };
+    rig.until(30, "the lead's answer is posted in the team", || posted().is_some()).await;
+    let post = posted().unwrap();
+    let names: Vec<&str> = post.attachments.iter().filter_map(|a| a["filename"].as_str()).collect();
+    assert_eq!(names, vec!["launch-package.md", "launch-package.pdf"], "{:?}", post.attachments);
+    for a in &post.attachments {
+        let id = a["fileId"].as_str().unwrap_or_default();
+        assert!(agent::uploads::by_id(id).is_some(), "each file landed through the upload path: {a}");
+    }
+
+    let seat = format!("agent:{lead}:coworker:team:{TEAM}");
+    let chat_id = nebo.store().get_session_by_name(&seat).ok().flatten().and_then(|s| s.active_chat_id).expect("the seat's chat");
+    let reply = nebo
+        .store()
+        .get_chat_messages(&chat_id)
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .expect("the member's reply");
+    let meta: Value = serde_json::from_str(reply.metadata.as_deref().unwrap_or("{}")).unwrap_or_default();
+    let cards = meta["artifacts"].to_string();
+    assert!(cards.contains("launch-package.md") && cards.contains("launch-package.pdf"), "its own thread keeps the cards: {cards}");
+}
+
 /// The owner's authority on his team post is his direct message's, never
 /// more: a rule that turns a tool off for the employee still refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
