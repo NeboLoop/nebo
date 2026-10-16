@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos cli-darwin app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test test-full audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos cli-darwin app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -54,7 +54,8 @@ help:
 	@echo "  make run            - Build + run CLI once (no file watching)"
 	@echo "  make build          - Build headless CLI binary"
 	@echo "  make build-desktop  - Build Tauri desktop app"
-	@echo "  make test           - Run all tests (unit, offline)"
+	@echo "  make test           - Run the tests (nextest, 4 at a time; no end-to-end proofs)"
+	@echo "  make test-full      - Every test, the end-to-end proofs included"
 	@echo "  make audit          - Dependency vulnerability scan (cargo audit + pnpm audit); fails on high/critical"
 	@echo "  make test-live      - Run the live fixture suite against a running server (LLM-judged)"
 	@echo "  make test-live-fast - Same, program checks only (no judge, no claude CLI)"
@@ -142,9 +143,16 @@ build-desktop: bundle-napps
 audit:
 	@./scripts/audit.sh
 
+# cargo-nextest, 4 tests at a time (.config/nextest.toml), without the
+# end-to-end proofs; `make test-full` adds them. docs/testing.md has the tiers.
 test:
 	@echo "Running tests..."
-	cargo test
+	cargo nextest run --workspace --exclude nebo
+	cargo test --doc --workspace --exclude nebo
+
+test-full:
+	cargo nextest run --workspace --exclude nebo --profile full
+	cargo test --doc --workspace --exclude nebo
 
 clean:
 	@echo "Cleaning build artifacts..."
