@@ -92,9 +92,8 @@ fn resolve_members(
     Ok(out)
 }
 
-/// PUT /teams/{teamId} — rename, re-mission, or change members (`edit_team`: the
-/// commander graph already owns the `update_team` name). The rules
-/// (two-member floor, organizer stays) live in `tools::team::update`.
+/// PUT /teams/{teamId} — rename, re-mission, or change members (`edit_team`).
+/// The rules (two-member floor, organizer stays) live in `tools::team::update`.
 /// `changed` is false when the team already was what the request asks for
 /// (every member named already on it, the same lead): nothing was written
 /// and nothing is announced.

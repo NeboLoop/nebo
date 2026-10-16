@@ -14,7 +14,6 @@ mod chats;
 mod comm_outbox;
 mod comm_seen;
 mod comm_stream_offsets;
-mod commander;
 mod company_policy;
 mod cron_jobs;
 mod embeddings;

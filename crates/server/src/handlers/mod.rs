@@ -9,7 +9,6 @@ pub mod auth;
 pub mod auth_page;
 pub mod browser;
 pub mod chat;
-pub mod commander;
 pub mod entity_config;
 pub mod feedback;
 pub mod files;

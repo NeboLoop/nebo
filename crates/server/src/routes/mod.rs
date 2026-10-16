@@ -12,7 +12,6 @@ mod auth;
 mod browser;
 mod desktop;
 mod chat;
-mod commander;
 mod entity_config;
 pub mod files;
 mod import;
@@ -85,7 +84,6 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(org::routes())
         .merge(layers::routes(max_upload_bytes))
         .merge(roles::routes())
-        .merge(commander::routes())
         .merge(plugins::routes())
         .merge(store::routes())
         .merge(entity_config::routes())
