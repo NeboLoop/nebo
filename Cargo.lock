@@ -5790,7 +5790,7 @@ dependencies = [
 
 [[package]]
 name = "nebo"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5828,7 +5828,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-agent"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "a2ui-validation",
  "async-trait",
@@ -5878,7 +5878,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-ai"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -5916,7 +5916,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-auth"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -5937,7 +5937,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-browser"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5959,7 +5959,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-cli"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5993,7 +5993,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-comm"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "async-trait",
  "futures",
@@ -6017,14 +6017,14 @@ dependencies = [
 
 [[package]]
 name = "nebo-command"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "nebo-config"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "dirs",
  "hex",
@@ -6043,7 +6043,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-db"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "chrono",
  "nebo-types",
@@ -6061,7 +6061,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-mcp"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6082,7 +6082,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-napp"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6118,7 +6118,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-notify"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "nebo-command",
  "tracing",
@@ -6126,7 +6126,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-proto"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "prost",
  "tonic",
@@ -6135,7 +6135,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-render"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "docx-rs",
  "pulldown-cmark",
@@ -6173,7 +6173,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-server"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "a2ui-core",
  "a2ui-types",
@@ -6252,7 +6252,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-sheet"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "ironcalc",
  "roxmltree",
@@ -6264,7 +6264,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-syntax"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "streaming-iterator",
  "thiserror 2.0.18",
@@ -6301,7 +6301,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-tools"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6369,7 +6369,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-types"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "libc",
  "regex",
@@ -6383,7 +6383,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-updater"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -6406,7 +6406,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-vm"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "hex",
  "nebo-command",
@@ -6441,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-voice"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6457,7 +6457,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-workflow"
-version = "0.16.16"
+version = "0.16.18"
 dependencies = [
  "async-trait",
  "chrono",
