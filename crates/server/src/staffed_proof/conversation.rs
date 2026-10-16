@@ -4587,3 +4587,79 @@ async fn a_project_is_its_own_thread_and_the_team_thread_stays_as_it_was() {
     assert_eq!(refused.0, 400, "{:?}", refused.1);
     assert!(refused.1.to_string().contains("Pick its lead first"), "{:?}", refused.1);
 }
+
+/// A project's cards are lines in its thread (Teams, projects and threads,
+/// 2026-10-16): when the project's run hands a step to a member (an
+/// assignment that is the project's card), the lead's line names the member,
+/// the work and when it counts as done; the member works it as its own case
+/// and, when it closes, its summary is the next line. The card is the
+/// hand-off, in the project and its team.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_projects_card_is_handed_out_and_closed_in_its_thread() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof CD Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof CD Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-cards";
+    nebo.store()
+        .create_team(TEAM, "Proof Cards", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], &lead, None)
+        .unwrap();
+    let project = nebo
+        .store()
+        .create_project(&db::NewProject {
+            id: "proof-project-cards",
+            team_id: TEAM,
+            lead_agent_id: &lead,
+            title: "PH launch",
+            ask: "launch",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        })
+        .unwrap();
+    let rig = Rig::new(&nebo, vec![]).await;
+    // The member's case turn is a workflow step; the card's title is in its
+    // inputs (only the writer's case carries it).
+    rig.answer_background(Box::new(|t| {
+        (t.req.trace.purpose == "workflow_activity" && t.says("MARK-CARD")).then(|| {
+            Step::say(r#"Saved it. {"result":{"status":"done","summary":"CARD-RESULT: hero-30s.md saved."},"next":{"action":"close"}}"#)
+        })
+    }));
+
+    let assignment = workflow::cases::open_assignment(
+        nebo.store(),
+        &workflow::cases::NewAssignmentRequest {
+            assigner_agent_id: &lead,
+            assigner_name: "Proof CD Lead",
+            assigner_session_key: "",
+            parent_run_id: None,
+            assignee_agent_id: &writer,
+            subject: "MARK-CARD write the hero script",
+            done_means: "Done when: saved and on brand.",
+            due: None,
+            workflow_reply: None,
+            card: Some(workflow::cases::Card {
+                project_id: &project.id,
+                task: "MARK-CARD write the hero script",
+                done_when: "saved and on brand",
+            }),
+        },
+        chrono::Utc::now().timestamp(),
+    )
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !project_rows(&nebo, &project).iter().any(|(_, text)| text.contains("CARD-RESULT")) {
+        assert!(tokio::time::Instant::now() < deadline, "the card never closed in the thread: {:?}", project_rows(&nebo, &project));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let rows = project_rows(&nebo, &project);
+    assert_eq!(
+        rows[0],
+        ("Proof CD Lead".to_string(), "Proof CD Writer: MARK-CARD write the hero script\nDone when: saved and on brand".to_string()),
+        "{rows:?}"
+    );
+    let closed = rows.iter().find(|(_, text)| text.contains("CARD-RESULT")).unwrap();
+    assert_eq!(closed.0, "Proof CD Writer");
+    let card = nebo.store().get_handoff(&assignment).unwrap().unwrap();
+    assert_eq!((card.status.as_str(), card.project_id.as_deref(), card.team_id.as_str()), ("done", Some(project.id.as_str()), TEAM));
+    assert!(team_rows(&nebo, TEAM).is_empty(), "the team's own thread stays as it was");
+}

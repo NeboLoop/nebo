@@ -3905,7 +3905,7 @@
 			"loopSource": "迴圈「{id}」需要資料來源（例如 inputs.items）",
 			"httpUrl": "HTTP 節點「{id}」需要 URL",
 			"decideQuestions": "判斷節點「{id}」需要問題（具型別問題的 JSON 物件）",
-			"expertFields": "專家節點「{id}」需要專家、任務和逾時",
+			"expertFields": "專家節點「{id}」需要專家和任務",
 			"waitDuration": "等待節點「{id}」需要等待時間",
 			"needsIntent": "「{workflow}」中的活動「{id}」需要意圖或步驟",
 			"targetsTrigger": "有連線指向觸發器",

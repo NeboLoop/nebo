@@ -3905,7 +3905,7 @@
 			"loopSource": "Vòng lặp “{id}” cần một nguồn dữ liệu (vd. inputs.items)",
 			"httpUrl": "Nút HTTP “{id}” cần một URL",
 			"decideQuestions": "Nút Quyết định “{id}” cần câu hỏi (một đối tượng JSON gồm các câu hỏi có kiểu)",
-			"expertFields": "Nút Chuyên gia “{id}” cần một chuyên gia, một nhiệm vụ và thời gian chờ",
+			"expertFields": "Nút Chuyên gia “{id}” cần một chuyên gia và một nhiệm vụ",
 			"waitDuration": "Nút Chờ “{id}” cần thời gian chờ",
 			"needsIntent": "Hoạt động “{id}” trong “{workflow}” cần một ý định hoặc các bước",
 			"targetsTrigger": "Một kết nối trỏ tới nút kích hoạt",

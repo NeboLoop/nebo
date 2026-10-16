@@ -2644,6 +2644,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // A settled assignment rings the same bell: its assigner hears the
     // outcome now, not at the end of some later run.
     workflow::cases::install_wake_bell(wake_tx.clone());
+    // A project's card that opens or closes rings the card bell: its line
+    // goes to the project's thread (`team::card_lines`).
+    let (card_tx, card_rx) = tokio::sync::mpsc::unbounded_channel::<workflow::cases::CardChange>();
+    workflow::cases::install_card_bell(card_tx);
     let (helper_ui_tx, mut helper_ui_rx) = tokio::sync::mpsc::unbounded_channel::<agent::harness::delegation::HelperEvent>();
     let helpers = agent::harness::delegation::Helpers::new(
         store.clone(),
@@ -2871,6 +2875,7 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
             }
         });
     }
+    team::card_lines(state.clone(), card_rx);
 
     // A background command that ends reports to the session that started it,
     // through the same rail.

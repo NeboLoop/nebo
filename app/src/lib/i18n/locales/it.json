@@ -3905,7 +3905,7 @@
 			"loopSource": "Il ciclo «{id}» richiede un’origine dati (es. inputs.items)",
 			"httpUrl": "Il nodo HTTP «{id}» richiede un URL",
 			"decideQuestions": "Il nodo Decidi «{id}» richiede delle domande (un oggetto JSON di domande tipizzate)",
-			"expertFields": "Il nodo Esperto «{id}» richiede un esperto, un compito e un timeout",
+			"expertFields": "Il nodo Esperto «{id}» richiede un esperto e un compito",
 			"waitDuration": "Il nodo Attendi «{id}» richiede una durata",
 			"needsIntent": "L’attività «{id}» in «{workflow}» richiede un intento o dei passaggi",
 			"targetsTrigger": "Un collegamento punta al trigger",

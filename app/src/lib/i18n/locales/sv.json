@@ -3905,7 +3905,7 @@
 			"loopSource": "Loopen ”{id}” behöver en datakälla (t.ex. inputs.items)",
 			"httpUrl": "HTTP-noden ”{id}” behöver en URL",
 			"decideQuestions": "Avgör-noden ”{id}” behöver frågor (ett JSON-objekt med typade frågor)",
-			"expertFields": "Expertnoden ”{id}” behöver en expert, en uppgift och en tidsgräns",
+			"expertFields": "Expertnoden ”{id}” behöver en expert och en uppgift",
 			"waitDuration": "Vänta-noden ”{id}” behöver en väntetid",
 			"needsIntent": "Aktiviteten ”{id}” i ”{workflow}” behöver en avsikt eller steg",
 			"targetsTrigger": "En koppling leder till utlösaren",

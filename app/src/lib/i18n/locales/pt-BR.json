@@ -3905,7 +3905,7 @@
 			"loopSource": "A repetição “{id}” precisa de uma fonte de dados (ex.: inputs.items)",
 			"httpUrl": "O nó HTTP “{id}” precisa de uma URL",
 			"decideQuestions": "O nó Decidir “{id}” precisa de perguntas (um objeto JSON de perguntas tipadas)",
-			"expertFields": "O nó Especialista “{id}” precisa de um especialista, uma tarefa e um tempo limite",
+			"expertFields": "O nó Especialista “{id}” precisa de um especialista e uma tarefa",
 			"waitDuration": "O nó Esperar “{id}” precisa de um tempo de espera",
 			"needsIntent": "A atividade “{id}” em “{workflow}” precisa de uma intenção ou de passos",
 			"targetsTrigger": "Uma conexão aponta para o gatilho",

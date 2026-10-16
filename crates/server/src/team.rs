@@ -310,6 +310,63 @@ pub(crate) fn record(
     Ok((message, sender_name))
 }
 
+/// A project's cards as lines in its thread: each change a card goes
+/// through (`workflow::cases::CardChange`, rung by the engine when a
+/// project's step is handed to a member and when the member closes it)
+/// becomes one row, written by `record` like every row, and the card's
+/// hand-off goes to every open view. Handing out is the lead's line ("Script
+/// Writer: hero script. Done when: …"); the close is the member's own
+/// summary, or that it could not finish and why.
+pub(crate) fn card_lines(state: AppState, mut rx: tokio::sync::mpsc::UnboundedReceiver<workflow::cases::CardChange>) {
+    tokio::spawn(async move {
+        while let Some(change) = rx.recv().await {
+            if let Err(e) = card_line(&state, &change) {
+                tracing::warn!(error = %e, ?change, "project: card line not recorded");
+            }
+        }
+    });
+}
+
+fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(), String> {
+    use workflow::cases::CardChange;
+    let id = match change {
+        CardChange::Opened { assignment_id, .. } | CardChange::Closed { assignment_id } => assignment_id,
+    };
+    let Some(card) = state.store.get_handoff(id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let Some(project) = card.project_id.as_deref().map(|p| state.store.get_project(p)).transpose().map_err(|e| e.to_string())?.flatten()
+    else {
+        return Ok(());
+    };
+    let Some(team) = state.store.get_team(&project.team_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    crate::handoff::broadcast(state, card.clone());
+    let member = state.store.get_agent(&card.to_agent_id).ok().flatten().map(|a| a.name).unwrap_or_else(|| card.to_agent_id.clone());
+    let (from, text) = match change {
+        CardChange::Opened { task, done_when, .. } => (
+            card.from_agent_id.as_str(),
+            match done_when.trim() {
+                "" => format!("{member}: {task}"),
+                when => format!("{member}: {task}\nDone when: {when}"),
+            },
+        ),
+        CardChange::Closed { .. } => (
+            card.to_agent_id.as_str(),
+            match card.status.as_str() {
+                "done" if !card.result.trim().is_empty() => card.result.clone(),
+                "done" => "Done.".to_string(),
+                _ => {
+                    let why = [card.error.trim(), card.result.trim()].into_iter().find(|s| !s.is_empty()).unwrap_or("no reason was given");
+                    format!("I couldn't finish this: {why}")
+                }
+            },
+        ),
+    };
+    record(state, &team, Some(&project), TeamSender::Local(from), &text, &serde_json::json!([]), &[]).map(|_| ())
+}
+
 /// A post that came through the hub as the team's record shows it: its
 /// name and its row's role. Who it is from is decided once, by
 /// `crate::hub_sender` (the seam on trusting the hub). Only the owner's own

@@ -3905,7 +3905,7 @@
 			"loopSource": "\"{id}\" döngüsü bir veri kaynağına ihtiyaç duyuyor (örn. inputs.items)",
 			"httpUrl": "\"{id}\" HTTP düğümü bir URL’ye ihtiyaç duyuyor",
 			"decideQuestions": "\"{id}\" karar düğümü sorulara ihtiyaç duyuyor (türlendirilmiş soruların JSON nesnesi)",
-			"expertFields": "\"{id}\" uzman düğümü bir uzmana, bir göreve ve bir zaman aşımına ihtiyaç duyuyor",
+			"expertFields": "\"{id}\" uzman düğümü bir uzmana ve bir göreve ihtiyaç duyuyor",
 			"waitDuration": "\"{id}\" bekleme düğümü bir süreye ihtiyaç duyuyor",
 			"needsIntent": "\"{workflow}\" içindeki \"{id}\" aktivitesi bir amaca veya adımlara ihtiyaç duyuyor",
 			"targetsTrigger": "Bir bağlantı tetikleyiciyi hedefliyor",

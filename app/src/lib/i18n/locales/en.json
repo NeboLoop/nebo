@@ -3905,7 +3905,7 @@
 			"loopSource": "Loop \"{id}\" needs a data source (e.g. inputs.items)",
 			"httpUrl": "HTTP node \"{id}\" needs a URL",
 			"decideQuestions": "Decide node \"{id}\" needs questions (a JSON object of typed questions)",
-			"expertFields": "Expert node \"{id}\" needs an expert, a task and a timeout",
+			"expertFields": "Expert node \"{id}\" needs an expert and a task",
 			"waitDuration": "Wait node \"{id}\" needs a duration",
 			"needsIntent": "Activity \"{id}\" in \"{workflow}\" needs an intent or steps",
 			"targetsTrigger": "A connection targets the trigger",

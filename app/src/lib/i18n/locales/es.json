@@ -3905,7 +3905,7 @@
 			"loopSource": "El bucle «{id}» necesita un origen de datos (p. ej. inputs.items)",
 			"httpUrl": "El nodo HTTP «{id}» necesita una URL",
 			"decideQuestions": "El nodo Decidir «{id}» necesita preguntas (un objeto JSON de preguntas tipadas)",
-			"expertFields": "El nodo Experto «{id}» necesita un experto, una tarea y un tiempo límite",
+			"expertFields": "El nodo Experto «{id}» necesita un experto y una tarea",
 			"waitDuration": "El nodo Esperar «{id}» necesita una duración",
 			"needsIntent": "La actividad «{id}» de «{workflow}» necesita una intención o pasos",
 			"targetsTrigger": "Una conexión apunta al disparador",

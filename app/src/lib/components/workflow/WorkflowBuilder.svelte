@@ -140,7 +140,7 @@
 					if (!pstr('questions')) err($t('workflow.validation.decideQuestions', { values: { id: act.id } }), act.id);
 				} else if (actType === 'expert') {
 					const task = pstr('task') || (act.intent ?? '').trim();
-					if (!pstr('expert') || !task || !pstr('timeout')) err($t('workflow.validation.expertFields', { values: { id: act.id } }), act.id);
+					if (!pstr('expert') || !task) err($t('workflow.validation.expertFields', { values: { id: act.id } }), act.id);
 				} else if (actType === 'wait') {
 					if (!pstr('duration')) err($t('workflow.validation.waitDuration', { values: { id: act.id } }), act.id);
 				} else if ((!act.intent || !act.intent.trim()) && !(act.steps && act.steps.length > 0)) {

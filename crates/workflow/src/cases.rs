@@ -952,6 +952,44 @@ pub struct NewAssignmentRequest<'a> {
     /// recorded as that step's reply (`expert::record_reply`), which wakes
     /// the run parked on it.
     pub workflow_reply: Option<WorkflowReply<'a>>,
+    /// Set when the work is a card in a project (the assigning run is the
+    /// project's): the hand-off carries the project and its team, and the
+    /// card's lines go to the project's thread (`install_card_bell`).
+    pub card: Option<Card<'a>>,
+}
+
+/// An assignment that is a card in a project.
+pub struct Card<'a> {
+    pub project_id: &'a str,
+    /// The work, in the lead's words (the card's title).
+    pub task: &'a str,
+    /// When it counts as done; empty = not said.
+    pub done_when: &'a str,
+}
+
+/// What happened to a project's card: the work was handed out, or it
+/// closed (done, blocked or failed: the hand-off row says which).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardChange {
+    Opened { assignment_id: String, task: String, done_when: String },
+    Closed { assignment_id: String },
+}
+
+static CARD_BELL: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CardChange>> = std::sync::OnceLock::new();
+
+/// The server installs the card bell once at boot: each change to a
+/// project's card becomes a line in the project's thread, written by the
+/// team rail (`server::team::card_lines`). The card itself is the hand-off
+/// row, durable before the bell rings; with no bell (a unit test) only the
+/// line is left out.
+pub fn install_card_bell(bell: tokio::sync::mpsc::UnboundedSender<CardChange>) {
+    let _ = CARD_BELL.set(bell);
+}
+
+fn ring_card(change: CardChange) {
+    if let Some(bell) = CARD_BELL.get() {
+        let _ = bell.send(change);
+    }
 }
 
 /// The workflow run and request an assignment answers (see
@@ -1002,7 +1040,13 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         "done_means": req.done_means,
         "due": req.due,
         "workflow_reply": req.workflow_reply.as_ref().map(|w| serde_json::json!({ "run_id": w.run_id, "key": w.key })),
+        "project_id": req.card.as_ref().map(|c| c.project_id),
     });
+    // A card's hand-off is in its project's team.
+    let project = match req.card.as_ref() {
+        Some(c) => store.get_project(c.project_id)?,
+        None => None,
+    };
     let inputs = serde_json::json!({
         "subject": req.subject,
         "done_means": req.done_means,
@@ -1044,14 +1088,14 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
             kind: "assignment",
             from_agent_id: req.assigner_agent_id,
             to_agent_id: req.assignee_agent_id,
-            team_id: "",
+            team_id: project.as_ref().map(|p| p.team_id.as_str()).unwrap_or(""),
             sender_session: req.assigner_session_key,
             sender_run_id: req.parent_run_id,
             receiver_session: &session_key,
             receiver_run_id: Some(&case_id),
             ask: req.subject,
             status: "running",
-            project_id: None,
+            project_id: project.as_ref().map(|p| p.id.as_str()),
         },
         t,
     )?;
@@ -1098,6 +1142,13 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
             store.engine_complete_event(ev.id, t)?;
         }
     }
+    if let (Some(card), Some(_)) = (req.card.as_ref(), project.as_ref()) {
+        ring_card(CardChange::Opened {
+            assignment_id: assignment_id.clone(),
+            task: card.task.to_string(),
+            done_when: card.done_when.to_string(),
+        });
+    }
     Ok(assignment_id)
 }
 
@@ -1143,6 +1194,9 @@ pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status:
     if let Err(e) = ended {
         tracing::warn!(error = %e, assignment = %id, "assignment: hand-off end not recorded");
     }
+    if a["project_id"].as_str().is_some_and(|p| !p.is_empty()) {
+        ring_card(CardChange::Closed { assignment_id: id.to_string() });
+    }
     let assignee = a["assignee_agent_id"].as_str().unwrap_or("");
     let payload = serde_json::json!({
         "assignment_id": id,
@@ -1186,6 +1240,7 @@ impl tools::assignments::AssignmentOpener for CaseAssignmentOpener {
             done_means: &req.done_means,
             due: req.due.as_deref(),
             workflow_reply: None,
+            card: None,
         };
         open_assignment(&self.store, &r, chrono::Utc::now().timestamp()).map_err(|e| e.to_string())
     }
@@ -1214,6 +1269,7 @@ mod assignment_tests {
             done_means: "Reports posted",
             due: Some("2026-10-05"),
             workflow_reply: None,
+            card: None,
         };
         let id = open_assignment(&s, &req, t).expect("opened");
         let row = s.get_assignment(&id).unwrap().expect("row");
@@ -1264,6 +1320,7 @@ mod assignment_tests {
             done_means: "A number",
             due: None,
             workflow_reply: None,
+            card: None,
         };
         let id = open_assignment(&s, &req, 1_700_000_000).expect("opened from a chat turn");
         let case = s.engine_run_for_key("case:assignment", &id).unwrap().expect("case bound");
