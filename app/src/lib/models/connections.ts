@@ -56,8 +56,12 @@ export function choiceProviderLabel(choice: Pick<PackChoice, 'provider' | 'conne
 	return conn && conn !== choice.provider ? `${choice.provider} (${conn})` : choice.provider;
 }
 
-/** What a pack slot runs on: the provider/connection line and the model id beneath it. */
-export type RunsOn = { label: string; modelId: string; local: boolean };
+/**
+ * What a pack slot runs on: the provider/connection line and, beneath it, the
+ * model by the name its provider gives it (a Nebo AI speed: "High and Max"),
+ * else by its id.
+ */
+export type RunsOn = { label: string; model: string; local: boolean };
 
 /**
  * Name the model a slot points at. Uses the pack choices (every active model
@@ -67,10 +71,10 @@ export type RunsOn = { label: string; modelId: string; local: boolean };
 export function runsOn(value: string | undefined, choices: PackChoice[]): RunsOn | null {
 	if (!value) return null;
 	const hit = choices.find((c) => c.value === value);
-	if (hit) return { label: choiceProviderLabel(hit), modelId: hit.modelId, local: hit.local };
+	if (hit) return { label: choiceProviderLabel(hit), model: hit.name || hit.modelId, local: hit.local };
 	const { kind, modelId } = parseModelString(value);
 	const sameKind = choices.find((c) => parseModelString(c.value).kind === kind);
-	return { label: sameKind?.provider ?? (kind === 'janus' ? 'Nebo AI' : kind), modelId, local: sameKind?.local ?? false };
+	return { label: sameKind?.provider ?? (kind === 'janus' ? 'Nebo AI' : kind), model: modelId, local: sameKind?.local ?? false };
 }
 
 /**

@@ -3822,18 +3822,18 @@ mod tests {
         assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
     }
 
-    /// Nebo AI's lanes: on its Auto, a workflow's step runs on Fast and a
-    /// build on Deep at its own effort; a step that names its own model keeps
-    /// it, and a model that is not a pack has no lane.
+    /// Nebo AI's lanes: on its Auto, a workflow's step runs at Instant and a
+    /// build at High; a step that names its own model keeps it, and a model
+    /// that is not a pack has no lane.
     #[tokio::test]
-    async fn nebo_ai_builds_on_deep_and_runs_workflows_on_fast() {
+    async fn nebo_ai_builds_at_high_and_runs_workflows_at_instant() {
         use types::packs::Lane;
         let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
         h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
         let step = turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Workflow)).unwrap();
-        assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-flash", None), "a step on Fast");
+        assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-flash", None), "a step at Instant");
         let built = build_model(h.resolver(), "pack/nebo-ai", false).unwrap();
-        assert_eq!((built.model.as_str(), built.effort), ("janus/nebo-1-pro", None), "built on Deep");
+        assert_eq!((built.model.as_str(), built.effort), ("janus/nebo-1-pro", None), "built at High");
         assert_eq!(build_model(h.resolver(), "pack/nebo-ai/low", false).unwrap().model, "janus/nebo-1-pro", "whatever level chats");
         assert!(build_model(h.resolver(), "anthropic/claude-x", false).is_none(), "a model the owner chose stays his");
         assert!(build_model(h.resolver(), "pack/nebo-ai", true).is_none(), "a linked employee runs its agent");
@@ -3846,7 +3846,7 @@ mod tests {
         req.seat.model_override = "janus/nebo-1-medium".into();
         assert_eq!(lane_of(&req), None, "the step's own model");
 
-        // An Explore helper searches on Fast; any other helper keeps the
+        // An Explore helper searches at Instant; any other helper keeps the
         // helpers' lane.
         let helper = |kind| {
             let mut req = owner("x");
@@ -3858,18 +3858,18 @@ mod tests {
         assert_eq!(lane_of(&helper(HelperKind::Explore)), Some(Lane::Explore));
         assert_eq!(lane_of(&helper(HelperKind::General)), Some(Lane::Helpers));
         let explore = turn_model(h.resolver(), "pack/nebo-ai", lane_of(&helper(HelperKind::Explore))).unwrap();
-        assert_eq!(explore.model, "janus/nebo-1-flash", "Explore on Fast");
+        assert_eq!(explore.model, "janus/nebo-1-flash", "Explore at Instant");
     }
 
     /// Background build work (a workflow tune) runs on the build lane like a
-    /// turn that builds: Deep on a bot that never chose a pack, the pinned
+    /// turn that builds: High on a bot that never chose a pack, the pinned
     /// level of a chosen pack, and nothing for a model the owner chose.
     #[tokio::test]
     async fn background_build_work_runs_on_the_build_lane() {
         let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
         h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
         h.selector.set_task_routing([("general".to_string(), "pack/nebo-ai".to_string())].into());
-        assert_eq!(h.build_lane(), Some(("janus/nebo-1-pro".to_string(), None)), "Nebo AI builds on Deep");
+        assert_eq!(h.build_lane(), Some(("janus/nebo-1-pro".to_string(), None)), "Nebo AI builds at High");
         h.selector.set_task_routing([("general".to_string(), "anthropic/claude-x".to_string())].into());
         assert_eq!(h.build_lane(), None, "a model the owner chose stays his");
     }
@@ -3913,16 +3913,16 @@ mod tests {
     }
 
     /// A taught task's learning run builds from its first step: on Nebo AI
-    /// (a bot left on Auto) that is Deep, `janus/nebo-1-pro`, sent as the
+    /// (a bot left on Auto) that is High, `janus/nebo-1-pro`, sent as the
     /// `build` purpose Janus serves on its strongest model. The owner's own
     /// choice is untouched, and the hold ends with its window.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_taught_tasks_learning_run_requests_deep() {
         use types::packs::{Effort, LevelEffort, Pack, PackLanes, PackLevels};
-        // On Auto, the build lane is Deep.
+        // On Auto, the build lane is High.
         let auto = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
         auto.selector.set_loaded_providers(vec!["janus".into()]);
-        assert_eq!(build_model(auto.resolver(), "pack/nebo-ai", false).unwrap().model, "janus/nebo-1-pro", "Auto learns on Deep");
+        assert_eq!(build_model(auto.resolver(), "pack/nebo-ai", false).unwrap().model, "janus/nebo-1-pro", "Auto learns at High");
 
         // The learning run, from its first step.
         let model = Scripted::new(vec![Step::Say("I learned how to file the orders.")]);

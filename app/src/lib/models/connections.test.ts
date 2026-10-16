@@ -41,17 +41,22 @@ describe('runsOn', () => {
 	it('names the provider with its connection, and drops a connection that repeats the provider', () => {
 		expect(runsOn('anthropic@p1/claude-sonnet-5', choices)).toEqual({
 			label: 'Anthropic (Company key)',
-			modelId: 'claude-sonnet-5',
+			model: 'claude-sonnet-5',
 			local: false
 		});
-		expect(runsOn('ollama/llama3.2:3b', choices)).toEqual({ label: 'Ollama', modelId: 'llama3.2:3b', local: true });
+		expect(runsOn('ollama/llama3.2:3b', choices)).toEqual({ label: 'Ollama', model: 'llama3.2:3b', local: true });
 		expect(runsOn('janus/jev-latest', choices)?.label).toBe('Nebo AI');
+	});
+
+	it('names a Nebo AI speed by the levels it serves, never by its internal id', () => {
+		const speed = { value: 'janus/nebo-1-pro', provider: 'Nebo AI', connection: '', modelId: 'nebo-1-pro', name: 'High and Max', local: false };
+		expect(runsOn('janus/nebo-1-pro', [speed])).toEqual({ label: 'Nebo AI', model: 'High and Max', local: false });
 	});
 
 	it('still shows a model that is no longer offered, and nothing for an empty slot', () => {
 		expect(runsOn('anthropic@gone/claude-opus-5', choices)).toEqual({
 			label: 'Anthropic',
-			modelId: 'claude-opus-5',
+			model: 'claude-opus-5',
 			local: false
 		});
 		expect(runsOn(undefined, choices)).toBeNull();

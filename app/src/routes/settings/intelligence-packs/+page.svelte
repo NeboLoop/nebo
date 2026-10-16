@@ -71,7 +71,7 @@
   }
 
   function choiceLabel(c: PackChoice): string {
-    return `${choiceProviderLabel(c)} · ${c.modelId}`;
+    return `${choiceProviderLabel(c)} · ${c.name || c.modelId}`;
   }
 
   async function load() {
@@ -183,7 +183,7 @@
   {#if on}
     <span class="flex flex-col items-end text-end min-w-0">
       <span class="text-sm">{on.label}{#if effort}{' · '}{$t('settingsPacks.withEffort', { values: { effort: $t(`settingsPacks.level.${effort}`) } })}{/if}</span>
-      <span class="text-xs text-base-content/50 font-mono truncate max-w-full">{on.modelId}</span>
+      <span class="text-xs text-base-content/50 font-mono truncate max-w-full">{on.model}</span>
     </span>
   {:else}
     <span class="text-xs text-base-content/50 text-end">{empty}</span>
@@ -221,7 +221,7 @@
           >
             {#if defaultIsOther}
               {@const on = runsOn(defaultValue, allChoices)}
-              <option value={defaultValue}>{on ? `${on.label} · ${on.modelId}` : defaultValue}</option>
+              <option value={defaultValue}>{on ? `${on.label} · ${on.model}` : defaultValue}</option>
             {/if}
             {#each defaultOptions as opt (opt.value)}
               <option value={opt.value}>{opt.label}</option>

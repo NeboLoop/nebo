@@ -179,12 +179,13 @@ const KIND_LABELS: Record<string, string> = {
 	openrouter: 'OpenRouter',
 	deepseek: 'DeepSeek',
 	ollama: 'Ollama',
-	janus: 'Janus'
+	janus: 'Nebo AI'
 };
 
 /**
  * What an owner's pack set one level to, as he set it: the provider's label
- * and the model id verbatim ("OpenAI · gpt-6.1", "Janus · nebo-1-pro").
+ * and the model, by the name its provider gives it ("Nebo AI · High and Max")
+ * else its id verbatim ("OpenAI · gpt-6.1").
  * Only the connection key (`openai@<id>`) and a linked agent's id stay out.
  */
 export function runsOnLine(value: string, choices: PackChoice[]): string {
@@ -194,8 +195,8 @@ export function runsOnLine(value: string, choices: PackChoice[]): string {
 	let model = slash < 0 ? value : value.slice(slash + 1);
 	if (kind === 'linked') model = model.slice(model.indexOf('/') + 1);
 	const hit = choices.find((c) => c.value === value);
-	const provider = kind === 'janus' ? 'Janus' : (hit?.provider ?? KIND_LABELS[kind] ?? kind);
-	return [provider, hit?.modelId ?? model].filter(Boolean).join(' · ');
+	const provider = hit?.provider ?? KIND_LABELS[kind] ?? kind;
+	return [provider, hit?.name || hit?.modelId || model].filter(Boolean).join(' · ');
 }
 
 /**

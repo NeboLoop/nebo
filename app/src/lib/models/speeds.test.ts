@@ -88,7 +88,7 @@ describe('names', () => {
 describe('an owner\'s pack, as he set it', () => {
 	const choices = [
 		{ value: 'openai@p1/gpt-6.1', provider: 'OpenAI', connection: 'Company key', modelId: 'gpt-6.1', local: false },
-		{ value: 'janus/nebo-1-pro', provider: 'Nebo AI', connection: '', modelId: 'nebo-1-pro', local: false }
+		{ value: 'janus/nebo-1-pro', provider: 'Nebo AI', connection: '', modelId: 'nebo-1-pro', name: 'High and Max', local: false }
 	];
 	const mine: PackRow = {
 		id: 'm',
@@ -98,17 +98,17 @@ describe('an owner\'s pack, as he set it', () => {
 		levelEffort: { max: 'high' }
 	};
 
-	it('each level: the provider and the model verbatim, no connection key', () => {
+	it('each level: the provider and the model, by its name when it has one, no connection key', () => {
 		expect(runsOnLine('openai@p1/gpt-6.1', choices)).toBe('OpenAI · gpt-6.1');
-		expect(runsOnLine('janus/nebo-1-pro', choices)).toBe('Janus · nebo-1-pro');
+		expect(runsOnLine('janus/nebo-1-pro', choices)).toBe('Nebo AI · High and Max');
 		expect(runsOnLine('anthropic@zz/claude-sonnet-5', [])).toBe('Anthropic · claude-sonnet-5');
 		expect(runsOnLine('openrouter@k/anthropic/claude-x', [])).toBe('OpenRouter · anthropic/claude-x');
 		expect(runsOnLine('linked/1f2e/codex-3', [])).toBe('linked · codex-3');
 	});
 
 	it('the level rows: set, with effort, Auto, and an empty level from Nebo AI', () => {
-		expect(levelSubtitle(mine, 'high', choices, t)).toEqual({ text: 'Janus · nebo-1-pro', muted: false });
-		expect(levelSubtitle(mine, 'instant', choices, t).text).toBe('Janus · nebo-1-flash');
+		expect(levelSubtitle(mine, 'high', choices, t)).toEqual({ text: 'Nebo AI · High and Max', muted: false });
+		expect(levelSubtitle(mine, 'instant', choices, t).text).toBe('Nebo AI · nebo-1-flash');
 		expect(levelSubtitle(mine, 'max', choices, t).text).toBe('OpenAI · gpt-6.1 · <settingsPacks.withEffort>');
 		expect(levelSubtitle(mine, 'auto', choices, t).text).toBe('<modelPick.autoCustom>');
 		expect(levelSubtitle(mine, 'medium', choices, t)).toEqual({ text: '<modelPick.levelDesc.medium> · <modelPick.fromNeboAi>', muted: true });
@@ -123,7 +123,7 @@ describe('an owner\'s pack, as he set it', () => {
 	});
 
 	it('the pack list names an owner\'s pack by its providers', () => {
-		expect(packSubtitle(mine, choices, t)).toBe('Janus, OpenAI');
+		expect(packSubtitle(mine, choices, t)).toBe('Nebo AI, OpenAI');
 		expect(packSubtitle({ id: 'e', name: 'Empty', builtIn: false }, choices, t)).toBe('<modelPick.packOwn>');
 	});
 });
