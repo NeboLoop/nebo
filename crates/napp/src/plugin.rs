@@ -2675,14 +2675,19 @@ impl PluginStore {
 
                 // Wait out the burst: rescan once the trees are quiet, or
                 // at the latest after `PLUGIN_SETTLE_MAX` of steady writes.
-                let started = tokio::time::Instant::now();
+                // Only a relevant event is a write. On Linux the watch also
+                // reports every open and read of the trees (the server's own
+                // reads of its plugins included), and counting those as
+                // writes held every rescan off for the full 30 s: a plugin
+                // copied in by hand took half a minute to load.
+                let latest = tokio::time::Instant::now() + PLUGIN_SETTLE_MAX;
+                let mut quiet_at = tokio::time::Instant::now() + PLUGIN_SETTLE_QUIET;
                 loop {
-                    let left = PLUGIN_SETTLE_MAX.saturating_sub(started.elapsed());
-                    if left.is_zero() {
-                        break;
-                    }
-                    match tokio::time::timeout(PLUGIN_SETTLE_QUIET.min(left), rx.recv()).await {
-                        Ok(Some(_)) => continue,
+                    match tokio::time::timeout_at(quiet_at.min(latest), rx.recv()).await {
+                        Ok(Some(Ok(event))) if relevant(&event) => {
+                            quiet_at = tokio::time::Instant::now() + PLUGIN_SETTLE_QUIET;
+                        }
+                        Ok(Some(_)) => {}
                         Ok(None) => return,
                         Err(_) => break,
                     }
