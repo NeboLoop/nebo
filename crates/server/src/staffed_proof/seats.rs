@@ -638,7 +638,7 @@ async fn every_claude_code_hire_is_an_employee_of_its_own() {
     nebo.store().finish_handoff(&handoff, "done", "fixed", "", 0).unwrap();
 
     // The hire list: Claude Code once, to start new; both on the team.
-    let listing = crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone())).await.unwrap().0;
+    let listing = crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone()), axum::extract::Query(Default::default())).await.unwrap().0;
     assert_eq!(
         hire_entries(&listing, "This computer", "claude-code"),
         [
@@ -804,7 +804,7 @@ async fn the_hire_list_answers_from_what_is_known_and_an_app_found_later_is_sent
     let mut state = nebo.state.clone();
     state.local_host = Some(host.clone());
     state.linked_apps = Arc::new(Default::default());
-    let list = || crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone()));
+    let list = || crate::handlers::agents::list_linked_agents(axum::extract::State(state.clone()), axum::extract::Query(Default::default()));
     // Any other coding agent that speaks ACP: never one this machine has
     // installed itself, so it is there only once it is told.
     let other = |listing: &Value| !hire_entries(listing, "This computer", "acp").is_empty();

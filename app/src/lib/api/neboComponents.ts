@@ -2490,6 +2490,7 @@ export interface ListIntegrationsResponse {
 
 export interface ListLinkedAgentsResponse {
 	computers: LinkedComputerEntry[]
+	missing: LinkedMissingApp[]
 	checkedAt: number
 }
 
@@ -3452,6 +3453,15 @@ export interface LinkedComputerEntry {
 	local: boolean
 	/** What is installed on it, one entry per app, in the order shown. */
 	agents: LinkedAgentEntry[]
+}
+
+export interface LinkedMissingApp {
+	/** The runtime it would run: "claude-code". */
+	runtime: string
+	/** The app as the owner knows it: "Claude Code". */
+	app: string
+	/** Where its makers say how to install it. */
+	installUrl: string
 }
 
 export interface PackChoice {

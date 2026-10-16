@@ -24,13 +24,18 @@
   Another app (Hermes, OpenClaw) is hired as its agent: at once when it runs
   one, from a list of them when it runs several, the ones on the team
   checked. The hired employee opens.
+
+  A coding app this computer could host but does not have (`missing`) is
+  said plainly under the list: "Claude Code isn't installed on this
+  computer.", with its makers' install page and Check again, which looks at
+  the computer now (`?look=true`) without restarting Nebo.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { Bot, Check, ChevronLeft, Terminal, X } from 'lucide-svelte';
   import { createAgent, getCompanyPermissions, listLinkedAgents, workOutAgentNeeds } from '$lib/api/nebo';
-  import type { ListLinkedAgentsResponse } from '$lib/api/neboComponents';
+  import type { LinkedMissingApp, ListLinkedAgentsResponse } from '$lib/api/neboComponents';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import {
     appLine,
@@ -60,6 +65,10 @@
   // has answered.
   let apps = $state<LinkedApp[]>([]);
   let listed = $state(false);
+  // The coding apps this computer could host but does not have, and
+  // whether Check again is looking.
+  let missing = $state<LinkedMissingApp[]>([]);
+  let checking = $state(false);
 
   // The hire of one app, a step at a time: its name (a coding app), the
   // computer (a coding app on several), the agent (an app running several),
@@ -133,8 +142,22 @@
   // comes as an event. Neither moves a row that is shown.
   onWsEvent<ListLinkedAgentsResponse>('linked_apps_changed', (data) => {
     apps = mergeLinkedApps(apps, data.computers ?? []);
+    missing = data.missing ?? [];
     listed = true;
   });
+
+  // Check again: look at this computer now, as the answer to this call.
+  async function checkAgain() {
+    checking = true;
+    try {
+      const resp = await listLinkedAgents(true);
+      apps = mergeLinkedApps(apps, resp.computers ?? []);
+      missing = resp.missing ?? [];
+    } catch {
+      // What was shown stays; the next listing or event updates it.
+    }
+    checking = false;
+  }
 
   onMount(() => {
     getCompanyPermissions()
@@ -143,7 +166,10 @@
         // The first choice reads "Same as company defaults" alone.
       });
     listLinkedAgents()
-      .then((resp) => (apps = mergeLinkedApps(apps, resp.computers ?? [])))
+      .then((resp) => {
+        apps = mergeLinkedApps(apps, resp.computers ?? []);
+        missing = resp.missing ?? [];
+      })
       .catch(() => {
         // Nothing listed is the same as no apps: the section stays hidden.
       })
@@ -412,7 +438,7 @@
         </button>
       </div>
 
-      {#if !listed || apps.length > 0}
+      {#if !listed || apps.length > 0 || missing.length > 0}
         <div class="w-full mt-5 pt-4 border-t border-base-300 text-start">
           <h2 class="text-sm font-semibold">{$t('newEmployee.hireFromApps')}</h2>
           <p class="text-xs text-base-content/60 mt-1 leading-relaxed">{$t('newEmployee.linkedLede')}</p>
@@ -445,6 +471,22 @@
                 </li>
               {/each}
             </ul>
+            {#if missing.length > 0}
+              <ul class="mt-2 flex flex-col gap-1">
+                {#each missing as m (m.runtime)}
+                  <li class="flex items-start gap-3 px-3 py-2">
+                    <Terminal class="w-4 h-4 shrink-0 mt-0.5 text-base-content/40" />
+                    <span class="min-w-0 flex-1 flex flex-col items-start gap-0.5">
+                      <span class="text-sm text-base-content/70">{$t('newEmployee.notInstalled', { values: { app: m.app } })}</span>
+                      <a href={m.installUrl} target="_blank" rel="noopener noreferrer" class="text-xs text-primary hover:underline">{$t('newEmployee.howToInstall', { values: { app: m.app } })}</a>
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+              <button type="button" class="btn btn-ghost btn-xs rounded-field mt-1" disabled={checking} onclick={checkAgain}>
+                {checking ? $t('newEmployee.checking') : $t('newEmployee.checkAgain')}
+              </button>
+            {/if}
           {/if}
         </div>
       {/if}
