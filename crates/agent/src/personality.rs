@@ -1,4 +1,5 @@
 use ai::{Provider, StreamEventType};
+use sha2::Digest;
 use db::Store;
 use tracing::{debug, info, warn};
 
@@ -9,35 +10,35 @@ const MAX_OBSERVATIONS: usize = 15;
 /// Base lifespan multiplier per reinforced_count (days).
 const LIFESPAN_DAYS_PER_REINFORCEMENT: i64 = 14;
 
+/// Where the directive is stored, inside the observations' namespace.
+const DIRECTIVE_NAMESPACE: &str = "tacit/personality";
+const DIRECTIVE_KEY: &str = "directive";
+
 /// Synthesize a personality directive from style observations.
 /// Calls the LLM to produce a 3-5 sentence directive in 2nd person.
-/// Stores the result as `tacit/personality/directive`.
+/// Stores the result as `tacit/personality/directive`, with the hash of the
+/// observations it was written from (`input_hash`): while the observations
+/// are unchanged, the stored directive stands and no call is made (audit
+/// 2026-10-16: ~95 syntheses a day on unchanged input).
 pub async fn synthesize_directive(
     store: &Store,
     provider: &dyn Provider,
     model: &str,
     user_id: &str,
 ) -> Option<String> {
-    // Load all style observations
-    let observations =
-        match store.list_memories_by_user_and_namespace(user_id, "tacit/personality/style", 200, 0)
-        {
-            Ok(mems) => mems,
-            Err(e) => {
-                debug!(error = %e, "failed to load style observations");
-                return None;
-            }
-        };
-
-    // Also include tacit/personality observations (non-style)
-    let personality_obs = store
-        .list_memories_by_user_and_namespace(user_id, "tacit/personality", 200, 0)
-        .unwrap_or_default();
-
-    let all_obs: Vec<_> = observations
-        .into_iter()
-        .chain(personality_obs.into_iter())
-        .collect();
+    // Every observation under `tacit/personality` (the style ones included:
+    // the namespace is a prefix), never the directive itself, which would
+    // feed each synthesis into the next.
+    let all_obs: Vec<_> = match store.list_memories_by_user_and_namespace(user_id, DIRECTIVE_NAMESPACE, 400, 0) {
+        Ok(mems) => mems
+            .into_iter()
+            .filter(|m| !(m.namespace == DIRECTIVE_NAMESPACE && m.key == DIRECTIVE_KEY))
+            .collect(),
+        Err(e) => {
+            debug!(error = %e, "failed to load style observations");
+            return None;
+        }
+    };
 
     if all_obs.len() < MIN_OBSERVATIONS {
         debug!(
@@ -108,6 +109,19 @@ pub async fn synthesize_directive(
         })
         .collect();
 
+    let input_hash = hex::encode(sha2::Sha256::digest(observations_text.join("\n").as_bytes()));
+    let written_from = store
+        .get_memory_by_key_and_user(DIRECTIVE_NAMESPACE, DIRECTIVE_KEY, user_id)
+        .ok()
+        .flatten()
+        .and_then(|m| m.metadata)
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+        .and_then(|m| m.get("input_hash").and_then(|h| h.as_str()).map(str::to_string));
+    if written_from.as_deref() == Some(input_hash.as_str()) {
+        debug!("personality observations unchanged: the directive stands");
+        return None;
+    }
+
     let prompt = format!(
         "Based on these observed communication style patterns, write a concise personality directive (one paragraph, 3-5 sentences, second person \"you\").\n\
          The directive should guide an AI employee on how to communicate with this user.\n\
@@ -168,12 +182,13 @@ pub async fn synthesize_directive(
         "synthesized_at": now,
         "observation_count": scored.len(),
         "confidence": 0.95,
+        "input_hash": input_hash,
     })
     .to_string();
 
     if let Err(e) = store.upsert_memory(
-        "tacit/personality",
-        "directive",
+        DIRECTIVE_NAMESPACE,
+        DIRECTIVE_KEY,
         &directive,
         None,
         Some(&metadata),
@@ -193,6 +208,45 @@ pub async fn synthesize_directive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model that writes a directive and counts how often it was asked.
+    struct Writer(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Provider for Writer {
+        fn id(&self) -> &str {
+            "writer"
+        }
+        async fn stream(&self, _req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.send(ai::StreamEvent::text(format!("Be brief, version {n}."))).await.unwrap();
+            Ok(rx)
+        }
+    }
+
+    /// The directive is written once per set of observations: unchanged
+    /// observations make no call, a new one does, and the directive never
+    /// counts as an observation of its own.
+    #[tokio::test]
+    async fn an_unchanged_observation_set_is_never_synthesized_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join("p.db").to_string_lossy()).unwrap();
+        for i in 0..MIN_OBSERVATIONS {
+            store.upsert_memory("tacit/personality/style", &format!("s{i}"), "short replies", None, None, "u").unwrap();
+        }
+        let writer = Writer(std::sync::atomic::AtomicUsize::new(0));
+        let calls = || writer.0.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(synthesize_directive(&store, &writer, "m", "u").await.is_some());
+        assert_eq!(calls(), 1);
+        assert!(synthesize_directive(&store, &writer, "m", "u").await.is_none(), "unchanged: the directive stands");
+        assert_eq!(calls(), 1, "and no call was made");
+        store.upsert_memory("tacit/personality/style", "s-new", "no emoji", None, None, "u").unwrap();
+        assert!(synthesize_directive(&store, &writer, "m", "u").await.is_some(), "a new observation: written again");
+        assert_eq!(calls(), 2);
+        let stored = store.get_memory_by_key_and_user(DIRECTIVE_NAMESPACE, DIRECTIVE_KEY, "u").unwrap().unwrap();
+        assert_eq!(stored.value, "Be brief, version 1.");
+    }
 
     #[test]
     fn test_min_observations_check() {
