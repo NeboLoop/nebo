@@ -3128,6 +3128,39 @@ mod tests {
         assert!(!hist.iter().any(|e| e.payload.contains("without a valid next")), "{hist:?}");
     }
 
+    /// A turn's history row is complete as it lands, and settling the turn
+    /// holds no other event. Seen in the staffed proof of 2026-10-16: a
+    /// coworker's reply to a parked workflow was due when a case turn
+    /// settled; the settle claimed it with its own row and left it under a
+    /// two-minute lease nobody delivered, so the workflow stayed parked.
+    #[test]
+    fn settling_a_turn_holds_no_other_event() {
+        let s = store();
+        let b = binding();
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "hold@x.com", &serde_json::json!({"email": "hold@x.com"}), "webhook", "s-hold", 1_000).unwrap() else { panic!() };
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        let other = s
+            .engine_enqueue_event(&NewEvent {
+                kind: workflow::expert::REPLY_KIND,
+                target_type: "run",
+                target_id: "expert:another-run",
+                payload: "{}",
+                idem_key: "expert-reply:another",
+                durable: true,
+                ..Default::default()
+            })
+            .unwrap();
+        settle_turn(&s, &turn, Some(r#"{"next":{"action":"wait","deadline":"1d"}}"#), false, 1_100).unwrap();
+        let hist = s.engine_events_for("run", &case_id, 50).unwrap();
+        let row = hist.iter().find(|e| e.kind == "turn_result").expect("the turn's row");
+        assert!(row.delivered_at.is_some(), "the history row is complete on arrival");
+        let (claimable, _) = s.engine_claim_events(1_100, 10).unwrap();
+        assert!(
+            claimable.iter().any(|e| db::Enqueued::Inserted(e.id) == other),
+            "the reply is still the loop's to deliver now: {claimable:?}"
+        );
+    }
+
     /// Seen live: a retry after a failed first turn was handed the failure
     /// line alone and answered "no lead data available to process". The
     /// person's own message is in every turn's history.
