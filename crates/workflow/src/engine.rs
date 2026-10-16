@@ -890,6 +890,9 @@ pub async fn execute_activity(
         workflow_id: workflow.id.clone(),
         action_id: activity.id.clone(),
         step_id,
+        // The step's turn names its conversation (the cache key) when it
+        // sends.
+        session_id: String::new(),
     };
 
     // Memory continuity for agent-bound runs. Computed per activity so

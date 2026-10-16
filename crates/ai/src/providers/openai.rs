@@ -81,6 +81,14 @@ impl OpenAIProvider {
     }
 
     /// Build async-openai messages from our generic format.
+    /// OpenAI's own API takes `prompt_cache_key` (requests with the same
+    /// key and prefix land on the same cache). Other OpenAI-compatible
+    /// servers may refuse a field they don't know; Janus reads the same key
+    /// from `X-Session-ID` (`RequestTrace::headers`).
+    fn takes_prompt_cache_key(&self) -> bool {
+        self.base_url.starts_with("https://api.openai.com/")
+    }
+
     fn build_messages(&self, req: &ChatRequest) -> Vec<ChatCompletionRequestMessage> {
         // Build indexes for history sanitisation (same as Go buildMessages):
         // - respondedToolIDs: tool_call_ids that have a matching tool-result message
@@ -649,6 +657,7 @@ impl Provider for OpenAIProvider {
                 None
             },
             tools,
+            prompt_cache_key: self.takes_prompt_cache_key().then(|| req.trace.session_id.clone()).filter(|k| !k.is_empty()),
             ..Default::default()
         };
 
@@ -1636,6 +1645,38 @@ mod tests {
         assert!(head.contains("x-purpose: memory_extract"), "{head}");
         assert!(head.contains("x-agent-id: agent-1"), "{head}");
         assert!(!head.contains("x-run-id"), "empty ids stay off the wire: {head}");
+    }
+
+    // The conversation's prompt-cache key rides every request as
+    // `X-Session-ID`; only OpenAI's own API also gets `prompt_cache_key` in
+    // the body, since another OpenAI-compatible server may refuse it.
+    #[tokio::test]
+    async fn the_session_is_the_prompt_cache_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap();
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n";
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), format!("http://{addr}"));
+        provider.set_provider_id("janus");
+        let req = ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace { session_id: "sess-1".into(), ..RequestTrace::new("agent_turn") })
+        };
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        let sent = server.await.unwrap();
+        assert!(sent.to_lowercase().contains("x-session-id: sess-1"), "{sent}");
+        assert!(!sent.contains("prompt_cache_key"), "not OpenAI's own API: {sent}");
+
+        let openai = OpenAIProvider::new(String::new(), "m".into());
+        assert!(openai.takes_prompt_cache_key());
+        assert!(!provider.takes_prompt_cache_key());
     }
 
     // Janus takes the pack level's effort whatever the model's capabilities
