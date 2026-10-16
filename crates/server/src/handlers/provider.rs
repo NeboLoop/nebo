@@ -799,6 +799,10 @@ mod reload_tests {
     /// cut linked employees off until a restart).
     #[tokio::test]
     async fn a_code_pairing_leaves_janus_live_and_keeps_the_linked_provider() {
+        // The profile's token is stored encrypted, as at startup. This test
+        // used to pass only when another test in the same process had set
+        // the encryptor first.
+        auth::credential::init(mcp::crypto::Encryptor::generate());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
         crate::seed_models_from_catalog(&store, &config::ModelsConfig::load());

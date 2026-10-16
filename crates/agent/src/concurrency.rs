@@ -348,6 +348,17 @@ impl ConcurrencyController {
     pub fn ceiling(&self) -> usize {
         self.bounds.lock().unwrap().ceiling
     }
+
+    /// Calls of `priority` queued for a foreground permit right now: what a
+    /// test waits on instead of sleeping and hoping the call has queued.
+    #[cfg(test)]
+    pub(crate) fn llm_waiting(&self, priority: Priority) -> usize {
+        let books = self.llm.books.lock().unwrap();
+        match priority {
+            Priority::Owner => books.owner.len(),
+            Priority::Work => books.work.len(),
+        }
+    }
 }
 
 /// A provider whose calls are housekeeping: each call takes a background

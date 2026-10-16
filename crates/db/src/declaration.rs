@@ -256,8 +256,20 @@ pub fn merge_package_declaration(existing: &str, incoming: &str) -> String {
     // owner's own values, and the next real update would then read their edits
     // as the package's and give every one of them away. So: an owner-side
     // document is taken as it is, and the baseline does not move.
+    //
+    // An owner-side document is a copy of the row at the moment it was
+    // written, baseline included. When the row's baseline has moved since, a
+    // package delivered in between, and the document is older than the row:
+    // taking it would hand back the declaration from before that delivery
+    // (the watcher reads the mirror an owner's edit wrote, a package update
+    // lands, then the watcher's stale read is applied — and the update's new
+    // entries are gone). The row stands.
     let is_package_delivery = at(&theirs, &format!("/{PACKAGE_BASELINE}")).is_none();
     if !is_package_delivery {
+        let stale = ours.get(PACKAGE_BASELINE).is_some_and(|row| theirs.get(PACKAGE_BASELINE) != Some(row));
+        if stale {
+            return existing.to_string();
+        }
         return theirs.to_string();
     }
 
@@ -405,6 +417,31 @@ mod tests {
             serde_json::json!(["ledger"]),
             "the baseline keeps the package's word"
         );
+    }
+
+    /// The owner's edit is mirrored to `agent.json` with its baseline; a
+    /// package update lands; then that older mirror comes back through the
+    /// watcher. It is older than the row and must not undo the update.
+    #[test]
+    fn an_owner_document_older_than_a_package_update_does_not_undo_it() {
+        let shipped = r#"{"requires": {"interfaces": ["ledger"]},
+                           "inputs": [{"key": "mailbox", "label": "Which mailbox?"}]}"#;
+        let mirror = owner_edits(shipped, |fm| {
+            fm["requires"]["interfaces"] = serde_json::json!(["ledger", "mail"]);
+        });
+        let update = r#"{"requires": {"interfaces": ["ledger"]},
+                          "inputs": [{"key": "mailbox", "label": "Which mailbox?"},
+                                     {"key": "approver", "label": "Who approves?"}]}"#;
+        let row = merge_package_declaration(&mirror, update);
+        assert_eq!(merge_package_declaration(&row, &mirror), row, "the stale mirror leaves the row as it is");
+
+        // A mirror written after the update (its baseline is the row's) is
+        // the owner's document and is taken as it is.
+        let current: Value = serde_json::from_str(&row).unwrap();
+        let mut edited = current.clone();
+        edited["requires"]["interfaces"] = serde_json::json!(["ledger", "mail", "sms"]);
+        let taken: Value = serde_json::from_str(&merge_package_declaration(&row, &edited.to_string())).unwrap();
+        assert_eq!(taken, edited);
     }
 
     /// An entry the owner deleted stays deleted. Re-adding it on every update
