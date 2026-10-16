@@ -637,7 +637,8 @@ pub struct Message {
 /// What an LLM request is for and which Nebo run produced it. Every
 /// `ChatRequest` carries one, so a call that does not name its purpose does
 /// not compile. The Janus provider emits it as `X-Purpose` plus
-/// `X-Agent-ID`/`X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID` headers so
+/// `X-Agent-ID`/`X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID`/
+/// `X-Session-ID` headers so
 /// usage can be grouped by purpose and attributed per agent/workflow/action/
 /// step. `agent_id` is the rollup key that disambiguates the same workflow run
 /// by different agents; chat runs set `agent_id` + `run_id`. Empty ids stay off
@@ -652,6 +653,13 @@ pub struct RequestTrace {
     pub workflow_id: String,
     pub action_id: String,
     pub step_id: String,
+    /// The conversation the call reads (its session's id): the prompt-cache
+    /// key. Stable for the conversation's life, so every step of every turn
+    /// and every fork of it (a checkpoint, a memory pass) is routed to the
+    /// same cache: sent as `X-Session-ID` to Janus and as `prompt_cache_key`
+    /// to a provider that takes one (`OpenAIProvider`). Empty for a call that
+    /// reads no conversation.
+    pub session_id: String,
 }
 
 impl RequestTrace {
@@ -665,6 +673,7 @@ impl RequestTrace {
             workflow_id: String::new(),
             action_id: String::new(),
             step_id: String::new(),
+            session_id: String::new(),
         }
     }
 
@@ -679,6 +688,7 @@ impl RequestTrace {
             ("x-workflow-id", self.workflow_id.as_str()),
             ("x-action-id", self.action_id.as_str()),
             ("x-step-id", self.step_id.as_str()),
+            ("x-session-id", self.session_id.as_str()),
         ] {
             if !val.is_empty()
                 && let Ok(hv) = val.parse()

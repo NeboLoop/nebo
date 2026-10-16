@@ -152,6 +152,7 @@ impl TurnContext {
     fn trace(&self, purpose: &'static str) -> RequestTrace {
         RequestTrace {
             agent_id: self.agent_id().to_string(),
+            session_id: self.session_id.clone(),
             ..RequestTrace::new(purpose)
         }
     }
@@ -2630,10 +2631,11 @@ fn build_request(
         cache_breakpoints: prompt::cache_breakpoints(),
         cancel_token: Some(cx.request.cancel.clone()),
         trace: match cx.workflow() {
-            Some(m) => m.trace.clone(),
+            Some(m) => RequestTrace { session_id: cx.session_id.clone(), ..m.trace.clone() },
             None => RequestTrace {
                 agent_id: cx.agent_id().to_string(),
                 run_id: cx.progress.run_id.clone(),
+                session_id: cx.session_id.clone(),
                 ..RequestTrace::new(if st.building { "build" } else { "agent_turn" })
             },
         },
@@ -3877,6 +3879,31 @@ mod tests {
     /// A turn that starts building moves to the build lane's model from its
     /// next step, routed fresh and sent as the `build` purpose; the steps
     /// before it keep the turn's model.
+    /// Every step of a conversation's turns carries the conversation as its
+    /// prompt-cache key, the same on each step and the next turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_step_carries_the_conversation_as_its_cache_key() {
+        let model = Scripted::new(vec![
+            Step::Call("echo", serde_json::json!({})),
+            Step::Say("Done."),
+            Step::Say("Again."),
+        ]);
+        let extra: Vec<Box<dyn tools::registry::DynTool>> =
+            vec![Box::new(Echo { name: "echo", deferred: false, read_only: true })];
+        let h = harness_with(&model, extra).await;
+        run_turn(&h, owner("Look it up")).await;
+        run_turn(&h, owner("And again")).await;
+        let keys: Vec<String> = model
+            .calls()
+            .iter()
+            .filter(|c| c.trace.purpose == "agent_turn")
+            .map(|c| c.trace.session_id.clone())
+            .collect();
+        assert_eq!(keys.len(), 3, "{keys:?}");
+        assert!(!keys[0].is_empty());
+        assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_turn_that_builds_moves_to_the_build_lane() {
         use types::packs::{Effort, LevelEffort, Pack, PackLanes, PackLevels};
