@@ -9,6 +9,12 @@
 //! that the next reply or the earliest deadline wakes. The woken run re-enters
 //! under its own id; finished nodes replay and only unfinished work runs.
 //!
+//! `params.timeout` is optional. With one, an expert that has not answered by
+//! then fails the step. Without one the step waits for the answer however
+//! long it takes (a project's card: the run's own limit and the owner are
+//! the backstop). `params.done_when` says when the work counts as done; the
+//! expert is told it, and it rides the assignment's `done_means`.
+//!
 //! An expert on another bot (a `loop:` address) is never sent anything: data
 //! leaving the owner's bot needs his approval per workflow and expert, and
 //! there is no approval of that kind yet, so the step is blocked and says so.
@@ -47,8 +53,8 @@ fn reply_idem(key: &str) -> String {
     format!("expert-reply:{key}")
 }
 
-/// `params.timeout`: `30s`, `45m`, `2h`, `3d`. Required — an expert that
-/// never answers must not hold the run forever.
+/// `params.timeout`: `30s`, `45m`, `2h`, `3d`. `None` for anything else;
+/// an absent timeout is read by [`timeout_of`].
 pub fn parse_timeout(s: &str) -> Option<std::time::Duration> {
     let s = s.trim();
     if let Some(days) = s.strip_suffix('d').or_else(|| s.strip_suffix('D')) {
@@ -56,6 +62,21 @@ pub fn parse_timeout(s: &str) -> Option<std::time::Duration> {
         return Some(std::time::Duration::from_secs(n * 86_400));
     }
     crate::parser::parse_wait_duration(s)
+}
+
+/// How long the step waits for its expert: `Ok(None)` when the node names no
+/// timeout (it waits for the answer), `Err` for one it cannot read.
+pub fn timeout_of(activity: &Activity) -> Result<Option<u64>, String> {
+    let raw = param_str(activity, "timeout").trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    parse_timeout(raw).map(|d| Some(d.as_secs())).ok_or_else(|| {
+        format!(
+            "expert activity '{}': params.timeout {raw:?} is not a duration (e.g. \"30m\", \"4h\", \"2d\"); leave it out to wait for the answer",
+            activity.id
+        )
+    })
 }
 
 /// Definition-time rules for an expert node.
@@ -69,12 +90,7 @@ pub fn validate(activity: &Activity) -> Result<(), String> {
     if param_str(activity, "task").trim().is_empty() && activity.intent.trim().is_empty() {
         return Err(format!("expert activity '{}' requires params.task (what the expert should do)", activity.id));
     }
-    if parse_timeout(param_str(activity, "timeout")).is_none() {
-        return Err(format!(
-            "expert activity '{}' requires params.timeout (e.g. \"30m\", \"4h\", \"2d\")",
-            activity.id
-        ));
-    }
+    timeout_of(activity)?;
     if let Some(input) = activity.params.as_ref().and_then(|p| p.get("input")) {
         let refs: Vec<&Value> = match input {
             Value::Object(m) => m.values().collect(),
@@ -174,7 +190,10 @@ pub struct Request<'a> {
     pub task: &'a str,
     pub input: &'a Value,
     pub contract: &'a str,
-    pub timeout_secs: u64,
+    /// When the work counts as done (`params.done_when`); empty = not said.
+    pub done_when: &'a str,
+    /// `None`: wait for the answer however long it takes.
+    pub timeout_secs: Option<u64>,
 }
 
 /// Where a request stands.
@@ -184,13 +203,14 @@ pub enum Standing {
     Answered(Value),
     /// The expert refused, could not do it, or did not answer in time.
     Failed(String),
-    /// Sent and not answered yet; wake the run by this time at the latest.
-    Waiting { deadline: i64 },
+    /// Sent and not answered yet; wake the run by this time at the latest
+    /// (`None`: only the answer wakes it).
+    Waiting { deadline: Option<i64> },
 }
 
 /// The request's standing from what is on record, or None when it was never
 /// sent.
-pub fn standing(store: &Store, run_id: &str, key: &str, timeout_secs: u64, now: i64) -> Option<Standing> {
+pub fn standing(store: &Store, run_id: &str, key: &str, timeout_secs: Option<u64>, now: i64) -> Option<Standing> {
     if let Some(reply) = recorded_reply(store, run_id, key) {
         return Some(read_reply(&reply));
     }
@@ -199,11 +219,14 @@ pub fn standing(store: &Store, run_id: &str, key: &str, timeout_secs: u64, now: 
         .ok()?
         .into_iter()
         .find(|e| e.idem_key == effect_key(key))?;
+    let Some(timeout_secs) = timeout_secs else {
+        return Some(Standing::Waiting { deadline: None });
+    };
     let deadline = effect.created_at + timeout_secs as i64;
     Some(if now >= deadline {
         Standing::Failed(format!("the expert did not answer within {}", human_secs(timeout_secs)))
     } else {
-        Standing::Waiting { deadline }
+        Standing::Waiting { deadline: Some(deadline) }
     })
 }
 
@@ -221,7 +244,13 @@ pub fn send(store: &Store, expert: &Expert, req: &Request<'_>, now: i64) -> Resu
         .flatten()
         .map(|a| a.name)
         .unwrap_or_else(|| "a workflow".to_string());
-    let subject = format!("{} (from the workflow '{}')", req.task.trim(), req.workflow_name);
+    // A project's run hands its steps out as the project's cards: the task
+    // is the card's title, and its lines go to the project's thread.
+    let project = store.workflow_run_project(req.run_id).ok().flatten();
+    let subject = match project {
+        Some(_) => req.task.trim().to_string(),
+        None => format!("{} (from the workflow '{}')", req.task.trim(), req.workflow_name),
+    };
     let done_means = done_means(req);
     let opened = crate::cases::open_assignment(
         store,
@@ -236,6 +265,11 @@ pub fn send(store: &Store, expert: &Expert, req: &Request<'_>, now: i64) -> Resu
             done_means: &done_means,
             due: None,
             workflow_reply: Some(crate::cases::WorkflowReply { run_id: req.run_id, key: req.key }),
+            card: project.as_deref().map(|project_id| crate::cases::Card {
+                project_id,
+                task: req.task.trim(),
+                done_when: req.done_when.trim(),
+            }),
         },
         now,
     );
@@ -243,7 +277,7 @@ pub fn send(store: &Store, expert: &Expert, req: &Request<'_>, now: i64) -> Resu
         Ok(assignment_id) => {
             let _ = store.engine_effect_completed(effect, Some(&assignment_id), None, now);
             tracing::info!(run = req.run_id, key = req.key, expert = %name, assignment = %assignment_id, "expert request sent");
-            Ok(Standing::Waiting { deadline: now + req.timeout_secs as i64 })
+            Ok(Standing::Waiting { deadline: req.timeout_secs.map(|t| now + t as i64) })
         }
         Err(e) => {
             let reason = format!("expert '{name}' could not be given the work: {e}");
@@ -253,10 +287,14 @@ pub fn send(store: &Store, expert: &Expert, req: &Request<'_>, now: i64) -> Resu
     }
 }
 
-/// What done means for the expert: the task's data, the contract, and that
-/// its closing summary is its reply.
+/// What done means for the expert: when the work counts as done, the
+/// task's data, the contract, and that its closing summary is its reply.
 fn done_means(req: &Request<'_>) -> String {
-    let mut s = String::from(
+    let mut s = match req.done_when.trim() {
+        "" => String::new(),
+        when => format!("Done when: {when}. "),
+    };
+    s.push_str(
         "Your closing summary is your reply to the workflow that asked: begin it with one short \
          sentence saying what you did or found.",
     );
@@ -490,10 +528,29 @@ mod tests {
             task: "Price these",
             input: &input,
             contract: "",
-            timeout_secs: 60,
+            done_when: "",
+            timeout_secs: Some(60),
         };
         let told = done_means(&req);
         assert!(told.contains(&input.to_string()), "all {} chars of it", input.to_string().len());
         assert!(told.contains("sku-04999"));
+        assert!(!told.contains("Done when"), "{told}");
+        let told = done_means(&Request { done_when: "both scripts saved and on brand", ..req });
+        assert!(told.starts_with("Done when: both scripts saved and on brand. "), "{told}");
+    }
+
+    /// A timeout is optional: none waits for the answer, a readable one is
+    /// kept, an unreadable one is refused when the workflow is saved.
+    #[test]
+    fn an_expert_without_a_timeout_waits_for_the_answer() {
+        let node = |params: Value| -> Activity {
+            serde_json::from_value(serde_json::json!({"id": "card", "type": "expert", "params": params})).unwrap()
+        };
+        let none = node(serde_json::json!({"expert": "Script Writer", "task": "hero script"}));
+        assert_eq!(timeout_of(&none), Ok(None));
+        assert!(validate(&none).is_ok());
+        assert_eq!(timeout_of(&node(serde_json::json!({"expert": "a", "task": "t", "timeout": "2d"}))), Ok(Some(172_800)));
+        let bad = node(serde_json::json!({"expert": "a", "task": "t", "timeout": "soon"}));
+        assert!(validate(&bad).unwrap_err().contains("leave it out to wait"), "{:?}", validate(&bad));
     }
 }

@@ -3905,7 +3905,7 @@
 			"loopSource": "반복 \"{id}\"에 데이터 출처가 필요합니다(예: inputs.items)",
 			"httpUrl": "HTTP 노드 \"{id}\"에 URL이 필요합니다",
 			"decideQuestions": "판단 노드 \"{id}\"에 질문이 필요합니다(유형이 지정된 질문의 JSON 객체)",
-			"expertFields": "전문가 노드 \"{id}\"에 전문가, 작업, 제한 시간이 필요합니다",
+			"expertFields": "전문가 노드 \"{id}\"에 전문가와 작업이 필요합니다",
 			"waitDuration": "대기 노드 \"{id}\"에 대기 시간이 필요합니다",
 			"needsIntent": "\"{workflow}\"의 활동 \"{id}\"에 의도나 단계가 필요합니다",
 			"targetsTrigger": "트리거로 들어오는 연결이 있습니다",

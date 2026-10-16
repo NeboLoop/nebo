@@ -53,7 +53,9 @@ struct GraphState {
     /// (input is dominated by fixed tool-schema overhead resent every turn).
     total_output_tokens: u32,
     /// Expert requests this pass found still out: (request key, deadline).
-    pending_experts: Vec<(String, i64)>,
+    /// Requests still out, each with the latest time to wake the run for it
+    /// (`None`: only its answer wakes it).
+    pending_experts: Vec<(String, Option<i64>)>,
 }
 
 struct GraphCtx<'a> {
@@ -1367,7 +1369,9 @@ fn decide_state(activity_id: &str, state: serde_json::Value) -> (serde_json::Val
 /// `params.task` (or the intent) and `params.expert` interpolate from the
 /// data context, so a loop body can name `{{item.expert}}`; `params.input`
 /// hands the expert explicit references (`{"leads": "{{nodes.fetch}}"}`)
-/// as JSON; `params.output` is the contract; `params.timeout` is required.
+/// as JSON; `params.output` is the contract; `params.done_when` says when
+/// the work counts as done (it interpolates like the task); `params.timeout`
+/// is optional, and without it the step waits for the answer.
 ///
 /// A request still out parks the walk at this node (the run parks once every
 /// other branch is done). A refusal, an unreachable expert or a timeout is
@@ -1394,8 +1398,10 @@ async fn run_expert<'a>(
         let t = param_str(activity, "task");
         interpolate_context(if t.trim().is_empty() { &activity.intent } else { t }, &data)
     };
-    // Validation requires a timeout; an unreadable one waits an hour.
-    let timeout_secs = expert::parse_timeout(param_str(activity, "timeout")).map_or(3_600, |d| d.as_secs());
+    // No timeout: the step waits for the answer. Saving refuses an
+    // unreadable one; one that got past it anyway waits an hour.
+    let timeout_secs = expert::timeout_of(activity).unwrap_or(Some(3_600));
+    let done_when = interpolate_context(param_str(activity, "done_when"), &data);
     let input = expert::resolve_input(activity, &|path| resolve_path(&data, path));
     let contract = expert::output_contract(activity);
     let finish = |status: &str, error: Option<&str>, content: Option<&str>| {
@@ -1442,6 +1448,7 @@ async fn run_expert<'a>(
                     task: &task,
                     input: &input,
                     contract: &contract,
+                    done_when: &done_when,
                     timeout_secs,
                 };
                 match expert::send(ctx.store, &target, &req, now) {
@@ -1484,7 +1491,7 @@ async fn run_expert<'a>(
 /// earliest deadline, so the first reply or the first timeout wakes it. A
 /// reply that landed while the run was still busy woke nothing; it wakes
 /// the run now.
-fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, i64)]) -> Result<(), WorkflowError> {
+fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, Option<i64>)]) -> Result<(), WorkflowError> {
     let now = chrono::Utc::now().timestamp();
     let reason = format!("waiting on {} expert(s)", pending.len());
     let target = crate::expert::run_target(run_id);
@@ -1494,7 +1501,7 @@ fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, i64)]) -> Re
             action: "resume",
             on_kind: crate::expert::REPLY_KIND,
             key: &target,
-            deadline: pending.iter().map(|(_, d)| *d).min(),
+            deadline: pending.iter().filter_map(|(_, d)| *d).min(),
             parked: None,
             reason: &reason,
         },
@@ -4877,6 +4884,65 @@ mod walk_tests {
         assert!(calls[0].contains("Priced the order."), "the next step reads the reply");
     }
 
+    /// A project's card: the run is the project's, so its expert step is a
+    /// card in the project. The hand-off carries the project and its team,
+    /// the member reads the card's title (not the workflow's) and its "done
+    /// when", the card's opening and closing ring the card bell, and with no
+    /// timeout the step waits for the answer however long it takes.
+    #[tokio::test]
+    async fn a_project_card_waits_for_its_answer_and_is_the_projects_hand_off() {
+        let store = expert_store(&["ana"]);
+        store.create_team("t-1", "Launch", "", &[db::TeamMember::local("owner"), db::TeamMember::local("ana")], "owner", None).unwrap();
+        store
+            .create_project(&db::NewProject {
+                id: "p-1",
+                team_id: "t-1",
+                lead_agent_id: "owner",
+                title: "PH launch",
+                ask: "launch",
+                asker_session_key: "",
+                asker_agent_id: "",
+                playbook_binding: None,
+            })
+            .unwrap();
+        let (bell, mut rang) = tokio::sync::mpsc::unbounded_channel();
+        crate::cases::install_card_bell(bell);
+        let def = SAME_BOT.replace(r#""timeout": "2h""#, r#""done_when": "the total is priced from the current list""#);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, &def);
+        store.conn_exec_for_test(&format!("UPDATE workflow_runs SET project_id = 'p-1' WHERE id = '{run_id}'"));
+        let inputs = serde_json::json!({ "order": 1 });
+
+        assert!(matches!(pass(&store, &run_id, &def, inputs.clone(), &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        assert_eq!(live_wait(&store, &run_id).deadline, None, "only the answer wakes it");
+        let effect = &store.engine_effects_for_run(&run_id).unwrap()[0];
+        let assignment_id = effect.provider_ref.clone().unwrap();
+        let assignment = store.get_assignment(&assignment_id).unwrap().unwrap();
+        assert_eq!(assignment.subject, "Price the order", "the card's title");
+        assert!(assignment.done_means.starts_with("Done when: the total is priced from the current list. "), "{}", assignment.done_means);
+        let card = store.get_handoff(&assignment_id).unwrap().unwrap();
+        assert_eq!((card.project_id.as_deref(), card.team_id.as_str()), (Some("p-1"), "t-1"));
+        assert_eq!(
+            rang.try_recv().unwrap(),
+            crate::cases::CardChange::Opened {
+                assignment_id: assignment_id.clone(),
+                task: "Price the order".into(),
+                done_when: "the total is priced from the current list".into(),
+            }
+        );
+
+        // A month later, still out: no timeout, so no failure.
+        age_request(&store, &run_id, "ana", 30 * 86_400);
+        assert!(matches!(pass(&store, &run_id, &def, inputs.clone(), &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        assert_eq!(expert_requests(&store, &run_id), 1, "asked once");
+
+        coworker_closes(&store, &run_id, "ana", "done", "Priced it. {\"total\": 42}");
+        assert_eq!(rang.try_recv().unwrap(), crate::cases::CardChange::Closed { assignment_id: assignment_id.clone() });
+        assert!(pass(&store, &run_id, &def, inputs, &provider).await.is_ok());
+        assert_eq!(store.get_handoff(&assignment_id).unwrap().unwrap().status, "done");
+        assert!(rang.try_recv().is_err(), "each change rings once");
+    }
+
     #[tokio::test]
     async fn an_expert_that_does_not_answer_in_time_follows_on_error() {
         let store = expert_store(&["ana"]);
@@ -5004,7 +5070,7 @@ mod walk_tests {
         let run_id = new_run(&store, SAME_BOT);
         let key = crate::expert::request_key(&run_id, "ask", "", 0);
         crate::expert::record_reply(&store, &run_id, &key, "done", "fast", "ana").unwrap();
-        park_on_experts(&store, &run_id, &[(key, chrono::Utc::now().timestamp() + 60)]).unwrap();
+        park_on_experts(&store, &run_id, &[(key, Some(chrono::Utc::now().timestamp() + 60))]).unwrap();
         let run = store.engine_get_run(&run_id).unwrap().unwrap();
         assert_eq!(run.state, "queued", "woken, not left waiting for the deadline");
         assert!(run.woken_by().is_some());
@@ -5060,10 +5126,14 @@ mod walk_tests {
         assert_eq!(provider.calls().len(), 1, "the report ran once, after every item");
     }
 
+    /// An expert node names its expert and its task; a timeout is its own
+    /// choice (none waits for the answer), but one it gives must be readable.
     #[test]
-    fn an_expert_node_needs_its_expert_task_and_timeout() {
-        let missing = SAME_BOT.replace(r#", "timeout": "2h""#, "");
-        let err = parse_workflow(&missing).unwrap_err().to_string();
+    fn an_expert_node_needs_its_expert_and_task_and_a_readable_timeout() {
+        let waits = SAME_BOT.replace(r#", "timeout": "2h""#, "");
+        assert!(parse_workflow(&waits).is_ok(), "no timeout: it waits for the answer");
+        let unreadable = SAME_BOT.replace(r#""timeout": "2h""#, r#""timeout": "soon""#);
+        let err = parse_workflow(&unreadable).unwrap_err().to_string();
         assert!(err.contains("params.timeout"), "{err}");
         let loose = SAME_BOT.replace(r#""{{inputs.order}}""#, r#""the order""#);
         let err = parse_workflow(&loose).unwrap_err().to_string();

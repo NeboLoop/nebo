@@ -3905,7 +3905,7 @@
 			"loopSource": "Perulangan “{id}” memerlukan sumber data (mis. inputs.items)",
 			"httpUrl": "Node HTTP “{id}” memerlukan URL",
 			"decideQuestions": "Node Putuskan “{id}” memerlukan pertanyaan (objek JSON berisi pertanyaan bertipe)",
-			"expertFields": "Node Pakar “{id}” memerlukan pakar, tugas, dan batas waktu",
+			"expertFields": "Node Pakar “{id}” memerlukan pakar dan tugas",
 			"waitDuration": "Node Tunggu “{id}” memerlukan durasi",
 			"needsIntent": "Aktivitas “{id}” di “{workflow}” memerlukan maksud atau langkah",
 			"targetsTrigger": "Sebuah koneksi mengarah ke pemicu",

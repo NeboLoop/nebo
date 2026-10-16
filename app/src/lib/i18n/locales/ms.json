@@ -3905,7 +3905,7 @@
 			"loopSource": "Gelung “{id}” memerlukan sumber data (cth. inputs.items)",
 			"httpUrl": "Nod HTTP “{id}” memerlukan URL",
 			"decideQuestions": "Nod Putuskan “{id}” memerlukan soalan (objek JSON soalan bertaip)",
-			"expertFields": "Nod Pakar “{id}” memerlukan pakar, tugas dan had masa",
+			"expertFields": "Nod Pakar “{id}” memerlukan pakar dan tugas",
 			"waitDuration": "Nod Tunggu “{id}” memerlukan tempoh",
 			"needsIntent": "Aktiviti “{id}” dalam “{workflow}” memerlukan niat atau langkah",
 			"targetsTrigger": "Satu sambungan menghala ke pencetus",

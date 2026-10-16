@@ -319,6 +319,15 @@ impl Store {
         Ok(mode.as_deref().and_then(types::permissions::Mode::parse))
     }
 
+    /// The project a run is the work of (`projects.id`), if it is one's.
+    pub fn workflow_run_project(&self, id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row("SELECT project_id FROM workflow_runs WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0))
+            .optional()
+            .map(|p| p.flatten().filter(|s| !s.is_empty()))
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The `provider/model` a run was routed to, once known.
     pub fn workflow_run_model(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;

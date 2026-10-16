@@ -3905,7 +3905,7 @@
 			"loopSource": "循环“{id}”需要一个数据来源（例如 inputs.items）",
 			"httpUrl": "HTTP 节点“{id}”需要一个 URL",
 			"decideQuestions": "判断节点“{id}”需要问题（一个带类型问题的 JSON 对象）",
-			"expertFields": "专家节点“{id}”需要专家、任务和超时",
+			"expertFields": "专家节点“{id}”需要专家和任务",
 			"waitDuration": "等待节点“{id}”需要一个时长",
 			"needsIntent": "“{workflow}”中的活动“{id}”需要一个意图或步骤",
 			"targetsTrigger": "有一条连线指向了触发器",

@@ -3905,7 +3905,7 @@
 			"loopSource": "Schleife „{id}“ braucht eine Datenquelle (z. B. inputs.items)",
 			"httpUrl": "HTTP-Knoten „{id}“ braucht eine URL",
 			"decideQuestions": "Entscheidungsknoten „{id}“ braucht Fragen (ein JSON-Objekt mit typisierten Fragen)",
-			"expertFields": "Expertenknoten „{id}“ braucht einen Experten, eine Aufgabe und ein Zeitlimit",
+			"expertFields": "Expertenknoten „{id}“ braucht einen Experten und eine Aufgabe",
 			"waitDuration": "Warteknoten „{id}“ braucht eine Dauer",
 			"needsIntent": "Aktivität „{id}“ in „{workflow}“ braucht ein Anliegen oder Schritte",
 			"targetsTrigger": "Eine Verbindung zeigt auf den Auslöser",

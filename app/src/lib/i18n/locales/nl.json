@@ -3905,7 +3905,7 @@
 			"loopSource": "Lus \"{id}\" heeft een gegevensbron nodig (bijv. inputs.items)",
 			"httpUrl": "HTTP-node \"{id}\" heeft een URL nodig",
 			"decideQuestions": "Beslissingsnode \"{id}\" heeft vragen nodig (een JSON-object met getypeerde vragen)",
-			"expertFields": "Expertnode \"{id}\" heeft een expert, een taak en een time-out nodig",
+			"expertFields": "Expertnode \"{id}\" heeft een expert en een taak nodig",
 			"waitDuration": "Wachtnode \"{id}\" heeft een duur nodig",
 			"needsIntent": "Activiteit \"{id}\" in \"{workflow}\" heeft een intentie of stappen nodig",
 			"targetsTrigger": "Een verbinding wijst naar de trigger",

@@ -3905,7 +3905,7 @@
 			"loopSource": "ループ「{id}」にはデータソースが必要です（例: inputs.items）",
 			"httpUrl": "HTTPノード「{id}」にはURLが必要です",
 			"decideQuestions": "判断ノード「{id}」には質問が必要です（型付きの質問のJSONオブジェクト）",
-			"expertFields": "エキスパートノード「{id}」にはエキスパート、タスク、タイムアウトが必要です",
+			"expertFields": "エキスパートノード「{id}」にはエキスパートとタスクが必要です",
 			"waitDuration": "待機ノード「{id}」には待機時間が必要です",
 			"needsIntent": "「{workflow}」のアクティビティ「{id}」にはインテントまたはステップが必要です",
 			"targetsTrigger": "トリガーに向かう接続があります",

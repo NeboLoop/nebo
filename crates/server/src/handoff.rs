@@ -76,7 +76,7 @@ pub fn view(store: &db::Store, h: db::Handoff) -> HandoffView {
     }
 }
 
-fn broadcast(state: &AppState, h: db::Handoff) {
+pub(crate) fn broadcast(state: &AppState, h: db::Handoff) {
     // The background list (`background::collect`) reads hand-offs still
     // going: it hears every change at once.
     crate::background::changed();

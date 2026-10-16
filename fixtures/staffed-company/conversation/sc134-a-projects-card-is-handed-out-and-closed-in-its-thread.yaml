@@ -1,0 +1,12 @@
+id: sc134-a-projects-card-is-handed-out-and-closed-in-its-thread
+name: "SC134 — A project's card is handed out and closed in its thread"
+description: |
+  Teams, projects and threads (2026-10-16): a project's step handed to a
+  member is a card. The lead's line in the project's thread names the
+  member, the work and when it counts as done; the member works it as its
+  own case, and when the case closes its summary is the next line. The card
+  is the hand-off, carrying the project and its team; the team's own thread
+  stays as it was.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_projects_card_is_handed_out_and_closed_in_its_thread
+conversation: []

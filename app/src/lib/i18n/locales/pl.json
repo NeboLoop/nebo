@@ -3905,7 +3905,7 @@
 			"loopSource": "Pętla „{id}” potrzebuje źródła danych (np. inputs.items)",
 			"httpUrl": "Węzeł HTTP „{id}” potrzebuje adresu URL",
 			"decideQuestions": "Węzeł decyzji „{id}” potrzebuje pytań (obiekt JSON z pytaniami o określonych typach)",
-			"expertFields": "Węzeł eksperta „{id}” potrzebuje eksperta, zadania i limitu czasu",
+			"expertFields": "Węzeł eksperta „{id}” potrzebuje eksperta i zadania",
 			"waitDuration": "Węzeł oczekiwania „{id}” potrzebuje czasu trwania",
 			"needsIntent": "Aktywność „{id}” w „{workflow}” potrzebuje zamiaru lub kroków",
 			"targetsTrigger": "Połączenie prowadzi do wyzwalacza",

@@ -3905,7 +3905,7 @@
 			"loopSource": "La boucle « {id} » a besoin d’une source de données (ex. inputs.items)",
 			"httpUrl": "Le nœud HTTP « {id} » a besoin d’une URL",
 			"decideQuestions": "Le nœud Décider « {id} » a besoin de questions (un objet JSON de questions typées)",
-			"expertFields": "Le nœud Expert « {id} » a besoin d’un expert, d’une tâche et d’un délai",
+			"expertFields": "Le nœud Expert « {id} » a besoin d’un expert et d’une tâche",
 			"waitDuration": "Le nœud Attendre « {id} » a besoin d’une durée",
 			"needsIntent": "L’activité « {id} » de « {workflow} » a besoin d’une intention ou d’étapes",
 			"targetsTrigger": "Une connexion pointe vers le déclencheur",

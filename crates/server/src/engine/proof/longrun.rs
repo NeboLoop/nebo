@@ -251,6 +251,7 @@ fn e16_a_temporary_team_is_due_to_disband_when_its_lead_closes_its_work() {
         done_means: "A number and a plan",
         due: None,
         workflow_reply: None,
+        card: None,
     };
     let assignment = workflow::cases::open_assignment(&w.s, &req, w.t).unwrap();
     let case = w.s.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the lead's case");
@@ -294,6 +295,7 @@ fn e16b_a_lead_that_ends_its_assignment_through_exit_closes_it_and_wakes_the_ass
         done_means: "Scripts and a first comment, saved",
         due: None,
         workflow_reply: None,
+        card: None,
     };
     let assignment = workflow::cases::open_assignment(&w.s, &req, w.t).unwrap();
     let case = w.s.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the lead's case");
