@@ -44,6 +44,8 @@ pub struct Handoff {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// The project the hand-off is a card in; `None` outside a project.
+    pub project_id: Option<String>,
 }
 
 /// A hand-off as it starts.
@@ -60,6 +62,8 @@ pub struct NewHandoff<'a> {
     pub ask: &'a str,
     /// `queued` or `running`.
     pub status: &'a str,
+    /// The project the hand-off is a card in; `None` outside a project.
+    pub project_id: Option<&'a str>,
 }
 
 /// Which hand-offs [`Store::list_handoffs`] reads. Every field narrows; the
@@ -81,7 +85,7 @@ pub struct HandoffQuery<'a> {
 }
 
 const COLUMNS: &str = "id, parent_id, kind, from_agent_id, to_agent_id, team_id, sender_session, sender_run_id, \
-     receiver_session, receiver_run_id, ask, status, result, error, created_at, started_at, finished_at";
+     receiver_session, receiver_run_id, ask, status, result, error, created_at, started_at, finished_at, project_id";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Handoff> {
     Ok(Handoff {
@@ -102,6 +106,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Handoff> {
         created_at: r.get(14)?,
         started_at: r.get(15)?,
         finished_at: r.get(16)?,
+        project_id: r.get(17)?,
     })
 }
 
@@ -125,10 +130,10 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO handoffs (id, parent_id, kind, from_agent_id, to_agent_id, team_id, sender_session, sender_run_id,
-                 receiver_session, receiver_run_id, ask, status, created_at, started_at)
+                 receiver_session, receiver_run_id, ask, status, created_at, started_at, project_id)
              VALUES (?1,
                  (SELECT p.id FROM handoffs p WHERE p.receiver_session = ?6 AND ?6 != '' ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1),
-                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 h.id,
                 h.kind,
@@ -143,6 +148,7 @@ impl Store {
                 h.status,
                 now,
                 started,
+                h.project_id,
             ],
         )
         .db_err("create_handoff")?;
@@ -288,6 +294,7 @@ mod tests {
             receiver_run_id: None,
             ask: "Pull last month's invoices",
             status: "queued",
+            project_id: None,
         }
     }
 

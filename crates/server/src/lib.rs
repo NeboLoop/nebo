@@ -6062,6 +6062,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             if let Err(e) = team::record(
                 &state,
                 room,
+                None,
                 team::TeamSender::Hub { agent_id: &from_agent_id, name: &sender_name, from },
                 &text,
                 &serde_json::to_value(&msg.attachments).unwrap_or_default(),

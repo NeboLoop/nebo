@@ -5063,7 +5063,13 @@ fn teammate_name(
     use types::keyparser::Conversation;
     let named = match conversation {
         Conversation::Owner => None,
-        Conversation::Team { team_id } => state.store.get_team(team_id).ok().flatten().map(|t| t.name),
+        Conversation::Team { team_id, project_id } => {
+            let team = state.store.get_team(team_id).ok().flatten().map(|t| t.name);
+            match project_id.as_deref().and_then(|p| state.store.get_project(p).ok().flatten()) {
+                Some(project) => Some(format!("{} › {}", team.unwrap_or_default(), project.title)),
+                None => team,
+            }
+        }
         Conversation::Colleague { with } => {
             let id = if with == "main" { tools::team_tool::PRIMARY_AGENT_ID } else { with.as_str() };
             state.store.get_agent(id).ok().flatten().map(|a| a.name).or_else(|| {

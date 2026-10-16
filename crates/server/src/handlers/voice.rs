@@ -1803,6 +1803,7 @@ impl TurnSink {
                 if let Err(e) = crate::team::record(
                     state,
                     team,
+                    None,
                     crate::team::TeamSender::Local(from),
                     text,
                     &serde_json::json!([]),
@@ -1953,7 +1954,7 @@ fn team_voice_context(state: &AppState, team: &db::Team) -> String {
     );
     let tail: Vec<String> = state
         .store
-        .list_team_messages(&team.id, 12)
+        .list_team_messages(&db::team_thread_key(&team.id), 12)
         .unwrap_or_default()
         .into_iter()
         .filter(|m| !m.content.is_empty())
@@ -2764,7 +2765,7 @@ async fn handle_conversation_session(
     let voice_agent_id = q.agent_id.clone().unwrap_or_default();
     let team_seat = team
         .as_ref()
-        .map(|t| crate::coworker::team_seat(&voice_agent_id, t));
+        .map(|t| crate::coworker::team_seat(&voice_agent_id, t, None));
     ctx.session_key = match team_seat.as_ref() {
         Some((key, _)) => key.clone(),
         None => format!(

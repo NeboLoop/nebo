@@ -456,6 +456,7 @@ fn handoff(id: &str, kind: &str, status: &str) -> crate::handoff::HandoffView {
         created_at: 100,
         started_at: if status == "queued" { None } else { Some(105) },
         finished_at: None,
+        project_id: None,
     }
 }
 

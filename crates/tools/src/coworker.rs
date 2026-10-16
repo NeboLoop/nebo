@@ -93,6 +93,10 @@ impl Conversation {
 #[derive(Debug, Clone)]
 pub struct TeamDelivery {
     pub team_id: String,
+    /// The team's project the post is in (`db::Project::id`); `None` for
+    /// the team's own thread. The member works it in its seat for that
+    /// project, briefed from the project's thread, and answers there.
+    pub project_id: Option<String>,
     /// The post's row in the team thread (`db::TeamMessage::id`): the
     /// team's conversation the member is briefed with is what came before it.
     pub post_id: String,
@@ -163,6 +167,9 @@ pub struct CoworkerDelivery {
 pub struct TeamPost {
     /// Local team id (`db::Team::id`).
     pub team_id: String,
+    /// The team's project the post goes into (`db::Project::id`); `None`
+    /// for the team's own thread.
+    pub project_id: Option<String>,
     /// Posting agent id (empty = the owner).
     pub from_agent_id: String,
     /// The owner typed this post in the app: it is his own request, and the

@@ -31,8 +31,12 @@ fn name_of(store: &db::Store, agent_id: &str) -> String {
 /// Where conversation `session_key` opens: a team's thread, or the
 /// conversation an employee's session is holding.
 fn session_link(store: &db::Store, session_key: &str) -> String {
-    if let Some(team_id) = session_key.strip_prefix(db::TEAM_THREAD_PREFIX) {
-        return tools::owner_notify::link::team(team_id);
+    match db::team_thread_of(session_key) {
+        Some(db::TeamThread::Team(team_id)) => return tools::owner_notify::link::team(team_id),
+        Some(db::TeamThread::Project { team_id, project_id }) => {
+            return tools::owner_notify::link::project(team_id, project_id);
+        }
+        None => {}
     }
     let agent_id = types::keyparser::extract_agent_id(session_key);
     if agent_id.is_empty() {
@@ -68,6 +72,7 @@ pub fn view(store: &db::Store, h: db::Handoff) -> HandoffView {
         created_at: h.created_at,
         started_at: h.started_at,
         finished_at: h.finished_at,
+        project_id: h.project_id,
     }
 }
 
@@ -94,6 +99,8 @@ pub(crate) struct Delivery<'a> {
     pub sender_run_id: Option<&'a str>,
     pub receiver_session: &'a str,
     pub ask: &'a str,
+    /// The project the delivery is a card in.
+    pub project_id: Option<&'a str>,
 }
 
 pub(crate) fn queued(state: &AppState, d: &Delivery<'_>) -> Option<String> {
@@ -110,6 +117,7 @@ pub(crate) fn queued(state: &AppState, d: &Delivery<'_>) -> Option<String> {
         receiver_run_id: None,
         ask: d.ask,
         status: "queued",
+        project_id: d.project_id,
     };
     match state.store.create_handoff(&row, now()) {
         Ok(h) => {

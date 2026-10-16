@@ -626,6 +626,7 @@ async fn every_claude_code_hire_is_an_employee_of_its_own() {
             sender_run_id: None,
             receiver_session: front_session,
             ask: "Fix the failing build",
+            project_id: None,
         },
     )
     .expect("the hand-off is recorded");

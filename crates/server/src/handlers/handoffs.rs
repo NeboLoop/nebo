@@ -40,6 +40,9 @@ pub struct HandoffView {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// The project the hand-off is a card in; absent outside a project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

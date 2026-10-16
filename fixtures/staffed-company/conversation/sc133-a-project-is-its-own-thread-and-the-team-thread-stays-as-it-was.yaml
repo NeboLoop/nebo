@@ -1,0 +1,13 @@
+id: sc133-a-project-is-its-own-thread-and-the-team-thread-stays-as-it-was
+name: "SC133 — A project is its own thread, and the team thread stays as it was"
+description: |
+  Teams, projects and threads (owner-approved 2026-10-16): the owner opens a
+  project in a team. His ask is the project's first post and goes to the
+  lead; the lead hands a step to a member by name; the member works it in
+  its seat for that project, briefed from the project's thread and with the
+  team's standing rules, and answers there; the lead sums it up there. The
+  hand-off is a card in the project. The team's own thread gains nothing,
+  and an owner-led team is told to pick a lead before it can own a project.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_project_is_its_own_thread_and_the_team_thread_stays_as_it_was
+conversation: []

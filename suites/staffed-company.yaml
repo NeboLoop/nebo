@@ -110,3 +110,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc113-a-conversation-runs-in-the-mode-picked-for-it.yaml
   - ../fixtures/staffed-company/conversation/sc114-what-a-conversation-starts-holds-to-its-stricter-mode.yaml
   - ../fixtures/staffed-company/conversation/sc115-the-owners-next-message-answers-an-open-question.yaml
+  - ../fixtures/staffed-company/conversation/sc133-a-project-is-its-own-thread-and-the-team-thread-stays-as-it-was.yaml

@@ -309,6 +309,7 @@ async fn park_for_owner(state: &AppState, run: &EmployeeRun, key_label: &str, ev
         from_name: &from,
         session_key: &run.session_key,
         team_id: None,
+        project_id: None,
         door: &types::permissions::Door::LocalApi,
     };
     match ev.event_type {

@@ -830,7 +830,7 @@ fn takes_it(said: &str, tool: &str, input: Value) -> Step {
 /// The team thread as the owner reads it: (sender, words), oldest first.
 fn team_rows(nebo: &Nebo, team_id: &str) -> Vec<(String, String)> {
     nebo.store()
-        .list_team_messages(team_id, 100)
+        .list_team_messages(&db::team_thread_key(team_id), 100)
         .unwrap()
         .into_iter()
         .map(|m| (m.from, m.content))
@@ -1419,7 +1419,7 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
     .await;
     assert_eq!(member_ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the member was not asked, so it did not run");
 
-    let before = nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len();
+    let before = nebo.store().list_team_messages(&db::team_thread_key("proof-team-e15-open"), 50).unwrap().len();
     let refused = nebo
         .tool(
             &ctx,
@@ -1430,7 +1430,7 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
     assert!(refused.is_error, "{}", refused.content);
     assert!(refused.content.contains("has no lead") && refused.content.contains("NOT sent"), "{}", refused.content);
     assert_eq!(
-        nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len(),
+        nebo.store().list_team_messages(&db::team_thread_key("proof-team-e15-open"), 50).unwrap().len(),
         before,
         "nothing was recorded"
     );
@@ -3102,7 +3102,7 @@ async fn the_lead_passes_the_owners_request_to_a_linked_teammate_with_his_author
     // the owner's post, so what it passes on is his request too.
     let owners_post = nebo
         .store()
-        .list_team_messages(TEAM, 100)
+        .list_team_messages(&db::team_thread_key(TEAM), 100)
         .unwrap()
         .into_iter()
         .find(|m| m.from_agent_id.is_empty() && m.content.contains("MARK-LRL have Hermes"))
@@ -3404,7 +3404,7 @@ async fn a_linked_member_is_sent_the_team_conversation_it_has_not_seen() {
         )
         .unwrap();
     nebo.store()
-        .append_team_message(&team, "assistant", "CODEX-HISTORY: the ICP is two-agent brokerages.", "Proof Brainstormer", &brain, &json!([]), &[])
+        .append_team_message(&team, None, "assistant", "CODEX-HISTORY: the ICP is two-agent brokerages.", "Proof Brainstormer", &brain, &json!([]), &[])
         .unwrap();
     let rig = Rig::new(
         &nebo,
@@ -4490,4 +4490,100 @@ async fn what_a_conversation_starts_holds_to_its_stricter_mode() {
     .expect("the scheduled run starts");
     assert_eq!(nebo.store().workflow_run_narrow(&scheduled).unwrap(), None, "nothing scheduled is affected");
     assert_eq!(nebo.store().workflow_run_launched_from(&scheduled).unwrap(), None, "a scheduled run is no chat's");
+}
+
+/// A project thread as the owner reads it: (sender, words), oldest first.
+fn project_rows(nebo: &Nebo, project: &db::Project) -> Vec<(String, String)> {
+    nebo.store()
+        .list_team_messages(&project.thread_session_key, 100)
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.from, m.content))
+        .collect()
+}
+
+/// The owner's "New project" (Teams, projects and threads, 2026-10-16): a
+/// project is one piece of work with its own thread. His ask is its first
+/// post and goes to the team's lead; the lead hands a step to a member by
+/// name; the member works it in its seat for that project, briefed from the
+/// project's thread and with the team's standing rules, and answers there;
+/// the lead sums it up there. The team's own thread stays as it was, and a
+/// leaderless team is told to pick a lead first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_project_is_its_own_thread_and_the_team_thread_stays_as_it_was() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof PJ Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof PJ Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-project";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Launch",
+            "launch the product",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let edited = nebo.put_ok(&format!("/teams/{TEAM}"), &json!({ "standing": "Never compare to competitors." })).await;
+    assert_eq!(edited["team"]["standing"], "Never compare to competitors.", "{edited}");
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            if !(t.opener().contains("MARK-PROJ") && t.says("You are Proof PJ Lead.")) {
+                return None;
+            }
+            if t.new_text().contains("PROJ-SCRIPT-RESULT") {
+                return Some(Step::say("PROJ-LEAD-WRAP: the hero script is saved."));
+            }
+            (!t.answered("@Proof PJ Writer")).then(|| Step::say("@Proof PJ Writer write the 30 second hero script."))
+        }),
+        Box::new(|t| {
+            if !(t.opener().contains("MARK-PROJ") && t.says("You are Proof PJ Writer.")) {
+                return None;
+            }
+            // The member is briefed with the project and the team's rules.
+            let briefed = t.says("Never compare to competitors.") && t.says("the team's project \"PH launch\"");
+            Some(Step::say(if briefed { "PROJ-SCRIPT-RESULT: hero-30s.md saved." } else { "NOT-BRIEFED" }))
+        }),
+    ];
+    let _rig = Rig::new(&nebo, rules).await;
+
+    let created = nebo
+        .post_ok(&format!("/teams/{TEAM}/projects"), &json!({ "title": "PH launch", "ask": "MARK-PROJ launch us on Product Hunt" }))
+        .await;
+    let project: db::Project = serde_json::from_value(created["project"].clone()).expect("the project");
+    assert_eq!((project.team_id.as_str(), project.lead_agent_id.as_str(), project.state.as_str()), (TEAM, lead.as_str(), "live"));
+    assert_eq!(project.thread_session_key, db::project_thread_key(TEAM, &project.id));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !project_rows(&nebo, &project).iter().any(|(_, text)| text.contains("PROJ-LEAD-WRAP")) {
+        assert!(tokio::time::Instant::now() < deadline, "no wrap-up in the project thread: {:?}", project_rows(&nebo, &project));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let rows = project_rows(&nebo, &project);
+    let at = |needle: &str| rows.iter().position(|(_, text)| text.contains(needle)).unwrap_or_else(|| panic!("no row with {needle}: {rows:?}"));
+    assert!(at("MARK-PROJ") < at("write the 30 second") && at("write the 30 second") < at("PROJ-SCRIPT-RESULT"), "{rows:?}");
+    assert!(at("PROJ-SCRIPT-RESULT") < at("PROJ-LEAD-WRAP"), "{rows:?}");
+    assert_eq!(rows[at("PROJ-SCRIPT-RESULT")].0, "Proof PJ Writer");
+    assert!(team_rows(&nebo, TEAM).is_empty(), "the team's own thread stays as it was: {:?}", team_rows(&nebo, TEAM));
+    // The member worked it in its seat for the project.
+    let seat = format!("agent:{writer}:coworker:{}", project.thread_session_key);
+    assert!(nebo.store().get_session_by_name(&seat).unwrap().is_some(), "the writer's project seat");
+
+    // The project is listed, its thread reads back through the API, and the
+    // hand-off is a card in the project.
+    let listed = nebo.get_ok(&format!("/teams/{TEAM}/projects")).await;
+    assert_eq!(listed["total"], 1, "{listed}");
+    let thread = nebo.get_ok(&format!("/projects/{}/messages", project.id)).await;
+    assert!(thread["messages"].as_array().is_some_and(|m| m.len() == rows.len()), "{thread}");
+    let cards = nebo.store().list_handoffs(&db::HandoffQuery::default()).unwrap();
+    assert!(cards.iter().any(|h| h.to_agent_id == writer && h.project_id.as_deref() == Some(project.id.as_str())), "{cards:?}");
+
+    // An owner-led team has nobody to own a project.
+    nebo.store()
+        .create_team("proof-team-ownerled", "Proof Owner Led", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], "", None)
+        .unwrap();
+    let refused = nebo.post("/teams/proof-team-ownerled/projects", &json!({ "ask": "MARK-PROJ do it" })).await;
+    assert_eq!(refused.0, 400, "{:?}", refused.1);
+    assert!(refused.1.to_string().contains("Pick its lead first"), "{:?}", refused.1);
 }

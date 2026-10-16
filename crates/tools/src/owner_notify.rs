@@ -293,6 +293,12 @@ pub mod link {
         format!("/teams/{}", urlencoding::encode(team_id))
     }
 
+    /// One of a team's projects: its team's page, opened on the project's
+    /// thread (an app that knows no projects opens the team).
+    pub fn project(team_id: &str, project_id: &str) -> String {
+        format!("{}?project={}", team(team_id), urlencoding::encode(project_id))
+    }
+
     /// One run of an employee's work.
     pub fn run(agent_id: &str, run_id: &str) -> String {
         format!("/{agent_id}/runs/{}", urlencoding::encode(run_id))

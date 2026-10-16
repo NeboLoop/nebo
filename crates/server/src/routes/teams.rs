@@ -43,6 +43,20 @@ pub fn routes() -> Router<AppState> {
             "/teams/{teamId}/read",
             axum::routing::put(handlers::teams::mark_team_read),
         )
+        // A team's projects: each one piece of work its lead owns, with its
+        // own thread (`team::post` with a project).
+        .route(
+            "/teams/{teamId}/projects",
+            axum::routing::get(handlers::teams::list_projects).post(handlers::teams::create_project),
+        )
+        .route(
+            "/projects/{id}/messages",
+            axum::routing::get(handlers::teams::get_project_messages)
+                .post(handlers::teams::send_project_message),
+        )
+        .route("/projects/{id}/read", axum::routing::put(handlers::teams::mark_project_read))
+        .route("/projects/{id}/working", axum::routing::get(handlers::teams::project_working))
+        .route("/projects/{id}/stop", axum::routing::post(handlers::teams::stop_project_work))
         // ── Aliases: the old workroom routes ──
         .route(
             "/workrooms",

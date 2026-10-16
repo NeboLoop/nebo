@@ -18,11 +18,19 @@ pub const TEAM_CREATED_EVENT: &str = "team_created";
 /// WS event for every post in a team's thread (the open team view is
 /// event-driven, never polling).
 pub const TEAM_MESSAGE_EVENT: &str = "team_message";
+/// WS event for every post in a project's thread: the team-style payload plus
+/// `projectId` (`team_message` stays the team's own thread).
+pub const PROJECT_MESSAGE_EVENT: &str = "project_message";
 /// WS event after a team's name, mission, or members change; carries the team.
 pub const TEAM_UPDATED_EVENT: &str = "team_updated";
 /// WS event when a team is removed: the owner's delete, or a temporary team
 /// disbanding once its outcome reached the owner. Carries `teamId`.
 pub const TEAM_REMOVED_EVENT: &str = "team_removed";
+/// WS event when a project is created or its state moves; carries `project`.
+pub const PROJECT_UPDATED_EVENT: &str = "project_updated";
+/// WS event when a member starts working on a post in a project's thread:
+/// the `team_activity` payload plus `projectId`.
+pub const PROJECT_ACTIVITY_EVENT: &str = "project_activity";
 /// WS event when a member starts working on a post ("X is working").
 pub const TEAM_ACTIVITY_EVENT: &str = "team_activity";
 
@@ -110,7 +118,7 @@ pub async fn create(
     // The team's own thread exists from day one — an empty team still has a
     // place to read.
     store
-        .ensure_team_thread(&team.id, &team.name)
+        .ensure_team_thread(&db::team_thread_key(&team.id), &team.name)
         .map_err(|e| format!("open team thread: {e}"))?;
     if let crate::workflows::Lifetime::Temporary { report_to } = lifetime {
         store
@@ -129,7 +137,8 @@ pub struct Updated {
     pub changed: bool,
 }
 
-/// Change a team's name, mission, members, or lead — the ONE rule set both
+/// Change a team's name, mission, members, lead, or standing rules (what
+/// doesn't change: brand, rules, who does what) — the ONE rule set both
 /// doors (the app's edit picker, the tool) go through. `None` keeps a field.
 /// Rules: a team never drops below two employees; the lead (organizer) must
 /// be a member or empty (= the owner leads); remove the lead without naming
@@ -142,6 +151,7 @@ pub fn update(
     mission: Option<&str>,
     member_list: Option<&[TeamMember]>,
     organizer_agent_id: Option<&str>,
+    standing: Option<&str>,
 ) -> Result<Updated, String> {
     let current = store
         .get_team(team_id)
@@ -160,6 +170,7 @@ pub fn update(
         }
     }
     let mission = mission.map(str::trim).unwrap_or(&current.mission);
+    let standing = standing.map(str::trim).unwrap_or(&current.standing);
 
     let mut members: Vec<TeamMember> = Vec::new();
     for m in member_list.unwrap_or(&current.members) {
@@ -195,11 +206,16 @@ pub fn update(
     };
 
     let same_members = members.len() == current.members.len() && members.iter().all(|m| current.members.contains(m));
-    if name == current.name && mission == current.mission && same_members && organizer == current.organizer_agent_id {
+    if name == current.name
+        && mission == current.mission
+        && standing == current.standing
+        && same_members
+        && organizer == current.organizer_agent_id
+    {
         return Ok(Updated { team: current, changed: false });
     }
     store
-        .update_team(&current.id, name, mission, &members, &organizer)
+        .update_team(&current.id, name, mission, &members, &organizer, standing)
         .map_err(|e| format!("update team: {e}"))?
         .map(|team| Updated { team, changed: true })
         .ok_or_else(|| "team vanished during update".to_string())
@@ -668,11 +684,11 @@ mod tests {
         )
         .unwrap();
 
-        let err = update(&s, "t-1", None, None, None, Some("hub-agent-1")).unwrap_err();
+        let err = update(&s, "t-1", None, None, None, Some("hub-agent-1"), None).unwrap_err();
         assert!(err.contains("has to be on this computer"), "{err}");
 
         // The local member is still a fine lead.
-        let ok = update(&s, "t-1", None, None, None, Some("chief")).unwrap();
+        let ok = update(&s, "t-1", None, None, None, Some("chief"), None).unwrap();
         assert_eq!(ok.team.organizer_agent_id, "chief");
     }
 
@@ -699,7 +715,7 @@ mod tests {
             .unwrap();
         assert_eq!(member_ids(&team), vec!["chief", "hub-agent-1"]);
 
-        let renamed = update(&s, "t-1", Some("Finance & Books"), None, None, None).unwrap();
+        let renamed = update(&s, "t-1", Some("Finance & Books"), None, None, None, None).unwrap();
         assert!(renamed.changed);
         assert_eq!(renamed.team.members, vec![TeamMember::local("chief"), remote]);
 
@@ -716,12 +732,12 @@ mod tests {
         let s = store();
         s.create_team("t-1", "Ops", "run the office", &[TeamMember::local("a"), TeamMember::local("b")], "a", None)
             .unwrap();
-        let same = update(&s, "t-1", Some("Ops"), None, Some(&[TeamMember::local("b"), TeamMember::local("a")]), Some("a"))
+        let same = update(&s, "t-1", Some("Ops"), None, Some(&[TeamMember::local("b"), TeamMember::local("a")]), Some("a"), None)
             .unwrap();
         assert!(!same.changed, "the same people, lead and name");
         assert_eq!(member_ids(&same.team), vec!["a", "b"], "the order stays as it was");
 
-        let grown = update(&s, "t-1", None, None, Some(&[TeamMember::local("a"), TeamMember::local("b"), TeamMember::local("c")]), None)
+        let grown = update(&s, "t-1", None, None, Some(&[TeamMember::local("a"), TeamMember::local("b"), TeamMember::local("c")]), None, None)
             .unwrap();
         assert!(grown.changed);
         assert_eq!(member_ids(&s.get_team("t-1").unwrap().unwrap()), vec!["a", "b", "c"]);

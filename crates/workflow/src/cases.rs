@@ -1041,6 +1041,7 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
             receiver_run_id: Some(&case_id),
             ask: req.subject,
             status: "running",
+            project_id: None,
         },
         t,
     )?;

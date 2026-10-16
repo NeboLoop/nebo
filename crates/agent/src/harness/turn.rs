@@ -7886,7 +7886,7 @@ mod tests {
 
         // Restaffed: Bo leads Marketing now.
         h.store
-            .update_team("t-mkt", "Marketing", "every campaign we run", &[db::TeamMember::local("ava"), db::TeamMember::local("bo")], "bo")
+            .update_team("t-mkt", "Marketing", "every campaign we run", &[db::TeamMember::local("ava"), db::TeamMember::local("bo")], "bo", "")
             .unwrap();
         run_turn(&h, owner("Bo leads marketing now")).await;
         assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "teams_listing").count(), 2);

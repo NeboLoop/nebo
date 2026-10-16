@@ -52,6 +52,25 @@ impl Teams {
 
     /// The calling employee's local id (the primary employee for the main
     /// companion chat).
+    /// The project of `team_id` the caller is working in, when its session
+    /// is its seat in one of that team's projects: what it posts goes into
+    /// that project's thread and what it reads comes from it.
+    fn seat_project(ctx: &ToolContext, team_id: &str) -> Option<String> {
+        match types::keyparser::conversation_of(&ctx.session_key) {
+            Some(types::keyparser::Conversation::Team { team_id: seat_team, project_id }) if seat_team == team_id => project_id,
+            _ => None,
+        }
+    }
+
+    /// The thread the caller reads for `team_id`: its project's, from a
+    /// project seat; the team's own otherwise.
+    fn seat_thread(store: &db::Store, ctx: &ToolContext, team_id: &str) -> String {
+        Self::seat_project(ctx, team_id)
+            .and_then(|p| store.get_project(&p).ok().flatten())
+            .map(|p| p.thread_session_key)
+            .unwrap_or_else(|| db::team_thread_key(team_id))
+    }
+
     fn caller_agent_id(store: &db::Store, ctx: &ToolContext) -> String {
         let own = types::keyparser::extract_agent_id(&ctx.session_key);
         if !own.is_empty() {
@@ -298,6 +317,7 @@ impl Teams {
         };
         let post = crate::coworker::TeamPost {
             attachments: vec![],
+            project_id: Self::seat_project(ctx, &t.id),
             team_id: t.id.clone(),
             from_agent_id: Self::caller_agent_id(store, ctx),
             by_owner: false,
@@ -340,7 +360,7 @@ impl Teams {
         }
     }
 
-    pub fn messages(&self, input: &serde_json::Value) -> ToolResult {
+    pub fn messages(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
         let store = match self.store() {
             Ok(s) => s,
             Err(r) => return r,
@@ -351,7 +371,7 @@ impl Teams {
             Err(e) => return ToolResult::error(e),
         };
         let limit = input["limit"].as_u64().unwrap_or(50) as usize;
-        match store.list_team_messages(&t.id, limit) {
+        match store.list_team_messages(&Self::seat_thread(store, ctx, &t.id), limit) {
             Ok(msgs) if msgs.is_empty() => ToolResult::ok(format!(
                 "No messages in team \"{}\" yet. Post the first one with send_message(to: \"{}\", message: \"...\").",
                 t.name, t.name
@@ -381,7 +401,7 @@ impl Teams {
         }
     }
 
-    /// Change a team's name, mission, members or lead — through the ONE rule
+    /// Change a team's name, mission, standing rules, members or lead — through the ONE rule
     /// set the app's edit dialog uses (`team::update`). Fields left out keep
     /// their value; `lead: "owner"` (or "") makes the team owner-led.
     pub fn update(&self, input: &serde_json::Value) -> ToolResult {
@@ -459,6 +479,7 @@ impl Teams {
             input["mission"].as_str(),
             members.as_deref(),
             lead.as_deref(),
+            input["standing"].as_str(),
         ) {
             Ok(team::Updated { team: same, changed: false }) => {
                 ToolResult::ok(Self::already(store, &same, named.as_deref(), lead.as_deref()))
@@ -631,6 +652,7 @@ impl Kind {
                     "team": team,
                     "name": { "type": "string", "description": "A new name." },
                     "mission": { "type": "string", "description": "A new mission." },
+                    "standing": { "type": "string", "description": "What doesn't change for the team (brand, rules, who does what), in full: it replaces what is there. Every member is briefed with it." },
                     "members": names("The full new member list, by employee name."),
                     "lead": { "type": "string", "description": "The employee who leads the team, or \"owner\" to make it owner-led." }
                 },
@@ -722,7 +744,7 @@ impl DynTool for TeamTool {
                 Kind::Update => self.teams.update(&input),
                 Kind::List => self.teams.list(),
                 Kind::Members => self.teams.members(&input),
-                Kind::Messages => self.teams.messages(&input),
+                Kind::Messages => self.teams.messages(ctx, &input),
                 Kind::Stop => self.teams.stop(&input, ctx).await,
             }
         })
