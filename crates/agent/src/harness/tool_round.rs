@@ -66,6 +66,18 @@ const STUCK_NOTE: &str = "This exact call has now failed the same way 8 times in
 pub(crate) const REPEAT_NOTE: &str = "You already made this exact call earlier this turn and it gave this same answer. \
      Don't send it again unless something has changed since: carry on with the work, or answer the owner.";
 
+/// What the model reads instead of a read it already has the answer to: a
+/// read-only call (same tool, same input) that answered the same way twice
+/// in a row this turn with nothing changed since ([`Repeats::standing`]).
+/// It is not run a third time. Twice the same is the proof the read is
+/// settled: a read whose answer moves on its own (the next page of a
+/// cursor, a job's status) answers differently and always runs. Audit
+/// 2026-10-16: the same read sent again and again within one turn, each one
+/// another full result in the conversation.
+pub(crate) const ALREADY_READ_NOTE: &str = "Not run again: this exact call (same tool, same input) already gave \
+     the same answer twice this turn and nothing has changed since, so that answer above still stands. Use it, or \
+     change the input if you need something different.";
+
 /// What the owner reads when an unattended run stops on a repeated
 /// failure: what is stuck, in plain words, with no tool or path in it.
 pub(crate) const STUCK_NOTICE: &str = "I stopped here: one step kept failing the same way, eight times in a row, \
@@ -82,6 +94,14 @@ pub(crate) struct Repeats {
     seen: HashMap<u64, Seen>,
     /// Bumped by every change; a count taken before the latest one is stale.
     changes: u64,
+    /// Read-only calls ([`call_key`]) that answered the same way twice in a
+    /// row: [`Repeats::changes`] and the time when each last ran.
+    reads: HashMap<u64, (u64, std::time::Instant)>,
+}
+
+/// One call as the rule for repeats tells it: its tool and its exact input.
+pub(crate) fn call_key(tc: &ai::ToolCall) -> u64 {
+    crate::harness::simple_hash(format!("{}\0{}", tc.name, tc.input).as_bytes())
 }
 
 struct Seen {
@@ -115,6 +135,37 @@ impl Repeats {
         // Its own change doesn't make the same call new next time.
         self.seen.get_mut(&outcome).expect("counted").changes = self.changes;
         times
+    }
+
+    /// Something changed outside the calls (the owner spoke): every count
+    /// and every standing read starts over.
+    pub(crate) fn changed(&mut self) {
+        self.changes += 1;
+    }
+
+    /// A read-only call that ran at `now`, counted first
+    /// ([`Repeats::count`]): `settled` when it answered in words the same
+    /// way as the run before it, with nothing changed between.
+    pub(crate) fn read(&mut self, call: u64, now: std::time::Instant, settled: bool) {
+        if settled {
+            self.reads.insert(call, (self.changes, now));
+        } else {
+            self.reads.remove(&call);
+        }
+    }
+
+    /// The reads whose answer still stands at `now`: nothing changed and
+    /// nobody waited since they ran, and less than [`SETTLE`] passed. The
+    /// same call again is answered with [`ALREADY_READ_NOTE`] and not run.
+    /// A write, an edit, a command that isn't read-only or a wait between
+    /// them makes the read new: reading a file after editing it, or polling
+    /// a job with a wait between polls, always runs.
+    pub(crate) fn standing(&self, now: std::time::Instant) -> HashSet<u64> {
+        self.reads
+            .iter()
+            .filter(|(_, (changes, at))| *changes == self.changes && now.saturating_duration_since(*at) < SETTLE)
+            .map(|(call, _)| *call)
+            .collect()
     }
 }
 
@@ -584,7 +635,15 @@ pub(crate) async fn run_tool_round(
         let target = targets[idx].as_ref();
         let read_only = target.is_some_and(|t| t.read_only);
         let outcome = crate::harness::simple_hash(format!("{}\0{}\0{}\0{}", result.is_error, tc.name, tc.input, result.content).as_bytes());
-        let times = failures.count(outcome, std::time::Instant::now(), waits(&tc.input), !result.is_error && !read_only);
+        let now = std::time::Instant::now();
+        let times = failures.count(outcome, now, waits(&tc.input), !result.is_error && !read_only);
+        // A read that answered in words the same way twice in a row stands
+        // for the same call until something changes; one with a picture or
+        // files never does.
+        if read_only && durations.contains_key(&tc.id) {
+            let settled = times >= 2 && !result.is_error && result.image_url.is_none() && result.more_files.is_empty();
+            failures.read(call_key(&tc), now, settled);
+        }
         match repeat(times, result.is_error, read_only, attended) {
             Repeat::New => {}
             Repeat::SameAnswer => {
@@ -897,6 +956,8 @@ pub(crate) struct Ran {
 /// Results come back in call order.
 pub(crate) struct ToolExecutor<'a> {
     cx: &'a RoundContext<'a>,
+    /// The reads whose answer still stands this round ([`Repeats::standing`]).
+    standing: Arc<HashSet<u64>>,
     ctx: ToolContext,
     pool: Arc<tokio::sync::Semaphore>,
     calls: Vec<ai::ToolCall>,
@@ -915,9 +976,10 @@ pub(crate) struct ToolExecutor<'a> {
 }
 
 impl<'a> ToolExecutor<'a> {
-    pub(crate) fn new(cx: &'a RoundContext<'a>) -> Self {
+    pub(crate) fn new(cx: &'a RoundContext<'a>, standing: HashSet<u64>) -> Self {
         Self {
             cx,
+            standing: Arc::new(standing),
             ctx: cx.scope.tool_context(),
             pool: Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_CALLS)),
             calls: Vec::new(),
@@ -1038,7 +1100,16 @@ impl<'a> ToolExecutor<'a> {
             self.status[idx] = Status::Running;
             let cx = self.cx;
             let prejudged = self.prejudged[idx].take();
-            let run = run_call(cx, self.ctx.clone(), self.pool.clone(), idx, self.calls[idx].clone(), self.judging, prejudged);
+            let run = run_call(
+                cx,
+                self.ctx.clone(),
+                self.pool.clone(),
+                idx,
+                self.calls[idx].clone(),
+                self.judging,
+                prejudged,
+                self.standing.clone(),
+            );
             self.running.push(Box::pin(run));
         }
     }
@@ -1094,6 +1165,7 @@ async fn run_call(
     mut tc: ai::ToolCall,
     judging: JudgementMode,
     prejudged: Option<(Question, Judgement)>,
+    standing: Arc<HashSet<u64>>,
 ) -> Ran {
     let RoundContext { scope, tools, concurrency, hooks, turn_mode, .. } = *cx;
     let RunToolScope { tx, session_id, run_cwd, .. } = *scope;
@@ -1144,8 +1216,19 @@ async fn run_call(
     {
         refusal = Some(refused);
     }
-    if let Some(msg) = refusal {
-        let result = ToolResult::error(msg);
+    // A read whose answer still stands is not run again.
+    let already_read = refusal.is_none()
+        && target.as_ref().is_some_and(|t| t.read_only)
+        && standing.contains(&call_key(&tc));
+    if already_read {
+        debug!(tool = %tc.name, id = %tc.id, "the same read already answered this turn: not run again");
+    }
+    let refused = match refusal {
+        Some(msg) => Some(ToolResult::error(msg)),
+        None if already_read => Some(ToolResult::ok(ALREADY_READ_NOTE)),
+        None => None,
+    };
+    if let Some(result) = refused {
         let _ = tx
             .send(StreamEvent {
                 payload: None,
@@ -1153,7 +1236,7 @@ async fn run_call(
                 event_type: StreamEventType::ToolResult,
                 text: result.content.clone(),
                 tool_call: Some(tc.clone()),
-                error: Some(result.content.clone()),
+                error: result.is_error.then(|| result.content.clone()),
                 usage: None,
                 rate_limit: None,
                 widgets: None,
