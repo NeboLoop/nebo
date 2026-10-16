@@ -795,6 +795,14 @@ impl Provider for OpenAIProvider {
         // Purpose + trace headers — let Janus group usage by what the call was
         // for and attribute it to the agent/run/workflow/action/step behind it.
         headers.extend(req.trace.headers());
+        // A one-off request is cached nowhere (`ChatRequest::cache_breakpoints`).
+        if req.cache_breakpoints.is_empty() {
+            let (name, value) = crate::PROMPT_CACHE_OFF;
+            headers.insert(
+                reqwest::header::HeaderName::from_static(name),
+                reqwest::header::HeaderValue::from_static(value),
+            );
+        }
 
         let client = self
             .http_client
@@ -1634,6 +1642,7 @@ mod tests {
         let head = server.await.unwrap();
 
         assert!(head.contains("x-purpose: memory_extract"), "{head}");
+        assert!(head.contains("x-prompt-cache: off"), "a one-off request is cached nowhere: {head}");
         assert!(head.contains("x-agent-id: agent-1"), "{head}");
         assert!(!head.contains("x-run-id"), "empty ids stay off the wire: {head}");
     }

@@ -77,7 +77,8 @@ impl AnthropicProvider {
         // with `cache_control: { type: "ephemeral" }` so that the stable prefix
         // can be served from Anthropic's prompt cache at ~90% discount.
         //
-        // Without breakpoints the whole prompt is sent as a single cached block.
+        // Without breakpoints the request is a one-off and nothing of it is
+        // marked (`ChatRequest::cache_breakpoints`).
         let system_blocks = if !system_prompt.is_empty() {
             if !req.cache_breakpoints.is_empty() {
                 let mut blocks = Vec::new();
@@ -125,14 +126,13 @@ impl AnthropicProvider {
                 Some(vec![SystemBlock {
                     text: system_prompt,
                     block_type: "text".to_string(),
-                    cache_control: Some(CacheControl {
-                        cache_type: "ephemeral".to_string(),
-                    }),
+                    cache_control: None,
                 }])
             }
         } else {
             None
         };
+        let cached = !req.cache_breakpoints.is_empty();
 
         // Tools a result loaded go deferred. The last tool loaded up front
         // carries a cache marker, so a tool appended after it (one a request's
@@ -146,7 +146,7 @@ impl AnthropicProvider {
                 .tools
                 .iter()
                 .rposition(|t| !deferred.contains(&t.name))
-                .filter(|_| system_markers + 2 <= MAX_CACHE_MARKERS);
+                .filter(|_| cached && system_markers + 2 <= MAX_CACHE_MARKERS);
             let tool_list: Vec<AnthropicTool> = req
                 .tools
                 .iter()
@@ -177,8 +177,11 @@ impl AnthropicProvider {
 
         // Exactly one message marker, on the last message: a plain-text
         // message becomes a text block to carry it, so each step reads the
-        // previous step's whole prefix from the cache.
-        mark_last_message(&mut messages);
+        // previous step's whole prefix from the cache. A one-off request
+        // carries none.
+        if cached {
+            mark_last_message(&mut messages);
+        }
 
         // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
         let tool_choice = match &req.tool_choice {
@@ -1051,6 +1054,16 @@ mod tests {
         assert_eq!(last["content"][0]["text"], "<system-reminder>\nIt is noon.\n</system-reminder>");
         assert!(last["content"][0]["cache_control"].is_object(), "{last}");
         assert!(body["messages"][0]["content"].is_string(), "earlier messages stay as they are");
+    }
+
+    /// A request with no cache breakpoints is a one-off: nothing of it is
+    /// marked for the cache.
+    #[test]
+    fn a_one_off_request_carries_no_cache_marker() {
+        let once = ChatRequest { cache_breakpoints: Vec::new(), ..request(vec![user("Title this chat.")]) };
+        let body = sent(&once);
+        assert_eq!(markers(&body), 0, "{body}");
+        assert_eq!(body["system"][0]["text"], "SYSTEM", "the system prompt is still sent");
     }
 
     #[test]
