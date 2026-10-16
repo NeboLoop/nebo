@@ -12,7 +12,7 @@ process of its own, many side by side. The configuration is
 | Pull request | The crates the diff touches, every crate that depends on them, and the tree guards (`scripts/ci-test-crates.py`). The end-to-end proofs only when the diff touches them. | `ci.yml`, GitHub-hosted (the repo is public) |
 | Push to main | Builds and lists every test binary: the merge still compiles and every binary starts. No tests: they ran on the pull request's merge ref. | `ci.yml` |
 | Nightly (09:17 UTC) | Every test, the end-to-end proofs included, and the doctests. | `ci.yml` `schedule` (and `workflow_dispatch` to run it by hand) |
-| Release gate | The nightly run, on the commit being tagged. | `release.yml` (added after v0.16.18) |
+| Release gate | The nightly run, on the commit being tagged, beside the builds. Nothing publishes (the GitHub release, the CDN, APT, Homebrew, the announce) unless it passes. | `release.yml` job `tests` (calls `ci.yml`) |
 | Your machine | What you changed: `cargo nextest run -p <crate>`. 4 tests at a time. | `.config/nextest.toml` `[profile.default]` |
 
 The frontend job (`pnpm lint`, `pnpm test`) runs on every pull request and
