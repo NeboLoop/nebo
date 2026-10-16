@@ -6072,6 +6072,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 &text,
                 &serde_json::to_value(&msg.attachments).unwrap_or_default(),
                 &[],
+                None,
             ) {
                 tracing::warn!(error = %e, team = %room.id, "failed to record mirrored hub message in the team thread");
             }

@@ -2061,7 +2061,34 @@
 		"save": "保存",
 		"createFailed": "チームを作成できませんでした。",
 		"gone": "このチームはもうありません。",
-		"send": "送信"
+		"send": "送信",
+		"standing": "すべてのプロジェクトの前提",
+		"standingEmpty": "変わらないことを追加: ブランド、ルール、担当分け。",
+		"standingLabel": "変わらないこと",
+		"standingPlaceholder": "このチームで変わらないこと: ブランド、ルール、担当分け。すべてのプロジェクトはここから始まります。",
+		"projects": "プロジェクト",
+		"doneCount": "完了 · {count}",
+		"newProject": "新しいプロジェクト",
+		"newProjectTitle": "新しいプロジェクト",
+		"newProjectLede": "チームにやってほしいことを書いてください。リードが計画し、仕事を割り振ります。",
+		"projectTitleLabel": "プロジェクト名",
+		"projectTitlePlaceholder": "タイトル（任意）",
+		"projectAskLabel": "やること",
+		"projectAskPlaceholder": "チームに何をしてほしいですか？",
+		"projectCreate": "プロジェクトを開始",
+		"projectCreateFailed": "プロジェクトを開始できませんでした。",
+		"projectNeedsLead": "プロジェクトには責任を持つリードが必要ですが、このチームにはまだいません。先にリードを選んでください。",
+		"pickLead": "リードを選ぶ",
+		"liveCount": "{count}件進行中",
+		"state": {
+			"live": "進行中",
+			"paused": "一時停止",
+			"done": "完了"
+		},
+		"projectComposerPlaceholder": "プロジェクトにメッセージを送る",
+		"reopenPlaceholder": "ここに書くと再開します…",
+		"backToTeam": "{name}に戻る",
+		"projectGone": "このプロジェクトはもうありません。"
 	},
 	"agentIsolation": {
 		"title": "会話とメモリ",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "{name} の作業を開く",
 		"doneWith": "完了: {result}",
 		"failedWith": "失敗: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "完了の条件: {when}",
 		"stop": "停止",
 		"status": {
 			"queued": "待機中",
@@ -4143,6 +4172,13 @@
 			"done": "完了",
 			"failed": "失敗",
 			"stopped": "停止済み"
+		},
+		"card": {
+			"handedOut": "依頼済み",
+			"working": "作業中",
+			"done": "完了",
+			"notFinished": "完了できず",
+			"stopped": "停止"
 		}
 	},
 	"connectors": {

@@ -189,14 +189,27 @@ pub async fn open_team(
     Ok(Json(serde_json::json!({ "team": team })))
 }
 
-/// One row of the roster's team list: the team, and where it sits in the
-/// owner's Pinned list (null when it is not pinned).
+/// One row of the roster's team list: the team, where it sits in the
+/// owner's Pinned list (null when it is not pinned), its projects with
+/// their states (the row's "N live", or "done" once none is going), and the
+/// newest post in any of its threads (the row's latest line).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RosterTeam {
     #[serde(flatten)]
     pub team: db::Team,
     pub pin_position: Option<usize>,
+    pub projects: Vec<RosterProject>,
+    pub latest: Option<db::TeamMessage>,
+}
+
+/// A project on a team's roster row: which one, and its state (`live`,
+/// `paused` or `done`), kept current by `project_updated`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterProject {
+    pub id: String,
+    pub state: String,
 }
 
 /// GET /teams — the sidebar's team list, in the owner's order (his order,
@@ -207,18 +220,27 @@ pub async fn list_teams(State(state): State<AppState>) -> HandlerResult<serde_js
     let rows: Vec<(&str, &str)> = teams.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect();
     let arranged = db::models::RosterOrder::arrange(&order.teams, None, &rows);
     let mut slots: Vec<Option<db::Team>> = teams.drain(..).map(Some).collect();
-    let teams: Vec<RosterTeam> = arranged
-        .into_iter()
-        .filter_map(|i| slots[i].take())
-        .map(|team| RosterTeam {
+    let mut teams: Vec<RosterTeam> = Vec::new();
+    for team in arranged.into_iter().filter_map(|i| slots[i].take()) {
+        let projects = state
+            .store
+            .list_team_projects(&team.id)
+            .map_err(to_error_response)?
+            .into_iter()
+            .map(|p| RosterProject { id: p.id, state: p.state })
+            .collect();
+        let latest = state.store.latest_team_message(&team.id).map_err(to_error_response)?;
+        teams.push(RosterTeam {
             pin_position: order.pin_position(
                 db::models::RosterKind::Team,
                 &team.id,
                 tools::team_tool::PRIMARY_AGENT_ID,
             ),
+            projects,
+            latest,
             team,
-        })
-        .collect();
+        });
+    }
     let total = teams.len();
     // The teams with a member's post the owner has not read: the sidebar's
     // "New reply" dot. Cleared by `PUT /teams/{teamId}/read`. A project's

@@ -34,7 +34,7 @@ pub use queries::{OwnerNeedRow, ToldNeed};
 pub use queries::PluginAccountProfile;
 pub use queries::{FileHistoryEntry, NewFileHistory, WorkspaceIndexRow};
 pub use queries::{WorkDocument, WorkDocumentListing, WorkDocumentVersion};
-pub use queries::{project_thread_key, team_thread_key, team_thread_of, NewProject, Project, Team, TeamMember, TeamMessage, TeamThread, TEAM_THREAD_PREFIX};
+pub use queries::{project_thread_key, team_thread_key, team_thread_of, NewProject, Project, Team, TeamCard, TeamMember, TeamMessage, TeamThread, TEAM_THREAD_PREFIX};
 pub use queries::{TemporaryClaim, TemporaryKind, TemporaryWork};
 pub use store::Store;
 

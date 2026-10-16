@@ -1808,6 +1808,7 @@ impl TurnSink {
                     text,
                     &serde_json::json!([]),
                     &[],
+                    None,
                 ) {
                     error!(error = %e, team = %team.id, "failed to post voice turn to the team");
                 }

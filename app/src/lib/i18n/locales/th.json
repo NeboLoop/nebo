@@ -2061,7 +2061,34 @@
 		"save": "บันทึก",
 		"createFailed": "สร้างทีมนั้นไม่ได้",
 		"gone": "ทีมนี้ไม่มีอยู่แล้ว",
-		"send": "ส่ง"
+		"send": "ส่ง",
+		"standing": "ทุกโปรเจกต์เริ่มจาก",
+		"standingEmpty": "เพิ่มสิ่งที่ไม่เปลี่ยน: แบรนด์ กฎ ใครทำอะไร",
+		"standingLabel": "สิ่งที่ไม่เปลี่ยน",
+		"standingPlaceholder": "สิ่งที่ไม่เปลี่ยนของทีมนี้: แบรนด์ กฎ ใครทำอะไร ทุกโปรเจกต์เริ่มจากตรงนี้",
+		"projects": "โปรเจกต์",
+		"doneCount": "เสร็จแล้ว · {count}",
+		"newProject": "โปรเจกต์ใหม่",
+		"newProjectTitle": "โปรเจกต์ใหม่",
+		"newProjectLede": "บอกว่าทีมต้องทำอะไร หัวหน้าทีมจะวางแผนและแจกงาน",
+		"projectTitleLabel": "ชื่อโปรเจกต์",
+		"projectTitlePlaceholder": "ชื่อ (ไม่บังคับ)",
+		"projectAskLabel": "สิ่งที่ต้องทำ",
+		"projectAskPlaceholder": "ทีมควรทำอะไร?",
+		"projectCreate": "เริ่มโปรเจกต์",
+		"projectCreateFailed": "เริ่มโปรเจกต์ไม่ได้",
+		"projectNeedsLead": "ทุกโปรเจกต์มีหัวหน้าทีมที่รับผิดชอบ แต่ทีมนี้ยังไม่มี เลือกหัวหน้าทีมก่อน",
+		"pickLead": "เลือกหัวหน้าทีม",
+		"liveCount": "กำลังทำ {count}",
+		"state": {
+			"live": "กำลังทำ",
+			"paused": "หยุดชั่วคราว",
+			"done": "เสร็จแล้ว"
+		},
+		"projectComposerPlaceholder": "ส่งข้อความถึงโปรเจกต์",
+		"reopenPlaceholder": "เขียนที่นี่เพื่อเปิดอีกครั้ง…",
+		"backToTeam": "กลับไปที่ {name}",
+		"projectGone": "ไม่มีโปรเจกต์นี้แล้ว"
 	},
 	"agentIsolation": {
 		"title": "บทสนทนาและความจำ",
@@ -4136,12 +4163,21 @@
 		"openReceiver": "เปิดงานของ {name}",
 		"doneWith": "เสร็จแล้ว: {result}",
 		"failedWith": "ล้มเหลว: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "เสร็จเมื่อ: {when}",
 		"stop": "หยุด",
 		"status": {
 			"queued": "อยู่ในคิว",
 			"running": "กำลังทำงาน",
 			"done": "เสร็จแล้ว",
 			"failed": "ล้มเหลว",
+			"stopped": "หยุดแล้ว"
+		},
+		"card": {
+			"handedOut": "มอบหมายแล้ว",
+			"working": "กำลังทำงาน",
+			"done": "เสร็จแล้ว",
+			"notFinished": "ทำไม่เสร็จ",
 			"stopped": "หยุดแล้ว"
 		}
 	},

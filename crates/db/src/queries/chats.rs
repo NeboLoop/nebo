@@ -1594,7 +1594,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
     })
 }
 
-fn row_to_chat_message(row: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
+pub(crate) fn row_to_chat_message(row: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
     Ok(ChatMessage {
         id: row.get("id")?,
         chat_id: row.get("chat_id")?,

@@ -105,6 +105,26 @@ export function receiverHref(h: HandoffView, here: URL): string {
 	return h.receiverLink;
 }
 
+/** Where a project's card stands, in the words its chip says
+ *  (`handoff.card.*`): handed out until the member picks it up, working,
+ *  done, couldn't finish (failed or blocked: the member's line says why),
+ *  or stopped. */
+export type CardState = 'handedOut' | 'working' | 'done' | 'notFinished' | 'stopped';
+export function cardState(h: Pick<HandoffView, 'status'>): CardState {
+	switch (h.status) {
+		case 'running':
+			return 'working';
+		case 'done':
+			return 'done';
+		case 'failed':
+			return 'notFinished';
+		case 'stopped':
+			return 'stopped';
+		default:
+			return 'handedOut';
+	}
+}
+
 /** The one line beneath a hand-off: its status, and what came back or why
  *  it failed. Labels are the caller's (`handoff.*`). */
 export function statusLine(h: HandoffView, tr: (key: string, opts?: { values: Record<string, string> }) => string): string {

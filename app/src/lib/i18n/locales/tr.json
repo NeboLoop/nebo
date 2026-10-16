@@ -2061,7 +2061,34 @@
 		"save": "Kaydet",
 		"createFailed": "Ekip oluşturulamadı.",
 		"gone": "Bu ekip artık yok.",
-		"send": "Gönder"
+		"send": "Gönder",
+		"standing": "Her proje şununla başlar",
+		"standingEmpty": "Değişmeyenleri ekleyin: marka, kurallar, kim ne yapar.",
+		"standingLabel": "Değişmeyenler",
+		"standingPlaceholder": "Bu ekip için değişmeyenler: marka, kurallar, kim ne yapar. Her proje bununla başlar.",
+		"projects": "Projeler",
+		"doneCount": "Tamamlanan · {count}",
+		"newProject": "Yeni proje",
+		"newProjectTitle": "Yeni proje",
+		"newProjectLede": "Ekibin ne yapması gerektiğini yazın. Lider planlar ve işi dağıtır.",
+		"projectTitleLabel": "Proje başlığı",
+		"projectTitlePlaceholder": "Başlık (isteğe bağlı)",
+		"projectAskLabel": "Yapılacak iş",
+		"projectAskPlaceholder": "Ekip ne yapmalı?",
+		"projectCreate": "Projeyi başlat",
+		"projectCreateFailed": "Proje başlatılamadı.",
+		"projectNeedsLead": "Her projenin ondan sorumlu bir lideri vardır ve bu ekibin henüz yok. Önce liderini seçin.",
+		"pickLead": "Lideri seç",
+		"liveCount": "{count} devam ediyor",
+		"state": {
+			"live": "devam ediyor",
+			"paused": "duraklatıldı",
+			"done": "tamamlandı"
+		},
+		"projectComposerPlaceholder": "Projeye mesaj yazın",
+		"reopenPlaceholder": "Yeniden açmak için buraya yazın…",
+		"backToTeam": "{name} ekibine dön",
+		"projectGone": "Bu proje artık yok."
 	},
 	"agentIsolation": {
 		"title": "Konuşmalar ve hafıza",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "{name} işini aç",
 		"doneWith": "Tamamlandı: {result}",
 		"failedWith": "Başarısız: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Tamamlanma ölçütü: {when}",
 		"stop": "Durdur",
 		"status": {
 			"queued": "Sırada",
@@ -4143,6 +4172,13 @@
 			"done": "Tamamlandı",
 			"failed": "Başarısız",
 			"stopped": "Durduruldu"
+		},
+		"card": {
+			"handedOut": "verildi",
+			"working": "üzerinde çalışılıyor",
+			"done": "tamamlandı",
+			"notFinished": "bitirilemedi",
+			"stopped": "durduruldu"
 		}
 	},
 	"connectors": {

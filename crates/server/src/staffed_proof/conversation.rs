@@ -3404,7 +3404,7 @@ async fn a_linked_member_is_sent_the_team_conversation_it_has_not_seen() {
         )
         .unwrap();
     nebo.store()
-        .append_team_message(&team, None, "assistant", "CODEX-HISTORY: the ICP is two-agent brokerages.", "Proof Brainstormer", &brain, &json!([]), &[])
+        .append_team_message(&team, None, "assistant", "CODEX-HISTORY: the ICP is two-agent brokerages.", "Proof Brainstormer", &brain, &json!([]), &[], None)
         .unwrap();
     let rig = Rig::new(
         &nebo,

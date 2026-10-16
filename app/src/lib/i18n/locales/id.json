@@ -2061,7 +2061,34 @@
 		"save": "Simpan",
 		"createFailed": "Tim tidak dapat dibuat.",
 		"gone": "Tim ini sudah tidak ada.",
-		"send": "Kirim"
+		"send": "Kirim",
+		"standing": "Setiap proyek dimulai dengan",
+		"standingEmpty": "Tambahkan yang tidak berubah: merek, aturan, siapa mengerjakan apa.",
+		"standingLabel": "Yang tidak berubah",
+		"standingPlaceholder": "Yang tidak berubah untuk tim ini: merek, aturan, siapa mengerjakan apa. Setiap proyek dimulai dengan ini.",
+		"projects": "Proyek",
+		"doneCount": "Selesai · {count}",
+		"newProject": "Proyek baru",
+		"newProjectTitle": "Proyek baru",
+		"newProjectLede": "Tulis apa yang harus dikerjakan tim. Ketua merencanakannya dan membagikan pekerjaan.",
+		"projectTitleLabel": "Judul proyek",
+		"projectTitlePlaceholder": "Judul (opsional)",
+		"projectAskLabel": "Yang harus dikerjakan",
+		"projectAskPlaceholder": "Apa yang harus dikerjakan tim?",
+		"projectCreate": "Mulai proyek",
+		"projectCreateFailed": "Proyek tidak dapat dimulai.",
+		"projectNeedsLead": "Setiap proyek punya ketua yang bertanggung jawab, dan tim ini belum punya. Pilih ketuanya dulu.",
+		"pickLead": "Pilih ketua",
+		"liveCount": "{count} berjalan",
+		"state": {
+			"live": "berjalan",
+			"paused": "dijeda",
+			"done": "selesai"
+		},
+		"projectComposerPlaceholder": "Kirim pesan ke proyek",
+		"reopenPlaceholder": "Tulis di sini untuk membukanya lagi…",
+		"backToTeam": "Kembali ke {name}",
+		"projectGone": "Proyek ini sudah tidak ada."
 	},
 	"agentIsolation": {
 		"title": "Percakapan dan memori",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Buka pekerjaan {name}",
 		"doneWith": "Selesai: {result}",
 		"failedWith": "Gagal: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Selesai jika: {when}",
 		"stop": "Hentikan",
 		"status": {
 			"queued": "Dalam antrean",
@@ -4143,6 +4172,13 @@
 			"done": "Selesai",
 			"failed": "Gagal",
 			"stopped": "Dihentikan"
+		},
+		"card": {
+			"handedOut": "diserahkan",
+			"working": "dikerjakan",
+			"done": "selesai",
+			"notFinished": "tidak bisa diselesaikan",
+			"stopped": "dihentikan"
 		}
 	},
 	"connectors": {

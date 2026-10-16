@@ -2061,7 +2061,34 @@
 		"save": "Сохранить",
 		"createFailed": "Не удалось создать команду.",
 		"gone": "Этой команды больше нет.",
-		"send": "Отправить"
+		"send": "Отправить",
+		"standing": "Каждый проект начинается с",
+		"standingEmpty": "Добавьте то, что не меняется: бренд, правила, кто что делает.",
+		"standingLabel": "Что не меняется",
+		"standingPlaceholder": "Что не меняется в этой команде: бренд, правила, кто что делает. С этого начинается каждый проект.",
+		"projects": "Проекты",
+		"doneCount": "Завершённые · {count}",
+		"newProject": "Новый проект",
+		"newProjectTitle": "Новый проект",
+		"newProjectLede": "Напишите, что должна сделать команда. Руководитель спланирует работу и раздаст задачи.",
+		"projectTitleLabel": "Название проекта",
+		"projectTitlePlaceholder": "Название (необязательно)",
+		"projectAskLabel": "Что сделать",
+		"projectAskPlaceholder": "Что должна сделать команда?",
+		"projectCreate": "Начать проект",
+		"projectCreateFailed": "Не удалось начать проект.",
+		"projectNeedsLead": "У каждого проекта есть руководитель, который за него отвечает, а у этой команды его пока нет. Сначала выберите руководителя.",
+		"pickLead": "Выбрать руководителя",
+		"liveCount": "в работе: {count}",
+		"state": {
+			"live": "в работе",
+			"paused": "на паузе",
+			"done": "завершён"
+		},
+		"projectComposerPlaceholder": "Написать в проект",
+		"reopenPlaceholder": "Напишите здесь, чтобы открыть снова…",
+		"backToTeam": "Назад к {name}",
+		"projectGone": "Этого проекта больше нет."
 	},
 	"agentIsolation": {
 		"title": "Разговоры и память",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Открыть работу {name}",
 		"doneWith": "Готово: {result}",
 		"failedWith": "Ошибка: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Готово, когда: {when}",
 		"stop": "Остановить",
 		"status": {
 			"queued": "В очереди",
@@ -4143,6 +4172,13 @@
 			"done": "Готово",
 			"failed": "Ошибка",
 			"stopped": "Остановлено"
+		},
+		"card": {
+			"handedOut": "передано",
+			"working": "в работе",
+			"done": "готово",
+			"notFinished": "не удалось завершить",
+			"stopped": "остановлено"
 		}
 	},
 	"connectors": {

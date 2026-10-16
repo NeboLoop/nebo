@@ -2061,7 +2061,34 @@
 		"save": "儲存",
 		"createFailed": "無法建立這個團隊。",
 		"gone": "這個團隊已經不在了。",
-		"send": "傳送"
+		"send": "傳送",
+		"standing": "每個專案都從這裡開始",
+		"standingEmpty": "新增不變的內容：品牌、規則、誰負責什麼。",
+		"standingLabel": "不變的內容",
+		"standingPlaceholder": "這個團隊不變的內容：品牌、規則、誰負責什麼。每個專案都從這裡開始。",
+		"projects": "專案",
+		"doneCount": "已完成 · {count}",
+		"newProject": "新增專案",
+		"newProjectTitle": "新增專案",
+		"newProjectLede": "說明團隊要做什麼。負責人會擬定計畫並分配工作。",
+		"projectTitleLabel": "專案標題",
+		"projectTitlePlaceholder": "標題（選填）",
+		"projectAskLabel": "要做什麼",
+		"projectAskPlaceholder": "團隊要做什麼？",
+		"projectCreate": "開始專案",
+		"projectCreateFailed": "無法開始專案。",
+		"projectNeedsLead": "每個專案都有一位負責人，而這個團隊還沒有。請先選定負責人。",
+		"pickLead": "選定負責人",
+		"liveCount": "{count} 個進行中",
+		"state": {
+			"live": "進行中",
+			"paused": "已暫停",
+			"done": "已完成"
+		},
+		"projectComposerPlaceholder": "傳訊息給專案",
+		"reopenPlaceholder": "在這裡寫下內容即可重新開啟…",
+		"backToTeam": "返回 {name}",
+		"projectGone": "這個專案已不存在。"
 	},
 	"agentIsolation": {
 		"title": "對話與記憶",
@@ -4136,12 +4163,21 @@
 		"openReceiver": "開啟 {name} 的工作",
 		"doneWith": "已完成：{result}",
 		"failedWith": "失敗：{error}",
+		"cardTask": "{name}：{task}",
+		"doneWhen": "完成標準：{when}",
 		"stop": "停止",
 		"status": {
 			"queued": "排隊中",
 			"running": "處理中",
 			"done": "已完成",
 			"failed": "失敗",
+			"stopped": "已停止"
+		},
+		"card": {
+			"handedOut": "已指派",
+			"working": "處理中",
+			"done": "已完成",
+			"notFinished": "未能完成",
 			"stopped": "已停止"
 		}
 	},

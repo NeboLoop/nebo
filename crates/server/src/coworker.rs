@@ -853,6 +853,7 @@ impl OwnerForward<'_> {
             &text,
             &serde_json::Value::Array(Vec::new()),
             &[],
+            None,
         ) {
             Ok(_) => true,
             Err(e) => {
@@ -1370,6 +1371,7 @@ mod tests {
             created_at: 0,
             provenance: Vec::new(),
             cleared: false,
+            card: None,
         }
     }
 

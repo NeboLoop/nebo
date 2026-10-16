@@ -2061,7 +2061,34 @@
 		"save": "সংরক্ষণ করুন",
 		"createFailed": "দলটি তৈরি করা যায়নি।",
 		"gone": "এই দলটি আর নেই।",
-		"send": "পাঠান"
+		"send": "পাঠান",
+		"standing": "প্রতিটি প্রকল্প শুরু হয় এগুলো দিয়ে",
+		"standingEmpty": "যা বদলায় না তা যোগ করুন: ব্র্যান্ড, নিয়ম, কে কী করে।",
+		"standingLabel": "যা বদলায় না",
+		"standingPlaceholder": "এই দলের যা বদলায় না: ব্র্যান্ড, নিয়ম, কে কী করে। প্রতিটি প্রকল্প এটি দিয়ে শুরু হয়।",
+		"projects": "প্রকল্প",
+		"doneCount": "সম্পন্ন · {count}",
+		"newProject": "নতুন প্রকল্প",
+		"newProjectTitle": "নতুন প্রকল্প",
+		"newProjectLede": "দলকে কী করতে হবে লিখুন। দলনেতা পরিকল্পনা করে কাজ ভাগ করে দেন।",
+		"projectTitleLabel": "প্রকল্পের শিরোনাম",
+		"projectTitlePlaceholder": "শিরোনাম (ঐচ্ছিক)",
+		"projectAskLabel": "কী করতে হবে",
+		"projectAskPlaceholder": "দলকে কী করতে হবে?",
+		"projectCreate": "প্রকল্প শুরু করুন",
+		"projectCreateFailed": "প্রকল্পটি শুরু করা যায়নি।",
+		"projectNeedsLead": "প্রতিটি প্রকল্পের একজন দলনেতা থাকেন যিনি এর দায়িত্বে, আর এই দলে এখনো কেউ নেই। আগে দলনেতা বেছে নিন।",
+		"pickLead": "দলনেতা বেছে নিন",
+		"liveCount": "{count}টি চলছে",
+		"state": {
+			"live": "চলছে",
+			"paused": "বিরতিতে",
+			"done": "সম্পন্ন"
+		},
+		"projectComposerPlaceholder": "প্রকল্পে বার্তা পাঠান",
+		"reopenPlaceholder": "আবার খুলতে এখানে লিখুন…",
+		"backToTeam": "{name}-এ ফিরে যান",
+		"projectGone": "এই প্রকল্পটি আর নেই।"
 	},
 	"agentIsolation": {
 		"title": "কথোপকথন ও মেমরি",
@@ -4136,12 +4163,21 @@
 		"openReceiver": "{name}-এর কাজ খুলুন",
 		"doneWith": "সম্পন্ন: {result}",
 		"failedWith": "ব্যর্থ: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "সম্পন্ন হবে যখন: {when}",
 		"stop": "থামান",
 		"status": {
 			"queued": "অপেক্ষমাণ",
 			"running": "কাজ চলছে",
 			"done": "সম্পন্ন",
 			"failed": "ব্যর্থ",
+			"stopped": "থামানো হয়েছে"
+		},
+		"card": {
+			"handedOut": "দেওয়া হয়েছে",
+			"working": "কাজ চলছে",
+			"done": "সম্পন্ন",
+			"notFinished": "শেষ করা যায়নি",
 			"stopped": "থামানো হয়েছে"
 		}
 	},

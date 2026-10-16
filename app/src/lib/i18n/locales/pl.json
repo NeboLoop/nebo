@@ -2061,7 +2061,34 @@
 		"save": "Zapisz",
 		"createFailed": "Nie udało się utworzyć zespołu.",
 		"gone": "Tego zespołu już nie ma.",
-		"send": "Wyślij"
+		"send": "Wyślij",
+		"standing": "Każdy projekt zaczyna się od",
+		"standingEmpty": "Dodaj to, co się nie zmienia: marka, zasady, kto co robi.",
+		"standingLabel": "Co się nie zmienia",
+		"standingPlaceholder": "Co się nie zmienia w tym zespole: marka, zasady, kto co robi. Każdy projekt zaczyna się od tego.",
+		"projects": "Projekty",
+		"doneCount": "Zakończone · {count}",
+		"newProject": "Nowy projekt",
+		"newProjectTitle": "Nowy projekt",
+		"newProjectLede": "Napisz, co zespół ma zrobić. Kierownik to zaplanuje i rozdzieli pracę.",
+		"projectTitleLabel": "Tytuł projektu",
+		"projectTitlePlaceholder": "Tytuł (opcjonalnie)",
+		"projectAskLabel": "Co zrobić",
+		"projectAskPlaceholder": "Co ma zrobić zespół?",
+		"projectCreate": "Rozpocznij projekt",
+		"projectCreateFailed": "Nie udało się rozpocząć projektu.",
+		"projectNeedsLead": "Każdy projekt ma kierownika, który za niego odpowiada, a ten zespół jeszcze go nie ma. Najpierw wybierz kierownika.",
+		"pickLead": "Wybierz kierownika",
+		"liveCount": "w toku: {count}",
+		"state": {
+			"live": "w toku",
+			"paused": "wstrzymany",
+			"done": "zakończony"
+		},
+		"projectComposerPlaceholder": "Napisz w projekcie",
+		"reopenPlaceholder": "Napisz tutaj, aby go wznowić…",
+		"backToTeam": "Wróć do {name}",
+		"projectGone": "Ten projekt już nie istnieje."
 	},
 	"agentIsolation": {
 		"title": "Rozmowy i pamięć",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Otwórz pracę {name}",
 		"doneWith": "Gotowe: {result}",
 		"failedWith": "Niepowodzenie: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Gotowe, gdy: {when}",
 		"stop": "Zatrzymaj",
 		"status": {
 			"queued": "W kolejce",
@@ -4143,6 +4172,13 @@
 			"done": "Gotowe",
 			"failed": "Niepowodzenie",
 			"stopped": "Zatrzymano"
+		},
+		"card": {
+			"handedOut": "przekazane",
+			"working": "w toku",
+			"done": "gotowe",
+			"notFinished": "nie udało się dokończyć",
+			"stopped": "zatrzymane"
 		}
 	},
 	"connectors": {

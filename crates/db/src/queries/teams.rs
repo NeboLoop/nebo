@@ -191,6 +191,24 @@ pub struct TeamMessage {
     /// no member is briefed with it again.
     #[serde(default)]
     pub cleared: bool,
+    /// The card this post hands out, when it is a project's card line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<TeamCard>,
+}
+
+/// A card a project's lead hands out (`team::card_lines`): the hand-off
+/// that carries it, who does it, the work, and when it counts as done. It
+/// rides the post that hands it out, so the app shows that post as the
+/// card and reads its state from the hand-off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamCard {
+    pub handoff_id: String,
+    /// The member doing it (local agent id).
+    pub agent_id: String,
+    pub task: String,
+    /// Empty when the lead gave none.
+    pub done_when: String,
 }
 
 fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<Team> {
@@ -228,6 +246,7 @@ fn message_from_row(m: ChatMessage) -> TeamMessage {
         }
     }
     let cleared = m.role == "system" && meta["compactBoundary"] == true && meta["reason"] == "cleared";
+    let card = serde_json::from_value::<Option<TeamCard>>(meta["card"].clone()).unwrap_or(None);
     TeamMessage {
         id: m.id.clone(),
         from: meta["senderName"].as_str().unwrap_or("").to_string(),
@@ -238,6 +257,7 @@ fn message_from_row(m: ChatMessage) -> TeamMessage {
         created_at: m.created_at,
         provenance,
         cleared,
+        card,
     }
 }
 
@@ -386,9 +406,10 @@ impl Store {
 
     /// Append one post to a team-style thread: the team's own
     /// (`team_thread_key`) or one of its projects' (`project_thread_key`,
-    /// `project` named). `from_agent_id` is empty for the owner. The sender
-    /// and the post's provenance ride message metadata, so the transcript
-    /// labels every row correctly after a reload and the words stay the words.
+    /// `project` named). `from_agent_id` is empty for the owner. The sender,
+    /// the post's provenance and the card it hands out (if any) ride message
+    /// metadata, so the transcript labels every row correctly after a reload
+    /// and the words stay the words.
     pub fn append_team_message(
         &self,
         team: &Team,
@@ -399,6 +420,7 @@ impl Store {
         from_agent_id: &str,
         attachments: &serde_json::Value,
         provenance: &[types::provenance::ProvenanceClass],
+        card: Option<&TeamCard>,
     ) -> Result<TeamMessage, NeboError> {
         let (key, title) = match project {
             Some(p) => (p.thread_session_key.clone(), p.title.as_str()),
@@ -414,6 +436,9 @@ impl Store {
         });
         if let Some(p) = project {
             meta["projectId"] = serde_json::json!(p.id);
+        }
+        if let Some(c) = card {
+            meta["card"] = serde_json::json!(c);
         }
         let meta = meta.to_string();
         let msg = self.create_chat_message_for_runner(
@@ -451,6 +476,28 @@ impl Store {
             rows.drain(..rows.len() - limit);
         }
         Ok(rows.into_iter().map(message_from_row).collect())
+    }
+
+    /// The newest post across a team's threads, its own and its projects':
+    /// the roster row's latest line. A clear's divider and Nebo's own rows
+    /// (`isMeta`) are not posts.
+    pub fn latest_team_message(&self, team_id: &str) -> Result<Option<TeamMessage>, NeboError> {
+        let own = team_thread_key(team_id);
+        let projects = format!("{own}{PROJECT_SEGMENT}");
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT m.* FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+             WHERE (c.session_name = ?1 OR substr(c.session_name, 1, length(?2)) = ?2)
+               AND m.role IN ('user', 'assistant')
+               AND COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.isMeta') END, 0) NOT IN (1, 'true')
+             ORDER BY m.created_at DESC, m.rowid DESC
+             LIMIT 1",
+            params![own, projects],
+            super::chats::row_to_chat_message,
+        )
+        .optional()
+        .db_err("latest_team_message")
+        .map(|m| m.map(message_from_row))
     }
 }
 
@@ -592,12 +639,12 @@ mod tests {
         let team = s.create_team("t-1", "Ops", "m", &members(), "chief", None).unwrap();
         assert!(s.list_team_messages(&team_thread_key("t-1"), 50).unwrap().is_empty());
 
-        let first = s.append_team_message(&team, None, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![]), &[]).unwrap();
+        let first = s.append_team_message(&team, None, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![]), &[], None).unwrap();
         assert_eq!(first.from, "Owner");
         assert_eq!(first.role, "user");
         assert_eq!(first.from_agent_id, "");
-        s.append_team_message(&team, None, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![]), &[]).unwrap();
-        s.append_team_message(&team, None, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![]), &[]).unwrap();
+        s.append_team_message(&team, None, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![]), &[], None).unwrap();
+        s.append_team_message(&team, None, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![]), &[], None).unwrap();
 
         let all = s.list_team_messages(&team_thread_key("t-1"), 0).unwrap();
         assert_eq!(all.len(), 3);
@@ -638,7 +685,7 @@ mod tests {
         assert_eq!(team_thread_of("team:t-1"), Some(TeamThread::Team("t-1")));
         assert_eq!(team_thread_of("agent:a:web"), None);
 
-        s.append_team_message(&team, Some(&first), "user", "launch us", "Owner", "", &serde_json::json!([]), &[]).unwrap();
+        s.append_team_message(&team, Some(&first), "user", "launch us", "Owner", "", &serde_json::json!([]), &[], None).unwrap();
         let rows = s.list_team_messages(&first.thread_session_key, 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(s.list_team_messages(&team_thread_key("t-1"), 0).unwrap().is_empty(), "the team's own thread is untouched");
@@ -651,6 +698,51 @@ mod tests {
         let reopened = s.set_project_state("p-1", "live", 60).unwrap().unwrap();
         assert_eq!(reopened.closed_at, None);
         assert!(s.create_project(&new("p-1")).is_err(), "one row per project");
+    }
+
+    /// The roster row's latest line is the newest post in any of the
+    /// team's threads, its own or a project's, and never another team's.
+    /// A card line keeps the card it hands out.
+    #[test]
+    fn the_latest_line_spans_the_teams_threads() {
+        let s = store();
+        let team = s.create_team("t-1", "Launch", "m", &members(), "chief", None).unwrap();
+        let other = s.create_team("t-10", "Other", "m", &members(), "chief", None).unwrap();
+        assert!(s.latest_team_message("t-1").unwrap().is_none());
+
+        s.append_team_message(&team, None, "user", "kick off", "Owner", "", &serde_json::json!([]), &[], None).unwrap();
+        assert_eq!(s.latest_team_message("t-1").unwrap().unwrap().content, "kick off");
+
+        let project = s
+            .create_project(&NewProject {
+                id: "p-1",
+                team_id: "t-1",
+                lead_agent_id: "chief",
+                title: "PH launch",
+                ask: "launch us",
+                asker_session_key: "",
+                asker_agent_id: "",
+                playbook_binding: None,
+            })
+            .unwrap();
+        let card = TeamCard {
+            handoff_id: "h-1".into(),
+            agent_id: "ea".into(),
+            task: "hero script".into(),
+            done_when: "saved and on brand".into(),
+        };
+        let posted = s
+            .append_team_message(&team, Some(&project), "assistant", "Executive Assistant: hero script", "Chief of Staff", "chief", &serde_json::json!([]), &[], Some(&card))
+            .unwrap();
+        assert_eq!(posted.card.as_ref(), Some(&card));
+        let latest = s.latest_team_message("t-1").unwrap().unwrap();
+        assert_eq!((latest.from.as_str(), latest.card.as_ref()), ("Chief of Staff", Some(&card)));
+        assert_eq!(s.list_team_messages(&project.thread_session_key, 0).unwrap()[0].card.as_ref(), Some(&card));
+
+        // Another team's post (even one whose id starts the same) is not this team's.
+        s.append_team_message(&other, None, "assistant", "elsewhere", "Chief of Staff", "chief", &serde_json::json!([]), &[], None).unwrap();
+        assert_eq!(s.latest_team_message("t-1").unwrap().unwrap().content, "Executive Assistant: hero script");
+        assert_eq!(s.latest_team_message("t-10").unwrap().unwrap().content, "elsewhere");
     }
 
     /// The standing rules are the team's own field: empty at first, set with

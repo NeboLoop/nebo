@@ -74,6 +74,9 @@ var typeOverrides = map[string]string{
 	"edit_team.changed":           "boolean",
 	"stop_team_work.stopped":      "string[]",
 	"team_working.working":        "TeamWorkEntry[]",
+	// A project's thread: the same rows, work list and unread entries as a team's.
+	"project_working.working":     "TeamWorkEntry[]",
+	"list_teams.unreadProjects":   "{ teamId: string; projectId: string }[]",
 
 	// ── User profile ──
 	"userGetProfile.profile": "UserProfileFull",

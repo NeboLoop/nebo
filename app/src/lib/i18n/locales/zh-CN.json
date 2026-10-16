@@ -2061,7 +2061,34 @@
 		"save": "保存",
 		"createFailed": "无法创建该团队。",
 		"gone": "这个团队已经不在了。",
-		"send": "发送"
+		"send": "发送",
+		"standing": "每个项目都从这里开始",
+		"standingEmpty": "添加不变的内容：品牌、规则、谁负责什么。",
+		"standingLabel": "不变的内容",
+		"standingPlaceholder": "这个团队不变的内容：品牌、规则、谁负责什么。每个项目都从这里开始。",
+		"projects": "项目",
+		"doneCount": "已完成 · {count}",
+		"newProject": "新建项目",
+		"newProjectTitle": "新建项目",
+		"newProjectLede": "说明团队要做什么。负责人会制定计划并分配工作。",
+		"projectTitleLabel": "项目标题",
+		"projectTitlePlaceholder": "标题（可选）",
+		"projectAskLabel": "要做什么",
+		"projectAskPlaceholder": "团队要做什么？",
+		"projectCreate": "开始项目",
+		"projectCreateFailed": "无法开始项目。",
+		"projectNeedsLead": "每个项目都有一位负责人，而这个团队还没有。请先选定负责人。",
+		"pickLead": "选定负责人",
+		"liveCount": "{count} 个进行中",
+		"state": {
+			"live": "进行中",
+			"paused": "已暂停",
+			"done": "已完成"
+		},
+		"projectComposerPlaceholder": "给项目发消息",
+		"reopenPlaceholder": "在这里写下内容即可重新打开…",
+		"backToTeam": "返回 {name}",
+		"projectGone": "这个项目已不存在。"
 	},
 	"agentIsolation": {
 		"title": "对话与记忆",
@@ -4136,12 +4163,21 @@
 		"openReceiver": "打开 {name} 的工作",
 		"doneWith": "已完成：{result}",
 		"failedWith": "失败：{error}",
+		"cardTask": "{name}：{task}",
+		"doneWhen": "完成标准：{when}",
 		"stop": "停止",
 		"status": {
 			"queued": "排队中",
 			"running": "处理中",
 			"done": "已完成",
 			"failed": "失败",
+			"stopped": "已停止"
+		},
+		"card": {
+			"handedOut": "已分派",
+			"working": "处理中",
+			"done": "已完成",
+			"notFinished": "未能完成",
 			"stopped": "已停止"
 		}
 	},
