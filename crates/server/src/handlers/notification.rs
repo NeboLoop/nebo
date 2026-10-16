@@ -193,6 +193,9 @@ pub(crate) async fn answer_item(state: &AppState, item: &Notification, value: &s
         }
         return Ok(());
     }
+    if let Some(key) = id.strip_prefix("held:") {
+        return crate::team::answer_held(state, key, value, via).map_err(NeboError::Validation);
+    }
     if let Some(rest) = id.strip_prefix("limit:") {
         let project_id = rest.split(':').next().unwrap_or_default();
         let project = state.store.get_project(project_id)?.ok_or(NeboError::NotFound)?;

@@ -80,6 +80,119 @@ fn reply_idem(key: &str) -> String {
     format!("expert-reply:{key}")
 }
 
+fn review_idem(key: &str) -> String {
+    format!("expert-review:{key}")
+}
+
+/// What a run parked on request `key` waits for: the expert's reply.
+pub fn reply_watch(key: &str) -> String {
+    reply_idem(key)
+}
+
+/// What a run parked on a held answer to request `key` waits for: the
+/// owner's review of it.
+pub fn review_watch(key: &str) -> String {
+    review_idem(key)
+}
+
+/// The key of round `round` of a request: the request's own key first, then
+/// `<key>:r1`, `<key>:r2`… one more each time the owner asks for changes to
+/// a held answer, so each round is its own request, sent once and answered
+/// once. A key stays one path segment (the owner's Inbox item for a held
+/// answer is named by it: `held:<key>`).
+pub fn round_key(key: &str, round: u32) -> String {
+    match round {
+        0 => key.to_string(),
+        r => format!("{key}:r{r}"),
+    }
+}
+
+/// `params.hold`: the step's answer is held for the owner's OK before the
+/// run uses it ("held for your OK").
+pub fn held(activity: &Activity) -> bool {
+    activity.params.as_ref().and_then(|p| p.get("hold")).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The owner's review of a held answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Review {
+    /// The answer is the step's output.
+    Approve,
+    /// Send it back to the same expert with what to change (empty: he
+    /// said only that it should change).
+    Change(String),
+}
+
+/// Record the owner's review of the held answer to request `key`. It lands
+/// on the run's expert target, so it wakes the run parked on it exactly as
+/// a reply does; one review per round (a repeat is a duplicate).
+pub fn record_review(store: &Store, run_id: &str, key: &str, review: &Review) -> Result<(), types::NeboError> {
+    let payload = match review {
+        Review::Approve => serde_json::json!({ "review": "approve" }),
+        Review::Change(note) => serde_json::json!({ "review": "change", "note": note }),
+    };
+    store.engine_enqueue_event(&NewEvent {
+        kind: REPLY_KIND,
+        target_type: "run",
+        target_id: &run_target(run_id),
+        payload: &payload.to_string(),
+        channel: "expert",
+        r#ref: key,
+        idem_key: &review_idem(key),
+        durable: true,
+        ..Default::default()
+    })?;
+    Ok(())
+}
+
+/// The owner's review of the held answer to request `key`, once given.
+pub fn review_of(store: &Store, run_id: &str, key: &str) -> Option<Review> {
+    let idem = review_idem(key);
+    let event = store
+        .engine_events_for("run", &run_target(run_id), 10_000)
+        .ok()?
+        .into_iter()
+        .find(|e| e.idem_key == idem)?;
+    let p: Value = serde_json::from_str(&event.payload).unwrap_or_default();
+    Some(match p["review"].as_str() {
+        Some("approve") => Review::Approve,
+        _ => Review::Change(p["note"].as_str().unwrap_or("").trim().to_string()),
+    })
+}
+
+/// Mark the held answer to request `key` as put to the owner: `true` the
+/// first time (ring the bell and ask him), `false` once he has been asked.
+/// A history row on the run, complete as it lands.
+pub fn mark_held(store: &Store, run_id: &str, key: &str) -> Result<bool, types::NeboError> {
+    let recorded = store.engine_enqueue_event(&NewEvent {
+        kind: "expert_held",
+        target_type: "run",
+        target_id: run_id,
+        payload: key,
+        r#ref: key,
+        idem_key: &format!("expert-held:{key}"),
+        durable: true,
+        ..Default::default()
+    })?;
+    match recorded {
+        db::Enqueued::Inserted(id) => {
+            store.engine_complete_event(id, chrono::Utc::now().timestamp())?;
+            Ok(true)
+        }
+        db::Enqueued::Duplicate => Ok(false),
+    }
+}
+
+/// The assignment request `key` opened, once sent.
+pub fn assignment_of(store: &Store, run_id: &str, key: &str) -> Option<String> {
+    store
+        .engine_effects_for_run(run_id)
+        .ok()?
+        .into_iter()
+        .find(|e| e.idem_key == effect_key(key))
+        .and_then(|e| e.provider_ref)
+}
+
 /// `params.timeout`: `30s`, `45m`, `2h`, `3d`. `None` for anything else;
 /// an absent timeout is read by [`timeout_of`].
 pub fn parse_timeout(s: &str) -> Option<std::time::Duration> {
@@ -364,10 +477,11 @@ fn recorded_reply(store: &Store, run_id: &str, key: &str) -> Option<db::EngineEv
         .find(|e| e.idem_key == idem)
 }
 
-/// The id of a reply already on record for any of `keys`: a reply that came
-/// while the run was busy wakes nothing, so the run checks before it parks.
-pub fn any_reply(store: &Store, run_id: &str, keys: &[String]) -> Option<i64> {
-    let idems: std::collections::HashSet<String> = keys.iter().map(|k| reply_idem(k)).collect();
+/// The id of an event already on record for any of `watches` (a reply,
+/// `reply_watch`, or the owner's review, `review_watch`): one that came
+/// while the run was busy woke nothing, so the run checks before it parks.
+pub fn any_reply(store: &Store, run_id: &str, watches: &[String]) -> Option<i64> {
+    let idems: std::collections::HashSet<&String> = watches.iter().collect();
     store
         .engine_events_for("run", &run_target(run_id), 10_000)
         .ok()?

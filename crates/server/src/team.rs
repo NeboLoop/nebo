@@ -405,6 +405,9 @@ pub(crate) fn project_lines(state: AppState, mut rx: tokio::sync::mpsc::Unbounde
         while let Some(change) = rx.recv().await {
             let said = match &change {
                 workflow::cases::ProjectChange::LimitReached { project_id, run_id } => paused_at_limit(&state, project_id, run_id),
+                workflow::cases::ProjectChange::HeldForOk { run_id, key, assignment_id, summary } => {
+                    held_for_ok(&state, run_id, key, assignment_id.as_deref(), summary)
+                }
                 _ => project_line(&state, &change),
             };
             if let Err(e) = said {
@@ -418,7 +421,7 @@ fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Re
     use workflow::cases::ProjectChange;
     let id = match change {
         ProjectChange::Opened { assignment_id, .. } | ProjectChange::Closed { assignment_id } => assignment_id,
-        ProjectChange::LimitReached { .. } => return Ok(()),
+        ProjectChange::LimitReached { .. } | ProjectChange::HeldForOk { .. } => return Ok(()),
     };
     let Some(card) = state.store.get_handoff(id).map_err(|e| e.to_string())? else {
         return Ok(());
@@ -446,7 +449,7 @@ fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Re
                 done_when: done_when.trim().to_string(),
             }),
         ),
-        ProjectChange::LimitReached { .. } => return Ok(()),
+        ProjectChange::LimitReached { .. } | ProjectChange::HeldForOk { .. } => return Ok(()),
         ProjectChange::Closed { .. } => (
             card.to_agent_id.as_str(),
             match card.status.as_str() {
@@ -461,6 +464,97 @@ fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Re
         ),
     };
     record(state, &team, Some(&project), TeamSender::Local(from), &text, &serde_json::json!([]), &[], handed_out.as_ref()).map(|_| ())
+}
+
+/// The answers a held result takes. Any other answer is a Change with that
+/// text as what to change (an app that lets the owner type it sends it).
+const HELD_APPROVE: &str = "approve";
+const HELD_CHANGE: &str = "change";
+
+/// A member's result held for the owner's OK (`params.hold` on its card,
+/// `workflow::graph::run_expert`): the project's thread shows it held, and
+/// the owner is asked in Needs you and on his phone to Approve it or have it
+/// changed. The item is `held:<request key>`; the run is the key's first
+/// segment.
+fn held_for_ok(state: &AppState, run_id: &str, key: &str, assignment_id: Option<&str>, summary: &str) -> Result<(), String> {
+    let project = state.store.workflow_run_project(run_id).map_err(|e| e.to_string())?.and_then(|p| state.store.get_project(&p).ok().flatten());
+    let card = assignment_id.and_then(|a| state.store.get_handoff(a).ok().flatten());
+    let member = card
+        .as_ref()
+        .and_then(|c| state.store.get_agent(&c.to_agent_id).ok().flatten())
+        .map(|a| a.name)
+        .unwrap_or_else(|| "A teammate".to_string());
+    let task = card.as_ref().map(|c| c.ask.clone()).unwrap_or_default();
+    if let Some(p) = project.as_ref()
+        && let Some(team) = state.store.get_team(&p.team_id).map_err(|e| e.to_string())?
+    {
+        let from = card.as_ref().map(|c| c.to_agent_id.clone()).unwrap_or_else(|| p.lead_agent_id.clone());
+        let line = format!("Held for your OK: {summary}");
+        record(state, &team, Some(p), TeamSender::Local(&from), &line, &serde_json::json!([]), &[], None)?;
+    }
+    let id = format!("held:{key}");
+    let title = match task.trim() {
+        "" => format!("{member}'s result is held for your OK"),
+        task => format!("{member}: {task}"),
+    };
+    let link = match project.as_ref() {
+        Some(p) => tools::owner_notify::link::project(&p.team_id, &p.id),
+        None => String::new(),
+    };
+    let options = [
+        db::models::ItemOption { label: "Approve".into(), value: HELD_APPROVE.into() },
+        db::models::ItemOption { label: "Change".into(), value: HELD_CHANGE.into() },
+    ];
+    let lead = project.as_ref().map(|p| p.lead_agent_id.clone());
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "info",
+        title: &title,
+        body: Some(summary),
+        action_url: (!link.is_empty()).then_some(link.as_str()),
+        agent_id: lead.as_deref(),
+        loud: true,
+        needs_you: true,
+        options: &options,
+        link_label: project.as_ref().map(|_| "Project"),
+        ..Default::default()
+    };
+    if tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n) {
+        crate::codes::push_inbox(state, n.hub_item(serde_json::json!({})));
+    }
+    Ok(())
+}
+
+/// The owner's review of a held result (`held:<request key>` in the Inbox):
+/// the ONE way it is answered. Approve makes it the step's output and the
+/// run goes on; Change (or any other words, which say what to change) sends
+/// it back to the same member as the next round, held again when it
+/// returns. The item is settled and the project's thread says which.
+pub(crate) fn answer_held(state: &AppState, key: &str, answer: &str, via: &str) -> Result<(), String> {
+    let run_id = key.split(':').next().unwrap_or_default();
+    let review = match answer.trim() {
+        HELD_APPROVE => workflow::expert::Review::Approve,
+        HELD_CHANGE => workflow::expert::Review::Change(String::new()),
+        note => workflow::expert::Review::Change(note.to_string()),
+    };
+    workflow::expert::record_review(&state.store, run_id, key, &review).map_err(|e| e.to_string())?;
+    let label = match &review {
+        workflow::expert::Review::Approve => "Approved",
+        workflow::expert::Review::Change(_) => "Change",
+    };
+    tools::owner_notify::settle(&state.store, Some(&|ev, p| state.hub.broadcast(ev, p)), &format!("held:{key}"), label, Some(via));
+    let project = state.store.workflow_run_project(run_id).map_err(|e| e.to_string())?.and_then(|p| state.store.get_project(&p).ok().flatten());
+    if let Some(p) = project
+        && let Some(team) = state.store.get_team(&p.team_id).map_err(|e| e.to_string())?
+    {
+        let line = match &review {
+            workflow::expert::Review::Approve => "Approved.".to_string(),
+            workflow::expert::Review::Change(note) if note.is_empty() => "Change it, please.".to_string(),
+            workflow::expert::Review::Change(note) => format!("Change it, please: {note}"),
+        };
+        record(state, &team, Some(&p), TeamSender::Local(""), &line, &serde_json::json!([]), &[], None)?;
+    }
+    Ok(())
 }
 
 /// The answers a project paused at its limit takes.
