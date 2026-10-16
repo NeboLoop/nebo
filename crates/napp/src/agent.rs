@@ -463,6 +463,21 @@ pub struct WorkflowBinding {
     /// existing binding) = today's behavior, a run per trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case: Option<CaseConfig>,
+    /// Present = this binding is a team's PLAYBOOK: each run is a fresh
+    /// project of `team`, led by the employee the binding belongs to, its
+    /// expert steps the project's cards. Absent (every existing binding) =
+    /// today's behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PlaybookProject>,
+}
+
+/// A playbook's project (`WorkflowBinding::project`): the team whose
+/// project each run is, and the title each one takes (with its date).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaybookProject {
+    /// The team, by name or id.
+    pub team: String,
+    pub title: String,
 }
 
 /// `emit` as written: a list of event names, or one string of them.
@@ -1176,6 +1191,19 @@ mod tests {
         let json = r#"{"inputs": [{"key": "deposit_pct", "money": true, "default": 5}]}"#;
         let err = parse_agent_config(json).unwrap_err().to_string();
         assert!(err.contains("money"), "{err}");
+    }
+
+    /// A playbook names its team's project; every existing binding (no
+    /// `project`) parses and writes back exactly as before.
+    #[test]
+    fn a_playbook_binding_carries_its_project_and_old_bindings_are_unchanged() {
+        let json = r#"{"workflows": {"weekly": {"trigger": {"type": "manual"}, "project": {"team": "Launch", "title": "Weekly launch"}}, "old": {"trigger": {"type": "manual"}}}}"#;
+        let config = parse_agent_config(json).unwrap();
+        let project = config.workflows["weekly"].project.clone().unwrap();
+        assert_eq!((project.team.as_str(), project.title.as_str()), ("Launch", "Weekly launch"));
+        assert!(config.workflows["old"].project.is_none());
+        let written = serde_json::to_value(&config.workflows["old"]).unwrap();
+        assert!(written.get("project").is_none(), "{written}");
     }
 
     #[test]

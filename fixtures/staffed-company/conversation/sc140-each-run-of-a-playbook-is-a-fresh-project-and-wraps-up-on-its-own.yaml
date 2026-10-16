@@ -1,0 +1,14 @@
+id: sc140-each-run-of-a-playbook-is-a-fresh-project-and-wraps-up-on-its-own
+name: "SC140 — Each run of a playbook is a fresh project, and wraps up on its own"
+description: |
+  Teams, projects and threads (2026-10-16): recurring playbooks. A team's
+  playbook is its lead's workflow with `project` set. Each run of it is a
+  fresh project of the team (no plan turn: the playbook is the plan),
+  titled with its day, its thread opening with what the playbook is for. A
+  second run starts while the first still waits on the owner (its card held
+  for his OK) and opens its own project. Each ends through the one close:
+  the lead, woken in its seat for that project, writes the wrap-up, which
+  is that project's done notice.
+target_component: staffed-company
+proof: staffed_proof::conversation::each_run_of_a_playbook_is_a_fresh_project_and_wraps_up_on_its_own
+conversation: []

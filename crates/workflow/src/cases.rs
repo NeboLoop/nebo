@@ -975,6 +975,9 @@ pub enum ProjectChange {
     Opened { assignment_id: String, task: String, done_when: String },
     Closed { assignment_id: String },
     LimitReached { project_id: String, run_id: String },
+    /// A playbook's run opened a fresh project (its thread opens with what
+    /// the playbook is for, and its lead's seat is ready for the wrap-up).
+    Started { project_id: String, run_id: String },
     /// An expert's answer to request `key` is held for the owner's OK
     /// (`params.hold`): he is asked to approve it or have it changed.
     HeldForOk { run_id: String, key: String, assignment_id: Option<String>, summary: String },
@@ -991,7 +994,7 @@ pub fn install_project_bell(bell: tokio::sync::mpsc::UnboundedSender<ProjectChan
     let _ = PROJECT_BELL.set(bell);
 }
 
-pub(crate) fn ring_project(change: ProjectChange) {
+pub fn ring_project(change: ProjectChange) {
     if let Some(bell) = PROJECT_BELL.get() {
         let _ = bell.send(change);
     }

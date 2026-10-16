@@ -5158,3 +5158,84 @@ async fn a_held_result_waits_for_the_owners_ok_and_his_change_goes_back_to_the_m
     assert!(at("HD-DRAFT-1") < at("Change it, please: make it shorter") && at("Change it, please") < at("HD-DRAFT-2"), "{rows:#?}");
     assert!(at("HD-DRAFT-2") < at("Approved.") && at("Approved.") < at("HD-WRAP"), "{rows:#?}");
 }
+
+/// Recurring playbooks (Teams, projects and threads, 2026-10-16): a team's
+/// playbook is its lead's workflow with `project` set. Each run of it is a
+/// fresh project of the team (no plan turn: the playbook is the plan),
+/// titled with its day, its thread opening with what the playbook is for.
+/// A second run starts while the first still waits on the owner (its card
+/// held for his OK) and opens its own project. Each ends through the one
+/// close: the lead, woken in its seat for that project, writes the wrap-up,
+/// and it is that project's done notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_run_of_a_playbook_is_a_fresh_project_and_wraps_up_on_its_own() {
+    let nebo = session().await;
+    let playbook = json!({
+        "workflows": {
+            "weekly-launch": {
+                "trigger": {"type": "manual"},
+                "description": "MARK-PB this week's launch post",
+                "project": {"team": "Proof Playbooks", "title": "Weekly launch"},
+                "activities": [{"id": "post", "type": "expert", "params": {"expert": "Proof PB Writer", "task": "MARK-PBW write this week's post", "hold": true}}],
+                "connections": [{"from": "__trigger__", "to": "post"}]
+            }
+        }
+    });
+    let lead = nebo.hire("Proof PB Lead", playbook).await;
+    let writer = nebo.hire("Proof PB Writer", json!({ "workflows": {} })).await;
+    nebo.store()
+        .create_team("proof-team-playbooks", "Proof Playbooks", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], &lead, None)
+        .unwrap();
+    fn wraps(t: &Thread<'_>) -> Option<Step> {
+        (t.says("You are Proof PB Lead,") && t.new_text().contains("Outcome:")).then(|| Step::say("PB-WRAP: this week's post is out."))
+    }
+    let rig = Rig::new(&nebo, vec![Box::new(wraps)]).await;
+    rig.answer_background(Box::new(|t| {
+        (t.req.trace.purpose == "workflow_activity" && t.says("MARK-PBW")).then(|| {
+            Step::say(r#"Written. {"result":{"status":"done","summary":"PB-POST: this week's post."},"next":{"action":"close"}}"#)
+        })
+    }));
+    let ctx = conversation_ctx(&nebo, &rig, &lead, None);
+    let projects = || nebo.store().list_team_projects("proof-team-playbooks").unwrap();
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let held = || {
+        nebo.store()
+            .list_user_notifications(&user, db::models::InboxView::All, None, 50, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.id.starts_with("held:") && n.answered_at.is_none())
+            .collect::<Vec<_>>()
+    };
+
+    for _ in 0..2 {
+        let started = nebo.tool(&ctx, "run_workflow", json!({ "workflow": "weekly-launch" })).await;
+        assert!(!started.is_error, "{}", started.content);
+    }
+    rig.until(60, "both runs wait on the owner, each its own project", || held().len() == 2).await;
+    let opened = projects();
+    assert_eq!(opened.len(), 2, "{opened:?}");
+    for p in &opened {
+        assert!(p.title.starts_with("Weekly launch · "), "{}", p.title);
+        assert_eq!(p.playbook_binding.as_deref(), Some(format!("agent:{lead}:weekly-launch").as_str()));
+        assert_eq!((p.lead_agent_id.as_str(), p.state.as_str()), (lead.as_str(), "live"));
+        let rows = project_rows(&nebo, p);
+        assert_eq!(rows.first().map(|r| r.1.as_str()), Some("Started: MARK-PB this week's launch post"), "{rows:#?}");
+        assert!(rows.iter().any(|(_, t)| t.contains("MARK-PBW write this week's post")), "its card: {rows:#?}");
+    }
+
+    for item in held() {
+        nebo.post_ok(&format!("/notifications/{}/answer", item.id), &json!({ "value": "approve" })).await;
+    }
+    rig.until(60, "each project wraps up on its own", || {
+        projects().iter().all(|p| p.state == "done" && project_rows(&nebo, p).iter().any(|(_, t)| t.contains("PB-WRAP")))
+    })
+    .await;
+    let notices = nebo
+        .store()
+        .list_user_notifications(&user, db::models::InboxView::All, None, 50, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.id.starts_with("project:"))
+        .count();
+    assert_eq!(notices, 2, "one done notice per project");
+}

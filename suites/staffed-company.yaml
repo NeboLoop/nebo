@@ -117,3 +117,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc137-a-project-at-its-limit-pauses-and-the-owners-answer-decides.yaml
   - ../fixtures/staffed-company/conversation/sc138-a-project-stopped-at-its-limit-closes-with-its-wrap-up.yaml
   - ../fixtures/staffed-company/conversation/sc139-a-held-result-waits-for-the-owners-ok-and-his-change-goes-back-to-the-member.yaml
+  - ../fixtures/staffed-company/conversation/sc140-each-run-of-a-playbook-is-a-fresh-project-and-wraps-up-on-its-own.yaml

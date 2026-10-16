@@ -328,6 +328,67 @@ impl Store {
         Ok(())
     }
 
+    /// Projects' runs that ended and have not been reported yet
+    /// (`mark_project_run_reported`): the project's id and the run.
+    pub fn ended_project_runs(&self, limit: i64) -> Result<Vec<(String, crate::EngineRun)>, NeboError> {
+        let ids: Vec<(String, String)> = {
+            let conn = self.conn()?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT w.project_id, w.id FROM workflow_runs w JOIN engine_runs r ON r.id = w.id
+                     WHERE w.project_id IS NOT NULL AND w.project_id != ''
+                       AND r.state IN ('done', 'failed', 'cancelled')
+                       AND NOT EXISTS (SELECT 1 FROM engine_events e WHERE e.idem_key = 'project-run-ended:' || w.id)
+                     ORDER BY r.ended_at LIMIT ?1",
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))?
+        };
+        let mut out = Vec::with_capacity(ids.len());
+        for (project, run) in ids {
+            if let Some(r) = self.engine_get_run(&run)? {
+                out.push((project, r));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Report a project's ended run once: `true` the first time. A history
+    /// row on the run, complete as it lands.
+    pub fn mark_project_run_reported(&self, run_id: &str, now: i64) -> Result<bool, NeboError> {
+        match self.engine_enqueue_event(&crate::NewEvent {
+            kind: "project_run_ended",
+            target_type: "run",
+            target_id: run_id,
+            payload: "",
+            r#ref: run_id,
+            idem_key: &format!("project-run-ended:{run_id}"),
+            durable: true,
+            ..Default::default()
+        })? {
+            crate::Enqueued::Inserted(id) => {
+                self.engine_complete_event(id, now)?;
+                Ok(true)
+            }
+            crate::Enqueued::Duplicate => Ok(false),
+        }
+    }
+
+    /// Whether any of a project's runs is still going (or parked).
+    pub fn project_has_live_run(&self, project_id: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM workflow_runs w JOIN engine_runs r ON r.id = w.id
+                            WHERE w.project_id = ?1 AND r.state NOT IN ('done', 'failed', 'cancelled'))",
+            params![project_id],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// A project's latest run, by when it started.
     pub fn latest_project_run(&self, project_id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;
