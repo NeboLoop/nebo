@@ -2,7 +2,7 @@
 """The authoring eval: owner requests -> the workflows Nebo's authoring
 guidance produces -> a score per request, per model.
 
-  make eval-authoring                         # MODELS=claude:haiku by default
+  make eval-authoring                         # MODELS=janus:nebo-1-flash by default
   make eval-authoring MODELS=janus:nebo-1-flash,janus:nebo-1-medium,janus:nebo-1-pro
   make eval-authoring ONLY=crm-sync,invoice-run
   make eval-authoring SCORE=<run dir>         # re-score a run without generating
@@ -31,6 +31,11 @@ answer and the calls.
 
 The guidance under test is only what the exported surfaces say: this
 script adds the bot's facts, never rules.
+
+Every Janus call is labeled so its spend is never read as a bot's: it
+sends X-Purpose: eval and X-Bot-ID: EVAL_LABEL (default "eval-authoring").
+A refused request (4xx other than 429) is not retried: it fails the same
+way every time.
 """
 
 import argparse
@@ -188,6 +193,7 @@ def ask(prompt: str, model: str) -> str:
 
 
 JANUS_URL = os.environ.get("JANUS_URL", "https://janus.neboloop.com/v1")
+EVAL_LABEL = os.environ.get("EVAL_LABEL", "eval-authoring")
 _checker = None
 
 
@@ -229,18 +235,26 @@ def janus(model: str, messages: list, tools=None, timeout=600) -> dict:
     body = {"model": model, "messages": messages}
     if tools:
         body["tools"] = tools
+    headers = {
+        "Authorization": f"Bearer {os.environ['JANUS_TOKEN']}",
+        "Content-Type": "application/json",
+        "X-Purpose": "eval",
+        "X-Bot-ID": EVAL_LABEL,
+    }
     for attempt in range(4):
-        req = urllib.request.Request(
-            f"{JANUS_URL}/chat/completions", data=json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {os.environ['JANUS_TOKEN']}", "Content-Type": "application/json"},
-        )
+        req = urllib.request.Request(f"{JANUS_URL}/chat/completions", data=json.dumps(body).encode(), headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        except urllib.error.HTTPError as e:
+            # A refusal is the same on every try; only a busy or failing
+            # server (429, 5xx) is worth another.
+            if attempt == 3 or (400 <= e.code < 500 and e.code != 429):
+                return {"error": f"{e}: {e.read().decode(errors='replace')[:300]}"}
+        except (urllib.error.URLError, TimeoutError) as e:
             if attempt == 3:
                 return {"error": str(e)}
-            time.sleep(5 * (attempt + 1))
+        time.sleep(5 * (attempt + 1))
     return {}
 
 
@@ -531,7 +545,7 @@ def run_track(run: pathlib.Path, models: list, jobs: int, repeats: int) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", default=os.environ.get("MODELS") or os.environ.get("MODEL") or "claude:haiku")
+    ap.add_argument("--models", default=os.environ.get("MODELS") or os.environ.get("MODEL") or "janus:nebo-1-flash")
     ap.add_argument("--only", default=os.environ.get("ONLY", ""))
     ap.add_argument("--score", default=os.environ.get("SCORE", ""), help="re-score this run dir")
     ap.add_argument("--jobs", type=int, default=int(os.environ.get("JOBS", "6")))
