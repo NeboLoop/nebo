@@ -106,11 +106,17 @@ Nebo is **the operating system for AI employees** — it turns the user's comput
 make dev              # Hot reload headless server (cargo watch)
 make build            # Release CLI binary (cargo build --release -p nebo-cli)
 make build-desktop    # Tauri desktop app (builds frontend first)
-make test             # cargo test (all workspace tests)
+make test             # cargo nextest, 4 at a time, no end-to-end proofs
+make test-full        # every test, the end-to-end proofs included
 make clean            # rm -rf target/ dist/
-cargo test -p nebo-agent             # Test a single crate
-cargo test -p nebo-tools -- test_name  # Run a specific test
+cargo nextest run -p nebo-agent              # Test a single crate
+cargo nextest run -p nebo-tools test_name    # Run a specific test
 ```
+
+Test what you changed (`-p <crate>`), not the workspace: the full suite is
+CI's job (nightly and the release gate), and a full run on the owner's Mac
+competes with everything else on it. nextest runs 4 tests at a time locally
+(`.config/nextest.toml`); never raise it. Tiers: `docs/testing.md`.
 
 ### Frontend (SvelteKit)
 ```bash

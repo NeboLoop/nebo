@@ -1,0 +1,80 @@
+# cargo-nextest: every test in a process of its own, run side by side.
+# The tiers (pull request, main, nightly, release) and how to run each one
+# by hand: docs/testing.md.
+#
+#   cargo nextest run -p nebo-agent                 # what you changed, 4 at a time
+#   cargo nextest run -p nebo-server --profile full # with the end-to-end proofs
+#
+# Process per test is what the product is: one Nebo per process. Process-wide
+# state (the credential encryptor, the backup ship's last commit, the shared
+# proof server, the environment) is no longer shared between tests that
+# happen to run in the same binary at the same time.
+
+[profile.default]
+# Local runs share the owner's Mac with everything else: never every core.
+test-threads = 4
+slow-timeout = { period = "60s", terminate-after = 5 }
+# The end-to-end proofs below wait on real servers and real engine ticks.
+# They run nightly, at the release gate, and on a pull request that touches
+# them; `--profile full` (or `--ignore-default-filter`) runs them by hand.
+default-filter = """
+not (
+  (package(nebo-server) & kind(lib) & (test(/^staffed_proof::[a-z_]+::/) | test(/^harness::permissions::proof::/)))
+  | binary_id(nebo-server::unattended_work)
+  | binary_id(nebo-server::drain)
+  | binary_id(nebo-server::cross_device)
+  | binary_id(nebo-server::app_record)
+  | binary_id(nebo-server::temporary_teams)
+  | binary_id(nebo-server::long_running_work)
+)
+"""
+
+[profile.full]
+# Everything, the proofs included: nightly, the release gate, by hand.
+default-filter = "all()"
+
+[profile.ci]
+# A pull request: what it touched. The proofs only when it touched them;
+# ci.yml runs ci-full then.
+# One per core. 8 on the runner's 4 cores was no faster over several runs
+# (163-261 s against 260-274 s) and starved CPU-bound tests: some took 10 s
+# instead of 0.5 s, the road to timing flakes.
+test-threads = "num-cpus"
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[profile.ci-full]
+# Nightly and the release gate: every test. One per core: the proofs boot
+# real servers and are CPU-bound (8 on 4 cores doubled their test-seconds and
+# made the full run slower, 410 s against 353 s).
+default-filter = "all()"
+test-threads = "num-cpus"
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci-full.junit]
+path = "junit.xml"
+
+# ── Quarantine ───────────────────────────────────────────────────────────
+# A test that fails now and then, while its issue is open. It is retried;
+# a pass on a retry is reported as FLAKY and does not fail the run, and a
+# test that fails every attempt still does. Each entry names its issue, and
+# leaves this list when the issue closes. Never a place to park a test that
+# simply fails.
+#
+# [[profile.default.overrides]]
+# filter = "package(nebo-x) & test(=module::the_test)"
+# retries = 2   # https://github.com/NeboLoop/nebo/issues/N
+
+# The watch's first look missed an employee written before it (Linux only,
+# 2 of 6 full CI runs). Fixed in the same change that added this list (the
+# first look is never skipped); leaves once the nightlies stay clean.
+# https://github.com/NeboLoop/nebo/issues/915
+[[profile.default.overrides]]
+filter = "package(nebo-napp) & test(=agent_loader::tests::an_employee_written_before_the_watch_is_in_place_is_found)"
+retries = 2

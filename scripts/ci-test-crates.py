@@ -8,8 +8,9 @@ pull_request only; a push to main always runs the whole workspace.
   python3 scripts/ci-test-crates.py --files A B  # explicit changed paths
   python3 scripts/ci-test-crates.py --self-check
 
-Prints the decision and, under Actions, writes `mode` (full | some | none)
-and `args` (the cargo test package arguments) to $GITHUB_OUTPUT.
+Prints the decision and, under Actions, writes `mode` (full | some | none),
+`args` (the package arguments) and `proofs` (1 when the diff touches the
+end-to-end proofs, so they run too) to $GITHUB_OUTPUT.
 
 Anything this script does not know is treated as a workspace-wide change:
 an unmapped path runs the full suite, never fewer tests.
@@ -48,6 +49,16 @@ DATA_INPUTS = (
     ("app/static/", {"nebo-tools"}, False),       # bundled skill checks the SDK bundle
     (".github/workflows/harness-gate.yml", {"nebo-agent"}, False),
     ("scripts/gate-", {"nebo-agent"}, False),     # testing/isolation.rs runs gate-run.sh
+)
+
+# The end-to-end proofs (.config/nextest.toml's default-filter leaves them
+# out of a pull request) and what they exercise most directly. A pull
+# request that touches any of these runs them too.
+PROOF_INPUTS = (
+    "crates/server/src/staffed_proof/", "crates/server/src/harness/permissions/",
+    "crates/server/tests/", "crates/server/src/engine", "crates/server/src/scheduler",
+    "suites/staffed-company.yaml", "suites/memory-proof.yaml", "fixtures/staffed-company/",
+    ".config/nextest.toml",
 )
 
 # No Rust build or test reads these.
@@ -123,6 +134,11 @@ def select(ws, files):
     return "some", pkgs, reasons
 
 
+def touches_proofs(files):
+    """True when a changed path is one of the proofs or what they exercise."""
+    return any(f.startswith(PROOF_INPUTS) for f in files)
+
+
 def changed_files(base):
     # --no-renames: a file moved out of a crate shows its old path too.
     out = subprocess.run(
@@ -146,6 +162,9 @@ def self_check():
         assert select(ws, [f])[0] == "full", f
     assert select(ws, ["crates/types/src/lib.rs"])[1] >= {"nebo-types", "nebo-db", "nebo-server"}
     assert select(ws, [".github/workflows/release.yml"])[0] == "none"
+    assert touches_proofs(["crates/server/src/staffed_proof/seats.rs"])
+    assert touches_proofs(["crates/server/tests/drain.rs", "README.md"])
+    assert not touches_proofs(["crates/agent/src/harness/turn.rs", "crates/server/src/handlers/chat.rs"])
     # The TOML graph must match cargo's own, where cargo is at hand.
     try:
         import json
@@ -166,19 +185,22 @@ def main(argv):
     files = argv[1:] if argv[:1] == ["--files"] else changed_files(argv[0])
     mode, pkgs, reasons = select(workspace(), files)
     args = FULL_ARGS if mode == "full" else " ".join(f"-p {p}" for p in sorted(pkgs))
+    proofs = touches_proofs(files)
     print(f"{len(files)} changed file(s)")
     for r in reasons:
         print("  " + r)
     if mode == "none":
         print("No Rust crate or Rust test input changed: cargo tests skipped.")
     elif mode == "full":
-        print(f"Full suite: cargo test {args}")
+        print(f"Full suite: cargo nextest run {args}")
     else:
         print(f"Selected {len(pkgs)} package(s): " + " ".join(sorted(pkgs)))
-        print(f"cargo test {args}")
+        print(f"cargo nextest run {args}")
+    if mode != "none":
+        print("End-to-end proofs: " + ("run, the diff touches them" if proofs else "left to nightly and the release gate"))
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"mode={mode}\nargs={args}\n")
+            f.write(f"mode={mode}\nargs={args}\nproofs={int(proofs)}\n")
 
 
 if __name__ == "__main__":

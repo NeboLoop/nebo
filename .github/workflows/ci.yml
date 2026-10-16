@@ -1,9 +1,21 @@
 name: CI
 
-# Two gates: frontend typecheck + unit tests, and the full cargo workspace
-# test suite. The Rust job exists because its absence let a workflow
-# regression AND the compile break that hid its test ship in one commit — the
-# repo read green for weeks on frontend checks alone.
+# Two gates: frontend typecheck + unit tests, and the cargo workspace tests.
+# The Rust job exists because its absence let a workflow regression AND the
+# compile break that hid its test ship in one commit — the repo read green
+# for weeks on frontend checks alone.
+#
+# The Rust tests run in tiers, so one change is not tested over and over
+# (docs/testing.md):
+#
+#   pull request  the crates the diff touches and their dependents, under
+#                 cargo-nextest; the end-to-end proofs only when the diff
+#                 touches them (scripts/ci-test-crates.py)
+#   push to main  builds and lists every test binary: the merge still
+#                 compiles. Its tests ran on the pull request's merge ref.
+#   nightly       the full suite, the proofs included (schedule below), and
+#                 workflow_dispatch for the same run by hand
+#   release gate  the same full run, called by release.yml (workflow_call)
 #
 # push is main-only ON PURPOSE. A bare `push:` plus `pull_request:` ran every
 # PR'd commit twice — and the concurrency group below could never dedupe the
@@ -18,9 +30,23 @@ on:
     # removes this entry along with the branch.
     branches: [main, harness/turn-controller]
   pull_request:
+  schedule:
+    # Nightly, 09:17 UTC (03:17 in Denver): the full suite on main.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+  # The release gate: release.yml calls this workflow for the full run on
+  # the commit being tagged, so the gate and the nightly are one recipe.
+  workflow_call:
+    inputs:
+      tier:
+        description: "full: every test, the proofs included"
+        type: string
+        default: full
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # The event is in the group: a push to main must not cancel the nightly
+  # run on main, nor the nightly a push.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -78,30 +104,51 @@ jobs:
           # which the crate selection below diffs against.
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
 
-      # Pull requests test only what they change: the crates their diff
-      # touches, every crate that depends on those, and the crates whose tests
-      # scan the tree. Workspace-wide inputs (Cargo.toml, Cargo.lock, the
+      # Which tier this run is (see the top of this file):
+      #   mode   full | some | none  — what runs; `build` on a push to main
+      #   args   the package arguments
+      #   proofs 1 when the end-to-end proofs run too
+      # A pull request tests what its diff touches: the crates it changes,
+      # every crate that depends on those, and the crates whose tests scan
+      # the tree. Workspace-wide inputs (Cargo.toml, Cargo.lock, the
       # toolchain, .cargo/, this workflow) and any unmapped path run the full
-      # suite; a PR with no Rust input skips every step below. Pushes skip this
-      # step, so main always runs the full workspace. Mapping:
+      # suite; a PR with no Rust input skips every step below. Mapping:
       # scripts/ci-test-crates.py.
-      - name: Select crates
+      - name: Select tests
         id: select
-        if: github.event_name == 'pull_request'
-        run: python3 scripts/ci-test-crates.py HEAD^1
+        run: |
+          if [ "${{ inputs.tier }}" = "full" ]; then
+            echo "Release gate: the full suite, the end-to-end proofs included."
+            printf 'mode=full\nargs=--workspace --exclude nebo\nproofs=1\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "${{ github.event_name }}" in
+            pull_request)
+              python3 scripts/ci-test-crates.py HEAD^1 ;;
+            push)
+              echo "Push to main: build and list every test binary; the tests ran on the pull request."
+              printf 'mode=build\nargs=--workspace --exclude nebo\nproofs=0\n' >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Nightly: the full suite, the end-to-end proofs included."
+              printf 'mode=full\nargs=--workspace --exclude nebo\nproofs=1\n' >> "$GITHUB_OUTPUT" ;;
+          esac
 
       # The workspace debug-build plus the restored cache can crowd the
       # runner's ~14GB free disk, and a full disk kills test binaries with
       # SIGBUS (their pages are mmap'd from files that can no longer be
       # read back) — a crash that looks like memory corruption and isn't.
       # These preinstalled toolchains are dead weight for this job; dropping
-      # them frees ~25-30GB.
+      # them frees ~25-30GB. The delete takes one to two minutes, and nothing
+      # before the build needs the space, so it runs in the background while
+      # the toolchain, the cache and the packages install; "Wait for the
+      # reclaimed disk" holds the build until it is done.
       - name: Reclaim runner disk
         if: steps.select.outputs.mode != 'none'
         run: |
           df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          df -h / | tail -1
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL > /tmp/reclaim.log 2>&1 &
+          echo $! > /tmp/reclaim.pid
 
       - name: Install Rust
         if: steps.select.outputs.mode != 'none'
@@ -109,12 +156,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
+      - name: Install cargo-nextest
+        if: steps.select.outputs.mode != 'none'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Cache Rust build
         if: steps.select.outputs.mode != 'none'
         uses: Swatinem/rust-cache@v2
         with:
           key: ci-test
           cache-on-failure: true
+          # Pull requests and the nightly read the cache main's pushes save:
+          # one cache, kept warm by the push that builds every test binary.
+          save-if: ${{ github.event_name == 'push' }}
 
       # Same dependency set as release.yml's Linux leg — that recipe is already
       # hardened for this runner image; do not let the two drift.
@@ -152,13 +208,49 @@ jobs:
           mkdir -p app/build
           printf '<!doctype html><html><head><title>Nebo</title></head><body></body></html>\n' > app/build/index.html
 
+      - name: Wait for the reclaimed disk
+        if: steps.select.outputs.mode != 'none'
+        run: |
+          while sudo kill -0 "$(cat /tmp/reclaim.pid)" 2>/dev/null; do sleep 2; done
+          cat /tmp/reclaim.log
+          df -h / | tail -1
+          # Runner speed varies; with the test times, this says which ran.
+          echo "$(nproc) cores: $(lscpu | sed -n 's/^Model name: *//p')"
+
       # --exclude nebo: the desktop crate has no tests and its build script
       # wants ../app/build (frontendDist) — excluding it keeps this job free of
-      # a frontend build. Everything else in the workspace runs. A PR passes
-      # the selected `-p` set instead (empty on push = the full workspace).
+      # a frontend build. A push to main builds every test binary and lists
+      # its tests (a binary that cannot start fails here) without running
+      # them.
+      - name: Build and list every test
+        if: steps.select.outputs.mode == 'build'
+        run: cargo nextest list ${{ steps.select.outputs.args }} --profile ci-full
+
+      # Every test in its own process, on every core (.config/nextest.toml).
+      # The nightly runs the ci-full profile (the proofs included); a pull
+      # request runs ci, and the proofs too when its diff touches them.
       - name: Run tests
-        if: steps.select.outputs.mode != 'none'
-        run: cargo test ${{ steps.select.outputs.args || '--workspace --exclude nebo' }} --no-fail-fast
+        if: steps.select.outputs.mode == 'full' || steps.select.outputs.mode == 'some'
+        run: >-
+          cargo nextest run ${{ steps.select.outputs.args }}
+          --profile ${{ steps.select.outputs.proofs == '1' && 'ci-full' || 'ci' }}
+
+      # nextest runs no doctests; these are the ones cargo test ran. The full
+      # run only: building every crate's docs for one doctest (nebo-command's)
+      # cost a pull request a minute.
+      - name: Run doctests
+        if: steps.select.outputs.mode == 'full' && steps.select.outputs.proofs == '1'
+        run: cargo test --doc ${{ steps.select.outputs.args }}
+
+      # Per-test timings and results: the slowest tests are read from here.
+      - name: Keep the test report
+        if: always() && (steps.select.outputs.mode == 'full' || steps.select.outputs.mode == 'some')
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ github.event_name }}-${{ github.run_id }}
+          path: target/nextest/ci*/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
       # A test binary dying of SIGBUS or an OOM-kill leaves its cause in the
       # kernel log and the disk numbers, not in cargo's output. Capture both
