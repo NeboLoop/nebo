@@ -1,0 +1,15 @@
+id: sc135-the-lead-plans-a-project-as-cards-and-wraps-it-up-in-its-thread
+name: "SC135 — The lead plans a project as cards and wraps it up in its thread"
+description: |
+  Teams, projects and threads (2026-10-16), answering the live case where a
+  lead given the work wrote every script itself. The owner opens a project;
+  its lead, held to the lead's tools (no file or shell tool there), lays the
+  work out as one temporary workflow of cards and says its plan. The run is
+  the project's: each card is handed out in the thread, a card that starts
+  when another is done waits for it and reads its result, and each member
+  works its card as its own case. When the last card is done the outcome
+  comes back to the lead in its seat, and its wrap-up is the thread's last
+  line.
+target_component: staffed-company
+proof: staffed_proof::conversation::the_lead_plans_a_project_as_cards_and_wraps_it_up_in_its_thread
+conversation: []

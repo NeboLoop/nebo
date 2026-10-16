@@ -6745,32 +6745,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // the work is theirs. Coordination is the room, messages,
                 // the roster, the task list, assignments and memory; a helper would do
                 // the work itself, so the organizer gets none.
-                tool_allowlist: if organizer_run {
-                    Some(
-                        [
-                            "send_loop_message",
-                            "read_loop_channel",
-                            "loop_channel_members",
-                            "find_tools",
-                            "send_message",
-                            "list_employees",
-                            "get_employee",
-                            "create_task",
-                            "update_task",
-                            "get_task",
-                            "list_tasks",
-                            "assign_task",
-                            "list_assignments",
-                            "recall",
-                            "remember",
-                        ]
-                        .into_iter()
-                        .map(String::from)
-                        .collect(),
-                    )
-                } else {
-                    None
-                },
+                tool_allowlist: organizer_run.then(|| coworker::lead_scope(coworker::Leads::HubRoom)),
                 hidden_prompt: false,
                 coworker: None,
                 audience: None,

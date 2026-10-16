@@ -1491,10 +1491,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                 .as_deref()
                 .map(|d| d.split(':').next().unwrap_or(d).to_string())
                 .filter(|b| fresh && !b.is_empty());
+            // The project this run is the work of: temporary work its lead
+            // laid out from its seat in the project (`project_of_temporary`).
+            let mut project: Option<String> = None;
             if let Some(binding) = &temporary_binding {
                 match self.store.claim_temporary_run(TemporaryKind::Workflow, agent_id, binding, &run_id) {
                     Ok(TemporaryClaim::NotTemporary) => {}
                     Ok(TemporaryClaim::Claimed) => {
+                        project = project_of_temporary(&self.store, agent_id, binding);
                         if let Err(e) = self.store.set_agent_workflow_active(agent_id, binding, false) {
                             warn!(agent_id, binding = %binding, error = %e, "temporary workflow's trigger not turned off");
                         }
@@ -1548,6 +1552,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                     self.store
                         .set_workflow_run_narrow(&run_id, mode)
                         .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
+                }
+                // A project's run, before its first step: its expert steps
+                // are the project's cards.
+                if let Some(project) = project.as_deref() {
+                    self.store
+                        .set_workflow_run_project(&run_id, project)
+                        .map_err(|e| format!("set_workflow_run_project: {}", e))?;
                 }
             }
 
@@ -2810,14 +2821,18 @@ async fn save_binding(
             }
 
             // Reject hollow definitions loudly — a workflow with no activities
-            // can never execute, and silently storing one reads as success.
+            // can never execute, and silently storing one reads as success. A
+            // typed step (an expert card, a command, a condition…) runs from
+            // its params, which the run's parser checks below; a step a model
+            // runs needs its words.
             let has_runnable_activity = def
                 .get("activities")
                 .and_then(|v| v.as_array())
                 .is_some_and(|acts| {
                     !acts.is_empty()
                         && acts.iter().any(|a| {
-                            a.get("steps").and_then(|s| s.as_array()).is_some_and(|s| !s.is_empty())
+                            !napp::workflow_check::is_ai_step(a)
+                                || a.get("steps").and_then(|s| s.as_array()).is_some_and(|s| !s.is_empty())
                                 || a.get("intent").and_then(|i| i.as_str()).is_some_and(|i| !i.is_empty())
                         })
                 });
@@ -2890,7 +2905,7 @@ async fn save_binding(
             if let Some(e) = def.get("emit") {
                 binding_val["emit"] = e.clone();
             }
-            loadable_binding(&binding_val)?;
+            loadable_binding(&binding_name, &binding_val)?;
             fm["workflows"][binding_name.as_str()] = binding_val;
 
             mgr.store
@@ -2994,19 +3009,39 @@ async fn save_binding(
     }
 }
 
+/// The project temporary work is for: work a project's lead laid out from
+/// its seat in that project (the session the work reports to,
+/// `agent:<lead>:coworker:team:<team>:project:<id>`) is that project's run.
+/// `None` for any other temporary work.
+fn project_of_temporary(store: &db::Store, agent_id: &str, binding: &str) -> Option<String> {
+    let work = store.temporary_work(TemporaryKind::Workflow, agent_id, binding).ok().flatten()?;
+    let types::keyparser::Conversation::Team { project_id: Some(project_id), .. } =
+        types::keyparser::conversation_of(&work.report_to)?
+    else {
+        return None;
+    };
+    let project = store.get_project(&project_id).ok().flatten()?;
+    (project.lead_agent_id == agent_id).then_some(project.id)
+}
+
 /// What a save accepts is what the employee's own config loads and runs
-/// ([`napp::agent::WorkflowBinding`]). The release proof of 2026-09-27
-/// saved 13 workflows whose steps were objects: each save said "created",
-/// and reload_employee then read 0 workflows (the loader skipped every one)
-/// and cleared their schedules.
-fn loadable_binding(binding: &serde_json::Value) -> Result<(), String> {
-    serde_json::from_value::<napp::agent::WorkflowBinding>(binding.clone()).map(|_| ()).map_err(|e| {
+/// ([`napp::agent::WorkflowBinding`]), and what its run's parser accepts
+/// (`workflow::parser::parse_workflow`: a typed step's params, such as an
+/// expert card's expert and task). The release proof of 2026-09-27 saved 13
+/// workflows whose steps were objects: each save said "created", and
+/// reload_employee then read 0 workflows (the loader skipped every one) and
+/// cleared their schedules.
+fn loadable_binding(name: &str, binding: &serde_json::Value) -> Result<(), String> {
+    let loaded = serde_json::from_value::<napp::agent::WorkflowBinding>(binding.clone()).map_err(|e| {
         format!(
             "invalid workflow definition: {e}. Shape: {{\"activities\": [{{\"id\": \"run\", \"intent\": \
              \"what this accomplishes\", \"steps\": [\"concrete step 1\", \"concrete step 2\"]}}]}}: each step \
              is one plain sentence."
         )
-    })
+    })?;
+    workflow::parser::parse_workflow(&loaded.to_workflow_json(name))
+        .map(|_| ())
+        .map_err(|e| format!("invalid workflow definition: {e}. Nothing was saved."))
 }
 
 /// A save's lifetime option, applied to a binding (owner, 09-25): temporary
@@ -3581,13 +3616,21 @@ mod trigger_tests {
         let objects = serde_json::json!({"trigger": trigger, "activities": [{"id": "run", "intent": "invoice-customer", "steps": [
             {"name": "get-customer-info", "instruction": "Ask the owner for the customer name."}
         ]}]});
-        let err = loadable_binding(&objects).unwrap_err();
+        let err = loadable_binding("invoice", &objects).unwrap_err();
         assert!(err.starts_with("invalid workflow definition: "), "{err}");
         assert!(err.contains("each step is one plain sentence"), "{err}");
         let sentences = serde_json::json!({"trigger": trigger, "activities": [{"id": "run", "intent": "invoice-customer", "steps": [
             "Ask the owner for the customer name."
         ]}]});
-        assert_eq!(loadable_binding(&sentences), Ok(()));
+        assert_eq!(loadable_binding("invoice", &sentences), Ok(()));
+        // The run's parser has its say too: a card names its expert.
+        let cards = |params: serde_json::Value| {
+            serde_json::json!({"trigger": trigger, "activities": [{"id": "card", "type": "expert", "params": params}],
+                "connections": [{"from": "__trigger__", "to": "card"}]})
+        };
+        assert_eq!(loadable_binding("cards", &cards(serde_json::json!({"expert": "Script Writer", "task": "hero script"}))), Ok(()));
+        let nobody = loadable_binding("cards", &cards(serde_json::json!({"task": "hero script"}))).unwrap_err();
+        assert!(nobody.contains("params.expert") && nobody.ends_with("Nothing was saved."), "{nobody}");
     }
 
     #[test]

@@ -4663,3 +4663,124 @@ async fn a_projects_card_is_handed_out_and_closed_in_its_thread() {
     assert_eq!((card.status.as_str(), card.project_id.as_deref(), card.team_id.as_str()), ("done", Some(project.id.as_str()), TEAM));
     assert!(team_rows(&nebo, TEAM).is_empty(), "the team's own thread stays as it was");
 }
+
+/// The lead plans a project as cards (Teams, projects and threads,
+/// 2026-10-16; the live case it answers: a lead given the work wrote every
+/// script itself). The owner opens a project; its lead, held to the lead's
+/// tools (it holds no file or shell tool there), lays the work out as one
+/// temporary workflow of cards and says its plan; the workflow's run is the
+/// project's, so each card is handed out in the thread and a card that
+/// starts when another is done waits for it; each member works its card as
+/// its own case; when the last card is done the outcome comes back to the
+/// lead in its seat and its wrap-up is the thread's last line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lead_plans_a_project_as_cards_and_wraps_it_up_in_its_thread() {
+    use std::sync::Mutex as StdMutex;
+    let nebo = session().await;
+    let lead = nebo.hire("Proof PL Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof PL Writer", json!({ "workflows": {} })).await;
+    let editor = nebo.hire("Proof PL Editor", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-plans";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Plans",
+            "launch the product",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&writer), db::TeamMember::local(&editor)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    // What the lead was told when it reached for a member's tool.
+    static REFUSED: StdMutex<Option<String>> = StdMutex::new(None);
+    fn plans(t: &Thread<'_>) -> Option<Step> {
+        if !(t.opener().contains("MARK-PL") && t.says("You are Proof PL Lead.")) {
+            return None;
+        }
+        let new = t.new_text();
+        if new.contains("Outcome:") {
+            return Some(Step::say("PL-WRAP: the launch video is exported; nothing is open."));
+        }
+        let results: String = t
+            .since_last_answer()
+            .iter()
+            .filter_map(|m| m.tool_results.as_ref())
+            .map(|r| r.to_string())
+            .collect();
+        if results.contains("ph-launch-plan") {
+            return Some(Step::say("PL-PLAN: the Writer scripts it, then the Editor cuts it."));
+        }
+        if !t.has_tool_results() {
+            // It reaches for the work itself first.
+            return Some(Step::call(vec![("write_file", json!({"path": "hero-30s.md", "content": "a script"}))]));
+        }
+        REFUSED.lock().unwrap().get_or_insert(results);
+        let plan = json!({
+            "activities": [
+                {"id": "script", "type": "expert", "params": {"expert": "Proof PL Writer", "task": "MARK-PLW write the hero script", "done_when": "the script is saved"}},
+                {"id": "cut", "type": "expert", "params": {"expert": "Proof PL Editor", "task": "MARK-PLE cut the video from {{nodes.script.summary}}", "done_when": "the video is exported"}}
+            ],
+            "connections": [{"from": "__trigger__", "to": "script"}, {"from": "script", "to": "cut"}]
+        });
+        Some(Step::call(vec![(
+            "create_workflow",
+            json!({ "name": "PH launch plan", "lifetime": "temporary", "definition": plan.to_string() }),
+        )]))
+    }
+    let rig = Rig::new(&nebo, vec![Box::new(plans)]).await;
+    // The lead's step after it lays out the cards runs as building work;
+    // each member's card is its own case turn (a workflow step).
+    rig.answer_background(Box::new(plans));
+    rig.answer_background(Box::new(|t| {
+        if t.req.trace.purpose != "workflow_activity" {
+            return None;
+        }
+        let close = |summary: &str| {
+            Step::say(&format!(r#"Done. {{"result":{{"status":"done","summary":"{summary}"}},"next":{{"action":"close"}}}}"#))
+        };
+        if t.says("MARK-PLW") {
+            Some(close("PL-SCRIPT-RESULT: hero-30s.md saved."))
+        } else if t.says("MARK-PLE") {
+            Some(close("PL-CUT-RESULT: hero-30s.mp4 exported."))
+        } else {
+            None
+        }
+    }));
+
+    let created = nebo.post_ok(&format!("/teams/{TEAM}/projects"), &json!({ "title": "PH launch", "ask": "MARK-PL launch us on Product Hunt" })).await;
+    let project: db::Project = serde_json::from_value(created["project"].clone()).expect("the project");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !project_rows(&nebo, &project).iter().any(|(_, text)| text.contains("PL-WRAP")) {
+        assert!(tokio::time::Instant::now() < deadline, "no wrap-up: {:#?}", project_rows(&nebo, &project));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let rows = project_rows(&nebo, &project);
+    let at = |needle: &str| rows.iter().position(|(_, text)| text.contains(needle)).unwrap_or_else(|| panic!("no row with {needle}: {rows:#?}"));
+    // Each card handed out and closed in order (a card goes out the moment
+    // the plan is saved, so the first can come before the plan's words),
+    // then the wrap-up.
+    let order = ["MARK-PL launch", "MARK-PLW write the hero script", "PL-SCRIPT-RESULT", "MARK-PLE cut the video", "PL-CUT-RESULT", "PL-WRAP"];
+    for pair in order.windows(2) {
+        assert!(at(pair[0]) < at(pair[1]), "{} before {}: {rows:#?}", pair[0], pair[1]);
+    }
+    assert!(at("MARK-PL launch") < at("PL-PLAN") && at("PL-PLAN") < at("PL-WRAP"), "{rows:#?}");
+    assert!(rows[at("MARK-PLE cut the video")].1.contains("PL-SCRIPT-RESULT"), "the second card reads the first one's result: {rows:#?}");
+    assert_eq!(rows[at("MARK-PLW write the hero script")].0, "Proof PL Lead");
+    assert_eq!(rows[at("PL-SCRIPT-RESULT")].0, "Proof PL Writer");
+    assert_eq!(rows[at("PL-CUT-RESULT")].0, "Proof PL Editor");
+    assert_eq!(rows[at("PL-WRAP")].0, "Proof PL Lead");
+    // The lead holds only the lead's tools in the project: its reach for
+    // a member's tool was refused.
+    let refused = REFUSED.lock().unwrap().clone().expect("the lead's write_file came back");
+    assert!(refused.contains("\"is_error\":true") && refused.contains("delegating IS the action"), "{refused}");
+    // Both cards are the project's hand-offs, done.
+    let cards: Vec<db::Handoff> = nebo
+        .store()
+        .list_handoffs(&db::HandoffQuery::default())
+        .unwrap()
+        .into_iter()
+        .filter(|h| h.project_id.as_deref() == Some(project.id.as_str()) && h.kind == "assignment")
+        .collect();
+    assert_eq!(cards.len(), 2, "{cards:?}");
+    assert!(cards.iter().all(|c| c.status == "done" && c.team_id == TEAM), "{cards:?}");
+}

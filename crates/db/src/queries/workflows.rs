@@ -319,6 +319,15 @@ impl Store {
         Ok(mode.as_deref().and_then(types::permissions::Mode::parse))
     }
 
+    /// Make a run the work of a project: its expert steps are the project's
+    /// cards. Set before the run's first step.
+    pub fn set_workflow_run_project(&self, id: &str, project_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE workflow_runs SET project_id = ?2 WHERE id = ?1", params![id, project_id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// The project a run is the work of (`projects.id`), if it is one's.
     pub fn workflow_run_project(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;

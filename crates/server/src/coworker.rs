@@ -331,7 +331,9 @@ pub(crate) async fn send_coworker_message(
             } else {
                 roster.join(", ")
             };
-            let floor = if tools::team::lead_of(t) == Some(to_id.as_str()) {
+            let floor = if project.as_ref().is_some_and(|p| p.lead_agent_id == to_id) {
+                PROJECT_LEAD
+            } else if tools::team::lead_of(t) == Some(to_id.as_str()) {
                 " You are the TEAM LEAD: a post to the team that names nobody — from the owner or \
                  another employee — comes to you alone. Answer it yourself, or hand steps to teammates \
                  by writing their @name with a specific ask (@everyone when the whole team must act). \
@@ -646,7 +648,10 @@ pub(crate) async fn run_in_thread(
         channel_ctx: None,
         handoff_depth: route.sender_depth.saturating_add(1),
         seed_taint,
-        tool_allowlist: None,
+        // A project's lead works in it only as its lead: it plans the cards
+        // and wraps up, with the lead's scope (`lead_scope`); the work is
+        // its members'.
+        tool_allowlist: leads_project(state, &route).then(|| lead_scope(Leads::Project)),
         hidden_prompt: false,
         coworker,
         // Recall-for-audience: a colleague's request has the target's recall
@@ -883,6 +888,84 @@ pub(crate) fn parse_team_envelope(content: &str) -> Option<TeamEnvelope<'_>> {
         from,
         text,
     })
+}
+
+/// Whether `route` is a project's lead working in its seat for the project.
+fn leads_project(state: &AppState, route: &CoworkerRoute) -> bool {
+    route
+        .team
+        .as_ref()
+        .and_then(|leg| leg.project_id.as_deref())
+        .and_then(|id| state.store.get_project(id).ok().flatten())
+        .is_some_and(|p| p.lead_agent_id == route.to_agent_id)
+}
+
+/// What a project's lead is told about leading it: it owns the outcome and
+/// hands the work out as cards (the expert steps of one temporary
+/// workflow, `create_workflow`), never doing it itself; each card's line
+/// shows in the project's thread; the outcome comes back to it here, and it
+/// wraps up.
+const PROJECT_LEAD: &str = " You LEAD this project and own its outcome. You never do its work yourself: you hand it \
+     out as cards, and your tools here are only the ones that plan, follow and wrap up. Plan the work with ONE \
+     create_workflow call with lifetime \"temporary\" whose activities are cards, one per piece of work, each \
+     {\"id\": \"hero-script\", \"type\": \"expert\", \"params\": {\"expert\": \"<teammate's name>\", \"task\": \"<the work, \
+     specifically>\", \"done_when\": \"<when it counts as done>\"}}, and connections from \"__trigger__\" to every card \
+     that can start now and from a card to each card that starts when it is done. Leave out timeout: a card waits \
+     for its answer. Hand each card to the teammate whose role owns it; follow the team's rules above. Then reply \
+     with your plan in a few short lines: who does what, and what waits on what. Every card shows in this thread \
+     as it is handed out and as it closes. When the last card is done you hear the outcome here: then write the \
+     wrap-up, what was made (name the files) and anything still open. When the owner writes again, answer him, \
+     or plan the next round the same way.";
+
+/// Where a lead leads: what its coordination-only tool scope is for.
+pub(crate) enum Leads {
+    /// A room mirrored from a hub loop channel: it hands steps on by
+    /// addressing the room's experts, and tracks them as tasks.
+    HubRoom,
+    /// One of its team's projects: it lays the work out as cards (one
+    /// temporary workflow whose expert steps are the cards) and reads how
+    /// they went.
+    Project,
+}
+
+/// The ONE coordination-only tool scope of a lead. A lead's moves are
+/// decompose, hand out and integrate, so where it leads its runs hold only
+/// these tools, enforced at dispatch, not merely prompted: prose alone lost
+/// twice to "I could just do this myself", and in the live case of
+/// 2026-10-16 a lead given the work wrote every script itself. Its members
+/// keep their own tools; the work is theirs. A helper would do the work
+/// itself, so a lead gets none.
+pub(crate) fn lead_scope(leads: Leads) -> std::collections::HashSet<String> {
+    let tools: &[&str] = match leads {
+        Leads::HubRoom => &[
+            "send_loop_message",
+            "read_loop_channel",
+            "loop_channel_members",
+            "find_tools",
+            "send_message",
+            "list_employees",
+            "get_employee",
+            "create_task",
+            "update_task",
+            "get_task",
+            "list_tasks",
+            "assign_task",
+            "list_assignments",
+            "recall",
+            "remember",
+        ],
+        Leads::Project => &[
+            "create_workflow",
+            "workflow_status",
+            "list_workflow_runs",
+            "team_messages",
+            "list_employees",
+            "get_employee",
+            "recall",
+            "remember",
+        ],
+    };
+    tools.iter().map(|t| t.to_string()).collect()
 }
 
 /// The team's standing rules as its briefing says them: what doesn't change
