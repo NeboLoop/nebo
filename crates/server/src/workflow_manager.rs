@@ -3890,7 +3890,7 @@ mod employee_model_tests {
             requires_tools: Vec::new(),
             case_turn: false,
             spend_cap_microcents: 0,
-            model: String::new(),
+            level: None,
             cancel: None,
             turn_key: "run:".into(),
         };
@@ -3922,7 +3922,7 @@ mod list_tests {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
         }
         fn cleanup(&self, _run_id: &str) {}
-        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+        fn context_chars(&self, _agent_id: &str, _level: Option<types::packs::Effort>) -> usize {
             800_000
         }
     }

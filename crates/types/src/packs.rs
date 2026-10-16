@@ -84,7 +84,9 @@ pub struct PackLevels {
     pub decisions: Option<String>,
 }
 
-/// Kinds of work pinned to an Effort level. Absent: the work chooses.
+/// Kinds of work pinned to an Effort level. Absent: the work chooses,
+/// except background work (heartbeat, schedules, a workflow's steps), which
+/// runs at Instant unless the pack pins it ([`Lane::is_background`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackLanes {
@@ -99,7 +101,8 @@ pub struct PackLanes {
     /// Designing employees and workflows: the steps that write them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build: Option<Effort>,
-    /// A workflow's steps as they run, unless the step names its own model.
+    /// A workflow's steps as they run, unless the step declares its own
+    /// level (the activity's `level`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow: Option<Effort>,
 }
@@ -126,16 +129,29 @@ pub enum Lane {
     Explore,
 }
 
+impl Lane {
+    /// Work that runs with nobody waiting on its reply: a heartbeat, a
+    /// schedule, a workflow's step. It runs at the level its pack pins it
+    /// to, Instant when the pack pins none, whatever model the employee or
+    /// the bot names (owner, 2026-10-16: workflow steps on a chat model cost
+    /// a hundred times what they cost on Instant).
+    pub fn is_background(self) -> bool {
+        matches!(self, Lane::Heartbeat | Lane::Scheduled | Lane::Workflow)
+    }
+}
+
 impl PackLanes {
-    /// The level `lane` is pinned to, if any.
+    /// The level `lane` is pinned to, if any. Background work
+    /// ([`Lane::is_background`]) is always pinned: Instant unless the pack
+    /// pins it elsewhere.
     pub fn level(&self, lane: Lane) -> Option<Effort> {
         match lane {
-            Lane::Heartbeat => self.heartbeat,
-            Lane::Scheduled => self.scheduled,
+            Lane::Heartbeat => self.heartbeat.or(Some(Effort::Instant)),
+            Lane::Scheduled => self.scheduled.or(Some(Effort::Instant)),
             Lane::Communication => self.communication,
             Lane::Helpers => self.helpers,
             Lane::Build => self.build,
-            Lane::Workflow => self.workflow,
+            Lane::Workflow => self.workflow.or(Some(Effort::Instant)),
             Lane::Housekeeping | Lane::Explore => Some(Effort::Instant),
         }
     }
@@ -383,7 +399,12 @@ mod tests {
         assert_eq!(nebo.model_for(Effort::Medium), Some("janus/nebo-1-medium"));
         assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run at Instant");
         assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
-        assert_eq!(nebo.lanes.level(Lane::Heartbeat), None, "the rest: the work chooses");
+        assert_eq!(nebo.lanes.level(Lane::Heartbeat), Some(Effort::Instant), "background work at Instant");
+        assert_eq!(nebo.lanes.level(Lane::Scheduled), Some(Effort::Instant), "background work at Instant");
+        assert_eq!(nebo.lanes.level(Lane::Communication), None, "the rest: the work chooses");
+        let pinned = PackLanes { heartbeat: Some(Effort::Low), ..PackLanes::default() };
+        assert_eq!(pinned.level(Lane::Heartbeat), Some(Effort::Low), "a pack's own pin wins");
+        assert_eq!(PackLanes::default().level(Lane::Workflow), Some(Effort::Instant), "an owner's pack too");
         assert_eq!(nebo.lanes.level(Lane::Explore), Some(Effort::Instant), "an Explore helper at Instant");
         assert_eq!(PackLanes { helpers: Some(Effort::Max), ..PackLanes::default() }.level(Lane::Explore), Some(Effort::Instant));
         let mine = byo(PackLevels {

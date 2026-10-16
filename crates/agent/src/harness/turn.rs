@@ -673,14 +673,13 @@ pub(crate) struct TurnModel {
 
 /// The lane a turn runs in, which a pack can pin to a level: heartbeat, a
 /// schedule, a helper's run (an Explore helper's always on the Instant
-/// level), a workflow's step that names no model of its own, or a message
-/// from a channel.
+/// level), a workflow's step, or a message from a channel.
 fn lane_of(req: &TurnRequest) -> Option<types::packs::Lane> {
     use types::packs::Lane;
     use types::permissions::Door;
     let seat = &req.seat;
     match (&seat.door, seat.origin) {
-        (Door::Workflow, _) if seat.model_override.trim().is_empty() => Some(Lane::Workflow),
+        (Door::Workflow, _) => Some(Lane::Workflow),
         (Door::Heartbeat, _) => Some(Lane::Heartbeat),
         (Door::Schedule, _) => Some(Lane::Scheduled),
         (Door::Helper, _) if matches!(req.mode, TurnMode::Helper { kind: super::delegation::HelperKind::Explore, .. }) => {
@@ -703,11 +702,14 @@ fn lane_of(req: &TurnRequest) -> Option<types::packs::Lane> {
 /// stored for an empty level is not used: it was set for no model of the
 /// owner's. When the level's model isn't one this bot can send to, the turn
 /// runs on Nebo AI at the same level and says so, or — the pack set not to
-/// fall back — is refused with that line. Never a silent swap. Anything else
+/// fall back — is refused with that line. Never a silent swap. Background
+/// work (`Lane::is_background`) on a Nebo AI model named by its id runs on
+/// the Nebo AI pack at the lane's level ([`background_pick`]). Anything else
 /// resolves as it always has (`ModelSelector::resolve`).
 pub(crate) fn turn_model(h: Resolver<'_>, chosen: &str, lane: Option<types::packs::Lane>) -> Result<TurnModel, String> {
     use types::packs::{DEFAULT_EFFORT, NEBO_AI_ID, nebo_ai, pack_ref, parse_ref};
     let pick = pack_pick(h, chosen);
+    let pick = if lane.is_some_and(types::packs::Lane::is_background) { background_pick(pick) } else { pick };
     let Some((id, named)) = parse_ref(&pick) else {
         let model = h.selector.resolve(chosen);
         let ran_on = (selector::parse_model_id(&model).0 != "janus").then(|| model.clone());
@@ -756,6 +758,40 @@ pub(crate) fn turn_model(h: Resolver<'_>, chosen: &str, lane: Option<types::pack
 /// default (which ships as the Nebo AI pack).
 fn pack_pick(h: Resolver<'_>, chosen: &str) -> String {
     if chosen.trim().is_empty() { h.selector.configured() } else { chosen.to_string() }
+}
+
+/// The pack background work on `pick` runs through: a pack reference as
+/// named; a Nebo AI model named by its id (`janus/<model>`, an employee or
+/// a bot set to a model rather than a pack) is the Nebo AI pack's, so the
+/// work runs at the lane's level and never on that model. A model on the
+/// owner's own connection, a coding tool on his computer and a linked agent
+/// belong to no pack: they run as chosen.
+fn background_pick(pick: String) -> String {
+    use types::packs::{NEBO_AI_ID, pack_ref, parse_ref};
+    if parse_ref(&pick).is_none() && selector::parse_model_id(&pick).0 == "janus" {
+        return pack_ref(NEBO_AI_ID, None);
+    }
+    pick
+}
+
+/// The model reference and lane a turn on `chosen` in `lane` resolves
+/// through ([`turn_model`]). A workflow step that declares a level
+/// (`workflow::Activity::level`, the one way a step asks for more than its
+/// lane) runs on its pack ([`background_pick`]) at that level; every other
+/// turn as given.
+fn step_choice(
+    h: Resolver<'_>,
+    chosen: &str,
+    lane: Option<types::packs::Lane>,
+    declared: Option<types::packs::Effort>,
+) -> (String, Option<types::packs::Lane>) {
+    let Some(level) = declared else {
+        return (chosen.to_string(), lane);
+    };
+    match types::packs::parse_ref(&background_pick(pack_pick(h, chosen))) {
+        Some((id, _)) => (types::packs::pack_ref(id, Some(level)), None),
+        None => (chosen.to_string(), lane),
+    }
 }
 
 /// The model that reads a turn's images and video (`sidecar`): its
@@ -1188,7 +1224,12 @@ pub(crate) async fn prepare(
         && (types::keyparser::parse_session_key(&req.session_key).rest == types::keyparser::WORKFLOW_BUILDER
             || h.builds_session(&req.session_key));
     let lane = if builder { Some(types::packs::Lane::Build) } else { lane_of(&req) };
-    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort, ran_on } = turn_model(h.resolver(), &model, lane)?;
+    let declared = match &req.mode {
+        TurnMode::Workflow(m) => m.level,
+        _ => None,
+    };
+    let (pick, lane) = step_choice(h.resolver(), &model, lane, declared);
+    let TurnModel { model: turn_model, notice: pack_notice, effort: turn_effort, ran_on } = turn_model(h.resolver(), &pick, lane)?;
     // A workflow run records what it ran on, as its page shows it: once, at
     // its first step.
     if let (TurnMode::Workflow(m), Some(ran_on)) = (&req.mode, &ran_on) {
@@ -2533,12 +2574,13 @@ fn chosen_model(h: &Harness, agent_id: &str, model_override: &str, model_prefere
 impl Harness {
     /// Characters of input a workflow step's model takes: the request size
     /// its turn checkpoints at (its context window less room for its
-    /// reply), for the model the step's turn resolves to (`model`, its own,
-    /// else the workflow lane's). The engine fits a step's data to it.
-    pub fn workflow_context_chars(&self, agent_id: &str, model: &str) -> usize {
-        let (chosen, _) = chosen_model(self, agent_id, model, None);
-        let lane = model.trim().is_empty().then_some(types::packs::Lane::Workflow);
-        let model = turn_model(self.resolver(), &chosen, lane).map(|t| t.model).unwrap_or(chosen);
+    /// reply), for the model the step's turn resolves to (its declared
+    /// `level`, else the workflow lane's: [`step_choice`]). The engine fits
+    /// a step's data to it.
+    pub fn workflow_context_chars(&self, agent_id: &str, level: Option<types::packs::Effort>) -> usize {
+        let (chosen, _) = chosen_model(self, agent_id, "", None);
+        let (pick, lane) = step_choice(self.resolver(), &chosen, Some(types::packs::Lane::Workflow), level);
+        let model = turn_model(self.resolver(), &pick, lane).map(|t| t.model).unwrap_or(chosen);
         compact::checkpoint::Trigger::threshold(self.selector.context_window(&model), usize::MAX) * crate::CHARS_PER_TOKEN
     }
 }
@@ -3812,7 +3854,9 @@ mod tests {
         let beat = turn_model(h.resolver(), "pack/l/high", Some(Lane::Heartbeat)).unwrap();
         assert_eq!((beat.model.as_str(), beat.effort), ("janus/nebo-1-flash", None), "the pinned lane wins");
         let sched = turn_model(h.resolver(), "pack/l", Some(Lane::Scheduled)).unwrap();
-        assert_eq!(sched.model, "anthropic/claude-x", "an unpinned lane keeps the reference's level");
+        assert_eq!(sched.model, "janus/nebo-1-flash", "an unpinned background lane runs at Instant");
+        let comm = turn_model(h.resolver(), "pack/l", Some(Lane::Communication)).unwrap();
+        assert_eq!(comm.model, "anthropic/claude-x", "an unpinned lane that isn't background keeps the reference's level");
         let empty = turn_model(h.resolver(), "pack/l/max", None).unwrap();
         assert_eq!(
             (empty.model.as_str(), empty.effort, empty.notice),
@@ -3823,8 +3867,8 @@ mod tests {
     }
 
     /// Nebo AI's lanes: on its Auto, a workflow's step runs at Instant and a
-    /// build at Medium; a step that names its own model keeps it, and a model
-    /// that is not a pack has no lane.
+    /// build at Medium; every workflow step is in the workflow lane, and a
+    /// model that is not a pack has no build lane.
     #[tokio::test]
     async fn nebo_ai_builds_at_medium_and_runs_workflows_at_instant() {
         use types::packs::Lane;
@@ -3844,7 +3888,7 @@ mod tests {
         req.seat.door = types::permissions::Door::Workflow;
         assert_eq!(lane_of(&req), Some(Lane::Workflow));
         req.seat.model_override = "janus/nebo-1-medium".into();
-        assert_eq!(lane_of(&req), None, "the step's own model");
+        assert_eq!(lane_of(&req), Some(Lane::Workflow), "a model on the seat never takes a step out of its lane");
 
         // An Explore helper searches at Instant; any other helper keeps the
         // helpers' lane.
@@ -3859,6 +3903,52 @@ mod tests {
         assert_eq!(lane_of(&helper(HelperKind::General)), Some(Lane::Helpers));
         let explore = turn_model(h.resolver(), "pack/nebo-ai", lane_of(&helper(HelperKind::Explore))).unwrap();
         assert_eq!(explore.model, "janus/nebo-1-flash", "Explore at Instant");
+    }
+
+    /// Background work (a heartbeat, a schedule, a workflow's step) runs at
+    /// its pack's background level, Instant unless the pack pins another,
+    /// whatever level the reference names and when the employee or the bot
+    /// names a Nebo AI model rather than a pack. A bring-your-own pack runs
+    /// on its own Instant model; a model on the owner's own connection
+    /// belongs to no pack and runs as chosen. A step that declares a level
+    /// runs on its pack at that level, and only then.
+    #[tokio::test]
+    async fn background_work_runs_on_the_packs_background_level() {
+        use types::packs::{Effort, Lane, Pack, PackLevels};
+        let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
+        h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
+        h.store
+            .save_intelligence_pack(&Pack {
+                id: "byo".into(),
+                name: "Mine".into(),
+                levels: PackLevels { instant: Some("anthropic/claude-x".into()), ..Default::default() },
+                fallback: true,
+                built_in: false,
+                ..types::packs::nebo_ai()
+            })
+            .unwrap();
+        let on = |chosen: &str, lane| turn_model(h.resolver(), chosen, Some(lane)).unwrap().model;
+        for lane in [Lane::Heartbeat, Lane::Scheduled, Lane::Workflow] {
+            assert_eq!(on("pack/nebo-ai/max", lane), "janus/nebo-1-flash", "{lane:?}: the reference's level never wins");
+            assert_eq!(on("janus/nebo-1-pro", lane), "janus/nebo-1-flash", "{lane:?}: a Nebo AI model is Nebo AI's pack");
+            assert_eq!(on("pack/byo/high", lane), "anthropic/claude-x", "{lane:?}: the owner's pack, its Instant");
+            assert_eq!(on("anthropic/claude-x", lane), "anthropic/claude-x", "{lane:?}: his own connection runs as chosen");
+        }
+        h.selector.set_task_routing([("general".to_string(), "janus/nebo-1-pro".to_string())].into());
+        assert_eq!(on("", Lane::Heartbeat), "janus/nebo-1-flash", "a bot set to a Nebo AI model, not a pack");
+        assert_eq!(on("janus/nebo-1-pro", Lane::Communication), "janus/nebo-1-pro", "a reply on a channel keeps its model");
+        assert_eq!(turn_model(h.resolver(), "janus/nebo-1-pro", None).unwrap().model, "janus/nebo-1-pro", "a chat keeps its model");
+
+        // A step's declared level, and only a declared level, lifts it.
+        let step = |chosen: &str, level| {
+            let (pick, lane) = step_choice(h.resolver(), chosen, Some(Lane::Workflow), level);
+            turn_model(h.resolver(), &pick, lane).unwrap().model
+        };
+        assert_eq!(step("janus/nebo-1-pro", None), "janus/nebo-1-flash");
+        assert_eq!(step("janus/nebo-1-pro", Some(Effort::High)), "janus/nebo-1-pro", "declared High");
+        assert_eq!(step("pack/nebo-ai", Some(Effort::Medium)), "janus/nebo-1-medium", "declared Medium");
+        assert_eq!(step("anthropic/claude-x", Some(Effort::High)), "anthropic/claude-x", "no pack: no levels to declare");
+        assert_eq!(h.workflow_context_chars("", None), h.workflow_context_chars("", Some(Effort::Instant)));
     }
 
     /// Background build work (a workflow tune) runs on the build lane like a
@@ -6777,7 +6867,7 @@ mod tests {
             requires_tools: Vec::new(),
             case_turn: false,
             spend_cap_microcents: 0,
-            model: String::new(),
+            level: None,
             cancel: None,
             turn_key: format!("run::1:{max}"),
         };
@@ -6834,7 +6924,7 @@ mod tests {
             requires_tools: Vec::new(),
             case_turn,
             spend_cap_microcents: 0,
-            model: String::new(),
+            level: None,
             cancel: None,
             turn_key: "work:".into(),
         };
@@ -6888,7 +6978,7 @@ mod tests {
             requires_tools: Vec::new(),
             case_turn: false,
             spend_cap_microcents: 0,
-            model: String::new(),
+            level: None,
             cancel: None,
             turn_key: "work:".into(),
         };
@@ -6963,7 +7053,7 @@ mod tests {
             requires_tools: Vec::new(),
             case_turn: false,
             spend_cap_microcents: 0,
-            model: String::new(),
+            level: None,
             cancel: None,
             turn_key: format!("digest::{}", uuid::Uuid::new_v4()),
         };

@@ -63,8 +63,9 @@ pub struct LoopTurn<'a> {
     /// package's `token_budget` is an estimate, never a ceiling; this is
     /// the only one, and reaching it means one wrap-up turn, then stop.
     pub spend_cap_microcents: i64,
-    /// Per-activity model override ("" = session default).
-    pub model: String,
+    /// The level the activity declares (`Activity::level`); None: the
+    /// workflow lane's.
+    pub level: Option<types::packs::Effort>,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
     /// Distinct per (activity, iteration, step): names the implementation's
     /// scratch conversation so `cleanup` can find and remove it.
@@ -104,9 +105,9 @@ pub trait ActivityLoop: Send + Sync {
     /// part of the resume state.
     fn cleanup(&self, run_id: &str);
 
-    /// Characters of input the model of `agent_id`'s step takes (`model`,
-    /// its own, or "" for the workflow default): the engine hands a step
+    /// Characters of input the model of `agent_id`'s step takes at the
+    /// activity's declared `level` (None: the workflow lane's): the engine hands a step
     /// its data whole within it, and a summary plus `read_step_data` for
     /// what does not fit.
-    fn context_chars(&self, agent_id: &str, model: &str) -> usize;
+    fn context_chars(&self, agent_id: &str, level: Option<types::packs::Effort>) -> usize;
 }
