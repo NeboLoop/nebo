@@ -4,7 +4,7 @@ vi.mock('$lib/websocket/client', () => ({
 	getWebSocketClient: () => ({ on: () => () => {} })
 }));
 
-import { isLive, receiverHref, statusLine } from './handoffs';
+import { cardState, isLive, receiverHref, statusLine } from './handoffs';
 import type { HandoffView } from '$lib/api/neboComponents';
 
 const base: HandoffView = {
@@ -56,5 +56,14 @@ describe('hand-offs', () => {
 		expect(statusLine({ ...base, status: 'done' }, tr)).toBe('handoff.status.done');
 		expect(statusLine({ ...base, status: 'failed', error: 'Could not connect.' }, tr)).toBe('handoff.failedWith(Could not connect.)');
 		expect(statusLine({ ...base, status: 'stopped' }, tr)).toBe('handoff.status.stopped');
+	});
+
+	// A project's card chip: the hand-off's status in the card's words.
+	it("says where a project's card stands", () => {
+		expect(cardState({ status: 'queued' })).toBe('handedOut');
+		expect(cardState({ status: 'running' })).toBe('working');
+		expect(cardState({ status: 'done' })).toBe('done');
+		expect(cardState({ status: 'failed' })).toBe('notFinished');
+		expect(cardState({ status: 'stopped' })).toBe('stopped');
 	});
 });

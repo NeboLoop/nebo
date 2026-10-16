@@ -2061,7 +2061,34 @@
 		"save": "Spara",
 		"createFailed": "Teamet kunde inte skapas.",
 		"gone": "Det här teamet finns inte längre.",
-		"send": "Skicka"
+		"send": "Skicka",
+		"standing": "Varje projekt börjar med",
+		"standingEmpty": "Lägg till det som inte ändras: varumärke, regler, vem som gör vad.",
+		"standingLabel": "Det som inte ändras",
+		"standingPlaceholder": "Det som inte ändras för det här teamet: varumärke, regler, vem som gör vad. Varje projekt börjar med det.",
+		"projects": "Projekt",
+		"doneCount": "Klara · {count}",
+		"newProject": "Nytt projekt",
+		"newProjectTitle": "Nytt projekt",
+		"newProjectLede": "Skriv vad teamet ska göra. Teamledaren planerar och delar ut arbetet.",
+		"projectTitleLabel": "Projektets titel",
+		"projectTitlePlaceholder": "Titel (valfritt)",
+		"projectAskLabel": "Vad som ska göras",
+		"projectAskPlaceholder": "Vad ska teamet göra?",
+		"projectCreate": "Starta projekt",
+		"projectCreateFailed": "Projektet kunde inte startas.",
+		"projectNeedsLead": "Varje projekt har en teamledare som äger det, och det här teamet har ingen än. Välj teamledare först.",
+		"pickLead": "Välj teamledare",
+		"liveCount": "{count} pågår",
+		"state": {
+			"live": "pågår",
+			"paused": "pausat",
+			"done": "klart"
+		},
+		"projectComposerPlaceholder": "Skriv till projektet",
+		"reopenPlaceholder": "Skriv här för att öppna det igen…",
+		"backToTeam": "Tillbaka till {name}",
+		"projectGone": "Det här projektet finns inte längre."
 	},
 	"agentIsolation": {
 		"title": "Samtal och minne",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Öppna arbetet för {name}",
 		"doneWith": "Klart: {result}",
 		"failedWith": "Misslyckades: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Klart när: {when}",
 		"stop": "Stoppa",
 		"status": {
 			"queued": "I kö",
@@ -4143,6 +4172,13 @@
 			"done": "Klart",
 			"failed": "Misslyckades",
 			"stopped": "Stoppad"
+		},
+		"card": {
+			"handedOut": "överlämnat",
+			"working": "pågår",
+			"done": "klart",
+			"notFinished": "kunde inte slutföras",
+			"stopped": "stoppat"
 		}
 	},
 	"connectors": {

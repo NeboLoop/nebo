@@ -1492,8 +1492,15 @@ export interface RosterOrder {
 	employees?: string[]
 }
 
+export interface RosterProject {
+	id: string
+	state: string
+}
+
 export interface RosterTeam extends Team {
 	pinPosition?: number
+	projects: RosterProject[]
+	latest?: TeamMessage
 }
 
 export interface RuleCandidate extends RuleWords {
@@ -1695,6 +1702,13 @@ export interface Team {
 	standing?: string
 }
 
+export interface TeamCard {
+	handoffId: string
+	agentId: string
+	task: string
+	doneWhen: string
+}
+
 export interface TeamMember {
 	botId?: string
 	agentId: string
@@ -1710,6 +1724,7 @@ export interface TeamMessage {
 	attachments: unknown[]
 	createdAt: number
 	cleared?: boolean
+	card?: TeamCard
 }
 
 export interface UploadStatus {
@@ -2614,7 +2629,7 @@ export interface ListTeamsResponse {
 	teams: RosterTeam[]
 	total: number
 	unreadTeams: string[]
-	unreadProjects: unknown[]
+	unreadProjects: { teamId: string; projectId: string }[]
 }
 
 export interface ListToolsResponse {
@@ -2782,7 +2797,7 @@ export interface ProcessAgentBindingsResponse {
 }
 
 export interface ProjectWorkingResponse {
-	working: unknown
+	working: TeamWorkEntry[]
 }
 
 export interface ProxyPluginRouteResponse {

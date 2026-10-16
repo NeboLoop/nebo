@@ -10,7 +10,7 @@
 // reply unread, `chat_read` clears it everywhere, and opening a conversation
 // marks it read (`PUT /chats/{id}/read`, `PUT /teams/{teamId}/read`).
 
-import { isTeamSeat, teamKey } from './sessionKey';
+import { isTeamSeat, projectKey, teamKey } from './sessionKey';
 
 /** Who is working right now: agent id → session key → what it is doing
  *  ("reading a file", or '' while it thinks). */
@@ -55,7 +55,8 @@ export function snapshotWork(
 	return next;
 }
 
-/** Whether a member works in the team's conversation (its seat for it). */
+/** Whether a member works in the team's conversation or one of its
+ *  projects' (its seat for it). */
 export function teamWorking(w: Working, teamId: string): boolean {
 	return Object.values(w).some((sessions) => Object.keys(sessions).some((key) => isTeamSeat(key, teamId)));
 }
@@ -66,10 +67,28 @@ export function seedAgentUnread(unread: Set<string>, sessionKeys: string[]): Set
 	return new Set([...[...unread].filter((k) => k.startsWith(TEAM_THREAD)), ...sessionKeys]);
 }
 
-/** Replace the teams' unread threads with the team list's (`unreadTeams`);
- *  the employees' are kept. */
-export function seedTeamUnread(unread: Set<string>, teamIds: string[]): Set<string> {
-	return new Set([...[...unread].filter((k) => !k.startsWith(TEAM_THREAD)), ...teamIds.map(teamKey)]);
+/** Replace the teams' unread threads with the team list's: the teams' own
+ *  (`unreadTeams`) and their projects' (`unreadProjects`); the employees'
+ *  are kept. */
+export function seedTeamUnread(
+	unread: Set<string>,
+	teamIds: string[],
+	projects: { teamId: string; projectId: string }[] = []
+): Set<string> {
+	return new Set([
+		...[...unread].filter((k) => !k.startsWith(TEAM_THREAD)),
+		...teamIds.map(teamKey),
+		...projects.map((p) => projectKey(p.teamId, p.projectId)),
+	]);
+}
+
+/** Whether the team's own conversation or one of its projects' holds an
+ *  unread post: the team row's dot. */
+export function teamUnread(unread: Set<string>, teamId: string): boolean {
+	const own = teamKey(teamId);
+	const projects = `${own}:project:`;
+	for (const k of unread) if (k === own || k.startsWith(projects)) return true;
+	return false;
 }
 
 /** The conversation the owner is looking at: open in the main pane, with the

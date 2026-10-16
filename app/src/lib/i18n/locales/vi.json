@@ -2061,7 +2061,34 @@
 		"save": "Lưu",
 		"createFailed": "Không tạo được nhóm đó.",
 		"gone": "Nhóm này không còn nữa.",
-		"send": "Gửi"
+		"send": "Gửi",
+		"standing": "Mọi dự án bắt đầu với",
+		"standingEmpty": "Thêm những điều không đổi: thương hiệu, quy tắc, ai làm gì.",
+		"standingLabel": "Những điều không đổi",
+		"standingPlaceholder": "Những điều không đổi của nhóm này: thương hiệu, quy tắc, ai làm gì. Mọi dự án đều bắt đầu từ đây.",
+		"projects": "Dự án",
+		"doneCount": "Đã xong · {count}",
+		"newProject": "Dự án mới",
+		"newProjectTitle": "Dự án mới",
+		"newProjectLede": "Nói nhóm cần làm gì. Trưởng nhóm lên kế hoạch và giao việc.",
+		"projectTitleLabel": "Tên dự án",
+		"projectTitlePlaceholder": "Tên (không bắt buộc)",
+		"projectAskLabel": "Việc cần làm",
+		"projectAskPlaceholder": "Nhóm cần làm gì?",
+		"projectCreate": "Bắt đầu dự án",
+		"projectCreateFailed": "Không thể bắt đầu dự án.",
+		"projectNeedsLead": "Mỗi dự án có một trưởng nhóm chịu trách nhiệm, và nhóm này chưa có. Hãy chọn trưởng nhóm trước.",
+		"pickLead": "Chọn trưởng nhóm",
+		"liveCount": "{count} đang làm",
+		"state": {
+			"live": "đang làm",
+			"paused": "tạm dừng",
+			"done": "đã xong"
+		},
+		"projectComposerPlaceholder": "Nhắn cho dự án",
+		"reopenPlaceholder": "Viết vào đây để mở lại…",
+		"backToTeam": "Quay lại {name}",
+		"projectGone": "Dự án này không còn nữa."
 	},
 	"agentIsolation": {
 		"title": "Cuộc trò chuyện và bộ nhớ",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Mở công việc của {name}",
 		"doneWith": "Xong: {result}",
 		"failedWith": "Thất bại: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Xong khi: {when}",
 		"stop": "Dừng",
 		"status": {
 			"queued": "Đang chờ",
@@ -4143,6 +4172,13 @@
 			"done": "Xong",
 			"failed": "Thất bại",
 			"stopped": "Đã dừng"
+		},
+		"card": {
+			"handedOut": "đã giao",
+			"working": "đang làm",
+			"done": "xong",
+			"notFinished": "không hoàn thành được",
+			"stopped": "đã dừng"
 		}
 	},
 	"connectors": {

@@ -10,6 +10,7 @@ import {
 	seedTeamUnread,
 	snapshotWork,
 	startWork,
+	teamUnread,
 	teamWorking,
 	type Working
 } from './rowState';
@@ -67,6 +68,17 @@ describe('unread', () => {
 		unread = seedTeamUnread(unread, ['t2']);
 		expect(unread).toEqual(new Set([KEY, 'team:t2']));
 	});
+
+	it("a project's unread post lights its team's row until the project is read", () => {
+		let unread = seedTeamUnread(new Set([KEY]), [], [{ teamId: 't1', projectId: 'p1' }]);
+		expect(unread).toEqual(new Set([KEY, 'team:t1:project:p1']));
+		expect(teamUnread(unread, 't1')).toBe(true);
+		expect(teamUnread(unread, 't10')).toBe(false);
+		unread = conversationRead(unread, 'team:t1:project:p1');
+		expect(teamUnread(unread, 't1')).toBe(false);
+		// A post in the team's own conversation lights it the same way.
+		expect(teamUnread(new Set(['team:t1']), 't1')).toBe(true);
+	});
 });
 
 describe('working', () => {
@@ -101,6 +113,12 @@ describe('working', () => {
 		expect(teamWorking(w, 't1')).toBe(true);
 		expect(teamWorking(w, 't2')).toBe(false);
 		expect(teamWorking(startWork({}, 'ap', 'agent:ap:coworker:cfo'), 't1')).toBe(false);
+	});
+
+	it("a team works while a member works in its seat for one of the team's projects", () => {
+		const w = startWork({}, 'ap', 'agent:ap:coworker:team:t1:project:p1');
+		expect(teamWorking(w, 't1')).toBe(true);
+		expect(teamWorking(w, 't')).toBe(false);
 	});
 
 	it('working wins; a finished run with a new reply becomes the unread dot', () => {

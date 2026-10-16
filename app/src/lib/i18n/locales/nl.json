@@ -2061,7 +2061,34 @@
 		"save": "Opslaan",
 		"createFailed": "Het team kon niet worden aangemaakt.",
 		"gone": "Dit team bestaat niet meer.",
-		"send": "Versturen"
+		"send": "Versturen",
+		"standing": "Elk project begint met",
+		"standingEmpty": "Voeg toe wat niet verandert: merk, regels, wie wat doet.",
+		"standingLabel": "Wat niet verandert",
+		"standingPlaceholder": "Wat voor dit team niet verandert: merk, regels, wie wat doet. Elk project begint hiermee.",
+		"projects": "Projecten",
+		"doneCount": "Klaar · {count}",
+		"newProject": "Nieuw project",
+		"newProjectTitle": "Nieuw project",
+		"newProjectLede": "Zeg wat het team moet doen. De leiding plant het en verdeelt het werk.",
+		"projectTitleLabel": "Projecttitel",
+		"projectTitlePlaceholder": "Titel (optioneel)",
+		"projectAskLabel": "Wat er moet gebeuren",
+		"projectAskPlaceholder": "Wat moet het team doen?",
+		"projectCreate": "Project starten",
+		"projectCreateFailed": "Het project kon niet worden gestart.",
+		"projectNeedsLead": "Elk project heeft een leiding die ervoor verantwoordelijk is, en dit team heeft er nog geen. Kies eerst de leiding.",
+		"pickLead": "Leiding kiezen",
+		"liveCount": "{count} lopend",
+		"state": {
+			"live": "lopend",
+			"paused": "gepauzeerd",
+			"done": "klaar"
+		},
+		"projectComposerPlaceholder": "Bericht aan het project",
+		"reopenPlaceholder": "Schrijf hier om het te heropenen…",
+		"backToTeam": "Terug naar {name}",
+		"projectGone": "Dit project bestaat niet meer."
 	},
 	"agentIsolation": {
 		"title": "Gesprekken en geheugen",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Werk van {name} openen",
 		"doneWith": "Klaar: {result}",
 		"failedWith": "Mislukt: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Klaar als: {when}",
 		"stop": "Stoppen",
 		"status": {
 			"queued": "In de wachtrij",
@@ -4143,6 +4172,13 @@
 			"done": "Klaar",
 			"failed": "Mislukt",
 			"stopped": "Gestopt"
+		},
+		"card": {
+			"handedOut": "overgedragen",
+			"working": "bezig",
+			"done": "klaar",
+			"notFinished": "niet afgerond",
+			"stopped": "gestopt"
 		}
 	},
 	"connectors": {

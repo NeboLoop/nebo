@@ -13,19 +13,19 @@
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import { createChatController } from '$lib/chat/controller.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { teamWorking } from '$lib/api/nebo';
   import type { WorkEntry } from '$lib/teams/teamWork';
   import { callWords } from '$lib/chat/callLabel';
 
   let {
-    teamId,
+    readWorking,
     entry,
     live,
     onclose,
     onstop,
     onredirect,
   }: {
-    teamId: string;
+    /** The conversation's working list (the team's, or its project's). */
+    readWorking: () => Promise<WorkEntry[]>;
     entry: WorkEntry;
     /** Still at work: once it stops, the sheet shows what it did. */
     live: boolean;
@@ -44,9 +44,9 @@
       chatId = entry.chatId;
       if (!chatId) {
         // Seen first as an event: the chat that holds its steps is named
-        // by the team's working list.
-        const resp = await teamWorking(teamId).catch(() => null);
-        chatId = resp?.working.find((w) => w.sessionKey === entry.sessionKey)?.chatId ?? '';
+        // by the conversation's working list.
+        const working = await readWorking().catch(() => [] as WorkEntry[]);
+        chatId = working.find((w) => w.sessionKey === entry.sessionKey)?.chatId ?? '';
       }
       if (chatId) await chat.loadHistory(chatId);
     })();

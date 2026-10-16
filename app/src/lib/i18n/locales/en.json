@@ -2061,7 +2061,34 @@
 		"save": "Save",
 		"createFailed": "The team could not be created.",
 		"gone": "This team is gone.",
-		"send": "Send"
+		"send": "Send",
+		"standing": "Every project starts with",
+		"standingEmpty": "Add what doesn't change: brand, rules, who does what.",
+		"standingLabel": "What doesn't change",
+		"standingPlaceholder": "What doesn't change for this team: brand, rules, who does what. Every project starts with it.",
+		"projects": "Projects",
+		"doneCount": "Done · {count}",
+		"newProject": "New project",
+		"newProjectTitle": "New project",
+		"newProjectLede": "Say what the team should do. The lead plans it and hands out the work.",
+		"projectTitleLabel": "Project title",
+		"projectTitlePlaceholder": "Title (optional)",
+		"projectAskLabel": "What to do",
+		"projectAskPlaceholder": "What should the team do?",
+		"projectCreate": "Start project",
+		"projectCreateFailed": "The project could not be started.",
+		"projectNeedsLead": "Every project has a lead who owns it, and this team has none yet. Pick its lead first.",
+		"pickLead": "Pick the lead",
+		"liveCount": "{count} live",
+		"state": {
+			"live": "live",
+			"paused": "paused",
+			"done": "done"
+		},
+		"projectComposerPlaceholder": "Message the project",
+		"reopenPlaceholder": "Write here to reopen…",
+		"backToTeam": "Back to {name}",
+		"projectGone": "This project is gone."
 	},
 	"agentIsolation": {
 		"title": "Conversations and memory",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Open {name}'s work",
 		"doneWith": "Done: {result}",
 		"failedWith": "Failed: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Done when: {when}",
 		"stop": "Stop",
 		"status": {
 			"queued": "Queued",
@@ -4143,6 +4172,13 @@
 			"done": "Done",
 			"failed": "Failed",
 			"stopped": "Stopped"
+		},
+		"card": {
+			"handedOut": "handed out",
+			"working": "working",
+			"done": "done",
+			"notFinished": "couldn't finish",
+			"stopped": "stopped"
 		}
 	},
 	"connectors": {

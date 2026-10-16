@@ -2061,7 +2061,34 @@
 		"save": "Enregistrer",
 		"createFailed": "L'équipe n'a pas pu être créée.",
 		"gone": "Cette équipe n'existe plus.",
-		"send": "Envoyer"
+		"send": "Envoyer",
+		"standing": "Chaque projet commence avec",
+		"standingEmpty": "Ajoutez ce qui ne change pas : marque, règles, qui fait quoi.",
+		"standingLabel": "Ce qui ne change pas",
+		"standingPlaceholder": "Ce qui ne change pas pour cette équipe : marque, règles, qui fait quoi. Chaque projet commence avec.",
+		"projects": "Projets",
+		"doneCount": "Terminés · {count}",
+		"newProject": "Nouveau projet",
+		"newProjectTitle": "Nouveau projet",
+		"newProjectLede": "Dites ce que l'équipe doit faire. Le responsable planifie et répartit le travail.",
+		"projectTitleLabel": "Titre du projet",
+		"projectTitlePlaceholder": "Titre (facultatif)",
+		"projectAskLabel": "Ce qu'il faut faire",
+		"projectAskPlaceholder": "Que doit faire l'équipe ?",
+		"projectCreate": "Lancer le projet",
+		"projectCreateFailed": "Le projet n'a pas pu être lancé.",
+		"projectNeedsLead": "Chaque projet a un responsable, et cette équipe n'en a pas encore. Choisissez d'abord son responsable.",
+		"pickLead": "Choisir le responsable",
+		"liveCount": "{count} en cours",
+		"state": {
+			"live": "en cours",
+			"paused": "en pause",
+			"done": "terminé"
+		},
+		"projectComposerPlaceholder": "Écrire au projet",
+		"reopenPlaceholder": "Écrivez ici pour le rouvrir…",
+		"backToTeam": "Retour à {name}",
+		"projectGone": "Ce projet n'existe plus."
 	},
 	"agentIsolation": {
 		"title": "Conversations et mémoire",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Ouvrir le travail de {name}",
 		"doneWith": "Terminé : {result}",
 		"failedWith": "Échec : {error}",
+		"cardTask": "{name} : {task}",
+		"doneWhen": "Terminé quand : {when}",
 		"stop": "Arrêter",
 		"status": {
 			"queued": "En attente",
@@ -4143,6 +4172,13 @@
 			"done": "Terminé",
 			"failed": "Échec",
 			"stopped": "Arrêté"
+		},
+		"card": {
+			"handedOut": "confié",
+			"working": "en cours",
+			"done": "terminé",
+			"notFinished": "pas pu finir",
+			"stopped": "arrêté"
 		}
 	},
 	"connectors": {

@@ -1449,6 +1449,50 @@
 .handoff-line-status {
   @apply mt-0.5 flex min-w-0 items-baseline gap-1.5 ps-1;
 }
+/* A project's card in its thread: the task, where it stands, and when it
+   counts as done. */
+.handoff-card {
+  @apply flex flex-col gap-1 min-w-0 max-w-[85%] rounded-box border border-base-300 bg-base-100 px-3.5 py-2.5 text-sm no-underline;
+}
+.handoff-card-head {
+  @apply flex items-start gap-2 min-w-0;
+}
+.handoff-card-task {
+  @apply flex-1 min-w-0 break-words font-medium text-base-content/85;
+}
+.handoff-line-link:hover .handoff-card-task {
+  @apply text-base-content;
+}
+.handoff-card-when {
+  @apply text-xs text-base-content/55;
+}
+.handoff-card-state {
+  @apply badge badge-sm shrink-0 border-none bg-base-200 text-base-content/60;
+}
+.handoff-card-state-working {
+  @apply bg-info/15 text-info;
+}
+.handoff-card-state-done {
+  @apply bg-success/15 text-success;
+}
+.handoff-card-state-notFinished {
+  @apply bg-error/15 text-error;
+}
+.handoff-card-state-stopped {
+  @apply bg-warning/15 text-warning;
+}
+
+/* A team's projects: the chip on a project (live, paused, done) and on the
+   team's roster row ("2 live", "done"). */
+.project-chip {
+  @apply badge badge-xs shrink-0 border-none bg-base-200 text-base-content/60;
+}
+.project-chip-live {
+  @apply bg-success/15 text-success;
+}
+.project-chip-paused {
+  @apply bg-warning/15 text-warning;
+}
 
 /* The bot's computer: copy and paste with the owner's computer
    (DesktopView.svelte, $lib/chat/desktopClipboard). The sink is the

@@ -29,14 +29,15 @@
   import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
   import { pinnedFirst, withPin } from '$lib/chat/pins';
   import { conversationLists, teammateLabel, teammateName } from '$lib/chat/teammates';
-  import { conversationTitle, teamKey, threadKey } from '$lib/chat/sessionKey';
+  import { conversationTitle, projectKey, teamKey, threadKey } from '$lib/chat/sessionKey';
   import { endsRun } from '$lib/chat/runEnd';
   import { removeEmployee } from '$lib/chat/removeEmployee';
   import { addToast } from '$lib/stores/toast';
   import {
     agentUnread, conversationRead, endWork, openNeedsRead, replyArrived, rowMark, seedAgentUnread,
-    seedTeamUnread, snapshotWork, startWork, teamWorking, type Open, type Working,
+    seedTeamUnread, snapshotWork, startWork, teamUnread, teamWorking, type Open, type Working,
   } from '$lib/chat/rowState';
+  import { latestLine, postArrived, projectChanged, rowChip, seedTeamRows, type TeamRows } from '$lib/teams/teamRow';
   import { callWords, isCallName } from '$lib/chat/callLabel';
   import RowMark from '$lib/components/ui/RowMark.svelte';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
@@ -213,17 +214,23 @@
   let teams = $state<import('$lib/api/neboComponents').RosterTeam[]>([]);
   // Live recency: a team row rises within its section when it talks.
   let teamActivity = $state<Record<string, number>>({});
+  // What each team row says at a glance: its latest line and its projects
+  // ("2 live", "done"), from the list, then live (`teamRow`).
+  let teamRows = $state<TeamRows>({});
   async function loadTeams() {
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listTeams();
       teams = resp?.teams ?? [];
-      unread = seedTeamUnread(unread, resp?.unreadTeams ?? []);
+      teamRows = seedTeamRows(teams);
+      unread = seedTeamUnread(unread, resp?.unreadTeams ?? [], resp?.unreadProjects ?? []);
     } catch {
       /* section simply stays absent */
     }
   }
   const teamParam = $derived(appPath($page.url.pathname).match(/^\/teams\/([^/]+)/)?.[1] ?? null);
+  /** The team's project open in the main pane (`/teams/<id>?project=<id>`). */
+  const projectParam = $derived(teamParam ? ($page.url.searchParams.get('project') ?? '') : '');
   // The owner's order, kept on the bot (pinned teams sit under Pinned): the
   // same one the phone shows.
   const sortedTeams = $derived(teams.filter((w) => w.pinPosition == null));
@@ -293,7 +300,7 @@
   const openConversation = $derived<Open>({
     key: $page.params.agentId && $page.params.threadId
       ? threadKey($page.params.agentId, $page.params.threadId)
-      : teamParam ? teamKey(teamParam) : '',
+      : teamParam ? (projectParam ? projectKey(teamParam, projectParam) : teamKey(teamParam)) : '',
     visible: pageVisible,
   });
   /** Mark the open conversation read, here and on the bot (which tells the
@@ -304,7 +311,8 @@
     unread = conversationRead(unread, key);
     try {
       const api = await import('$lib/api/nebo');
-      if (teamParam && key === teamKey(teamParam)) await api.markTeamRead(teamParam);
+      if (teamParam && projectParam && key === projectKey(teamParam, projectParam)) await api.markProjectRead(projectParam);
+      else if (teamParam && key === teamKey(teamParam)) await api.markTeamRead(teamParam);
       else if ($page.params.threadId) await api.markChatRead($page.params.threadId);
     } catch {
       /* the dot returns with the next roster load; opening it again reads it */
@@ -798,7 +806,20 @@
     onWsEvent('nebo:team_message', (data) => {
       if (!data?.teamId) return;
       teamActivity[data.teamId] = Date.now();
+      teamRows = postArrived(teamRows, data);
       onReply(teamKey(data.teamId), data?.unread === true);
+    });
+    // A project's post: its team's row moves and shows it; an unread one
+    // lights the row until the project is read.
+    onWsEvent('nebo:project_message', (data) => {
+      if (!data?.teamId || !data?.projectId) return;
+      teamActivity[data.teamId] = Date.now();
+      teamRows = postArrived(teamRows, data);
+      onReply(projectKey(data.teamId, data.projectId), data?.unread === true);
+    });
+    // A project opened, closed, or reopened: its team's "N live".
+    onWsEvent('nebo:project_updated', (data) => {
+      teamRows = projectChanged(teamRows, data?.project);
     });
 
     // Run/workflow updates → refresh runs + stats
@@ -1570,7 +1591,9 @@
 
   {#snippet teamRow(room: import('$lib/api/neboComponents').RosterTeam)}
     {@const faces = teamFaces(room)}
-    {@const roomUnread = unread.has(teamKey(room.id))}
+    {@const roomUnread = teamUnread(unread, room.id)}
+    {@const chip = rowChip(teamRows[room.id])}
+    {@const line = latestLine(teamRows[room.id]?.latest ?? null, $t('teams.you'), (id) => allAgents.find((a) => a.id === id || a.loopAgentId === id)?.name ?? id)}
     <!-- Margin lives on the wrapper, width on the button — w-full plus
          mx on the same box overflows the column and summons a
          scrollbar on hover (the row "jump"). -->
@@ -1606,7 +1629,16 @@
           <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
           <RowMark mark={rowMark(teamWorking(working, room.id), roomUnread)} />
         </div>
-        <div class="text-xs truncate {roomUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</div>
+        <div class="flex items-center gap-1.5 min-w-0">
+          <!-- What's happening, without opening anything: the newest line in
+               any of the team's threads, then how many projects are live. -->
+          <span class="text-xs truncate min-w-0 flex-1 {roomUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{line || room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</span>
+          {#if chip === 'done'}
+            <span class="project-chip project-chip-done">{$t('teams.state.done')}</span>
+          {:else if chip}
+            <span class="project-chip project-chip-live">{$t('teams.liveCount', { values: { count: chip.live } })}</span>
+          {/if}
+        </div>
       </div>
     </button>
     </div>
@@ -2129,7 +2161,7 @@
     onclose={() => (newTeamOpen = false)}
     oncreated={(team) => {
       newTeamOpen = false;
-      teams = [...teams.filter((w) => w.id !== team.id), { ...team, pinPosition: undefined }];
+      teams = [...teams.filter((w) => w.id !== team.id), { ...team, pinPosition: undefined, projects: [] }];
       teamActivity[team.id] = Date.now();
       openTeam(team.id);
     }}

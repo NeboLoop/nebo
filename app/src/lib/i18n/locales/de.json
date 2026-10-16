@@ -2061,7 +2061,34 @@
 		"save": "Speichern",
 		"createFailed": "Das Team konnte nicht erstellt werden.",
 		"gone": "Dieses Team gibt es nicht mehr.",
-		"send": "Senden"
+		"send": "Senden",
+		"standing": "Jedes Projekt beginnt mit",
+		"standingEmpty": "Ergänze, was sich nicht ändert: Marke, Regeln, wer was macht.",
+		"standingLabel": "Was sich nicht ändert",
+		"standingPlaceholder": "Was sich für dieses Team nicht ändert: Marke, Regeln, wer was macht. Jedes Projekt beginnt damit.",
+		"projects": "Projekte",
+		"doneCount": "Erledigt · {count}",
+		"newProject": "Neues Projekt",
+		"newProjectTitle": "Neues Projekt",
+		"newProjectLede": "Sag, was das Team tun soll. Die Leitung plant es und verteilt die Arbeit.",
+		"projectTitleLabel": "Projekttitel",
+		"projectTitlePlaceholder": "Titel (optional)",
+		"projectAskLabel": "Was zu tun ist",
+		"projectAskPlaceholder": "Was soll das Team tun?",
+		"projectCreate": "Projekt starten",
+		"projectCreateFailed": "Das Projekt konnte nicht gestartet werden.",
+		"projectNeedsLead": "Jedes Projekt hat eine Leitung, die dafür verantwortlich ist, und dieses Team hat noch keine. Wähle zuerst die Leitung.",
+		"pickLead": "Leitung wählen",
+		"liveCount": "{count} aktiv",
+		"state": {
+			"live": "aktiv",
+			"paused": "pausiert",
+			"done": "erledigt"
+		},
+		"projectComposerPlaceholder": "Nachricht an das Projekt",
+		"reopenPlaceholder": "Hier schreiben, um es wieder zu öffnen…",
+		"backToTeam": "Zurück zu {name}",
+		"projectGone": "Dieses Projekt gibt es nicht mehr."
 	},
 	"agentIsolation": {
 		"title": "Gespräche und Gedächtnis",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Arbeit von {name} öffnen",
 		"doneWith": "Erledigt: {result}",
 		"failedWith": "Fehlgeschlagen: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Erledigt, wenn: {when}",
 		"stop": "Stoppen",
 		"status": {
 			"queued": "In Warteschlange",
@@ -4143,6 +4172,13 @@
 			"done": "Erledigt",
 			"failed": "Fehlgeschlagen",
 			"stopped": "Gestoppt"
+		},
+		"card": {
+			"handedOut": "übergeben",
+			"working": "in Arbeit",
+			"done": "erledigt",
+			"notFinished": "nicht abgeschlossen",
+			"stopped": "gestoppt"
 		}
 	},
 	"connectors": {

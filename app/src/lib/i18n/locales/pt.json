@@ -2061,7 +2061,34 @@
 		"save": "Guardar",
 		"createFailed": "Não foi possível criar a equipa.",
 		"gone": "Esta equipa já não existe.",
-		"send": "Enviar"
+		"send": "Enviar",
+		"standing": "Cada projeto começa com",
+		"standingEmpty": "Adicione o que não muda: marca, regras, quem faz o quê.",
+		"standingLabel": "O que não muda",
+		"standingPlaceholder": "O que não muda nesta equipa: marca, regras, quem faz o quê. Cada projeto começa com isto.",
+		"projects": "Projetos",
+		"doneCount": "Concluídos · {count}",
+		"newProject": "Novo projeto",
+		"newProjectTitle": "Novo projeto",
+		"newProjectLede": "Diga o que a equipa deve fazer. O responsável planeia e distribui o trabalho.",
+		"projectTitleLabel": "Título do projeto",
+		"projectTitlePlaceholder": "Título (opcional)",
+		"projectAskLabel": "O que fazer",
+		"projectAskPlaceholder": "O que deve a equipa fazer?",
+		"projectCreate": "Iniciar projeto",
+		"projectCreateFailed": "Não foi possível iniciar o projeto.",
+		"projectNeedsLead": "Cada projeto tem um responsável, e esta equipa ainda não tem. Escolha primeiro o responsável.",
+		"pickLead": "Escolher o responsável",
+		"liveCount": "{count} em curso",
+		"state": {
+			"live": "em curso",
+			"paused": "em pausa",
+			"done": "concluído"
+		},
+		"projectComposerPlaceholder": "Escrever ao projeto",
+		"reopenPlaceholder": "Escreva aqui para o reabrir…",
+		"backToTeam": "Voltar a {name}",
+		"projectGone": "Este projeto já não existe."
 	},
 	"agentIsolation": {
 		"title": "Conversas e memória",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Abrir o trabalho de {name}",
 		"doneWith": "Concluído: {result}",
 		"failedWith": "Falhou: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Concluído quando: {when}",
 		"stop": "Parar",
 		"status": {
 			"queued": "Em fila",
@@ -4143,6 +4172,13 @@
 			"done": "Concluído",
 			"failed": "Falhou",
 			"stopped": "Parado"
+		},
+		"card": {
+			"handedOut": "entregue",
+			"working": "em curso",
+			"done": "concluído",
+			"notFinished": "não conseguiu terminar",
+			"stopped": "parado"
 		}
 	},
 	"connectors": {

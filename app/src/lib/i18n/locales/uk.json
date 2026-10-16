@@ -2061,7 +2061,34 @@
 		"save": "Зберегти",
 		"createFailed": "Не вдалося створити команду.",
 		"gone": "Цієї команди більше немає.",
-		"send": "Надіслати"
+		"send": "Надіслати",
+		"standing": "Кожен проєкт починається з",
+		"standingEmpty": "Додайте те, що не змінюється: бренд, правила, хто що робить.",
+		"standingLabel": "Що не змінюється",
+		"standingPlaceholder": "Що не змінюється в цій команді: бренд, правила, хто що робить. З цього починається кожен проєкт.",
+		"projects": "Проєкти",
+		"doneCount": "Завершені · {count}",
+		"newProject": "Новий проєкт",
+		"newProjectTitle": "Новий проєкт",
+		"newProjectLede": "Напишіть, що має зробити команда. Керівник спланує роботу й роздасть завдання.",
+		"projectTitleLabel": "Назва проєкту",
+		"projectTitlePlaceholder": "Назва (необов'язково)",
+		"projectAskLabel": "Що зробити",
+		"projectAskPlaceholder": "Що має зробити команда?",
+		"projectCreate": "Почати проєкт",
+		"projectCreateFailed": "Не вдалося почати проєкт.",
+		"projectNeedsLead": "Кожен проєкт має керівника, який за нього відповідає, а в цієї команди його ще немає. Спершу виберіть керівника.",
+		"pickLead": "Вибрати керівника",
+		"liveCount": "у роботі: {count}",
+		"state": {
+			"live": "у роботі",
+			"paused": "на паузі",
+			"done": "завершено"
+		},
+		"projectComposerPlaceholder": "Написати в проєкт",
+		"reopenPlaceholder": "Напишіть тут, щоб відкрити знову…",
+		"backToTeam": "Назад до {name}",
+		"projectGone": "Цього проєкту більше немає."
 	},
 	"agentIsolation": {
 		"title": "Розмови й пам'ять",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Відкрити роботу {name}",
 		"doneWith": "Готово: {result}",
 		"failedWith": "Помилка: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Готово, коли: {when}",
 		"stop": "Зупинити",
 		"status": {
 			"queued": "У черзі",
@@ -4143,6 +4172,13 @@
 			"done": "Готово",
 			"failed": "Помилка",
 			"stopped": "Зупинено"
+		},
+		"card": {
+			"handedOut": "передано",
+			"working": "у роботі",
+			"done": "готово",
+			"notFinished": "не вдалося завершити",
+			"stopped": "зупинено"
 		}
 	},
 	"connectors": {

@@ -2061,7 +2061,34 @@
 		"save": "שמור",
 		"createFailed": "לא ניתן היה ליצור את הצוות.",
 		"gone": "הצוות הזה נעלם.",
-		"send": "שלח"
+		"send": "שלח",
+		"standing": "כל פרויקט מתחיל עם",
+		"standingEmpty": "הוסיפו את מה שלא משתנה: מותג, כללים, מי עושה מה.",
+		"standingLabel": "מה שלא משתנה",
+		"standingPlaceholder": "מה שלא משתנה בצוות הזה: מותג, כללים, מי עושה מה. כל פרויקט מתחיל עם זה.",
+		"projects": "פרויקטים",
+		"doneCount": "הושלמו · {count}",
+		"newProject": "פרויקט חדש",
+		"newProjectTitle": "פרויקט חדש",
+		"newProjectLede": "כתבו מה הצוות צריך לעשות. ראש הצוות מתכנן ומחלק את העבודה.",
+		"projectTitleLabel": "שם הפרויקט",
+		"projectTitlePlaceholder": "כותרת (לא חובה)",
+		"projectAskLabel": "מה לעשות",
+		"projectAskPlaceholder": "מה הצוות צריך לעשות?",
+		"projectCreate": "התחל פרויקט",
+		"projectCreateFailed": "לא ניתן היה להתחיל את הפרויקט.",
+		"projectNeedsLead": "לכל פרויקט יש ראש צוות שאחראי עליו, ולצוות הזה עדיין אין. בחרו קודם ראש צוות.",
+		"pickLead": "בחר ראש צוות",
+		"liveCount": "{count} פעילים",
+		"state": {
+			"live": "פעיל",
+			"paused": "מושהה",
+			"done": "הושלם"
+		},
+		"projectComposerPlaceholder": "שלח הודעה לפרויקט",
+		"reopenPlaceholder": "כתבו כאן כדי לפתוח מחדש…",
+		"backToTeam": "חזרה אל {name}",
+		"projectGone": "הפרויקט הזה כבר לא קיים."
 	},
 	"agentIsolation": {
 		"title": "שיחות וזיכרון",
@@ -4136,12 +4163,21 @@
 		"openReceiver": "פתח את העבודה של {name}",
 		"doneWith": "הושלם: {result}",
 		"failedWith": "נכשל: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "הושלם כאשר: {when}",
 		"stop": "עצור",
 		"status": {
 			"queued": "בתור",
 			"running": "בעבודה",
 			"done": "הושלם",
 			"failed": "נכשל",
+			"stopped": "נעצר"
+		},
+		"card": {
+			"handedOut": "הועבר",
+			"working": "בעבודה",
+			"done": "הושלם",
+			"notFinished": "לא הושלם",
 			"stopped": "נעצר"
 		}
 	},

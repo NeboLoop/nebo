@@ -2061,7 +2061,34 @@
 		"save": "Simpan",
 		"createFailed": "Pasukan itu tidak dapat dicipta.",
 		"gone": "Pasukan ini tiada lagi.",
-		"send": "Hantar"
+		"send": "Hantar",
+		"standing": "Setiap projek bermula dengan",
+		"standingEmpty": "Tambah perkara yang tidak berubah: jenama, peraturan, siapa buat apa.",
+		"standingLabel": "Perkara yang tidak berubah",
+		"standingPlaceholder": "Perkara yang tidak berubah bagi pasukan ini: jenama, peraturan, siapa buat apa. Setiap projek bermula dengannya.",
+		"projects": "Projek",
+		"doneCount": "Selesai · {count}",
+		"newProject": "Projek baharu",
+		"newProjectTitle": "Projek baharu",
+		"newProjectLede": "Nyatakan apa yang perlu pasukan lakukan. Ketua merancangnya dan mengagihkan kerja.",
+		"projectTitleLabel": "Tajuk projek",
+		"projectTitlePlaceholder": "Tajuk (pilihan)",
+		"projectAskLabel": "Apa yang perlu dibuat",
+		"projectAskPlaceholder": "Apa yang perlu pasukan lakukan?",
+		"projectCreate": "Mulakan projek",
+		"projectCreateFailed": "Projek tidak dapat dimulakan.",
+		"projectNeedsLead": "Setiap projek ada ketua yang bertanggungjawab, dan pasukan ini belum ada. Pilih ketuanya dahulu.",
+		"pickLead": "Pilih ketua",
+		"liveCount": "{count} sedang berjalan",
+		"state": {
+			"live": "berjalan",
+			"paused": "dijeda",
+			"done": "selesai"
+		},
+		"projectComposerPlaceholder": "Hantar mesej kepada projek",
+		"reopenPlaceholder": "Tulis di sini untuk membukanya semula…",
+		"backToTeam": "Kembali ke {name}",
+		"projectGone": "Projek ini sudah tiada."
 	},
 	"agentIsolation": {
 		"title": "Perbualan dan memori",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Buka kerja {name}",
 		"doneWith": "Selesai: {result}",
 		"failedWith": "Gagal: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Selesai apabila: {when}",
 		"stop": "Hentikan",
 		"status": {
 			"queued": "Dalam baris gilir",
@@ -4143,6 +4172,13 @@
 			"done": "Selesai",
 			"failed": "Gagal",
 			"stopped": "Dihentikan"
+		},
+		"card": {
+			"handedOut": "diserahkan",
+			"working": "sedang diusahakan",
+			"done": "selesai",
+			"notFinished": "tidak dapat disiapkan",
+			"stopped": "dihentikan"
 		}
 	},
 	"connectors": {

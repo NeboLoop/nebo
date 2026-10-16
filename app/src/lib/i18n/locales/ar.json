@@ -2061,7 +2061,34 @@
 		"save": "حفظ",
 		"createFailed": "تعذّر إنشاء الفريق.",
 		"gone": "لم يعد هذا الفريق موجودًا.",
-		"send": "إرسال"
+		"send": "إرسال",
+		"standing": "كل مشروع يبدأ بـ",
+		"standingEmpty": "أضف ما لا يتغير: الهوية، القواعد، ومن يفعل ماذا.",
+		"standingLabel": "ما لا يتغير",
+		"standingPlaceholder": "ما لا يتغير في هذا الفريق: الهوية، القواعد، ومن يفعل ماذا. كل مشروع يبدأ به.",
+		"projects": "المشاريع",
+		"doneCount": "منتهية · {count}",
+		"newProject": "مشروع جديد",
+		"newProjectTitle": "مشروع جديد",
+		"newProjectLede": "اكتب ما يجب أن يفعله الفريق. القائد يخطط له ويوزع العمل.",
+		"projectTitleLabel": "عنوان المشروع",
+		"projectTitlePlaceholder": "العنوان (اختياري)",
+		"projectAskLabel": "ما المطلوب",
+		"projectAskPlaceholder": "ما الذي يجب أن يفعله الفريق؟",
+		"projectCreate": "ابدأ المشروع",
+		"projectCreateFailed": "تعذر بدء المشروع.",
+		"projectNeedsLead": "لكل مشروع قائد مسؤول عنه، وهذا الفريق بلا قائد بعد. اختر قائده أولًا.",
+		"pickLead": "اختر القائد",
+		"liveCount": "{count} جارية",
+		"state": {
+			"live": "جارٍ",
+			"paused": "متوقف مؤقتًا",
+			"done": "منتهٍ"
+		},
+		"projectComposerPlaceholder": "راسل المشروع",
+		"reopenPlaceholder": "اكتب هنا لإعادة فتحه…",
+		"backToTeam": "العودة إلى {name}",
+		"projectGone": "هذا المشروع لم يعد موجودًا."
 	},
 	"agentIsolation": {
 		"title": "المحادثات والذاكرة",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "افتح عمل {name}",
 		"doneWith": "تم: {result}",
 		"failedWith": "فشل: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "يكتمل عندما: {when}",
 		"stop": "إيقاف",
 		"status": {
 			"queued": "في الانتظار",
@@ -4143,6 +4172,13 @@
 			"done": "تم",
 			"failed": "فشل",
 			"stopped": "تم الإيقاف"
+		},
+		"card": {
+			"handedOut": "تم التسليم",
+			"working": "قيد العمل",
+			"done": "تم",
+			"notFinished": "تعذر الإنهاء",
+			"stopped": "متوقف"
 		}
 	},
 	"connectors": {

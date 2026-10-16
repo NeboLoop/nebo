@@ -13,19 +13,39 @@
   The working strip above the composer: who is working in this team's
   conversation now (GET /teams/{id}/working, then the work's own events),
   folded to "N working"; a row opens what that one is doing in a sheet.
+
+  With `project` set it is the SAME view bound to one of the team's
+  projects: its own thread (GET/POST /projects/{id}/messages,
+  `project_message`), its working list and Stop (/projects/{id}/working,
+  /stop, `project_activity`). The lead's lines that hand work out are the
+  project's cards (`HandoffLine` with `card`). A done project says so in
+  its composer: writing there reopens it. The team's own conversation is
+  untouched by any of it.
+
+  The rail beside the thread (behind the header toggle on phones) holds
+  what doesn't change for the team (its standing rules, edited with the
+  team), its projects (going first, done ones folded under "Done · N"),
+  "+ New project", and who is on the team.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { slide } from 'svelte/transition';
   import Crown from 'lucide-svelte/icons/crown';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Pencil from 'lucide-svelte/icons/pencil';
   import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
-  import { getTeamMessages, sendTeamMessage, stopTeamWork, teamWorking } from '$lib/api/nebo';
+  import NewProjectModal from '$lib/components/teams/NewProjectModal.svelte';
+  import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
+  import Plus from 'lucide-svelte/icons/plus';
+  import { goto } from '$lib/nav';
+  import {
+    getProjectMessages, getTeamMessages, projectWorking, sendProjectMessage, sendTeamMessage,
+    stopProjectWork, stopTeamWork, teamWorking,
+  } from '$lib/api/nebo';
   import { isStorageFull, storageFullMessage, uploadFiles } from '$lib/api/upload';
   import { stripAttachmentNotes, type UploadedAttachment } from '$lib/types/attachment';
-  import type { Team, TeamMessage } from '$lib/api/neboComponents';
+  import type { Project, Team, TeamCard, TeamMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { parseMarkdown } from '$lib/markdown';
   import { EVERYONE, renderMentionChips } from '$lib/mentions';
@@ -33,21 +53,41 @@
   import ChatComposer from '$lib/components/chat/ChatComposer.svelte';
   import TeamWorkSheet from '$lib/components/teams/TeamWorkSheet.svelte';
   import { applyWorkEvent, stopBody, workKey, WORK_EVENTS, type WorkEntry } from '$lib/teams/teamWork';
+  import { splitProjects } from '$lib/teams/projects';
+  import { projectKey, teamKey } from '$lib/chat/sessionKey';
   import { callWords } from '$lib/chat/callLabel';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
 
   let {
     team,
     roster = [],
+    projects = [],
+    project = null,
+    onprojectcreated,
   }: {
     team: Team;
     /** The employee roster, for member chips and sender-name resolution. */
     roster?: { id: string; name: string; initial: string; color?: string; shape?: string; loopAgentId?: string; isApp?: boolean }[];
+    /** The team's projects, in the server's order (the page keeps them live). */
+    projects?: Project[];
+    /** The project whose thread this is; null for the team's own. The view
+     *  is keyed per thread, so which thread never changes under it. */
+    project?: Project | null;
+    /** A project the owner just started here. */
+    onprojectcreated?: (project: Project) => void;
   } = $props();
+
+  // Which thread this view is: the team's own, or one of its projects'.
+  const projectId = untrack(() => project?.id ?? '');
+  const thread = untrack(() => (projectId ? projectKey(team.id, projectId) : teamKey(team.id)));
 
   // The member picker, in edit mode. The server broadcasts team_updated on
   // save; the shell patches its list and this view re-renders from `team`.
   let editOpen = $state(false);
+  let newProjectOpen = $state(false);
+  let doneOpen = $state(false);
+  const projectLists = $derived(splitProjects(projects));
+  const openProject = (id: string) => goto(`/teams/${team.id}?project=${id}`);
 
   type TeamMsg = {
     id: string;
@@ -57,6 +97,8 @@
     attachments: UploadedAttachment[];
     /** The divider where the owner cleared the team's conversation. */
     cleared?: boolean;
+    /** The card this post hands out (a project's lead's line). */
+    card?: TeamCard;
   };
   const asAttachments = (v: unknown): UploadedAttachment[] =>
     Array.isArray(v) ? (v as UploadedAttachment[]) : [];
@@ -139,12 +181,19 @@
     mine: m.role === 'user',
     attachments: asAttachments(m.attachments),
     ...(m.cleared ? { cleared: true } : {}),
+    ...(m.card ? { card: m.card } : {}),
   });
+
+  // The thread's own doors: the team's, or its project's.
+  const readMessages = async () => (projectId ? await getProjectMessages(projectId) : await getTeamMessages(team.id))?.messages ?? [];
+  const readWorking = async () => (projectId ? await projectWorking(projectId) : await teamWorking(team.id))?.working ?? [];
+  const stopIn = (body: { agentId?: string; taskId?: string }) =>
+    projectId ? stopProjectWork(projectId, body) : stopTeamWork(team.id, body);
 
   async function stopWork(entry?: WorkEntry) {
     sheetEntry = null;
     try {
-      const resp = await stopTeamWork(team.id, entry ? stopBody(entry) : {});
+      const resp = await stopIn(entry ? stopBody(entry) : {});
       notice = resp?.message ?? '';
     } catch {
       notice = '';
@@ -164,8 +213,7 @@
   onMount(() => {
     (async () => {
       try {
-        const resp = await getTeamMessages(team.id);
-        messages = (resp?.messages ?? []).map(fromRest);
+        messages = (await readMessages()).map(fromRest);
       } catch {
         messages = [];
       } finally {
@@ -175,18 +223,20 @@
     })();
 
     (async () => {
-      const resp = await teamWorking(team.id).catch(() => null);
-      if (resp?.working) work = resp.working;
+      const working = await readWorking().catch(() => null);
+      if (working) work = working;
     })();
     const ws = getWebSocketClient();
     const offWork = WORK_EVENTS.map((type) =>
       ws.on(type, (data: any) => {
-        work = applyWorkEvent(work, type, data ?? {}, team.id, nameFor);
+        work = applyWorkEvent(work, type, data ?? {}, thread, nameFor);
       })
     );
 
-    const off = ws.on('team_message', (data: any) => {
-      if (data?.teamId !== team.id) return;
+    // The team's own posts come as `team_message`, a project's as
+    // `project_message`: each view hears its own thread only.
+    const off = ws.on(projectId ? 'project_message' : 'team_message', (data: any) => {
+      if (data?.teamId !== team.id || (projectId && data?.projectId !== projectId)) return;
       const text = data.text ?? '';
       if (!text) return;
       // Already here: the same row can arrive twice (the owner's own echo
@@ -212,6 +262,7 @@
           content: text,
           mine: isOwner,
           attachments: asAttachments(data.attachments),
+          ...(data.card ? { card: data.card as TeamCard } : {}),
         },
       ];
       scrollToEnd();
@@ -240,8 +291,10 @@
       if (attachments.length) {
         messages = messages.map((m) => (m.id === tempId ? { ...m, attachments } : m));
       }
-      const resp = await sendTeamMessage(team.id, { text, attachments });
-      if (resp?.command) {
+      const resp = projectId
+        ? await sendProjectMessage(projectId, { text, attachments })
+        : await sendTeamMessage(team.id, { text, attachments });
+      if (resp && 'command' in resp && resp.command) {
         // A command, run by the server and never posted: its answer shows
         // above the composer; a clear's divider arrives as its own row.
         messages = messages.filter((m) => m.id !== tempId);
@@ -274,6 +327,70 @@
     <Pencil class="w-3.5 h-3.5" />
     {$t('teams.editMembers')}
   </button>
+{/snippet}
+
+{#snippet standingRows()}
+  <!-- What doesn't change for the team: every project starts with it.
+       Edited with the rest of the team. -->
+  <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45 px-3 mb-1">{$t('teams.standing')}</span>
+  {#if team.standing}
+    <button
+      type="button"
+      class="mx-1.5 px-1.5 py-1 rounded-md bg-transparent border-none cursor-pointer text-start text-xs text-base-content/70 leading-relaxed whitespace-pre-line hover:bg-base-200"
+      onclick={() => (editOpen = true)}
+      title={$t('teams.editMembers')}
+    >{team.standing}</button>
+  {:else}
+    <button
+      type="button"
+      class="mx-1.5 px-1.5 py-1 rounded-md bg-transparent border-none cursor-pointer text-start text-xs text-base-content/45 leading-relaxed hover:bg-base-200 hover:text-base-content/70"
+      onclick={() => (editOpen = true)}
+    >{$t('teams.standingEmpty')}</button>
+  {/if}
+{/snippet}
+
+{#snippet projectRow(p: Project)}
+  <button
+    type="button"
+    class="w-full flex items-center gap-2 px-3 py-1.5 bg-transparent border-none cursor-pointer text-start min-w-0 {p.id === projectId ? 'bg-primary/10' : 'hover:bg-base-200'}"
+    onclick={() => openProject(p.id)}
+    aria-current={p.id === projectId ? 'page' : undefined}
+  >
+    <span class="text-sm truncate min-w-0 flex-1">{p.title}</span>
+    <span class="project-chip project-chip-{p.state}">{$t(`teams.state.${p.state}`)}</span>
+  </button>
+{/snippet}
+
+{#snippet projectRows()}
+  <!-- The team's projects: the ones going first; done ones folded. -->
+  <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45 px-3 mb-1">{$t('teams.projects')}</span>
+  {#each projectLists.going as p (p.id)}
+    {@render projectRow(p)}
+  {/each}
+  {#if projectLists.done.length > 0}
+    <button
+      type="button"
+      class="w-full flex items-center gap-1.5 px-3 py-1.5 bg-transparent border-none cursor-pointer text-start text-xs text-base-content/55 hover:text-base-content"
+      aria-expanded={doneOpen}
+      onclick={() => (doneOpen = !doneOpen)}
+    >
+      <span>{$t('teams.doneCount', { values: { count: projectLists.done.length } })}</span>
+      <ChevronDown class="w-3 h-3 shrink-0 transition-transform {doneOpen ? 'rotate-180' : ''}" />
+    </button>
+    {#if doneOpen || projectLists.done.some((p) => p.id === projectId)}
+      <div transition:slide={{ duration: 140 }}>
+        {#each projectLists.done as p (p.id)}
+          {@render projectRow(p)}
+        {/each}
+      </div>
+    {/if}
+  {/if}
+  <div class="px-3 pt-1">
+    <button type="button" class="btn btn-ghost btn-xs gap-1 text-base-content/70" onclick={() => (newProjectOpen = true)}>
+      <Plus class="w-3.5 h-3.5" />
+      {$t('teams.newProject')}
+    </button>
+  </div>
 {/snippet}
 
 {#snippet memberRows()}
@@ -314,7 +431,12 @@
       <ChevronDown class="w-3.5 h-3.5 shrink-0 text-base-content/50 transition-transform {membersOpen ? 'rotate-180' : ''}" />
     </button>
     {#if membersOpen}
-      <div transition:slide={{ duration: 160 }} class="pb-2">
+      <div transition:slide={{ duration: 160 }} class="pb-2 flex flex-col max-h-[60vh] overflow-y-auto">
+        {@render standingRows()}
+        <div class="h-2 shrink-0"></div>
+        {@render projectRows()}
+        <div class="h-2 shrink-0"></div>
+        <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45 px-3 mb-1">{$t('teams.inTeam')}</span>
         {@render memberRows()}
         <div class="px-3 pt-1">{@render editMembersButton()}</div>
       </div>
@@ -337,6 +459,18 @@
           {@const sender = m.mine ? undefined : rosterFor(m.from)}
           {#if m.cleared}
             <div class="divider my-2 text-xs text-base-content/50">{$t('chat.clearedBoundary')}</div>
+          {:else if m.card}
+            <!-- The lead hands work out: the line is the card, its state
+                 read from the hand-off it carries. -->
+            <div class="flex flex-col items-start">
+              <HandoffLine
+                card
+                to={nameFor(m.card.agentId)}
+                ask={m.card.task}
+                handoffId={m.card.handoffId}
+                doneWhen={m.card.doneWhen}
+              />
+            </div>
           {:else}
           <TranscriptMessage
             name={m.mine ? $t('teams.you') : m.from}
@@ -392,9 +526,11 @@
       {/if}
       <ChatComposer
         agentId="team"
-        threadId={team.id}
+        threadId={projectId || team.id}
         teamId={team.id}
-        placeholder={$t('teams.composerPlaceholder')}
+        placeholder={project
+          ? project.state === 'done' ? $t('teams.reopenPlaceholder') : $t('teams.projectComposerPlaceholder')
+          : $t('teams.composerPlaceholder')}
         allAgents={composerAgents}
         isLoading={sending || work.length > 0}
         onsend={(text, files) => send(text, files)}
@@ -414,6 +550,10 @@
   <div class="shrink-0 h-[4.5rem] overflow-y-auto px-3 border-b border-base-300 mb-2">
     <p class="text-xs text-base-content/60 leading-relaxed">{team.mission}</p>
   </div>
+  {@render standingRows()}
+  <div class="h-3 shrink-0"></div>
+  {@render projectRows()}
+  <div class="h-3 shrink-0"></div>
   <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45 px-3 mb-1">{$t('teams.inTeam')}</span>
   {@render memberRows()}
   <div class="px-3 pt-2">{@render editMembersButton()}</div>
@@ -424,12 +564,28 @@
   <NewTeamModal {roster} {team} onclose={() => (editOpen = false)} oncreated={() => (editOpen = false)} />
 {/if}
 
+{#if newProjectOpen}
+  <NewProjectModal
+    {team}
+    onclose={() => (newProjectOpen = false)}
+    oncreated={(p) => {
+      newProjectOpen = false;
+      onprojectcreated?.(p);
+      openProject(p.id);
+    }}
+    onpicklead={() => {
+      newProjectOpen = false;
+      editOpen = true;
+    }}
+  />
+{/if}
+
 {#if sheetEntry}
   <!-- The row as it is now: its activity line keeps moving under the sheet. -->
   {@const current = work.find((w) => sheetEntry && workKey(w) === workKey(sheetEntry))}
   {#key workKey(sheetEntry)}
     <TeamWorkSheet
-      teamId={team.id}
+      {readWorking}
       entry={current ?? sheetEntry}
       live={!!current}
       onclose={() => (sheetEntry = null)}

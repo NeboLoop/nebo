@@ -2061,7 +2061,34 @@
 		"save": "सहेजें",
 		"createFailed": "टीम नहीं बनाई जा सकी।",
 		"gone": "यह टीम अब नहीं रही।",
-		"send": "भेजें"
+		"send": "भेजें",
+		"standing": "हर प्रोजेक्ट इससे शुरू होता है",
+		"standingEmpty": "जो नहीं बदलता उसे जोड़ें: ब्रांड, नियम, कौन क्या करता है।",
+		"standingLabel": "जो नहीं बदलता",
+		"standingPlaceholder": "इस टीम में जो नहीं बदलता: ब्रांड, नियम, कौन क्या करता है। हर प्रोजेक्ट इसी से शुरू होता है।",
+		"projects": "प्रोजेक्ट",
+		"doneCount": "पूरे · {count}",
+		"newProject": "नया प्रोजेक्ट",
+		"newProjectTitle": "नया प्रोजेक्ट",
+		"newProjectLede": "बताएं कि टीम को क्या करना है। लीड योजना बनाता है और काम बांटता है।",
+		"projectTitleLabel": "प्रोजेक्ट का शीर्षक",
+		"projectTitlePlaceholder": "शीर्षक (वैकल्पिक)",
+		"projectAskLabel": "क्या करना है",
+		"projectAskPlaceholder": "टीम को क्या करना चाहिए?",
+		"projectCreate": "प्रोजेक्ट शुरू करें",
+		"projectCreateFailed": "प्रोजेक्ट शुरू नहीं हो सका।",
+		"projectNeedsLead": "हर प्रोजेक्ट का एक लीड होता है जो उसकी ज़िम्मेदारी लेता है, और इस टीम में अभी कोई नहीं है। पहले लीड चुनें।",
+		"pickLead": "लीड चुनें",
+		"liveCount": "{count} चालू",
+		"state": {
+			"live": "चालू",
+			"paused": "रुका हुआ",
+			"done": "पूरा"
+		},
+		"projectComposerPlaceholder": "प्रोजेक्ट को संदेश भेजें",
+		"reopenPlaceholder": "फिर से खोलने के लिए यहां लिखें…",
+		"backToTeam": "{name} पर वापस जाएं",
+		"projectGone": "यह प्रोजेक्ट अब मौजूद नहीं है।"
 	},
 	"agentIsolation": {
 		"title": "बातचीत और मेमोरी",
@@ -4136,12 +4163,21 @@
 		"openReceiver": "{name} का काम खोलें",
 		"doneWith": "पूरा: {result}",
 		"failedWith": "विफल: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "पूरा तब: {when}",
 		"stop": "रोकें",
 		"status": {
 			"queued": "कतार में",
 			"running": "काम जारी है",
 			"done": "पूरा",
 			"failed": "विफल",
+			"stopped": "रोका गया"
+		},
+		"card": {
+			"handedOut": "सौंपा गया",
+			"working": "काम जारी है",
+			"done": "पूरा",
+			"notFinished": "पूरा नहीं हो सका",
 			"stopped": "रोका गया"
 		}
 	},

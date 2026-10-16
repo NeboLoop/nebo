@@ -2061,7 +2061,34 @@
 		"save": "Guardar",
 		"createFailed": "No se pudo crear el equipo.",
 		"gone": "Este equipo ya no existe.",
-		"send": "Enviar"
+		"send": "Enviar",
+		"standing": "Cada proyecto empieza con",
+		"standingEmpty": "Añade lo que no cambia: marca, reglas, quién hace qué.",
+		"standingLabel": "Lo que no cambia",
+		"standingPlaceholder": "Lo que no cambia en este equipo: marca, reglas, quién hace qué. Cada proyecto empieza con esto.",
+		"projects": "Proyectos",
+		"doneCount": "Terminados · {count}",
+		"newProject": "Nuevo proyecto",
+		"newProjectTitle": "Nuevo proyecto",
+		"newProjectLede": "Di qué debe hacer el equipo. El responsable lo planifica y reparte el trabajo.",
+		"projectTitleLabel": "Título del proyecto",
+		"projectTitlePlaceholder": "Título (opcional)",
+		"projectAskLabel": "Qué hay que hacer",
+		"projectAskPlaceholder": "¿Qué debe hacer el equipo?",
+		"projectCreate": "Iniciar proyecto",
+		"projectCreateFailed": "No se pudo iniciar el proyecto.",
+		"projectNeedsLead": "Cada proyecto tiene un responsable, y este equipo aún no tiene uno. Elige primero al responsable.",
+		"pickLead": "Elegir responsable",
+		"liveCount": "{count} en curso",
+		"state": {
+			"live": "en curso",
+			"paused": "en pausa",
+			"done": "terminado"
+		},
+		"projectComposerPlaceholder": "Escribe al proyecto",
+		"reopenPlaceholder": "Escribe aquí para reabrirlo…",
+		"backToTeam": "Volver a {name}",
+		"projectGone": "Este proyecto ya no existe."
 	},
 	"agentIsolation": {
 		"title": "Conversaciones y memoria",
@@ -4136,6 +4163,8 @@
 		"openReceiver": "Abrir el trabajo de {name}",
 		"doneWith": "Hecho: {result}",
 		"failedWith": "Falló: {error}",
+		"cardTask": "{name}: {task}",
+		"doneWhen": "Terminado cuando: {when}",
 		"stop": "Detener",
 		"status": {
 			"queued": "En cola",
@@ -4143,6 +4172,13 @@
 			"done": "Hecho",
 			"failed": "Falló",
 			"stopped": "Detenido"
+		},
+		"card": {
+			"handedOut": "asignado",
+			"working": "en curso",
+			"done": "hecho",
+			"notFinished": "no se pudo terminar",
+			"stopped": "detenido"
 		}
 	},
 	"connectors": {

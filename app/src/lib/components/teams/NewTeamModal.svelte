@@ -4,8 +4,10 @@
   optional. Creating lands the owner in the team's conversation.
 
   With `team` set it is the SAME picker in edit mode: current members come
-  checked, unchecking removes, name and mission are prefilled. One flow to
-  learn; both doors go through the server's one rule set (two-member floor,
+  checked, unchecking removes, name and mission are prefilled, and the
+  team's standing rules (what doesn't change: brand, rules, who does what;
+  every project starts with them) are edited here too. One flow to learn;
+  both doors go through the server's one rule set (two-member floor,
   organizer stays).
 -->
 <script lang="ts">
@@ -43,6 +45,7 @@
   );
   let typedName = $state(initial?.name ?? '');
   let mission = $state(initial?.mission ?? '');
+  let standing = $state(initial?.standing ?? '');
   // The lead: a member that gets posts addressed to nobody in particular.
   // '' = you lead. Picking an employee that is then unchecked falls back to you.
   let lead = $state(initial?.organizerAgentId ?? '');
@@ -75,7 +78,7 @@
         members: [...picked.map((agentId) => ({ agentId })), ...remoteMembers],
         organizerAgentId: lead
       };
-      const resp = team ? await editTeam(team.id, body) : await openTeam(body);
+      const resp = team ? await editTeam(team.id, { ...body, standing: standing.trim() }) : await openTeam(body);
       oncreated(resp.team);
     } catch (e: unknown) {
       errorMsg = e instanceof Error ? e.message : $t('teams.createFailed');
@@ -139,6 +142,14 @@
         maxlength="300"
         aria-label={$t('teams.missionLabel')}
       />
+      {#if team}
+        <textarea
+          class="textarea textarea-bordered textarea-sm w-full min-h-20 leading-relaxed"
+          placeholder={$t('teams.standingPlaceholder')}
+          bind:value={standing}
+          aria-label={$t('teams.standingLabel')}
+        ></textarea>
+      {/if}
       {#if errorMsg}
         <p class="text-xs text-error">{errorMsg}</p>
       {/if}

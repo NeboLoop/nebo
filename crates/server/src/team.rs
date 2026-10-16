@@ -138,6 +138,7 @@ pub(crate) fn post(
             &text,
             &attachments_json,
             &post.provenance,
+            None,
         )?;
 
         // A member on another computer is reached the only way it can be:
@@ -262,7 +263,10 @@ pub(crate) fn post(
 /// (`coworker::OwnerForward::acknowledge`). Returns the
 /// row and the sender's display name ("Owner" for the owner of this Nebo).
 /// `provenance` is the posting run's: it rides the row as metadata, for the
-/// members briefed with the post and the gates, never in the words.
+/// members briefed with the post and the gates, never in the words. `card`
+/// is set on the lead's line that hands a project's card out
+/// (`card_lines`): the row and its event carry it, so the app shows the
+/// line as the card.
 pub(crate) fn record(
     state: &AppState,
     team: &db::Team,
@@ -271,6 +275,7 @@ pub(crate) fn record(
     text: &str,
     attachments: &serde_json::Value,
     provenance: &[types::provenance::ProvenanceClass],
+    card: Option<&db::TeamCard>,
 ) -> Result<(db::TeamMessage, String), String> {
     let untrusted = matches!(sender, TeamSender::Hub { from, .. } if from != crate::HubSender::Owner);
     let (from_agent_id, sender_name, role) = match sender {
@@ -297,7 +302,7 @@ pub(crate) fn record(
     }
     let message = state
         .store
-        .append_team_message(team, project, role, text, &sender_name, from_agent_id, attachments, &provenance)
+        .append_team_message(team, project, role, text, &sender_name, from_agent_id, attachments, &provenance, card)
         .map_err(|e| format!("record team post: {e}"))?;
     let thread = project.map(|p| p.thread_session_key.clone()).unwrap_or_else(|| db::team_thread_key(&team.id));
     let mut payload = serde_json::json!({
@@ -313,6 +318,9 @@ pub(crate) fn record(
         // (an app with the thread open marks it read).
         "unread": state.store.conversation_unread(&thread).unwrap_or(false),
     });
+    if let Some(c) = card {
+        payload["card"] = serde_json::json!(c);
+    }
     let event = match project {
         Some(p) => {
             payload["projectId"] = serde_json::json!(p.id);
@@ -419,13 +427,19 @@ fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(
     };
     crate::handoff::broadcast(state, card.clone());
     let member = state.store.get_agent(&card.to_agent_id).ok().flatten().map(|a| a.name).unwrap_or_else(|| card.to_agent_id.clone());
-    let (from, text) = match change {
+    let (from, text, handed_out) = match change {
         CardChange::Opened { task, done_when, .. } => (
             card.from_agent_id.as_str(),
             match done_when.trim() {
                 "" => format!("{member}: {task}"),
                 when => format!("{member}: {task}\nDone when: {when}"),
             },
+            Some(db::TeamCard {
+                handoff_id: card.id.clone(),
+                agent_id: card.to_agent_id.clone(),
+                task: task.clone(),
+                done_when: done_when.trim().to_string(),
+            }),
         ),
         CardChange::Closed { .. } => (
             card.to_agent_id.as_str(),
@@ -437,9 +451,10 @@ fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(
                     format!("I couldn't finish this: {why}")
                 }
             },
+            None,
         ),
     };
-    record(state, &team, Some(&project), TeamSender::Local(from), &text, &serde_json::json!([]), &[]).map(|_| ())
+    record(state, &team, Some(&project), TeamSender::Local(from), &text, &serde_json::json!([]), &[], handed_out.as_ref()).map(|_| ())
 }
 
 /// A post that came through the hub as the team's record shows it: its

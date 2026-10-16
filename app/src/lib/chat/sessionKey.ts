@@ -31,10 +31,19 @@ export function teamKey(teamId: string): string {
 	return `team:${teamId}`;
 }
 
-/** Whether `key` is a member's seat in the team `teamId`
- *  (`agent:<member>:coworker:team:<teamId>`): where the member works for it. */
+/** Session key of a project's thread: `team:<teamId>:project:<projectId>`
+ *  (the server's `project_thread_key`). */
+export function projectKey(teamId: string, projectId: string): string {
+	return `${teamKey(teamId)}:project:${projectId}`;
+}
+
+/** Whether `key` is a member's seat in the team `teamId` or in one of its
+ *  projects (`agent:<member>:coworker:team:<teamId>[:project:<id>]`):
+ *  where the member works for it. */
 export function isTeamSeat(key: string, teamId: string): boolean {
-	return key.startsWith('agent:') && key.endsWith(`:coworker:${teamKey(teamId)}`);
+	if (!key.startsWith('agent:')) return false;
+	const team = `:coworker:${teamKey(teamId)}`;
+	return key.endsWith(team) || key.includes(`${team}:project:`);
 }
 
 /** The thread id embedded in a thread session key, or '' when `key` isn't one. */
