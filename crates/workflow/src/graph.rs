@@ -53,8 +53,10 @@ struct GraphState {
     /// (input is dominated by fixed tool-schema overhead resent every turn).
     total_output_tokens: u32,
     /// Expert requests this pass found still out: (request key, deadline).
-    /// Requests still out, each with the latest time to wake the run for it
-    /// (`None`: only its answer wakes it).
+    /// What the run still waits for: an expert's reply
+    /// (`expert::reply_watch`) or the owner's review of a held answer
+    /// (`expert::review_watch`), each with the latest time to wake the run
+    /// for it (`None`: only that event wakes it).
     pending_experts: Vec<(String, Option<i64>)>,
 }
 
@@ -1428,9 +1430,24 @@ async fn run_expert<'a>(
         }
     };
 
+    let hold = expert::held(activity);
     let mut failure = String::new();
     for attempt in 0..activity.on_error.retry.max(1) {
-        let key = expert::request_key(&ctx.run_id, &activity.id, &scope.iteration, attempt);
+        // A held answer the owner asked to change goes back to the same
+        // expert as the next round, with his notes; each round is its own
+        // request (`expert::round_key`).
+        let first = expert::request_key(&ctx.run_id, &activity.id, &scope.iteration, attempt);
+        let mut round = 0;
+        let mut changes: Vec<String> = Vec::new();
+        while let Some(expert::Review::Change(note)) = expert::review_of(ctx.store, &ctx.run_id, &expert::round_key(&first, round)) {
+            changes.push(note);
+            round += 1;
+        }
+        let key = expert::round_key(&first, round);
+        let task = match changes.is_empty() {
+            true => task.clone(),
+            false => format!("{task}\n\n{}", changes_asked(&changes)),
+        };
         let now = chrono::Utc::now().timestamp();
         let standing = match expert::standing(ctx.store, &ctx.run_id, &key, timeout_secs, now) {
             Some(standing) => standing,
@@ -1473,6 +1490,22 @@ async fn run_expert<'a>(
             }
         };
         match standing {
+            // Held for the owner's OK: the answer waits for his review. He is
+            // asked once (`expert::mark_held`); his Change sends it back as
+            // the next round, his Approve makes it the step's output.
+            Standing::Answered(output) if hold && expert::review_of(ctx.store, &ctx.run_id, &key) != Some(expert::Review::Approve) => {
+                if expert::mark_held(ctx.store, &ctx.run_id, &key)? {
+                    crate::cases::ring_project(crate::cases::ProjectChange::HeldForOk {
+                        run_id: ctx.run_id.clone(),
+                        key: key.clone(),
+                        assignment_id: expert::assignment_of(ctx.store, &ctx.run_id, &key),
+                        summary: output["summary"].as_str().unwrap_or("").to_string(),
+                    });
+                }
+                info!(activity = activity.id.as_str(), expert = %expert_label, "expert answer held for the owner's OK");
+                ctx.state.lock().unwrap().pending_experts.push((expert::review_watch(&key), None));
+                return Err(WorkflowError::AwaitingExpert(1));
+            }
             Standing::Answered(output) => {
                 let output = output.to_string();
                 finish("completed", None, Some(&output));
@@ -1481,7 +1514,7 @@ async fn run_expert<'a>(
                 return route(ctx, scope, &activity.id, |_| true).await;
             }
             Standing::Waiting { deadline } => {
-                ctx.state.lock().unwrap().pending_experts.push((key, deadline));
+                ctx.state.lock().unwrap().pending_experts.push((expert::reply_watch(&key), deadline));
                 return Err(WorkflowError::AwaitingExpert(1));
             }
             Standing::Failed(why) => failure = why,
@@ -1497,6 +1530,21 @@ async fn run_expert<'a>(
     finish("completed", Some(&failure), Some(&output));
     record_output(ctx, scope, &activity.id, output);
     route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// What the expert reads when the owner asked for changes to its held answer.
+fn changes_asked(changes: &[String]) -> String {
+    let said: Vec<&str> = changes.iter().map(|c| c.trim()).filter(|c| !c.is_empty()).collect();
+    match said.as_slice() {
+        [] => "The owner looked at your last answer and asked for changes before he approves it. Look at it again \
+               against the task and when it counts as done, improve it, and say what you changed."
+            .to_string(),
+        notes => format!(
+            "The owner looked at your last answer and asked for changes before he approves it: {}. Make them, and say \
+             what you changed.",
+            notes.join("; then: ")
+        ),
+    }
 }
 
 /// Park the run on its experts: one `resume` wait on `expert:<run>` with the
@@ -1519,8 +1567,8 @@ fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, Option<i64>)
         },
         now,
     )?;
-    let keys: Vec<String> = pending.iter().map(|(k, _)| k.clone()).collect();
-    if let Some(event_id) = crate::expert::any_reply(store, run_id, &keys) {
+    let watches: Vec<String> = pending.iter().map(|(w, _)| w.clone()).collect();
+    if let Some(event_id) = crate::expert::any_reply(store, run_id, &watches) {
         store.engine_resume_from_wait(wait_id, event_id, now)?;
     }
     Ok(())
@@ -5045,6 +5093,57 @@ mod walk_tests {
         assert_eq!(expert_requests(&store, &run_id), 1, "the card went out");
     }
 
+    /// Held for your OK (`params.hold`): the expert's answer is not the
+    /// step's output until the owner approves it. Held, the run parks on his
+    /// review and he is asked once, however often the run re-enters. His
+    /// Change sends the work back to the same expert as the next round, with
+    /// his note; that answer is held again, and his Approve makes it the
+    /// step's output.
+    #[tokio::test]
+    async fn a_held_answer_waits_for_the_owners_ok_and_a_change_goes_back() {
+        let store = expert_store(&["ana"]);
+        let (bell, mut rang) = tokio::sync::mpsc::unbounded_channel();
+        crate::cases::install_project_bell(bell);
+        let def = SAME_BOT.replace(r#""timeout": "2h""#, r#""hold": true"#);
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, &def);
+        let inputs = serde_json::json!({ "order": 1 });
+        let first = crate::expert::request_key(&run_id, "ask", "", 0);
+
+        assert!(matches!(pass(&store, &run_id, &def, inputs.clone(), &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        coworker_closes(&store, &run_id, "ana", "done", "Drafted it. {\"total\": 40}");
+        // Held: parked on the owner's review, asked once.
+        for _ in 0..2 {
+            assert!(matches!(pass(&store, &run_id, &def, inputs.clone(), &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        }
+        assert!(provider.calls().is_empty(), "nothing after the held step ran");
+        let crate::cases::ProjectChange::HeldForOk { key, summary, assignment_id, .. } = rang.try_recv().unwrap() else { panic!("held") };
+        assert_eq!((key.as_str(), summary.as_str()), (first.as_str(), "Drafted it."));
+        assert!(assignment_id.is_some());
+        assert!(rang.try_recv().is_err(), "asked once");
+        assert_eq!(live_wait(&store, &run_id).deadline, None, "only his review wakes it");
+
+        // He asks for a change: the same expert gets the work again, with his note.
+        crate::expert::record_review(&store, &run_id, &first, &crate::expert::Review::Change("make it 42".into())).unwrap();
+        assert!(matches!(pass(&store, &run_id, &def, inputs.clone(), &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        assert_eq!(expert_requests(&store, &run_id), 2, "round two went out");
+        let second = crate::expert::round_key(&first, 1);
+        let asked = store.get_assignment(&crate::expert::assignment_of(&store, &run_id, &second).unwrap()).unwrap().unwrap();
+        assert!(asked.subject.contains("asked for changes") && asked.subject.contains("make it 42"), "{}", asked.subject);
+
+        // Round two comes back, is held again, and he approves it.
+        let case = store.engine_run_for_key("case:assignment", &asked.id).unwrap().unwrap();
+        let case_inputs: serde_json::Value = serde_json::from_str(case.inputs.as_deref().unwrap()).unwrap();
+        crate::cases::settle_assignment(&store, &case_inputs, "done", "Changed it. {\"total\": 42}", chrono::Utc::now().timestamp()).unwrap();
+        assert!(matches!(pass(&store, &run_id, &def, inputs.clone(), &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        assert!(matches!(rang.try_recv().unwrap(), crate::cases::ProjectChange::HeldForOk { key, .. } if key == second));
+        crate::expert::record_review(&store, &run_id, &second, &crate::expert::Review::Approve).unwrap();
+        assert!(pass(&store, &run_id, &def, inputs, &provider).await.is_ok());
+        let out = node_output(&store, &run_id, "ask", "");
+        assert_eq!(out["reply"]["total"], 42, "the approved round is the output: {out}");
+        assert!(provider.calls()[0].contains("Changed it."), "the next step reads it");
+    }
+
     #[tokio::test]
     async fn an_expert_that_does_not_answer_in_time_follows_on_error() {
         let store = expert_store(&["ana"]);
@@ -5172,7 +5271,7 @@ mod walk_tests {
         let run_id = new_run(&store, SAME_BOT);
         let key = crate::expert::request_key(&run_id, "ask", "", 0);
         crate::expert::record_reply(&store, &run_id, &key, "done", "fast", "ana").unwrap();
-        park_on_experts(&store, &run_id, &[(key, Some(chrono::Utc::now().timestamp() + 60))]).unwrap();
+        park_on_experts(&store, &run_id, &[(crate::expert::reply_watch(&key), Some(chrono::Utc::now().timestamp() + 60))]).unwrap();
         let run = store.engine_get_run(&run_id).unwrap().unwrap();
         assert_eq!(run.state, "queued", "woken, not left waiting for the deadline");
         assert!(run.woken_by().is_some());

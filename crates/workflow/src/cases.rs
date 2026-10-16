@@ -975,6 +975,9 @@ pub enum ProjectChange {
     Opened { assignment_id: String, task: String, done_when: String },
     Closed { assignment_id: String },
     LimitReached { project_id: String, run_id: String },
+    /// An expert's answer to request `key` is held for the owner's OK
+    /// (`params.hold`): he is asked to approve it or have it changed.
+    HeldForOk { run_id: String, key: String, assignment_id: Option<String>, summary: String },
 }
 
 static PROJECT_BELL: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<ProjectChange>> = std::sync::OnceLock::new();

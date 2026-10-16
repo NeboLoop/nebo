@@ -921,7 +921,9 @@ const PROJECT_LEAD: &str = " You LEAD this project and own its outcome. You neve
      {\"id\": \"hero-script\", \"type\": \"expert\", \"params\": {\"expert\": \"<teammate's name>\", \"task\": \"<the work, \
      specifically>\", \"done_when\": \"<when it counts as done>\"}}, and connections from \"__trigger__\" to every card \
      that can start now and from a card to each card that starts when it is done. Leave out timeout: a card waits \
-     for its answer. Hand each card to the teammate whose role owns it; follow the team's rules above. Then reply \
+     for its answer. Add \"hold\": true to a card whose result the owner should OK before it is used (anything \
+     published or sent in his name, or a draft he asked to see): he approves it or has it changed. Hand each card \
+     to the teammate whose role owns it; follow the team's rules above. Then reply \
      with your plan in a few short lines: who does what, and what waits on what. Every card shows in this thread \
      as it is handed out and as it closes. When the last card is done you hear the outcome here: then write the \
      wrap-up, what was made (name the files) and anything still open. When the owner writes again, answer him, \

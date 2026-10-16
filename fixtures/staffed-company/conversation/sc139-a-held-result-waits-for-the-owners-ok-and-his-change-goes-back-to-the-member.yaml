@@ -1,0 +1,13 @@
+id: sc139-a-held-result-waits-for-the-owners-ok-and-his-change-goes-back-to-the-member
+name: "SC139 — A held result waits for the owner's OK, and his change goes back to the member"
+description: |
+  Teams, projects and threads (2026-10-16): "Approve results, not steps".
+  A project's card held for the owner's OK: the member's draft shows in the
+  thread as held and the owner is asked in Needs you (Approve · Change). He
+  writes what to change in his answer: the draft goes back to the same
+  member with his words, comes back held again, and his Approve lets the
+  project go on to its wrap-up. Nothing after the held card runs while it
+  is held.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_held_result_waits_for_the_owners_ok_and_his_change_goes_back_to_the_member
+conversation: []

@@ -5072,3 +5072,89 @@ async fn a_project_stopped_at_its_limit_closes_with_its_wrap_up() {
     let settled = nebo.store().get_notification(&asked.id, &user).unwrap().unwrap();
     assert!(settled.answered_at.is_some(), "the question is answered: {settled:?}");
 }
+
+/// Held for your OK (Teams, projects and threads, 2026-10-16: "Approve
+/// results, not steps"). A project's card held for the owner's OK: the
+/// member's draft shows in the thread as held, and the owner is asked in
+/// Needs you. He writes what to change in his answer: the draft goes back to
+/// the same member with his words, comes back held again, and his Approve
+/// lets the project go on to its wrap-up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_result_waits_for_the_owners_ok_and_his_change_goes_back_to_the_member() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof HD Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof HD Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-held";
+    nebo.store()
+        .create_team(TEAM, "Proof Held", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], &lead, None)
+        .unwrap();
+    let project = nebo
+        .store()
+        .create_project(&db::NewProject {
+            id: "proof-project-held",
+            team_id: TEAM,
+            lead_agent_id: &lead,
+            title: "PH launch",
+            ask: "launch",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        })
+        .unwrap();
+    fn plans(t: &Thread<'_>) -> Option<Step> {
+        if !(t.opener().contains("MARK-HD") && t.says("You are Proof HD Lead.")) {
+            return None;
+        }
+        if t.new_text().contains("Outcome:") {
+            return Some(Step::say("HD-WRAP: the first comment is approved."));
+        }
+        let results: String = t.since_last_answer().iter().filter_map(|m| m.tool_results.as_ref()).map(|r| r.to_string()).collect();
+        if results.contains("held-plan") {
+            return Some(Step::say("HD-PLAN: the Writer drafts the first comment, held for your OK."));
+        }
+        let plan = json!({
+            "activities": [{"id": "comment", "type": "expert", "params": {"expert": "Proof HD Writer", "task": "MARK-HDW draft the first comment", "hold": true}}],
+            "connections": [{"from": "__trigger__", "to": "comment"}]
+        });
+        Some(Step::call(vec![("create_workflow", json!({ "name": "Held plan", "lifetime": "temporary", "definition": plan.to_string() }))]))
+    }
+    let rig = Rig::new(&nebo, vec![Box::new(plans)]).await;
+    rig.answer_background(Box::new(plans));
+    rig.answer_background(Box::new(|t| {
+        if !(t.req.trace.purpose == "workflow_activity" && t.says("MARK-HDW")) {
+            return None;
+        }
+        let summary = if t.says("make it shorter") { "HD-DRAFT-2: Hey PH, meet NeboAI." } else { "HD-DRAFT-1: Hey Product Hunt, we built NeboAI so anyone can hire AI employees." };
+        Some(Step::say(&format!(r#"Drafted. {{"result":{{"status":"done","summary":"{summary}"}},"next":{{"action":"close"}}}}"#)))
+    }));
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let held = |marker: &'static str| {
+        let nebo = &nebo;
+        let user = user.clone();
+        move || {
+            nebo.store()
+                .list_user_notifications(&user, db::models::InboxView::All, None, 50, 0)
+                .unwrap()
+                .into_iter()
+                .find(|n| n.id.starts_with("held:") && n.answered_at.is_none() && n.body.as_deref().unwrap_or("").contains(marker))
+        }
+    };
+
+    nebo.post_ok(&format!("/projects/{}/messages", project.id), &json!({ "text": "MARK-HD launch us" })).await;
+    rig.until(60, "the first draft is held for his OK", || held("HD-DRAFT-1")().is_some()).await;
+    let first = held("HD-DRAFT-1")().unwrap();
+    assert!(first.needs_you && first.options.iter().map(|o| o.value.as_str()).eq(["approve", "change"]), "{first:?}");
+    assert!(project_rows(&nebo, &project).iter().any(|(from, t)| from == "Proof HD Writer" && t.starts_with("Held for your OK: HD-DRAFT-1")));
+
+    // He writes what to change: it goes back to the Writer with his words.
+    nebo.post_ok(&format!("/notifications/{}/answer", first.id), &json!({ "value": "make it shorter" })).await;
+    rig.until(60, "the changed draft is held again", || held("HD-DRAFT-2")().is_some()).await;
+    assert!(!project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("HD-WRAP")), "nothing goes on while it is held");
+    let second = held("HD-DRAFT-2")().unwrap();
+    nebo.post_ok(&format!("/notifications/{}/answer", second.id), &json!({ "value": "approve" })).await;
+    rig.until(60, "the project goes on to its wrap-up", || project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("HD-WRAP"))).await;
+    let rows = project_rows(&nebo, &project);
+    let at = |needle: &str| rows.iter().position(|(_, text)| text.contains(needle)).unwrap_or_else(|| panic!("no row with {needle}: {rows:#?}"));
+    assert!(at("HD-DRAFT-1") < at("Change it, please: make it shorter") && at("Change it, please") < at("HD-DRAFT-2"), "{rows:#?}");
+    assert!(at("HD-DRAFT-2") < at("Approved.") && at("Approved.") < at("HD-WRAP"), "{rows:#?}");
+}
