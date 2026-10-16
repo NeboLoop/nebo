@@ -1235,8 +1235,8 @@ async fn drive(state: &AppState) {
     // call is the same.
     let queued = store.engine_queued_runs_of_kind("workflow", TURNS_PER_TICK).unwrap_or_default();
     for run in queued {
-        if let Some(event_id) = run.woken_by().filter(|id| woke_for_expert(store, *id)) {
-            resume_after_expert(state, &run, event_id, t).await;
+        if let Some(event_id) = run.woken_by().filter(|id| woke_to_reenter(store, *id)) {
+            reenter(state, &run, event_id, t).await;
         } else if let Some(event_id) = run.woken_by() {
             resume_after_approval(state, &run, event_id, t).await;
         } else if run.parent_run_id.is_some() {
@@ -1946,13 +1946,14 @@ async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     }
 }
 
-/// Whether the event that woke a run is an expert's: a reply, or the
-/// deadline timer of a run's expert wait.
-fn woke_for_expert(store: &Store, event_id: i64) -> bool {
+/// Whether the event that woke a run re-enters it under its own id: an
+/// expert's reply, the deadline timer of a run's expert wait, or the
+/// owner's Continue for a project's run paused at its limit.
+fn woke_to_reenter(store: &Store, event_id: i64) -> bool {
     let Some(e) = store.engine_get_event(event_id).ok().flatten() else {
         return false;
     };
-    if e.kind == workflow::expert::REPLY_KIND {
+    if e.kind == workflow::expert::REPLY_KIND || e.kind == workflow::expert::LIMIT_KIND {
         return true;
     }
     e.target_type == "wait"
@@ -1963,11 +1964,12 @@ fn woke_for_expert(store: &Store, event_id: i64) -> bool {
             .is_some_and(|w| w.on_kind == workflow::expert::REPLY_KIND)
 }
 
-/// An expert's reply (or its deadline) woke a run parked on experts: it
-/// re-enters under its own id with the definition it launched with; the
-/// nodes it finished replay, and each expert step reads its reply, times
-/// out, or parks the run again.
-async fn resume_after_expert(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
+/// An expert's reply (or its deadline) woke a run parked on experts, or the
+/// owner's Continue woke a project's run paused at its limit: it re-enters
+/// under its own id with the definition it launched with; the nodes it
+/// finished replay, and each expert step reads its reply, times out, hands
+/// out its card, or parks the run again.
+async fn reenter(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
     let store = &state.store;
     let Some(definition) = run.definition.clone() else {
         let _ = store.engine_set_run_state(&run.id, "failed", t, Some("parked run has no definition snapshot to resume"));

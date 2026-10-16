@@ -75,6 +75,6 @@ pub use plugin_account_profiles::PluginAccountProfile;
 pub use upgrade::{ToolNamingCell, tool_naming_places};
 pub use file_history::{FileHistoryEntry, NewFileHistory, WorkspaceIndexRow};
 pub use work::{WorkDocument, WorkDocumentListing, WorkDocumentVersion};
-pub use teams::{project_thread_key, team_thread_key, team_thread_of, NewProject, Project, Team, TeamCard, TeamMember, TeamMessage, TeamThread, TEAM_THREAD_PREFIX};
+pub use teams::{PROJECT_LIMIT_SPEND_CENTS, PROJECT_LIMIT_STEPS, project_thread_key, team_thread_key, team_thread_of, NewProject, Project, ProjectUsage, Team, TeamCard, TeamMember, TeamMessage, TeamThread, TEAM_THREAD_PREFIX};
 pub use temporary_work::{TemporaryClaim, TemporaryKind, TemporaryWork};
 pub use workflow_audits::WorkflowAuditRow;

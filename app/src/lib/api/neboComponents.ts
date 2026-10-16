@@ -2043,6 +2043,10 @@ export interface ConnectIntegrationResponse {
 	tools: string[]
 }
 
+export interface ContinueProjectResponse {
+	answered: unknown
+}
+
 export interface CreateAdminResponse {
 	success: boolean
 	token: string

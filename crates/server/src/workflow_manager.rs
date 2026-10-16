@@ -1893,10 +1893,16 @@ impl WorkflowManager for WorkflowManagerImpl {
                         tell_owner_if_blocked(&store, &hub, &neboai_api_url, &installed, &agent_id_owned, &binding_name, &run_id_clone);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
                     }
+                    Err(workflow::WorkflowError::ProjectLimit(used)) => {
+                        // Not a failure: the project's run is parked until
+                        // the owner answers (`team::answer_limit`); the
+                        // project's thread and his Inbox already ask him.
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, used = %used, "inline workflow paused at its project's limit");
+                    }
                     Err(workflow::WorkflowError::AwaitingExpert(waiting)) => {
                         // Not a failure: the run is parked on one engine wait
                         // that the next reply or the earliest deadline wakes
-                        // (engine::resume_after_expert).
+                        // (engine::reenter).
                         hub.broadcast(
                             "workflow_run_waiting",
                             serde_json::json!({

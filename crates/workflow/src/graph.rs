@@ -245,6 +245,13 @@ pub(crate) async fn execute_graph(
             Ok((run_id.to_string(), final_context))
         }
         Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // Parked at the project's limit: one wait, no deadline, until the
+        // owner decides.
+        Err(WorkflowError::ProjectLimit(used)) => {
+            park_at_limit(store, run_id, &used)?;
+            info!(workflow = def.id.as_str(), run_id, used = %used, "workflow paused at its project's limit (graph)");
+            Err(WorkflowError::ProjectLimit(used))
+        }
         // Parked on experts: one wait for every request still out.
         Err(WorkflowError::AwaitingExpert(_)) => {
             let pending = std::mem::take(&mut ctx.state.lock().unwrap().pending_experts);
@@ -1428,6 +1435,11 @@ async fn run_expert<'a>(
         let standing = match expert::standing(ctx.store, &ctx.run_id, &key, timeout_secs, now) {
             Some(standing) => standing,
             None => {
+                // A project's next card waits while the project is at its
+                // limit: the owner decides whether it goes on.
+                if let Some(used) = expert::project_limit_reached(ctx.store, &ctx.run_id) {
+                    return Err(WorkflowError::ProjectLimit(used));
+                }
                 let target = match expert::resolve(ctx.store, &ctx.agent_id, &expert_label) {
                     Ok(target) => target,
                     Err(Unsent::NeedsOwner(why)) => {
@@ -1510,6 +1522,31 @@ fn park_on_experts(store: &Store, run_id: &str, pending: &[(String, Option<i64>)
     let keys: Vec<String> = pending.iter().map(|(k, _)| k.clone()).collect();
     if let Some(event_id) = crate::expert::any_reply(store, run_id, &keys) {
         store.engine_resume_from_wait(wait_id, event_id, now)?;
+    }
+    Ok(())
+}
+
+/// Park a project's run at its limit: one `resume` wait on `limit:<run>`
+/// with no deadline, the project paused, and the bell rung so its thread and
+/// the owner hear it (`server::team::project_lines`). The owner's Continue is
+/// the event that wakes it.
+fn park_at_limit(store: &Store, run_id: &str, used: &str) -> Result<(), WorkflowError> {
+    let now = chrono::Utc::now().timestamp();
+    store.engine_declare_wait(
+        run_id,
+        &db::NewWait {
+            action: "resume",
+            on_kind: crate::expert::LIMIT_KIND,
+            key: &crate::expert::limit_target(run_id),
+            deadline: None,
+            parked: None,
+            reason: &format!("paused at its limit ({used})"),
+        },
+        now,
+    )?;
+    if let Some(project) = store.workflow_run_project(run_id)? {
+        store.set_project_state(&project, "paused", now)?;
+        crate::cases::ring_project(crate::cases::ProjectChange::LimitReached { project_id: project, run_id: run_id.to_string() });
     }
     Ok(())
 }
@@ -4906,7 +4943,7 @@ mod walk_tests {
             })
             .unwrap();
         let (bell, mut rang) = tokio::sync::mpsc::unbounded_channel();
-        crate::cases::install_card_bell(bell);
+        crate::cases::install_project_bell(bell);
         let def = SAME_BOT.replace(r#""timeout": "2h""#, r#""done_when": "the total is priced from the current list""#);
         let provider = MockProvider::new(&[]);
         let run_id = new_run(&store, &def);
@@ -4924,7 +4961,7 @@ mod walk_tests {
         assert_eq!((card.project_id.as_deref(), card.team_id.as_str()), (Some("p-1"), "t-1"));
         assert_eq!(
             rang.try_recv().unwrap(),
-            crate::cases::CardChange::Opened {
+            crate::cases::ProjectChange::Opened {
                 assignment_id: assignment_id.clone(),
                 task: "Price the order".into(),
                 done_when: "the total is priced from the current list".into(),
@@ -4937,10 +4974,75 @@ mod walk_tests {
         assert_eq!(expert_requests(&store, &run_id), 1, "asked once");
 
         coworker_closes(&store, &run_id, "ana", "done", "Priced it. {\"total\": 42}");
-        assert_eq!(rang.try_recv().unwrap(), crate::cases::CardChange::Closed { assignment_id: assignment_id.clone() });
+        assert_eq!(rang.try_recv().unwrap(), crate::cases::ProjectChange::Closed { assignment_id: assignment_id.clone() });
         assert!(pass(&store, &run_id, &def, inputs, &provider).await.is_ok());
         assert_eq!(store.get_handoff(&assignment_id).unwrap().unwrap().status, "done");
         assert!(rang.try_recv().is_err(), "each change rings once");
+    }
+
+    /// A project at its limit hands out no more cards: before the next one
+    /// goes out its run parks on `limit:<run>` with no deadline, the project
+    /// is paused, and the bell rings so the owner is asked. Once the limit
+    /// is raised (his Continue), the run re-enters and the card goes out.
+    #[tokio::test]
+    async fn a_project_at_its_limit_pauses_before_its_next_card() {
+        let store = expert_store(&["ana"]);
+        store.create_team("t-1", "Launch", "", &[db::TeamMember::local("owner"), db::TeamMember::local("ana")], "owner", None).unwrap();
+        store
+            .create_project(&db::NewProject {
+                id: "p-1",
+                team_id: "t-1",
+                lead_agent_id: "owner",
+                title: "PH launch",
+                ask: "launch",
+                asker_session_key: "",
+                asker_agent_id: "",
+                playbook_binding: None,
+            })
+            .unwrap();
+        store.raise_project_limits("p-1", 2, 500).unwrap();
+        let (bell, mut rang) = tokio::sync::mpsc::unbounded_channel();
+        crate::cases::install_project_bell(bell);
+        let def = SAME_BOT.replace(r#", "timeout": "2h""#, "");
+        let provider = MockProvider::new(&[]);
+        let run_id = new_run(&store, &def);
+        store.conn_exec_for_test(&format!("UPDATE workflow_runs SET project_id = 'p-1' WHERE id = '{run_id}'"));
+        // Two turns of the project's work already happened in the lead's seat.
+        for _ in 0..2 {
+            store
+                .record_run_usage(&db::models::RunUsageEntry {
+                    agent_id: "owner".into(),
+                    session_key: Some("agent:owner:coworker:team:t-1:project:p-1".into()),
+                    run_id: None,
+                    run_type: "chat".into(),
+                    model_id: "m".into(),
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cost_microcents: 0,
+                    outcome: None,
+                    exit_reason: None,
+                })
+                .unwrap();
+        }
+        let inputs = serde_json::json!({ "order": 1 });
+
+        let paused = pass(&store, &run_id, &def, inputs.clone(), &provider).await;
+        assert!(matches!(&paused, Err(WorkflowError::ProjectLimit(used)) if used.starts_with("2 of 2 steps")), "{paused:?}");
+        assert_eq!(expert_requests(&store, &run_id), 0, "no card went out");
+        let wait = live_wait(&store, &run_id);
+        assert_eq!((wait.on_kind.as_str(), wait.key.clone(), wait.deadline), (crate::expert::LIMIT_KIND, crate::expert::limit_target(&run_id), None));
+        assert_eq!(store.get_project("p-1").unwrap().unwrap().state, "paused");
+        assert_eq!(
+            rang.try_recv().unwrap(),
+            crate::cases::ProjectChange::LimitReached { project_id: "p-1".into(), run_id: run_id.clone() }
+        );
+
+        // Continue: more room, and the run goes on.
+        store.raise_project_limits("p-1", 62, 1_000).unwrap();
+        assert!(matches!(pass(&store, &run_id, &def, inputs, &provider).await, Err(WorkflowError::AwaitingExpert(1))));
+        assert_eq!(expert_requests(&store, &run_id), 1, "the card went out");
     }
 
     #[tokio::test]

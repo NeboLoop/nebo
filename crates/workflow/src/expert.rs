@@ -26,6 +26,33 @@ use crate::parser::{Activity, param_str};
 
 /// Engine event kind a reply arrives as.
 pub const REPLY_KIND: &str = "expert_reply";
+/// Engine event kind the owner's Continue arrives as, for a project's run
+/// paused at its limit (on `limit:<run>`).
+pub const LIMIT_KIND: &str = "project_limit";
+
+/// What a project's paused run waits on.
+pub fn limit_target(run_id: &str) -> String {
+    format!("limit:{run_id}")
+}
+
+/// Whether a project's run may hand out its next card: `Some(what was
+/// used)` when the project has reached its step or spend limit
+/// (`db::Project::limits`, measured by `db::Store::project_usage`). `None`
+/// for a run that is not a project's.
+pub fn project_limit_reached(store: &Store, run_id: &str) -> Option<String> {
+    let project = store.workflow_run_project(run_id).ok().flatten()?;
+    let project = store.get_project(&project).ok().flatten()?;
+    let used = store.project_usage(&project).ok()?;
+    let (steps, cents) = project.limits();
+    (used.turns >= steps || used.spent_microcents >= cents * 1_000_000).then(|| {
+        format!(
+            "{} of {steps} steps, ${:.2} of ${:.2}",
+            used.turns,
+            used.spent_microcents as f64 / 100_000_000.0,
+            cents as f64 / 100.0
+        )
+    })
+}
 /// The effects-ledger class of an expert request.
 pub const EFFECT_CLASS: &str = "expert";
 /// The prefix that names an agent on another bot.

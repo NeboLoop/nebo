@@ -1,0 +1,13 @@
+id: sc137-a-project-at-its-limit-pauses-and-the-owners-answer-decides
+name: "SC137 — A project at its limit pauses, and the owner's answer decides"
+description: |
+  Teams, projects and threads (2026-10-16): a project never quietly burns
+  the owner's balance. Before its next card goes out, a project that has
+  used its steps or spend (its lead's and members' turns, its runs and its
+  cards' cases) parks its run, is paused, says so in its thread, and asks
+  the owner in Needs you: Continue or Stop. His Continue in the Inbox gives
+  it room again; the card goes out, the work finishes and the lead wraps
+  up.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_project_at_its_limit_pauses_and_the_owners_answer_decides
+conversation: []
