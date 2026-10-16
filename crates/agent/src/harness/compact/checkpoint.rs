@@ -7,7 +7,7 @@
 //! passes the window's compaction threshold or the provider says it
 //! overflowed, and the owner takes one with `/compact`, a turn of its own
 //! (`TurnInput::Compact`) that checkpoints its first step. Pre-checkpoint hooks
-//! run first (the memory flush is one). The summary call forks the step's
+//! run first (the transcript index is one). The summary call forks the step's
 //! own request, so the provider's prompt cache is reused, with the checkpoint
 //! instruction as the last message and tools off. A conversation too long for
 //! that call loses its oldest fifth and is tried again, and the boundary says
@@ -60,49 +60,52 @@ pub trait PreCheckpointHook: Send + Sync {
     async fn before_checkpoint(&self, session_id: &str, why: CheckpointReason);
 }
 
-/// The pre-checkpoint memory flush: durable facts are extracted from the
-/// conversation the checkpoint summarizes, in the background, for this
-/// session only; the checkpoint never waits on it. Barred when the run's
-/// taint meets the memory scope's write bar.
-pub struct MemoryFlush {
-    pub provider: Arc<dyn ai::Provider>,
+/// What the checkpoint keeps of the conversation it summarizes for memory:
+/// the same summary call writes the durable facts in a `<memories>` block
+/// (`memory::extraction_prompt`, its bar and categories), read from the
+/// conversation the fork already carries, and they are stored under the
+/// run's memory scope. One call, on the cached prefix: before, a separate
+/// flush sent a flattened copy of the whole conversation (50–54k tokens)
+/// just before the checkpoint (audit 2026-10-16). None when the run may not
+/// write memory, or its taint meets the scope's write bar.
+pub struct CheckpointMemory {
     pub store: Arc<db::Store>,
     pub user_id: String,
     pub topics: Vec<napp::agent::MemoryTopic>,
     pub embedding: Option<Arc<dyn ai::EmbeddingProvider>>,
     pub taint: Vec<types::provenance::ProvenanceClass>,
-    pub barred: bool,
-    /// The flush model's window: the conversation fills half of it.
-    pub window_tokens: usize,
 }
 
-#[async_trait::async_trait]
-impl PreCheckpointHook for MemoryFlush {
-    fn name(&self) -> &'static str {
-        "memory_flush"
+impl CheckpointMemory {
+    /// What the summary call is asked for besides the checkpoint.
+    fn ask(&self) -> String {
+        let existing = crate::memory::build_existing_memories_section(&self.store, &self.user_id);
+        format!(
+            "After the </checkpoint> block, write a <memories> block holding only a JSON object, for what is worth \
+             remembering beyond this conversation:\n\n{}",
+            crate::memory::extraction_prompt(None, &existing, &self.topics, None)
+        )
     }
 
-    async fn before_checkpoint(&self, session_id: &str, _why: CheckpointReason) {
-        if self.barred {
-            info!(
-                session_id,
-                classes = %types::provenance::label_classes(&self.taint),
-                "memory flush barred by scope write bar"
-            );
+    /// Store the facts of the reply's `<memories>` block, if it wrote one.
+    fn keep(&self, reply: &str, session_id: &str) {
+        let Some(block) = block(reply, "memories") else {
             return;
-        }
-        crate::memory_flush::spawn_memory_flush(
-            self.provider.clone(),
-            self.store.clone(),
-            session_id.to_string(),
-            self.user_id.clone(),
-            self.topics.clone(),
-            self.embedding.clone(),
-            self.taint.clone(),
-            self.window_tokens,
-        )
-        .await;
+        };
+        let Some(facts) = crate::memory::parse_facts(block) else {
+            return;
+        };
+        crate::memory::store_facts(&self.store, &facts, &self.user_id, self.embedding.clone(), &self.topics, &self.taint);
+        info!(session_id, "checkpoint: the conversation's durable facts kept");
     }
+}
+
+/// The text inside the reply's `<tag>…</tag>` block.
+fn block<'a>(reply: &'a str, tag: &str) -> Option<&'a str> {
+    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+    let a = reply.find(&open)? + open.len();
+    let b = reply[a..].find(&close)? + a;
+    Some(&reply[a..b])
 }
 
 /// The pre-checkpoint transcript index: the conversation the summary is
@@ -148,6 +151,8 @@ pub struct CheckpointContext<'a> {
     /// model, cache breakpoints) and replaces its messages.
     pub fork_of: &'a ChatRequest,
     pub hooks: &'a [Box<dyn PreCheckpointHook>],
+    /// The durable facts the summary call also writes, and where they go.
+    pub memory: Option<CheckpointMemory>,
     pub restore: RestoreState<'a>,
     /// What the owner asked the summary to keep or focus on (`/compact
     /// <instructions>`), added to the summary prompt as extra instructions.
@@ -382,7 +387,12 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         .get_chat_messages_since_checkpoint(&cx.sessions.active_chat_id(cx.session_id))
         .map_err(|e| format!("could not load the conversation: {e}"))?;
 
-    let (reply, head_cut) = summarize(cx.provider, cx.fork_of, cx.conversation, cx.instructions, cx.session_id).await?;
+    let memories = cx.memory.as_ref().map(CheckpointMemory::ask);
+    let (reply, head_cut) =
+        summarize(cx.provider, cx.fork_of, cx.conversation, cx.instructions, memories.as_deref(), cx.session_id).await?;
+    if let Some(memory) = &cx.memory {
+        memory.keep(&reply, cx.session_id);
+    }
     let summary = extract_checkpoint(&reply)?;
 
     // The deferred tools loaded so far carry over on the boundary.
@@ -474,7 +484,7 @@ pub async fn summary_of(
     conversation: &[ChatMessage],
     session_id: &str,
 ) -> Result<String, String> {
-    let (reply, _) = summarize(provider, base, conversation, None, session_id).await?;
+    let (reply, _) = summarize(provider, base, conversation, None, None, session_id).await?;
     extract_checkpoint(&reply)
 }
 
@@ -486,6 +496,7 @@ async fn summarize(
     fork_of: &ChatRequest,
     conversation: &[ChatMessage],
     instructions: Option<&str>,
+    memories: Option<&str>,
     session_id: &str,
 ) -> Result<(String, bool), String> {
     let rounds = round_starts(conversation);
@@ -496,7 +507,7 @@ async fn summarize(
         let mut messages = crate::harness::conversation::convert_messages(&conversation[start..], &model);
         messages.push(Message {
             role: "user".into(),
-            content: instruction(instructions),
+            content: instruction(instructions, memories),
             ..Default::default()
         });
         // Everything but the messages is the step's request as it was sent:
@@ -532,11 +543,17 @@ async fn summarize(
 
 /// The summary call's closing instruction, with the owner's own
 /// instructions for this checkpoint when they gave any.
-fn instruction(owner: Option<&str>) -> String {
-    match owner.map(str::trim).filter(|i| !i.is_empty()) {
-        Some(extra) => format!("{CHECKPOINT_INSTRUCTION}\n\nAdditional instructions from the owner:\n{extra}"),
-        None => CHECKPOINT_INSTRUCTION.to_string(),
+fn instruction(owner: Option<&str>, memories: Option<&str>) -> String {
+    let mut text = CHECKPOINT_INSTRUCTION.to_string();
+    if let Some(memories) = memories {
+        text.push_str("\n\n");
+        text.push_str(memories);
     }
+    // The owner's words about the checkpoint come last.
+    if let Some(extra) = owner.map(str::trim).filter(|i| !i.is_empty()) {
+        text.push_str(&format!("\n\nAdditional instructions from the owner:\n{extra}"));
+    }
+    text
 }
 
 enum CallError {
@@ -587,6 +604,11 @@ fn round_starts(conversation: &[ChatMessage]) -> Vec<usize> {
 /// The `<checkpoint>` block of the reply, the `<notes>` block stripped.
 fn extract_checkpoint(reply: &str) -> Result<String, String> {
     let mut text = reply.to_string();
+    if let (Some(a), Some(b)) = (text.find("<memories>"), text.rfind("</memories>"))
+        && a < b
+    {
+        text.replace_range(a..b + "</memories>".len(), "");
+    }
     if let (Some(a), Some(b)) = (text.find("<notes>"), text.find("</notes>"))
         && a < b
     {
@@ -740,6 +762,7 @@ mod tests {
                 heard_through: conversation.last().map(|m| m.id.as_str()),
                 fork_of: &fork_of,
                 hooks,
+                memory: None,
                 restore,
                 instructions: None,
                 fit_under: self.fit_under.get(),
@@ -1362,11 +1385,57 @@ mod tests {
             heard_through: None,
             fork_of: &fork_of,
             hooks: &[],
+            memory: None,
             restore: RestoreState::default(),
             instructions: None,
             fit_under: None,
             overhead_tokens: 0,
         };
         send(&checkpoint(&cx, CheckpointReason::OwnerAsked));
+    }
+
+    /// The summary call also writes the conversation's durable facts: one
+    /// call, the memories ask on its instruction, the facts stored under the
+    /// scope, and the summary without them.
+    #[tokio::test]
+    async fn the_checkpoint_keeps_the_conversations_facts_in_the_same_call() {
+        let s = Setup::new();
+        s.say("user", "Our accountant is Dana Lee; she files every quarter.");
+        s.say("assistant", "Noted.");
+        let reply = "<notes>n</notes><checkpoint>You told me who your accountant is.</checkpoint>\n<memories>\
+            {\"entities\": [{\"key\": \"person/dana-lee\", \"value\": \"Dana Lee is the owner's accountant and files every quarter.\", \"explicit\": true}]}\
+            </memories>";
+        let provider = Scripted::new(vec![Reply::Say(reply.into())]);
+        let conversation = s.conversation();
+        let fork_of = ChatRequest::new(ai::RequestTrace::new("agent_turn"));
+        let cx = CheckpointContext {
+            sessions: &s.sessions,
+            provider: provider.as_ref(),
+            session_id: &s.sid,
+            conversation: &conversation,
+            heard_through: None,
+            fork_of: &fork_of,
+            hooks: &[],
+            memory: Some(CheckpointMemory {
+                store: s.store.clone(),
+                user_id: "u".into(),
+                topics: vec![],
+                embedding: None,
+                taint: vec![],
+            }),
+            restore: RestoreState::default(),
+            instructions: None,
+            fit_under: None,
+            overhead_tokens: 0,
+        };
+        let written = checkpoint(&cx, CheckpointReason::OwnerAsked).await.unwrap();
+        assert_eq!(written.summary, "You told me who your accountant is.", "the facts stay out of the summary");
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1, "one call for both");
+        let asked = &requests[0].messages.last().unwrap().content;
+        assert!(asked.starts_with(CHECKPOINT_INSTRUCTION) && asked.contains("<memories>"), "{asked}");
+        assert!(asked.contains("The conversation is the one above."), "not copied in again");
+        let kept = s.store.list_memories_by_user_and_namespace("u", "", 50, 0).unwrap();
+        assert!(kept.iter().any(|m| m.key.contains("dana-lee")), "{kept:?}");
     }
 }
