@@ -1705,6 +1705,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
         if conversation::mid_turn_message_landed(&conversation, &st.seen) && st.step > 1 {
             st.transition = Transition::MidTurnInput;
+            // The owner spoke: a read made before his words may answer
+            // differently now, so none of them stands any more.
+            st.round.failures.changed();
         }
         // The owner spoke and has no answer yet: this step hears him. What
         // his message asks for is decided before it, once per message, and
@@ -2019,7 +2022,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // The streaming executor: safe calls start as their input completes
         // in the stream, while the reply is still arriving, so a read costs
         // no wait for the rest of the reply.
-        let mut executor = ToolExecutor::new(&round_cx);
+        let mut executor = ToolExecutor::new(&round_cx, st.round.failures.standing(std::time::Instant::now()));
         let reply_heard_through = st.seen.last().map(|m| m.id.clone());
         let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
         // Tools are off for the answer to a stop: nothing streamed starts.
@@ -4313,7 +4316,8 @@ mod tests {
             stored(&h).iter().filter(|m| m.role == "tool").map(|m| m.tool_results.clone().unwrap_or_default()).collect();
         assert_eq!(results.len(), 3, "{results:#?}");
         assert!(!results[0].contains("already made this exact call"), "{}", results[0]);
-        assert!(results[1].contains("already made this exact call") && results[2].contains("already made this exact call"));
+        assert!(results[1].contains("already made this exact call"), "{}", results[1]);
+        assert!(results[2].contains(tool_round::ALREADY_READ_NOTE), "the same answer twice: not run a third time: {}", results[2]);
     }
 
     /// Live 2026-10-08: "I don't want these in the video: /Users/…/Desktop/
@@ -5040,6 +5044,61 @@ mod tests {
         assert_eq!(results.len(), 12);
         assert!(results[11].contains(tool_round::CHANGE_APPROACH_NOTE), "{}", results[11]);
         assert!(notices(&events).is_empty(), "{}", notices(&events));
+    }
+
+    /// A read with the same input that answered the same way twice, nothing
+    /// changed since, is not run a third time: it is answered with a note
+    /// that its answer stands. A different input, or a change in between (a
+    /// write), runs it again; a read whose answer moves (the next part)
+    /// always runs (`PartReader` in the mid-turn tests).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_already_answered_is_not_run_again_until_something_changes() {
+        let model = Scripted::new(vec![
+            Step::Call("lookup", serde_json::json!({"q": "a"})),
+            Step::Call("lookup", serde_json::json!({"q": "a"})),
+            Step::Call("lookup", serde_json::json!({"q": "a"})),
+            Step::Call("lookup", serde_json::json!({"q": "b"})),
+            Step::Call("writer", serde_json::json!({})),
+            Step::Call("lookup", serde_json::json!({"q": "a"})),
+            Step::Say("Done."),
+        ]);
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = harness_with(&model, vec![Box::new(Lookup(ran.clone()))]).await;
+        let events = run_turn(&h, owner("Look it up")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let results = tool_results(&h);
+        assert_eq!(results.len(), 6);
+        assert!(results[1].contains("found a"), "the second run still runs: {}", results[1]);
+        assert!(results[2].contains("Not run again"), "the same answer twice: the third is not run: {}", results[2]);
+        assert!(results[3].contains("found b"), "another input runs: {}", results[3]);
+        assert!(results[5].contains("found a"), "a write in between: the read runs again: {}", results[5]);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 4, "the third never reached the tool");
+    }
+
+    /// A read-only lookup that counts its runs.
+    struct Lookup(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tools::registry::DynTool for Lookup {
+        fn name(&self) -> &str {
+            "lookup"
+        }
+        fn description(&self) -> String {
+            "Looks a thing up".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move { tools::ToolResult::ok(format!("found {}", input["q"].as_str().unwrap_or_default())) })
+        }
     }
 
     /// The owner speaks while a tool round runs: the next step's call
@@ -8229,7 +8288,7 @@ mod tests {
             "reads things".into()
         }
         fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
+            serde_json::json!({"type": "object", "properties": {"part": {"type": "integer"}}})
         }
         fn read_only(&self, _input: &serde_json::Value) -> bool {
             true
@@ -8253,7 +8312,7 @@ mod tests {
     /// checkpoint.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pressure_clears_old_results_before_a_checkpoint() {
-        let mut script: Vec<Step> = (0..30).map(|_| Step::Call("reader", serde_json::json!({}))).collect();
+        let mut script: Vec<Step> = (0..30).map(|part| Step::Call("reader", serde_json::json!({ "part": part }))).collect();
         script.extend([Step::Overflow, Step::Say("Carried on.")]);
         let model = Scripted::new(script);
         let h = harness_with(&model, vec![Box::new(Reader)]).await;
