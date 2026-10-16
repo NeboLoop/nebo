@@ -701,10 +701,48 @@ pub(crate) async fn run_in_thread(
         // runtime's own words — never silence.
         let error = reply.error.filter(|_| reply.text.is_empty());
         let said = if reply.text.is_empty() { error.clone().unwrap_or_default() } else { reply.text };
-        deliver_reply(&state, &route, &thread_key, said.clone(), reply.provenance, reply.heard_through.as_deref()).await;
+        // The files the run handed the owner: kept on its own thread as
+        // the cards a direct chat shows, and carried by its team post.
+        crate::chat_dispatch::keep_turn_artifacts(&state.harness, &thread_key, &reply.files, &state.config.neboai.api_url);
+        deliver_reply(&state, &route, &thread_key, said.clone(), &reply.files, reply.provenance, reply.heard_through.as_deref()).await;
         crate::handoff::turn_ended(&state, &thread_key, &said, error.as_deref(), run_started);
     });
     Ok(())
+}
+
+/// The files a member's run handed the owner, landed through the one upload
+/// path (`land_upload`), so its team post carries them the way the owner's
+/// own post carries what he attached: every surface shows them and every
+/// member can open them. A file that could not land is left out, and said.
+async fn land_run_files(state: &AppState, urls: &[String]) -> Vec<comm::wire::Attachment> {
+    let Ok(files_dir) = config::data_dir().map(|d| d.join("files")) else {
+        return Vec::new();
+    };
+    let mut landed = Vec::new();
+    for url in urls {
+        let Some(path) = crate::chat_dispatch::artifact_local_path(&files_dir, url) else {
+            continue;
+        };
+        let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let data = match tokio::fs::read(&path).await {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "team: a file the member handed over could not be read");
+                continue;
+            }
+        };
+        let mime = crate::chat_dispatch::mime_from_extension(&path);
+        match crate::handlers::files::land_upload(state, &filename, &mime, data).await {
+            Ok(attachment) => landed.push(attachment),
+            Err(crate::handlers::files::Unlanded::Refused(_)) => {
+                tracing::warn!(file = %filename, "team: the account's storage refused a file the member handed over");
+            }
+            Err(crate::handlers::files::Unlanded::Failed(e)) => {
+                tracing::warn!(file = %filename, error = %e, "team: a file the member handed over could not be kept");
+            }
+        }
+    }
+    landed
 }
 
 /// A coworker's reply: recorded where its thread's route says — posted
@@ -720,6 +758,7 @@ async fn deliver_reply(
     route: &CoworkerRoute,
     thread_key: &str,
     reply: String,
+    files: &[String],
     provenance: Vec<types::provenance::ProvenanceClass>,
     heard_through: Option<&str>,
 ) {
@@ -728,7 +767,7 @@ async fn deliver_reply(
         match &route.team {
             Some(leg) => {
                 let post = tools::coworker::TeamPost {
-                    attachments: vec![],
+                    attachments: land_run_files(state, files).await,
                     team_id: leg.team_id.clone(),
                     project_id: leg.project_id.clone(),
                     from_agent_id: route.to_agent_id.clone(),

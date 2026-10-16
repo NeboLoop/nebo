@@ -1,0 +1,9 @@
+id: sc141-a-file-a-team-member-hands-over-rides-its-team-post
+name: "SC141 — A file a team member hands over rides its team post"
+description: |
+  The owner asks a team for a package; the lead hands over a document and its PDF. The lead's
+  team post carries both, landed through the one upload path, and the lead's own thread keeps
+  them as the cards a direct chat shows.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_file_a_team_member_hands_over_rides_its_team_post
+conversation: []
