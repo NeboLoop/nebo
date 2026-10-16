@@ -15,6 +15,24 @@ pub const TURN_RETRY_ATTEMPTS: i64 = 3;
 pub const TURN_RETRY_FIRST_SECS: i64 = 60;
 pub const TURN_RETRY_MAX_SECS: i64 = 3600;
 
+/// A history row (a turn's result, a give-up) is complete as it lands: it
+/// wakes nothing. Exactly the row just recorded is completed. Claiming the
+/// loop's batch to find it held every other due event under a lease nobody
+/// delivered (two minutes): seen in the staffed proof of 2026-10-16, a
+/// coworker's reply to a parked workflow sat claimed and undelivered, and the
+/// run it answered stayed parked.
+fn complete_history_row(store: &Store, recorded: Result<db::Enqueued, NeboError>, t: i64) -> Result<(), NeboError> {
+    match recorded {
+        Ok(db::Enqueued::Inserted(id)) => store.engine_complete_event(id, t),
+        // Already on record: completed when it first landed.
+        Ok(db::Enqueued::Duplicate) => Ok(()),
+        Err(e) => {
+            tracing::warn!(error = %e, "case: history row not recorded");
+            Ok(())
+        }
+    }
+}
+
 /// The engine gave up on something: a poisoned event, a run interrupted
 /// twice, a turn that failed past its retries, a money effect nobody can
 /// confirm, a merge that left two open cases, two employees on one case.
@@ -41,11 +59,7 @@ pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &st
         return Ok(());
     }
     // History rows never wake anything.
-    if let Ok((claimed, _)) = store.engine_claim_events(t, 50) {
-        for e in claimed.iter().filter(|e| e.idem_key == idem) {
-            store.engine_complete_event(e.id, t)?;
-        }
-    }
+    complete_history_row(store, Ok(recorded), t)?;
 
     let title = match case {
         Some(_) => "A case needs your attention",
@@ -844,7 +858,7 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
             .join(", ");
         format!("{} send(s) on the ledger this turn: {list}", receipts.len())
     };
-    let _ = store.engine_enqueue_event(&NewEvent {
+    let recorded = store.engine_enqueue_event(&NewEvent {
         kind: if failed { "turn_failed" } else { "turn_result" },
         target_type: "run",
         target_id: parent_id,
@@ -855,11 +869,7 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
         ..Default::default()
     });
     // History rows never wake anything; they are complete on arrival.
-    if let Ok((claimed, _)) = store.engine_claim_events(t, 50) {
-        for e in claimed.iter().filter(|e| e.r#ref == child.id && e.target_type == "run" && e.target_id == parent_id) {
-            store.engine_complete_event(e.id, t)?;
-        }
-    }
+    complete_history_row(store, recorded, t)?;
 
     if !parent_open {
         return Ok(());
