@@ -421,8 +421,8 @@ const TEACH_VISIBLE: &str = "I just demonstrated a task for you on your computer
     watch the recording back and learn how to do it.";
 
 /// The learning run: the narration transcribed (a failure is one line of
-/// the reply, never a stop), then the run dispatched HERE on the deepest
-/// intelligence. The engine owns both the visible message and the steering
+/// the reply, never a stop), then the run dispatched HERE on the build
+/// lane. The engine owns both the visible message and the steering
 /// briefing: the chat shows one human sentence, and the operational
 /// instructions ride `mention_context` — the existing ephemeral
 /// `<system-reminder>` rail — so they reach the model without ever being
@@ -482,10 +482,10 @@ async fn learn(
         })
         .unwrap_or_default();
     let briefing = teach_briefing(&rec, rec.dir.join("timeline.md").exists(), narration);
-    // Training uses the deepest intelligence: the run, and the turns that
-    // follow it in this thread, build from their first step on the build
-    // lane of the employee's pack (Nebo AI's: High, which Janus serves on
-    // its strongest model). The owner's own setting is untouched.
+    // Training builds: the run, and the turns that follow it in this
+    // thread, build from their first step on the build lane of the
+    // employee's pack (Nebo AI's: Medium, which Janus serves on its build
+    // pool). The owner's own setting is untouched.
     state.harness.build_session(&session_key, TEACH_BUILD_WINDOW);
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
     let config = crate::chat_dispatch::ChatConfig {
@@ -991,8 +991,8 @@ mod tests {
         assert_eq!(narration_ext("blob", ""), "m4a");
     }
 
-    /// The learning run is pinned to the build lane (the deepest
-    /// intelligence) for its session, and the transcript is never logged.
+    /// The learning run is pinned to the build lane for its session, and the
+    /// transcript is never logged.
     #[test]
     fn the_learning_run_builds_and_never_logs_what_was_said() {
         let src = include_str!("desktop.rs");

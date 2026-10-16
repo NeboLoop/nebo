@@ -149,7 +149,7 @@ impl Harness {
 
     /// The turns of `session_key` build from their first step for the next
     /// `window`: they run on the build lane of the employee's intelligence
-    /// pack (Nebo AI's: High, sent as the `build` purpose), the way the
+    /// pack (Nebo AI's: Medium, sent as the `build` purpose), the way the
     /// workflow builder's do, without touching the model the owner chose.
     /// For a taught task: its learning run and the turns that make a
     /// workflow or a task from it.

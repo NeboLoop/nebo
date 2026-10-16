@@ -211,12 +211,11 @@ pub const NEBO_AI_ID: &str = "nebo-ai";
 /// Low on `nebo-1-flash`, Medium on `nebo-1-medium`, High and Max on
 /// `nebo-1-pro`. Max runs on `nebo-1-pro` until Janus has a real Max.
 ///
-/// Its lanes are the model bake-off's split (2026-10-09): employees and
-/// workflows are written at High, and their workflows run at Instant. A
-/// build's steps reach Janus as the `build` purpose, which Janus serves on
-/// its strongest model when it can, else on `nebo-1-pro`. High, not Max:
-/// Max's thinking budget is more than Nebo's output cap, which the
-/// `nebo-1-pro` qwen models refuse (live 2026-10-10).
+/// Its lanes: employees and workflows are written at Medium, and their
+/// workflows run at Instant. Writing an employee does not need High (owner,
+/// 2026-10-15). A build's steps reach Janus as the `build` purpose, which
+/// Janus serves on its build pool of fast models, else on `nebo-1-medium`;
+/// never on `nebo-1-pro` and never on a Claude Fable model.
 pub fn nebo_ai() -> Pack {
     let janus = |m: &str| Some(format!("janus/{m}"));
     Pack {
@@ -238,7 +237,7 @@ pub fn nebo_ai() -> Pack {
         fallback: false,
         built_in: true,
         route_through_janus: false,
-        lanes: PackLanes { build: Some(Effort::High), workflow: Some(Effort::Instant), ..PackLanes::default() },
+        lanes: PackLanes { build: Some(Effort::Medium), workflow: Some(Effort::Instant), ..PackLanes::default() },
         // Low is Instant with a little thinking; Max is High at its highest
         // effort until Janus has a speed above `nebo-1-pro`.
         level_effort: LevelEffort {
@@ -380,7 +379,8 @@ mod tests {
         assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Instant, thinking a little");
         assert_eq!(nebo.effort_for(Effort::High), None, "nebo-1-pro at its default");
         assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-pro at its highest");
-        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::High), "built at High");
+        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::Medium), "built at Medium, never High or Max");
+        assert_eq!(nebo.model_for(Effort::Medium), Some("janus/nebo-1-medium"));
         assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run at Instant");
         assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.lanes.level(Lane::Heartbeat), None, "the rest: the work chooses");
