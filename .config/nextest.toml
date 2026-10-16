@@ -71,9 +71,10 @@ path = "junit.xml"
 # filter = "package(nebo-x) & test(=module::the_test)"
 # retries = 2   # https://github.com/NeboLoop/nebo/issues/N
 
-
 # The watch's first look missed an employee written before it (Linux only,
-# 1 of 4 full CI runs). https://github.com/NeboLoop/nebo/issues/915
+# 2 of 6 full CI runs). Fixed in the same change that added this list (the
+# first look is never skipped); leaves once the nightlies stay clean.
+# https://github.com/NeboLoop/nebo/issues/915
 [[profile.default.overrides]]
 filter = "package(nebo-napp) & test(=agent_loader::tests::an_employee_written_before_the_watch_is_in_place_is_found)"
 retries = 2

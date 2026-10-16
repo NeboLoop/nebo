@@ -1217,7 +1217,8 @@ impl Loader {
             // whatever landed meanwhile.
             let mut look_now = true;
             loop {
-                let mut paths: Vec<std::path::PathBuf> = if std::mem::take(&mut look_now) {
+                let first_look = std::mem::take(&mut look_now);
+                let mut paths: Vec<std::path::PathBuf> = if first_look {
                     Vec::new()
                 } else {
                     let event = match rx.recv().await {
@@ -1267,8 +1268,13 @@ impl Loader {
                 // watcher, are older than that reload's scan and already in
                 // the catalog. Reloading for them again was a second full
                 // scan per install.
+                // The first look is never skipped: no event asked for it,
+                // and a file written just after the boot's load can carry an
+                // mtime a few ms older than that load (the kernel stamps
+                // files from a coarse clock) — read as already loaded, it
+                // would never be (the agent loader's watch had exactly this).
                 let scan_began = *scanned_at.lock().unwrap_or_else(|e| e.into_inner());
-                if scan_began.is_some_and(|began| napp::reader::changed_before(&paths, began)) {
+                if !first_look && scan_began.is_some_and(|began| napp::reader::changed_before(&paths, began)) {
                     debug!("skills changes already in the catalog; no reload");
                     continue;
                 }

@@ -310,7 +310,8 @@ impl AgentLoader {
             loop {
                 // What the burst names, to tell whether a scan already has it.
                 let mut paths: Vec<PathBuf> = Vec::new();
-                if !std::mem::take(&mut look_now) {
+                let first_look = std::mem::take(&mut look_now);
+                if !first_look {
                     let event = match rx.recv().await {
                         None => break,
                         Some(Ok(event)) => event,
@@ -363,8 +364,15 @@ impl AgentLoader {
                 // (`finalize_agent_install`): the events of its writes,
                 // reported after, are older than that scan. Rescanning every
                 // employee for them again was a second full scan per hire.
+                // The first look is never skipped: no event asked for it.
+                // The drain above can hand it the watch's own events (an
+                // open of a watched folder, on Linux), and a folder written
+                // just after the boot's scan can carry an mtime a few ms
+                // older than that scan (the kernel stamps files from a
+                // coarse clock), so it read as already loaded and the
+                // employee written before the watch was never reported.
                 let scan_began = *scanned_at.lock().unwrap_or_else(|e| e.into_inner());
-                if scan_began.is_some_and(|began| crate::reader::changed_before(&paths, began)) {
+                if !first_look && scan_began.is_some_and(|began| crate::reader::changed_before(&paths, began)) {
                     debug!("agents changes already loaded; no rescan");
                     continue;
                 }
