@@ -1339,46 +1339,6 @@ impl ChangeExplanation {
     }
 }
 
-// ── Commander ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommanderTeam {
-    pub id: String,
-    pub name: String,
-    pub color: String,
-    pub position_x: f64,
-    pub position_y: f64,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommanderTeamMember {
-    pub team_id: String,
-    pub agent_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommanderNodePosition {
-    pub node_id: String,
-    pub position_x: f64,
-    pub position_y: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CommanderEdge {
-    pub id: String,
-    pub source_node_id: String,
-    pub target_node_id: String,
-    pub edge_type: String,
-    pub label: String,
-    pub created_at: i64,
-}
-
 /// An A2UI surface persisted for state restoration across restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -923,55 +923,6 @@ export function serveCommFile(id: string) {
 }
 
 /**
- * @description "Create edge"
- */
-export function createEdge(req: Record<string, unknown> = {}) {
-	return webapi.post<components.CreateEdgeResponse>(`/api/v1/commander/edges`, req)
-}
-
-/**
- * @description "Delete edge"
- */
-export function deleteEdge(id: string) {
-	return webapi.delete<components.DeleteEdgeResponse>(`/api/v1/commander/edges/${id}`)
-}
-
-/**
- * @description "Get graph"
- */
-export function getGraph() {
-	return webapi.get<components.GetGraphResponse>(`/api/v1/commander/graph`)
-}
-
-/**
- * @description "Save layout"
- */
-export function saveLayout(req: Record<string, unknown> = {}) {
-	return webapi.put<components.SaveLayoutResponse>(`/api/v1/commander/layout`, req)
-}
-
-/**
- * @description "Create team"
- */
-export function createTeam(req: Record<string, unknown> = {}) {
-	return webapi.post<components.CreateTeamResponse>(`/api/v1/commander/teams`, req)
-}
-
-/**
- * @description "Update team"
- */
-export function updateTeam(id: string, req: Record<string, unknown> = {}) {
-	return webapi.put<components.UpdateTeamResponse>(`/api/v1/commander/teams/${id}`, req)
-}
-
-/**
- * @description "Delete team"
- */
-export function deleteTeam(id: string) {
-	return webapi.delete<components.DeleteTeamResponse>(`/api/v1/commander/teams/${id}`)
-}
-
-/**
  * @description "Dashboard"
  */
 export function dashboard() {

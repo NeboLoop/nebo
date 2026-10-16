@@ -524,36 +524,6 @@ export interface ChatStreamResponse {
 	toolCall?: unknown
 }
 
-export interface CommanderEdge {
-	id: string
-	sourceNodeId: string
-	targetNodeId: string
-	edgeType: string
-	label: string
-	createdAt: number
-}
-
-export interface CommanderNodePosition {
-	nodeId: string
-	positionX: number
-	positionY: number
-}
-
-export interface CommanderTeam {
-	id: string
-	name: string
-	color: string
-	positionX: number
-	positionY: number
-	createdAt: number
-	updatedAt: number
-}
-
-export interface CommanderTeamMember {
-	teamId: string
-	agentId: string
-}
-
 export interface ConnectionModel {
 	modelId: string
 	displayName: string
@@ -2076,10 +2046,6 @@ export interface CreateCompanionChatResponse {
 	sessionKey: string
 }
 
-export interface CreateEdgeResponse {
-	edge: CommanderEdge
-}
-
 export interface CreateIntegrationResponse {
 	integration: McpIntegration
 }
@@ -2108,11 +2074,6 @@ export interface CreateSkillResponse {
 
 export interface CreateStoreCollectionResponse {
 	collection: unknown
-}
-
-export interface CreateTeamResponse {
-	team: CommanderTeam
-	memberIds: string[]
 }
 
 export interface CreateWorkflowResponse {
@@ -2148,10 +2109,6 @@ export interface DeleteChatResponse {
 
 export interface DeleteConnectionModelResponse {
 	deleted: string
-}
-
-export interface DeleteEdgeResponse {
-	ok: boolean
 }
 
 export interface DeleteEntityConfigResponse {
@@ -2197,10 +2154,6 @@ export interface DeleteStoreCollectionResponse {
 
 export interface DeleteTaskResponse {
 	success: boolean
-}
-
-export interface DeleteTeamResponse {
-	ok: boolean
 }
 
 export interface DeleteWorkflowResponse {
@@ -2295,12 +2248,6 @@ export interface GetDiagnosticsResponse {
 
 export interface GetEntityConfigResponse {
 	config: unknown
-}
-
-export interface GetGraphResponse {
-	nodes: unknown[]
-	edges: unknown[]
-	teams: unknown[]
 }
 
 export interface GetHeartbeatResponse {
@@ -2874,10 +2821,6 @@ export interface RunWorkflowResponse {
 	run: WorkflowRun
 }
 
-export interface SaveLayoutResponse {
-	saved: number
-}
-
 export interface SearchMemoriesResponse {
 	memories: Memory[]
 }
@@ -3112,10 +3055,6 @@ export interface UpdateStoreCollectionResponse {
 
 export interface UpdateTaskRoutingResponse {
 	message: string
-}
-
-export interface UpdateTeamResponse {
-	ok: boolean
 }
 
 export interface UpdateWorkflowResponse {
