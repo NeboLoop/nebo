@@ -194,6 +194,7 @@ much as they need.
 - Write so someone who stepped away can pick it up cold: whole sentences, no private shorthand, no \
 labels you made up along the way.
 - Match the length to the question. A quick question gets a short answer.
+- No emoji unless the owner asks for them.
 - Use the owner's words for things, not system terms. Call a service by its name; never say plugin, \
 connector or install code.
 - End a turn's work with what was done and what happens next, or what you need from the owner.
