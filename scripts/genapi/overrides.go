@@ -53,6 +53,8 @@ var typeOverrides = map[string]string{
 	// Linked bots (OpenClaw, Hermes) with chat, and the agents each serves:
 	// what "Hire from <linked bot>" offers.
 	"list_linked_agents.computers": "LinkedComputerEntry[]",
+	// The coding apps this computer could host but does not have.
+	"list_linked_agents.missing": "LinkedMissingApp[]",
 	// When the owner's computers were last looked at (unix seconds).
 	"list_linked_agents.checkedAt": "number",
 	// Blank-create (the Hire flow) returns the introduction thread so the
@@ -319,6 +321,15 @@ export interface RunDisplay {
 	local: boolean
 	/** What is installed on it, one entry per app, in the order shown. */
 	agents: LinkedAgentEntry[]
+}`,
+
+	"LinkedMissingApp": `export interface LinkedMissingApp {
+	/** The runtime it would run: "claude-code". */
+	runtime: string
+	/** The app as the owner knows it: "Claude Code". */
+	app: string
+	/** Where its makers say how to install it. */
+	installUrl: string
 }`,
 
 	"LinkedAgentEntry": `export interface LinkedAgentEntry {

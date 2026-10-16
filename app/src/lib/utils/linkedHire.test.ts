@@ -165,4 +165,14 @@ describe('the hire list', () => {
 		expect(modal).not.toMatch(/setInterval/);
 		expect(modal).toContain("onWsEvent<ListLinkedAgentsResponse>('linked_apps_changed'");
 	});
+
+	it('says plainly when a coding app is not installed, with where to get it and Check again', async () => {
+		const modal = (await import('$lib/components/NewEmployeeModal.svelte?raw')).default;
+		expect(modal).toContain("$t('newEmployee.notInstalled'");
+		expect(modal).toContain('href={m.installUrl}');
+		// Check again looks at the computer now, without restarting Nebo.
+		expect(modal).toContain('listLinkedAgents(true)');
+		const en = (await import('$lib/i18n/locales/en.json')).default as { newEmployee: Record<string, string> };
+		expect(en.newEmployee.notInstalled.replace('{app}', 'Claude Code')).toBe("Claude Code isn't installed on this computer.");
+	});
 });

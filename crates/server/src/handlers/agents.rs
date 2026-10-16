@@ -2357,17 +2357,69 @@ async fn hire_linked(
     })))
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct ListLinkedQuery {
+    /// "Check again": look at the owner's computers now and answer with
+    /// what is found, rather than with what was last found.
+    #[serde(default)]
+    pub look: bool,
+}
+
 /// GET /agents/linked — what "Hire from another app" offers, by computer:
 /// what is installed on each, one entry per app (Claude Code, Codex, Gemini
 /// CLI, Hermes, OpenClaw), each hired from the bot its row names (`botId`)
-/// and started as itself. Answered at once from what Nebo already knows of
-/// the owner's computers ([`crate::linked_apps`]), which is looked for again
-/// behind the answer; only the very first listing, before anything is
-/// known, waits for it. `checkedAt` is when it was last looked for.
-pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let inventory = state.linked_apps.current_or_look(&state).await;
+/// and started as itself, and the coding apps this computer could host but
+/// does not have (`missing`, with where to get each). Answered at once from
+/// what Nebo already knows of the owner's computers ([`crate::linked_apps`]),
+/// which is looked for again behind the answer; only the very first listing,
+/// before anything is known, waits for it, and `?look=true` ("Check again")
+/// always does. `checkedAt` is when it was last looked for.
+pub async fn list_linked_agents(
+    State(state): State<AppState>,
+    Query(q): Query<ListLinkedQuery>,
+) -> HandlerResult<serde_json::Value> {
+    let inventory = state.linked_apps.current_or_look(&state, q.look).await;
     let computers = linked_listing(&state, &inventory);
-    Ok(Json(serde_json::json!({ "computers": computers, "checkedAt": inventory.checked_at })))
+    let missing = missing_here(&state, &inventory.installed);
+    Ok(Json(serde_json::json!({ "computers": computers, "missing": missing, "checkedAt": inventory.checked_at })))
+}
+
+/// The coding apps this computer could host for the owner but does not
+/// have installed, each with the page that says how to install it: none
+/// while Nebo can't host coding agents here (no bot yet, or a nebo-link
+/// daemon hosts them).
+pub(crate) fn missing_here(state: &AppState, installed: &[comm::api_types::LinkedRuntime]) -> Vec<serde_json::Value> {
+    let hosts = state
+        .local_host
+        .as_ref()
+        .is_some_and(|local| local.bot_id().is_some() && local.hosted_by_daemon().is_none());
+    if !hosts {
+        return Vec::new();
+    }
+    missing_apps(installed)
+}
+
+/// The known coding apps not in `installed`, in the hire list's order, each
+/// with its install page.
+fn missing_apps(installed: &[comm::api_types::LinkedRuntime]) -> Vec<serde_json::Value> {
+    nebo_runtimes::acp::Agent::KNOWN
+        .into_iter()
+        .filter(|a| !installed.iter().any(|r| r.id == a.key()))
+        .filter_map(|a| {
+            Some(serde_json::json!({ "runtime": a.key(), "app": a.name(), "installUrl": install_page(a.key())? }))
+        })
+        .collect()
+}
+
+/// Where a coding app's makers say how to install it.
+fn install_page(runtime: &str) -> Option<&'static str> {
+    match runtime {
+        "claude-code" => Some("https://code.claude.com/docs/en/setup"),
+        "codex" => Some("https://developers.openai.com/codex/cli"),
+        "gemini" => Some("https://github.com/google-gemini/gemini-cli"),
+        "opencode" => Some("https://opencode.ai/docs/"),
+        _ => None,
+    }
 }
 
 /// The hire list from what is known of the owner's computers: the apps
@@ -6603,7 +6655,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{Here, NEW, ThisComputer, agent_name, hire_source, hired_as, linked_computers, linked_offline, linked_persona_edit, linked_target, refusal};
+    use super::{Here, NEW, ThisComputer, agent_name, hire_source, hired_as, linked_computers, linked_offline, linked_persona_edit, linked_target, missing_apps, refusal};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -6754,6 +6806,19 @@ mod linked_hire_tests {
             runtimes: runtimes.iter().map(|r| installed(r)).collect(),
         };
         (bot, roster)
+    }
+
+    /// A coding app that isn't installed here is named, with where to
+    /// install it, so "Hire from another app" can say so plainly; one that
+    /// is installed is not.
+    #[test]
+    fn a_coding_app_not_installed_here_says_where_to_get_it() {
+        let runtimes = |m: &[serde_json::Value]| m.iter().map(|a| a["runtime"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let none = missing_apps(&[]);
+        assert_eq!(runtimes(&none), ["claude-code", "codex", "gemini", "opencode"]);
+        assert_eq!(none[0]["app"], "Claude Code");
+        assert!(none.iter().all(|a| a["installUrl"].as_str().is_some_and(|u| u.starts_with("https://"))), "{none:?}");
+        assert_eq!(runtimes(&missing_apps(&[installed("claude-code"), installed("gemini")])), ["codex", "opencode"]);
     }
 
     fn installed(runtime: &str) -> comm::api_types::LinkedRuntime {

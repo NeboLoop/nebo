@@ -46,9 +46,10 @@ pub struct LinkedApps {
 
 impl LinkedApps {
     /// What was last found, and a look for anything newer behind it; the
-    /// very first time, before anything was found, the look itself.
-    pub async fn current_or_look(&self, state: &AppState) -> Inventory {
-        if let Some(known) = self.known.read().await.clone() {
+    /// very first time, before anything was found, or with `fresh` (the
+    /// owner's "Check again"), the look itself.
+    pub async fn current_or_look(&self, state: &AppState, fresh: bool) -> Inventory {
+        if !fresh && let Some(known) = self.known.read().await.clone() {
             let state = state.clone();
             tokio::spawn(async move { state.linked_apps.look(&state).await });
             return known;
@@ -83,7 +84,11 @@ impl LinkedApps {
             info!(computers = listed.len(), "linked: the apps on the owner's computers changed");
             state.hub.broadcast(
                 "linked_apps_changed",
-                serde_json::json!({ "computers": listed, "checkedAt": inventory.checked_at }),
+                serde_json::json!({
+                    "computers": listed,
+                    "missing": crate::handlers::agents::missing_here(state, &inventory.installed),
+                    "checkedAt": inventory.checked_at,
+                }),
             );
         }
     }
