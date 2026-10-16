@@ -944,6 +944,7 @@ pub async fn execute_activity(
             max_iterations: granted,
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
+            case_turn: inputs.get("_case").is_some(),
             spend_cap_microcents,
             model: activity.model.clone(),
             cancel: cancel_token.cloned(),
@@ -1052,6 +1053,7 @@ pub async fn execute_activity(
             max_iterations: granted,
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
+            case_turn: inputs.get("_case").is_some(),
             spend_cap_microcents,
             model: activity.model.clone(),
             cancel: cancel_token.cloned(),
@@ -1640,13 +1642,14 @@ fn build_activity_prompt_with_context(
     // Emit is opt-in via cmds declaration.
     prompt.push_str("\n## Workflow Controls\n");
     prompt.push_str("You have access to these workflow control tools:\n");
-    prompt.push_str(
+    let case_turn = inputs.get("_case").is_some();
+    prompt.push_str(if case_turn {
+        "- exit(reason: \"...\") — ends this turn now. The reason is the turn's \
+         output, so it MUST end with the turn's JSON object (see Ending this turn).\n"
+    } else {
         "- exit(reason: \"...\") — call this to stop the workflow early if \
-         the condition in your task is not met or there is nothing to do. \
-         In a case turn (inputs carry `_case`) the reason is the turn's \
-         output: it MUST end with the turn's JSON object (result/next), \
-         because the engine reads the next wait from it.\n",
-    );
+         the condition in your task is not met or there is nothing to do.\n"
+    });
     let has_emit_cmd = activity.cmds.iter().any(|c| c == "emit");
     if has_emit_cmd && emit_sources.is_empty() {
         prompt.push_str(
@@ -1656,6 +1659,9 @@ fn build_activity_prompt_with_context(
         );
     }
     prompt.push('\n');
+    if case_turn {
+        prompt.push_str(&format!("## Ending this turn\n{}\n\n", crate::cases::TURN_CONTRACT));
+    }
 
     // Browser automation guide — injected when the browser tools are available
     if has_browser {
@@ -1745,6 +1751,27 @@ mod input_value_tests {
         assert_eq!(prompt.matches("\"row-1999\"").count(), 2, "the last row, in the list and in the object");
         assert!(prompt.contains("\"id\": \"m1\""), "the object's scalars");
         assert!(!prompt.contains("truncated"), "nothing cut");
+    }
+
+    /// A case turn is told how it ends, in the contract's own words, and
+    /// that an exit's reason is that output; any other step is told neither.
+    /// A bare exit is refused with the same words; one that carries the
+    /// turn object is not.
+    #[test]
+    fn a_case_turn_is_told_how_it_ends_and_held_to_it() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({"id": "work", "intent": "Do it"})).unwrap();
+        let case = serde_json::json!({"_case": {"case_type": "assignment"}, "subject": "Scripts"});
+        let prompt = build_activity_prompt_with_context(&activity, "", &case, None, &[], false, &[], None);
+        assert!(prompt.contains("## Ending this turn") && prompt.contains(crate::cases::TURN_CONTRACT), "{prompt}");
+        assert!(prompt.contains("The reason is the turn's output"), "{prompt}");
+        let plain = build_activity_prompt_with_context(&activity, "", &serde_json::json!({"subject": "x"}), None, &[], false, &[], None);
+        assert!(!plain.contains("Ending this turn") && !plain.contains("turn's output"), "{plain}");
+
+        let refused = crate::cases::exit_refusal("done").expect("a bare exit leaves the case without its next step");
+        assert!(refused.contains("no JSON object") && refused.contains(crate::cases::TURN_CONTRACT), "{refused}");
+        let close = r#"Saved both. {"result":{"status":"done","summary":"two scripts"},"next":{"action":"close"}}"#;
+        assert_eq!(crate::cases::exit_refusal(close), None);
+        assert_eq!(crate::cases::exit_refusal(r#"{"next":{"action":"wait","deadline":"2d"}}"#), None);
     }
 }
 

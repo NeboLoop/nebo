@@ -3782,6 +3782,7 @@ mod employee_model_tests {
             max_iterations: 3,
             min_iterations: 0,
             requires_tools: Vec::new(),
+            case_turn: false,
             spend_cap_microcents: 0,
             model: String::new(),
             cancel: None,

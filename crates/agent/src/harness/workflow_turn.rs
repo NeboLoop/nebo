@@ -8,7 +8,10 @@
 //! History model: each turn gets a scratch session seeded from the engine's
 //! curated conversation (step prompts and step results). The scratch
 //! sessions are deleted at run end, except when the run parks for approval:
-//! then the suspension row the park closure writes is the resume state.
+//! then the suspension row the park closure writes is the resume state. A
+//! turn that Nebo stopping cut off keeps its scratch conversation: when the
+//! run is relaunched it goes on from there (`cut_off_by_restart`), so what it
+//! already did is not done twice.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -280,6 +283,33 @@ impl WorkflowTurns {
         Ok(())
     }
 
+    /// Whether this turn's scratch conversation is one an earlier process
+    /// started and a restart cut off: it has messages, this process never
+    /// opened it (a retry inside the run reuses a conversation this process
+    /// made, and starts over), and the run has been started more than once.
+    fn cut_off_by_restart(&self, turn: &LoopTurn<'_>, session_id: &str, existing: &[db::models::ChatMessage]) -> bool {
+        if existing.is_empty() {
+            return false;
+        }
+        let ours = self
+            .sessions_by_run
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&turn.trace.run_id)
+            .is_some_and(|ids| ids.iter().any(|id| id == session_id));
+        if ours {
+            return false;
+        }
+        match self.harness.store.engine_get_run(&turn.trace.run_id) {
+            Ok(Some(run)) => run.attempts > 1,
+            Ok(None) => false,
+            Err(e) => {
+                warn!(run_id = %turn.trace.run_id, error = %e, "workflow turn: run unreadable; starting the turn over");
+                false
+            }
+        }
+    }
+
     /// A turn that ended in tool calls only: its output is the latest tool
     /// message's non-error results (errors excluded, so a step whose tools
     /// only failed yields empty output: branch termination).
@@ -319,7 +349,16 @@ impl ActivityLoop for WorkflowTurns {
         let mut session_id = session.id.clone();
 
         let existing = sessions.get_messages(&session_id).unwrap_or_default();
-        if turn.pending.is_none() {
+        if turn.pending.is_none() && self.cut_off_by_restart(&turn, &session_id, &existing) {
+            // The run was relaunched after Nebo stopped mid-turn: this
+            // conversation is what the turn already did (files written,
+            // messages sent). It goes on from there instead of starting
+            // over and doing it all twice (seen live 2026-10-16: a lead's
+            // assignment re-ran from the top after a restart and wrote every
+            // file again). Open calls get a result saying so.
+            super::conversation::record_interrupt(sessions, &session_id, super::conversation::Interrupt::Restarted);
+            info!(run_id = %turn.trace.run_id, session_id, "workflow turn: continuing the conversation a restart cut off");
+        } else if turn.pending.is_none() {
             // A fresh turn (or a retry): the curated seed is the whole truth;
             // a stale scratch conversation from an earlier attempt must not
             // leak in.
@@ -433,6 +472,7 @@ impl ActivityLoop for WorkflowTurns {
                 contract: WorkflowContract {
                     min_iterations: turn.min_iterations,
                     requires_tools: turn.requires_tools.clone(),
+                    case_turn: turn.case_turn,
                 },
                 park,
             })),

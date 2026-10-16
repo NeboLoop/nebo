@@ -272,6 +272,50 @@ fn e16_a_temporary_team_is_due_to_disband_when_its_lead_closes_its_work() {
     assert!(told[0].payload.contains("It was a temporary team, so it has disbanded."), "{}", told[0].payload);
 }
 
+/// E16b — The lead ends its assignment through the exit tool, the close in
+/// the exit's reason (the one way a case turn's exit may end it: a bare
+/// `exit("done")` is answered with the contract and the turn goes on,
+/// `harness::turn::tests::a_case_turns_exit_must_carry_the_turn_object`).
+/// The assignment is done and the session that assigned it is woken with
+/// `assignment.done`, once. Seen live 2026-10-16: the lead's bare exit left
+/// the case waiting two days and the assigner never heard. Must never: an
+/// exited turn read as a turn with no next, or an assigner left unwoken.
+#[test]
+fn e16b_a_lead_that_ends_its_assignment_through_exit_closes_it_and_wakes_the_assigner() {
+    let w = World::new();
+    let assigner = "agent:video-editor:thread:t1";
+    let req = workflow::cases::NewAssignmentRequest {
+        assigner_agent_id: "video-editor",
+        assigner_name: "Video Editor",
+        assigner_session_key: assigner,
+        parent_run_id: None,
+        assignee_agent_id: "lead",
+        subject: "Plan the Product Hunt launch",
+        done_means: "Scripts and a first comment, saved",
+        due: None,
+        workflow_reply: None,
+    };
+    let assignment = workflow::cases::open_assignment(&w.s, &req, w.t).unwrap();
+    let case = w.s.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the lead's case");
+    let queued = w.queued_turn(&case.id).expect("the lead's turn");
+    let turn = w.start(&queued.id);
+
+    // The exit path records its reason where a failure would, and no result.
+    let reason = closes("done", "Both scripts and the first comment are saved");
+    w.s.update_workflow_run(&turn.id, Some("exited"), None, None, Some(&reason), None).unwrap();
+    let turn = w.run(&turn.id);
+    let output = turn_output(&turn, w.t);
+    settle_turn(&w.s, &turn, output.as_deref(), turn.state != "done", w.t).unwrap();
+
+    assert_eq!(w.run(&case.id).state, "done", "the close in the exit's reason closed the case");
+    let row = w.s.get_assignment(&assignment).unwrap().expect("the assignment");
+    assert_eq!(row.state, "done");
+    assert!(!w.history_has(&case.id, "turn_result", "without a valid next"), "{:?}", w.history(&case.id));
+    let woke: Vec<_> = w.s.engine_claim_session_events(assigner, w.t).unwrap().0.into_iter().filter(|e| e.kind == "assignment.done").collect();
+    assert_eq!(woke.len(), 1, "the assigner hears it once: {woke:?}");
+    assert!(woke[0].payload.contains("Both scripts and the first comment are saved"), "{}", woke[0].payload);
+}
+
 /// E18 — A temporary workflow waits for an outside event the way it waits
 /// for the owner. It works one case: the customer's. Its turn writes to the
 /// customer and waits on their reply as a signal, with a follow-up timer a
