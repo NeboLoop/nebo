@@ -340,6 +340,26 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The project whose work a run is part of: the run's own project, or the
+    /// project of the run it was started under, up the chain (a card's case
+    /// and the case's turns sit under the project's run).
+    pub fn project_of_run(&self, run_id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "WITH RECURSIVE up(id, parent, depth) AS (
+                 SELECT id, parent_run_id, 0 FROM engine_runs WHERE id = ?1
+                 UNION ALL SELECT r.id, r.parent_run_id, u.depth + 1 FROM engine_runs r JOIN up u ON r.id = u.parent
+                 WHERE u.depth < 32
+             )
+             SELECT w.project_id FROM up JOIN workflow_runs w ON w.id = up.id
+             WHERE w.project_id IS NOT NULL AND w.project_id != '' ORDER BY up.depth LIMIT 1",
+            params![run_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The project a run is the work of (`projects.id`), if it is one's.
     pub fn workflow_run_project(&self, id: &str) -> Result<Option<String>, NeboError> {
         let conn = self.conn()?;

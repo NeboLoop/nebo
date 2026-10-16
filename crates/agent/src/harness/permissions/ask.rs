@@ -14,9 +14,12 @@
 //! counts as a No and never approves. One a workflow run is parked on
 //! expires after a day ([`RUN_ASK_EXPIRES_AFTER`]): nobody is there to
 //! carry on, so the run ends saying it waited and no answer came, instead
-//! of hanging. Every other ask stays open, and the wait's timer brings it
-//! back to the owner as a reminder, at widening intervals, for as long as
-//! it is open. Nothing here ever approves on its own.
+//! of hanging. A run that is part of a project's work is the exception
+//! (owner, 2026-10-16): the project waits on its owner as long as it takes,
+//! so its ask never expires. Every other ask stays open too, and the wait's
+//! timer brings it back to the owner as a reminder, at widening intervals
+//! (a day, two, four, then weekly), for as long as it is open. Nothing here
+//! ever approves on its own.
 
 use std::sync::{Arc, OnceLock};
 
@@ -45,7 +48,8 @@ pub fn reminder_after(reminded: usize) -> i64 {
 /// How long a workflow run waits on an unanswered ask before it stops, in
 /// seconds: a day, when the ask's first reminder would come. The run is
 /// unattended; past this it ends with a clear message to the owner rather
-/// than waiting forever.
+/// than waiting forever. A run that is part of a project's work never
+/// expires: the project waits on him (`Store::project_of_run`).
 pub const RUN_ASK_EXPIRES_AFTER: i64 = 24 * 3600;
 
 /// The event kind the owner's answer is signalled as, on the ask's wait key
@@ -691,7 +695,7 @@ impl Asks {
                     if self.parked_run_is_gone(&run) {
                         return self.withdraw(ask, now).map(|_| None);
                     }
-                    if now - ask.created_at >= RUN_ASK_EXPIRES_AFTER {
+                    if now - ask.created_at >= RUN_ASK_EXPIRES_AFTER && !self.holds_a_project(&run) {
                         return self.expire(registry, ask, &run, now);
                     }
                 }
@@ -892,6 +896,17 @@ impl Asks {
         }
         self.store.engine_finish_run(&ask.id, now).map_err(store_err)?;
         Ok(())
+    }
+
+    /// Whether the run an ask holds is part of a project's work: a project
+    /// waits on its owner as long as it takes, so the ask never expires. An
+    /// unreadable answer keeps today's day-long wait.
+    fn holds_a_project(&self, run_id: &str) -> bool {
+        self.store.project_of_run(run_id).unwrap_or_else(|e| {
+            tracing::warn!(run = run_id, error = %e, "ask: could not tell whether the run is a project's; it expires after a day");
+            None
+        })
+        .is_some()
     }
 
     /// Nobody answered the ask a workflow run is parked on for
@@ -2067,6 +2082,37 @@ mod tests {
         assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "done", "the ask's wait is closed");
         assert!(matches!(r.asks.answer(&id, Answer::AllowAlways, AnsweredVia::Inbox), Err(AskError::Settled(_))));
         assert_eq!(r.ran(1), 0, "nothing ran");
+    }
+
+    /// A project waits on its owner as long as it takes (owner, 2026-10-16):
+    /// an ask held by a run under a project's run (here a card's case turn,
+    /// two levels down) never expires. It comes back as a reminder at a day,
+    /// two, four, then weekly, and an answer weeks later still applies.
+    #[tokio::test]
+    async fn a_projects_ask_never_expires_and_keeps_reminding() {
+        let r = rig().await;
+        let id = r.park("workflow:wf-14", Door::Workflow, "+15550142").await;
+        r.store.create_workflow_run("plan-14", "agent:lead", "manual", None, None, None, None).unwrap();
+        r.store.conn_exec_for_test("UPDATE workflow_runs SET project_id = 'p-14' WHERE id = 'plan-14'");
+        for (run, kind, parent) in [("case-14", "case", "plan-14"), ("turn-14", "workflow", "case-14")] {
+            r.store
+                .engine_create_run(&db::NewRun { id: run, kind, session_key: "k", agent_id: "emp", lane: "main", parent_run_id: Some(parent), ..Default::default() })
+                .unwrap();
+        }
+        r.store.engine_set_run_state("turn-14", "waiting", 1, None).unwrap();
+        r.store.link_permission_ask_run(&id, "turn-14").unwrap();
+        assert_eq!(r.store.project_of_run("turn-14").unwrap().as_deref(), Some("p-14"));
+        let created = r.asks.get(&id).unwrap().unwrap().created_at;
+
+        for days in [1, 3, 7, 30] {
+            assert!(r.asks.resume(&r.reg, &id, created + days * RUN_ASK_EXPIRES_AFTER).unwrap().is_none());
+            assert_eq!(r.asks.get(&id).unwrap().unwrap().status, AskStatus::Open, "still waiting on day {days}");
+        }
+        assert!(r.seen.expired.lock().unwrap().is_empty(), "the run is never ended for waiting");
+        assert_eq!(r.seen.reminded.lock().unwrap().len(), 4, "a reminder each time it came due");
+        let wait = r.store.engine_waits_for_run(&id).unwrap().pop().expect("the next reminder");
+        assert_eq!(wait.deadline, Some(created + 30 * RUN_ASK_EXPIRES_AFTER + 7 * 24 * 3600), "weekly from the fourth");
+        assert!(r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Inbox).is_ok(), "an answer a month later still applies");
     }
 
     /// The owner cancelled the run an ask parked: the card clears at once
