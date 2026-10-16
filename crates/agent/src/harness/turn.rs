@@ -6775,6 +6775,7 @@ mod tests {
             max_iterations: max,
             min_iterations: 0,
             requires_tools: Vec::new(),
+            case_turn: false,
             spend_cap_microcents: 0,
             model: String::new(),
             cancel: None,
@@ -6802,6 +6803,139 @@ mod tests {
         assert!(err.to_string().starts_with("Stopped: Step 2/2 of \"run\" used its 2 model turns"), "{err}");
     }
 
+    /// A case turn's exit carries the turn object in its reason. Live
+    /// 2026-10-16: a lead ended an assignment with `exit(reason: "done")`,
+    /// the case waited two days and the assigner never heard. That exit is
+    /// answered with the contract and the turn goes on; the exit that
+    /// carries it ends the turn with it. Outside a case turn any reason
+    /// ends it, as before.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_case_turns_exit_must_carry_the_turn_object() {
+        use workflow::ActivityLoop;
+        let activity: workflow::parser::Activity =
+            serde_json::from_value(serde_json::json!({"id": "work", "intent": "do the assignment"})).unwrap();
+        let close = r#"Both scripts saved. {"result":{"status":"done","summary":"two scripts"},"next":{"action":"close"}}"#;
+        let turn = |case_turn: bool| workflow::LoopTurn {
+            activity: &activity,
+            instructions: "Do the assignment.".into(),
+            seed_messages: vec![ai::Message { role: "user".into(), content: "do the assignment".into(), ..Default::default() }],
+            workflow_name: "assignment",
+            advertised_tools: vec!["exit".into()],
+            agent_id: "lead",
+            user_id: "",
+            memory_writes_disabled: true,
+            trace: RequestTrace { run_id: uuid::Uuid::new_v4().to_string(), ..RequestTrace::new("workflow_activity") },
+            checkpoint: None,
+            pending: None,
+            iteration: "",
+            step_index: None,
+            max_iterations: 5,
+            min_iterations: 0,
+            requires_tools: Vec::new(),
+            case_turn,
+            spend_cap_microcents: 0,
+            model: String::new(),
+            cancel: None,
+            turn_key: "work:".into(),
+        };
+
+        let model = Scripted::new(vec![
+            Step::Call("exit", serde_json::json!({"reason": "done"})),
+            Step::Call("exit", serde_json::json!({"reason": close})),
+        ]);
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        let Err(workflow::WorkflowError::Exited(reason)) = looper.run_turn(turn(true)).await else { panic!("the second exit ends it") };
+        assert_eq!(reason, close, "the turn's output is the exit that carried the object");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the bare exit did not end the turn");
+        let refused = calls[1].messages.iter().filter_map(|m| m.tool_results.as_ref()).map(|r| r.to_string()).collect::<String>();
+        assert!(refused.contains("Not ended") && refused.contains("next") && refused.contains("close"), "{refused}");
+
+        let model = Scripted::new(vec![Step::Call("exit", serde_json::json!({"reason": "done"}))]);
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(harness(&model).await);
+        let Err(workflow::WorkflowError::Exited(reason)) = looper.run_turn(turn(false)).await else { panic!("an exit ends a workflow step") };
+        assert_eq!(reason, "done");
+    }
+
+    /// A turn Nebo stopping cut off goes on from its own conversation when
+    /// its run is relaunched, instead of starting over and doing its work
+    /// twice (live 2026-10-16: a restart re-ran a lead's assignment from the
+    /// top and every file was written again). The call that was open gets a
+    /// result saying whether it ran is not known. A turn this process
+    /// already ran (a retry inside the run) still starts from the seed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_a_restart_cut_off_goes_on_from_its_own_conversation() {
+        use workflow::ActivityLoop;
+        let activity: workflow::parser::Activity =
+            serde_json::from_value(serde_json::json!({"id": "work", "intent": "write the scripts"})).unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let turn = || workflow::LoopTurn {
+            activity: &activity,
+            instructions: "Write the scripts.".into(),
+            seed_messages: vec![ai::Message { role: "user".into(), content: "write the scripts".into(), ..Default::default() }],
+            workflow_name: "assignment",
+            advertised_tools: vec!["echo".into()],
+            agent_id: "lead",
+            user_id: "",
+            memory_writes_disabled: true,
+            trace: RequestTrace { run_id: run_id.clone(), ..RequestTrace::new("workflow_activity") },
+            checkpoint: None,
+            pending: None,
+            iteration: "",
+            step_index: None,
+            max_iterations: 5,
+            min_iterations: 0,
+            requires_tools: Vec::new(),
+            case_turn: false,
+            spend_cap_microcents: 0,
+            model: String::new(),
+            cancel: None,
+            turn_key: "work:".into(),
+        };
+        let model = Scripted::new(vec![Step::Say("Both scripts are written."), Step::Say("Written again.")]);
+        let h = harness(&model).await;
+        // The first process: the run started, the turn wrote one script and
+        // was calling for the second when Nebo stopped.
+        h.store
+            .engine_create_run(&db::NewRun {
+                id: &run_id,
+                kind: "workflow",
+                session_key: &format!("agent:lead:workflow:{run_id}"),
+                agent_id: "lead",
+                lane: "main",
+                parent_run_id: None,
+                definition: None,
+                inputs: None,
+                external_ref: None,
+                state: None,
+            })
+            .unwrap();
+        h.store.engine_set_run_state(&run_id, "running", 1, None).unwrap();
+        let key = format!("agent:lead:workflow:{run_id}:work:");
+        let session = h.sessions.get_or_create(&key, "").unwrap();
+        h.sessions.append_message(&session.id, "user", "write the scripts", None, None, None).unwrap();
+        let first = r#"[{"id":"c1","name":"write_file","input":{"path":"hero-30s.md"}}]"#;
+        h.sessions.append_message(&session.id, "assistant", "", Some(first), None, None).unwrap();
+        h.sessions.append_message(&session.id, "tool", "", None, Some(r#"[{"tool_call_id":"c1","content":"written"}]"#), None).unwrap();
+        let second = r#"[{"id":"c2","name":"write_file","input":{"path":"cutdown-15s.md"}}]"#;
+        h.sessions.append_message(&session.id, "assistant", "", Some(second), None, None).unwrap();
+        // The next start relaunched it.
+        h.store.engine_set_run_state(&run_id, "interrupted", 2, None).unwrap();
+        h.store.engine_set_run_state(&run_id, "running", 3, None).unwrap();
+
+        let looper = crate::harness::workflow_turn::WorkflowTurns::new(h.clone());
+        looper.run_turn(turn()).await.expect("finishes");
+        let sent = format!("{:?}", model.calls()[0].messages);
+        assert!(sent.contains("hero-30s.md") && sent.contains("cutdown-15s.md"), "the turn read what it already did: {sent}");
+        assert!(sent.contains("may or may not have run") && sent.contains("[Nebo restarted]"), "{sent}");
+
+        // A retry inside the same run (this process made the conversation):
+        // the seed is the whole truth again.
+        looper.run_turn(turn()).await.expect("finishes");
+        let retried = format!("{:?}", model.calls()[1].messages);
+        assert!(!retried.contains("hero-30s.md") && !retried.contains("[Nebo restarted]"), "{retried}");
+    }
+
     /// A workflow step's data goes to the model whole, and data too large
     /// for the model's context window fails the step loudly, naming the
     /// step, the size and the limit, with no call made and nothing cut.
@@ -6827,6 +6961,7 @@ mod tests {
             max_iterations: 5,
             min_iterations: 0,
             requires_tools: Vec::new(),
+            case_turn: false,
             spend_cap_microcents: 0,
             model: String::new(),
             cancel: None,

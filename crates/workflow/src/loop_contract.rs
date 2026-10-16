@@ -55,6 +55,10 @@ pub struct LoopTurn<'a> {
     /// Tools that must land a successful (non-error) call before this turn
     /// may finish — the activity's declared outward effect.
     pub requires_tools: Vec<String>,
+    /// A case turn (the run's inputs carry `_case`): its `exit` reason is
+    /// the turn's output and must carry the turn object
+    /// (`cases::exit_refusal`).
+    pub case_turn: bool,
     /// The owner's per-run spending limit in microcents (0 = none). A
     /// package's `token_budget` is an estimate, never a ceiling; this is
     /// the only one, and reaching it means one wrap-up turn, then stop.

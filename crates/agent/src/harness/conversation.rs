@@ -42,6 +42,9 @@ Do not resume the interrupted step on your own; wait for their next message and 
 pub(crate) enum Interrupt {
     Owner,
     Stalled,
+    /// Nebo stopped while an unattended turn ran, and the turn's run was
+    /// relaunched at the next start (`WorkflowTurns::cut_off_by_restart`).
+    Restarted,
 }
 
 impl Interrupt {
@@ -50,6 +53,7 @@ impl Interrupt {
         match self {
             Interrupt::Owner => INTERRUPTED_TOOL_RESULT.to_string(),
             Interrupt::Stalled => format!("[Run ended: nothing happened for {} minutes]", stall_minutes()),
+            Interrupt::Restarted => RESTARTED_TOOL_RESULT.to_string(),
         }
     }
 
@@ -65,9 +69,16 @@ impl Interrupt {
                  tell them what it was doing.",
                 stall_minutes()
             ),
+            Interrupt::Restarted => RESTARTED_MESSAGE.to_string(),
         })
     }
 }
+
+/// What a call open when Nebo stopped says: whether it ran is not known.
+const RESTARTED_TOOL_RESULT: &str = "[Nebo stopped before this call's result came back: it may or may not have run]";
+
+/// The line a turn a restart cut off reads when it goes on.
+const RESTARTED_MESSAGE: &str = "[Nebo restarted] Nebo stopped while you were working on this and has started again. Everything above already happened: the files you wrote are saved and the calls that returned a result ran. Go on from where you stopped. Do not redo finished work; before repeating a call whose result is missing, check whether it already took effect.";
 
 fn stall_minutes() -> u64 {
     crate::guardrails::RUN_IDLE_LIMIT.as_secs() / 60

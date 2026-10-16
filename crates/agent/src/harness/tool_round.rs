@@ -463,8 +463,11 @@ pub(crate) async fn run_tool_round(
     // Workflow `exit` is a loop primitive, not a real tool: the first exit
     // call ends the turn and nothing else in the reply runs (a read-only
     // call the stream already started is dropped with the executor).
+    // A case turn's exit without its turn object is not taken: the executor
+    // answers it with the contract (`case_exit_refusal`) and the turn goes on.
     if workflow_mode.is_some()
         && let Some(tc) = tool_calls.iter().find(|tc| tc.name == "exit")
+        && case_exit_refusal(workflow_mode, &tc.input).is_none()
     {
         let reason = tc.input.get("reason").and_then(|v| v.as_str()).unwrap_or("");
         return RoundOutcome::Workflow(format!("workflow_exit:{reason}"));
@@ -1075,6 +1078,14 @@ fn startable(calls: &[(Status, bool)], streaming: bool) -> Vec<usize> {
 /// `prejudged`: the round's judgement of this call (`ToolExecutor::judge`),
 /// used when the call's question is still the one asked; `judging`: the
 /// judgement's mode for the round.
+/// What a case turn's `exit` is answered with when its reason lacks the
+/// turn object (`workflow::cases::exit_refusal`); `None` outside a case
+/// turn, or when the reason carries it.
+fn case_exit_refusal(mode: Option<&WorkflowMode>, input: &serde_json::Value) -> Option<String> {
+    mode.filter(|m| m.contract.case_turn)?;
+    workflow::cases::exit_refusal(input.get("reason").and_then(|v| v.as_str()).unwrap_or(""))
+}
+
 async fn run_call(
     cx: &RoundContext<'_>,
     mut ctx: ToolContext,
@@ -1124,6 +1135,12 @@ async fn run_call(
     if refusal.is_none()
         && let (Some(mode), Some(t)) = (turn_mode, &target)
         && let Err(refused) = crate::harness::delegation::permits(mode, t)
+    {
+        refusal = Some(refused);
+    }
+    if refusal.is_none()
+        && tc.name == "exit"
+        && let Some(refused) = case_exit_refusal(cx.workflow_mode, &tc.input)
     {
         refusal = Some(refused);
     }

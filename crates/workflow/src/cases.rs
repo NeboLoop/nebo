@@ -669,6 +669,28 @@ fn default_on() -> String {
     "signal".to_string()
 }
 
+/// The turn contract in the words a case turn is given: the activity
+/// prompt's "Ending this turn" section, and the answer to an `exit` whose
+/// reason lacks it ([`exit_refusal`]). One text, so the employee reads the
+/// same shape wherever it is told.
+pub const TURN_CONTRACT: &str = "This is a case turn: it ends with one JSON object, and nothing after it. \
+     The engine reads what happens next from it.\n\
+     - To close the case: {\"result\": {\"status\": \"done\", \"summary\": \"what you produced\"}, \"next\": {\"action\": \"close\"}}\n\
+     - To wait: {\"result\": {\"status\": \"waiting\", \"summary\": \"what you did\"}, \"next\": {\"action\": \"wait\", \"on\": \"signal\", \"deadline\": \"2d\", \"reason\": \"what you are waiting for\"}}\n\
+     `status` is the case's own state in your words (an assignment closes as \"done\", \"blocked\" or \"failed\"). \
+     `deadline` is optional: a span like \"3d\" or \"12h\", or a date and time.";
+
+/// What a case turn's `exit` is answered with when its reason does not end
+/// with the turn object: in a case turn the reason IS the turn's output, so
+/// such an exit would leave the case without its next step. Seen live
+/// 2026-10-16: a lead finished an assignment and called `exit(reason:
+/// "done")`; the case waited two days and the assigner was never told.
+/// `None`: the reason carries a valid object and the exit may end the turn.
+pub fn exit_refusal(reason: &str) -> Option<String> {
+    let why = parse_turn(reason, chrono::Utc::now().timestamp()).err()?;
+    Some(format!("Not ended: {why}. In a case turn exit's reason is the turn's output. {TURN_CONTRACT}"))
+}
+
 /// What the engine does with a valid turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Turn {

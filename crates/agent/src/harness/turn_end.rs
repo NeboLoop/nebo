@@ -49,6 +49,10 @@ pub const WORKFLOW_CONTRACT: &str = "workflow_contract";
 pub struct WorkflowContract {
     pub min_iterations: u32,
     pub requires_tools: Vec<String>,
+    /// A case turn: an `exit` must carry the turn object in its reason
+    /// (`workflow::cases::exit_refusal`), or it is refused and the turn
+    /// goes on.
+    pub case_turn: bool,
 }
 
 /// The workflow contract as an end check.
@@ -385,6 +389,7 @@ mod tests {
         WorkflowContract {
             min_iterations: 2,
             requires_tools: vec!["send_mail".into()],
+            case_turn: false,
         }
     }
 

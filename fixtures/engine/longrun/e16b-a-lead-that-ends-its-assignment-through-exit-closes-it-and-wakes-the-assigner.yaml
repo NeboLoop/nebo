@@ -1,0 +1,17 @@
+id: e16b-a-lead-that-ends-its-assignment-through-exit-closes-it-and-wakes-the-assigner
+name: "E16b — A lead that ends its assignment through exit closes it and wakes the assigner"
+description: |
+  E16b — Seen live 2026-10-16 ("PH Launch Team"): the team's lead finished
+  an assignment and ended its turn with exit(reason: "done"). The engine
+  read no next step, the case waited two days and the employee who
+  assigned it was never told. In a case turn an exit's reason is the turn's
+  output: a bare exit is answered with the turn contract and the turn goes
+  on (the harness test a_case_turns_exit_must_carry_the_turn_object), and
+  an exit that carries the close ends the turn with it. This proof: the
+  close in the exit's reason closes the assignment as done and wakes the
+  assigner's session with assignment.done, once.
+  Must never: an exited turn read as a turn with no next, or an assigner
+  left unwoken.
+target_component: engine
+proof: engine::proof::longrun::e16b_a_lead_that_ends_its_assignment_through_exit_closes_it_and_wakes_the_assigner
+conversation: []
