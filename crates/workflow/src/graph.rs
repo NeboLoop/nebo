@@ -2020,7 +2020,7 @@ async fn run_llm_activity<'a>(
             item: scope.item.as_ref(),
             item_source: scope.item_source.as_ref(),
             at: &scope.iteration,
-            budget: data_budget(ctx.loop_impl.context_chars(&ctx.agent_id, &activity.model)),
+            budget: data_budget(ctx.loop_impl.context_chars(&ctx.agent_id, activity.level)),
         },
     );
 
@@ -2999,7 +2999,7 @@ mod walk_tests {
 
         fn cleanup(&self, _run_id: &str) {}
 
-        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+        fn context_chars(&self, _agent_id: &str, _level: Option<types::packs::Effort>) -> usize {
             self.provider.context_chars
         }
     }

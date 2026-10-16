@@ -464,7 +464,7 @@ pub async fn execute_workflow(
                 item: None,
                 item_source: None,
                 at: "",
-                budget: crate::graph::data_budget(loop_impl.context_chars(agent_id, &activity.model)),
+                budget: crate::graph::data_budget(loop_impl.context_chars(agent_id, activity.level)),
             },
         );
 
@@ -949,7 +949,7 @@ pub async fn execute_activity(
             requires_tools: activity.requires_tools.clone(),
             case_turn: inputs.get("_case").is_some(),
             spend_cap_microcents,
-            model: activity.model.clone(),
+            level: activity.level,
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}", activity.id, iteration),
         };
@@ -1058,7 +1058,7 @@ pub async fn execute_activity(
             requires_tools: activity.requires_tools.clone(),
             case_turn: inputs.get("_case").is_some(),
             spend_cap_microcents,
-            model: activity.model.clone(),
+            level: activity.level,
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}:{}", activity.id, iteration, i),
         };
@@ -2191,7 +2191,7 @@ mod engine_tests {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
         }
         fn cleanup(&self, _run_id: &str) {}
-        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+        fn context_chars(&self, _agent_id: &str, _level: Option<types::packs::Effort>) -> usize {
             800_000
         }
     }
@@ -2308,7 +2308,7 @@ mod engine_tests {
             Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
         }
         fn cleanup(&self, _run_id: &str) {}
-        fn context_chars(&self, _agent_id: &str, _model: &str) -> usize {
+        fn context_chars(&self, _agent_id: &str, _level: Option<types::packs::Effort>) -> usize {
             800_000
         }
     }

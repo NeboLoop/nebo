@@ -57,6 +57,9 @@ pub struct WorkflowMode {
     pub spend_cap_microcents: i64,
     /// Steps the turn may take; 0 = the loop's default.
     pub max_steps: u32,
+    /// The level the activity declares (`workflow::Activity::level`); None:
+    /// the pack's workflow lane.
+    pub level: Option<types::packs::Effort>,
     /// The activity's contract, checked when the model stops.
     pub contract: WorkflowContract,
     /// Park an ask on the owner instead of refusing it unattended. `None` =
@@ -72,6 +75,7 @@ impl std::fmt::Debug for WorkflowMode {
             .field("tainted", &self.tainted)
             .field("spend_cap_microcents", &self.spend_cap_microcents)
             .field("max_steps", &self.max_steps)
+            .field("level", &self.level)
             .field("contract", &self.contract)
             .field("park", &self.park.is_some())
             .finish()
@@ -91,6 +95,7 @@ impl Default for WorkflowMode {
             tainted: false,
             spend_cap_microcents: 0,
             max_steps: 0,
+            level: None,
             contract: WorkflowContract::default(),
             park: None,
         }
@@ -454,7 +459,10 @@ impl ActivityLoop for WorkflowTurns {
                 tool_allowlist: Some(workflow::enforced_tools(&turn.advertised_tools)),
                 tool_denial_hint: Some(STEP_TOOL_DENIAL.to_string()),
                 handoff_depth: 0,
-                model_override: turn.model.clone(),
+                // A step runs on its employee's pack, at the level it
+                // declares or the workflow lane's, never on a model of its
+                // own (`turn::step_choice`).
+                model_override: String::new(),
                 model_preference: None,
                 personality_snippet: None,
                 tool_scope: None,
@@ -469,6 +477,7 @@ impl ActivityLoop for WorkflowTurns {
                 tainted: turn.checkpoint.map(|c| c.tainted).unwrap_or(false),
                 spend_cap_microcents: turn.spend_cap_microcents,
                 max_steps: turn.max_iterations,
+                level: turn.level,
                 contract: WorkflowContract {
                     min_iterations: turn.min_iterations,
                     requires_tools: turn.requires_tools.clone(),
@@ -616,8 +625,8 @@ impl ActivityLoop for WorkflowTurns {
         })
     }
 
-    fn context_chars(&self, agent_id: &str, model: &str) -> usize {
-        self.harness.workflow_context_chars(agent_id, model)
+    fn context_chars(&self, agent_id: &str, level: Option<types::packs::Effort>) -> usize {
+        self.harness.workflow_context_chars(agent_id, level)
     }
 
     fn cleanup(&self, run_id: &str) {

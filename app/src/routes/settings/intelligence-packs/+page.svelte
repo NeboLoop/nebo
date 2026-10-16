@@ -27,6 +27,12 @@
 
   const LANES = ['heartbeat', 'scheduled', 'communication', 'helpers', 'build', 'workflow'] as const;
   type Lane = (typeof LANES)[number];
+  // Background work runs at Instant unless the pack pins another level
+  // (`types::packs::Lane::is_background`): never "chosen by the work".
+  const BACKGROUND_LANES: readonly Lane[] = ['heartbeat', 'scheduled', 'workflow'];
+  function setLane(lane: Lane, level: Effort) {
+    if (editing) editing.lanes[lane] = level;
+  }
   const LANE_KEYS: Record<Lane, string> = {
     heartbeat: 'settingsPacks.laneHeartbeat',
     scheduled: 'settingsPacks.laneScheduled',
@@ -406,12 +412,25 @@
           <div class="grid grid-cols-[7rem_1fr] gap-2 items-center">
             {#each LANES as lane}
               <label class="text-sm" for="ln-{lane}">{$t(LANE_KEYS[lane])}</label>
-              <select id="ln-{lane}" bind:value={editing.lanes[lane]} class="select select-bordered select-sm w-full">
-                <option value={undefined}>{$t('settingsPacks.laneByWork')}</option>
-                {#each EFFORTS as e}
-                  <option value={e}>{levelLabel(e)}</option>
-                {/each}
-              </select>
+              {#if BACKGROUND_LANES.includes(lane)}
+                <select
+                  id="ln-{lane}"
+                  value={editing.lanes[lane] ?? 'instant'}
+                  onchange={(ev) => setLane(lane, ev.currentTarget.value as Effort)}
+                  class="select select-bordered select-sm w-full"
+                >
+                  {#each EFFORTS as e}
+                    <option value={e}>{levelLabel(e)}</option>
+                  {/each}
+                </select>
+              {:else}
+                <select id="ln-{lane}" bind:value={editing.lanes[lane]} class="select select-bordered select-sm w-full">
+                  <option value={undefined}>{$t('settingsPacks.laneByWork')}</option>
+                  {#each EFFORTS as e}
+                    <option value={e}>{levelLabel(e)}</option>
+                  {/each}
+                </select>
+              {/if}
             {/each}
           </div>
         </section>

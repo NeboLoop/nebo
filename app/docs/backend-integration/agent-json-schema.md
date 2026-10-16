@@ -180,7 +180,7 @@ interface WorkflowActivity {
   skills?: string[];                    // Skill references: ["@nebo/skills/web-scraper@^1.0.0"]
   steps?: string[];                     // Implementation steps (human-readable)
   params?: Record<string, any>;         // Type-specific parameters (see below)
-  model?: string;                       // LLM model override for this step
+  level?: "instant" | "low" | "medium" | "high" | "max"; // Intelligence level on the owner's pack (default: the pack's workflow level, Instant). A step never names a model.
   token_budget?: { max: number };       // Token limit for this step
   on_error?: {
     retry?: number;                     // Number of retries

@@ -19,7 +19,7 @@
       "intent": "Research the given topic and gather key facts",
       "skills": ["@nebo/skills/quick-research@1.0.0"],
       "tools": ["@nebo/tools/notepad@1.0.0"],
-      "model": "claude-sonnet",
+      "level": "medium",
       "steps": [
         "Break the topic into 2-3 specific questions",
         "Research each question using available information",
@@ -32,7 +32,6 @@
       "id": "summarize",
       "intent": "Write a concise research summary from the findings",
       "tools": ["@nebo/tools/notepad@1.0.0"],
-      "model": "claude-haiku",
       "steps": [
         "List all saved notes from the research phase",
         "Read each note to gather all findings",

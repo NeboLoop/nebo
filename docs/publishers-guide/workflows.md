@@ -66,7 +66,7 @@ Activities define the steps an agent takes when a workflow fires. Each activity 
 | `steps` | string[] | no | Step-by-step hints for the LLM |
 | `skills` | string[] | no | Skill references available to this activity (`@org/skills/name`) |
 | `mcps` | string[] | no | MCP server slugs available to this activity |
-| `model` | string | no | Model override (`"sonnet"`, `"haiku"`, `"opus"`) |
+| `level` | string | no | Intelligence level the activity's steps run at (`"instant"`, `"low"`, `"medium"`, `"high"`, `"max"`), on the owner's intelligence pack. Leave it out and steps run at the pack's workflow level, Instant unless the owner pins another. Declare a level only when the step genuinely needs more thinking: every step above Instant costs the owner more. A step never names a model; a `model` key is ignored. |
 | `token_budget` | object | no | Per-activity token limit: `{ "max": 4096 }` |
 | `on_error` | object | no | Error handling: `{ "retry": 1, "fallback": "notify_owner" }` |
 | `min_iterations` | number | no | Force LLM to continue even if it wants to stop early |

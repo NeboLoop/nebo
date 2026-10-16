@@ -83,8 +83,13 @@ pub struct Activity {
     pub mcps: Vec<String>,
     #[serde(default)]
     pub cmds: Vec<String>,
-    #[serde(default)]
-    pub model: String,
+    /// The intelligence level this activity's steps run at
+    /// (`instant`, `low`, `medium`, `high`, `max`), on the employee's pack.
+    /// Absent: the pack's workflow lane, Instant unless the pack pins
+    /// another (`types::packs::Lane::Workflow`). A step never names a model:
+    /// a `model` key in a definition is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<types::packs::Effort>,
     #[serde(default)]
     pub steps: Vec<String>,
     #[serde(default)]
