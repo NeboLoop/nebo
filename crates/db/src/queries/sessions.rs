@@ -168,10 +168,7 @@ impl Store {
         Ok(())
     }
 
-    /// One more compaction happened (the sliding window evicted messages).
-    /// The pre-eviction memory flush gate compares this against
-    /// `memory_flush_compaction_count`; until 2026-09-02 nothing incremented
-    /// it, so that gate could never open.
+    /// One more compaction happened (a checkpoint was written).
     pub fn increment_session_compaction_count(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -284,21 +281,6 @@ impl Store {
         conn.execute(
             "UPDATE sessions SET last_embedded_message_id = ?2, updated_at = unixepoch() WHERE id = ?1",
             params![id, last_embedded_message_id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Update memory flush tracking after a pre-compaction flush.
-    pub fn update_session_memory_flush(
-        &self,
-        id: &str,
-        compaction_count: i64,
-    ) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET memory_flush_at = unixepoch(), memory_flush_compaction_count = ?2, updated_at = unixepoch() WHERE id = ?1",
-            params![id, compaction_count],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -448,23 +430,16 @@ mod tests {
 mod counter_tests {
     use crate::Store;
 
-    /// The eviction site increments the counter that gates the pre-eviction
-    /// memory flush; the flush marks its own count, and the gate reopens only
-    /// on the next compaction.
+    /// Each checkpoint counts one compaction.
     #[test]
-    fn compaction_count_increments_on_eviction_and_opens_the_flush_gate() {
+    fn compaction_count_increments_on_each_checkpoint() {
         let (_dir, store) = store();
         store.create_session("s1", Some("s1"), None, None, None).unwrap();
         let count = |s: &Store| s.get_session("s1").unwrap().unwrap().compaction_count.unwrap_or(0);
-        let flushed = |s: &Store| s.get_session("s1").unwrap().unwrap().memory_flush_compaction_count.unwrap_or(0);
         assert_eq!(count(&store), 0);
         store.increment_session_compaction_count("s1").unwrap();
-        assert_eq!(count(&store), 1);
-        assert!(count(&store) > flushed(&store), "gate open after the first eviction");
-        store.update_session_memory_flush("s1", count(&store)).unwrap();
-        assert!(count(&store) <= flushed(&store), "gate closed once the flush caught up");
         store.increment_session_compaction_count("s1").unwrap();
-        assert!(count(&store) > flushed(&store), "and reopens on the next eviction");
+        assert_eq!(count(&store), 2);
     }
 
     fn store() -> (tempfile::TempDir, Store) {

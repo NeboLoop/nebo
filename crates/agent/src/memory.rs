@@ -173,7 +173,7 @@ pub async fn extract_facts(
         Some((s, uid)) => build_existing_memories_section(s, uid),
         None => String::new(),
     };
-    let prompt = extraction_prompt(&conversation, &existing_memories_section, topics, goal);
+    let prompt = extraction_prompt(Some(&conversation), &existing_memories_section, topics, goal);
 
     let req = ai::ChatRequest {
         tool_credential: None,
@@ -215,8 +215,12 @@ pub async fn extract_facts(
         }
     }
 
-    // Parse JSON response
-    let json_str = extract_json_object(&response)?;
+    parse_facts(&response)
+}
+
+/// The facts in an extraction's answer: its first JSON object.
+pub fn parse_facts(response: &str) -> Option<ExtractedFacts> {
+    let json_str = extract_json_object(response)?;
     match serde_json::from_str::<ExtractedFacts>(&json_str) {
         Ok(facts) => Some(facts),
         Err(e) => {
@@ -228,9 +232,11 @@ pub async fn extract_facts(
 
 /// The extraction prompt over `conversation`: the bar, the categories (the
 /// scope's topics replace the generic `project`), the memories already
-/// stored and, when the session has one, its agreed goal.
-fn extraction_prompt(
-    conversation: &str,
+/// stored and, when the session has one, its agreed goal. `None`: the
+/// conversation is the one the request already carries (a checkpoint's
+/// fork, `compact::checkpoint`), so it is not copied in.
+pub(crate) fn extraction_prompt(
+    conversation: Option<&str>,
     existing_memories_section: &str,
     topics: &[MemoryTopic],
     goal: Option<&str>,
@@ -252,6 +258,10 @@ fn extraction_prompt(
     let goal_section = match goal.map(str::trim).filter(|g| !g.is_empty()) {
         Some(goal) => format!("The agreed goal of this work: {goal}\n\n"),
         None => String::new(),
+    };
+    let conversation = match conversation {
+        Some(text) => format!("Conversation:\n{text}"),
+        None => "The conversation is the one above.".to_string(),
     };
     format!(
         "Analyze the conversation and extract durable facts worth remembering in FUTURE conversations.\n\n\
@@ -295,7 +305,7 @@ fn extraction_prompt(
          - \"explicit\": true if the user directly stated it, false if inferred\n\n\
          {existing_memories_section}\
          {goal_section}\
-         Conversation:\n{conversation}\n\n\
+         {conversation}\n\n\
          Return ONLY valid JSON, no markdown fences."
     )
 }
@@ -552,7 +562,7 @@ fn normalize_key(key: &str) -> String {
 /// Build a prompt section listing existing memory keys so the LLM
 /// avoids extracting duplicates. Returns an empty string if no memories
 /// exist or loading fails.
-fn build_existing_memories_section(store: &Store, user_id: &str) -> String {
+pub(crate) fn build_existing_memories_section(store: &Store, user_id: &str) -> String {
     let memories = match store.get_tacit_memories_by_user(user_id, 100) {
         Ok(m) => m,
         Err(_) => return String::new(),

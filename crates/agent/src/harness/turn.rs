@@ -2728,8 +2728,8 @@ async fn stalled(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
     Some(TurnExit::ContextStalled)
 }
 
-/// Checkpoint the conversation: the pre-checkpoint memory flush, the
-/// summary forked from the step's request, the boundary row and the restore
+/// Checkpoint the conversation: the pre-checkpoint hooks, the
+/// summary forked from the step's request (which also keeps the durable facts), the boundary row and the restore
 /// rows. `heard_through` is the last row the step's conversation was
 /// loaded through. The next step loads from the boundary, with every row
 /// the summary never read, and is told the session's facts again.
@@ -2750,21 +2750,22 @@ async fn checkpoint(
     let taint: Vec<types::provenance::ProvenanceClass> =
         cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect();
     // Both write under the memory scope, so a run that may not write
-    // memory (an isolated employee with no derivable matter, a helper) runs
-    // neither.
+    // memory (an isolated employee with no derivable matter, a helper)
+    // keeps no facts and indexes nothing; a run whose taint meets the
+    // scope's write bar keeps no facts.
     let mut hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = Vec::new();
+    let barred = taint.iter().any(|c| cx.seat.write_bar.contains(c));
+    if barred {
+        info!(session_id = %cx.session_id, classes = %types::provenance::label_classes(&taint), "checkpoint keeps no facts: the scope's write bar");
+    }
+    let memory = (!cx.seat.memory.writes_disabled && !barred).then(|| compact::checkpoint::CheckpointMemory {
+        store: h.store.clone(),
+        user_id: cx.seat.memory.user_id.clone(),
+        topics: cx.seat.memory_topics.clone(),
+        embedding: h.embedding_provider.clone(),
+        taint,
+    });
     if !cx.seat.memory.writes_disabled {
-        hooks.push(Box::new(compact::checkpoint::MemoryFlush {
-            // Housekeeping: the background pool, like every memory write.
-            provider: h.concurrency.background(provider.clone()),
-            store: h.store.clone(),
-            user_id: cx.seat.memory.user_id.clone(),
-            topics: cx.seat.memory_topics.clone(),
-            embedding: h.embedding_provider.clone(),
-            barred: taint.iter().any(|c| cx.seat.write_bar.contains(c)),
-            taint,
-            window_tokens: h.selector.context_window(&st.model),
-        }));
         if let Some(embedding) = h.embedding_provider.clone() {
             hooks.push(Box::new(compact::checkpoint::TranscriptIndex {
                 store: h.store.clone(),
@@ -2785,6 +2786,7 @@ async fn checkpoint(
             heard_through,
             fork_of,
             hooks: &hooks,
+            memory,
             restore: compact::restore::RestoreState {
                 goal: goal.as_ref(),
                 running: &running,
@@ -8180,33 +8182,19 @@ mod tests {
         assert_eq!(model.calls().len(), 2, "the helper's call is made once the owner's is served");
     }
 
-    /// B12, B15: the memory flush before a checkpoint is housekeeping: it
-    /// waits for a background permit, never the pool the owner's turns use,
-    /// and the turn never waits for it (extraction runs as a background
-    /// fork). It reads the conversation the checkpoint
-    /// summarized.
+    /// A checkpoint keeps the conversation's facts in its own summary call:
+    /// no separate flush sends the conversation again, and the summary call
+    /// carries the memories ask.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_checkpoint_memory_flush_runs_in_the_background_on_a_background_permit() {
+    async fn a_checkpoint_keeps_facts_in_its_own_call_with_no_flush() {
         let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
         let h = harness(&model).await;
-        h.concurrency.set_ceiling(4);
-        assert_eq!(h.concurrency.background_permits(), 1);
         run_turn(&h, owner("The Zanzibar invoice is due on the ninth.")).await;
-        let held = h.concurrency.acquire_background_permit().await;
-        let events = tokio::time::timeout(std::time::Duration::from_secs(10), run_turn(&h, owner("Keep going")))
-            .await
-            .expect("the turn never waits on the flush");
+        let events = run_turn(&h, owner("Keep going")).await;
         assert_eq!(exit_of(&events), "text_response");
-        assert!(
-            !model.side.lock().unwrap().iter().any(|r| r.trace.purpose == "memory_flush"),
-            "no flush while housekeeping's only permit is taken"
-        );
-        drop(held);
-        let flush = model.side_call("memory_flush").await.expect("the flush ran once a background permit was free");
-        assert!(
-            flush.messages[0].content.contains("The Zanzibar invoice is due on the ninth."),
-            "it read the conversation before the boundary"
-        );
+        let summary = model.side_call("checkpoint").await.expect("the checkpoint ran");
+        assert!(summary.messages.last().unwrap().content.contains("<memories>"), "the facts are asked for in the same call");
+        assert!(!model.side.lock().unwrap().iter().any(|r| r.trace.purpose == "memory_flush"), "no flush call");
     }
 
     /// The same vector for every text: a search through it finds whatever
