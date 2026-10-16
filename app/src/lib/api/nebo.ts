@@ -1987,6 +1987,13 @@ export function togglePlugin(slug: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Continue project"
+ */
+export function continueProject(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.ContinueProjectResponse>(`/api/v1/projects/${id}/continue`, req)
+}
+
+/**
  * @description "Get project messages"
  */
 export function getProjectMessages(id: string) {

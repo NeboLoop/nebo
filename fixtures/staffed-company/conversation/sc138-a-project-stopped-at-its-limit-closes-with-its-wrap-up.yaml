@@ -1,0 +1,9 @@
+id: sc138-a-project-stopped-at-its-limit-closes-with-its-wrap-up
+name: "SC138 — A project stopped at its limit closes with its wrap-up"
+description: |
+  Teams, projects and threads (2026-10-16): the owner's Stop on a project
+  paused at its limit ends its run. Nothing more is handed out, and the
+  project closes with its lead's wrap-up.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_project_stopped_at_its_limit_closes_with_its_wrap_up
+conversation: []

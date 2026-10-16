@@ -394,26 +394,31 @@ fn heard_the_outcome(state: &AppState, project: &db::Project, seat: &str, heard_
 
 
 /// A project's cards as lines in its thread: each change a card goes
-/// through (`workflow::cases::CardChange`, rung by the engine when a
+/// through (`workflow::cases::ProjectChange`, rung by the engine when a
 /// project's step is handed to a member and when the member closes it)
 /// becomes one row, written by `record` like every row, and the card's
 /// hand-off goes to every open view. Handing out is the lead's line ("Script
 /// Writer: hero script. Done when: …"); the close is the member's own
 /// summary, or that it could not finish and why.
-pub(crate) fn card_lines(state: AppState, mut rx: tokio::sync::mpsc::UnboundedReceiver<workflow::cases::CardChange>) {
+pub(crate) fn project_lines(state: AppState, mut rx: tokio::sync::mpsc::UnboundedReceiver<workflow::cases::ProjectChange>) {
     tokio::spawn(async move {
         while let Some(change) = rx.recv().await {
-            if let Err(e) = card_line(&state, &change) {
-                tracing::warn!(error = %e, ?change, "project: card line not recorded");
+            let said = match &change {
+                workflow::cases::ProjectChange::LimitReached { project_id, run_id } => paused_at_limit(&state, project_id, run_id),
+                _ => project_line(&state, &change),
+            };
+            if let Err(e) = said {
+                tracing::warn!(error = %e, ?change, "project: line not recorded");
             }
         }
     });
 }
 
-fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(), String> {
-    use workflow::cases::CardChange;
+fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Result<(), String> {
+    use workflow::cases::ProjectChange;
     let id = match change {
-        CardChange::Opened { assignment_id, .. } | CardChange::Closed { assignment_id } => assignment_id,
+        ProjectChange::Opened { assignment_id, .. } | ProjectChange::Closed { assignment_id } => assignment_id,
+        ProjectChange::LimitReached { .. } => return Ok(()),
     };
     let Some(card) = state.store.get_handoff(id).map_err(|e| e.to_string())? else {
         return Ok(());
@@ -428,7 +433,7 @@ fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(
     crate::handoff::broadcast(state, card.clone());
     let member = state.store.get_agent(&card.to_agent_id).ok().flatten().map(|a| a.name).unwrap_or_else(|| card.to_agent_id.clone());
     let (from, text, handed_out) = match change {
-        CardChange::Opened { task, done_when, .. } => (
+        ProjectChange::Opened { task, done_when, .. } => (
             card.from_agent_id.as_str(),
             match done_when.trim() {
                 "" => format!("{member}: {task}"),
@@ -441,7 +446,8 @@ fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(
                 done_when: done_when.trim().to_string(),
             }),
         ),
-        CardChange::Closed { .. } => (
+        ProjectChange::LimitReached { .. } => return Ok(()),
+        ProjectChange::Closed { .. } => (
             card.to_agent_id.as_str(),
             match card.status.as_str() {
                 "done" if !card.result.trim().is_empty() => card.result.clone(),
@@ -455,6 +461,104 @@ fn card_line(state: &AppState, change: &workflow::cases::CardChange) -> Result<(
         ),
     };
     record(state, &team, Some(&project), TeamSender::Local(from), &text, &serde_json::json!([]), &[], handed_out.as_ref()).map(|_| ())
+}
+
+/// The answers a project paused at its limit takes.
+const LIMIT_CONTINUE: &str = "continue";
+const LIMIT_STOP: &str = "stop";
+
+/// The Inbox item that asks the owner about a project's run paused at its
+/// limit (`limit:<project>:<run>`), and the project and run it names.
+fn limit_item_id(project_id: &str, run_id: &str) -> String {
+    format!("limit:{project_id}:{run_id}")
+}
+
+/// A project's run paused at its limit (`workflow::graph::park_at_limit`):
+/// the project's thread says so, and the owner is asked, in Needs you and on
+/// his phone, whether it goes on (Continue) or ends (Stop). Nothing more is
+/// handed out until he answers; work already handed out finishes.
+fn paused_at_limit(state: &AppState, project_id: &str, run_id: &str) -> Result<(), String> {
+    let Some(project) = state.store.get_project(project_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let Some(team) = state.store.get_team(&project.team_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    crate::handlers::teams::announce_project(state, &project);
+    let (steps, cents) = project.limits();
+    let line = format!("Paused: this project reached its limit of {steps} steps / ${:.2}. Continue or Stop?", cents as f64 / 100.0);
+    record(state, &team, Some(&project), TeamSender::Local(&project.lead_agent_id), &line, &serde_json::json!([]), &[], None)?;
+    let id = limit_item_id(&project.id, run_id);
+    let title = format!("{} is paused at its limit", project.title);
+    let link = tools::owner_notify::link::project(&project.team_id, &project.id);
+    let options = [
+        db::models::ItemOption { label: "Continue".into(), value: LIMIT_CONTINUE.into() },
+        db::models::ItemOption { label: "Stop".into(), value: LIMIT_STOP.into() },
+    ];
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "info",
+        title: &title,
+        body: Some(&line),
+        action_url: Some(&link),
+        agent_id: Some(&project.lead_agent_id),
+        loud: true,
+        needs_you: true,
+        options: &options,
+        link_label: Some("Project"),
+        ..Default::default()
+    };
+    if tools::owner_notify::emit(&state.store, Some(&|ev, payload| state.hub.broadcast(ev, payload)), &n) {
+        crate::codes::push_inbox(state, n.hub_item(serde_json::json!({})));
+    }
+    Ok(())
+}
+
+/// The owner's answer to a project paused at its limit, from the Inbox
+/// (`limit:` items) or the project's own Continue (`POST
+/// /projects/{id}/continue`): the ONE way it is answered. Continue gives the
+/// project as much room again (its limit raised by the default allowance
+/// past what it used) and wakes its run, which hands out its next card;
+/// Stop ends the run, and the project closes with its lead's wrap-up.
+/// `false` when the project is not paused.
+pub(crate) async fn answer_limit(state: &AppState, project: &db::Project, answer: &str, via: &str) -> Result<bool, String> {
+    if project.state != "paused" {
+        return Ok(false);
+    }
+    let Some(run_id) = state.store.latest_project_run(&project.id).map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    let label = match answer {
+        LIMIT_CONTINUE => "Continue",
+        LIMIT_STOP => "Stop",
+        other => return Err(format!("a paused project takes continue or stop, not {other:?}")),
+    };
+    tools::owner_notify::settle(&state.store, Some(&|ev, p| state.hub.broadcast(ev, p)), &limit_item_id(&project.id, &run_id), label, Some(via));
+    let now = chrono::Utc::now().timestamp();
+    if answer == LIMIT_STOP {
+        state.workflow_manager.cancel_run(&run_id).await?;
+        return Ok(true);
+    }
+    let used = state.store.project_usage(project).map_err(|e| e.to_string())?;
+    let steps = used.turns + db::PROJECT_LIMIT_STEPS;
+    let cents = used.spent_microcents / 1_000_000 + db::PROJECT_LIMIT_SPEND_CENTS;
+    state.store.raise_project_limits(&project.id, steps, cents).map_err(|e| e.to_string())?;
+    if let Some(live) = state.store.set_project_state(&project.id, "live", now).map_err(|e| e.to_string())? {
+        crate::handlers::teams::announce_project(state, &live);
+    }
+    state
+        .store
+        .engine_enqueue_event(&db::NewEvent {
+            kind: workflow::expert::LIMIT_KIND,
+            target_type: "run",
+            target_id: &workflow::expert::limit_target(&run_id),
+            payload: "continue",
+            idem_key: &format!("limit-continue:{run_id}:{steps}"),
+            durable: true,
+            ..Default::default()
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// A post that came through the hub as the team's record shows it: its

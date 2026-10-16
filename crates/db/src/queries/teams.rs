@@ -132,6 +132,29 @@ pub struct Project {
     pub closed_at: Option<i64>,
 }
 
+/// How far a project goes before it pauses and asks the owner whether to go
+/// on, when its row names no limit of its own (0): turns taken by its lead,
+/// its members and its cards, and what they cost.
+pub const PROJECT_LIMIT_STEPS: i64 = 60;
+pub const PROJECT_LIMIT_SPEND_CENTS: i64 = 500;
+
+impl Project {
+    /// The project's limit: its own, or the default for whatever it leaves at 0.
+    pub fn limits(&self) -> (i64, i64) {
+        let or = |v: i64, d: i64| if v > 0 { v } else { d };
+        (or(self.limit_steps, PROJECT_LIMIT_STEPS), or(self.limit_spend_cents, PROJECT_LIMIT_SPEND_CENTS))
+    }
+}
+
+/// What a project has used so far: every turn its work took (its lead's and
+/// members' turns in their seats for it, its runs, and its cards' cases and
+/// their turns), and what they cost in microcents (`run_usage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProjectUsage {
+    pub turns: i64,
+    pub spent_microcents: i64,
+}
+
 /// What `create_project` needs.
 pub struct NewProject<'a> {
     pub id: &'a str,
@@ -550,6 +573,37 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().db_err("list_team_projects collect")
     }
 
+    /// What a project has used so far (`ProjectUsage`): the turns recorded
+    /// in its seats (`agent:<id>:coworker:<thread>`) and against its runs and
+    /// every run under them (its cards' cases and their turns).
+    pub fn project_usage(&self, project: &Project) -> Result<ProjectUsage, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "WITH RECURSIVE tree(id) AS (
+                 SELECT id FROM workflow_runs WHERE project_id = ?1
+                 UNION SELECT r.id FROM engine_runs r JOIN tree t ON r.parent_run_id = t.id
+             )
+             SELECT COUNT(*), COALESCE(SUM(cost_microcents), 0) FROM run_usage
+             WHERE run_id IN (SELECT id FROM tree)
+                OR instr(COALESCE(session_key, ''), ':coworker:' || ?2) > 0",
+            params![project.id, project.thread_session_key],
+            |r| Ok(ProjectUsage { turns: r.get(0)?, spent_microcents: r.get(1)? }),
+        )
+        .db_err("project_usage")
+    }
+
+    /// Give a project more room: its step and spend limit, raised to these.
+    pub fn raise_project_limits(&self, id: &str, steps: i64, spend_cents: i64) -> Result<Option<Project>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!("UPDATE projects SET limit_steps = ?2, limit_spend_cents = ?3 WHERE id = ?1 RETURNING {PROJECT_COLUMNS}"),
+            params![id, steps, spend_cents],
+            row_to_project,
+        )
+        .optional()
+        .db_err("raise_project_limits")
+    }
+
     /// Move a project to `live`, `paused` or `done`; `done` stamps when it
     /// closed, any other state clears it (a post reopens a done project).
     pub fn set_project_state(&self, id: &str, state: &str, now: i64) -> Result<Option<Project>, NeboError> {
@@ -755,5 +809,74 @@ mod tests {
         let updated = s.update_team("t-1", "Launch", "m", &members(), "chief", "Never compare to competitors.").unwrap().unwrap();
         assert_eq!(updated.standing, "Never compare to competitors.");
         assert_eq!(s.get_team("t-1").unwrap().unwrap().standing, "Never compare to competitors.");
+    }
+
+    fn usage(session: &str, run: Option<&str>, cost: i64) -> crate::models::RunUsageEntry {
+        crate::models::RunUsageEntry {
+            agent_id: "a".into(),
+            session_key: Some(session.into()),
+            run_id: run.map(String::from),
+            run_type: "x".into(),
+            model_id: "m".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_microcents: cost,
+            outcome: None,
+            exit_reason: None,
+        }
+    }
+
+    /// A project's usage is all of its work: its seats' turns, its runs'
+    /// turns and every run under them (a card's case and the case's turns);
+    /// another project's or the team's own work is not. Its limit is its own
+    /// or the default, and raising it keeps what was used.
+    #[test]
+    fn a_projects_usage_is_all_of_its_work_and_only_its_own() {
+        let s = store();
+        s.create_team("t-1", "Launch", "m", &members(), "chief", None).unwrap();
+        let new = |id: &'static str| NewProject {
+            id,
+            team_id: "t-1",
+            lead_agent_id: "chief",
+            title: "PH launch",
+            ask: "launch",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        };
+        let p = s.create_project(&new("p-1")).unwrap();
+        s.create_project(&new("p-2")).unwrap();
+        assert_eq!(p.limits(), (PROJECT_LIMIT_STEPS, PROJECT_LIMIT_SPEND_CENTS));
+        // The project's run, a card's case under it, and the case's turn.
+        s.create_workflow_run("run-1", "agent:chief", "manual", None, None, None, None).unwrap();
+        s.conn_exec_for_test("UPDATE workflow_runs SET project_id = 'p-1' WHERE id = 'run-1'");
+        for (id, kind, parent) in [("run-1", "workflow", None), ("case-1", "case", Some("run-1")), ("turn-1", "workflow", Some("case-1"))] {
+            s.engine_create_run(&crate::NewRun {
+                id,
+                kind,
+                session_key: "k",
+                agent_id: "a",
+                lane: "main",
+                parent_run_id: parent,
+                definition: None,
+                inputs: None,
+                external_ref: None,
+                state: None,
+            })
+            .ok();
+        }
+        s.record_run_usage(&usage("agent:chief:coworker:team:t-1:project:p-1", None, 1_000_000)).unwrap();
+        s.record_run_usage(&usage("agent:ea:workflow:turn-1:work:", Some("turn-1"), 2_000_000)).unwrap();
+        s.record_run_usage(&usage("agent:chief:workflow:run-1:plan:", Some("run-1"), 3_000_000)).unwrap();
+        // Not the project's: another project's seat, the team's own thread.
+        s.record_run_usage(&usage("agent:chief:coworker:team:t-1:project:p-2", None, 50_000_000)).unwrap();
+        s.record_run_usage(&usage("agent:chief:coworker:team:t-1", None, 50_000_000)).unwrap();
+        assert_eq!(s.project_usage(&p).unwrap(), ProjectUsage { turns: 3, spent_microcents: 6_000_000 });
+
+        let raised = s.raise_project_limits("p-1", 63, 506).unwrap().unwrap();
+        assert_eq!(raised.limits(), (63, 506));
+        assert_eq!(s.project_usage(&raised).unwrap().turns, 3, "what was used stays");
     }
 }

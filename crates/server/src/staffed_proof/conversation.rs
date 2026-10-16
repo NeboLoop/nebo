@@ -4865,3 +4865,210 @@ async fn a_done_projects_wrap_up_reaches_the_owner_and_writing_reopens_it() {
     assert_eq!((reopened.state.as_str(), reopened.closed_at), ("live", None));
     rig.until(30, "the lead takes it up again", || project_rows(&nebo, &reopened).iter().any(|(_, text)| text.contains("WR-AGAIN"))).await;
 }
+
+/// A project at its limit pauses and asks (Teams, projects and threads,
+/// 2026-10-16): "it never quietly burns your balance". Before its next card
+/// goes out, a project that has used its steps or spend parks its run, is
+/// paused, says so in its thread, and asks the owner in Needs you
+/// (Continue · Stop). His Continue in the Inbox gives it room again: the
+/// card goes out, the work finishes and the lead wraps up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_project_at_its_limit_pauses_and_the_owners_answer_decides() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof LM Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof LM Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-limit";
+    nebo.store()
+        .create_team(TEAM, "Proof Limit", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], &lead, None)
+        .unwrap();
+    let project = nebo
+        .store()
+        .create_project(&db::NewProject {
+            id: "proof-project-limit",
+            team_id: TEAM,
+            lead_agent_id: &lead,
+            title: "PH launch",
+            ask: "launch",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        })
+        .unwrap();
+    // It has used all of a small limit already.
+    nebo.store().raise_project_limits(&project.id, 2, 500).unwrap();
+    for _ in 0..2 {
+        nebo.store()
+            .record_run_usage(&db::models::RunUsageEntry {
+                agent_id: lead.clone(),
+                session_key: Some(format!("agent:{lead}:coworker:{}", project.thread_session_key)),
+                run_id: None,
+                run_type: "chat".into(),
+                model_id: "m".into(),
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cost_microcents: 0,
+                outcome: None,
+                exit_reason: None,
+            })
+            .unwrap();
+    }
+    fn plans(t: &Thread<'_>) -> Option<Step> {
+        if !(t.opener().contains("MARK-LM") && t.says("You are Proof LM Lead.")) {
+            return None;
+        }
+        if t.new_text().contains("Outcome:") {
+            return Some(Step::say("LM-WRAP: the script is saved."));
+        }
+        let results: String = t.since_last_answer().iter().filter_map(|m| m.tool_results.as_ref()).map(|r| r.to_string()).collect();
+        if results.contains("limit-plan") {
+            return Some(Step::say("LM-PLAN: the Writer scripts it."));
+        }
+        let plan = json!({
+            "activities": [{"id": "script", "type": "expert", "params": {"expert": "Proof LM Writer", "task": "MARK-LMW write the hero script"}}],
+            "connections": [{"from": "__trigger__", "to": "script"}]
+        });
+        Some(Step::call(vec![("create_workflow", json!({ "name": "Limit plan", "lifetime": "temporary", "definition": plan.to_string() }))]))
+    }
+    let rig = Rig::new(&nebo, vec![Box::new(plans)]).await;
+    rig.answer_background(Box::new(plans));
+    rig.answer_background(Box::new(|t| {
+        (t.req.trace.purpose == "workflow_activity" && t.says("MARK-LMW")).then(|| {
+            Step::say(r#"Done. {"result":{"status":"done","summary":"LM-SCRIPT-RESULT: hero-30s.md saved."},"next":{"action":"close"}}"#)
+        })
+    }));
+
+    nebo.post_ok(&format!("/projects/{}/messages", project.id), &json!({ "text": "MARK-LM launch us" })).await;
+    rig.until(30, "the project pauses at its limit", || {
+        nebo.store().get_project(&project.id).unwrap().is_some_and(|p| p.state == "paused")
+    })
+    .await;
+    rig.until(10, "the thread says so", || project_rows(&nebo, &project).iter().any(|(_, t)| t.starts_with("Paused: this project reached its limit"))).await;
+    assert!(!project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("MARK-LMW")), "no card went out at the limit");
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let asked = nebo
+        .store()
+        .list_user_notifications(&user, db::models::InboxView::All, None, 50, 0)
+        .unwrap()
+        .into_iter()
+        .find(|n| n.id.starts_with(&format!("limit:{}:", project.id)))
+        .expect("the owner is asked in Needs you");
+    assert!(asked.needs_you, "{asked:?}");
+    assert_eq!(asked.options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), ["continue", "stop"]);
+
+    // He answers Continue in the Inbox.
+    nebo.post_ok(&format!("/notifications/{}/answer", asked.id), &json!({ "value": "continue" })).await;
+    rig.until(60, "the card goes out and the work wraps up", || {
+        project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("LM-WRAP"))
+    })
+    .await;
+    let rows = project_rows(&nebo, &project);
+    assert!(rows.iter().any(|(_, t)| t.contains("MARK-LMW")) && rows.iter().any(|(_, t)| t.contains("LM-SCRIPT-RESULT")), "{rows:#?}");
+    let done = nebo.store().get_project(&project.id).unwrap().unwrap();
+    assert_eq!(done.state, "done");
+    assert!(done.limits().0 >= 2 + db::PROJECT_LIMIT_STEPS, "Continue gave it room again: {:?}", done.limits());
+    let settled = nebo.store().get_notification(&asked.id, &user).unwrap().unwrap();
+    assert!(settled.answered_at.is_some(), "the question is answered: {settled:?}");
+}
+
+/// Stopped at its limit (Teams, projects and threads, 2026-10-16): the
+/// owner's Stop on a project paused at its limit ends its run; nothing more
+/// is handed out, and the project closes with its lead's wrap-up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_project_stopped_at_its_limit_closes_with_its_wrap_up() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof LS Lead", json!({ "workflows": {} })).await;
+    let writer = nebo.hire("Proof LS Writer", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-limit-stop";
+    nebo.store()
+        .create_team(TEAM, "Proof Limit Stop", "", &[db::TeamMember::local(&lead), db::TeamMember::local(&writer)], &lead, None)
+        .unwrap();
+    let project = nebo
+        .store()
+        .create_project(&db::NewProject {
+            id: "proof-project-limit-stop",
+            team_id: TEAM,
+            lead_agent_id: &lead,
+            title: "PH launch",
+            ask: "launch",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        })
+        .unwrap();
+    // It has used all of a small limit already.
+    nebo.store().raise_project_limits(&project.id, 2, 500).unwrap();
+    for _ in 0..2 {
+        nebo.store()
+            .record_run_usage(&db::models::RunUsageEntry {
+                agent_id: lead.clone(),
+                session_key: Some(format!("agent:{lead}:coworker:{}", project.thread_session_key)),
+                run_id: None,
+                run_type: "chat".into(),
+                model_id: "m".into(),
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cost_microcents: 0,
+                outcome: None,
+                exit_reason: None,
+            })
+            .unwrap();
+    }
+    fn plans(t: &Thread<'_>) -> Option<Step> {
+        if !(t.opener().contains("MARK-LS") && t.says("You are Proof LS Lead.")) {
+            return None;
+        }
+        if t.new_text().contains("Outcome:") {
+            return Some(Step::say("LS-WRAP: the script is saved."));
+        }
+        let results: String = t.since_last_answer().iter().filter_map(|m| m.tool_results.as_ref()).map(|r| r.to_string()).collect();
+        if results.contains("limit-stop-plan") {
+            return Some(Step::say("LS-PLAN: the Writer scripts it."));
+        }
+        let plan = json!({
+            "activities": [{"id": "script", "type": "expert", "params": {"expert": "Proof LS Writer", "task": "MARK-LSW write the hero script"}}],
+            "connections": [{"from": "__trigger__", "to": "script"}]
+        });
+        Some(Step::call(vec![("create_workflow", json!({ "name": "Limit stop plan", "lifetime": "temporary", "definition": plan.to_string() }))]))
+    }
+    let rig = Rig::new(&nebo, vec![Box::new(plans)]).await;
+    rig.answer_background(Box::new(plans));
+    rig.answer_background(Box::new(|t| {
+        (t.req.trace.purpose == "workflow_activity" && t.says("MARK-LSW")).then(|| {
+            Step::say(r#"Done. {"result":{"status":"done","summary":"LS-SCRIPT-RESULT: hero-30s.md saved."},"next":{"action":"close"}}"#)
+        })
+    }));
+
+    nebo.post_ok(&format!("/projects/{}/messages", project.id), &json!({ "text": "MARK-LS launch us" })).await;
+    rig.until(30, "the project pauses at its limit", || {
+        nebo.store().get_project(&project.id).unwrap().is_some_and(|p| p.state == "paused")
+    })
+    .await;
+    rig.until(10, "the thread says so", || project_rows(&nebo, &project).iter().any(|(_, t)| t.starts_with("Paused: this project reached its limit"))).await;
+    assert!(!project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("MARK-LSW")), "no card went out at the limit");
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let asked = nebo
+        .store()
+        .list_user_notifications(&user, db::models::InboxView::All, None, 50, 0)
+        .unwrap()
+        .into_iter()
+        .find(|n| n.id.starts_with(&format!("limit:{}:", project.id)))
+        .expect("the owner is asked in Needs you");
+    assert!(asked.needs_you, "{asked:?}");
+    assert_eq!(asked.options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), ["continue", "stop"]);
+
+    // He answers Stop in the Inbox: the run ends, and the project closes
+    // with its lead's wrap-up; no card ever went out.
+    nebo.post_ok(&format!("/notifications/{}/answer", asked.id), &json!({ "value": "stop" })).await;
+    rig.until(60, "the project closes with its wrap-up", || {
+        nebo.store().get_project(&project.id).unwrap().is_some_and(|p| p.state == "done")
+            && project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("LS-WRAP"))
+    })
+    .await;
+    assert!(!project_rows(&nebo, &project).iter().any(|(_, t)| t.contains("MARK-LSW")), "no card went out");
+    let settled = nebo.store().get_notification(&asked.id, &user).unwrap().unwrap();
+    assert!(settled.answered_at.is_some(), "the question is answered: {settled:?}");
+}

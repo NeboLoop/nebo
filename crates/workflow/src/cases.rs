@@ -954,7 +954,7 @@ pub struct NewAssignmentRequest<'a> {
     pub workflow_reply: Option<WorkflowReply<'a>>,
     /// Set when the work is a card in a project (the assigning run is the
     /// project's): the hand-off carries the project and its team, and the
-    /// card's lines go to the project's thread (`install_card_bell`).
+    /// card's lines go to the project's thread (`install_project_bell`).
     pub card: Option<Card<'a>>,
 }
 
@@ -967,27 +967,29 @@ pub struct Card<'a> {
     pub done_when: &'a str,
 }
 
-/// What happened to a project's card: the work was handed out, or it
-/// closed (done, blocked or failed: the hand-off row says which).
+/// What happened in a project that its thread says: a card was handed out,
+/// or it closed (done, blocked or failed: the hand-off row says which), or
+/// the project reached its limit and its run paused to ask the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CardChange {
+pub enum ProjectChange {
     Opened { assignment_id: String, task: String, done_when: String },
     Closed { assignment_id: String },
+    LimitReached { project_id: String, run_id: String },
 }
 
-static CARD_BELL: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CardChange>> = std::sync::OnceLock::new();
+static PROJECT_BELL: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<ProjectChange>> = std::sync::OnceLock::new();
 
-/// The server installs the card bell once at boot: each change to a
-/// project's card becomes a line in the project's thread, written by the
-/// team rail (`server::team::card_lines`). The card itself is the hand-off
-/// row, durable before the bell rings; with no bell (a unit test) only the
-/// line is left out.
-pub fn install_card_bell(bell: tokio::sync::mpsc::UnboundedSender<CardChange>) {
-    let _ = CARD_BELL.set(bell);
+/// The server installs the project bell once at boot: each change becomes a
+/// line in the project's thread, written by the team rail
+/// (`server::team::project_lines`), and a pause the owner's question. What
+/// changed is durable before the bell rings (the hand-off row, the run's
+/// wait); with no bell (a unit test) only the line is left out.
+pub fn install_project_bell(bell: tokio::sync::mpsc::UnboundedSender<ProjectChange>) {
+    let _ = PROJECT_BELL.set(bell);
 }
 
-fn ring_card(change: CardChange) {
-    if let Some(bell) = CARD_BELL.get() {
+pub(crate) fn ring_project(change: ProjectChange) {
+    if let Some(bell) = PROJECT_BELL.get() {
         let _ = bell.send(change);
     }
 }
@@ -1143,7 +1145,7 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         }
     }
     if let (Some(card), Some(_)) = (req.card.as_ref(), project.as_ref()) {
-        ring_card(CardChange::Opened {
+        ring_project(ProjectChange::Opened {
             assignment_id: assignment_id.clone(),
             task: card.task.to_string(),
             done_when: card.done_when.to_string(),
@@ -1195,7 +1197,7 @@ pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status:
         tracing::warn!(error = %e, assignment = %id, "assignment: hand-off end not recorded");
     }
     if a["project_id"].as_str().is_some_and(|p| !p.is_empty()) {
-        ring_card(CardChange::Closed { assignment_id: id.to_string() });
+        ring_project(ProjectChange::Closed { assignment_id: id.to_string() });
     }
     let assignee = a["assignee_agent_id"].as_str().unwrap_or("");
     let payload = serde_json::json!({

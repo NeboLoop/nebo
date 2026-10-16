@@ -57,6 +57,7 @@ pub fn routes() -> Router<AppState> {
         .route("/projects/{id}/read", axum::routing::put(handlers::teams::mark_project_read))
         .route("/projects/{id}/working", axum::routing::get(handlers::teams::project_working))
         .route("/projects/{id}/stop", axum::routing::post(handlers::teams::stop_project_work))
+        .route("/projects/{id}/continue", axum::routing::post(handlers::teams::continue_project))
         // ── Aliases: the old workroom routes ──
         .route(
             "/workrooms",

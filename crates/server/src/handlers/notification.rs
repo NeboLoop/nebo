@@ -193,6 +193,19 @@ pub(crate) async fn answer_item(state: &AppState, item: &Notification, value: &s
         }
         return Ok(());
     }
+    if let Some(rest) = id.strip_prefix("limit:") {
+        let project_id = rest.split(':').next().unwrap_or_default();
+        let project = state.store.get_project(project_id)?.ok_or(NeboError::NotFound)?;
+        return match crate::team::answer_limit(state, &project, value, via).await {
+            Ok(true) => Ok(()),
+            // Answered already (on the project, or another device).
+            Ok(false) => {
+                tools::owner_notify::settle(&state.store, Some(&|ev, p| state.hub.broadcast(ev, p)), id, "Answered", Some(via));
+                Ok(())
+            }
+            Err(e) => Err(NeboError::Validation(e)),
+        };
+    }
     if id.starts_with("handled:") {
         return match value {
             crate::handlers::learned_rules::UNDO => crate::handlers::learned_rules::undo(state, item, via),

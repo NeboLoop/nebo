@@ -969,6 +969,30 @@ pub async fn project_working(
     Ok(Json(serde_json::json!({ "working": working(&state, &team, Some(&project)).await })))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ContinueProjectRequest {
+    /// "continue" (the default) or "stop".
+    #[serde(default)]
+    pub answer: Option<String>,
+}
+
+/// POST /projects/{id}/continue — the owner's answer to a project paused
+/// at its limit, from the project itself: the same answer as its Inbox
+/// item's (`team::answer_limit`). `answered` is false when it was not
+/// paused.
+pub async fn continue_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ContinueProjectRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let (project, _) = load_project(&state, &id)?;
+    let answer = body.answer.as_deref().unwrap_or("continue");
+    let answered = crate::team::answer_limit(&state, &project, answer, "project")
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
+    Ok(Json(serde_json::json!({ "answered": answered })))
+}
+
 /// POST /projects/{id}/stop — the project's Stop: every member's work in
 /// it, one member's (`agentId`), or one helper (`agentId` + `taskId`).
 /// Never anything outside the project.

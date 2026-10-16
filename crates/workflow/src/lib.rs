@@ -89,6 +89,13 @@ pub enum WorkflowError {
     /// The count is of the requests still out across the whole run.
     #[error("waiting on {0} expert(s)")]
     AwaitingExpert(usize),
+    /// The run is a project's, and the project reached its step or spend
+    /// limit before its next card went out. Not a failure: the run parks on
+    /// one engine wait (`expert::LIMIT_KIND` on `limit:<run>`, no deadline)
+    /// and the owner decides: Continue raises the limit and the run
+    /// re-enters under its own id; Stop ends it. The text says what was used.
+    #[error("paused at its limit: {0}")]
+    ProjectLimit(String),
     #[error("circuit breaker tripped: {0}")]
     CircuitBreak(String),
     #[error("{0}")]
