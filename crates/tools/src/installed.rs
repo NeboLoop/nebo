@@ -30,8 +30,10 @@ pub fn is_locally_installed(slug: &str, artifact_type: &str) -> bool {
 
 /// Check if a product is installed on the filesystem.
 pub fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store: &db::Store) -> bool {
+    // An app installs as an agent with a page (`agents/<slug>`), so it is
+    // found where agents are.
     let dir_type = match artifact_type {
-        "agent" => "agents",
+        "agent" | "app" => "agents",
         "skill" => "skills",
         "plugin" => "plugins",
         _ => "skills",
@@ -101,7 +103,7 @@ impl InstalledIndex {
     /// Mirrors `is_installed`'s type mapping: unknown types check skills.
     pub fn contains(&self, slug: &str, artifact_type: &str) -> bool {
         match artifact_type {
-            "agent" => self.agents.contains(slug),
+            "agent" | "app" => self.agents.contains(slug),
             "plugin" => self.plugins.contains(slug),
             _ => self.skills.contains(slug),
         }
@@ -172,6 +174,7 @@ mod tests {
             updates: vec![],
         };
         assert!(idx.contains("receptionist", "agent"));
+        assert!(idx.contains("receptionist", "app"), "an app installs as an agent");
         assert!(!idx.contains("receptionist", "plugin"));
         assert!(idx.contains("gmail", "plugin"));
         assert!(idx.contains("invoicing", "skill"));
