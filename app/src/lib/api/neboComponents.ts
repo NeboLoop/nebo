@@ -1462,6 +1462,21 @@ export interface Report extends Context {
 	suppressed?: number
 }
 
+export interface RosterItem {
+	kind: RosterKind
+	id: string
+}
+
+export interface RosterOrder {
+	pinned?: RosterItem[]
+	teams?: string[]
+	employees?: string[]
+}
+
+export interface RosterTeam extends Team {
+	pinPosition?: number
+}
+
 export interface RuleCandidate extends RuleWords {
 	id: string
 	agentId: string
@@ -1719,6 +1734,7 @@ export interface UserPreference {
 	inappNotifications: boolean
 	startPage: string
 	locale?: string
+	rosterOrder?: RosterOrder
 }
 
 export interface UserProfile {
@@ -1873,6 +1889,8 @@ export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
 export type Mode = 'automatic' | 'ask' | 'plan' | 'full_access'
 
 export type ProviderEffort = 'low' | 'medium' | 'high'
+
+export type RosterKind = 'employee' | 'team'
 
 // ── API Response Types (inferred from handlers) ────────────────────
 
@@ -2558,7 +2576,7 @@ export interface ListTaskHistoryResponse {
 }
 
 export interface ListTeamsResponse {
-	teams: Team[]
+	teams: RosterTeam[]
 	total: number
 	unreadTeams: string[]
 }
@@ -3158,6 +3176,8 @@ export interface AgentListEntry {
 	kind?: string
 	/** Linked employees only: the linked bot cannot be reached right now. */
 	offline?: boolean
+	/** Its place in the owner's Pinned list (employees and teams share it); null when not pinned. The rows come in the owner's order. */
+	pinPosition: number | null
 }
 
 export interface AgentRunEntry {

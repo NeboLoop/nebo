@@ -4,7 +4,7 @@
 
 use axum::extract::{Path, State};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::handlers::{to_error_response, HandlerResult};
 use crate::state::AppState;
@@ -186,9 +186,36 @@ pub async fn open_team(
     Ok(Json(serde_json::json!({ "team": team })))
 }
 
-/// GET /teams — the sidebar's team list.
+/// One row of the roster's team list: the team, and where it sits in the
+/// owner's Pinned list (null when it is not pinned).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterTeam {
+    #[serde(flatten)]
+    pub team: db::Team,
+    pub pin_position: Option<usize>,
+}
+
+/// GET /teams — the sidebar's team list, in the owner's order (his order,
+/// then A to Z), each row with its place among the pins.
 pub async fn list_teams(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let teams = state.store.list_teams().map_err(to_error_response)?;
+    let mut teams = state.store.list_teams().map_err(to_error_response)?;
+    let order = crate::handlers::agents::roster_order(&state.store);
+    let rows: Vec<(&str, &str)> = teams.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect();
+    let arranged = db::models::RosterOrder::arrange(&order.teams, None, &rows);
+    let mut slots: Vec<Option<db::Team>> = teams.drain(..).map(Some).collect();
+    let teams: Vec<RosterTeam> = arranged
+        .into_iter()
+        .filter_map(|i| slots[i].take())
+        .map(|team| RosterTeam {
+            pin_position: order.pin_position(
+                db::models::RosterKind::Team,
+                &team.id,
+                tools::team_tool::PRIMARY_AGENT_ID,
+            ),
+            team,
+        })
+        .collect();
     let total = teams.len();
     // The teams with a member's post the owner has not read: the sidebar's
     // "New reply" dot. Cleared by `PUT /teams/{teamId}/read`.

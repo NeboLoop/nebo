@@ -67,7 +67,7 @@ var typeOverrides = map[string]string{
 	"get_run.display": "RunDisplay",
 
 	// ── Teams (Team/TeamMessage generated from Rust structs) ──
-	"list_teams.teams":            "Team[]",
+	"list_teams.teams":            "RosterTeam[]",
 	"open_team.team":              "Team",
 	"get_team_messages.messages":  "TeamMessage[]",
 	"send_team_message.asked":     "string[]",
@@ -267,6 +267,8 @@ export interface RunDisplay {
 	kind?: string
 	/** Linked employees only: the linked bot cannot be reached right now. */
 	offline?: boolean
+	/** Its place in the owner's Pinned list (employees and teams share it); null when not pinned. The rows come in the owner's order. */
+	pinPosition: number | null
 }`,
 
 	// comm::api_types::FileShare — the hub's link for a shared file.

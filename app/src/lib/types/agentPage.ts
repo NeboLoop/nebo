@@ -169,6 +169,8 @@ export interface AgentDisplay {
 	reportsTo?: string
 	/** When the employee was hired (unix seconds). */
 	installedAt?: number
+	/** Its place in the owner's Pinned list (shared with teams); null when not pinned. */
+	pinPosition?: number | null
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */

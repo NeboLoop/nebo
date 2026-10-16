@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
+use tools::team_tool::PRIMARY_AGENT_ID;
 use tools::workflows::WorkflowManager;
 
 #[derive(Debug, Deserialize)]
@@ -596,6 +597,21 @@ fn roster(
         }));
     }
 
+    // The owner's order: the rows come in it, and each says where it sits in
+    // the Pinned list (null when it is not pinned), so the desktop and every
+    // phone draw the same roster without sorting it themselves.
+    let order = roster_order(store);
+    let rows: Vec<(&str, &str)> = agents
+        .iter()
+        .map(|a| (a["id"].as_str().unwrap_or_default(), a["name"].as_str().unwrap_or_default()))
+        .collect();
+    let arranged = db::models::RosterOrder::arrange(&order.employees, Some(PRIMARY_AGENT_ID), &rows);
+    let mut agents: Vec<serde_json::Value> = arranged.into_iter().map(|i| agents[i].take()).collect();
+    for a in &mut agents {
+        let id = a["id"].as_str().unwrap_or_default().to_string();
+        a["pinPosition"] = serde_json::json!(order.pin_position(db::models::RosterKind::Employee, &id, PRIMARY_AGENT_ID));
+    }
+
     let total = agents.len() as i64;
     // The owner's conversations with a reply he has not read, by session key
     // (`agent:<id>:…`): the roster's "New reply" dots, an employee's row lit
@@ -614,6 +630,18 @@ fn roster(
         "total": total,
         "unreadSessions": unread_sessions,
     })
+}
+
+/// The owner's roster order as the bot keeps it; a read that fails is
+/// logged and the roster falls back to A to Z rather than failing.
+pub(crate) fn roster_order(store: &db::Store) -> db::models::RosterOrder {
+    match store.get_user_preferences() {
+        Ok(prefs) => prefs.map(|p| p.roster_order).unwrap_or_default(),
+        Err(e) => {
+            warn!(error = %e, "roster: could not read the owner's order");
+            db::models::RosterOrder::default()
+        }
+    }
 }
 
 /// The directory a NEW user-owned employee's package goes in: `user/agents/

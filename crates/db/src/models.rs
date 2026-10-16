@@ -86,6 +86,96 @@ pub struct UserPreference {
     /// has told this bot; `language` is the language Nebo speaks from it.
     #[serde(default)]
     pub locale: Option<String>,
+    /// The owner's roster order: what is pinned, and the order of the teams
+    /// and of the employees. Empty until he first pins or reorders.
+    #[serde(default)]
+    pub roster_order: RosterOrder,
+}
+
+/// What a roster row is: an employee or a team.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RosterKind {
+    Employee,
+    Team,
+}
+
+/// One pinned row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterItem {
+    pub kind: RosterKind,
+    pub id: String,
+}
+
+/// The owner's order of the roster's three lists, as he last left them.
+///
+/// Each list orders only itself: a drag never moves a row between lists, and
+/// a team's members are not ordered here. Rows a list does not name (a new
+/// hire, a new team, one never moved) follow the named ones, A to Z, so a
+/// new arrival lands at the bottom and the owner's order never shifts on its
+/// own. The primary employee is always first of whichever list it is in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterOrder {
+    #[serde(default)]
+    pub pinned: Vec<RosterItem>,
+    #[serde(default)]
+    pub teams: Vec<String>,
+    #[serde(default)]
+    pub employees: Vec<String>,
+}
+
+impl RosterOrder {
+    /// The same order with each id once and no empty ids: what is stored.
+    pub fn normalized(self) -> Self {
+        fn once<T: Clone + PartialEq>(items: Vec<T>, keep: impl Fn(&T) -> bool) -> Vec<T> {
+            let mut out: Vec<T> = Vec::with_capacity(items.len());
+            for item in items {
+                if keep(&item) && !out.contains(&item) {
+                    out.push(item);
+                }
+            }
+            out
+        }
+        Self {
+            pinned: once(self.pinned, |p| !p.id.is_empty()),
+            teams: once(self.teams, |id| !id.is_empty()),
+            employees: once(self.employees, |id| !id.is_empty()),
+        }
+    }
+
+    /// Where a row sits in the Pinned list, or None when it is not pinned.
+    /// [primary] (the primary employee's id) is always first; the rest keep
+    /// the order they were pinned or dragged to. Positions are comparable
+    /// across employees and teams, and a pin whose row is gone leaves a gap,
+    /// never a reshuffle.
+    pub fn pin_position(&self, kind: RosterKind, id: &str, primary: &str) -> Option<usize> {
+        let at = self.pinned.iter().position(|p| p.kind == kind && p.id == id)?;
+        let primary_pinned = self.pinned.iter().any(|p| p.kind == RosterKind::Employee && p.id == primary);
+        Some(if kind == RosterKind::Employee && id == primary {
+            0
+        } else if primary_pinned {
+            at + 1
+        } else {
+            at
+        })
+    }
+
+    /// The rows of one list in the owner's order: [primary] first when it is
+    /// among them, then the ids [saved] names in that order, then everyone
+    /// else A to Z by name (case-insensitive, id breaking a tie). Rows are
+    /// `(id, name)`; the answer is their indexes into [rows], in order.
+    pub fn arrange(saved: &[String], primary: Option<&str>, rows: &[(&str, &str)]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        order.sort_by_cached_key(|&i| {
+            let (id, name) = rows[i];
+            let first = primary.is_some_and(|p| p == id);
+            let named = saved.iter().position(|s| s == id);
+            (!first, named.is_none(), named.unwrap_or(0), name.to_lowercase(), id.to_string())
+        });
+        order
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
