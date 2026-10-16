@@ -219,11 +219,28 @@ pub async fn get_preferences(State(state): State<AppState>) -> HandlerResult<ser
     Ok(Json(serde_json::json!({"preferences": prefs})))
 }
 
+/// Said to every open app when the owner's roster order changes, here or on
+/// another device, with the order as stored: each reads its roster again,
+/// which comes in the new order.
+pub const ROSTER_ORDER_EVENT: &str = "roster_order_updated";
+
 /// PUT /api/v1/user/me/preferences
+///
+/// `rosterOrder` replaces the owner's roster order whole: what is pinned
+/// (employees and teams, in order), the order of the teams and the order of
+/// the employees.
 pub async fn update_preferences(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    let roster_order = match body.get("rosterOrder") {
+        Some(v) => Some(
+            serde_json::from_value::<db::models::RosterOrder>(v.clone())
+                .map_err(|e| to_error_response(types::NeboError::Validation(format!("invalid rosterOrder: {e}"))))?
+                .normalized(),
+        ),
+        None => None,
+    };
     state
         .store
         .update_user_preferences(
@@ -235,6 +252,11 @@ pub async fn update_preferences(
             body["startPage"].as_str().filter(|v| *v == "chat" || *v == "dashboard"),
         )
         .map_err(to_error_response)?;
+    if let Some(order) = &roster_order {
+        state.store.set_roster_order(order).map_err(to_error_response)?;
+        let payload = serde_json::to_value(order).map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+        state.hub.broadcast(ROSTER_ORDER_EVENT, payload);
+    }
     // The owner's language is the account's: it goes there too, and from
     // there to every bot.
     if let Some(language) = body["language"].as_str().filter(|l| !l.is_empty()) {

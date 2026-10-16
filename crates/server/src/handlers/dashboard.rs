@@ -172,14 +172,13 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             last_run_at: last_wf.get(a.id.as_str()).map(|r| r.completed_at.unwrap_or(r.started_at)),
         });
     }
-    // The sidebar's order, so a card never jumps when its employee starts or
+    // The roster's order, so a card never jumps when its employee starts or
     // stops: a working card is marked, not moved.
-    let app_ids: HashSet<&str> = agents.iter().filter(|a| a.is_app.unwrap_or(0) != 0).map(|a| a.id.as_str()).collect();
-    employees.sort_by(|x, y| {
-        card_rank(&x.id, app_ids.contains(x.id.as_str()))
-            .cmp(&card_rank(&y.id, app_ids.contains(y.id.as_str())))
-            .then_with(|| x.name.cmp(&y.name))
-    });
+    let order = crate::handlers::agents::roster_order(&state.store);
+    let rows: Vec<(&str, &str)> = employees.iter().map(|e| (e.id.as_str(), e.name.as_str())).collect();
+    let places = card_places(&order, &rows);
+    let mut slots: Vec<Option<DashboardEmployee>> = employees.into_iter().map(Some).collect();
+    let employees: Vec<DashboardEmployee> = places.into_iter().filter_map(|i| slots[i].take()).collect();
 
     // ---- history: workflow runs by day and by employee, chat turns by day
     let mut days: HashMap<String, DashboardDay> = HashMap::new();
@@ -334,10 +333,20 @@ fn waiting_for(store: &db::Store, run: &db::EngineRun) -> String {
     }
 }
 
-/// The sidebar's order: the primary employee first, then everyone by name,
-/// apps last. Status is deliberately not part of it.
-fn card_rank(id: &str, is_app: bool) -> (bool, bool) {
-    (id != "assistant", is_app)
+/// The roster's order of the employee cards: the owner's pins first, then
+/// his order of the employees (the primary first, anyone never ordered A to
+/// Z). Rows are `(id, name)`; the answer is their indexes, in order. Status
+/// is deliberately not part of it.
+fn card_places(order: &db::models::RosterOrder, rows: &[(&str, &str)]) -> Vec<usize> {
+    let primary = tools::team_tool::PRIMARY_AGENT_ID;
+    let listed = db::models::RosterOrder::arrange(&order.employees, Some(primary), rows);
+    let mut ranked: Vec<(Option<usize>, usize, usize)> = listed
+        .into_iter()
+        .enumerate()
+        .map(|(place, i)| (order.pin_position(db::models::RosterKind::Employee, rows[i].0, primary), place, i))
+        .collect();
+    ranked.sort_by_key(|&(pin, place, _)| (pin.is_none(), pin, place));
+    ranked.into_iter().map(|(_, _, i)| i).collect()
 }
 
 /// What a run's row says about how it went, in the owner's words. The raw
@@ -443,11 +452,17 @@ mod tests {
     }
 
     #[test]
-    fn cards_keep_the_sidebar_order_whatever_their_status() {
-        let mut ids = vec![("zed", false), ("app", true), ("assistant", false), ("amy", false)];
-        ids.sort_by(|x, y| card_rank(x.0, x.1).cmp(&card_rank(y.0, y.1)).then_with(|| x.0.cmp(y.0)));
-        let order: Vec<&str> = ids.iter().map(|x| x.0).collect();
-        assert_eq!(order, ["assistant", "amy", "zed", "app"]);
+    fn cards_keep_the_roster_order_whatever_their_status() {
+        use db::models::{RosterItem, RosterKind, RosterOrder};
+        let rows = [("zed", "Zed"), ("app", "App"), ("assistant", "Jetson"), ("amy", "Amy")];
+        let order_of = |order: &RosterOrder| -> Vec<&str> { card_places(order, &rows).into_iter().map(|i| rows[i].0).collect() };
+        assert_eq!(order_of(&RosterOrder::default()), ["assistant", "amy", "app", "zed"]);
+        let owner = RosterOrder {
+            pinned: vec![RosterItem { kind: RosterKind::Employee, id: "zed".into() }],
+            teams: vec![],
+            employees: vec!["app".into(), "amy".into()],
+        };
+        assert_eq!(order_of(&owner), ["zed", "assistant", "app", "amy"]);
     }
 
     fn sample_run(status: &str) -> db::models::WorkflowRun {

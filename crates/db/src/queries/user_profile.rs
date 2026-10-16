@@ -1,7 +1,7 @@
 use rusqlite::params;
 
 use crate::Store;
-use crate::models::{UserPreference, UserProfile};
+use crate::models::{RosterOrder, UserPreference, UserProfile};
 use types::NeboError;
 
 impl Store {
@@ -204,7 +204,8 @@ impl Store {
         let conn = self.conn()?;
         match conn.query_row(
             "SELECT user_id, email_notifications, marketing_emails, timezone,
-                    language, theme, updated_at, inapp_notifications, start_page, locale
+                    language, theme, updated_at, inapp_notifications, start_page, locale,
+                    roster_order
              FROM user_preferences LIMIT 1",
             [],
             |row| {
@@ -219,6 +220,7 @@ impl Store {
                     inapp_notifications: row.get(7)?,
                     start_page: row.get(8)?,
                     locale: row.get(9)?,
+                    roster_order: roster_order_of(row.get(10)?),
                 })
             },
         ) {
@@ -226,6 +228,22 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(NeboError::Database(e.to_string())),
         }
+    }
+
+    /// Keep the owner's roster order (what is pinned, and the order of the
+    /// teams and the employees), replacing the one before.
+    pub fn set_roster_order(&self, order: &RosterOrder) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let user_id = self.ensure_local_user_id()?;
+        let json = serde_json::to_string(order).map_err(|e| NeboError::Internal(e.to_string()))?;
+        conn.execute("INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?1)", params![user_id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE user_preferences SET roster_order = ?1, updated_at = unixepoch() WHERE user_id = ?2",
+            params![json, user_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 
     /// Keep the account's full locale tag ("es-MX"): the region the
@@ -290,5 +308,80 @@ impl Store {
         }
 
         Ok(())
+    }
+}
+
+/// The stored roster order; none yet, or one that no longer reads, is the
+/// empty order (every list A to Z) rather than a preferences read that fails.
+fn roster_order_of(raw: Option<String>) -> RosterOrder {
+    raw.and_then(|json| match serde_json::from_str(&json) {
+        Ok(order) => Some(order),
+        Err(e) => {
+            tracing::warn!(error = %e, "roster order unreadable; using A to Z");
+            None
+        }
+    })
+    .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+    use crate::models::{RosterItem, RosterKind, RosterOrder};
+
+    fn temp_store() -> Store {
+        let path = std::env::temp_dir().join(format!(
+            "nebo-roster-order-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Store::new(path.to_str().unwrap()).unwrap()
+    }
+
+    fn ids<'a>(rows: &[(&'a str, &'a str)], order: Vec<usize>) -> Vec<&'a str> {
+        order.into_iter().map(|i| rows[i].0).collect()
+    }
+
+    /// The roster order is kept on the bot and read back as stored; the
+    /// primary is first of its list wherever it was put; rows the order does
+    /// not name (a new hire) go after the named ones, A to Z.
+    #[test]
+    fn roster_order_persists_primary_first_new_at_bottom() {
+        let store = temp_store();
+        assert_eq!(store.get_user_preferences().unwrap().map(|p| p.roster_order).unwrap_or_default(), RosterOrder::default());
+
+        let saved = RosterOrder {
+            pinned: vec![
+                RosterItem { kind: RosterKind::Team, id: "sales".into() },
+                RosterItem { kind: RosterKind::Employee, id: "assistant".into() },
+                RosterItem { kind: RosterKind::Team, id: "sales".into() },
+            ],
+            teams: vec!["month-end".into(), "launch".into()],
+            employees: vec!["lead".into(), "assistant".into(), "copy".into()],
+        }
+        .normalized();
+        store.set_roster_order(&saved).unwrap();
+        let order = store.get_user_preferences().unwrap().unwrap().roster_order;
+        assert_eq!(order, saved);
+        assert_eq!(order.pinned.len(), 2, "a pin is kept once");
+
+        // The primary leads the Pinned list though it was pinned second.
+        assert_eq!(order.pin_position(RosterKind::Employee, "assistant", "assistant"), Some(0));
+        assert_eq!(order.pin_position(RosterKind::Team, "sales", "assistant"), Some(1));
+        assert_eq!(order.pin_position(RosterKind::Employee, "copy", "assistant"), None);
+
+        // Employees: the primary first, the saved order, then a new hire.
+        let people = [("copy", "Copywriter"), ("zed", "Zed"), ("lead", "Lead Finder"), ("assistant", "Jetson"), ("new", "Aaron")];
+        assert_eq!(
+            ids(&people, RosterOrder::arrange(&order.employees, Some("assistant"), &people)),
+            ["assistant", "lead", "copy", "new", "zed"],
+        );
+        // Teams: the saved order, then the new team; never-ordered is A to Z.
+        let teams = [("launch", "Launch Crew"), ("new-team", "Brand Refresh"), ("month-end", "Month End")];
+        assert_eq!(ids(&teams, RosterOrder::arrange(&order.teams, None, &teams)), ["month-end", "launch", "new-team"]);
+        assert_eq!(ids(&teams, RosterOrder::arrange(&[], None, &teams)), ["new-team", "launch", "month-end"]);
     }
 }

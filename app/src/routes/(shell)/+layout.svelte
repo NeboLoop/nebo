@@ -210,7 +210,7 @@
   // ── Teams: local groups of employees that share one mission and one
   // conversation (the thread lives on this Nebo; a hub is only a mirror).
   // A team opens in the main pane at /teams/<id>, like an employee's chat.
-  let teams = $state<import('$lib/api/neboComponents').Team[]>([]);
+  let teams = $state<import('$lib/api/neboComponents').RosterTeam[]>([]);
   // Live recency: a team row rises within its section when it talks.
   let teamActivity = $state<Record<string, number>>({});
   async function loadTeams() {
@@ -224,8 +224,9 @@
     }
   }
   const teamParam = $derived(appPath($page.url.pathname).match(/^\/teams\/([^/]+)/)?.[1] ?? null);
-  // The server's order (A to Z), the same one the phone shows.
-  const sortedTeams = $derived(teams);
+  // The owner's order, kept on the bot (pinned teams sit under Pinned): the
+  // same one the phone shows.
+  const sortedTeams = $derived(teams.filter((w) => w.pinPosition == null));
   const openTeam = (id: string) => goto(`/teams/${id}`);
   const closeTeam = () => goto('/dashboard');
   let newTeamOpen = $state(false);
@@ -485,6 +486,7 @@
           department: a.department ?? '',
           reportsTo: a.reportsTo ?? '',
           installedAt: a.installedAt ?? undefined,
+          pinPosition: a.pinPosition,
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }
@@ -761,19 +763,27 @@
       }
     });
 
+    // The owner pinned or reordered, here or on another device: the roster
+    // comes again in his order.
+    onWsEvent('nebo:roster_order_updated', () => {
+      loadAgentRoster();
+      loadTeams();
+    });
+
     // Teams are created by employees (or the model); the sidebar learns
     // about a new one live.
     onWsEvent('nebo:team_created', (data) => {
       const team = data?.team;
       if (!team?.id) return;
-      teams = [team, ...teams.filter((w) => w.id !== team.id)];
+      // A new team goes to the bottom of its list, as the bot orders it.
+      teams = [...teams.filter((w) => w.id !== team.id), { ...team, pinPosition: undefined }];
       teamActivity[team.id] = Date.now();
     });
     // Name, mission, or members changed (the edit picker, or the model).
     onWsEvent('nebo:team_updated', (data) => {
       const team = data?.team;
       if (!team?.id) return;
-      teams = teams.map((w) => (w.id === team.id ? team : w));
+      teams = teams.map((w) => (w.id === team.id ? { ...team, pinPosition: w.pinPosition } : w));
     });
     // Removed here or elsewhere (a temporary team disbands once its outcome
     // reached the owner).
@@ -944,16 +954,21 @@
     return agentStatuses[id] ?? 'paused';
   }
 
-  // One list, one order: the primary employee first, then everyone else by
-  // name. An app is an employee like any other here (the row's badge says
-  // it is an app); it is not parked in its own group at the end.
-  const sortedAgents = $derived.by(() => {
-    const primary = allAgents.filter(a => a.id === 'assistant');
-    const rest = allAgents.filter(a => a.id !== 'assistant').sort((a, b) => a.name.localeCompare(b.name));
-    return [...primary, ...rest];
-  });
-
-  const listedAgents = $derived(sortedAgents);
+  // The owner's order, kept on the bot and the same one the phone shows: the
+  // roster comes in it (the primary first, anyone never ordered A to Z). An
+  // app is an employee like any other here (the row's badge says it is an
+  // app); it is not parked in its own group at the end.
+  // Pinned: employees and teams together, in the order the owner pinned or
+  // dragged them; they leave their own lists while pinned.
+  const pinnedRows = $derived(
+    [
+      ...allAgents.filter((a) => a.pinPosition != null).map((a) => ({ key: `employee:${a.id}`, at: a.pinPosition!, agent: a, team: null })),
+      ...teams.filter((w) => w.pinPosition != null).map((w) => ({ key: `team:${w.id}`, at: w.pinPosition!, agent: null, team: w })),
+    ].sort((x, y) => x.at - y.at)
+  );
+  const listedAgents = $derived(allAgents.filter((a) => a.pinPosition == null));
+  // The rail: everyone, the pinned first.
+  const sortedAgents = $derived([...pinnedRows.flatMap((r) => (r.agent ? [r.agent] : [])), ...listedAgents]);
 
   const agentId = $derived($page.params.agentId ?? '');
   // Whose runs the runs sheet shows: the page's employee, or on the
@@ -1553,6 +1568,142 @@
   </div>
 {/if}
 
+  {#snippet teamRow(room: import('$lib/api/neboComponents').RosterTeam)}
+    {@const faces = teamFaces(room)}
+    {@const roomUnread = unread.has(teamKey(room.id))}
+    <!-- Margin lives on the wrapper, width on the button — w-full plus
+         mx on the same box overflows the column and summons a
+         scrollbar on hover (the row "jump"). -->
+    <div class="mx-1.5">
+    <button
+      class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-start bg-transparent {teamParam === room.id
+        ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
+        : 'rounded-box border border-transparent hover:bg-base-100/70'}"
+      onclick={() => openTeam(room.id)}
+      oncontextmenu={(e) => handleTeamContext(e, room.id)}
+    >
+      <!-- Stacked-avatars glyph in the avatar slot: this row is a team,
+           not a person. -->
+      <div class="relative w-8 h-8 shrink-0">
+        {#if faces.length >= 2}
+          {@const extra = room.members.length - 2}
+          <span class="absolute top-0 start-0"><AgentAvatar name={faces[0].name} id={faces[0].id} color={faces[0].color} shape={faces[0].shape} size="xs" /></span>
+          <span class="absolute bottom-0 end-0"><AgentAvatar name={faces[1].name} id={faces[1].id} color={faces[1].color} shape={faces[1].shape} size="xs" /></span>
+          {#if extra > 0}
+            <!-- The row says "several"; the full roster is the team's member rail. -->
+            <div class="absolute -top-1 -end-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
+          {/if}
+        {:else}
+          <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </div>
+        {/if}
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline gap-2">
+          <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
+          <span class="flex-1"></span>
+          <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
+          <RowMark mark={rowMark(teamWorking(working, room.id), roomUnread)} />
+        </div>
+        <div class="text-xs truncate {roomUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</div>
+      </div>
+    </button>
+    </div>
+  {/snippet}
+
+  {#snippet agentRow(a: AgentDisplay)}
+    {@const st = agentStatus(a.id)}
+    {@const busy = working[a.id] !== undefined}
+    {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
+    {@const chats = apiThreads[a.id] ?? []}
+    {@const latest = chats[0]}
+    {@const isPinned = drilledAgent?.id === a.id}
+    {@const isUnread = agentUnread(unread, a.id)}
+    {@const setup = $employeeSetup[a.id]}
+    <div
+      transition:slide={{ duration: motionMs(200) }}
+      class="group/agent flex items-center gap-2.5 pe-2.5 mx-1.5 cursor-pointer text-start {!isPinned && agentId === a.id
+        ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
+        : 'rounded-box border border-transparent hover:bg-base-100/70'}"
+    >
+      <!-- Padding lives on the button, not the row, so the whole row is
+           clickable — with it on the wrapper, the gap between rows was
+           dead space that swallowed clicks. -->
+      <!-- A real link: the URL changes on the click and the route preloads
+           on hover. Where the employee opens is decided by the /{id}
+           route's load, not here. The pinned row is the way back, so it
+           keeps its button behaviour. -->
+      <a
+        href={withBase(rowHref(a))}
+        class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 ps-2.5 text-start no-underline text-inherit"
+        onclick={(e) => { if (isPinned) { e.preventDefault(); showList('1'); } }}
+        oncontextmenu={(e) => handleAgentContext(e, a.id)}
+        data-context-menu
+        title={isPinned ? $t('common.back') : undefined}
+      >
+        {#if isPinned}
+          <!-- Return chevron leads the header (the macOS/iOS "back"
+               position): this row is the way back to the employee list. -->
+          <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
+        {/if}
+        <div class="relative shrink-0 {busy ? 'agent-working' : ''}">
+          {#if a.isApp}
+            <div class="w-9 h-9 rounded-xl flex items-center justify-center {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
+            </div>
+          {:else}
+            <AgentAvatar name={a.name} color={a.color} shape={a.shape} />
+          {/if}
+          <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline gap-2">
+            <span class="text-sm font-medium truncate min-w-0">{a.name}</span>
+            {#if a.isApp}
+              <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
+            {/if}
+            {#if waitingForYou.has(a.id)}
+              <span class="badge badge-warning badge-xs shrink-0" data-testid="waiting-for-you">{$t('chat.waitingForYou')}</span>
+            {/if}
+            <span class="flex-1"></span>
+            <!-- No per-row time here: employees without chats have none,
+                 and a column where only some rows carry a time reads as
+                 noise. Times live on the conversations themselves. -->
+            <!-- Working already shows on the avatar and the live verb;
+                 the end of the row carries the unread dot. -->
+            {#if !busy && isUnread}<RowMark mark="unread" />{/if}
+          </div>
+          <!-- A restart is a state, not something the employee said: the
+               label carries it and the line keeps the last real status. -->
+          {#if busy}
+            <!-- Working: the live verb replaces the last line, so the row
+                 says what is happening, not what was said. -->
+            <div class="text-xs text-success truncate flex items-center gap-1.5"><span class="loading loading-dots loading-xs shrink-0"></span><span class="truncate">{workingLabel(a.id) || $t('sidebar.working')}</span></div>
+          {:else if setup}
+            <!-- Its dependencies are still landing: the install modal
+                 never waits on them, so the row carries the progress. -->
+            <div class="text-xs text-base-content/60 truncate flex items-center gap-1.5" data-testid="getting-ready"><span class="loading loading-spinner loading-xs shrink-0"></span><span class="truncate">{$t('installFlow.gettingReady', { values: { name: a.name } })} {setup.settled}/{setup.total}</span></div>
+          {:else if a.offline}
+            <!-- A linked employee whose linked bot cannot be reached: a
+                 state, said plainly, in place of the last line. -->
+            <div class="text-xs text-base-content/60 truncate">{$t('sidebar.offline')}</div>
+          {:else}
+            <div class="text-xs truncate {isUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
+          {/if}
+        </div>
+        {#if !isPinned && a.isolated}
+          <!-- Drill chevron: an isolated employee opens its list of sealed
+               conversations rather than one chat — the row IS navigation.
+               This replaces the lock glyph: one signal per row. -->
+          <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
+        {/if}
+      </a>
+      <!-- No gear on the row: the chat header's gear (and the row's
+           right-click menu) open the same employee settings. -->
+    </div>
+  {/snippet}
+
 <!-- The workspace list: Inbox, then the roster, each employee expanding to
      their chats. This is the app's only navigation. -->
   {#snippet teamsSection()}
@@ -1583,49 +1734,9 @@
           <!-- folded: nothing but the header -->
         {:else if sortedTeams.length > 0}
           {#each sortedTeams as room (room.id)}
-            {@const faces = teamFaces(room)}
-            {@const roomUnread = unread.has(teamKey(room.id))}
-            <!-- Margin lives on the wrapper, width on the button — w-full plus
-                 mx on the same box overflows the column and summons a
-                 scrollbar on hover (the row "jump"). -->
-            <div class="mx-1.5">
-            <button
-              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-start bg-transparent {teamParam === room.id
-                ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
-                : 'rounded-box border border-transparent hover:bg-base-100/70'}"
-              onclick={() => openTeam(room.id)}
-              oncontextmenu={(e) => handleTeamContext(e, room.id)}
-            >
-              <!-- Stacked-avatars glyph in the avatar slot: this row is a team,
-                   not a person. -->
-              <div class="relative w-8 h-8 shrink-0">
-                {#if faces.length >= 2}
-                  {@const extra = room.members.length - 2}
-                  <span class="absolute top-0 start-0"><AgentAvatar name={faces[0].name} id={faces[0].id} color={faces[0].color} shape={faces[0].shape} size="xs" /></span>
-                  <span class="absolute bottom-0 end-0"><AgentAvatar name={faces[1].name} id={faces[1].id} color={faces[1].color} shape={faces[1].shape} size="xs" /></span>
-                  {#if extra > 0}
-                    <!-- The row says "several"; the full roster is the team's member rail. -->
-                    <div class="absolute -top-1 -end-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
-                  {/if}
-                {:else}
-                  <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                  </div>
-                {/if}
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-baseline gap-2">
-                  <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
-                  <span class="flex-1"></span>
-                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
-                  <RowMark mark={rowMark(teamWorking(working, room.id), roomUnread)} />
-                </div>
-                <div class="text-xs truncate {roomUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</div>
-              </div>
-            </button>
-            </div>
+            {@render teamRow(room)}
           {/each}
-        {:else}
+        {:else if teams.length === 0}
           <!-- The section teaches what teams ARE before the first one exists —
                the owner shouldn't have to ask "how do I see the teams". -->
           <p class="text-xs text-base-content/45 mx-4 mb-1 leading-relaxed">{$t('teams.emptyRoster')}</p>
@@ -1687,7 +1798,22 @@
             </div>
           </button>
         </div>
-        {#if sortedTeams.length > 0}
+        {#if pinnedRows.length > 0}
+          <!-- PINNED — employees and teams together, in the owner's order
+               (kept on the bot; pinned and reordered from the phone). -->
+          <div class="flex items-center gap-2 mt-4 mb-1 px-4">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('sidebar.pinned')}</span>
+            <span class="text-[10px] font-mono text-base-content/40">{pinnedRows.length}</span>
+          </div>
+          {#each pinnedRows as row (row.key)}
+            {#if row.agent}
+              {@render agentRow(row.agent)}
+            {:else if row.team}
+              {@render teamRow(row.team)}
+            {/if}
+          {/each}
+        {/if}
+        {#if teams.length > 0}
           <!-- Teams lead when they exist: few rows, the shape of the workforce.
                Before the first team the hint sits below the employees instead. -->
           {@render teamsSection()}
@@ -1704,95 +1830,7 @@
         </button>
       {/if}
       {#each (drilledAgent ? [drilledAgent] : employeesOpen ? listedAgents : []) as a (a.id)}
-        {@const st = agentStatus(a.id)}
-        {@const busy = working[a.id] !== undefined}
-        {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
-        {@const chats = apiThreads[a.id] ?? []}
-        {@const latest = chats[0]}
-        {@const isPinned = drilledAgent?.id === a.id}
-        {@const isUnread = agentUnread(unread, a.id)}
-        {@const setup = $employeeSetup[a.id]}
-        <div
-          transition:slide={{ duration: motionMs(200) }}
-          class="group/agent flex items-center gap-2.5 pe-2.5 mx-1.5 cursor-pointer text-start {!isPinned && agentId === a.id
-            ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
-            : 'rounded-box border border-transparent hover:bg-base-100/70'}"
-        >
-          <!-- Padding lives on the button, not the row, so the whole row is
-               clickable — with it on the wrapper, the gap between rows was
-               dead space that swallowed clicks. -->
-          <!-- A real link: the URL changes on the click and the route preloads
-               on hover. Where the employee opens is decided by the /{id}
-               route's load, not here. The pinned row is the way back, so it
-               keeps its button behaviour. -->
-          <a
-            href={withBase(rowHref(a))}
-            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 ps-2.5 text-start no-underline text-inherit"
-            onclick={(e) => { if (isPinned) { e.preventDefault(); showList('1'); } }}
-            oncontextmenu={(e) => handleAgentContext(e, a.id)}
-            data-context-menu
-            title={isPinned ? $t('common.back') : undefined}
-          >
-            {#if isPinned}
-              <!-- Return chevron leads the header (the macOS/iOS "back"
-                   position): this row is the way back to the employee list. -->
-              <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
-            {/if}
-            <div class="relative shrink-0 {busy ? 'agent-working' : ''}">
-              {#if a.isApp}
-                <div class="w-9 h-9 rounded-xl flex items-center justify-center {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
-                </div>
-              {:else}
-                <AgentAvatar name={a.name} color={a.color} shape={a.shape} />
-              {/if}
-              <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-baseline gap-2">
-                <span class="text-sm font-medium truncate min-w-0">{a.name}</span>
-                {#if a.isApp}
-                  <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
-                {/if}
-                {#if waitingForYou.has(a.id)}
-                  <span class="badge badge-warning badge-xs shrink-0" data-testid="waiting-for-you">{$t('chat.waitingForYou')}</span>
-                {/if}
-                <span class="flex-1"></span>
-                <!-- No per-row time here: employees without chats have none,
-                     and a column where only some rows carry a time reads as
-                     noise. Times live on the conversations themselves. -->
-                <!-- Working already shows on the avatar and the live verb;
-                     the end of the row carries the unread dot. -->
-                {#if !busy && isUnread}<RowMark mark="unread" />{/if}
-              </div>
-              <!-- A restart is a state, not something the employee said: the
-                   label carries it and the line keeps the last real status. -->
-              {#if busy}
-                <!-- Working: the live verb replaces the last line, so the row
-                     says what is happening, not what was said. -->
-                <div class="text-xs text-success truncate flex items-center gap-1.5"><span class="loading loading-dots loading-xs shrink-0"></span><span class="truncate">{workingLabel(a.id) || $t('sidebar.working')}</span></div>
-              {:else if setup}
-                <!-- Its dependencies are still landing: the install modal
-                     never waits on them, so the row carries the progress. -->
-                <div class="text-xs text-base-content/60 truncate flex items-center gap-1.5" data-testid="getting-ready"><span class="loading loading-spinner loading-xs shrink-0"></span><span class="truncate">{$t('installFlow.gettingReady', { values: { name: a.name } })} {setup.settled}/{setup.total}</span></div>
-              {:else if a.offline}
-                <!-- A linked employee whose linked bot cannot be reached: a
-                     state, said plainly, in place of the last line. -->
-                <div class="text-xs text-base-content/60 truncate">{$t('sidebar.offline')}</div>
-              {:else}
-                <div class="text-xs truncate {isUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
-              {/if}
-            </div>
-            {#if !isPinned && a.isolated}
-              <!-- Drill chevron: an isolated employee opens its list of sealed
-                   conversations rather than one chat — the row IS navigation.
-                   This replaces the lock glyph: one signal per row. -->
-              <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
-            {/if}
-          </a>
-          <!-- No gear on the row: the chat header's gear (and the row's
-               right-click menu) open the same employee settings. -->
-        </div>
+        {@render agentRow(a)}
       {/each}
       {#if drilledAgent}
         <!-- The pinned employee's conversations, expanding beneath their row.
@@ -1879,7 +1917,7 @@
           {/if}
         </div>
       {/if}
-      {#if !drilledAgent && sortedTeams.length === 0}
+      {#if !drilledAgent && teams.length === 0}
         {@render teamsSection()}
       {/if}
     {/if}
@@ -2091,7 +2129,7 @@
     onclose={() => (newTeamOpen = false)}
     oncreated={(team) => {
       newTeamOpen = false;
-      teams = [team, ...teams.filter((w) => w.id !== team.id)];
+      teams = [...teams.filter((w) => w.id !== team.id), { ...team, pinPosition: undefined }];
       teamActivity[team.id] = Date.now();
       openTeam(team.id);
     }}
