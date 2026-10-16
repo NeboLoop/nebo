@@ -700,6 +700,10 @@ impl RequestTrace {
     }
 }
 
+/// The header and value a request with no cache breakpoints carries to
+/// Janus: cache none of it (no head marker, no rolling marker).
+pub const PROMPT_CACHE_OFF: (&str, &str) = ("x-prompt-cache", "off");
+
 /// A request to an AI provider. There is no `Default`: `trace` is required,
 /// so build one from [`ChatRequest::new`] or name every field.
 #[derive(Debug, Clone, Serialize)]
@@ -731,6 +735,13 @@ pub struct ChatRequest {
     /// placed.  Providers that support prompt caching (e.g. Anthropic) will
     /// split the system prompt at these offsets and mark the prefix blocks
     /// with `cache_control: { type: "ephemeral" }`.
+    ///
+    /// Empty: a one-off request (a title, a summary, a check) that nothing
+    /// reads back. It is cached nowhere: no marker of ours, and Janus is told
+    /// with [`PROMPT_CACHE_OFF`], so a call made once never pays the cache
+    /// write (audit 2026-10-16: millions of one-off tokens written to cache,
+    /// almost none read back). A turn's steps and the forks of them (a
+    /// checkpoint) carry the turn's breakpoints and are cached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_breakpoints: Vec<usize>,
     /// Cancellation token for cooperative shutdown. CLI providers use this to
