@@ -1553,6 +1553,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                         .set_workflow_run_narrow(&run_id, mode)
                         .map_err(|e| format!("set_workflow_run_narrow: {}", e))?;
                 }
+                // A playbook's run is a fresh project of its team.
+                if project.is_none()
+                    && let Some(binding) = temporary_binding.as_deref()
+                {
+                    project = open_playbook_project(&self.store, agent_id, binding, &run_id);
+                }
                 // A project's run, before its first step: its expert steps
                 // are the project's cards.
                 if let Some(project) = project.as_deref() {
@@ -2911,6 +2917,10 @@ async fn save_binding(
             if let Some(e) = def.get("emit") {
                 binding_val["emit"] = e.clone();
             }
+            // A team's playbook: each run is a fresh project of the team.
+            if let Some(p) = def.get("project") {
+                binding_val["project"] = p.clone();
+            }
             loadable_binding(&binding_name, &binding_val)?;
             fm["workflows"][binding_name.as_str()] = binding_val;
 
@@ -3012,6 +3022,53 @@ async fn save_binding(
                 run_id,
                 employee: Some(agent.name.clone()),
             })
+    }
+}
+
+/// Open the project a playbook's run is (`WorkflowBinding::project`): a
+/// fresh project of the playbook's team, titled with the day it ran, led by
+/// the employee the playbook belongs to, asked what the playbook is for. The
+/// project bell opens its thread (`team::project_lines`). `None` for a
+/// binding that is no playbook, or one whose team is gone or does not have
+/// the employee on it (the run goes on as a plain workflow run, logged).
+fn open_playbook_project(store: &db::Store, agent_id: &str, binding: &str, run_id: &str) -> Option<String> {
+    let agent = store.get_agent(agent_id).ok().flatten()?;
+    let config = napp::agent::parse_agent_config(&agent.frontmatter).ok()?;
+    let wb = config.workflows.get(binding)?;
+    let playbook = wb.project.as_ref()?;
+    let team = match tools::team::resolve_team(store, &playbook.team) {
+        Ok(t) if t.members.iter().any(|m| m.agent_id == agent_id && m.is_local()) => t,
+        Ok(t) => {
+            warn!(agent_id, binding, team = %t.name, "playbook's employee is not on its team; the run is no project");
+            return None;
+        }
+        Err(e) => {
+            warn!(agent_id, binding, error = %e, "playbook's team not found; the run is no project");
+            return None;
+        }
+    };
+    let title = format!("{} · {}", playbook.title.trim(), chrono::Local::now().format("%b %-d"));
+    let ask = if wb.description.trim().is_empty() { playbook.title.trim().to_string() } else { wb.description.trim().to_string() };
+    let id = uuid::Uuid::new_v4().to_string();
+    let source = format!("agent:{agent_id}:{binding}");
+    match store.create_project(&db::NewProject {
+        id: &id,
+        team_id: &team.id,
+        lead_agent_id: agent_id,
+        title: &title,
+        ask: &ask,
+        asker_session_key: "",
+        asker_agent_id: "",
+        playbook_binding: Some(&source),
+    }) {
+        Ok(p) => {
+            workflow::cases::ring_project(workflow::cases::ProjectChange::Started { project_id: p.id.clone(), run_id: run_id.to_string() });
+            Some(p.id)
+        }
+        Err(e) => {
+            warn!(agent_id, binding, error = %e, "playbook's project not opened; the run is no project");
+            None
+        }
     }
 }
 

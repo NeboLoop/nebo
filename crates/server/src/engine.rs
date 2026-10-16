@@ -1247,6 +1247,7 @@ async fn drive(state: &AppState) {
     settle_held_sends(store, &state.permission_asks);
     resume_asks(store, &state.permission_asks, &state.tools, t);
     finish_temporary_work(state).await;
+    finish_project_runs(state).await;
 
     time_out_turns(state, t).await;
 
@@ -1343,15 +1344,6 @@ async fn finish_temporary_work(state: &AppState) {
             warn!(name = %work.name, run = %run.id, error = %e, "engine: temporary work's outcome not delivered; tried again next tick");
             continue;
         }
-        // A project's run ended: the project is done, and its lead, woken
-        // with the outcome above, writes the wrap-up (`team::wrap_up`).
-        if let Some(project) = store.workflow_run_project(&run.id).ok().flatten() {
-            match store.set_project_state(&project, "done", now()) {
-                Ok(Some(p)) => crate::handlers::teams::announce_project(state, &p),
-                Ok(None) => {}
-                Err(e) => warn!(project = %project, error = %e, "engine: project not closed"),
-            }
-        }
         if !work.report_to.is_empty() {
             crate::wake::deliver(state, &work.report_to).await;
         }
@@ -1367,6 +1359,59 @@ async fn finish_temporary_work(state: &AppState) {
         if let Err(e) = store.unmark_temporary(work.kind, &work.agent_id, &work.name) {
             warn!(name = %work.name, error = %e, "engine: temporary work's row not cleared");
         }
+    }
+}
+
+/// The wake kind a project's lead hears its project's run end with.
+pub const PROJECT_RUN_ENDED: &str = "project_run.ended";
+
+/// The ONE close of a round of a project's work, for the runs its lead plans
+/// and its playbook's runs alike. Each ended run of a project is reported
+/// once (`Store::mark_project_run_reported`). Unless another of the
+/// project's runs is still going, the project is done and its lead is woken
+/// in its seat for the project with the outcome; its answer there is the
+/// wrap-up, the project's done notice (`team::wrap_up`).
+async fn finish_project_runs(state: &AppState) {
+    let store = &state.store;
+    for (project_id, run) in store.ended_project_runs(TURNS_PER_TICK).unwrap_or_default() {
+        match store.mark_project_run_reported(&run.id, now()) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                warn!(project = %project_id, run = %run.id, error = %e, "engine: project run's end not recorded; tried again next tick");
+                continue;
+            }
+        }
+        if store.project_has_live_run(&project_id).unwrap_or(true) {
+            continue;
+        }
+        let Some(project) = store.set_project_state(&project_id, "done", now()).ok().flatten() else {
+            continue;
+        };
+        crate::handlers::teams::announce_project(state, &project);
+        let Some(team) = store.get_team(&project.team_id).ok().flatten() else {
+            continue;
+        };
+        let (seat, _) = crate::coworker::team_seat(&project.lead_agent_id, &team, Some(&project));
+        let ended = match run.state.as_str() {
+            "done" => "finished",
+            "failed" => "failed",
+            _ => "was stopped",
+        };
+        let outcome: String = [run.result.as_deref(), run.error.as_deref(), Some(run.summary.as_str())]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|s| !s.is_empty())
+            .unwrap_or("It left no outcome.")
+            .chars()
+            .take(1_500)
+            .collect();
+        let text = format!(
+            "This project's work {ended} (run {}). Write the wrap-up now: what was made (name the files) and anything still open.\n\nOutcome:\n{outcome}",
+            run.id
+        );
+        crate::wake::enqueue(state, &seat, PROJECT_RUN_ENDED, &text, &[], 0);
     }
 }
 
@@ -1428,7 +1473,9 @@ pub fn report_temporary_outcome(
     if !projects && !tools::owner_notify::emit(store, broadcast, &n) {
         return Err(types::NeboError::Database(format!("{id}: the outcome's Inbox item was not stored")));
     }
-    if !work.report_to.is_empty() {
+    // A project's run reaches its lead through the project's close
+    // (`finish_project_runs`), the same for every run of a project.
+    if !work.report_to.is_empty() && !projects {
         let saved_again = match work.kind {
             db::TemporaryKind::Workflow => format!(
                 " It is temporary, so it is now deleted; create_workflow(from_run: \"{}\") saves the same work to run again.",

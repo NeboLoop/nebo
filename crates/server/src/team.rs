@@ -408,6 +408,7 @@ pub(crate) fn project_lines(state: AppState, mut rx: tokio::sync::mpsc::Unbounde
                 workflow::cases::ProjectChange::HeldForOk { run_id, key, assignment_id, summary } => {
                     held_for_ok(&state, run_id, key, assignment_id.as_deref(), summary)
                 }
+                workflow::cases::ProjectChange::Started { project_id, .. } => playbook_started(&state, project_id),
                 _ => project_line(&state, &change),
             };
             if let Err(e) = said {
@@ -421,7 +422,7 @@ fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Re
     use workflow::cases::ProjectChange;
     let id = match change {
         ProjectChange::Opened { assignment_id, .. } | ProjectChange::Closed { assignment_id } => assignment_id,
-        ProjectChange::LimitReached { .. } | ProjectChange::HeldForOk { .. } => return Ok(()),
+        ProjectChange::LimitReached { .. } | ProjectChange::HeldForOk { .. } | ProjectChange::Started { .. } => return Ok(()),
     };
     let Some(card) = state.store.get_handoff(id).map_err(|e| e.to_string())? else {
         return Ok(());
@@ -449,7 +450,7 @@ fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Re
                 done_when: done_when.trim().to_string(),
             }),
         ),
-        ProjectChange::LimitReached { .. } | ProjectChange::HeldForOk { .. } => return Ok(()),
+        ProjectChange::LimitReached { .. } | ProjectChange::HeldForOk { .. } | ProjectChange::Started { .. } => return Ok(()),
         ProjectChange::Closed { .. } => (
             card.to_agent_id.as_str(),
             match card.status.as_str() {
@@ -464,6 +465,39 @@ fn project_line(state: &AppState, change: &workflow::cases::ProjectChange) -> Re
         ),
     };
     record(state, &team, Some(&project), TeamSender::Local(from), &text, &serde_json::json!([]), &[], handed_out.as_ref()).map(|_| ())
+}
+
+/// A playbook's run opened a fresh project (`workflow_manager::
+/// open_playbook_project`): every open view hears of it, its lead's seat for
+/// it is ready to answer there (its route: a colleague's request into the
+/// project, so the wrap-up turn holds only the lead's tools and its words
+/// are posted to the project's thread), and the thread opens with what the
+/// playbook is for, in the lead's name.
+fn playbook_started(state: &AppState, project_id: &str) -> Result<(), String> {
+    let Some(project) = state.store.get_project(project_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let Some(team) = state.store.get_team(&project.team_id).map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    crate::handlers::teams::announce_project(state, &project);
+    let lead_name = state.store.get_agent(&project.lead_agent_id).ok().flatten().map(|a| a.name).unwrap_or_default();
+    let (seat, title) = crate::coworker::team_seat(&project.lead_agent_id, &team, Some(&project));
+    crate::coworker::ensure_conversation_thread(state, &seat, &title)?;
+    let route = crate::reply_route::CoworkerRoute {
+        to_agent_id: project.lead_agent_id.clone(),
+        to_name: lead_name,
+        from_agent_id: String::new(),
+        from_name: "the playbook's schedule".to_string(),
+        mirror_key: None,
+        sender_depth: 0,
+        team: Some(crate::reply_route::TeamLeg { team_id: team.id.clone(), team_name: team.name.clone(), project_id: Some(project.id.clone()) }),
+        authority: tools::coworker::Authority::Coworker,
+        narrow: None,
+    };
+    crate::reply_route::set(state, &seat, "", Some(&crate::reply_route::ReplyRoute::Coworker(route)));
+    let line = format!("Started: {}", project.ask);
+    record(state, &team, Some(&project), TeamSender::Local(&project.lead_agent_id), &line, &serde_json::json!([]), &[], None).map(|_| ())
 }
 
 /// The answers a held result takes. Any other answer is a Change with that
