@@ -7783,12 +7783,23 @@ mod tests {
             answer: None,
         };
         let mut helper_events = h.start_turn(helper).await.expect("helper starts").events;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait on the queue itself, never a fixed sleep: on a slow runner the
+        // owner's call could still be on its way when a permit came back,
+        // and the helper's queued call would take it.
+        let queued = |priority| {
+            let h = h.clone();
+            async move {
+                while h.concurrency.llm_waiting(priority) == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), queued(Priority::Work)).await.expect("the helper's call queues");
         let owner_turn = tokio::spawn({
             let h = h.clone();
             async move { run_turn(&h, owner("What time do we open?")).await }
         });
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), queued(Priority::Owner)).await.expect("the owner's call queues");
         assert!(model.calls().is_empty(), "both calls wait for a permit");
 
         drop(busy.pop());

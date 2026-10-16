@@ -247,6 +247,13 @@ opt-level = 3
 [profile.dev.package.ndarray]
 opt-level = 3
 
+# SQLite is C, built at the package's opt-level. Unoptimized, a new database
+# takes ~0.55 s to run its 221 migrations, and every store a test makes pays
+# it — over half the test suite's time. Optimized it is a fraction of that,
+# and the dev app opens and migrates its own database faster too.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
 [profile.release]
 # Thin LTO across 16 codegen units: fat LTO with one unit optimized the whole
 # program on ONE thread for ~16 minutes per binary per target (v0.14.0 on the
