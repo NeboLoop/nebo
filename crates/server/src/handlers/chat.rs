@@ -1,3 +1,4 @@
+// CI probe: a typical server-side pull request (measurement only, never merged).
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};

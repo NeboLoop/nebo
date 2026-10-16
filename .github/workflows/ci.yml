@@ -186,7 +186,8 @@ jobs:
             pkg-config \
             build-essential \
             protobuf-compiler \
-            libopenblas-dev
+            libopenblas-dev \
+            mold
 
       - name: Configure OpenBLAS paths
         if: steps.select.outputs.mode != 'none'
@@ -195,7 +196,7 @@ jobs:
           echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
           # `-l openblas` is REQUIRED — turbovec's `cblas_sgemm` reference
           # otherwise goes unresolved at link time (see release.yml).
-          echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=mold -C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
 
       # nebo-server embeds app/build via rust-embed (spa.rs) — the derive needs
       # the FOLDER to exist at compile time. The only asset a test reads is the
