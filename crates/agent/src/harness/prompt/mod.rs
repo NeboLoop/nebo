@@ -388,7 +388,9 @@ mod tests {
     /// it replaced. (8,000 until 2026-10-08, when the owner was first to be
     /// called "you" in a line of its own; 8,200 until 2026-10-11, when an
     /// employee told "use chrome" wrote a Playwright script: browsing is the
-    /// browser tools' alone and "Chrome" is the owner's own, +531.)
+    /// browser tools' alone and "Chrome" is the owner's own, +531; 8,643
+    /// until 2026-10-16, when headings came back with emoji the owner never
+    /// asked for, +43.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
@@ -396,5 +398,5 @@ mod tests {
         assert!(chars < 8_700);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 8_643;
+    const SYSTEM_PROMPT_CHARS: usize = 8_686;
 }
