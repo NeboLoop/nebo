@@ -838,6 +838,7 @@ export interface Handoff {
 	createdAt: number
 	startedAt?: number
 	finishedAt?: number
+	projectId?: string
 }
 
 export interface HandoffDetail {
@@ -874,6 +875,7 @@ export interface HandoffView {
 	createdAt: number
 	startedAt?: number
 	finishedAt?: number
+	projectId?: string
 }
 
 export interface HealthResponse {
@@ -1418,6 +1420,23 @@ export interface Pricing {
 	output: number
 }
 
+export interface Project {
+	id: string
+	teamId: string
+	leadAgentId: string
+	title: string
+	ask: string
+	askerSessionKey: string
+	askerAgentId: string
+	threadSessionKey: string
+	playbookBinding?: string
+	state: string
+	limitSteps: number
+	limitSpendCents: number
+	createdAt: number
+	closedAt?: number
+}
+
 export interface ProviderModel {
 	id: string
 	provider: string
@@ -1673,6 +1692,7 @@ export interface Team {
 	organizerAgentId: string
 	hubChannelId?: string
 	createdAt: number
+	standing?: string
 }
 
 export interface TeamMember {
@@ -2056,6 +2076,12 @@ export interface CreatePackResponse {
 	pack: Pack
 }
 
+export interface CreateProjectResponse {
+	project: Project
+	messageId: string
+	asked: string
+}
+
 export interface CreateSkillResponse {
 	name: string
 	path: string
@@ -2296,6 +2322,10 @@ export interface GetPluginConfigResponse {
 
 export interface GetPluginHelpResponse {
 	docs: unknown[]
+}
+
+export interface GetProjectMessagesResponse {
+	messages: TeamMessage[]
 }
 
 export interface GetRunResponse {
@@ -2545,6 +2575,11 @@ export interface ListPluginsResponse {
 	total: number
 }
 
+export interface ListProjectsResponse {
+	projects: Project[]
+	total: number
+}
+
 export interface ListProvidersResponse {
 	profiles: AuthProfile[]
 }
@@ -2579,6 +2614,7 @@ export interface ListTeamsResponse {
 	teams: RosterTeam[]
 	total: number
 	unreadTeams: string[]
+	unreadProjects: unknown[]
 }
 
 export interface ListToolsResponse {
@@ -2612,6 +2648,10 @@ export interface MarkAllReadResponse {
 }
 
 export interface MarkChatReadResponse {
+	success: boolean
+}
+
+export interface MarkProjectReadResponse {
 	success: boolean
 }
 
@@ -2741,6 +2781,10 @@ export interface ProcessAgentBindingsResponse {
 	status: string
 }
 
+export interface ProjectWorkingResponse {
+	working: unknown
+}
+
 export interface ProxyPluginRouteResponse {
 	output: unknown
 }
@@ -2829,6 +2873,12 @@ export interface SendDevlogResponse {
 	status: string
 }
 
+export interface SendProjectMessageResponse {
+	message: string
+	messageId: string
+	asked: string
+}
+
 export interface SendTeamMessageResponse {
 	message: string
 	messageId: string
@@ -2881,6 +2931,11 @@ export interface StartWorkflowChatResponse {
 
 export interface StatusResponse {
 	setupComplete: unknown
+}
+
+export interface StopProjectWorkResponse {
+	message: string
+	stopped: string[]
 }
 
 export interface StopTeamWorkResponse {

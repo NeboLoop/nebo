@@ -1987,6 +1987,41 @@ export function togglePlugin(slug: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Get project messages"
+ */
+export function getProjectMessages(id: string) {
+	return webapi.get<components.GetProjectMessagesResponse>(`/api/v1/projects/${id}/messages`)
+}
+
+/**
+ * @description "Send project message"
+ */
+export function sendProjectMessage(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.SendProjectMessageResponse>(`/api/v1/projects/${id}/messages`, req)
+}
+
+/**
+ * @description "Mark project read"
+ */
+export function markProjectRead(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.MarkProjectReadResponse>(`/api/v1/projects/${id}/read`, req)
+}
+
+/**
+ * @description "Stop project work"
+ */
+export function stopProjectWork(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.StopProjectWorkResponse>(`/api/v1/projects/${id}/stop`, req)
+}
+
+/**
+ * @description "Project working"
+ */
+export function projectWorking(id: string) {
+	return webapi.get<components.ProjectWorkingResponse>(`/api/v1/projects/${id}/working`)
+}
+
+/**
  * @description "List providers"
  */
 export function listProviders() {
@@ -2439,6 +2474,20 @@ export function getTeamMessages(teamId: string) {
  */
 export function sendTeamMessage(teamId: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.SendTeamMessageResponse>(`/api/v1/teams/${teamId}/messages`, req)
+}
+
+/**
+ * @description "List projects"
+ */
+export function listProjects(teamId: string) {
+	return webapi.get<components.ListProjectsResponse>(`/api/v1/teams/${teamId}/projects`)
+}
+
+/**
+ * @description "Create project"
+ */
+export function createProject(teamId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreateProjectResponse>(`/api/v1/teams/${teamId}/projects`, req)
 }
 
 /**

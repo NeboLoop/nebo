@@ -22,6 +22,33 @@ pub fn team_thread_key(team_id: &str) -> String {
     format!("{TEAM_THREAD_PREFIX}{team_id}")
 }
 
+/// The segment that marks a project's thread inside a team's key space.
+const PROJECT_SEGMENT: &str = ":project:";
+
+/// The ONE builder for a project's thread key: `team:<team>:project:<id>`.
+/// A project thread is a team-style thread, so it carries the team's prefix
+/// (read state and the roster treat it as one); a one-off project, with no
+/// team, is `team::project:<id>`.
+pub fn project_thread_key(team_id: &str, project_id: &str) -> String {
+    format!("{TEAM_THREAD_PREFIX}{team_id}{PROJECT_SEGMENT}{project_id}")
+}
+
+/// Which thread a `team:` key is: the team's own, or one of its projects'.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TeamThread<'a> {
+    Team(&'a str),
+    Project { team_id: &'a str, project_id: &'a str },
+}
+
+/// The ONE reading of a team-style thread key; `None` when `key` is not one.
+pub fn team_thread_of(key: &str) -> Option<TeamThread<'_>> {
+    let rest = key.strip_prefix(TEAM_THREAD_PREFIX)?;
+    Some(match rest.split_once(PROJECT_SEGMENT) {
+        Some((team_id, project_id)) => TeamThread::Project { team_id, project_id },
+        None => TeamThread::Team(rest),
+    })
+}
+
 /// One member of a team: which machine runs them, and who they are on it.
 ///
 /// A member used to be a bare local agent id, which assumed every member lives
@@ -72,6 +99,71 @@ pub struct Team {
     /// The NeboAI hub channel mirroring this team, once mirrored.
     pub hub_channel_id: Option<String>,
     pub created_at: i64,
+    /// What doesn't change for this team (brand kit, rules, who does what):
+    /// every member's briefing carries it. Empty until the owner sets it.
+    #[serde(default)]
+    pub standing: String,
+}
+
+/// One project: a piece of work a lead owns, with its own thread
+/// (`project_thread_key`). Frontend-shaped (genapi emits this).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Project {
+    pub id: String,
+    /// '' for a one-off project.
+    pub team_id: String,
+    pub lead_agent_id: String,
+    pub title: String,
+    /// What was asked, in the asker's words.
+    pub ask: String,
+    /// The conversation the work came from ('' = the owner, in the team).
+    pub asker_session_key: String,
+    /// The employee that asked ('' = the owner).
+    pub asker_agent_id: String,
+    pub thread_session_key: String,
+    /// The lead's workflow binding a recurring project runs.
+    pub playbook_binding: Option<String>,
+    /// `live`, `paused` or `done`.
+    pub state: String,
+    pub limit_steps: i64,
+    pub limit_spend_cents: i64,
+    pub created_at: i64,
+    pub closed_at: Option<i64>,
+}
+
+/// What `create_project` needs.
+pub struct NewProject<'a> {
+    pub id: &'a str,
+    pub team_id: &'a str,
+    pub lead_agent_id: &'a str,
+    pub title: &'a str,
+    pub ask: &'a str,
+    pub asker_session_key: &'a str,
+    pub asker_agent_id: &'a str,
+    pub playbook_binding: Option<&'a str>,
+}
+
+const PROJECT_COLUMNS: &str = "id, team_id, lead_agent_id, title, ask, asker_session_key, asker_agent_id, \
+     thread_session_key, playbook_binding, state, limit_steps, limit_spend_cents, created_at, closed_at";
+
+fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
+    Ok(Project {
+        id: row.get(0)?,
+        team_id: row.get(1)?,
+        lead_agent_id: row.get(2)?,
+        title: row.get(3)?,
+        ask: row.get(4)?,
+        asker_session_key: row.get(5)?,
+        asker_agent_id: row.get(6)?,
+        thread_session_key: row.get(7)?,
+        playbook_binding: row.get(8)?,
+        state: row.get(9)?,
+        limit_steps: row.get(10)?,
+        limit_spend_cents: row.get(11)?,
+        created_at: row.get(12)?,
+        closed_at: row.get(13)?,
+    })
 }
 
 /// One message in a team's local thread, frontend-shaped (genapi emits this).
@@ -111,11 +203,12 @@ fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<Team> {
         organizer_agent_id: row.get(4)?,
         hub_channel_id: row.get(5)?,
         created_at: row.get(6)?,
+        standing: row.get(7)?,
     })
 }
 
 const TEAM_COLUMNS: &str =
-    "id, name, mission, members, organizer_agent_id, hub_channel_id, created_at";
+    "id, name, mission, members, organizer_agent_id, hub_channel_id, created_at, standing";
 
 fn message_from_row(m: ChatMessage) -> TeamMessage {
     let meta: serde_json::Value = m
@@ -228,8 +321,9 @@ impl Store {
         .db_err("get_team_by_hub_channel")
     }
 
-    /// Replace a team's name, mission, and members in one write. Callers
-    /// validate (the tools crate's `team::update` is the ONE rule set).
+    /// Replace a team's name, mission, members, lead and standing rules in
+    /// one write. Callers validate (the tools crate's `team::update` is the
+    /// ONE rule set).
     pub fn update_team(
         &self,
         id: &str,
@@ -237,16 +331,17 @@ impl Store {
         mission: &str,
         members: &[TeamMember],
         organizer_agent_id: &str,
+        standing: &str,
     ) -> Result<Option<Team>, NeboError> {
         let conn = self.conn()?;
         let members = serde_json::to_string(members)
             .map_err(|e| NeboError::Internal(format!("serialize team members: {e}")))?;
         conn.query_row(
             &format!(
-                "UPDATE teams SET name = ?2, mission = ?3, members = ?4, organizer_agent_id = ?5
+                "UPDATE teams SET name = ?2, mission = ?3, members = ?4, organizer_agent_id = ?5, standing = ?6
                  WHERE id = ?1 RETURNING {TEAM_COLUMNS}"
             ),
-            params![id, name, mission, members, organizer_agent_id],
+            params![id, name, mission, members, organizer_agent_id, standing],
             row_to_team,
         )
         .optional()
@@ -273,29 +368,31 @@ impl Store {
         Ok(())
     }
 
-    /// Get-or-create the team's local thread (`team:<id>`): a session plus a
-    /// real chat row titled after the team, so the thread renders with a
-    /// readable name. Returns the chat id messages are stored under.
-    pub fn ensure_team_thread(&self, team_id: &str, title: &str) -> Result<String, NeboError> {
-        let key = team_thread_key(team_id);
+    /// Get-or-create a team-style thread (`team_thread_key` or
+    /// `project_thread_key`): a session plus a real chat row titled after the
+    /// team or project, so the thread renders with a readable name. Returns
+    /// the chat id messages are stored under.
+    pub fn ensure_team_thread(&self, key: &str, title: &str) -> Result<String, NeboError> {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let session = self.get_or_create_scoped_session(&session_id, &key, "agent", "", None)?;
+        let session = self.get_or_create_scoped_session(&session_id, key, "agent", "", None)?;
         if let Some(chat_id) = session.active_chat_id.filter(|c| !c.is_empty()) {
             return Ok(chat_id);
         }
         let chat_id = uuid::Uuid::new_v4().to_string();
-        self.create_chat_for_session(&chat_id, &key, title, None)?;
+        self.create_chat_for_session(&chat_id, key, title, None)?;
         self.set_session_active_chat_id(&session.id, &chat_id)?;
         Ok(chat_id)
     }
 
-    /// Append one post to the team's local thread. `from_agent_id` is empty
-    /// for the owner. The sender and the post's provenance ride message
-    /// metadata, so the transcript labels every row correctly after a reload
-    /// and the words stay the words.
+    /// Append one post to a team-style thread: the team's own
+    /// (`team_thread_key`) or one of its projects' (`project_thread_key`,
+    /// `project` named). `from_agent_id` is empty for the owner. The sender
+    /// and the post's provenance ride message metadata, so the transcript
+    /// labels every row correctly after a reload and the words stay the words.
     pub fn append_team_message(
         &self,
         team: &Team,
+        project: Option<&Project>,
         role: &str,
         content: &str,
         sender_name: &str,
@@ -303,15 +400,22 @@ impl Store {
         attachments: &serde_json::Value,
         provenance: &[types::provenance::ProvenanceClass],
     ) -> Result<TeamMessage, NeboError> {
-        let chat_id = self.ensure_team_thread(&team.id, &team.name)?;
-        let meta = serde_json::json!({
+        let (key, title) = match project {
+            Some(p) => (p.thread_session_key.clone(), p.title.as_str()),
+            None => (team_thread_key(&team.id), team.name.as_str()),
+        };
+        let chat_id = self.ensure_team_thread(&key, title)?;
+        let mut meta = serde_json::json!({
             "senderName": sender_name,
             "fromAgentId": from_agent_id,
             "teamId": team.id,
             "attachments": attachments,
             "provenance": provenance,
-        })
-        .to_string();
+        });
+        if let Some(p) = project {
+            meta["projectId"] = serde_json::json!(p.id);
+        }
+        let meta = meta.to_string();
         let msg = self.create_chat_message_for_runner(
             &uuid::Uuid::new_v4().to_string(),
             &chat_id,
@@ -321,18 +425,18 @@ impl Store {
             None,
             None,
             Some(&meta),
-            Some(&team_thread_key(&team.id)),
+            Some(&key),
             None,
         )?;
         Ok(message_from_row(msg))
     }
 
-    /// The team's transcript, oldest first; `limit` keeps the newest rows.
+    /// A team-style thread's transcript (`team_thread_key` or
+    /// `project_thread_key`), oldest first; `limit` keeps the newest rows.
     /// Nebo's own rows (`isMeta`, such as the boundary a clear writes for
     /// the model) are not part of it.
-    pub fn list_team_messages(&self, team_id: &str, limit: usize) -> Result<Vec<TeamMessage>, NeboError> {
-        let key = team_thread_key(team_id);
-        let Some(session) = self.get_session_by_name(&key)? else {
+    pub fn list_team_messages(&self, key: &str, limit: usize) -> Result<Vec<TeamMessage>, NeboError> {
+        let Some(session) = self.get_session_by_name(key)? else {
             return Ok(Vec::new());
         };
         let Some(chat_id) = session.active_chat_id.filter(|c| !c.is_empty()) else {
@@ -347,6 +451,72 @@ impl Store {
             rows.drain(..rows.len() - limit);
         }
         Ok(rows.into_iter().map(message_from_row).collect())
+    }
+}
+
+impl Store {
+    /// Open a project: its row and its thread's key. Its thread is created
+    /// with the first post (`append_team_message`).
+    pub fn create_project(&self, p: &NewProject<'_>) -> Result<Project, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "INSERT INTO projects (id, team_id, lead_agent_id, title, ask, asker_session_key, asker_agent_id,
+                                       thread_session_key, playbook_binding)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 RETURNING {PROJECT_COLUMNS}"
+            ),
+            params![
+                p.id,
+                p.team_id,
+                p.lead_agent_id,
+                p.title,
+                p.ask,
+                p.asker_session_key,
+                p.asker_agent_id,
+                project_thread_key(p.team_id, p.id),
+                p.playbook_binding,
+            ],
+            row_to_project,
+        )
+        .db_err("create_project")
+    }
+
+    pub fn get_project(&self, id: &str) -> Result<Option<Project>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(&format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = ?1"), params![id], row_to_project)
+            .optional()
+            .db_err("get_project")
+    }
+
+    /// A team's projects: live and paused ones first, newest first within
+    /// each, then the done ones, newest first.
+    pub fn list_team_projects(&self, team_id: &str) -> Result<Vec<Project>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {PROJECT_COLUMNS} FROM projects WHERE team_id = ?1
+                 ORDER BY (state = 'done'), COALESCE(closed_at, created_at) DESC, id"
+            ))
+            .db_err("list_team_projects prepare")?;
+        let rows = stmt.query_map(params![team_id], row_to_project).db_err("list_team_projects query")?;
+        rows.collect::<Result<Vec<_>, _>>().db_err("list_team_projects collect")
+    }
+
+    /// Move a project to `live`, `paused` or `done`; `done` stamps when it
+    /// closed, any other state clears it (a post reopens a done project).
+    pub fn set_project_state(&self, id: &str, state: &str, now: i64) -> Result<Option<Project>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "UPDATE projects SET state = ?2, closed_at = CASE WHEN ?2 = 'done' THEN ?3 ELSE NULL END
+                 WHERE id = ?1 RETURNING {PROJECT_COLUMNS}"
+            ),
+            params![id, state, now],
+            row_to_project,
+        )
+        .optional()
+        .db_err("set_project_state")
     }
 }
 
@@ -420,27 +590,78 @@ mod tests {
     fn messages_live_in_the_team_thread() {
         let s = store();
         let team = s.create_team("t-1", "Ops", "m", &members(), "chief", None).unwrap();
-        assert!(s.list_team_messages("t-1", 50).unwrap().is_empty());
+        assert!(s.list_team_messages(&team_thread_key("t-1"), 50).unwrap().is_empty());
 
-        let first = s.append_team_message(&team, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![]), &[]).unwrap();
+        let first = s.append_team_message(&team, None, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![]), &[]).unwrap();
         assert_eq!(first.from, "Owner");
         assert_eq!(first.role, "user");
         assert_eq!(first.from_agent_id, "");
-        s.append_team_message(&team, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![]), &[]).unwrap();
-        s.append_team_message(&team, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![]), &[]).unwrap();
+        s.append_team_message(&team, None, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![]), &[]).unwrap();
+        s.append_team_message(&team, None, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![]), &[]).unwrap();
 
-        let all = s.list_team_messages("t-1", 0).unwrap();
+        let all = s.list_team_messages(&team_thread_key("t-1"), 0).unwrap();
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].content, "hello team");
         assert_eq!(all[1].from_agent_id, "chief");
 
-        let newest = s.list_team_messages("t-1", 2).unwrap();
+        let newest = s.list_team_messages(&team_thread_key("t-1"), 2).unwrap();
         assert_eq!(newest.len(), 2);
         assert_eq!(newest[0].content, "on it");
         assert_eq!(newest[1].content, "booked");
 
         // The thread is one session keyed `team:<id>` with one chat.
         let session = s.get_session_by_name(&team_thread_key("t-1")).unwrap().unwrap();
-        assert_eq!(session.active_chat_id.as_deref(), Some(s.ensure_team_thread("t-1", "Ops").unwrap().as_str()));
+        assert_eq!(session.active_chat_id.as_deref(), Some(s.ensure_team_thread(&team_thread_key("t-1"), "Ops").unwrap().as_str()));
+    }
+
+    /// A project lives with its team: its thread is a team-style thread
+    /// keyed by the team and the project, its rows carry the project, the
+    /// team's own thread never sees them, and its list puts live work first.
+    #[test]
+    fn a_project_is_a_thread_of_its_team() {
+        let s = store();
+        let team = s.create_team("t-1", "Launch", "m", &members(), "chief", None).unwrap();
+        let new = |id: &'static str| NewProject {
+            id,
+            team_id: "t-1",
+            lead_agent_id: "chief",
+            title: "PH launch",
+            ask: "launch us",
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        };
+        let first = s.create_project(&new("p-1")).unwrap();
+        assert_eq!((first.state.as_str(), first.closed_at), ("live", None));
+        assert_eq!(first.thread_session_key, "team:t-1:project:p-1");
+        assert_eq!(team_thread_of(&first.thread_session_key), Some(TeamThread::Project { team_id: "t-1", project_id: "p-1" }));
+        assert_eq!(team_thread_of("team:t-1"), Some(TeamThread::Team("t-1")));
+        assert_eq!(team_thread_of("agent:a:web"), None);
+
+        s.append_team_message(&team, Some(&first), "user", "launch us", "Owner", "", &serde_json::json!([]), &[]).unwrap();
+        let rows = s.list_team_messages(&first.thread_session_key, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(s.list_team_messages(&team_thread_key("t-1"), 0).unwrap().is_empty(), "the team's own thread is untouched");
+
+        s.create_project(&new("p-2")).unwrap();
+        let done = s.set_project_state("p-1", "done", 50).unwrap().unwrap();
+        assert_eq!((done.state.as_str(), done.closed_at), ("done", Some(50)));
+        let order: Vec<String> = s.list_team_projects("t-1").unwrap().into_iter().map(|p| p.id).collect();
+        assert_eq!(order, ["p-2", "p-1"], "live first, done after");
+        let reopened = s.set_project_state("p-1", "live", 60).unwrap().unwrap();
+        assert_eq!(reopened.closed_at, None);
+        assert!(s.create_project(&new("p-1")).is_err(), "one row per project");
+    }
+
+    /// The standing rules are the team's own field: empty at first, set with
+    /// the rest of the team in one write, and read back.
+    #[test]
+    fn a_team_keeps_its_standing_rules() {
+        let s = store();
+        let team = s.create_team("t-1", "Launch", "m", &members(), "chief", None).unwrap();
+        assert_eq!(team.standing, "");
+        let updated = s.update_team("t-1", "Launch", "m", &members(), "chief", "Never compare to competitors.").unwrap().unwrap();
+        assert_eq!(updated.standing, "Never compare to competitors.");
+        assert_eq!(s.get_team("t-1").unwrap().unwrap().standing, "Never compare to competitors.");
     }
 }

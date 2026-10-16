@@ -234,8 +234,10 @@ pub enum Conversation {
     /// first segment of `<ctx>`: the colleague's id, `main`, or the matter an
     /// isolated colleague asked about.
     Colleague { with: String },
-    /// The employee's seat in a team (`agent:<id>:coworker:team:<team>`).
-    Team { team_id: String },
+    /// The employee's seat in a team (`agent:<id>:coworker:team:<team>`),
+    /// or in one of the team's projects
+    /// (`agent:<id>:coworker:team:<team>:project:<project>`).
+    Team { team_id: String, project_id: Option<String> },
 }
 
 impl Conversation {
@@ -265,7 +267,12 @@ pub fn conversation_of(key: &str) -> Option<Conversation> {
         COWORKER_CHANNEL => {
             let ctx = info.rest.split_once(':').map(|(_, ctx)| ctx).unwrap_or("");
             Some(match ctx.split_once(':') {
-                Some(("team", team_id)) => Conversation::Team { team_id: team_id.to_string() },
+                Some(("team", rest)) => match rest.split_once(":project:") {
+                    Some((team_id, project_id)) => {
+                        Conversation::Team { team_id: team_id.to_string(), project_id: Some(project_id.to_string()) }
+                    }
+                    None => Conversation::Team { team_id: rest.to_string(), project_id: None },
+                },
                 _ => Conversation::Colleague { with: ctx.split(':').next().unwrap_or("").to_string() },
             })
         }
@@ -392,7 +399,11 @@ mod tests {
         assert_eq!(conversation_of("agent:cc:coworker:case-42"), colleague("case-42"));
         assert_eq!(
             conversation_of("agent:cc:coworker:team:dev-1"),
-            Some(Conversation::Team { team_id: "dev-1".to_string() })
+            Some(Conversation::Team { team_id: "dev-1".to_string(), project_id: None })
+        );
+        assert_eq!(
+            conversation_of("agent:cc:coworker:team:dev-1:project:p-9"),
+            Some(Conversation::Team { team_id: "dev-1".to_string(), project_id: Some("p-9".to_string()) })
         );
         for none in ["agent:cc:help:workflow", "agent:cc:workflow:run-1:step::0", "team:dev-1", "proof:dm:x", ""] {
             assert_eq!(conversation_of(none), None, "{none}");

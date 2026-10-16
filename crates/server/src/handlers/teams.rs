@@ -53,6 +53,8 @@ pub struct UpdateTeamRequest {
     pub members: Option<Vec<MemberRef>>,
     /// The lead (local agent id or exact name); "" = the owner leads; absent = unchanged.
     pub organizer_agent_id: Option<String>,
+    /// What doesn't change for the team (brand, rules, who does what); absent = unchanged.
+    pub standing: Option<String>,
 }
 
 /// Turn what the app named into what the store holds.
@@ -117,6 +119,7 @@ pub async fn edit_team(
         body.mission.as_deref(),
         members.as_deref(),
         organizer.as_deref(),
+        body.standing.as_deref(),
     )
     .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
 
@@ -218,18 +221,26 @@ pub async fn list_teams(State(state): State<AppState>) -> HandlerResult<serde_js
         .collect();
     let total = teams.len();
     // The teams with a member's post the owner has not read: the sidebar's
-    // "New reply" dot. Cleared by `PUT /teams/{teamId}/read`.
-    let unread_teams: Vec<String> = state
-        .store
-        .unread_conversations()
-        .map_err(to_error_response)?
-        .iter()
-        .filter_map(|key| key.strip_prefix(db::TEAM_THREAD_PREFIX).map(str::to_string))
-        .collect();
+    // "New reply" dot. Cleared by `PUT /teams/{teamId}/read`. A project's
+    // thread is listed on its own (`unreadProjects`, cleared by
+    // `PUT /projects/{id}/read`), so an app that knows no projects never
+    // shows a dot it has no way to clear.
+    let mut unread_teams: Vec<String> = Vec::new();
+    let mut unread_projects: Vec<serde_json::Value> = Vec::new();
+    for key in state.store.unread_conversations().map_err(to_error_response)? {
+        match db::team_thread_of(&key) {
+            Some(db::TeamThread::Team(id)) => unread_teams.push(id.to_string()),
+            Some(db::TeamThread::Project { team_id, project_id }) => {
+                unread_projects.push(serde_json::json!({ "teamId": team_id, "projectId": project_id }))
+            }
+            None => {}
+        }
+    }
     Ok(Json(serde_json::json!({
         "teams": teams,
         "total": total,
         "unreadTeams": unread_teams,
+        "unreadProjects": unread_projects,
     })))
 }
 
@@ -287,27 +298,9 @@ pub async fn send_team_message(
     }
     let mention = mention_ids(&state.store, &team, &body.mention);
 
-    let receipt = crate::team::post(
-        state.clone(),
-        tools::coworker::TeamPost {
-            attachments: body.attachments,
-            team_id: team.id,
-            from_agent_id: String::new(),
-            // The owner typed it: his own request.
-            by_owner: true,
-            owners_turn: None,
-            text: text.to_string(),
-            mention,
-            handoff_depth: 0,
-            provenance: Vec::new(),
-            // His own post from the team view: no conversation's mode.
-            narrow: None,
-            // The owner reads the team thread.
-            reply_to: None,
-        },
-    )
-    .await
-    .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    let receipt = crate::team::post(state.clone(), owners_post(&team, None, text, body.attachments, mention))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
     Ok(Json(serde_json::json!({
         "message": "Sent",
@@ -346,7 +339,7 @@ pub async fn stop_team_work(
         (member, "") => Target::Member(member),
         (member, task_id) => Target::Helper { member, task_id },
     };
-    let stopped = stop(&state, &team, StopBy::Owner, target)
+    let stopped = stop(&state, &team, None, StopBy::Owner, target)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
     Ok(Json(serde_json::json!({
@@ -370,14 +363,20 @@ pub async fn team_working(
         .get_team(&team_id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    Ok(Json(serde_json::json!({ "working": working(&state, &team, None).await })))
+}
+
+/// What runs in a team's conversation, or in one of its projects', now:
+/// each local member working in its seat there, and each helper it started.
+async fn working(state: &AppState, team: &db::Team, project: Option<&db::Project>) -> Vec<serde_json::Value> {
     let sessions = state.harness.sessions();
     let chat_of = |key: &str| sessions.resolve_session_id_by_key(key).map(|sid| sessions.active_chat_id(&sid)).unwrap_or_default();
     let mut working: Vec<serde_json::Value> = Vec::new();
-    for (member_id, name) in tools::team::member_roster(&state.store, &team) {
+    for (member_id, name) in tools::team::member_roster(&state.store, team) {
         if !team.members.iter().any(|m| m.agent_id == member_id && m.is_local()) {
             continue;
         }
-        let (seat, _) = crate::coworker::team_seat(&member_id, &team);
+        let (seat, _) = crate::coworker::team_seat(&member_id, team, project);
         if let Some(run) = state.run_registry.find_by_session(&seat).await {
             working.push(serde_json::json!({
                 "kind": "member",
@@ -405,7 +404,7 @@ pub async fn team_working(
             }));
         }
     }
-    Ok(Json(serde_json::json!({ "working": working })))
+    working
 }
 
 /// A command the owner typed in a team's composer, run at the door.
@@ -435,7 +434,7 @@ pub(crate) async fn command(state: &AppState, team: &db::Team, text: &str) -> Op
             reply: "Context cleared — fresh start.".to_string(),
             message_id,
         })),
-        "/stop" | "/cancel" | "/halt" => match stop(state, team, StopBy::Owner, Target::Everyone).await {
+        "/stop" | "/cancel" | "/halt" => match stop(state, team, None, StopBy::Owner, Target::Everyone).await {
             Ok(stopped) => reply("stop", stopped_line(&stopped)),
             Err(e) => Some(Err(e)),
         },
@@ -474,7 +473,13 @@ pub(crate) enum Target<'a> {
 /// alone, and so is the lead that asked. The owner may stop one member's
 /// work there, or one helper a member started there; an employee stops the
 /// team as a whole or not at all. Returns who (or what) was stopped.
-pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, target: Target<'_>) -> Result<Vec<String>, String> {
+pub(crate) async fn stop(
+    state: &AppState,
+    team: &db::Team,
+    project: Option<&db::Project>,
+    by: StopBy<'_>,
+    target: Target<'_>,
+) -> Result<Vec<String>, String> {
     let asker = match by {
         StopBy::Owner => "",
         StopBy::Employee { agent_id, session_key, owners_turn } => {
@@ -496,7 +501,7 @@ pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, targ
     };
     let roster = tools::team::member_roster(&state.store, team);
     if let Target::Helper { member, task_id } = target {
-        let (seat, _) = crate::coworker::team_seat(member, team);
+        let (seat, _) = crate::coworker::team_seat(member, team, project);
         let Some(helper) = state.helpers.list(Some(&seat)).into_iter().find(|h| h.task_id == task_id && h.running) else {
             return Ok(Vec::new());
         };
@@ -506,8 +511,9 @@ pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, targ
     }
     let mut stopped: Vec<String> = Vec::new();
     // Members on other computers: the stop goes to them through the team's
-    // hub channel, the one way they hear the team.
-    let remote_wanted = team.members.iter().any(|m| {
+    // hub channel, the one way they hear the team. A project's work is all
+    // on this computer (`team::post`).
+    let remote_wanted = project.is_none() && team.members.iter().any(|m| {
         !m.is_local()
             && match target {
                 Target::Member(id) => m.agent_id == id,
@@ -526,12 +532,17 @@ pub(crate) async fn stop(state: &AppState, team: &db::Team, by: StopBy<'_>, targ
         if !local || !wanted || member_id == asker {
             continue;
         }
-        let (seat, _) = crate::coworker::team_seat(&member_id, team);
+        let (seat, _) = crate::coworker::team_seat(&member_id, team, project);
         if crate::chat_dispatch::stop_session(&state.store, &state.helpers, &state.run_registry, &seat).await {
-            state.hub.broadcast(
-                tools::team::TEAM_ACTIVITY_EVENT,
-                serde_json::json!({ "teamId": team.id, "agentId": member_id, "agentName": name, "state": "stopped" }),
-            );
+            let mut payload = serde_json::json!({ "teamId": team.id, "agentId": member_id, "agentName": name, "state": "stopped" });
+            let event = match project {
+                Some(p) => {
+                    payload["projectId"] = serde_json::json!(p.id);
+                    tools::team::PROJECT_ACTIVITY_EVENT
+                }
+                None => tools::team::TEAM_ACTIVITY_EVENT,
+            };
+            state.hub.broadcast(event, payload);
             stopped.push(name);
         }
     }
@@ -555,12 +566,12 @@ pub(crate) fn stopped_line(stopped: &[String]) -> String {
 /// briefed with a post from before it again (`coworker::team_context`).
 /// Returns the divider's row id.
 async fn clear_team(state: &AppState, team: &db::Team) -> Result<String, String> {
-    stop(state, team, StopBy::Owner, Target::Everyone).await?;
-    let chat = state.store.ensure_team_thread(&team.id, &team.name).map_err(|e| format!("open team thread: {e}"))?;
+    stop(state, team, None, StopBy::Owner, Target::Everyone).await?;
+    let chat = state.store.ensure_team_thread(&db::team_thread_key(&team.id), &team.name).map_err(|e| format!("open team thread: {e}"))?;
     let divider = agent::harness::compact::checkpoint::clear(&state.store, &chat).map_err(|e| format!("clear team thread: {e}"))?;
     let sessions = state.harness.sessions();
     for member in team.members.iter().filter(|m| m.is_local()) {
-        let (seat, _) = crate::coworker::team_seat(&member.agent_id, team);
+        let (seat, _) = crate::coworker::team_seat(&member.agent_id, team, None);
         let Ok(sid) = sessions.resolve_session_id_by_key(&seat) else {
             continue;
         };
@@ -681,10 +692,16 @@ pub async fn get_team_messages(
     {
         return Err(to_error_response(types::NeboError::NotFound));
     }
-    let messages: Vec<db::TeamMessage> = state
+    let messages = thread_messages(&state, &db::team_thread_key(&team_id)).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "messages": messages })))
+}
+
+/// A team-style thread as the app reads it: its newest 200 rows, each with
+/// its sender's name.
+fn thread_messages(state: &AppState, key: &str) -> Result<Vec<db::TeamMessage>, types::NeboError> {
+    Ok(state
         .store
-        .list_team_messages(&team_id, 200)
-        .map_err(to_error_response)?
+        .list_team_messages(key, 200)?
         .into_iter()
         .map(|mut m| {
             // Older rows (mirrored hub traffic) may lack a sender name; the
@@ -704,8 +721,7 @@ pub async fn get_team_messages(
             }
             m
         })
-        .collect();
-    Ok(Json(serde_json::json!({ "messages": messages })))
+        .collect())
 }
 
 /// DELETE /teams/{teamId} — remove (forget) the team. Its thread (and any hub
@@ -727,6 +743,231 @@ pub(crate) fn disband(state: &AppState, team_id: &str) -> Result<(), String> {
     state.store.delete_team(team_id).map_err(|e| format!("delete team: {e}"))?;
     state.hub.broadcast(tools::team::TEAM_REMOVED_EVENT, serde_json::json!({ "teamId": team_id }));
     Ok(())
+}
+
+// ── Projects ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateProjectRequest {
+    /// What the project is called. Empty: the start of the ask.
+    #[serde(default)]
+    pub title: String,
+    /// What the owner asks the team to do: the project's first post.
+    pub ask: String,
+    /// Uploaded files (POST /files/upload metadata) riding the ask.
+    #[serde(default)]
+    pub attachments: Vec<comm::wire::Attachment>,
+}
+
+/// Longest title a project takes from its ask.
+const PROJECT_TITLE_CHARS: usize = 60;
+
+/// A project's title: the one given, or the ask's first line, cut at a word.
+fn project_title(title: &str, ask: &str) -> String {
+    let title = title.trim();
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    let line = ask.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    match line.char_indices().nth(PROJECT_TITLE_CHARS) {
+        None => line.to_string(),
+        Some((cut, _)) => {
+            let head = &line[..cut];
+            let head = head.rsplit_once(' ').map(|(h, _)| h).filter(|h| !h.is_empty()).unwrap_or(head);
+            format!("{}…", head.trim_end())
+        }
+    }
+}
+
+fn load_team(state: &AppState, team_id: &str) -> Result<db::Team, (axum::http::StatusCode, Json<crate::handlers::ErrorResponse>)> {
+    state
+        .store
+        .get_team(team_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))
+}
+
+/// A project and its team.
+fn load_project(
+    state: &AppState,
+    id: &str,
+) -> Result<(db::Project, db::Team), (axum::http::StatusCode, Json<crate::handlers::ErrorResponse>)> {
+    let project = state
+        .store
+        .get_project(id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let team = load_team(state, &project.team_id)?;
+    Ok((project, team))
+}
+
+/// Tell every open view a project changed (created, or its state moved).
+pub(crate) fn announce_project(state: &AppState, project: &db::Project) {
+    state.hub.broadcast(tools::team::PROJECT_UPDATED_EVENT, serde_json::json!({ "project": project }));
+}
+
+/// GET /teams/{teamId}/projects — the team's projects: live and paused
+/// first, newest first, then the done ones.
+pub async fn list_projects(
+    State(state): State<AppState>,
+    Path(team_id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    load_team(&state, &team_id)?;
+    let projects = state.store.list_team_projects(&team_id).map_err(to_error_response)?;
+    let total = projects.len();
+    Ok(Json(serde_json::json!({ "projects": projects, "total": total })))
+}
+
+/// POST /teams/{teamId}/projects — the owner's "New project": the project,
+/// its own thread, and his ask as its first post, which goes to the team's
+/// lead like any post that names nobody (the lead answers it or hands steps
+/// to teammates by name). A project has a lead who owns it, so an
+/// owner-led team names one first.
+pub async fn create_project(
+    State(state): State<AppState>,
+    Path(team_id): Path<String>,
+    Json(body): Json<CreateProjectRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let team = load_team(&state, &team_id)?;
+    let ask = body.ask.trim();
+    if ask.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation("ask required".into())));
+    }
+    let Some(lead) = tools::team::lead_of(&team).map(str::to_string) else {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "A project has a lead who owns it, and the {} team has none. Pick its lead first.",
+            team.name
+        ))));
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let title = project_title(&body.title, ask);
+    let project = state
+        .store
+        .create_project(&db::NewProject {
+            id: &id,
+            team_id: &team.id,
+            lead_agent_id: &lead,
+            title: &title,
+            ask,
+            asker_session_key: "",
+            asker_agent_id: "",
+            playbook_binding: None,
+        })
+        .map_err(to_error_response)?;
+    announce_project(&state, &project);
+    let receipt = crate::team::post(state.clone(), owners_post(&team, Some(&project), ask, body.attachments, Vec::new()))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    Ok(Json(serde_json::json!({
+        "project": project,
+        "messageId": receipt.message_id,
+        "asked": receipt.asked,
+    })))
+}
+
+/// The owner's own post, typed in the app, into a team or one of its projects.
+fn owners_post(
+    team: &db::Team,
+    project: Option<&db::Project>,
+    text: &str,
+    attachments: Vec<comm::wire::Attachment>,
+    mention: Vec<String>,
+) -> tools::coworker::TeamPost {
+    tools::coworker::TeamPost {
+        attachments,
+        team_id: team.id.clone(),
+        project_id: project.map(|p| p.id.clone()),
+        from_agent_id: String::new(),
+        // The owner typed it: his own request.
+        by_owner: true,
+        owners_turn: None,
+        text: text.to_string(),
+        mention,
+        handoff_depth: 0,
+        provenance: Vec::new(),
+        // His own post from the app: no conversation's mode.
+        narrow: None,
+        // The owner reads the thread.
+        reply_to: None,
+    }
+}
+
+/// GET /projects/{id}/messages — the project's thread. Initial load only;
+/// live updates arrive as `project_message` events.
+pub async fn get_project_messages(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let (project, _) = load_project(&state, &id)?;
+    let messages = thread_messages(&state, &project.thread_session_key).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "messages": messages })))
+}
+
+/// POST /projects/{id}/messages — the owner writes in a project's thread:
+/// to its lead when he names nobody, or to the members he names.
+pub async fn send_project_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<SendTeamMessageRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let (project, team) = load_project(&state, &id)?;
+    let text = body.text.trim();
+    if text.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation("text required".into())));
+    }
+    let mention = mention_ids(&state.store, &team, &body.mention);
+    let receipt = crate::team::post(state.clone(), owners_post(&team, Some(&project), text, body.attachments, mention))
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    Ok(Json(serde_json::json!({
+        "message": "Sent",
+        "messageId": receipt.message_id,
+        "asked": receipt.asked,
+    })))
+}
+
+/// PUT /projects/{id}/read — the owner has the project's thread open.
+pub async fn mark_project_read(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let (project, _) = load_project(&state, &id)?;
+    crate::handlers::chat::conversation_read(&state, &project.thread_session_key).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({"success": true})))
+}
+
+/// GET /projects/{id}/working — what runs in the project now, as
+/// `GET /teams/{teamId}/working` reads it for the team's own thread.
+pub async fn project_working(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let (project, team) = load_project(&state, &id)?;
+    Ok(Json(serde_json::json!({ "working": working(&state, &team, Some(&project)).await })))
+}
+
+/// POST /projects/{id}/stop — the project's Stop: every member's work in
+/// it, one member's (`agentId`), or one helper (`agentId` + `taskId`).
+/// Never anything outside the project.
+pub async fn stop_project_work(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<StopTeamWorkRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let (project, team) = load_project(&state, &id)?;
+    let target = match (body.agent_id.as_str(), body.task_id.as_str()) {
+        ("", _) => Target::Everyone,
+        (member, "") => Target::Member(member),
+        (member, task_id) => Target::Helper { member, task_id },
+    };
+    let stopped = stop(&state, &team, Some(&project), StopBy::Owner, target)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+    Ok(Json(serde_json::json!({
+        "message": stopped_line(&stopped),
+        "stopped": stopped,
+    })))
 }
 
 #[cfg(test)]

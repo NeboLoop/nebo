@@ -72,6 +72,10 @@ pub(crate) struct CoworkerRoute {
 pub(crate) struct TeamLeg {
     pub team_id: String,
     pub team_name: String,
+    /// The team's project the member answers in; absent for the team's own
+    /// thread (and on every route recorded before projects).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 impl ReplyRoute {
@@ -212,6 +216,7 @@ mod tests {
             team: Some(TeamLeg {
                 team_id: "t1".into(),
                 team_name: "Floor".into(),
+                project_id: None,
             }),
             authority: tools::coworker::Authority::OwnersRequest { request: "p1".into() },
             narrow: Some(types::permissions::Mode::Ask),

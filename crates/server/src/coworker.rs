@@ -66,7 +66,7 @@ impl CoworkerRail for CoworkerRailImpl {
                 session_key: &stop.session_key,
                 owners_turn: stop.owners_turn.as_deref(),
             };
-            crate::handlers::teams::stop(&self.state, &team, by, crate::handlers::teams::Target::Everyone).await.map(|stopped| crate::handlers::teams::stopped_line(&stopped))
+            crate::handlers::teams::stop(&self.state, &team, None, by, crate::handlers::teams::Target::Everyone).await.map(|stopped| crate::handlers::teams::stopped_line(&stopped))
         })
     }
 
@@ -113,6 +113,17 @@ pub(crate) async fn send_coworker_message(
                 .get_team(&t.team_id)
                 .map_err(|e| format!("load team: {e}"))?
                 .ok_or_else(|| format!("No team with id {}", t.team_id))?,
+        ),
+        None => None,
+    };
+    // The team's project the post is in, when it is in one.
+    let project = match msg.team.as_ref().and_then(|t| t.project_id.as_deref()) {
+        Some(id) => Some(
+            state
+                .store
+                .get_project(id)
+                .map_err(|e| format!("load project: {e}"))?
+                .ok_or_else(|| format!("No project with id {id}"))?,
         ),
         None => None,
     };
@@ -211,7 +222,7 @@ pub(crate) async fn send_coworker_message(
     let matter = agent::memory::scope_matter(&msg.requester_scope);
     let (thread_key, mirror_key, thread_title) = match team.as_ref() {
         Some(t) => {
-            let (key, title) = team_seat(&to_id, t);
+            let (key, title) = team_seat(&to_id, t, project.as_ref());
             (key, None, title)
         }
         None => {
@@ -291,7 +302,8 @@ pub(crate) async fn send_coworker_message(
         Some(t) => {
             // What the team said before this post, read from the team thread
             // — the one record — rather than copied into the member's threads.
-            let history = match state.store.list_team_messages(&t.id, 0) {
+            let thread = project.as_ref().map(|p| p.thread_session_key.clone()).unwrap_or_else(|| db::team_thread_key(&t.id));
+            let history = match state.store.list_team_messages(&thread, 0) {
                 Ok(rows) => {
                     let post_id = msg.team.as_ref().map(|d| d.post_id.as_str()).unwrap_or("");
                     team_context(&rows, &to_id, post_id, &roster)
@@ -351,7 +363,7 @@ pub(crate) async fn send_coworker_message(
             (
                 team_envelope(&t.name, &t.mission, &from_name, &text),
                 format!(
-                    "Team \"{name}\" — mission: {mission}. This post is from {from_who}, and you were \
+                    "Team \"{name}\" — mission: {mission}.{standing}{project} This post is from {from_who}, and you were \
                      asked to act on it. Teammates: {roster}. \
                      Your reply is posted to the team automatically — do NOT relay it via other tools. \
                      Report concrete results: artifact, status, blockers, next action. Teammates only \
@@ -360,6 +372,11 @@ pub(crate) async fn send_coworker_message(
                      spawn sub-agents to do a teammate's job.{floor}{history}",
                     name = t.name,
                     mission = if t.mission.is_empty() { "(none stated)" } else { t.mission.as_str() },
+                    standing = standing_line(&t.standing),
+                    project = project
+                        .as_ref()
+                        .map(|p| format!(" This post is in the team's project \"{}\": the project's thread is the conversation here, and your reply is posted there.", p.title))
+                        .unwrap_or_default(),
                     from_who = from_who,
                     roster = roster,
                     floor = floor,
@@ -413,7 +430,11 @@ pub(crate) async fn send_coworker_message(
         from_name: from_name.clone(),
         mirror_key,
         sender_depth: msg.handoff_depth,
-        team: team.as_ref().map(|t| TeamLeg { team_id: t.id.clone(), team_name: t.name.clone() }),
+        team: team.as_ref().map(|t| TeamLeg {
+            team_id: t.id.clone(),
+            team_name: t.name.clone(),
+            project_id: project.as_ref().map(|p| p.id.clone()),
+        }),
         authority,
         narrow: msg.narrow,
     };
@@ -444,6 +465,7 @@ pub(crate) async fn send_coworker_message(
                 sender_run_id: msg.sender_run_id.as_deref(),
                 receiver_session: &thread_key,
                 ask: &msg.text,
+                project_id: project.as_ref().map(|p| p.id.as_str()),
             },
         )
     };
@@ -465,16 +487,23 @@ pub(crate) async fn send_coworker_message(
     if let Some(t) = team.as_ref() {
         // The owner's open team view shows who picked the post up — a post
         // must never look like it went into the void. Cleared client-side
-        // when this member's reply lands as a team_message.
-        state.hub.broadcast(
-            tools::team::TEAM_ACTIVITY_EVENT,
-            serde_json::json!({
-                "teamId": t.id,
-                "agentId": to_id,
-                "agentName": to_name,
-                "state": "started",
-            }),
-        );
+        // when this member's reply lands as a team_message (in a project:
+        // `project_activity`, cleared by the reply's `project_message`, so
+        // an app that knows no projects never shows work it can't clear).
+        let mut payload = serde_json::json!({
+            "teamId": t.id,
+            "agentId": to_id,
+            "agentName": to_name,
+            "state": "started",
+        });
+        let event = match project.as_ref() {
+            Some(p) => {
+                payload["projectId"] = serde_json::json!(p.id);
+                tools::team::PROJECT_ACTIVITY_EVENT
+            }
+            None => tools::team::TEAM_ACTIVITY_EVENT,
+        };
+        state.hub.broadcast(event, payload);
     }
 
     info!(
@@ -648,6 +677,7 @@ pub(crate) async fn run_in_thread(
             from_name: &route.from_name,
             session_key: &thread_key,
             team_id: route.team.as_ref().filter(|_| acknowledge).map(|leg| leg.team_id.as_str()),
+            project_id: route.team.as_ref().filter(|_| acknowledge).and_then(|leg| leg.project_id.as_deref()),
             door: &door,
         };
         let reply = crate::channel_dispatch::collect_channel_reply(
@@ -695,6 +725,7 @@ async fn deliver_reply(
                 let post = tools::coworker::TeamPost {
                     attachments: vec![],
                     team_id: leg.team_id.clone(),
+                    project_id: leg.project_id.clone(),
                     from_agent_id: route.to_agent_id.clone(),
                     by_owner: false,
                     owners_turn: None,
@@ -733,6 +764,8 @@ pub(crate) struct OwnerForward<'a> {
     pub session_key: &'a str,
     /// The team whose post this run picked up; `None` for every other run.
     pub team_id: Option<&'a str>,
+    /// The team's project that post is in; `None` for the team's own thread.
+    pub project_id: Option<&'a str>,
     /// The entry the run came through.
     pub door: &'a types::permissions::Door,
 }
@@ -784,6 +817,15 @@ impl OwnerForward<'_> {
                 return false;
             }
         };
+        let project = match self.project_id.map(|id| self.state.store.get_project(id)) {
+            None => None,
+            Some(Ok(Some(p))) => Some(p),
+            Some(Ok(None)) => return false,
+            Some(Err(e)) => {
+                tracing::warn!(error = %e, team = %team_id, "team: could not load the project to acknowledge in");
+                return false;
+            }
+        };
         let text = if said.is_empty() {
             format!("{} is working on this.", self.agent_name)
         } else {
@@ -792,6 +834,7 @@ impl OwnerForward<'_> {
         match crate::team::record(
             self.state,
             &team,
+            project.as_ref(),
             crate::team::TeamSender::Local(self.agent_id),
             &text,
             &serde_json::Value::Array(Vec::new()),
@@ -840,6 +883,16 @@ pub(crate) fn parse_team_envelope(content: &str) -> Option<TeamEnvelope<'_>> {
         from,
         text,
     })
+}
+
+/// The team's standing rules as its briefing says them: what doesn't change
+/// for this team (the owner's brand, rules, who does what), followed in every
+/// piece of work. Empty when the team has none.
+pub(crate) fn standing_line(standing: &str) -> String {
+    match standing.trim() {
+        "" => String::new(),
+        rules => format!(" What doesn't change for this team, followed in all of its work: {rules}"),
+    }
 }
 
 /// At most this many of the team's posts ride a member's briefing, and at
@@ -918,12 +971,21 @@ pub(crate) fn team_context(
 /// A member's seat in a team: the thread it works in when the team asks it
 /// to act (`agent:<member>:coworker:team:<id>`), and that thread's title.
 /// One thread per team per member, whether the ask arrives as a text post
-/// over the rail or as a task the owner spoke in the team's voice mode.
-pub(crate) fn team_seat(agent_id: &str, team: &db::Team) -> (String, String) {
-    (
-        format!("agent:{}:{}:{}", agent_id, COWORKER_CHANNEL, db::team_thread_key(&team.id)),
-        format!("Team: {}", team.name),
-    )
+/// over the rail or as a task the owner spoke in the team's voice mode; and
+/// one per project of the team it works in
+/// (`agent:<member>:coworker:team:<id>:project:<project>`), so one
+/// project's work never runs inside another's conversation.
+pub(crate) fn team_seat(agent_id: &str, team: &db::Team, project: Option<&db::Project>) -> (String, String) {
+    match project {
+        Some(p) => (
+            format!("agent:{}:{}:{}", agent_id, COWORKER_CHANNEL, p.thread_session_key),
+            format!("Team: {} › {}", team.name, p.title),
+        ),
+        None => (
+            format!("agent:{}:{}:{}", agent_id, COWORKER_CHANNEL, db::team_thread_key(&team.id)),
+            format!("Team: {}", team.name),
+        ),
+    }
 }
 
 /// The two thread keys for one coworker exchange. Target side:

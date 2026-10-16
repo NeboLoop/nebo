@@ -51,6 +51,19 @@ pub(crate) fn post(
             .get_team(&post.team_id)
             .map_err(|e| format!("load team: {e}"))?
             .ok_or_else(|| format!("No team with id {}", post.team_id))?;
+        // A post into one of the team's projects is recorded in that
+        // project's thread, and the members it asks work it there.
+        let project = match post.project_id.as_deref() {
+            Some(id) => Some(
+                state
+                    .store
+                    .get_project(id)
+                    .map_err(|e| format!("load project: {e}"))?
+                    .filter(|p| p.team_id == team.id)
+                    .ok_or_else(|| format!("No project {id} in team {}", team.name))?,
+            ),
+            None => None,
+        };
         let text = post.text.trim();
         if text.is_empty() {
             return Err("text required".to_string());
@@ -106,6 +119,7 @@ pub(crate) fn post(
         let (message, sender_name) = record(
             &state,
             &team,
+            project.as_ref(),
             TeamSender::Local(&post.from_agent_id),
             &text,
             &attachments_json,
@@ -124,8 +138,13 @@ pub(crate) fn post(
             .collect();
 
         // 3. The optional hub mirror (before fan-out so a slow hub never
-        // delays the members; best effort either way).
-        let mirrored = mirror_to_hub(&state, &team, &text, &sender_name, &post, &remote_asks).await;
+        // delays the members; best effort either way). The hub channel
+        // mirrors the team's own thread; a project's posts stay on this
+        // computer, so a member on another one is not asked in a project.
+        let mirrored = match project {
+            None => mirror_to_hub(&state, &team, &text, &sender_name, &post, &remote_asks).await,
+            Some(_) => false,
+        };
 
         // Whose request the post is: the owner's own when he typed it; one
         // of his passed on when the member posting (its reply, or a post
@@ -172,7 +191,10 @@ pub(crate) fn post(
             }
             let msg = CoworkerMessage {
                 from_agent_id: post.from_agent_id.clone(),
-                sender_session_key: db::team_thread_key(&team.id),
+                sender_session_key: project
+                    .as_ref()
+                    .map(|p| p.thread_session_key.clone())
+                    .unwrap_or_else(|| db::team_thread_key(&team.id)),
                 to: member_id.clone(),
                 text: text.clone(),
                 requester_scope: String::new(),
@@ -180,6 +202,7 @@ pub(crate) fn post(
                 provenance: post.provenance.clone(),
                 team: Some(TeamDelivery {
                     team_id: team.id.clone(),
+                    project_id: project.as_ref().map(|p| p.id.clone()),
                     post_id: message.id.clone(),
                     reply_to: post.reply_to.clone(),
                     authority: authority.clone(),
@@ -212,8 +235,11 @@ pub(crate) fn post(
 }
 
 /// The record of one post — step 1 of `post` on its own: append the row to
-/// the team's thread and broadcast `team_message`, so every open team view
-/// (desktop and mobile) shows it live. The ONE writer of a team row. `post`
+/// the team's thread, or to one of its projects' threads (`project`), and
+/// broadcast it (`team_message` for the team's own thread, `project_message`
+/// for a project's, so an app that knows only team threads never shows a
+/// project's row in the team chat), so every open view (desktop and mobile)
+/// shows it live. The ONE writer of a team row and of a project row. `post`
 /// calls it before the fan-out; a turn spoken in the team thread's voice
 /// mode calls it alone, because the lead already answered out loud and a
 /// fan-out would ask it the same thing again in text; the hub-mirror feed
@@ -226,6 +252,7 @@ pub(crate) fn post(
 pub(crate) fn record(
     state: &AppState,
     team: &db::Team,
+    project: Option<&db::Project>,
     sender: TeamSender<'_>,
     text: &str,
     attachments: &serde_json::Value,
@@ -256,24 +283,30 @@ pub(crate) fn record(
     }
     let message = state
         .store
-        .append_team_message(team, role, text, &sender_name, from_agent_id, attachments, &provenance)
+        .append_team_message(team, project, role, text, &sender_name, from_agent_id, attachments, &provenance)
         .map_err(|e| format!("record team post: {e}"))?;
-    state.hub.broadcast(
-        tools::team::TEAM_MESSAGE_EVENT,
-        serde_json::json!({
-            "teamId": team.id,
-            "messageId": message.id,
-            "from": sender_name,
-            "fromAgentId": from_agent_id,
-            "senderName": sender_name,
-            "role": role,
-            "text": text,
-            "attachments": attachments,
-            // A member's post the owner has not read yet: the sidebar's dot
-            // (an app with the team open marks it read).
-            "unread": state.store.conversation_unread(&db::team_thread_key(&team.id)).unwrap_or(false),
-        }),
-    );
+    let thread = project.map(|p| p.thread_session_key.clone()).unwrap_or_else(|| db::team_thread_key(&team.id));
+    let mut payload = serde_json::json!({
+        "teamId": team.id,
+        "messageId": message.id,
+        "from": sender_name,
+        "fromAgentId": from_agent_id,
+        "senderName": sender_name,
+        "role": role,
+        "text": text,
+        "attachments": attachments,
+        // A member's post the owner has not read yet: the sidebar's dot
+        // (an app with the thread open marks it read).
+        "unread": state.store.conversation_unread(&thread).unwrap_or(false),
+    });
+    let event = match project {
+        Some(p) => {
+            payload["projectId"] = serde_json::json!(p.id);
+            tools::team::PROJECT_MESSAGE_EVENT
+        }
+        None => tools::team::TEAM_MESSAGE_EVENT,
+    };
+    state.hub.broadcast(event, payload);
     Ok((message, sender_name))
 }
 
@@ -447,6 +480,7 @@ mod hub_sender_tests {
         tools::coworker::TeamPost {
             attachments: vec![],
             team_id: "t1".into(),
+            project_id: None,
             from_agent_id: from.into(),
             by_owner,
             owners_turn: None,
@@ -500,6 +534,7 @@ mod tests {
             organizer_agent_id: lead.into(),
             hub_channel_id: None,
             created_at: 0,
+            standing: String::new(),
         };
         assert_eq!(tools::team::lead_of(&team("m2")), Some("m2"));
         assert_eq!(tools::team::lead_of(&team("")), None);

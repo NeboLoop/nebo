@@ -170,6 +170,7 @@ pub async fn install_org(
                     Some(&mission),
                     Some(&member_list),
                     Some(&organizer_id),
+                    None,
                 )
                 .map(|u| u.team.id),
                 None => tools::team::create(
