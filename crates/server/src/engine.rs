@@ -1343,6 +1343,15 @@ async fn finish_temporary_work(state: &AppState) {
             warn!(name = %work.name, run = %run.id, error = %e, "engine: temporary work's outcome not delivered; tried again next tick");
             continue;
         }
+        // A project's run ended: the project is done, and its lead, woken
+        // with the outcome above, writes the wrap-up (`team::wrap_up`).
+        if let Some(project) = store.workflow_run_project(&run.id).ok().flatten() {
+            match store.set_project_state(&project, "done", now()) {
+                Ok(Some(p)) => crate::handlers::teams::announce_project(state, &p),
+                Ok(None) => {}
+                Err(e) => warn!(project = %project, error = %e, "engine: project not closed"),
+            }
+        }
         if !work.report_to.is_empty() {
             crate::wake::deliver(state, &work.report_to).await;
         }
@@ -1411,8 +1420,12 @@ pub fn report_temporary_outcome(
         loud: true,
         ..Default::default()
     };
-    // Stored before anything is deleted: the outcome must reach the owner.
-    if !tools::owner_notify::emit(store, broadcast, &n) {
+    // A project's run reaches the owner as its lead's wrap-up, the one
+    // notice that the project is done (`team::wrap_up`); the run's raw
+    // outcome is for the lead, below. Any other temporary work's outcome is
+    // stored before anything is deleted: it must reach the owner.
+    let projects = work.kind == db::TemporaryKind::Workflow && store.workflow_run_project(&run.id)?.is_some();
+    if !projects && !tools::owner_notify::emit(store, broadcast, &n) {
         return Err(types::NeboError::Database(format!("{id}: the outcome's Inbox item was not stored")));
     }
     if !work.report_to.is_empty() {

@@ -1,0 +1,12 @@
+id: sc136-a-done-projects-wrap-up-reaches-the-owner-and-writing-reopens-it
+name: "SC136 — A done project's wrap-up reaches the owner, and writing reopens it"
+description: |
+  Teams, projects and threads (2026-10-16): when a project's run ends the
+  project is done, and its lead's answer to the outcome is the one done
+  notice: the owner's Inbox, loud, linking to the project's thread, and his
+  phone (no second "workflow finished" item for the same work). The owner
+  writing in the done project reopens it, and the lead takes it up again in
+  the same thread.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_done_projects_wrap_up_reaches_the_owner_and_writing_reopens_it
+conversation: []
