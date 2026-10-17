@@ -229,7 +229,9 @@
 		"schedule": "Harmonogram",
 		"searchOrRun": "Szukaj lub uruchom...",
 		"botSettings": "Ustawienia bota",
-		"employeeSettings": "Ustawienia pracownika"
+		"employeeSettings": "Ustawienia pracownika",
+		"showSidebar": "Pokaż pasek boczny",
+		"hideSidebar": "Ukryj pasek boczny"
 	},
 	"sidebar": {
 		"agents": "Pracownicy",
@@ -266,7 +268,10 @@
 		"pinned": "Przypięte",
 		"deleteChatTitle": "Usunąć „{name}”?",
 		"deleteChatBody": "Ten czat i wszystkie jego wiadomości zostaną usunięte. Tej operacji nie można cofnąć.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Tryb",
+		"modeAssistant": "Asystent",
+		"modeTeam": "Zespół"
 	},
 	"chat": {
 		"worksIn": "Pracuje w {folder}",

@@ -229,7 +229,9 @@
 		"schedule": "排程",
 		"searchOrRun": "搜尋或執行...",
 		"botSettings": "機器人設定",
-		"employeeSettings": "員工設定"
+		"employeeSettings": "員工設定",
+		"showSidebar": "顯示側邊欄",
+		"hideSidebar": "隱藏側邊欄"
 	},
 	"sidebar": {
 		"agents": "員工",
@@ -266,7 +268,10 @@
 		"pinned": "已釘選",
 		"deleteChatTitle": "刪除「{name}」？",
 		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。",
-		"offline": "離線"
+		"offline": "離線",
+		"mode": "模式",
+		"modeAssistant": "助理",
+		"modeTeam": "團隊"
 	},
 	"chat": {
 		"worksIn": "在 {folder} 中工作",

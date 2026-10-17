@@ -229,7 +229,9 @@
 		"schedule": "Zamanlama",
 		"searchOrRun": "Ara veya çalıştır...",
 		"botSettings": "Bot ayarları",
-		"employeeSettings": "Çalışan ayarları"
+		"employeeSettings": "Çalışan ayarları",
+		"showSidebar": "Kenar çubuğunu göster",
+		"hideSidebar": "Kenar çubuğunu gizle"
 	},
 	"sidebar": {
 		"agents": "Çalışanlar",
@@ -266,7 +268,10 @@
 		"pinned": "Sabitlenenler",
 		"deleteChatTitle": "\"{name}\" silinsin mi?",
 		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz.",
-		"offline": "Çevrimdışı"
+		"offline": "Çevrimdışı",
+		"mode": "Mod",
+		"modeAssistant": "Asistan",
+		"modeTeam": "Ekip"
 	},
 	"chat": {
 		"worksIn": "Çalıştığı klasör: {folder}",

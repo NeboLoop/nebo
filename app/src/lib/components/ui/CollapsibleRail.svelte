@@ -8,7 +8,7 @@
   toggle closes the drawer instead.
 -->
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import { t } from 'svelte-i18n';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar';
 
@@ -46,12 +46,27 @@
     footer
   }: Props = $props();
 
-  const isCollapsed = sidebarCollapsedFor(section);
+  // A rail's section is fixed for its life: its stores are made once.
+  const key = untrack(() => section);
+  const isCollapsed = sidebarCollapsedFor(key);
+  // Closed completely, on wide screens: the column is gone and one button at
+  // the window's corner brings it back. ⌘\ (Ctrl+\) closes and reopens it.
+  // Persisted like the collapse, so it stays as the owner left it.
+  const isHidden = sidebarCollapsedFor(`${key}:hidden`);
   const drawerOpen = $derived(mobileOpen ?? false);
   const hasDrawer = $derived(mobileOpen !== undefined);
 
   // On mobile the drawer is full-width, so the rail rendering never applies.
   const showRail = $derived($isCollapsed && !drawerOpen);
+
+  const hideKeys = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘\\' : 'Ctrl+\\';
+
+  function onkeydown(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === '\\') {
+      e.preventDefault();
+      isHidden.set(!$isHidden);
+    }
+  }
 
   function toggle() {
     if (typeof window !== 'undefined' && !window.matchMedia('(min-width: 768px)').matches) {
@@ -62,6 +77,23 @@
   }
 </script>
 
+<svelte:window {onkeydown} />
+
+{#if $isHidden}
+  <button
+    class="max-md:hidden fixed top-2 start-2 z-30 w-7 h-7 rounded-md flex items-center justify-center bg-base-200 border border-base-300 hover:bg-base-100 cursor-pointer"
+    onclick={() => isHidden.set(false)}
+    title="{$t('nav.showSidebar')} {hideKeys}"
+    aria-label={$t('nav.showSidebar')}
+    aria-keyshortcuts="Meta+Backslash Control+Backslash"
+  >
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2" />
+      <line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2" />
+    </svg>
+  </button>
+{/if}
+
 {#if drawerOpen}
   <div
     class="fixed inset-0 z-30 bg-black/40 md:hidden"
@@ -71,7 +103,7 @@
 {/if}
 
 <div
-  class="{$isCollapsed
+  class="{$isHidden ? 'md:hidden' : ''} {$isCollapsed
     ? 'md:w-rail-collapsed md:min-w-rail-collapsed'
     : 'md:w-rail md:min-w-rail'} {hasDrawer
     ? `max-md:fixed max-md:inset-y-0 max-md:start-0 max-md:z-40 max-md:w-full max-md:transition-[transform,visibility] ${
@@ -94,7 +126,7 @@
     <button
       class="w-7 h-7 max-md:w-10 max-md:h-10 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
       onclick={toggle}
-      title={$isCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}
+      title="{$isCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')} · {$t('nav.hideSidebar')} {hideKeys}"
     >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
         <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2" />

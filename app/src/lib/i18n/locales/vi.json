@@ -229,7 +229,9 @@
 		"schedule": "Lịch trình",
 		"searchOrRun": "Tìm kiếm hoặc chạy...",
 		"botSettings": "Cài đặt bot",
-		"employeeSettings": "Cài đặt nhân viên"
+		"employeeSettings": "Cài đặt nhân viên",
+		"showSidebar": "Hiện thanh bên",
+		"hideSidebar": "Ẩn thanh bên"
 	},
 	"sidebar": {
 		"agents": "Nhân viên",
@@ -266,7 +268,10 @@
 		"pinned": "Đã ghim",
 		"deleteChatTitle": "Xóa \"{name}\"?",
 		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác.",
-		"offline": "Ngoại tuyến"
+		"offline": "Ngoại tuyến",
+		"mode": "Chế độ",
+		"modeAssistant": "Trợ lý",
+		"modeTeam": "Nhóm"
 	},
 	"chat": {
 		"worksIn": "Làm việc trong {folder}",

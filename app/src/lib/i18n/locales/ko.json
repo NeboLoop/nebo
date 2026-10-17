@@ -229,7 +229,9 @@
 		"schedule": "일정",
 		"searchOrRun": "검색 또는 실행...",
 		"botSettings": "봇 설정",
-		"employeeSettings": "직원 설정"
+		"employeeSettings": "직원 설정",
+		"showSidebar": "사이드바 표시",
+		"hideSidebar": "사이드바 숨기기"
 	},
 	"sidebar": {
 		"agents": "직원",
@@ -266,7 +268,10 @@
 		"pinned": "고정됨",
 		"deleteChatTitle": "\"{name}\"을(를) 삭제할까요?",
 		"deleteChatBody": "이 채팅과 모든 메시지가 삭제됩니다. 되돌릴 수 없습니다.",
-		"offline": "오프라인"
+		"offline": "오프라인",
+		"mode": "모드",
+		"modeAssistant": "어시스턴트",
+		"modeTeam": "팀"
 	},
 	"chat": {
 		"worksIn": "{folder}에서 일합니다",

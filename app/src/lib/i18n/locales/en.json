@@ -229,7 +229,9 @@
 		"schedule": "Schedule",
 		"searchOrRun": "Search or run...",
 		"botSettings": "Bot settings",
-		"employeeSettings": "Employee settings"
+		"employeeSettings": "Employee settings",
+		"showSidebar": "Show sidebar",
+		"hideSidebar": "Hide sidebar"
 	},
 	"sidebar": {
 		"agents": "Employees",
@@ -266,7 +268,10 @@
 		"pinned": "Pinned",
 		"deleteChatTitle": "Delete \"{name}\"?",
 		"deleteChatBody": "This chat and all its messages are removed. This can't be undone.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Mode",
+		"modeAssistant": "Assistant",
+		"modeTeam": "Team"
 	},
 	"chat": {
 		"worksIn": "Works in {folder}",
