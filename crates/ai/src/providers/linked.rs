@@ -38,9 +38,12 @@
 //! (Nebo's checkpoint summary) and the latest exchanges word for word, only
 //! when the session stops answering mid-turn ([`Stall`]: its host says the
 //! prompt is open and nothing works, held for [`STALL_WINDOW`], never
-//! silence alone), or when its agent can't reopen it and has no other to
-//! carry on in. The owner reads one plain line when it continues fresh. A
-//! cleared conversation starts fresh with no handoff.
+//! silence alone), when its agent can't reopen it and has no other to
+//! carry on in, or when the agent refuses a turn in it (a refusal can mark
+//! the whole session, so every later message there would be refused too:
+//! the owner's message is answered in the fresh one). The owner reads one
+//! plain line when it continues fresh. A cleared conversation starts fresh
+//! with no handoff.
 //!
 //! The owner's `/compact` compacts the agent's own session: it is sent as
 //! his message where the agent offers the command (its
@@ -929,7 +932,11 @@ impl Driver<'_> {
                     let _ = self.conn.request(None, "host/ping", json!({}));
                     if cancel_deadline.is_none() {
                         match self.liveness(&answers_tx).await? {
-                            Liveness::Ended(ended) => return self.ended(ended).await,
+                            Liveness::Ended(ended) => {
+                                if let Some(done) = self.settle(ended).await {
+                                    return done;
+                                }
+                            }
                             Liveness::Gone => {
                                 // The process died, but the session itself
                                 // (the agent's own transcript) is not lost:
@@ -963,8 +970,10 @@ impl Driver<'_> {
                         }
                         None => self.reconnect(&answers_tx, &cancel).await?,
                     };
-                    if let Some(ended) = ended {
-                        return self.ended(ended).await;
+                    if let Some(ended) = ended
+                        && let Some(done) = self.settle(ended).await
+                    {
+                        return done;
                     }
                 }
             }
@@ -1255,6 +1264,18 @@ impl Driver<'_> {
         }
     }
 
+    /// The turn ended, how [`Driver::ended`] says; or, refused, the owner's
+    /// message goes on in a fresh session ([`Rotation::Refused`]), once a
+    /// turn and never for `/compact`: `None` while the turn goes on.
+    async fn settle(&mut self, ended: TurnUpdate) -> Option<Result<(), String>> {
+        if ended.error.is_some() || ended.stop_reason != Some(StopReason::Refusal) || self.rotated || is_command(&self.prompt, COMPACT) {
+            return Some(self.ended(ended).await);
+        }
+        self.tools.flush();
+        self.cards().await;
+        self.rotate(Rotation::Refused).await.err().map(Err)
+    }
+
     /// The turn ended: its last cards, then how it ended as the owner reads
     /// it.
     async fn ended(&mut self, ended: TurnUpdate) -> Result<(), String> {
@@ -1418,6 +1439,9 @@ enum Rotation {
     /// Its agent could not reopen it: the session is not on this computer
     /// (a file gone), or the agent reopens none ([`unloadable`]).
     Unloadable,
+    /// Its agent refused a turn in it: a refusal can mark the session, and
+    /// every later message there is refused too, `/compact` included.
+    Refused,
 }
 
 /// Whether the agent's refusal to reopen a session means it can't be
@@ -1736,6 +1760,9 @@ mod tests {
     ///   nothing; a cancel is acknowledged, and the session stays wedged,
     ///   in this process or the next (it loads sessions). Every other
     ///   session answers `Fresh here.`
+    /// - `refuse`: as `stall`, but its first session refuses every prompt
+    ///   (`Flagged.`, then `refusal`), the way a session the agent's model
+    ///   flagged does; its sessions offer `compact`.
     /// - `busy`: a call running (`in_progress`), then nothing until
     ///   cancelled: quiet, but working.
     /// - `rotate`: each new session its own (`s-1`, `s-2`, …), offering the
@@ -1786,7 +1813,7 @@ mod tests {
                     "protocolVersion": 1,
                     "agentCapabilities": match script.as_str() {
                         "folders" => json!({ "loadSession": false, "mcpCapabilities": { "http": true } }),
-                        "stall" | "resume-bare" => json!({ "loadSession": true }),
+                        "stall" | "refuse" | "resume-bare" => json!({ "loadSession": true }),
                         "resume" => json!({ "loadSession": true, "sessionCapabilities": { "list": {} } }),
                         _ => json!({ "loadSession": false }),
                     },
@@ -1794,25 +1821,25 @@ mod tests {
                 })),
                 // Its sessions are numbered by every one it made, in any of
                 // its processes (`told` outlives them).
-                Some("session/new") if script == "stall" || script == "rotate" => {
+                Some("session/new") if ["stall", "rotate", "refuse"].contains(&script.as_str()) => {
                     let made = self::told(std::path::Path::new(&told)).iter().filter(|t| t.get("new").is_some()).count();
                     note(json!({ "new": message["params"]["cwd"] }));
                     let session = format!("s-{}", made + 1);
                     reply(json!({ "sessionId": session }));
                     // Just after it opens a session, it says what commands
                     // the session offers.
-                    if script == "rotate" {
+                    if script == "rotate" || script == "refuse" {
                         emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": {
                             "sessionUpdate": "available_commands_update",
                             "availableCommands": [{ "name": "compact", "description": "Compact the conversation" }, { "name": "review", "description": "Review" }],
                         } } }));
                     }
                 }
-                Some("session/load") if script == "stall" => {
+                Some("session/load") if script == "stall" || script == "refuse" => {
                     note(json!({ "load": message["params"]["sessionId"] }));
                     reply(json!({}));
                 }
-                Some("session/prompt") if script == "stall" || script == "rotate" => {
+                Some("session/prompt") if ["stall", "rotate", "refuse"].contains(&script.as_str()) => {
                     note(json!({ "prompt": message["params"]["prompt"] }));
                     let session = message["params"]["sessionId"].as_str().unwrap_or("").to_owned();
                     let update_in = |update: Value| emit(&json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": session, "update": update } }));
@@ -1820,7 +1847,10 @@ mod tests {
                     if script == "stall" && session == "s-1" {
                         prompt_id = id.clone();
                         update_in(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "Read", "kind": "read", "status": "pending" }));
-                    } else if script == "stall" {
+                    } else if script == "refuse" && session == "s-1" {
+                        update_in(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Flagged." } }));
+                        reply(json!({ "stopReason": "refusal" }));
+                    } else if script == "stall" || script == "refuse" {
                         update_in(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Fresh here." } }));
                         reply(json!({ "stopReason": "end_turn" }));
                     } else if text.starts_with("/compact") {
@@ -2902,6 +2932,29 @@ mod tests {
         assert_handoff(&fresh[0]);
         let chat = r.store.get_chat("chat-1").unwrap().unwrap();
         assert_eq!(chat.linked_chat_id.as_deref(), Some("s-2"), "the fresh session is the conversation's now");
+    }
+
+    /// The live incident of 2026-10-16: Claude Code's model flagged its
+    /// session, and every message after, `/compact` included, was refused
+    /// there. A refused turn is answered in a fresh session with the
+    /// handoff instead; a refused `/compact` stays refused.
+    #[tokio::test]
+    async fn a_refused_turn_continues_in_a_fresh_session_with_a_handoff() {
+        let r = remote("refuse").await;
+        let first = collect(r.provider.stream(&briefed(request("hi", "chat-1", &remote_model()))).await.unwrap()).await;
+        assert_eq!(first.last().unwrap().event_type, StreamEventType::Done, "{:?}", first.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>());
+        assert_eq!(texts(&first), format!("Flagged.{}\n\nFresh here.", NOTICE));
+        let prompts = prompt_texts(&told(&r.told));
+        let fresh = prompts.last().unwrap();
+        assert_eq!(fresh[1], "hi", "the owner's message, not retyped");
+        assert_handoff(&fresh[0]);
+        assert_eq!(r.store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(), Some("s-2"));
+
+        r.store.set_chat_linked_session("chat-1", "claude-code", "s-1").unwrap();
+        let compact = collect(r.provider.stream(&briefed(request("/compact", "chat-1", &remote_model()))).await.unwrap()).await;
+        let error = compact.iter().find(|e| e.event_type == StreamEventType::Error).and_then(|e| e.error.as_deref());
+        assert_eq!(error, Some("Danny declined to do that."));
+        assert_eq!(news(&told(&r.told)), 2, "never a fresh session for /compact");
     }
 
     /// The agent acknowledges a cancel (its adapter forces it) while its
