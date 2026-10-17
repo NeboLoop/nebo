@@ -229,7 +229,9 @@
 		"schedule": "ตารางเวลา",
 		"searchOrRun": "ค้นหาหรือเรียกใช้...",
 		"botSettings": "การตั้งค่าบอท",
-		"employeeSettings": "การตั้งค่าพนักงาน"
+		"employeeSettings": "การตั้งค่าพนักงาน",
+		"showSidebar": "แสดงแถบด้านข้าง",
+		"hideSidebar": "ซ่อนแถบด้านข้าง"
 	},
 	"sidebar": {
 		"agents": "พนักงาน",
@@ -266,7 +268,10 @@
 		"pinned": "ปักหมุดไว้",
 		"deleteChatTitle": "ลบ \"{name}\" ใช่ไหม",
 		"deleteChatBody": "แชทนี้และข้อความทั้งหมดจะถูกลบ ไม่สามารถเลิกทำได้",
-		"offline": "ออฟไลน์"
+		"offline": "ออฟไลน์",
+		"mode": "โหมด",
+		"modeAssistant": "ผู้ช่วย",
+		"modeTeam": "ทีม"
 	},
 	"chat": {
 		"worksIn": "ทำงานใน {folder}",

@@ -229,7 +229,9 @@
 		"schedule": "الجدولة",
 		"searchOrRun": "ابحث أو شغّل...",
 		"botSettings": "إعدادات البوت",
-		"employeeSettings": "إعدادات الموظف"
+		"employeeSettings": "إعدادات الموظف",
+		"showSidebar": "إظهار الشريط الجانبي",
+		"hideSidebar": "إخفاء الشريط الجانبي"
 	},
 	"sidebar": {
 		"agents": "الموظفون",
@@ -266,7 +268,10 @@
 		"pinned": "المثبّتة",
 		"deleteChatTitle": "حذف \"{name}\"؟",
 		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك.",
-		"offline": "غير متصل"
+		"offline": "غير متصل",
+		"mode": "الوضع",
+		"modeAssistant": "المساعد",
+		"modeTeam": "الفريق"
 	},
 	"chat": {
 		"worksIn": "يعمل في {folder}",

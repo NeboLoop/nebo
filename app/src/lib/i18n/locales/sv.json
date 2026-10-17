@@ -229,7 +229,9 @@
 		"schedule": "Schema",
 		"searchOrRun": "Sök eller kör...",
 		"botSettings": "Botinställningar",
-		"employeeSettings": "Medarbetarinställningar"
+		"employeeSettings": "Medarbetarinställningar",
+		"showSidebar": "Visa sidofältet",
+		"hideSidebar": "Dölj sidofältet"
 	},
 	"sidebar": {
 		"agents": "Medarbetare",
@@ -266,7 +268,10 @@
 		"pinned": "Fästa",
 		"deleteChatTitle": "Radera \"{name}\"?",
 		"deleteChatBody": "Den här chatten och alla dess meddelanden tas bort. Det går inte att ångra.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Läge",
+		"modeAssistant": "Assistent",
+		"modeTeam": "Team"
 	},
 	"chat": {
 		"worksIn": "Arbetar i {folder}",

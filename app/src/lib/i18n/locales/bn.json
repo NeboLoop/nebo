@@ -229,7 +229,9 @@
 		"schedule": "সময়সূচি",
 		"searchOrRun": "অনুসন্ধান বা চালান...",
 		"botSettings": "বট সেটিংস",
-		"employeeSettings": "কর্মী সেটিংস"
+		"employeeSettings": "কর্মী সেটিংস",
+		"showSidebar": "সাইডবার দেখান",
+		"hideSidebar": "সাইডবার লুকান"
 	},
 	"sidebar": {
 		"agents": "কর্মী",
@@ -266,7 +268,10 @@
 		"pinned": "পিন করা",
 		"deleteChatTitle": "\"{name}\" মুছবেন?",
 		"deleteChatBody": "এই চ্যাট এবং এর সব বার্তা মুছে ফেলা হবে। এটি আর ফেরানো যাবে না।",
-		"offline": "অফলাইন"
+		"offline": "অফলাইন",
+		"mode": "মোড",
+		"modeAssistant": "সহকারী",
+		"modeTeam": "দল"
 	},
 	"chat": {
 		"worksIn": "{folder}-এ কাজ করে",

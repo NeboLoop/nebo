@@ -229,7 +229,9 @@
 		"schedule": "日程",
 		"searchOrRun": "搜索或运行...",
 		"botSettings": "机器人设置",
-		"employeeSettings": "员工设置"
+		"employeeSettings": "员工设置",
+		"showSidebar": "显示侧边栏",
+		"hideSidebar": "隐藏侧边栏"
 	},
 	"sidebar": {
 		"agents": "员工",
@@ -266,7 +268,10 @@
 		"pinned": "已置顶",
 		"deleteChatTitle": "删除“{name}”？",
 		"deleteChatBody": "此聊天及其所有消息将被删除，且无法撤销。",
-		"offline": "离线"
+		"offline": "离线",
+		"mode": "模式",
+		"modeAssistant": "助理",
+		"modeTeam": "团队"
 	},
 	"chat": {
 		"worksIn": "在 {folder} 中工作",

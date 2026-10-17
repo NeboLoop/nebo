@@ -229,7 +229,9 @@
 		"schedule": "Agenda",
 		"searchOrRun": "Buscar ou executar...",
 		"botSettings": "Configurações do bot",
-		"employeeSettings": "Configurações do funcionário"
+		"employeeSettings": "Configurações do funcionário",
+		"showSidebar": "Mostrar barra lateral",
+		"hideSidebar": "Ocultar barra lateral"
 	},
 	"sidebar": {
 		"agents": "Funcionários",
@@ -266,7 +268,10 @@
 		"pinned": "Fixadas",
 		"deleteChatTitle": "Excluir \"{name}\"?",
 		"deleteChatBody": "Este chat e todas as suas mensagens serão removidos. Não é possível desfazer.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Modo",
+		"modeAssistant": "Assistente",
+		"modeTeam": "Equipe"
 	},
 	"chat": {
 		"worksIn": "Trabalha em {folder}",

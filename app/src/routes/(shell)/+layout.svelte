@@ -511,9 +511,8 @@
     apiTeammateThreads[id] = teammates;
   }
 
-  // Refresh threads for the currently viewed agent
-  async function refreshThreads() {
-    const id = $page.params.agentId;
+  // Refresh an employee's threads: the one being viewed, unless told which.
+  async function refreshThreads(id = $page.params.agentId) {
     if (!id) return;
     try {
       const api = await import('$lib/api/nebo');
@@ -1016,6 +1015,31 @@
     listParam && listParam !== '1' ? listParam : !listParam && agent?.isolated ? agentId : null
   );
   const drilledAgent = $derived(drilledAgentId ? allAgents.find(a => a.id === drilledAgentId) ?? null : null);
+
+  // Assistant or Team: what the sidebar shows, the mobile app's switch. The
+  // mode is this computer's view and nothing else: it changes no employee,
+  // team or setting. Team is the sidebar as it always was; Assistant is the
+  // primary employee's conversations alone, the rest of the company one row
+  // away. Team until the owner switches, as on the phone.
+  let mode = $state<'assistant' | 'team'>(storage.get('sidebar.mode') === 'assistant' ? 'assistant' : 'team');
+  const assistantAgent = $derived(allAgents.find((a) => a.id === 'assistant') ?? null);
+  // The employee whose conversations the sidebar lists: the one drilled
+  // into, else the assistant in Assistant mode. There the assistant's row
+  // is its home: no way back to a roster the mode does not show, and no
+  // way in, though an isolated assistant drills on its own chats.
+  const listAgent = $derived(drilledAgent ?? (mode === 'assistant' ? assistantAgent : null));
+  const assistantHome = $derived(mode === 'assistant' && (!drilledAgent || drilledAgent.id === assistantAgent?.id));
+  function setMode(next: 'assistant' | 'team') {
+    if (next === mode) return;
+    mode = next;
+    storage.set('sidebar.mode', next);
+    if (next === 'team') goto('/dashboard');
+    else selectAgent('assistant');
+  }
+  // Assistant mode lists the assistant's conversations wherever the owner is.
+  $effect(() => {
+    if (mode === 'assistant' && assistantAgent && !apiThreads[assistantAgent.id]) refreshThreads(assistantAgent.id);
+  });
   const agentColor = $derived(agent ? AGENT_COLORS_MAP[agent.color] : null);
   const threads = $derived(agentId ? (apiThreads[agentId] || []) : []);
   const isThreadsLoading = $derived(agentId ? (threadsLoading[agentId] ?? true) : true);
@@ -1650,7 +1674,8 @@
     {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
     {@const chats = apiThreads[a.id] ?? []}
     {@const latest = chats[0]}
-    {@const isPinned = drilledAgent?.id === a.id}
+    {@const home = assistantHome && listAgent?.id === a.id}
+    {@const isPinned = listAgent?.id === a.id && !home}
     {@const isUnread = agentUnread(unread, a.id)}
     {@const setup = $employeeSetup[a.id]}
     <div
@@ -1667,7 +1692,7 @@
            route's load, not here. The pinned row is the way back, so it
            keeps its button behaviour. -->
       <a
-        href={withBase(rowHref(a))}
+        href={withBase(home ? (latest ? `/${a.id}/threads/${latest.id}` : `/${a.id}/threads`) : rowHref(a))}
         class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 ps-2.5 text-start no-underline text-inherit"
         onclick={(e) => { if (isPinned) { e.preventDefault(); showList('1'); } }}
         oncontextmenu={(e) => handleAgentContext(e, a.id)}
@@ -1724,7 +1749,7 @@
             <div class="text-xs truncate {isUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
           {/if}
         </div>
-        {#if !isPinned && a.isolated}
+        {#if !isPinned && !home && a.isolated}
           <!-- Drill chevron: an isolated employee opens its list of sealed
                conversations rather than one chat — the row IS navigation.
                This replaces the lock glyph: one signal per row. -->
@@ -1801,6 +1826,11 @@
   {/snippet}
 
   {#snippet expanded()}
+    <!-- The mode switch: the mobile app's two modes, in its words. -->
+    <div role="tablist" aria-label={$t('sidebar.mode')} class="tabs tabs-box tabs-xs mx-3 mb-2">
+      <button type="button" role="tab" class="tab flex-1 {mode === 'assistant' ? 'tab-active' : ''}" aria-selected={mode === 'assistant'} onclick={() => setMode('assistant')}>{$t('sidebar.modeAssistant')}</button>
+      <button type="button" role="tab" class="tab flex-1 {mode === 'team' ? 'tab-active' : ''}" aria-selected={mode === 'team'} onclick={() => setMode('team')}>{$t('sidebar.modeTeam')}</button>
+    </div>
     {#if agentsLoading && sortedAgents.length === 0}
       <div class="py-6 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
@@ -1811,7 +1841,7 @@
            the siblings collapse (transition:slide) — the container-transform
            feel: the row you clicked BECOMES the header, nothing teleports.
            Clicking the pinned row slides everyone back. -->
-      {#if !drilledAgent}
+      {#if !listAgent}
         <!-- The Dashboard: the whole workforce on one page. Sits above the
              employees as a row of the same shape, highlighted like one. -->
         <div class="flex items-center gap-2.5 pe-2.5 mx-1.5 mb-1 cursor-pointer text-start {onDashboard
@@ -1861,10 +1891,10 @@
           <svg class="w-3.5 h-3.5 text-base-content/45 transition-transform {employeesOpen ? '' : '-rotate-90'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
         </button>
       {/if}
-      {#each (drilledAgent ? [drilledAgent] : employeesOpen ? listedAgents : []) as a (a.id)}
+      {#each (listAgent ? [listAgent] : employeesOpen ? listedAgents : []) as a (a.id)}
         {@render agentRow(a)}
       {/each}
-      {#if drilledAgent}
+      {#if listAgent}
         <!-- The pinned employee's conversations, expanding beneath their row.
              In waits for the sibling rows to finish collapsing. -->
         <div
@@ -1875,14 +1905,14 @@
           <!-- Isolation means each conversation is its own sealed matter, so
                starting a new one has to be reachable from the list of them. -->
           <a
-            href={`/${drilledAgent.id}/threads`}
+            href={`/${listAgent.id}/threads`}
             class="flex items-center gap-2 py-2 px-2.5 mx-1.5 mb-1 rounded-box border border-dashed border-base-300 text-primary hover:bg-base-100/70 transition-colors"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
             <span class="text-sm font-medium">{$t('agent.newChat')}</span>
           </a>
           <!-- The ones the owner pinned stay at the top, then newest first. -->
-          {#each pinnedFirst(apiThreads[drilledAgent.id] ?? []) as c (c.id)}
+          {#each pinnedFirst(apiThreads[listAgent.id] ?? []) as c (c.id)}
             {#if chatRenaming?.chatId === c.id}
               <!-- Renaming: the row becomes the title field (not a link, so
                    typing and clicking in it never navigate). -->
@@ -1898,11 +1928,11 @@
               </div>
             {:else}
               <a
-                href={`/${drilledAgent.id}/threads/${c.id}`}
+                href={`/${listAgent.id}/threads/${c.id}`}
                 class="block py-2 px-2.5 mx-1.5 rounded-box {$page.params.threadId === c.id
                   ? 'bg-primary/10 border border-primary/30 shadow-sm'
                   : 'border border-transparent hover:bg-base-100/70'}"
-                oncontextmenu={(e) => handleChatContext(e, drilledAgent.id, c.id)}
+                oncontextmenu={(e) => handleChatContext(e, listAgent.id, c.id)}
                 data-context-menu
                 aria-haspopup="menu"
               >
@@ -1910,15 +1940,15 @@
                   {#if c.pinned}
                     <svg class="chat-pin-mark" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label={$t('sidebar.pinned')}><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
                   {/if}
-                  <span class="text-sm truncate flex-1 min-w-0">{chatName(c, drilledAgent.id)}</span>
+                  <span class="text-sm truncate flex-1 min-w-0">{chatName(c, listAgent.id)}</span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
-                  <RowMark mark={rowMark(c.sessionName in (working[drilledAgent.id] ?? {}), unread.has(c.sessionName))} />
+                  <RowMark mark={rowMark(c.sessionName in (working[listAgent.id] ?? {}), unread.has(c.sessionName))} />
                 </div>
                 <div class="text-xs truncate {unread.has(c.sessionName) ? 'font-medium text-base-content' : 'text-base-content/55'}">{#if c.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
               </a>
             {/if}
           {/each}
-          {#if (apiTeammateThreads[drilledAgent.id] ?? []).length > 0}
+          {#if (apiTeammateThreads[listAgent.id] ?? []).length > 0}
             <!-- The employee's threads with colleagues and teams: work the
                  owner can read, kept apart from his own conversations and
                  listed below them, open until he folds them. A row opens the transcript. -->
@@ -1928,11 +1958,11 @@
               aria-expanded={teammatesOpen}
             >
               <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('sidebar.withTeammates')}</span>
-              <span class="text-[10px] font-mono text-base-content/40">{(apiTeammateThreads[drilledAgent.id] ?? []).length}</span>
+              <span class="text-[10px] font-mono text-base-content/40">{(apiTeammateThreads[listAgent.id] ?? []).length}</span>
               <span class="flex-1"></span>
               <svg class="w-3.5 h-3.5 text-base-content/45 transition-transform {teammatesOpen ? '' : '-rotate-90'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
             </button>
-            {#each (apiTeammateThreads[drilledAgent.id] ?? []).filter((c) => teammatesOpen || teammateLive(drilledAgent.id, c)) as c (c.id)}
+            {#each (apiTeammateThreads[listAgent.id] ?? []).filter((c) => teammatesOpen || teammateLive(listAgent.id, c)) as c (c.id)}
               <a
                 href={teammateHref(c)}
                 class="block py-2 px-2.5 mx-1.5 rounded-box {cwKey === c.sessionName
@@ -1949,7 +1979,7 @@
           {/if}
         </div>
       {/if}
-      {#if !drilledAgent && teams.length === 0}
+      {#if !listAgent && teams.length === 0}
         {@render teamsSection()}
       {/if}
     {/if}
@@ -1957,6 +1987,33 @@
 
   {#snippet collapsed()}
     <div class="flex flex-col items-center gap-1 py-2">
+      {#if mode === 'assistant' && assistantAgent}
+        <!-- Assistant mode's rail is the assistant alone: it, and a new
+             conversation with it. Workforce is the footer's row. -->
+        {@const a = assistantAgent}
+        {@const busy = working[a.id] !== undefined}
+        <div class="relative {busy ? 'agent-working' : ''}">
+          <button
+            class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 cursor-pointer transition-colors border-none bg-transparent p-0 {agentId === a.id ? 'ring-2 ring-base-content/40' : ''}"
+            onclick={() => selectAgent(a.id)}
+            oncontextmenu={(e) => handleAgentContext(e, a.id)}
+            data-context-menu
+            title={a.name}
+          ><AgentAvatar name={a.name} id={a.id} color={a.color} shape={a.shape} /></button>
+          <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : 'bg-success'}"></div>
+          {#if !busy && agentUnread(unread, a.id)}
+            <span class="absolute -top-0.5 -start-0.5 flex rounded-full ring-2 ring-base-200"><RowMark mark="unread" /></span>
+          {/if}
+        </div>
+        <a
+          href={withBase(`/${a.id}/threads`)}
+          class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 text-primary hover:bg-base-100"
+          title={$t('agent.newChat')}
+          aria-label={$t('agent.newChat')}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+        </a>
+      {:else}
       <button
         class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 cursor-pointer border {onDashboard ? 'border-primary/30 bg-primary/10 text-primary' : 'border-base-300 bg-base-100 text-primary'}"
         onclick={() => goto('/dashboard')}
@@ -1983,11 +2040,28 @@
           {/if}
         </div>
       {/each}
+      {/if}
     </div>
   {/snippet}
 
   {#snippet footer(isRail)}
     <div class="border-t border-base-300 shrink-0">
+      {#if mode === 'assistant'}
+        <!-- The rest of the company, one row away: the Workforce page,
+             as the mobile app's menu opens it, without leaving the mode. -->
+        <button
+          type="button"
+          onclick={() => goto('/dashboard')}
+          class="w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-start {onDashboard ? 'text-primary' : ''}"
+          title={$t('dashboard.title')}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="shrink-0"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg>
+          {#if !isRail}
+            <span class="text-sm flex-1">{$t('dashboard.title')}</span>
+            <span class="text-xs text-base-content/55 truncate">{$t('dashboard.sidebarLine', { values: { working: workingCount } })}</span>
+          {/if}
+        </button>
+      {/if}
       <button
         type="button"
         onclick={openInbox}

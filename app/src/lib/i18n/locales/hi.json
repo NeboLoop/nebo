@@ -229,7 +229,9 @@
 		"schedule": "शेड्यूल",
 		"searchOrRun": "खोजें या चलाएं...",
 		"botSettings": "बॉट सेटिंग्स",
-		"employeeSettings": "कर्मचारी सेटिंग्स"
+		"employeeSettings": "कर्मचारी सेटिंग्स",
+		"showSidebar": "साइडबार दिखाएँ",
+		"hideSidebar": "साइडबार छिपाएँ"
 	},
 	"sidebar": {
 		"agents": "कर्मचारी",
@@ -266,7 +268,10 @@
 		"pinned": "पिन किए गए",
 		"deleteChatTitle": "\"{name}\" हटाएँ?",
 		"deleteChatBody": "यह चैट और इसके सभी संदेश हटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।",
-		"offline": "ऑफलाइन"
+		"offline": "ऑफलाइन",
+		"mode": "मोड",
+		"modeAssistant": "सहायक",
+		"modeTeam": "टीम"
 	},
 	"chat": {
 		"worksIn": "{folder} में काम करता है",

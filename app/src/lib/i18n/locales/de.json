@@ -229,7 +229,9 @@
 		"schedule": "Zeitplan",
 		"searchOrRun": "Suchen oder ausführen...",
 		"botSettings": "Bot-Einstellungen",
-		"employeeSettings": "Mitarbeiter-Einstellungen"
+		"employeeSettings": "Mitarbeiter-Einstellungen",
+		"showSidebar": "Seitenleiste einblenden",
+		"hideSidebar": "Seitenleiste ausblenden"
 	},
 	"sidebar": {
 		"agents": "Mitarbeiter",
@@ -266,7 +268,10 @@
 		"pinned": "Angeheftet",
 		"deleteChatTitle": "„{name}“ löschen?",
 		"deleteChatBody": "Dieser Chat und alle seine Nachrichten werden entfernt. Das lässt sich nicht rückgängig machen.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Modus",
+		"modeAssistant": "Assistenz",
+		"modeTeam": "Team"
 	},
 	"chat": {
 		"worksIn": "Arbeitet in {folder}",

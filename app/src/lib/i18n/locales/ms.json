@@ -229,7 +229,9 @@
 		"schedule": "Jadual",
 		"searchOrRun": "Cari atau jalankan...",
 		"botSettings": "Tetapan bot",
-		"employeeSettings": "Tetapan pekerja"
+		"employeeSettings": "Tetapan pekerja",
+		"showSidebar": "Tunjukkan bar sisi",
+		"hideSidebar": "Sembunyikan bar sisi"
 	},
 	"sidebar": {
 		"agents": "Pekerja",
@@ -266,7 +268,10 @@
 		"pinned": "Disematkan",
 		"deleteChatTitle": "Padam \"{name}\"?",
 		"deleteChatBody": "Sembang ini dan semua mesejnya akan dipadam. Tindakan ini tidak boleh dibatalkan.",
-		"offline": "Luar talian"
+		"offline": "Luar talian",
+		"mode": "Mod",
+		"modeAssistant": "Pembantu",
+		"modeTeam": "Pasukan"
 	},
 	"chat": {
 		"worksIn": "Bekerja dalam {folder}",

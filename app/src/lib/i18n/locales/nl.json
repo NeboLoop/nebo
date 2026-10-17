@@ -229,7 +229,9 @@
 		"schedule": "Planning",
 		"searchOrRun": "Zoeken of uitvoeren...",
 		"botSettings": "Botinstellingen",
-		"employeeSettings": "Medewerkerinstellingen"
+		"employeeSettings": "Medewerkerinstellingen",
+		"showSidebar": "Zijbalk tonen",
+		"hideSidebar": "Zijbalk verbergen"
 	},
 	"sidebar": {
 		"agents": "Medewerkers",
@@ -266,7 +268,10 @@
 		"pinned": "Vastgezet",
 		"deleteChatTitle": "\"{name}\" verwijderen?",
 		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Modus",
+		"modeAssistant": "Assistent",
+		"modeTeam": "Team"
 	},
 	"chat": {
 		"worksIn": "Werkt in {folder}",

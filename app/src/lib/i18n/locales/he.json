@@ -229,7 +229,9 @@
 		"schedule": "לוח זמנים",
 		"searchOrRun": "חפש או הרץ...",
 		"botSettings": "הגדרות בוט",
-		"employeeSettings": "הגדרות עובד"
+		"employeeSettings": "הגדרות עובד",
+		"showSidebar": "הצגת סרגל הצד",
+		"hideSidebar": "הסתרת סרגל הצד"
 	},
 	"sidebar": {
 		"agents": "עובדים",
@@ -266,7 +268,10 @@
 		"pinned": "מוצמדות",
 		"deleteChatTitle": "למחוק את \"{name}\"?",
 		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו.",
-		"offline": "לא מחובר"
+		"offline": "לא מחובר",
+		"mode": "מצב",
+		"modeAssistant": "עוזר",
+		"modeTeam": "צוות"
 	},
 	"chat": {
 		"worksIn": "עובד ב-{folder}",
