@@ -236,25 +236,59 @@ pub async fn upload_file(
         )));
     }
 
+    let landed = match land_upload(&state, &filename, &mime_type, data).await {
+        Ok(landed) => landed,
+        Err(Unlanded::Refused(refusal)) => return Ok(refusal),
+        Err(Unlanded::Failed(e)) => return Err(to_error_response(types::NeboError::Internal(e))),
+    };
+
+    // The file is on this machine and named: announce the arrival so a flow
+    // waiting on this kind of attachment starts on its own. Announced with the
+    // id the caller is about to get back, whichever copy that is, and after
+    // the bytes are on disk — nothing subscribes to a file that is not there.
+    crate::attachments::announce(
+        &state,
+        &landed,
+        Some(agent_id.as_str()).filter(|s| !s.is_empty()),
+        Some(chat_id.as_str()).filter(|s| !s.is_empty()),
+    );
+
+    Ok(Json(serde_json::to_value(&landed).unwrap_or_default()).into_response())
+}
+
+/// Why a file did not land: the hub refused it (a full account, answered to
+/// the client as the hub said it), or this machine could not keep it.
+pub(crate) enum Unlanded {
+    Refused(axum::response::Response),
+    Failed(String),
+}
+
+/// Land one file through the ONE upload path: kept on this machine under a
+/// fresh id, copied to the loop (or the copy owed), and answered as the
+/// attachment every surface reads. `POST /files/upload` lands what a client
+/// sends; a team member's run lands the files it handed the owner, so its
+/// post carries them the way the owner's own post does.
+pub(crate) async fn land_upload(
+    state: &AppState,
+    filename: &str,
+    mime_type: &str,
+    data: Vec<u8>,
+) -> Result<comm::wire::Attachment, Unlanded> {
     let size = data.len() as u64;
     let file_id = uuid::Uuid::new_v4().to_string();
 
-    let dir = agent::uploads::dir().ok_or_else(|| {
-        to_error_response(types::NeboError::Internal(
-            "cannot open the uploads directory".into(),
-        ))
-    })?;
-    let path = dir.join(agent::uploads::file_name(&file_id, &filename));
-    std::fs::write(&path, &data)
-        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    let dir = agent::uploads::dir()
+        .ok_or_else(|| Unlanded::Failed("cannot open the uploads directory".into()))?;
+    let path = dir.join(agent::uploads::file_name(&file_id, filename));
+    std::fs::write(&path, &data).map_err(|e| Unlanded::Failed(e.to_string()))?;
 
     // The attachment as it stands: the local copy, until the loop copy below
     // re-keys it to the id the loop gave it.
     let mut landed = comm::wire::Attachment {
         url: format!("/api/v1/comm-files/{}", file_id),
         file_id,
-        filename: filename.clone(),
-        mime_type: mime_type.clone(),
+        filename: filename.to_string(),
+        mime_type: mime_type.to_string(),
         size,
         thumbnail_url: None,
         width: None,
@@ -267,13 +301,13 @@ pub async fn upload_file(
     // instead, and made in the background (`hub_sync`), whose record is what
     // `GET /api/v1/uploads/{id}` reports.
     let mut owed = true;
-    match crate::codes::build_api_client(&state) {
-        Ok(api) => match api.upload_file(&filename, &mime_type, data, &[]).await {
+    match crate::codes::build_api_client(state) {
+        Ok(api) => match api.upload_file(filename, mime_type, data, &[]).await {
             Ok(mut attachment) => {
-                attachment.mime_type = landed_mime(&mime_type, attachment.mime_type);
+                attachment.mime_type = landed_mime(mime_type, attachment.mime_type);
                 // Re-key the local copy to the loop's id so lookups by that id
                 // find it here instead of downloading what we already hold.
-                let renamed = dir.join(agent::uploads::file_name(&attachment.file_id, &filename));
+                let renamed = dir.join(agent::uploads::file_name(&attachment.file_id, filename));
                 if let Err(e) = std::fs::rename(&path, &renamed) {
                     tracing::warn!(error = %e, "could not re-key local attachment copy");
                 }
@@ -285,7 +319,7 @@ pub async fn upload_file(
                 // on: the file goes no further, here or there.
                 if let Some(refusal) = hub_upload_refusal(&e) {
                     let _ = std::fs::remove_file(&path);
-                    return Ok(refusal);
+                    return Err(Unlanded::Refused(refusal));
                 }
                 tracing::warn!(error = %e, "loop upload failed; the copy is owed")
             }
@@ -300,18 +334,7 @@ pub async fn upload_file(
         }
     }
 
-    // The file is on this machine and named: announce the arrival so a flow
-    // waiting on this kind of attachment starts on its own. Announced with the
-    // id the caller is about to get back, whichever copy that is, and after
-    // the bytes are on disk — nothing subscribes to a file that is not there.
-    crate::attachments::announce(
-        &state,
-        &landed,
-        Some(agent_id.as_str()).filter(|s| !s.is_empty()),
-        Some(chat_id.as_str()).filter(|s| !s.is_empty()),
-    );
-
-    Ok(Json(serde_json::to_value(&landed).unwrap_or_default()).into_response())
+    Ok(landed)
 }
 
 /// GET /api/v1/comm-files/{id} — stream a loop attachment through the bot's

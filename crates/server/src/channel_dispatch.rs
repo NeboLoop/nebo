@@ -230,6 +230,10 @@ pub(crate) struct ChannelReply {
     /// The last conversation row the run heard (its Done event's
     /// `heard_through`); `None` for a run that reports none.
     pub heard_through: Option<String>,
+    /// The files the run handed the owner (`owner_artifact_urls`), in
+    /// order. Collected only for a run on this machine for its owner
+    /// (`owner`): a remote channel's reply is its words.
+    pub files: Vec<String>,
 }
 
 /// `owner`: when the run happens on the LOCAL machine for the local owner
@@ -261,6 +265,7 @@ pub(crate) async fn collect_channel_reply(
     let mut error: Option<String> = None;
     let mut heard_through: Option<String> = None;
     let mut work_started = false;
+    let mut files: Vec<String> = Vec::new();
     while let Some(event) = rx.recv().await {
         if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
             full_response.push_str(frag);
@@ -327,7 +332,12 @@ pub(crate) async fn collect_channel_reply(
                 }
                 heard_through = event.heard_through().map(str::to_string);
             }
-            _ => {} // ToolCall, ToolResult, Usage — skip
+            StreamEventType::ToolResult => {
+                if let Some(fw) = owner {
+                    files.extend(crate::chat_dispatch::owner_artifact_urls(&fw.state.tools, &event).await);
+                }
+            }
+            _ => {} // ToolCall, Usage — skip
         }
     }
 
@@ -339,7 +349,7 @@ pub(crate) async fn collect_channel_reply(
         Some(notice) if reply.is_empty() => notice.trim().to_string(),
         _ => reply,
     };
-    ChannelReply { text, provenance: reply_provenance, queued, error, heard_through }
+    ChannelReply { text, provenance: reply_provenance, queued, error, heard_through, files }
 }
 
 #[cfg(test)]
