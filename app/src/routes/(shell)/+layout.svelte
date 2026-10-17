@@ -1987,6 +1987,33 @@
 
   {#snippet collapsed()}
     <div class="flex flex-col items-center gap-1 py-2">
+      {#if mode === 'assistant' && assistantAgent}
+        <!-- Assistant mode's rail is the assistant alone: it, and a new
+             conversation with it. Workforce is the footer's row. -->
+        {@const a = assistantAgent}
+        {@const busy = working[a.id] !== undefined}
+        <div class="relative {busy ? 'agent-working' : ''}">
+          <button
+            class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 cursor-pointer transition-colors border-none bg-transparent p-0 {agentId === a.id ? 'ring-2 ring-base-content/40' : ''}"
+            onclick={() => selectAgent(a.id)}
+            oncontextmenu={(e) => handleAgentContext(e, a.id)}
+            data-context-menu
+            title={a.name}
+          ><AgentAvatar name={a.name} id={a.id} color={a.color} shape={a.shape} /></button>
+          <div class="absolute -bottom-0.5 -end-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : 'bg-success'}"></div>
+          {#if !busy && agentUnread(unread, a.id)}
+            <span class="absolute -top-0.5 -start-0.5 flex rounded-full ring-2 ring-base-200"><RowMark mark="unread" /></span>
+          {/if}
+        </div>
+        <a
+          href={withBase(`/${a.id}/threads`)}
+          class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 text-primary hover:bg-base-100"
+          title={$t('agent.newChat')}
+          aria-label={$t('agent.newChat')}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+        </a>
+      {:else}
       <button
         class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 cursor-pointer border {onDashboard ? 'border-primary/30 bg-primary/10 text-primary' : 'border-base-300 bg-base-100 text-primary'}"
         onclick={() => goto('/dashboard')}
@@ -2013,6 +2040,7 @@
           {/if}
         </div>
       {/each}
+      {/if}
     </div>
   {/snippet}
 
