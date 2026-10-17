@@ -1024,10 +1024,11 @@
   let mode = $state<'assistant' | 'team'>(storage.get('sidebar.mode') === 'assistant' ? 'assistant' : 'team');
   const assistantAgent = $derived(allAgents.find((a) => a.id === 'assistant') ?? null);
   // The employee whose conversations the sidebar lists: the one drilled
-  // into, else the assistant in Assistant mode. The assistant's row there
-  // is its home, not a way back to a roster that mode does not show.
+  // into, else the assistant in Assistant mode. There the assistant's row
+  // is its home: no way back to a roster the mode does not show, and no
+  // way in, though an isolated assistant drills on its own chats.
   const listAgent = $derived(drilledAgent ?? (mode === 'assistant' ? assistantAgent : null));
-  const assistantHome = $derived(mode === 'assistant' && !drilledAgent);
+  const assistantHome = $derived(mode === 'assistant' && (!drilledAgent || drilledAgent.id === assistantAgent?.id));
   function setMode(next: 'assistant' | 'team') {
     if (next === mode) return;
     mode = next;
@@ -1673,7 +1674,8 @@
     {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
     {@const chats = apiThreads[a.id] ?? []}
     {@const latest = chats[0]}
-    {@const isPinned = listAgent?.id === a.id && !assistantHome}
+    {@const home = assistantHome && listAgent?.id === a.id}
+    {@const isPinned = listAgent?.id === a.id && !home}
     {@const isUnread = agentUnread(unread, a.id)}
     {@const setup = $employeeSetup[a.id]}
     <div
@@ -1690,7 +1692,7 @@
            route's load, not here. The pinned row is the way back, so it
            keeps its button behaviour. -->
       <a
-        href={withBase(rowHref(a))}
+        href={withBase(home ? (latest ? `/${a.id}/threads/${latest.id}` : `/${a.id}/threads`) : rowHref(a))}
         class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 ps-2.5 text-start no-underline text-inherit"
         onclick={(e) => { if (isPinned) { e.preventDefault(); showList('1'); } }}
         oncontextmenu={(e) => handleAgentContext(e, a.id)}
@@ -1747,7 +1749,7 @@
             <div class="text-xs truncate {isUnread ? 'font-medium text-base-content' : 'text-base-content/60'}">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs me-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
           {/if}
         </div>
-        {#if !isPinned && a.isolated}
+        {#if !isPinned && !home && a.isolated}
           <!-- Drill chevron: an isolated employee opens its list of sealed
                conversations rather than one chat — the row IS navigation.
                This replaces the lock glyph: one signal per row. -->
