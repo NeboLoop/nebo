@@ -229,7 +229,9 @@
 		"schedule": "Jadwal",
 		"searchOrRun": "Cari atau jalankan...",
 		"botSettings": "Pengaturan bot",
-		"employeeSettings": "Pengaturan karyawan"
+		"employeeSettings": "Pengaturan karyawan",
+		"showSidebar": "Tampilkan bilah sisi",
+		"hideSidebar": "Sembunyikan bilah sisi"
 	},
 	"sidebar": {
 		"agents": "Karyawan",
@@ -266,7 +268,10 @@
 		"pinned": "Disematkan",
 		"deleteChatTitle": "Hapus \"{name}\"?",
 		"deleteChatBody": "Obrolan ini dan semua pesannya akan dihapus. Tindakan ini tidak dapat dibatalkan.",
-		"offline": "Luring"
+		"offline": "Luring",
+		"mode": "Mode",
+		"modeAssistant": "Asisten",
+		"modeTeam": "Tim"
 	},
 	"chat": {
 		"worksIn": "Bekerja di {folder}",

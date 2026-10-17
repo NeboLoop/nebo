@@ -229,7 +229,9 @@
 		"schedule": "スケジュール",
 		"searchOrRun": "検索または実行...",
 		"botSettings": "ボット設定",
-		"employeeSettings": "社員設定"
+		"employeeSettings": "社員設定",
+		"showSidebar": "サイドバーを表示",
+		"hideSidebar": "サイドバーを隠す"
 	},
 	"sidebar": {
 		"agents": "社員",
@@ -266,7 +268,10 @@
 		"pinned": "ピン留め",
 		"deleteChatTitle": "「{name}」を削除しますか？",
 		"deleteChatBody": "このチャットとすべてのメッセージが削除されます。元に戻すことはできません。",
-		"offline": "オフライン"
+		"offline": "オフライン",
+		"mode": "モード",
+		"modeAssistant": "アシスタント",
+		"modeTeam": "チーム"
 	},
 	"chat": {
 		"worksIn": "{folder}で作業",

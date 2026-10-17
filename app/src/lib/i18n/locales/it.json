@@ -229,7 +229,9 @@
 		"schedule": "Agenda",
 		"searchOrRun": "Cerca o esegui...",
 		"botSettings": "Impostazioni del bot",
-		"employeeSettings": "Impostazioni del dipendente"
+		"employeeSettings": "Impostazioni del dipendente",
+		"showSidebar": "Mostra barra laterale",
+		"hideSidebar": "Nascondi barra laterale"
 	},
 	"sidebar": {
 		"agents": "Dipendenti",
@@ -266,7 +268,10 @@
 		"pinned": "Fissate",
 		"deleteChatTitle": "Eliminare \"{name}\"?",
 		"deleteChatBody": "Questa chat e tutti i suoi messaggi verranno rimossi. L'operazione non può essere annullata.",
-		"offline": "Offline"
+		"offline": "Offline",
+		"mode": "Modalità",
+		"modeAssistant": "Assistente",
+		"modeTeam": "Team"
 	},
 	"chat": {
 		"worksIn": "Lavora in {folder}",

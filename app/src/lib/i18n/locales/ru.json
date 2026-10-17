@@ -229,7 +229,9 @@
 		"schedule": "Расписание",
 		"searchOrRun": "Найти или выполнить...",
 		"botSettings": "Настройки бота",
-		"employeeSettings": "Настройки сотрудника"
+		"employeeSettings": "Настройки сотрудника",
+		"showSidebar": "Показать боковую панель",
+		"hideSidebar": "Скрыть боковую панель"
 	},
 	"sidebar": {
 		"agents": "Сотрудники",
@@ -266,7 +268,10 @@
 		"pinned": "Закреплённые",
 		"deleteChatTitle": "Удалить «{name}»?",
 		"deleteChatBody": "Этот чат и все его сообщения будут удалены. Это действие нельзя отменить.",
-		"offline": "Офлайн"
+		"offline": "Офлайн",
+		"mode": "Режим",
+		"modeAssistant": "Ассистент",
+		"modeTeam": "Команда"
 	},
 	"chat": {
 		"worksIn": "Работает в папке {folder}",
