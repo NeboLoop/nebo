@@ -836,11 +836,12 @@ impl PluginManifest {
         }
 
         // Auth: login command must be non-empty for interactive auth types (oauth_cli, etc.)
-        // Env-only auth types (auth_type == "env") use env vars and don't need a login command.
+        // Env-only auth types (auth_type == "env") use env vars and don't need a login command,
+        // and neither does a first-party plugin (`neboai`): it signs in as the owner's NeboAI account.
         if let Some(ref auth) = self.auth {
-            if auth.commands.login.is_empty() && auth.auth_type != "env" {
+            if auth.commands.login.is_empty() && auth.auth_type != "env" && auth.auth_type != "neboai" {
                 return Err(NappError::PluginValidation(
-                    "auth.commands.login is required when auth is declared (unless auth type is 'env')".into(),
+                    "auth.commands.login is required when auth is declared (unless auth type is 'env' or 'neboai')".into(),
                 ));
             }
         }
@@ -2846,6 +2847,10 @@ async fn run_auth_status_check_inner(
     for (key, value) in &resolved_env {
         cmd.env(key, value);
     }
+    // A first-party plugin's status check signs in the way its commands do.
+    for (key, value) in store.neboai_auth_env(slug) {
+        cmd.env(key, value);
+    }
     // Per-account isolation: set last so it wins over any global config-dir value.
     if let Some((env_name, config_dir)) = profile_dir {
         cmd.env(env_name, config_dir);
@@ -3820,6 +3825,18 @@ mod tests {
     fn test_validate_good_manifest() {
         let m = make_valid_manifest();
         assert!(m.validate().is_ok());
+    }
+
+    /// Env and NeboAI sign-in need no login command; an interactive auth
+    /// type does (connections-*, neighbor-mail, 2026-10-17: a `neboai`
+    /// plugin was refused at install).
+    #[test]
+    fn test_validate_login_command_by_auth_type() {
+        for (kind, ok) in [("env", true), ("neboai", true), ("oauth_cli", false)] {
+            let mut m = make_valid_manifest();
+            m.auth = Some(serde_json::from_value(serde_json::json!({"type": kind, "env": {"NEBOAI_TOKEN": ""}})).unwrap());
+            assert_eq!(m.validate().is_ok(), ok, "{kind}");
+        }
     }
 
     #[test]
