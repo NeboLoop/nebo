@@ -42,7 +42,7 @@ pub const MAX_DEPTH: u8 = 3;
 /// a runaway brake on one tree, not a width limit on model calls: those take permits from the bot's one
 /// adaptive pool (`crate::concurrency`), which stays the only brake on
 /// fan-out width (CODE_AUDITOR §15).
-pub const MAX_RUNNING: usize = 20;
+pub const MAX_RUNNING: usize = 1000;
 
 /// How long a foreground helper holds its parent's step. Past it the helper
 /// moves to the background: it keeps running and reports by notification.
@@ -2357,7 +2357,7 @@ mod tests {
     /// another conversation is untouched, and a finished helper frees its
     /// place.
     #[tokio::test]
-    async fn a_conversation_runs_at_most_twenty_helpers_at_once() {
+    async fn a_conversation_runs_at_most_max_running_helpers_at_once() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:ops:web");
         rig.helpers.delegate(&owner, None, &[], &call("Watch the others.", None)).await.unwrap();
@@ -2371,7 +2371,7 @@ mod tests {
             started.push(rig.next_turn().await);
         }
         let refused = rig.helpers.delegate(&babysitter.request, None, &[], &call("check again", None)).await.unwrap_err();
-        assert!(refused.contains("20 helpers are already running in this conversation") && refused.contains("Don't retry"), "{refused}");
+        assert!(refused.contains(&format!("{MAX_RUNNING} helpers are already running in this conversation")) && refused.contains("Don't retry"), "{refused}");
         assert!(rig.helpers.delegate(&owner, None, &[], &call("one more", None)).await.is_err(), "the owner's own launch counts the whole tree");
 
         let other = rig.owner_turn("agent:sales:web");
