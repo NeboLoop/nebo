@@ -1207,13 +1207,15 @@ impl PluginRunner {
         // same upstream socket race each other (we observed this with orphan
         // Slack bridges all posting "_Thinking..._" for one inbound message).
         // See `docs/publishers-guide/channel-plugins.md` for the contract.
+        // Only a plugin that declares a channel has a bridge: another
+        // plugin's `post` (Product Hunt's, 2026-10-17) is its own command.
         let verb = pi
             .command
             .split_whitespace()
             .next()
             .unwrap_or("")
             .to_string();
-        if matches!(verb.as_str(), "reply" | "post" | "upload" | "dm") {
+        if matches!(verb.as_str(), "reply" | "post" | "upload" | "dm") && self.plugin_store.get_channel_def(&pi.slug).is_some() {
             return self.route_through_bridge(&verb, pi, ctx).await;
         }
 
@@ -4035,6 +4037,21 @@ mod budget_and_install_tests {
         assert!(!login_ran);
         assert!(r.is_error && !r.terminal, "{}", r.content);
         assert!(r.content.contains("isn't connected") && r.content.contains("auth login"), "{}", r.content);
+    }
+
+    /// A plugin that declares no channel runs its own `post` (Product
+    /// Hunt's, 2026-10-17, was sent to a channel bridge that doesn't exist).
+    #[tokio::test]
+    async fn a_plugin_without_a_channel_runs_its_own_post() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_auth_plugin(tmp.path(), "books", serde_json::json!({"type": "env", "label": "Example login", "env": {}}));
+        std::fs::write(tmp.path().join("connected"), b"").unwrap();
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "agent:ic:main".into(), ..Default::default() };
+        let pi = PluginCall { slug: "books".into(), command: "post --slug nebo".into(), ..Default::default() };
+        let r = tool.handle_exec(&pi, &ctx).await.into_result();
+        assert!(!r.is_error && r.content.contains("ok"), "{}", r.content);
     }
 
     /// Asked to set an account up, the employee runs `auth login`: the owner
