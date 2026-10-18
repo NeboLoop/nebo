@@ -17,3 +17,4 @@ thiserror = "2"
 tokio-tungstenite = { workspace = true }
 futures = "0.3"
 base64 = "0.22"
+urlencoding = "2"

@@ -53,6 +53,9 @@ pub struct DictationConfig {
     /// BCP-47 language of the speaker ("en", "pt-BR"); none = the
     /// recognizer's own choice.
     pub language: Option<String>,
+    /// Words the speaker is likely to say (names, products), most important
+    /// first, as [`crate::keyterms`] bounds them.
+    pub keyterms: Vec<String>,
 }
 
 /// What the phone sends.
@@ -95,15 +98,22 @@ impl DictationEvent {
 }
 
 /// The provider URL for this dictation: PCM at the phone's rate, live
-/// partials, numbers written as numbers, the speaker's language.
+/// partials, the end of a thought heard at a pause (not every breath), the
+/// speaker's language, and the words to expect. Words stay as said
+/// ("first", "nine thirty"): written-form numbers are for transcripts, not a
+/// message being typed by voice.
 pub fn stt_url(cfg: &DictationConfig) -> String {
     let mut url = format!(
-        "{}?encoding=pcm&sample_rate={}&interim_results=true&format=true",
+        "{}?encoding=pcm&sample_rate={}&interim_results=true&smart_turn=0.7",
         cfg.endpoint, cfg.sample_rate
     );
     if let Some(lang) = cfg.language.as_deref().and_then(clean_language) {
         url.push_str("&language=");
         url.push_str(&lang);
+    }
+    for term in &cfg.keyterms {
+        url.push_str("&keyterm=");
+        url.push_str(&urlencoding::encode(term));
     }
     url
 }
@@ -287,15 +297,18 @@ fn hold(held: &mut Vec<Bytes>, held_bytes: &mut usize, b: Bytes) {
     held.push(b);
 }
 
-/// Tell the far end the audio is over; the last words follow. Returns when
-/// to give up waiting for them.
+/// Tell the far end the audio is over: end the words being said now without
+/// waiting for a pause (`finalize`), then close the audio (`audio.done`); the
+/// last words follow. Returns when to give up waiting for them.
 async fn finish<S>(up: &mut S) -> tokio::time::Instant
 where
     S: futures::Sink<Message> + Unpin,
 {
-    let _ = up
-        .send(Message::Text(json!({"type": "audio.done"}).to_string().into()))
-        .await;
+    for kind in ["finalize", "audio.done"] {
+        if up.send(Message::Text(json!({"type": kind}).to_string().into())).await.is_err() {
+            break;
+        }
+    }
     tokio::time::Instant::now() + STOP_GRACE
 }
 
@@ -313,6 +326,7 @@ mod tests {
             bot_id: Some("bot-1".into()),
             sample_rate: 16_000,
             language: Some("en".into()),
+            keyterms: Vec::new(),
         }
     }
 
@@ -321,8 +335,9 @@ mod tests {
         let c = cfg("wss://janus.example/v1/stt".into());
         assert_eq!(
             stt_url(&c),
-            "wss://janus.example/v1/stt?encoding=pcm&sample_rate=16000&interim_results=true&format=true&language=en"
+            "wss://janus.example/v1/stt?encoding=pcm&sample_rate=16000&interim_results=true&smart_turn=0.7&language=en"
         );
+        assert!(!stt_url(&c).contains("format"), "words stay as said");
         let mut c = c;
         c.language = Some("pt_BR".into());
         assert!(stt_url(&c).ends_with("&language=pt-BR"));
@@ -330,6 +345,19 @@ mod tests {
         assert!(!stt_url(&c).contains("language"));
         c.language = None;
         assert!(!stt_url(&c).contains("language"));
+    }
+
+    #[test]
+    fn the_url_carries_each_word_to_expect_as_its_own_keyterm() {
+        let mut c = cfg("wss://janus.example/v1/stt".into());
+        c.keyterms = vec!["NeboLoop".into(), "Nebo Media".into(), "Tymick & Co".into()];
+        assert!(
+            stt_url(&c).ends_with("&language=en&keyterm=NeboLoop&keyterm=Nebo%20Media&keyterm=Tymick%20%26%20Co"),
+            "{}",
+            stt_url(&c)
+        );
+        c.keyterms = crate::keyterms((0..150).map(|i| format!("Term {i}")));
+        assert_eq!(stt_url(&c).matches("&keyterm=").count(), crate::MAX_KEYTERMS);
     }
 
     #[test]
@@ -443,17 +471,16 @@ mod tests {
         assert_eq!(ev_rx.recv().await, Some(DictationEvent::Text { text: "hello".into(), start: 0.0, end: 0.6, is_final: false }));
         assert_eq!(ev_rx.recv().await, Some(DictationEvent::Text { text: "Hello there.".into(), start: 0.0, end: 1.2, is_final: true }));
         in_tx.send(DictationInput::Stop).await.unwrap();
-        // The far end hears the audio is over.
-        loop {
+        // The far end ends the words being said, then hears the audio is over.
+        let mut told = Vec::new();
+        while told.len() < 2 {
             match far.next().await {
-                Some(Ok(Message::Text(t))) => {
-                    assert_eq!(serde_json::from_str::<Value>(&t).unwrap(), json!({"type":"audio.done"}));
-                    break;
-                }
+                Some(Ok(Message::Text(t))) => told.push(serde_json::from_str::<Value>(&t).unwrap()),
                 Some(Ok(_)) => {}
-                other => panic!("expected audio.done, got {other:?}"),
+                other => panic!("expected finalize then audio.done, got {other:?}"),
             }
         }
+        assert_eq!(told, vec![json!({"type":"finalize"}), json!({"type":"audio.done"})]);
         say(&mut far, json!({"type":"transcript.partial","text":"Bye.","is_final":true,"start":1.2,"duration":0.5})).await;
         say(&mut far, json!({"type":"transcript.done","text":"Hello there. Bye.","duration":1.7})).await;
         assert_eq!(ev_rx.recv().await, Some(DictationEvent::Text { text: "Bye.".into(), start: 1.2, end: 1.7, is_final: true }));

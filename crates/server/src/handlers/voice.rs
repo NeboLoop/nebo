@@ -179,6 +179,7 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
         bot_id: config::read_bot_id(),
         sample_rate: q.sample_rate.filter(|r| (8_000..=48_000).contains(r)).unwrap_or(voice::dictation::DEFAULT_SAMPLE_RATE),
         language: q.language,
+        keyterms: voice_keyterms(&state.store),
     };
     let (in_tx, in_rx) = mpsc::channel::<DictationInput>(256);
     let (ev_tx, mut ev_rx) = mpsc::channel::<DictationEvent>(64);
@@ -1837,20 +1838,39 @@ impl TurnSink {
     }
 }
 
-/// Brand-term pronunciation map + ASR bias so the model says product names
-/// right while transcripts stay clean.
-fn brand_voice_hints() -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+/// Brand-term pronunciation map so the model says product names right while
+/// transcripts stay clean.
+fn brand_pronunciations() -> serde_json::Map<String, serde_json::Value> {
     let mut replace = serde_json::Map::new();
     replace.insert("NeboAI".into(), serde_json::Value::String("Nee-bo A I".into()));
     replace.insert("NeboLoop".into(), serde_json::Value::String("Nee-bo Loop".into()));
     replace.insert("Nebo".into(), serde_json::Value::String("Nee-bo".into()));
-    let keyterms = vec![
-        "Nebo".into(),
-        "NeboAI".into(),
-        "NeboLoop".into(),
-        "Janus".into(),
-    ];
-    (replace, keyterms)
+    replace
+}
+
+/// The bot's vocabulary for the recognizer — a voice call's and dictation's
+/// alike — most important first: the brand, the owner's name, the bot's
+/// name, every employee, every team, the installed apps and plugins, then
+/// the teams' projects. Names nobody spells the usual way ("Tymick") are
+/// heard right only when the recognizer expects them.
+fn voice_keyterms(store: &db::Store) -> Vec<String> {
+    let mut terms: Vec<String> = ["Nebo", "NeboAI", "NeboLoop"].map(String::from).into();
+    terms.extend(store.get_user_profile().ok().flatten().and_then(|p| p.display_name));
+    terms.extend(store.get_agent_profile().ok().flatten().map(|p| p.name));
+    let (apps, employees): (Vec<_>, Vec<_>) = store
+        .list_agents(i64::MAX, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .partition(|a| a.is_app.unwrap_or(0) != 0);
+    terms.extend(employees.into_iter().map(|a| a.name));
+    let teams = store.list_teams().unwrap_or_default();
+    terms.extend(teams.iter().map(|t| t.name.clone()));
+    terms.extend(apps.into_iter().map(|a| a.name));
+    terms.extend(store.list_installed_plugins().unwrap_or_default().into_iter().map(|p| p.display_name));
+    for team in &teams {
+        terms.extend(store.list_team_projects(&team.id).unwrap_or_default().into_iter().map(|p| p.title));
+    }
+    voice::keyterms(terms)
 }
 
 /// Characters of recent conversation a voice call starts with, newest first,
@@ -2388,7 +2408,8 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         instructions.push_str(&chat_history_context(&state, chat_id));
     }
 
-    let (replace, keyterms) = brand_voice_hints();
+    let replace = brand_pronunciations();
+    let keyterms = voice_keyterms(&state.store);
     let tree_intents: Vec<String> = call_tree
         .as_ref()
         .map(|t| t.intents.iter().map(|i| i.name.clone()).collect())
@@ -3462,6 +3483,54 @@ mod realtime_leg_tests {
             let words = leg_refusal_words(&r).1.to_ascii_lowercase();
             assert!(!["xai", "grok", "openai", "x.ai"].iter().any(|v| words.contains(v)), "{words}");
         }
+    }
+}
+
+#[cfg(test)]
+mod voice_keyterms_tests {
+    use super::voice_keyterms;
+
+    /// The recognizer expects the bot's own names, most important first:
+    /// brand, owner, bot, employees, teams, apps and plugins, projects —
+    /// each once, however it is cased.
+    #[test]
+    fn the_bots_names_come_most_important_first_and_once() {
+        let path = std::env::temp_dir().join(format!("nebo-voice-keyterms-{}.db", uuid::Uuid::new_v4()));
+        let store = db::Store::new(&path.to_string_lossy()).unwrap();
+        store.update_user_profile(Some("Alma Tymick"), None, None, None, None, None, None, None, None, None).unwrap();
+        store.ensure_agent_profile().unwrap();
+        store
+            .update_agent_profile(
+                Some("Nanna"), None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            )
+            .unwrap();
+        store.create_agent("e1", None, "Juniper", "", "", "", None, None).unwrap();
+        store.create_agent("a1", None, "Design Studio", "", "", "", None, None).unwrap();
+        store.set_agent_app_fields("a1", true, None, None, None).unwrap();
+        store.create_agent("e2", None, "NEBO", "", "", "", None, None).unwrap();
+        let team = store.create_team("t1", "Closers", "", &[db::TeamMember::local("e1")], "e1", None).unwrap();
+        store.upsert_installed_plugin("nebo-media", "Nebo Media", "1.0.0", "", "", "", "").unwrap();
+        store
+            .create_project(&db::NewProject {
+                id: "p1",
+                team_id: &team.id,
+                lead_agent_id: "e1",
+                title: "Harbor Listing",
+                ask: "",
+                asker_session_key: "",
+                asker_agent_id: "",
+                playbook_binding: None,
+            })
+            .unwrap();
+
+        let got = voice_keyterms(&store);
+        assert_eq!(&got[..3], ["Nebo", "NeboAI", "NeboLoop"], "the brand leads; Janus is never said");
+        assert_eq!(got[3..5], ["Alma Tymick", "Nanna"]);
+        let at = |t: &str| got.iter().position(|g| g == t).unwrap_or_else(|| panic!("{t} missing from {got:?}"));
+        assert!(at("Nanna") < at("Juniper") && at("Juniper") < at("Closers"));
+        assert!(at("Closers") < at("Design Studio") && at("Design Studio") < at("Nebo Media"));
+        assert!(at("Nebo Media") < at("Harbor Listing"));
+        assert!(!got.iter().any(|t| t == "NEBO"), "an employee called NEBO is the brand word already");
     }
 }
 
