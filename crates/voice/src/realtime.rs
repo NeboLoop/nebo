@@ -117,7 +117,8 @@ pub struct RealtimeConfig {
     pub speed: f64,
     /// Pronunciation map applied before TTS (transcripts stay clean).
     pub replace: serde_json::Map<String, Value>,
-    /// ASR bias terms (max 100, 50 chars each).
+    /// ASR bias terms, most important first, as [`crate::keyterms`] bounds
+    /// them.
     pub keyterms: Vec<String>,
     /// `type: "function"` tool entries (client-side only — server-side xAI
     /// tools like mcp/web_search are never exposed; they'd execute outside
@@ -1254,7 +1255,7 @@ mod tests {
     #[test]
     fn session_update_pins_audio_contract() {
         let mut cfg = RealtimeConfig::default();
-        cfg.keyterms = vec!["Nebo".into()];
+        cfg.keyterms = crate::keyterms(["Nebo", "Tymick", "nebo"]);
         cfg.replace
             .insert("NeboAI".into(), Value::String("Neebo A I".into()));
         cfg.tools = vec![json!({"type": "function", "name": "os"})];
@@ -1272,7 +1273,7 @@ mod tests {
             assert_eq!(s["audio"][dir]["format"]["rate"], 24000);
             assert_eq!(s["audio"][dir]["transport"], "binary");
         }
-        assert_eq!(s["audio"]["input"]["transcription"]["keyterms"][0], "Nebo");
+        assert_eq!(s["audio"]["input"]["transcription"]["keyterms"], json!(["Nebo", "Tymick"]));
         assert_eq!(s["replace"]["NeboAI"], "Neebo A I");
         assert_eq!(s["tools"][0]["name"], "os");
     }
