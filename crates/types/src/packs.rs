@@ -233,9 +233,10 @@ pub struct Pack {
 pub const NEBO_AI_ID: &str = "nebo-ai";
 
 /// The built-in Nebo AI pack: Auto on Janus's `nebo-1` alias, today's
-/// default model, and the five levels on Janus's three speeds: Instant and
-/// Low on `nebo-1-flash`, Medium on `nebo-1-medium`, High and Max on
-/// `nebo-1-pro`. Max runs on `nebo-1-pro` until Janus has a real Max.
+/// default model, and each of the five levels on its own Janus speed
+/// (owner, 2026-10-18): Instant on `nebo-1-instant`, Low on `nebo-1-flash`
+/// thinking a little, Medium on `nebo-1-medium`, High on `nebo-1-pro`, Max
+/// on `nebo-1-max` thinking hardest.
 ///
 /// Its lanes: workflows run at Instant. Building is not pinned: employees
 /// and workflows are written at the level the owner chose in the composer,
@@ -252,11 +253,11 @@ pub fn nebo_ai() -> Pack {
         name: "Nebo AI".to_string(),
         levels: PackLevels {
             auto: janus("nebo-1"),
-            instant: janus("nebo-1-flash"),
+            instant: janus("nebo-1-instant"),
             low: janus("nebo-1-flash"),
             medium: janus("nebo-1-medium"),
             high: janus("nebo-1-pro"),
-            max: janus("nebo-1-pro"),
+            max: janus("nebo-1-max"),
             // Janus reads images and video on its image_read and
             // video_read pools.
             vision: janus("nebo-1"),
@@ -267,8 +268,7 @@ pub fn nebo_ai() -> Pack {
         built_in: true,
         route_through_janus: false,
         lanes: PackLanes { workflow: Some(Effort::Instant), ..PackLanes::default() },
-        // Low is Instant with a little thinking; Max is High at its highest
-        // effort until Janus has a speed above `nebo-1-pro`.
+        // Low thinks a little; Max thinks hardest.
         level_effort: LevelEffort {
             low: Some(ProviderEffort::Low),
             max: Some(ProviderEffort::High),
@@ -402,19 +402,22 @@ mod tests {
     fn only_nebo_ai_has_auto() {
         let nebo = nebo_ai();
         assert_eq!(nebo.model_for_ref(None), Some("janus/nebo-1"), "Auto: Janus picks");
-        assert_eq!(nebo.model_for_ref(Some(Effort::Instant)), Some("janus/nebo-1-flash"));
+        assert_eq!(nebo.model_for_ref(Some(Effort::Instant)), Some("janus/nebo-1-instant"));
+        assert_eq!(nebo.model_for_ref(Some(Effort::Low)), Some("janus/nebo-1-flash"));
         assert_eq!(nebo.model_for_ref(Some(Effort::Medium)), Some("janus/nebo-1-medium"));
-        assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-pro"));
-        assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Instant, thinking a little");
+        assert_eq!(nebo.model_for_ref(Some(Effort::High)), Some("janus/nebo-1-pro"));
+        assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-max"));
+        assert_eq!(nebo.effort_for(Effort::Instant), None, "nebo-1-instant at its default");
+        assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "nebo-1-flash, thinking a little");
         assert_eq!(nebo.effort_for(Effort::High), None, "nebo-1-pro at its default");
-        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-pro at its highest");
+        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-max at its highest");
         assert_eq!(nebo.lanes.build, None, "building is not pinned");
         assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::High)), Some(Effort::High), "built at the level chosen");
         assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::Instant)), Some(Effort::Instant), "even Instant, when chosen");
         assert_eq!(nebo.lanes.level(Lane::Build, None), Some(Effort::Medium), "on Auto, at Medium");
         assert_eq!(nebo.model_for(Effort::Medium), Some("janus/nebo-1-medium"));
         assert_eq!(nebo.lanes.level(Lane::Workflow, Some(Effort::Max)), Some(Effort::Instant), "run at Instant");
-        assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
+        assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-instant"));
         assert_eq!(nebo.lanes.level(Lane::Heartbeat, None), Some(Effort::Instant), "background work at Instant");
         assert_eq!(nebo.lanes.level(Lane::Scheduled, Some(Effort::High)), Some(Effort::Instant), "background work at Instant");
         assert_eq!(nebo.lanes.level(Lane::Communication, None), None, "the rest: the level chosen");

@@ -58,7 +58,7 @@ export function choiceProviderLabel(choice: Pick<PackChoice, 'provider' | 'conne
 
 /**
  * What a pack slot runs on: the provider/connection line and, beneath it, the
- * model by the name its provider gives it (a Nebo AI speed: "High and Max"),
+ * model by the name its provider gives it (a Nebo AI speed: "High"),
  * else by its id.
  */
 export type RunsOn = { label: string; model: string; local: boolean };

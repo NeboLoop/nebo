@@ -4323,7 +4323,7 @@ mod janus_sync_tests {
         let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
         let listing: JanusListing = serde_json::from_value(serde_json::json!({"data": [
             {"id": "nebo-1", "owned_by": "neboai", "name": "Auto", "context_window": 200000},
-            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Instant and Low", "context_window": 131072},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Low", "context_window": 131072},
             {"id": "qwen3.7-flash", "owned_by": "dashscope", "context_window": 1000000}
         ]}))
         .unwrap();
@@ -4345,7 +4345,7 @@ mod janus_sync_tests {
     }
 
     /// The speeds list by their rank on the ladder, never by name (which
-    /// would read High and Max, Instant and Low, Medium), whether Janus sends
+    /// would read Auto, High, Instant, Low, Max, Medium), whether Janus sends
     /// the rank or only its order.
     #[test]
     fn the_speeds_list_by_rank_not_by_name() {
@@ -4356,22 +4356,26 @@ mod janus_sync_tests {
         };
         let ordered: JanusListing = serde_json::from_value(serde_json::json!({"data": [
             {"id": "nebo-1", "owned_by": "neboai", "name": "Auto"},
-            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Instant and Low"},
+            {"id": "nebo-1-instant", "owned_by": "neboai", "name": "Instant"},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Low"},
             {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Medium"},
-            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "High and Max"}
+            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "High"},
+            {"id": "nebo-1-max", "owned_by": "neboai", "name": "Max"}
         ]}))
         .unwrap();
         store_janus_listing(&store, ordered).unwrap();
-        assert_eq!(names(&store), ["Auto", "Instant and Low", "Medium", "High and Max"]);
+        assert_eq!(names(&store), ["Auto", "Instant", "Low", "Medium", "High", "Max"]);
         let ranked: JanusListing = serde_json::from_value(serde_json::json!({"data": [
-            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "High and Max", "rank": 3},
-            {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Medium", "rank": 2},
+            {"id": "nebo-1-max", "owned_by": "neboai", "name": "Max", "rank": 5},
+            {"id": "nebo-1-pro", "owned_by": "neboai", "name": "High", "rank": 4},
+            {"id": "nebo-1-medium", "owned_by": "neboai", "name": "Medium", "rank": 3},
             {"id": "nebo-1", "owned_by": "neboai", "name": "Auto", "rank": 0},
-            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Instant and Low", "rank": 1}
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Low", "rank": 2},
+            {"id": "nebo-1-instant", "owned_by": "neboai", "name": "Instant", "rank": 1}
         ]}))
         .unwrap();
         store_janus_listing(&store, ranked).unwrap();
-        assert_eq!(names(&store), ["Auto", "Instant and Low", "Medium", "High and Max"]);
+        assert_eq!(names(&store), ["Auto", "Instant", "Low", "Medium", "High", "Max"]);
         let all: Vec<String> = store
             .list_all_provider_models()
             .unwrap()
@@ -4379,7 +4383,7 @@ mod janus_sync_tests {
             .filter(|m| m.provider == "janus")
             .map(|m| m.display_name)
             .collect();
-        assert_eq!(all, ["Auto", "Instant and Low", "Medium", "High and Max"]);
+        assert_eq!(all, ["Auto", "Instant", "Low", "Medium", "High", "Max"]);
     }
 }
 
