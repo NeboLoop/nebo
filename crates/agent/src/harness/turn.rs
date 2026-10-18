@@ -126,8 +126,9 @@ pub struct TurnContext {
     /// Deferred tools this seat is declared from its first step
     /// (`tools::app_dev::preloaded`), never behind tool search.
     pub preloaded_tools: Arc<HashSet<String>>,
-    /// The model the turn's steps move to once it builds (`BUILD_TOOLS`),
-    /// when its intelligence pack pins the build lane.
+    /// The model the turn's steps run on once it builds (`BUILD_TOOLS`): its
+    /// intelligence pack's build lane (`build_model`). None for a turn on a
+    /// model that is not a pack, which builds on its own model.
     build: Option<TurnModel>,
     /// Who reads the images the turn's tools return (`Harness::eyes`).
     pub(crate) eyes: Option<crate::sidecar::Eyes>,
@@ -193,10 +194,11 @@ pub struct TurnState {
     /// chose, else the configured default (`ModelSelector::resolve`). It
     /// never changes after an error: a failed call is retried on it
     /// (`model_call`), and Nebo has no configured fallback model to switch
-    /// to. It changes once, upward, when the turn starts building an
-    /// employee or a workflow and its pack pins the build lane
-    /// (`TurnContext::build`): what the turn writes then is the work its
-    /// employees run on, worth one break of the cached prefix.
+    /// to. It changes once, when the turn starts building an employee or a
+    /// workflow and its build lane runs elsewhere (`TurnContext::build`: a
+    /// pack that pins Building, or Auto, which builds at Medium): what the
+    /// turn writes then is the work its employees run on, worth one break of
+    /// the cached prefix. A level the owner chose builds on that level.
     pub model: String,
     /// The turn's steps are building (`TurnContext::build`): they run on the
     /// build lane's model and reach Janus as the `build` purpose.
@@ -697,12 +699,13 @@ fn lane_of(req: &TurnRequest) -> Option<types::packs::Lane> {
 
 /// The model a turn runs on (see [`TurnModel`]). A pack reference
 /// (`pack/<id>[/<level>]`, chosen or the bot's default) runs on the pack's
-/// model for its level — the level the turn's lane is pinned to when the pack
-/// pins one, else the level the reference names (`types::packs::Pack::
-/// model_for_ref`) — at that level's provider effort. A level the pack leaves
-/// empty runs on Nebo AI's model for that same level, at Nebo AI's effort for
-/// it: that is the pack as the owner set it, so it carries no line and holds
-/// whether or not the pack falls back (owner, 2026-10-11). An effort the pack
+/// model for its level — the level the turn's lane runs at given the level
+/// the reference names (`types::packs::PackLanes::level`), else that named
+/// level (`types::packs::Pack::model_for_ref`) — at that level's provider
+/// effort. A level the pack leaves empty runs on Nebo AI's model for that
+/// same level, at Nebo AI's effort for it: that is the pack as the owner set
+/// it, so it carries no line and holds whether or not the pack falls back
+/// (owner, 2026-10-11). An effort the pack
 /// stored for an empty level is not used: it was set for no model of the
 /// owner's. When the level's model isn't one this bot can send to, the turn
 /// runs on Nebo AI at the same level and says so, or — the pack set not to
@@ -728,8 +731,11 @@ pub(crate) fn turn_model(h: Resolver<'_>, chosen: &str, lane: Option<types::pack
     let Some(pack) = h.store.get_intelligence_pack(id).ok().flatten() else {
         return Ok(on_nebo(named, "The intelligence pack this was set to is gone, so this reply used Nebo AI.".to_string()));
     };
-    // A lane the pack pins wins over the reference's level.
-    let level = lane.and_then(|l| pack.lanes.level(l)).or(named);
+    // The lane decides the level from the reference's: a pin wins.
+    let level = match lane {
+        Some(l) => pack.lanes.level(l, named),
+        None => named,
+    };
     let want = pack.model_for_ref(level);
     // Auto (Nebo AI's, no level) carries no provider effort of ours.
     let at = level.or(pack.levels.auto.is_none().then_some(DEFAULT_EFFORT));
@@ -932,26 +938,26 @@ impl Harness {
 /// calls one is building, and its steps from then on run in the build lane.
 const BUILD_TOOLS: &[&str] = &["create_employee", "update_employee", "create_workflow", "update_workflow"];
 
-/// The model a turn's building steps run on: the build lane's, when the
-/// turn's intelligence pack pins it; else none, and the turn keeps its model.
-/// A linked employee runs its linked agent, never a lane's model.
+/// The model a turn's building steps run on: its intelligence pack's build
+/// lane (`types::packs::PackLanes::level`), which is the level the owner
+/// chose unless the pack pins Building, and Medium on Auto. None for a
+/// reference that is not a pack (a model the owner chose stays his) and for
+/// a linked employee, which runs its linked agent, never a lane's model.
 fn build_model(h: Resolver<'_>, chosen: &str, linked: bool) -> Option<TurnModel> {
-    use types::packs::Lane;
     if linked {
         return None;
     }
-    let pick = pack_pick(h, chosen);
-    let (id, _) = types::packs::parse_ref(&pick)?;
-    h.store.get_intelligence_pack(id).ok().flatten()?.lanes.level(Lane::Build)?;
-    turn_model(h, chosen, Some(Lane::Build)).ok()
+    types::packs::parse_ref(&pack_pick(h, chosen))?;
+    turn_model(h, chosen, Some(types::packs::Lane::Build)).ok()
 }
 
 impl Harness {
     /// The model and provider effort background build work runs on (a
     /// workflow tune rewriting a workflow from its runs): the build lane of
-    /// the bot's intelligence pack, when it pins one; `None` keeps the
-    /// caller's default. The same lane a turn moves to when it builds
-    /// (`build_model`).
+    /// the bot's default intelligence pack, at the level the default names
+    /// (Medium on Auto) unless the pack pins Building; `None` for a default
+    /// that is not a pack keeps the caller's default. The same lane a turn
+    /// moves to when it builds (`build_model`).
     pub fn build_lane(&self) -> Option<(String, Option<types::packs::ProviderEffort>)> {
         build_model(self.resolver(), "", false).map(|m| (m.model, m.effort))
     }
@@ -1221,7 +1227,8 @@ pub(crate) async fn prepare(
     .join("\n\n");
     // The workflow builder's chat writes workflows from its first step, and
     // so does a session held to build (a taught task's learning run and its
-    // follow-ups, `Harness::build_session`); any other turn moves to the
+    // follow-ups, `Harness::build_session`): both run in the build lane, at
+    // the level chosen, Medium when none was. Any other turn moves to the
     // build lane when it starts building.
     let build = if matches!(req.mode, TurnMode::Workflow(_)) { None } else { build_model(h.resolver(), &model, employee.linked) };
     let builder = build.is_some()
@@ -3018,11 +3025,17 @@ async fn tool_round(
     None
 }
 
-/// The turn starts building: its next steps run on the build lane's model at
-/// its effort, routed fresh (the last model's route is not theirs).
+/// The turn starts building: its next steps reach Janus as the `build`
+/// purpose. When the build lane runs elsewhere they move to its model at its
+/// effort, routed fresh (the last model's route is not theirs); at the level
+/// the owner chose they keep the turn's model, effort and route.
 fn start_building(st: &mut TurnState, build: &TurnModel, session_id: &str) {
-    info!(session_id, from = %st.model, to = %build.model, "the turn builds: its steps move to the build lane");
     st.building = true;
+    if (st.model.as_str(), st.effort) == (build.model.as_str(), build.effort) {
+        info!(session_id, model = %st.model, "the turn builds at the level chosen");
+        return;
+    }
+    info!(session_id, from = %st.model, to = %build.model, "the turn builds: its steps move to the build lane");
     st.model = build.model.clone();
     st.effort = build.effort;
     st.call.sticky_metadata = None;
@@ -3898,8 +3911,9 @@ mod tests {
     }
 
     /// Nebo AI's lanes: on its Auto, a workflow's step runs at Instant and a
-    /// build at Medium; every workflow step is in the workflow lane, and a
-    /// model that is not a pack has no build lane.
+    /// build at Medium; a build at a level the owner chose runs at it; every
+    /// workflow step is in the workflow lane, and a model that is not a pack
+    /// has no build lane.
     #[tokio::test]
     async fn nebo_ai_builds_at_medium_and_runs_workflows_at_instant() {
         use types::packs::Lane;
@@ -3909,7 +3923,9 @@ mod tests {
         assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-flash", None), "a step at Instant");
         let built = build_model(h.resolver(), "pack/nebo-ai", false).unwrap();
         assert_eq!((built.model.as_str(), built.effort), ("janus/nebo-1-medium", None), "built at Medium");
-        assert_eq!(build_model(h.resolver(), "pack/nebo-ai/low", false).unwrap().model, "janus/nebo-1-medium", "whatever level chats");
+        let low = build_model(h.resolver(), "pack/nebo-ai/low", false).unwrap();
+        assert_eq!((low.model.as_str(), low.effort), ("janus/nebo-1-flash", Some(types::packs::ProviderEffort::Low)), "built at the level chosen");
+        assert_eq!(build_model(h.resolver(), "pack/nebo-ai/high", false).unwrap().model, "janus/nebo-1-pro", "High builds on High");
         assert!(build_model(h.resolver(), "anthropic/claude-x", false).is_none(), "a model the owner chose stays his");
         assert!(build_model(h.resolver(), "pack/nebo-ai", true).is_none(), "a linked employee runs its agent");
         assert!(build_model(h.resolver(), "janus/nebo-1", false).is_none(), "a raw model is not a pack");
@@ -4058,10 +4074,53 @@ mod tests {
         );
     }
 
+    /// A turn whose owner picked High keeps running at High once it builds:
+    /// the same model and effort, sent as the `build` purpose. A pack that
+    /// pins Building still moves the turn to its level.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_builds_at_the_level_its_owner_chose() {
+        use types::packs::{Effort, LevelEffort, Pack, PackLanes, PackLevels, ProviderEffort};
+        let pack = |id: &str, build: Option<Effort>| Pack {
+            id: id.into(),
+            name: id.into(),
+            levels: PackLevels { low: Some("scripted/fast".into()), high: Some("scripted/strong".into()), ..Default::default() },
+            fallback: false,
+            built_in: false,
+            route_through_janus: false,
+            lanes: PackLanes { build, ..Default::default() },
+            level_effort: LevelEffort { high: Some(ProviderEffort::High), ..Default::default() },
+        };
+        let mut runs = Vec::new();
+        for (id, build) in [("chosen", None), ("pinned", Some(Effort::Low))] {
+            let model = Scripted::new(vec![
+                Step::Call("echo", serde_json::json!({})),
+                Step::Call("create_workflow", serde_json::json!({})),
+                Step::Say("Your workflow is ready."),
+            ]);
+            let extra: Vec<Box<dyn tools::registry::DynTool>> =
+                vec![Box::new(Echo { name: "create_workflow", deferred: false, read_only: false })];
+            let h = harness_selecting(&model, extra, pack_selector()).await;
+            h.selector.set_loaded_providers(vec!["scripted".into()]);
+            h.store.save_intelligence_pack(&pack(id, build)).unwrap();
+            let mut req = owner("Design a workflow that files my receipts");
+            req.seat.model_override = format!("pack/{id}/high");
+            run_turn(&h, req).await;
+            runs.push(model.calls().iter().map(|c| (c.model.clone(), c.effort, c.trace.purpose)).collect::<Vec<_>>());
+        }
+        let high = |purpose| ("strong".to_string(), Some(ProviderEffort::High), purpose);
+        assert_eq!(runs[0], [high("agent_turn"), high("agent_turn"), high("build")], "High builds at High");
+        assert_eq!(
+            runs[1],
+            [high("agent_turn"), high("agent_turn"), ("fast".to_string(), None, "build")],
+            "a pack that pins Building moves the build to its level"
+        );
+    }
+
     /// A taught task's learning run builds from its first step: on Nebo AI
     /// (a bot left on Auto) that is Medium, `janus/nebo-1-medium`, sent as
-    /// the `build` purpose Janus serves on its build pool. The owner's own
-    /// choice is untouched, and the hold ends with its window.
+    /// the `build` purpose; a pack that pins Building runs it at that level.
+    /// The owner's own setting is untouched, and the hold ends with its
+    /// window.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_taught_tasks_learning_run_requests_the_build_lane() {
         use types::packs::{Effort, LevelEffort, Pack, PackLanes, PackLevels};

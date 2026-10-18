@@ -84,9 +84,11 @@ pub struct PackLevels {
     pub decisions: Option<String>,
 }
 
-/// Kinds of work pinned to an Effort level. Absent: the work chooses,
-/// except background work (heartbeat, schedules, a workflow's steps), which
-/// runs at Instant unless the pack pins it ([`Lane::is_background`]).
+/// Kinds of work pinned to an Effort level. Absent: the work runs at the
+/// level the owner chose, except background work (heartbeat, schedules, a
+/// workflow's steps), which runs at Instant unless the pack pins it
+/// ([`Lane::is_background`]), and building with no level chosen, which runs
+/// at [`DEFAULT_EFFORT`] ([`PackLanes::level`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PackLanes {
@@ -98,7 +100,8 @@ pub struct PackLanes {
     pub communication: Option<Effort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Effort>,
-    /// Designing employees and workflows: the steps that write them.
+    /// Designing employees and workflows: the steps that write them. Absent:
+    /// the level the owner chose in the composer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build: Option<Effort>,
     /// A workflow's steps as they run, unless the step declares its own
@@ -115,7 +118,10 @@ pub enum Lane {
     Communication,
     Helpers,
     /// Writing an employee or a workflow (`create_employee`,
-    /// `create_workflow`, the workflow builder).
+    /// `create_workflow`, the workflow builder). Runs at the level the owner
+    /// chose unless the pack pins it; with no level chosen (Auto, or a
+    /// session that builds before anyone chose), at [`DEFAULT_EFFORT`],
+    /// never dropped to Instant.
     Build,
     /// Running a workflow's steps.
     Workflow,
@@ -141,16 +147,20 @@ impl Lane {
 }
 
 impl PackLanes {
-    /// The level `lane` is pinned to, if any. Background work
+    /// The level work in `lane` runs at when the owner chose `chosen` (None:
+    /// Auto, no level). A level the pack pins wins. Background work
     /// ([`Lane::is_background`]) is always pinned: Instant unless the pack
-    /// pins it elsewhere.
-    pub fn level(&self, lane: Lane) -> Option<Effort> {
+    /// pins it elsewhere. Building keeps the level the owner chose, and with
+    /// none runs at [`DEFAULT_EFFORT`] (owner, 2026-10-18: "you choose" is
+    /// honest; we publish which level to pick to design a workflow instead
+    /// of forcing one). The rest runs at the level chosen.
+    pub fn level(&self, lane: Lane, chosen: Option<Effort>) -> Option<Effort> {
         match lane {
             Lane::Heartbeat => self.heartbeat.or(Some(Effort::Instant)),
             Lane::Scheduled => self.scheduled.or(Some(Effort::Instant)),
-            Lane::Communication => self.communication,
-            Lane::Helpers => self.helpers,
-            Lane::Build => self.build,
+            Lane::Communication => self.communication.or(chosen),
+            Lane::Helpers => self.helpers.or(chosen),
+            Lane::Build => self.build.or(chosen).or(Some(DEFAULT_EFFORT)),
             Lane::Workflow => self.workflow.or(Some(Effort::Instant)),
             Lane::Housekeeping | Lane::Explore => Some(Effort::Instant),
         }
@@ -227,11 +237,14 @@ pub const NEBO_AI_ID: &str = "nebo-ai";
 /// Low on `nebo-1-flash`, Medium on `nebo-1-medium`, High and Max on
 /// `nebo-1-pro`. Max runs on `nebo-1-pro` until Janus has a real Max.
 ///
-/// Its lanes: employees and workflows are written at Medium, and their
-/// workflows run at Instant. Writing an employee does not need High (owner,
-/// 2026-10-15). A build's steps reach Janus as the `build` purpose, which
-/// Janus serves on its build pool of fast models, else on `nebo-1-medium`;
-/// never on `nebo-1-pro` and never on a Claude Fable model.
+/// Its lanes: workflows run at Instant. Building is not pinned: employees
+/// and workflows are written at the level the owner chose in the composer,
+/// at Medium when he chose none (Auto), never at Instant (owner,
+/// 2026-10-18, replacing the 2026-10-15 Medium pin: "you choose" is honest,
+/// and we publish best practice, High or Max to design a workflow that then
+/// runs at Instant, instead of forcing a level). A build's steps reach
+/// Janus as the `build` purpose with the chosen level's model alias and
+/// effort, which Janus honors.
 pub fn nebo_ai() -> Pack {
     let janus = |m: &str| Some(format!("janus/{m}"));
     Pack {
@@ -253,7 +266,7 @@ pub fn nebo_ai() -> Pack {
         fallback: false,
         built_in: true,
         route_through_janus: false,
-        lanes: PackLanes { build: Some(Effort::Medium), workflow: Some(Effort::Instant), ..PackLanes::default() },
+        lanes: PackLanes { workflow: Some(Effort::Instant), ..PackLanes::default() },
         // Low is Instant with a little thinking; Max is High at its highest
         // effort until Janus has a speed above `nebo-1-pro`.
         level_effort: LevelEffort {
@@ -395,18 +408,23 @@ mod tests {
         assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Instant, thinking a little");
         assert_eq!(nebo.effort_for(Effort::High), None, "nebo-1-pro at its default");
         assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-pro at its highest");
-        assert_eq!(nebo.lanes.level(Lane::Build), Some(Effort::Medium), "built at Medium, never High or Max");
+        assert_eq!(nebo.lanes.build, None, "building is not pinned");
+        assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::High)), Some(Effort::High), "built at the level chosen");
+        assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::Instant)), Some(Effort::Instant), "even Instant, when chosen");
+        assert_eq!(nebo.lanes.level(Lane::Build, None), Some(Effort::Medium), "on Auto, at Medium");
         assert_eq!(nebo.model_for(Effort::Medium), Some("janus/nebo-1-medium"));
-        assert_eq!(nebo.lanes.level(Lane::Workflow), Some(Effort::Instant), "run at Instant");
+        assert_eq!(nebo.lanes.level(Lane::Workflow, Some(Effort::Max)), Some(Effort::Instant), "run at Instant");
         assert_eq!(nebo.model_for(Effort::Instant), Some("janus/nebo-1-flash"));
-        assert_eq!(nebo.lanes.level(Lane::Heartbeat), Some(Effort::Instant), "background work at Instant");
-        assert_eq!(nebo.lanes.level(Lane::Scheduled), Some(Effort::Instant), "background work at Instant");
-        assert_eq!(nebo.lanes.level(Lane::Communication), None, "the rest: the work chooses");
-        let pinned = PackLanes { heartbeat: Some(Effort::Low), ..PackLanes::default() };
-        assert_eq!(pinned.level(Lane::Heartbeat), Some(Effort::Low), "a pack's own pin wins");
-        assert_eq!(PackLanes::default().level(Lane::Workflow), Some(Effort::Instant), "an owner's pack too");
-        assert_eq!(nebo.lanes.level(Lane::Explore), Some(Effort::Instant), "an Explore helper at Instant");
-        assert_eq!(PackLanes { helpers: Some(Effort::Max), ..PackLanes::default() }.level(Lane::Explore), Some(Effort::Instant));
+        assert_eq!(nebo.lanes.level(Lane::Heartbeat, None), Some(Effort::Instant), "background work at Instant");
+        assert_eq!(nebo.lanes.level(Lane::Scheduled, Some(Effort::High)), Some(Effort::Instant), "background work at Instant");
+        assert_eq!(nebo.lanes.level(Lane::Communication, None), None, "the rest: the level chosen");
+        assert_eq!(nebo.lanes.level(Lane::Communication, Some(Effort::Low)), Some(Effort::Low), "the rest: the level chosen");
+        let pinned = PackLanes { heartbeat: Some(Effort::Low), build: Some(Effort::Max), ..PackLanes::default() };
+        assert_eq!(pinned.level(Lane::Heartbeat, None), Some(Effort::Low), "a pack's own pin wins");
+        assert_eq!(pinned.level(Lane::Build, Some(Effort::Low)), Some(Effort::Max), "a pack that pins Building moves it");
+        assert_eq!(PackLanes::default().level(Lane::Workflow, None), Some(Effort::Instant), "an owner's pack too");
+        assert_eq!(nebo.lanes.level(Lane::Explore, Some(Effort::Max)), Some(Effort::Instant), "an Explore helper at Instant");
+        assert_eq!(PackLanes { helpers: Some(Effort::Max), ..PackLanes::default() }.level(Lane::Explore, None), Some(Effort::Instant));
         let mine = byo(PackLevels {
             low: Some("a/low".into()),
             medium: Some("a/mid".into()),
@@ -464,6 +482,6 @@ mod tests {
         let old: Pack = serde_json::from_value(serde_json::json!({"id": "o", "name": "Old", "levels": {}, "fallback": true, "builtIn": false})).unwrap();
         assert!(!old.route_through_janus && old.lanes == PackLanes::default());
         let lanes: PackLanes = serde_json::from_value(serde_json::json!({"build": "max", "workflow": "instant"})).unwrap();
-        assert_eq!((lanes.level(Lane::Build), lanes.level(Lane::Workflow)), (Some(Effort::Max), Some(Effort::Instant)));
+        assert_eq!((lanes.level(Lane::Build, None), lanes.level(Lane::Workflow, None)), (Some(Effort::Max), Some(Effort::Instant)));
     }
 }
