@@ -3271,8 +3271,8 @@ pub(crate) fn current_binding_json(store: &db::Store, agent_id: &str, binding: &
 /// The tune's model call. A tune rewrites a workflow, which is build work:
 /// with the bot's build lane (`Harness::build_lane`) it runs on that lane's
 /// model (`lane`: the model's name on its provider, and its effort) and
-/// reaches Janus as the `build` purpose; without one it runs on the default
-/// provider's model as before.
+/// reaches Janus as the `build` purpose; without one (a bot default that is
+/// not an intelligence pack) it runs on the default provider's model.
 fn tune_request(
     agent_id: &str,
     report: String,
