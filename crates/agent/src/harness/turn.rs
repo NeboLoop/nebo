@@ -3694,7 +3694,7 @@ mod tests {
         let mut config = crate::selector::ModelRoutingConfig::default();
         config.provider_models.insert(
             "janus".into(),
-            ["nebo-1", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro"].map(info).to_vec(),
+            ["nebo-1", "nebo-1-instant", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro", "nebo-1-max"].map(info).to_vec(),
         );
         config.provider_models.insert("anthropic".into(), vec![info("claude-x")]);
         config.provider_models.insert("scripted".into(), vec![info("fast"), info("strong")]);
@@ -3732,8 +3732,8 @@ mod tests {
         };
 
         assert_eq!(tm("pack/mine"), ("anthropic/claude-x".to_string(), None));
-        assert_eq!(tm("pack/mine/max"), ("janus/nebo-1-pro".to_string(), None), "an empty level: Nebo AI's Max, no line");
-        assert_eq!(tm("pack/mine/instant"), ("janus/nebo-1-flash".to_string(), None), "an empty level: Nebo AI's Instant");
+        assert_eq!(tm("pack/mine/max"), ("janus/nebo-1-max".to_string(), None), "an empty level: Nebo AI's Max, no line");
+        assert_eq!(tm("pack/mine/instant"), ("janus/nebo-1-instant".to_string(), None), "an empty level: Nebo AI's Instant");
         let (model, notice) = tm("pack/gone-key/medium");
         assert_eq!(model, "janus/nebo-1-medium", "Nebo AI at the same level");
         assert!(notice.unwrap().contains("couldn't use openai/gpt-x: it isn't connected, so this reply used Nebo AI"));
@@ -3904,7 +3904,7 @@ mod tests {
         let empty = turn_model(h.resolver(), "pack/l/max", None).unwrap();
         assert_eq!(
             (empty.model.as_str(), empty.effort, empty.notice),
-            ("janus/nebo-1-pro", Some(ProviderEffort::High), None),
+            ("janus/nebo-1-max", Some(ProviderEffort::High), None),
             "an empty level runs on Nebo AI's Max at Nebo AI's effort for it"
         );
         assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
@@ -3920,7 +3920,7 @@ mod tests {
         let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
         h.selector.set_loaded_providers(vec!["janus".into(), "anthropic".into()]);
         let step = turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Workflow)).unwrap();
-        assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-flash", None), "a step at Instant");
+        assert_eq!((step.model.as_str(), step.effort), ("janus/nebo-1-instant", None), "a step at Instant");
         let built = build_model(h.resolver(), "pack/nebo-ai", false).unwrap();
         assert_eq!((built.model.as_str(), built.effort), ("janus/nebo-1-medium", None), "built at Medium");
         let low = build_model(h.resolver(), "pack/nebo-ai/low", false).unwrap();
@@ -3949,7 +3949,7 @@ mod tests {
         assert_eq!(lane_of(&helper(HelperKind::Explore)), Some(Lane::Explore));
         assert_eq!(lane_of(&helper(HelperKind::General)), Some(Lane::Helpers));
         let explore = turn_model(h.resolver(), "pack/nebo-ai", lane_of(&helper(HelperKind::Explore))).unwrap();
-        assert_eq!(explore.model, "janus/nebo-1-flash", "Explore at Instant");
+        assert_eq!(explore.model, "janus/nebo-1-instant", "Explore at Instant");
     }
 
     /// Background work (a heartbeat, a schedule, a workflow's step) runs at
@@ -3976,13 +3976,13 @@ mod tests {
             .unwrap();
         let on = |chosen: &str, lane| turn_model(h.resolver(), chosen, Some(lane)).unwrap().model;
         for lane in [Lane::Heartbeat, Lane::Scheduled, Lane::Workflow] {
-            assert_eq!(on("pack/nebo-ai/max", lane), "janus/nebo-1-flash", "{lane:?}: the reference's level never wins");
-            assert_eq!(on("janus/nebo-1-pro", lane), "janus/nebo-1-flash", "{lane:?}: a Nebo AI model is Nebo AI's pack");
+            assert_eq!(on("pack/nebo-ai/max", lane), "janus/nebo-1-instant", "{lane:?}: the reference's level never wins");
+            assert_eq!(on("janus/nebo-1-pro", lane), "janus/nebo-1-instant", "{lane:?}: a Nebo AI model is Nebo AI's pack");
             assert_eq!(on("pack/byo/high", lane), "anthropic/claude-x", "{lane:?}: the owner's pack, its Instant");
             assert_eq!(on("anthropic/claude-x", lane), "anthropic/claude-x", "{lane:?}: his own connection runs as chosen");
         }
         h.selector.set_task_routing([("general".to_string(), "janus/nebo-1-pro".to_string())].into());
-        assert_eq!(on("", Lane::Heartbeat), "janus/nebo-1-flash", "a bot set to a Nebo AI model, not a pack");
+        assert_eq!(on("", Lane::Heartbeat), "janus/nebo-1-instant", "a bot set to a Nebo AI model, not a pack");
         assert_eq!(on("janus/nebo-1-pro", Lane::Communication), "janus/nebo-1-pro", "a reply on a channel keeps its model");
         assert_eq!(turn_model(h.resolver(), "janus/nebo-1-pro", None).unwrap().model, "janus/nebo-1-pro", "a chat keeps its model");
 
@@ -3991,7 +3991,7 @@ mod tests {
             let (pick, lane) = step_choice(h.resolver(), chosen, Some(Lane::Workflow), level);
             turn_model(h.resolver(), &pick, lane).unwrap().model
         };
-        assert_eq!(step("janus/nebo-1-pro", None), "janus/nebo-1-flash");
+        assert_eq!(step("janus/nebo-1-pro", None), "janus/nebo-1-instant");
         assert_eq!(step("janus/nebo-1-pro", Some(Effort::High)), "janus/nebo-1-pro", "declared High");
         assert_eq!(step("pack/nebo-ai", Some(Effort::Medium)), "janus/nebo-1-medium", "declared Medium");
         assert_eq!(step("anthropic/claude-x", Some(Effort::High)), "anthropic/claude-x", "no pack: no levels to declare");

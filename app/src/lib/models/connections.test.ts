@@ -48,9 +48,9 @@ describe('runsOn', () => {
 		expect(runsOn('janus/jev-latest', choices)?.label).toBe('Nebo AI');
 	});
 
-	it('names a Nebo AI speed by the levels it serves, never by its internal id', () => {
-		const speed = { value: 'janus/nebo-1-pro', provider: 'Nebo AI', connection: '', modelId: 'nebo-1-pro', name: 'High and Max', local: false };
-		expect(runsOn('janus/nebo-1-pro', [speed])).toEqual({ label: 'Nebo AI', model: 'High and Max', local: false });
+	it('names a Nebo AI speed by the level it serves, never by its internal id', () => {
+		const speed = { value: 'janus/nebo-1-pro', provider: 'Nebo AI', connection: '', modelId: 'nebo-1-pro', name: 'High', local: false };
+		expect(runsOn('janus/nebo-1-pro', [speed])).toEqual({ label: 'Nebo AI', model: 'High', local: false });
 	});
 
 	it('still shows a model that is no longer offered, and nothing for an empty slot', () => {

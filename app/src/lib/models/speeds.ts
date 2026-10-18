@@ -184,7 +184,7 @@ const KIND_LABELS: Record<string, string> = {
 
 /**
  * What an owner's pack set one level to, as he set it: the provider's label
- * and the model, by the name its provider gives it ("Nebo AI · High and Max")
+ * and the model, by the name its provider gives it ("Nebo AI · High")
  * else its id verbatim ("OpenAI · gpt-6.1").
  * Only the connection key (`openai@<id>`) and a linked agent's id stay out.
  */

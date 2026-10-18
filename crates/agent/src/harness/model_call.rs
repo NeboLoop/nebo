@@ -1283,7 +1283,7 @@ mod tests {
             active: true,
         };
         let mut config = crate::selector::ModelRoutingConfig::default();
-        config.provider_models.insert("janus".into(), ["nebo-1", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro"].map(info).to_vec());
+        config.provider_models.insert("janus".into(), ["nebo-1", "nebo-1-instant", "nebo-1-flash", "nebo-1-medium", "nebo-1-pro", "nebo-1-max"].map(info).to_vec());
         config.provider_models.insert("anthropic".into(), vec![info("claude-small"), info("claude-big")]);
         config.task_routing.insert("general".into(), "pack/nebo-ai".into());
         let selector = Arc::new(ModelSelector::new(config));
@@ -1307,11 +1307,11 @@ mod tests {
         save("empty", None, true);
         save("strict", Some("openai/gpt-x"), false);
         let to = |r: Option<Route>| r.map(|r| format!("{}/{}", r.provider.id(), r.model));
-        assert_eq!(to(hk.route("").await).as_deref(), Some("janus/nebo-1-flash"), "the bot default, Nebo AI: Instant");
-        assert_eq!(to(hk.route("pack/nebo-ai/high").await).as_deref(), Some("janus/nebo-1-flash"), "whatever level the turn runs at");
+        assert_eq!(to(hk.route("").await).as_deref(), Some("janus/nebo-1-instant"), "the bot default, Nebo AI: Instant");
+        assert_eq!(to(hk.route("pack/nebo-ai/high").await).as_deref(), Some("janus/nebo-1-instant"), "whatever level the turn runs at");
         assert_eq!(to(hk.route("pack/janus/high").await).as_deref(), Some("janus/nebo-1-flash"));
         assert_eq!(to(hk.route("pack/byok/high").await).as_deref(), Some("anthropic/claude-small"), "the owner's key");
-        assert_eq!(to(hk.route("pack/empty").await).as_deref(), Some("janus/nebo-1-flash"), "an empty level is Nebo AI's");
+        assert_eq!(to(hk.route("pack/empty").await).as_deref(), Some("janus/nebo-1-instant"), "an empty level is Nebo AI's");
         assert_eq!(to(hk.route("pack/strict").await), None, "set not to use Nebo AI");
         assert_eq!(to(hk.route("anthropic/claude-big").await).as_deref(), Some("anthropic/claude-big"), "a model the owner chose");
         assert_eq!(hk.route("").await.unwrap().window_tokens, 100_000);

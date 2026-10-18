@@ -958,7 +958,7 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
     for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
         let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
         if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
-            // A Nebo AI speed reads by the levels it serves ("High and Max"),
+            // A Nebo AI speed reads by the level it serves ("High"),
             // never by its internal id.
             let mut c = choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &[], false);
             if !m.display_name.is_empty() && m.display_name != m.model_id {
