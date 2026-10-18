@@ -918,6 +918,11 @@ impl FileTool {
         if let Err(e) = validate_file_path(&path, "share") {
             return ToolResult::error(format!("Error: {}", e));
         }
+        if crate::result_shape::is_saved_result(Path::new(&path)) {
+            return ToolResult::error(format!(
+                "Error: {path} is a tool's raw output saved for you to read, not work for the owner. Nothing was shared; write what matters from it into a document and share that."
+            ));
+        }
 
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
