@@ -136,6 +136,9 @@ impl Helpers {
             speed: input["speed"].as_str().unwrap_or("").trim().to_string(),
             ..SpawnRequest::child_of(ctx)
         };
+        if let Some(pieces) = input["pieces"].as_array() {
+            return fan_out(orch, req, pieces).await;
+        }
         // The harness words what happened: the launch receipt, or the
         // finished helper's report with how to continue it.
         match orch.spawn(req).await {
@@ -246,6 +249,32 @@ impl Helpers {
 /// Whole words only, and never inside a path: a prompt that points at
 /// "/Library/Application Support/Nebo/sessions/..." is not asking for the
 /// employee called Nebo (live Auto-Categorizer thread, 2026-09-06).
+/// One helper per piece, each briefed with the shared `prompt` and its own
+/// task, all in the background: the many-helpers launch, so a wide fan-out
+/// is one call that states the context once rather than a response that
+/// repeats it per helper. Each piece starts through the same spawn as a
+/// single helper; the result lists every receipt.
+async fn fan_out(orch: &dyn SubAgentOrchestrator, base: SpawnRequest, pieces: &[Value]) -> ToolResult {
+    if base.wait {
+        return ToolResult::error("Pieces always run in the background. Nothing was started. Send it again without `background: false`.");
+    }
+    let mut lines = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        let task = piece["task"].as_str().unwrap_or("").trim();
+        let description = piece["description"].as_str().unwrap_or("").trim();
+        let req = SpawnRequest {
+            prompt: format!("{}\n\nYour piece: {task}", base.prompt),
+            description: description.to_string(),
+            ..base.clone()
+        };
+        lines.push(match orch.spawn(req).await {
+            Ok(r) => format!("{description}: {}", r.output),
+            Err(e) => format!("{description}: couldn't start: {e}"),
+        });
+    }
+    ToolResult::ok(lines.join("\n"))
+}
+
 fn employee_addressed(prompt: &str, helper_type: &str, names: &[String]) -> Option<String> {
     let names: Vec<&String> = names.iter().filter(|n| n.trim().len() >= 3).collect();
     if let Some(n) = names.iter().find(|n| n.trim().eq_ignore_ascii_case(helper_type.trim())) {
@@ -337,7 +366,7 @@ impl DynTool for HelperTool {
                  - It runs in the background: only its final report comes back, as a notification.\n\
                  - Until then you know nothing about the result. Never predict it; if the owner asks, say it's still running.\n\
                  - It hasn't seen this conversation. Brief it: the goal, what you know or ruled out, what to report. For a lookup, the exact command; for an investigation, the question.\n\
-                 - Several pieces: several delegate calls in one response.\n\
+                 - One job in many pieces: one call, the brief once in `prompt`, a task each in `pieces`.\n\
                  - To continue a helper, send_message with its id. Work for a named employee is a message to them.\n\
                  Example: owner: \"Find every place the retry setting is used.\" → delegate(helper_type: \"explore\", ...), reply \"A helper is searching; I'll report when it's back.\", and the turn ends. The report comes in a later turn.\n\
                  Example: owner, before it's back: \"Is billing one?\" → \"Still waiting on the search; that's one of the things it checks.\"\n\
@@ -363,7 +392,16 @@ impl DynTool for HelperTool {
                     "helper_type": { "type": "string", "enum": HELPER_TYPES, "description": "general (default); explore and plan only look and never change anything." },
                     "background": { "type": "boolean", "default": true, "description": "Run in the background and report by notification. false only when your very next step needs the result." },
                     "isolation": { "type": "string", "enum": ["worktree"], "description": "Its own copy of a code project, merged back when done, for helpers editing the same code. Never for media." },
-                    "speed": { "type": "string", "description": "The speed the helper works at, by model name. Leave it out and it works at yours." }
+                    "speed": { "type": "string", "description": "The speed the helper works at, by model name. Leave it out and it works at yours." },
+                    "pieces": {
+                        "type": "array",
+                        "description": "A background helper per piece, briefed with `prompt` then its task. Any number.",
+                        "items": {
+                            "type": "object",
+                            "properties": { "description": { "type": "string" }, "task": { "type": "string" } },
+                            "required": ["description", "task"]
+                        }
+                    }
                 },
                 "required": ["description", "prompt"]
             }),
@@ -432,8 +470,15 @@ impl DynTool for HelperTool {
             HelperOp::Delegate => &["description", "prompt"],
             HelperOp::SendMessage => &["to", "message"],
         };
-        match empty.iter().find(|k| blank(k)) {
-            Some(k) => Err(format!("{k} can't be empty.")),
+        if let Some(k) = empty.iter().find(|k| blank(k)) {
+            return Err(format!("{k} can't be empty."));
+        }
+        match input["pieces"].as_array() {
+            Some(pieces) if pieces.is_empty() => Err("pieces can't be empty: leave it out to start one helper.".to_string()),
+            Some(pieces) => match pieces.iter().position(|p| ["description", "task"].iter().any(|k| p[*k].as_str().is_none_or(|s| s.trim().is_empty()))) {
+                Some(i) => Err(format!("piece {} needs a description and a task.", i + 1)),
+                None => Ok(()),
+            },
             None => Ok(()),
         }
     }
@@ -685,6 +730,31 @@ mod tests {
         assert_eq!(spawned[0].agent_type, "explore");
     }
 
+    /// One call fans out: a helper per piece, each briefed with the shared
+    /// prompt and its own task, all in the background.
+    #[tokio::test]
+    async fn pieces_start_a_helper_each_with_the_shared_brief() {
+        let rig = Rig::new();
+        let pieces: Vec<Value> = (1..=150).map(|i| json!({"description": format!("rival {i}"), "task": format!("Map rival {i}.")})).collect();
+        let r = rig
+            .call("delegate", json!({"description": "map rivals", "prompt": "Report pricing and positioning.", "pieces": pieces}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content.lines().count(), 150, "a receipt per piece");
+        let spawned = rig.rec.spawned.lock().unwrap();
+        assert_eq!(spawned.len(), 150);
+        assert!(spawned.iter().all(|s| !s.wait && s.model_override == "janus/fast"));
+        assert_eq!(spawned[41].prompt, "Report pricing and positioning.\n\nYour piece: Map rival 42.");
+        assert_eq!(spawned[41].description, "rival 42");
+        drop(spawned);
+
+        let r = rig.call("delegate", json!({"description": "d", "prompt": "p", "pieces": [{"description": "a", "task": " "}]})).await;
+        assert!(r.is_error && r.content.contains("piece 1"), "{}", r.content);
+        let r = rig.call("delegate", json!({"description": "d", "prompt": "p", "background": false, "pieces": [{"description": "a", "task": "t"}]})).await;
+        assert!(r.is_error && r.content.contains("background"), "{}", r.content);
+        assert_eq!(rig.rec.spawned.lock().unwrap().len(), 150, "a refused call starts nothing");
+    }
+
     /// Review 5.1: a finished helper's report carries what it read. The
     /// result the parent reads is marked with it, so the parent's run takes
     /// the helper's taint.
@@ -930,13 +1000,14 @@ mod tests {
     /// 2026-09-26: asked for a billing employee with all its workflows, an
     /// employee loaded 28 skills one step at a time and never delegated. The
     /// description now shows that survey as helpers started together in one
-    /// response, each sending back a digest.
+    /// response, each sending back a digest; a wide fan-out of one job is
+    /// one call with `pieces`.
     #[test]
     fn delegate_shows_a_skill_survey_fanned_out() {
         let rig = Rig::new();
         let delegate = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().description();
         for part in [
-            "Several pieces: several delegate calls in one response.",
+            "One job in many pieces: one call, the brief once in `prompt`, a task each in `pieces`.",
             "twenty skills to learn before building → two delegate(helper_type: \"explore\") calls in one response, each reading half and sending back a digest.",
         ] {
             assert!(delegate.contains(part), "{part:?} missing from:\n{delegate}");
