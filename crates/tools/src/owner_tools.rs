@@ -60,8 +60,9 @@ impl Owner {
             .collect()
     }
 
-    /// Into the owner's companion chat, with an OS notification.
-    fn message(&self, input: &Value) -> ToolResult {
+    /// Into the owner's companion chat, with an OS notification, and one
+    /// Inbox item per employee carrying its newest message.
+    fn message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let text = input["message"].as_str().unwrap_or("");
         let companion = match self.store.get_companion_chat_by_user("") {
             Ok(Some(chat)) => Ok(chat),
@@ -78,6 +79,26 @@ impl Owner {
                     text,
                     None,
                 );
+                let agent = Some(types::keyparser::extract_agent_id(&ctx.session_key))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| crate::team_tool::PRIMARY_AGENT_ID.to_string());
+                let link = crate::owner_notify::link::chat(crate::team_tool::PRIMARY_AGENT_ID, &chat.id);
+                let n = crate::owner_notify::OwnerNotification {
+                    id: &format!("message:{agent}"),
+                    kind: "message",
+                    title: "Sent you a message",
+                    body: Some(text),
+                    action_url: Some(&link),
+                    agent_id: Some(&agent),
+                    link_label: Some("Chat"),
+                    latest: true,
+                    ..Default::default()
+                };
+                let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+                match notify {
+                    Some(f) => crate::owner_notify::emit(&self.store, Some(&|ev, payload| f(ev, payload)), &n),
+                    None => crate::owner_notify::emit(&self.store, None, &n),
+                };
                 notify_crate::send("Nebo", text);
                 ToolResult::ok(format!(
                     "Messaged the owner ({} chars)",
@@ -138,6 +159,7 @@ impl Owner {
             options: &options,
             link_label: input["link_label"].as_str().map(str::trim).filter(|l| !l.is_empty()),
             reply_to: asks.then_some(ctx.session_key.as_str()),
+            latest: false,
         };
         let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
         match notify {
@@ -481,7 +503,7 @@ impl DynTool for OwnerTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             match self.op {
-                OwnerOp::Message => self.owner.message(&input),
+                OwnerOp::Message => self.owner.message(&input, ctx),
                 OwnerOp::Notify => self.owner.notify(&input, ctx),
                 OwnerOp::CheckDnd => handle_dnd_status().await,
                 OwnerOp::InboxRead | OwnerOp::InboxShow | OwnerOp::InboxAnswer | OwnerOp::InboxBrief => {

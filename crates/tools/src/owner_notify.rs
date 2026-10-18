@@ -45,6 +45,10 @@ pub struct OwnerNotification<'a> {
     pub link_label: Option<&'a str>,
     /// The session an employee's own question is answered into.
     pub reply_to: Option<&'a str>,
+    /// The item stands for a conversation (an email thread, a text thread,
+    /// an employee's messages): a newer message restates it and brings it
+    /// back unread to the top, so a conversation is one item, never fifty.
+    pub latest: bool,
 }
 
 impl OwnerNotification<'_> {
@@ -95,6 +99,14 @@ pub fn emit(
     // notifications FK to users(id) — resolve the real local user ("" violates it).
     let user_id = store.ensure_local_user_id().unwrap_or_default();
     let link = n.link();
+    if n.latest && matches!(store.get_notification(n.id, &user_id), Ok(Some(_))) {
+        let resurfaced = store
+            .resurface_notification(n.id, &user_id)
+            .and_then(|()| store.restate_notification(n.id, n.title, n.body, Some(&link)));
+        if let Err(e) = resurfaced {
+            tracing::warn!(id = %n.id, error = %e, "owner notification not brought back");
+        }
+    }
     let stored = match store.create_notification_if_not_exists(&db::models::NewNotification {
         id: n.id,
         user_id: &user_id,
@@ -445,6 +457,24 @@ mod tests {
         assert!(!restate(&store, Some(&broadcast), &again), "dismissed: not restated");
         assert!(store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap().is_empty(), "and not brought back");
         assert_eq!(seen.lock().unwrap().len(), heard, "nothing is broadcast for it");
+    }
+
+    /// A conversation is one item: a newer message rewrites it and brings it
+    /// back unread to the top, even after the owner put it away.
+    #[test]
+    fn a_conversation_is_one_item_with_its_newest_message() {
+        let (_dir, store) = store();
+        let user = store.ensure_local_user_id().unwrap();
+        let first = OwnerNotification { id: "messages:phone-ava-1-2", kind: "text", title: "Messages from (801) 555-0100", body: Some("Are you open Sunday?"), agent_id: Some("ava"), latest: true, ..Default::default() };
+        emit(&store, None, &first);
+        store.mark_notification_read(first.id, &user).unwrap();
+        store.archive_notification(first.id, &user).unwrap();
+
+        emit(&store, None, &OwnerNotification { body: Some("And Monday?"), ..first });
+        let all = store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap();
+        assert_eq!(all.len(), 1, "one item for the conversation");
+        assert_eq!(all[0].body.as_deref(), Some("And Monday?"));
+        assert!(all[0].read_at.is_none() && all[0].archived_at.is_none(), "back, unread");
     }
 
     /// The hub copy is the item itself plus only what the hub alone

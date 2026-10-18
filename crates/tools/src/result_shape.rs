@@ -33,6 +33,13 @@ pub fn results_dir(session_id: &str) -> PathBuf {
     crate::checkpoint::session_dir(session_id).join("tool-results")
 }
 
+/// Whether `path` is a tool's saved result (`<…>/sessions/<session>/tool-results/<file>`,
+/// [`results_dir`]): the employee's scratch, never work for the owner.
+pub fn is_saved_result(path: &Path) -> bool {
+    let mut up = path.ancestors().skip(1).map(|p| p.file_name().and_then(|n| n.to_str()));
+    matches!((up.next(), up.next(), up.next()), (Some(Some("tool-results")), Some(Some(_)), Some(Some("sessions"))))
+}
+
 /// Shape a finished call's result for the model: an empty success names
 /// the tool, a long error keeps head and tail, and a success over the
 /// threshold is saved under `dir` (a session's [`results_dir`]) and previewed.
@@ -273,6 +280,14 @@ mod tests {
             assert_eq!(std::fs::read_to_string(path).unwrap(), body, "nothing is lost");
             assert!(r.content.len() < 3_000, "the preview is about 2KB");
         }
+    }
+
+    #[test]
+    fn a_saved_result_is_known_by_where_it_sits() {
+        assert!(is_saved_result(Path::new("/d/Nebo/sessions/s-1/tool-results/7ba1.txt")));
+        assert!(!is_saved_result(Path::new("/d/Nebo/files/tool-results/report.md")));
+        assert!(!is_saved_result(Path::new("/d/Nebo/sessions/s-1/report.md")));
+        assert!(!is_saved_result(Path::new("tool-results/x.txt")));
     }
 
     #[test]
