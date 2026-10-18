@@ -52,8 +52,12 @@ pub fn vacuum_into(conn: &Connection, dest: &Path) -> Result<String, NeboError> 
     }
     let _ = std::fs::remove_file(dest);
     let dest_s = dest.to_string_lossy().to_string();
-    conn.execute("VACUUM INTO ?1", params![dest_s])
-        .map_err(|e| NeboError::Database(format!("vacuum into {dest_s}: {e}")))?;
+    if let Err(e) = conn.execute("VACUUM INTO ?1", params![dest_s]) {
+        // Half a copy is no copy, and on a full disk it holds the space
+        // that ran out.
+        let _ = std::fs::remove_file(dest);
+        return Err(copy_failed(e, &dest_s));
+    }
     match integrity_of(dest) {
         Ok(v) if v == "ok" => Ok(v),
         Ok(v) => {
@@ -67,6 +71,31 @@ pub fn vacuum_into(conn: &Connection, dest: &Path) -> Result<String, NeboError> 
     }
 }
 
+/// Why `VACUUM INTO` failed. SQLite's "database or disk is full" is
+/// `StorageFull`, so a caller can say how much room a copy needs
+/// (`copy_bytes`) instead of passing SQLite's words on.
+fn copy_failed(e: rusqlite::Error, dest: &str) -> NeboError {
+    match e.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DiskFull) => NeboError::Io(std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            format!("no room on the disk for a copy of the database at {dest}"),
+        )),
+        _ => NeboError::Database(format!("vacuum into {dest}: {e}")),
+    }
+}
+
+/// How many bytes a copy of the open database takes: its pages in use,
+/// which is what `VACUUM INTO` writes.
+pub fn copy_bytes(conn: &Connection) -> Result<u64, NeboError> {
+    conn.query_row(
+        "SELECT (page_count - freelist_count) * page_size FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|bytes| bytes.max(0) as u64)
+    .map_err(|e| NeboError::Database(format!("measure the database for a copy: {e}")))
+}
+
 /// Open a file read-only and ask SQLite whether it is whole.
 pub fn integrity_of(path: &Path) -> Result<String, NeboError> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -77,9 +106,12 @@ pub fn integrity_of(path: &Path) -> Result<String, NeboError> {
 
 /// The retention rule: the last 7 daily, the last 4 weekly, the last 3
 /// monthly, plus every copy taken for a migration, which is a version
-/// boundary and not a day. Each tier keeps the newest copy in each of its
-/// newest N buckets, so "4 weekly" is four weeks, not "whatever fell in a
-/// four-week window". Returns the rows that no longer earn their place.
+/// boundary and not a day. Those are the migrator's to keep: it keeps the
+/// newest `migrate::PRE_MIGRATION_COPIES_KEPT` after a successful update and
+/// the ring follows it (`adopt_pre_migration_copies`), never dropping one
+/// itself. Each tier keeps the newest copy in each of its newest N buckets,
+/// so "4 weekly" is four weeks, not "whatever fell in a four-week window".
+/// Returns the rows that no longer earn their place.
 pub fn retain(rows: &[Backup], _now: i64) -> Vec<Backup> {
     let day = 86_400i64;
     let mut sorted: Vec<&Backup> = rows.iter().collect();
@@ -179,21 +211,26 @@ impl Store {
         Ok(drop.len())
     }
 
-    /// The migrator writes `<db>.pre-vNNNN.bak` before it changes anything.
-    /// Those are backups too; this puts them in the ring so there is one list.
+    /// The migrator writes `<db>.pre-vNNNN.bak` before it changes anything,
+    /// and removes all but the newest few once an update succeeds. Those are
+    /// backups too; this puts them in the ring so there is one list, and
+    /// takes out the rows of copies the migrator has since removed.
     pub fn adopt_pre_migration_copies(&self) -> Result<usize, NeboError> {
-        let db = Path::new(&self.path);
-        let Some(dir) = db.parent() else { return Ok(0) };
-        let stem = db.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let known: std::collections::HashSet<String> = self.list_backups()?.into_iter().map(|b| b.path).collect();
+        let copies = crate::migrate::pre_migration_copies(Path::new(&self.path))
+            .map_err(|e| NeboError::Database(format!("list the copies beside {}: {e}", self.path)))?;
+        let rows = self.list_backups()?;
+        for gone in rows
+            .iter()
+            .filter(|b| b.reason == "pre-migration" && matches!(Path::new(&b.path).try_exists(), Ok(false)))
+        {
+            self.conn()?
+                .execute("DELETE FROM backups WHERE id = ?1", params![gone.id])
+                .db_err("drop a removed pre-migration copy")?;
+            info!(path = %gone.path, "pre-migration copy no longer on disk; its ring entry goes too");
+        }
+        let known: std::collections::HashSet<String> = rows.into_iter().map(|b| b.path).collect();
         let mut adopted = 0;
-        for entry in std::fs::read_dir(dir).map_err(|e| NeboError::Database(format!("read {}: {e}", dir.display())))? {
-            let Ok(entry) = entry else { continue };
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !(name.starts_with(&format!("{stem}.pre-v")) && name.ends_with(".bak")) {
-                continue;
-            }
-            let path = entry.path();
+        for (_, path) in copies {
             let path_s = path.to_string_lossy().to_string();
             if known.contains(&path_s) {
                 continue;
@@ -314,6 +351,54 @@ mod tests {
         assert_eq!(s.adopt_pre_migration_copies().unwrap(), 0, "adoption is idempotent");
         let rows = s.list_backups().unwrap();
         assert_eq!(rows[0].reason, "pre-migration");
+    }
+
+    /// A pre-migration copy no longer on disk leaves the ring; a nightly
+    /// copy's row is the retention rule's to drop, not adoption's.
+    #[test]
+    fn copies_gone_from_disk_leave_the_ring() {
+        let (s, dir) = store();
+        for v in [158, 159] {
+            let conn = s.conn().unwrap();
+            vacuum_into(&conn, &dir.path().join(format!("nebo.db.pre-v{v:04}.bak"))).unwrap();
+        }
+        assert_eq!(s.adopt_pre_migration_copies().unwrap(), 2);
+        let nightly = s.snapshot("nightly").unwrap();
+        std::fs::remove_file(dir.path().join("nebo.db.pre-v0158.bak")).unwrap();
+        std::fs::remove_file(&nightly.path).unwrap();
+
+        assert_eq!(s.adopt_pre_migration_copies().unwrap(), 0);
+
+        let rows = s.list_backups().unwrap();
+        let kept: Vec<String> = rows.iter().filter(|b| b.reason == "pre-migration").map(|b| b.path.clone()).collect();
+        assert_eq!(kept, [dir.path().join("nebo.db.pre-v0159.bak").to_string_lossy().to_string()]);
+        assert!(rows.iter().any(|b| b.id == nightly.id));
+    }
+
+    /// SQLite's "database or disk is full" comes back as `StorageFull`, so
+    /// the migrator can say how much room it needs; anything else stays a
+    /// database error.
+    #[test]
+    fn a_full_disk_is_storage_full() {
+        let failure = |code| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+        assert!(matches!(
+            copy_failed(failure(rusqlite::ffi::SQLITE_FULL), "/x/nebo.db.pre-v0244.bak"),
+            NeboError::Io(e) if e.kind() == std::io::ErrorKind::StorageFull
+        ));
+        assert!(matches!(copy_failed(failure(rusqlite::ffi::SQLITE_IOERR), "/x"), NeboError::Database(_)));
+    }
+
+    /// A copy is no bigger than the pages in use `copy_bytes` counts.
+    #[test]
+    fn copy_bytes_covers_a_copy() {
+        let (s, _dir) = store();
+        let needed = {
+            let conn = s.conn().unwrap();
+            copy_bytes(&conn).unwrap()
+        };
+        let b = s.snapshot("manual").unwrap();
+        assert!(needed > 0);
+        assert!(b.bytes as u64 <= needed, "copy {} > measured {needed}", b.bytes);
     }
 
     #[test]

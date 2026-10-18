@@ -1,8 +1,22 @@
+use std::path::{Path, PathBuf};
+
 use rusqlite::Connection;
 use rust_embed::Embed;
-use tracing::info;
+use tracing::{info, warn};
 
 use types::NeboError;
+
+/// How many pre-migration copies stay beside the database once an update
+/// has reached head: the one taken for that update (going back is the
+/// previous binary plus that file) and the one before it, for a problem
+/// found only after a second update. Each copy is the whole database,
+/// hundreds of MB on a busy install, and every update with a migration
+/// writes one, so keeping them all grows without end (2026-10-18: 18
+/// copies, 3.4 GB, beside an 801 MB database).
+pub(crate) const PRE_MIGRATION_COPIES_KEPT: usize = 2;
+
+/// A megabyte as disks are sold and as macOS reports free space.
+const BYTES_PER_MB: u64 = 1_000_000;
 
 /// Embedded SQL migration files.
 #[derive(Embed)]
@@ -63,36 +77,44 @@ pub fn run_migrations_to(conn: &Connection, max_version: i64) -> Result<(), Nebo
     reconcile_renumbered(conn)?;
 
     // Get list of already-applied migrations
-    let applied: Vec<i64> = {
-        let mut stmt = conn
-            .prepare("SELECT version FROM _nebo_migrations ORDER BY version")
-            .map_err(|e| NeboError::Migration(format!("failed to query migrations: {e}")))?;
-        stmt.query_map([], |row| row.get(0))
-            .map_err(|e| NeboError::Migration(format!("failed to read migrations: {e}")))?
-            .filter_map(|r| r.ok())
-            .collect()
-    };
+    let applied = applied_versions(conn)?;
 
     // Get all migration files sorted by name
     let mut migration_files = iter_files();
     migration_files.sort();
 
+    // The file the database lives in; none for an in-memory one.
+    let file = conn.path().filter(|p| !p.is_empty() && *p != ":memory:");
+
     // A versioned copy of the database before anything changes, taken by
     // SQLite itself (consistent, online). Rollback is the previous binary
     // plus this file. Only for a database that has history: a fresh one has
     // nothing to lose. One file per starting version, overwritten if the
-    // same upgrade is attempted again.
+    // same upgrade is attempted again. Once the run reaches head, all but
+    // the newest `PRE_MIGRATION_COPIES_KEPT` go (`prune_pre_migration_copies`).
     let pending: Vec<&String> = migration_files
         .iter()
         .filter(|f| extract_version(f).map(|v| v <= max_version && !applied.contains(&v)).unwrap_or(false))
         .collect();
+    let mut copied_at = None;
     if !pending.is_empty() && !applied.is_empty() {
-        if let Some(path) = conn.path().filter(|p| !p.is_empty() && *p != ":memory:") {
+        if let Some(path) = file {
             let from = applied.iter().max().copied().unwrap_or(0);
-            let backup = format!("{path}.pre-v{from:04}.bak");
+            let backup = pre_migration_copy(path, from);
             // The ONE copy primitive: consistent, and verified before it counts.
-            match crate::backup::vacuum_into(conn, std::path::Path::new(&backup)) {
-                Ok(_) => info!(backup = %backup, from_version = from, pending = pending.len(), "pre-migration database copy written and verified"),
+            match crate::backup::vacuum_into(conn, Path::new(&backup)) {
+                Ok(_) => {
+                    info!(backup = %backup, from_version = from, pending = pending.len(), "pre-migration database copy written and verified");
+                    copied_at = Some(from);
+                }
+                // SQLite's "database or disk is full", said as what it asks of the owner.
+                Err(NeboError::Io(e)) if e.kind() == std::io::ErrorKind::StorageFull => {
+                    let needed_mb = crate::backup::copy_bytes(conn)?.div_ceil(BYTES_PER_MB);
+                    return Err(NeboError::Migration(format!(
+                        "Nebo needs about {needed_mb} MB free on this disk to update safely. It copies the database before \
+                         every update and does not update without that copy ({backup}). Free up some space, then open Nebo again."
+                    )));
+                }
                 Err(e) => {
                     return Err(NeboError::Migration(format!(
                         "refusing to migrate without a pre-migration copy ({backup}): {e}"
@@ -157,7 +179,103 @@ pub fn run_migrations_to(conn: &Connection, max_version: i64) -> Result<(), Nebo
         info!("database is up to date");
     }
 
+    // Older copies go only once the database holds every migration this
+    // binary carries: a run that failed returned above, and one that stopped
+    // short of head is not the update those copies guard.
+    let recorded = applied_versions(conn)?;
+    if let Some(path) = file
+        && versions().iter().all(|v| recorded.contains(v))
+    {
+        prune_pre_migration_copies(Path::new(path), copied_at);
+    }
+
     Ok(())
+}
+
+/// The versions recorded as applied, in order.
+fn applied_versions(conn: &Connection) -> Result<Vec<i64>, NeboError> {
+    let mut stmt = conn
+        .prepare("SELECT version FROM _nebo_migrations ORDER BY version")
+        .map_err(|e| NeboError::Migration(format!("failed to query migrations: {e}")))?;
+    let versions = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| NeboError::Migration(format!("failed to read migrations: {e}")))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(versions)
+}
+
+/// The pre-migration copy of the database at `db_path` taken at `version`:
+/// `<db>.pre-vNNNN.bak` beside it. The one place the name is made;
+/// `pre_migration_copies` finds exactly these.
+fn pre_migration_copy(db_path: &str, version: i64) -> String {
+    format!("{db_path}.pre-v{version:04}.bak")
+}
+
+/// Every pre-migration copy of the database at `db_path`, with the version
+/// it was taken at: the regular files beside it named exactly as
+/// `pre_migration_copy` names one. Nothing else in the folder (the live
+/// database, its WAL and shared memory, the ring's `backups/`, a file that
+/// only looks like a copy) is one.
+pub(crate) fn pre_migration_copies(db_path: &Path) -> std::io::Result<Vec<(i64, PathBuf)>> {
+    let (Some(dir), Some(name)) = (db_path.parent(), db_path.file_name()) else {
+        return Ok(Vec::new());
+    };
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let name = name.to_string_lossy();
+    let prefix = format!("{name}.pre-v");
+    let mut copies = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(entry) = entry else { continue };
+        let file_name = entry.file_name();
+        let Some(file) = file_name.to_str() else { continue };
+        let Some(digits) = file.strip_prefix(&prefix).and_then(|n| n.strip_suffix(".bak")) else {
+            continue;
+        };
+        if !digits.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(version) = digits.parse::<i64>() else { continue };
+        // Named exactly as the migrator names that version's copy: `0244`,
+        // never `244` or `00244`.
+        if pre_migration_copy(&name, version) == file && entry.file_type().is_ok_and(|t| t.is_file()) {
+            copies.push((version, entry.path()));
+        }
+    }
+    Ok(copies)
+}
+
+/// Keep the newest `PRE_MIGRATION_COPIES_KEPT` pre-migration copies of the
+/// database at `db_path` and delete the rest. The copy this run made
+/// (`copied_at`, the version it was taken at) is always one of those kept,
+/// even beside copies numbered above it (a database restored from an older
+/// copy); the others rank by version. Only called once a run has reached
+/// head. A copy that cannot be removed is logged and left; the update
+/// already succeeded.
+fn prune_pre_migration_copies(db_path: &Path, copied_at: Option<i64>) {
+    let mut copies = match pre_migration_copies(db_path) {
+        Ok(copies) => copies,
+        Err(e) => {
+            warn!(db = %db_path.display(), error = %e, "could not list pre-migration copies; none removed");
+            return;
+        }
+    };
+    copies.sort_by_key(|(version, _)| (Some(*version) != copied_at, std::cmp::Reverse(*version)));
+    let (mut removed, mut freed_bytes) = (0usize, 0u64);
+    for (version, path) in copies.into_iter().skip(PRE_MIGRATION_COPIES_KEPT) {
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                info!(path = %path.display(), version, bytes, "older pre-migration copy removed");
+                removed += 1;
+                freed_bytes += bytes;
+            }
+            Err(e) => warn!(path = %path.display(), error = %e, "could not remove an older pre-migration copy"),
+        }
+    }
+    if removed > 0 {
+        info!(removed, freed_bytes, freed_mb = freed_bytes / BYTES_PER_MB, kept = PRE_MIGRATION_COPIES_KEPT, "older pre-migration copies removed after a successful update");
+    }
 }
 
 /// If goose's `goose_db_version` table exists, import its versions into our tracker.
@@ -1379,5 +1497,148 @@ Two leads.', NULL, 3),
             get("now", "metadata"),
             serde_json::json!({"contentBlocks": [{"type": "tool", "toolCallIndex": 0}, {"type": "text", "fold": "folded"}]})
         );
+    }
+}
+
+#[cfg(test)]
+mod pre_migration_copy_tests {
+    use super::*;
+
+    /// A database one update behind head in `dir`, in WAL mode so its
+    /// `-wal` and `-shm` sit beside it, and the version it is at.
+    fn one_update_behind(dir: &Path) -> (Connection, i64) {
+        let conn = Connection::open(dir.join("nebo.db")).unwrap();
+        let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "wal");
+        let all = versions();
+        let from = all[all.len() - 2];
+        run_migrations_to(&conn, from).unwrap();
+        (conn, from)
+    }
+
+    fn copy(dir: &Path, version: i64) -> PathBuf {
+        dir.join(format!("nebo.db.pre-v{version:04}.bak"))
+    }
+
+    /// Copies earlier updates left. Nothing here opens them, so they need
+    /// not be databases.
+    fn earlier_copies(dir: &Path, versions: &[i64]) {
+        for v in versions {
+            std::fs::write(copy(dir, *v), b"an earlier copy").unwrap();
+        }
+    }
+
+    fn copies_left(dir: &Path) -> Vec<i64> {
+        let mut left: Vec<i64> = pre_migration_copies(&dir.join("nebo.db")).unwrap().into_iter().map(|(v, _)| v).collect();
+        left.sort_unstable();
+        left
+    }
+
+    /// Once an update reaches head, the copy it made and the newest earlier
+    /// one stay and every older copy is deleted. Nothing else in the folder
+    /// is touched: the live database, its WAL and shared memory, the ring's
+    /// `backups/`, and files that only look like a copy.
+    #[test]
+    fn a_successful_update_keeps_only_the_newest_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let (conn, from) = one_update_behind(d);
+        earlier_copies(d, &[100, 101, 102, 103, 104]);
+        std::fs::create_dir(d.join("backups")).unwrap();
+        let others = [
+            "nebo.db.pre-v0100.bak-journal",
+            "nebo.db.pre-v0100.bak.tmp",
+            "nebo.db.pre-v00100.bak",
+            "nebo.db.pre-v100.bak",
+            "nebo.db.pre-vlatest.bak",
+            "nebo.db.bak",
+            "other.db.pre-v0100.bak",
+            "backups/nebo.db.pre-v0100.bak",
+            "backups/nebo-20261018T000000Z.db",
+        ];
+        for name in others {
+            std::fs::write(d.join(name), b"not one of the migrator's copies").unwrap();
+        }
+        std::fs::create_dir(d.join("nebo.db.pre-v0099.bak")).unwrap();
+
+        // A run that stops short of head lets nothing go.
+        run_migrations_to(&conn, from).unwrap();
+        assert_eq!(copies_left(d), [100, 101, 102, 103, 104]);
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(copies_left(d), [104, from], "this update's copy and the newest before it");
+        for name in others {
+            assert!(d.join(name).is_file(), "{name} is untouched");
+        }
+        assert!(d.join("nebo.db.pre-v0099.bak").is_dir(), "a folder named like a copy is untouched");
+        for name in ["nebo.db", "nebo.db-wal", "nebo.db-shm"] {
+            assert!(d.join(name).is_file(), "{name} is untouched");
+        }
+    }
+
+    /// The copy an update makes is never the one deleted, even beside
+    /// copies numbered above it (a database put back from an older copy,
+    /// then updated again).
+    #[test]
+    fn the_copy_an_update_makes_always_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let (conn, from) = one_update_behind(d);
+        earlier_copies(d, &[9998, 9999]);
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(copies_left(d), [from, 9999]);
+    }
+
+    /// An update that fails deletes no copy: not the earlier ones, and not
+    /// the one it made before it failed.
+    #[test]
+    fn a_failed_update_deletes_no_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let (conn, from) = one_update_behind(d);
+        earlier_copies(d, &[100, 101, 102, 103, 104]);
+        // The migration runs, then cannot be recorded.
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_record BEFORE INSERT ON _nebo_migrations BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+
+        assert!(run_migrations(&conn).is_err());
+
+        assert_eq!(copies_left(d), [100, 101, 102, 103, 104, from]);
+    }
+
+    /// The ring lists the copies an update kept and drops the rows of the
+    /// ones it removed, so every row it shows is still a file.
+    #[test]
+    fn the_ring_follows_the_copies_an_update_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let (conn, from) = one_update_behind(d);
+        earlier_copies(d, &[100, 101, 102]);
+        // Earlier starts adopted them into the ring.
+        for v in [100, 101, 102] {
+            conn.execute(
+                "INSERT INTO backups (id, path, taken_at, reason, bytes, integrity) VALUES (?1, ?2, ?3, 'pre-migration', 1, 'ok')",
+                rusqlite::params![format!("m{v}"), copy(d, v).to_string_lossy(), v],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let store = crate::Store::new(&d.join("nebo.db").to_string_lossy()).unwrap();
+
+        let mut ring: Vec<String> = store
+            .list_backups()
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.reason == "pre-migration")
+            .map(|b| b.path)
+            .collect();
+        ring.sort();
+        assert_eq!(ring, [copy(d, 102), copy(d, from)].map(|p| p.to_string_lossy().to_string()));
     }
 }
