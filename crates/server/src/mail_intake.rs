@@ -570,6 +570,7 @@ pub(crate) async fn intake(state: &AppState, mail: InboundMail) {
         {
             tracing::warn!(agent = %placement.agent_id, error = %e, "could not record the email door as multi-chat");
         }
+        post_email_item(state, &mail, &placement.agent_id, chat_id, title);
     }
     if let Some(chat_id) = &placement.activate_chat {
         let sessions = state.harness.sessions();
@@ -742,6 +743,30 @@ pub(crate) async fn refresh_bot_address(state: &AppState) {
             as Arc<dyn tools::operation_tools::OperationProvider>
     });
     state.tools.set_runtime_provider(tools::bot_mail::PROVIDER, provider).await;
+}
+
+
+/// Mail from someone else reaches the owner's Inbox: one item per sender's
+/// thread, its newest message on top. The owner's own mail is his.
+fn post_email_item(state: &AppState, mail: &InboundMail, agent_id: &str, chat_id: &str, title: &str) {
+    let agent = if agent_id.is_empty() { tools::team_tool::PRIMARY_AGENT_ID } else { agent_id };
+    let body = [mail.subject.trim(), mail.snippet.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" — ");
+    let link = tools::owner_notify::link::chat(agent, chat_id);
+    tools::owner_notify::emit(
+        &state.store,
+        Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &format!("email:{chat_id}"),
+            kind: "email",
+            title,
+            body: Some(&body),
+            action_url: Some(&link),
+            agent_id: Some(agent),
+            link_label: Some("Email"),
+            latest: true,
+            ..Default::default()
+        },
+    );
 }
 
 #[cfg(test)]

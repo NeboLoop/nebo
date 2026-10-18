@@ -5279,6 +5279,26 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         };
         if let Some((chat_id, title)) = &route.thread {
             handlers::voice::ensure_chat_row(&state, chat_id, &session_key, title.as_deref());
+            // A text or a voicemail reaches the owner's Inbox: one item per
+            // number, its newest message on top.
+            if let (Some(outside::OutsideParty::Phone { .. }), Some(title)) = (&outside_party, title) {
+                let link = tools::owner_notify::link::chat(agent_row, chat_id);
+                tools::owner_notify::emit(
+                    &state.store,
+                    Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+                    &tools::owner_notify::OwnerNotification {
+                        id: &format!("messages:{chat_id}"),
+                        kind: "text",
+                        title,
+                        body: Some(truncate_str(&text, 200)),
+                        action_url: Some(&link),
+                        agent_id: Some(agent_row),
+                        link_label: Some("Messages"),
+                        latest: true,
+                        ..Default::default()
+                    },
+                );
+            }
         } else if !is_default_bot {
             let _ = state
                 .store

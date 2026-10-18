@@ -2719,6 +2719,9 @@ async fn handle_conversation_session(
     use voice::realtime::RealtimeCommand;
 
     let chat_id = q.chat_id.filter(|c| !c.is_empty());
+    let call_started = std::time::Instant::now();
+    // What the employee said the call came to (`end_call` / `transfer_call`).
+    let mut call_summary = String::new();
     // Phone calls get a deterministic caller-ID title ("Call from (801)
     // 023-2342"), protected from the auto-namer — a call's name is who
     // called, not whatever the caller happened to say first.
@@ -3071,6 +3074,7 @@ async fn handle_conversation_session(
                                 .unwrap_or("")
                                 .to_string();
                             info!(summary = %summary, "employee ending the call");
+                            call_summary = summary.clone();
                             pending_tools += 1;
                             let _ = tool_done_tx
                                 .send((
@@ -3178,6 +3182,7 @@ async fn handle_conversation_session(
                                 .unwrap_or("")
                                 .to_string();
                             info!(summary = %summary, "caller transfer requested");
+                            call_summary = summary.clone();
                             pending_tools += 1;
                             let _ = tool_done_tx
                                 .send((
@@ -3415,6 +3420,36 @@ async fn handle_conversation_session(
         // no-op when the chat is already titled or mid-window).
         state.harness.spawn_title_generation(&ctx.session_key, cid);
     }
+    if let (Some(title), Some(cid)) = (phone_title.as_deref(), chat_id.as_deref()) {
+        post_call_item(&state, q.agent_id.as_deref().unwrap_or_default(), cid, title, call_started.elapsed(), &call_summary);
+    }
+}
+
+/// A phone call reaches the owner's Inbox when it ends: who, how long, and
+/// what the employee said it came to, opening its transcript.
+fn post_call_item(state: &AppState, agent_id: &str, chat_id: &str, title: &str, took: std::time::Duration, summary: &str) {
+    let agent = if agent_id.is_empty() { tools::team_tool::PRIMARY_AGENT_ID } else { agent_id };
+    let minutes = took.as_secs().div_ceil(60).max(1);
+    let length = if minutes == 1 { "1 min".to_string() } else { format!("{minutes} min") };
+    let body = match summary.trim() {
+        "" => length,
+        said => format!("{length} · {said}"),
+    };
+    let link = tools::owner_notify::link::chat(agent, chat_id);
+    tools::owner_notify::emit(
+        &state.store,
+        Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &format!("call:{chat_id}"),
+            kind: "call",
+            title,
+            body: Some(&body),
+            action_url: Some(&link),
+            agent_id: Some(agent),
+            link_label: Some("Transcript"),
+            ..Default::default()
+        },
+    );
 }
 
 /// How long a voice client may send nothing at all, not even a ping, before
