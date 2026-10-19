@@ -13,6 +13,10 @@
 		/** 'options' is canonical; legacy single-choice shapes still render. */
 		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin' | 'hire_employee';
 		label?: string;
+		/** What the owner is deciding on (markdown): the brief, the draft, the
+		 *  plan the question is about, shown on the card above the question
+		 *  (`ask_owner`'s `context`). */
+		context?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
 		/** 'select': one pick from a long list, shown as a dropdown. Absent or
@@ -197,6 +201,7 @@
 	// raw ** markers. Same marked pipeline as the chat transcript.
 	import { parseMarkdown } from '$lib/markdown';
 	const promptHtml = $derived(parseMarkdown(prompt));
+	const contextHtml = $derived(widgets?.[0]?.context ? parseMarkdown(widgets[0].context) : '');
 
 	const widget = $derived(widgets?.[0]);
 	const options = $derived(normalizeOptions(widget?.options));
@@ -252,6 +257,7 @@
 		answer={answered && !wasSkipped ? (failedReason ?? response) : ''}
 		failed={failedReason != null}
 	>
+		{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
 		<div class="prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
 		{#if options.length > 0 || typedAnswers.length > 0}
 			<ul class="ask-receipt-options">
@@ -269,6 +275,7 @@
 	</AskReceipt>
 {:else}
 <div class="ask-card">
+	{#if contextHtml}<div class="ask-context prose prose-sm max-w-none">{@html contextHtml}</div>{/if}
 	<div class="text-sm font-medium mb-2 prose prose-sm max-w-none [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">{@html promptHtml}</div>
 
 	{#if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}

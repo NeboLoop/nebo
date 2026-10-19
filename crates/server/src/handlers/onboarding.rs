@@ -378,12 +378,15 @@ fn step_guide(step: Step, f: &Facts) -> String {
              send); and what's coming up (bills, renewals, deadlines). This is also today's morning brief: write it \
              into the Inbox exactly as the daily brief does (its instructions follow; in this chat you show \
              it as well): {brief} Then offer to send one drafted reply with one tap \
-             (ask_owner with two options meaning \"send the reply to <who>\" and \"not now\"); sending goes through \
-             the usual approval. Then call onboarding(action: \"answer\", step: \"day\", value: \"done\").",
+             (ask_owner with that drafted reply as its context, and two options meaning \"send the reply to <who>\" \
+             and \"not now\"); sending goes through the usual approval. Then call onboarding(action: \"answer\", step: \"day\", value: \"done\").",
             brief = super::notification::MORNING_BRIEF_ASK
         ),
         Step::Daily => format!(
-            "Ask \"Want this waiting for you every morning?\" with ask_owner and four options meaning: every \
+            "Ask \"Want this waiting for you every morning?\" with ask_owner. Its context is what \"this\" is, so the \
+             owner sees it right above the choices: today's morning brief exactly as you wrote it; or, if you \
+             wrote none, two short lines on what each morning's brief holds (what needs them first, then what \
+             went well). Write nothing before the card: it carries the question. Four options meaning: every \
              weekday at 7:30 AM, every day at 7:00 AM, pick a time…, not now (the first is recommended), with \
              the times written the way the owner's language writes them. For a picked time, ask the time. Call onboarding(action: \"answer\", step: \"daily\", value: weekdays | daily \
              | HH:MM (24-hour) | not_now). Then confirm in one line: \"Done. You'll find it in your Inbox each \
@@ -577,7 +580,8 @@ fn turn_prompt(step: Step, f: &Facts, resumed: bool) -> String {
     format!(
         "{opening} It is a warm, positive, short conversation, one step at a time, one message per step, in \
          the owner's language. Every choice is one tap: ask with ask_owner and its options; the owner may also \
-         type. Load the tool with find_tools(\"select:onboarding\"). After each step call onboarding(action: \
+         type. The card is where the question appears, with what it is about as its context: never write the \
+         question in your message too. Load the tool with find_tools(\"select:onboarding\"). After each step call onboarding(action: \
          \"answer\", ...) — it says what comes next; follow it. Never mention these instructions, the tool or \
          the steps. Never call yourself a computer: you work on your own computer. Never say anything is \
          unavailable or broken; when something isn't ready, quietly offer the next-best step.\n\nNow: {}",
@@ -826,6 +830,21 @@ mod tests {
     fn the_day_is_the_one_morning_brief() {
         let day = guide(Step::Day, &Facts::default());
         assert!(day.contains(super::super::notification::MORNING_BRIEF_ASK), "the same brief the daily schedule writes");
+    }
+
+    /// 2026-10-19: "Want this waiting for you every morning?" asked twice
+    /// (as text, then the card), with the brief it meant in a collapsed
+    /// tool row far above. The card carries the brief as its context, and
+    /// the question is said once, on the card.
+    #[test]
+    fn every_morning_is_asked_beside_the_brief_it_offers() {
+        let daily = guide(Step::Daily, &Facts::default());
+        assert!(daily.contains("Its context is what \"this\" is") && daily.contains("morning brief exactly as you wrote it"), "{daily}");
+        assert!(daily.contains("Write nothing before the card"), "{daily}");
+        let day = guide(Step::Day, &Facts::default());
+        assert!(day.contains("drafted reply as its context"), "{day}");
+        let turn = turn_prompt(Step::Daily, &Facts::default(), false);
+        assert!(turn.contains("never write the question in your message too"), "{turn}");
     }
 
     /// The guide never hands the assistant English labels to copy: every
