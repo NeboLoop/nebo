@@ -1112,7 +1112,6 @@ export interface Notification {
 export interface OAuthStartResponse {
 	authorizeUrl: string
 	state: string
-	opened: boolean
 }
 
 export interface OAuthStatusResponse {

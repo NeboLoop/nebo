@@ -12,9 +12,12 @@ use axum::response::Html;
 ///
 /// Self-contained (no external assets) since the browser navigates here directly.
 ///
-/// NeboAI OAuth is opened with the system browser (`open::that`), not `window.open`,
-/// so browsers block `window.close()`. The CTA therefore returns to the app; close
-/// is best-effort only for rare script-opened popups (e.g. some MCP flows).
+/// A sign-in opens in a window of its own (the desktop app's sign-in window in
+/// the default browser, a popup from a browser page), and Nebo comes back to
+/// the front by itself when it finishes. This page only has to say the window
+/// can be closed: it tries to close itself, which a browser allows only for a
+/// window a script opened, and never navigates anywhere — loading Nebo here
+/// would leave a second Nebo in the person's browser.
 pub fn auth_result_page(success: bool, heading: &str, message: &str) -> Html<String> {
     // Brand palette (matches app.css): green success, red error.
     let accent = if success { "#138a4a" } else { "#cc2222" };
@@ -52,10 +55,7 @@ body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,He
 @keyframes draw{{to{{stroke-dashoffset:0}}}}
 h1{{margin:0 0 8px;font-size:22px;font-weight:650;letter-spacing:-.01em}}
 .msg{{margin:0;font-size:15px;line-height:1.5;color:var(--muted)}}
-.hint{{margin:24px 0 0;font-size:13px;color:var(--muted);opacity:.8}}
-.btn{{display:inline-block;margin-top:20px;padding:10px 22px;border:0;border-radius:10px;cursor:pointer;
-  font-size:14px;font-weight:600;color:#fff;background:var(--accent);transition:opacity .15s}}
-.btn:hover{{opacity:.9}}
+.hint{{margin:24px 0 0;font-size:15px;font-weight:600;color:var(--ink)}}
 .wordmark{{margin-top:28px;font-size:12px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);opacity:.7}}
 </style></head>
 <body>
@@ -63,25 +63,12 @@ h1{{margin:0 0 8px;font-size:22px;font-weight:650;letter-spacing:-.01em}}
   <div class="ring"><svg viewBox="0 0 52 52">{glyph}</svg></div>
   <h1>{safe_heading}</h1>
   <p class="msg">{safe_message}</p>
-  <button class="btn" type="button" id="done">Return to Nebo</button>
-  <p class="hint" id="hint">Returning to Nebo…</p>
+  <p class="hint">You can close this window.</p>
   <div class="wordmark">Nebo</div>
 </div>
 <script>
 (function(){{
-  var returned = false;
-  function returnToNebo(){{
-    if (returned) return;
-    returned = true;
-    // Best-effort: only works when this tab was opened via window.open().
-    try {{ window.close(); }} catch (e) {{}}
-    // System-browser OAuth (open::that) cannot be closed by script — go home.
-    setTimeout(function(){{
-      if (!window.closed) window.location.replace('/');
-    }}, 150);
-  }}
-  document.getElementById('done').addEventListener('click', returnToNebo);
-  setTimeout(returnToNebo, 2500);
+  setTimeout(function(){{ try {{ window.close(); }} catch (e) {{}} }}, 2500);
 }})();
 </script>
 </body></html>"#
