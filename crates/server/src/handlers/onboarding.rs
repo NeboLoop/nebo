@@ -26,9 +26,17 @@ use crate::state::AppState;
 
 const PRIMARY: &str = tools::team_tool::PRIMARY_AGENT_ID;
 
-/// The Google plugins "Connect Google" signs the assistant in to: email and
-/// calendar, the successors of the retired `gws` bundle.
-pub(crate) const GOOGLE: [&str; 2] = ["gmail", "google-calendar"];
+/// "Connect Google": email through the Composio connections plugin
+/// (Composio's verified Google app, while our own Gmail app waits on
+/// Google's CASA review), the calendar through our own plugin.
+pub(crate) const CONNECTIONS: &str = "connections-composio";
+/// The app the connections plugin connects for email.
+pub(crate) const MAIL_APP: &str = "gmail";
+/// The calendar plugin, signed in through its connect card.
+pub(crate) const CALENDAR: &str = "google-calendar";
+
+/// How long the connections plugin's `accounts` may take: one hub call.
+const ACCOUNTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The assistant's default name, offered first everywhere. Mount Nebo is a
 /// real mountain too.
@@ -354,15 +362,18 @@ fn step_guide(step: Step, f: &Facts) -> String {
         Step::Connect => format!(
             "Say \"Got it. Let's start with something that pays off today.\" Then: \"If I can see your email and \
              calendar, I'll find what needs you today and draft the replies. It takes about 30 seconds.\" Then, \
-             BEFORE any connect card, the trust line: \"I read so I can help. I never send, delete or accept \
-             anything without your OK.\" Then connect Google for yourself: the {gmail} and {cal} plugins \
-             (install them if they aren't, then show their connect cards; the cards are how the owner says \
-             yes). When both are connected, call onboarding(action: \"answer\", step: \"connect\", value: \
-             \"connected\"). If the owner skips a card or says not now, or a connection isn't ready, call it \
-             with value \"not_now\" — say nothing about errors and never apologize; the next step is the \
-             next-best thing.",
-            gmail = GOOGLE[0],
-            cal = GOOGLE[1]
+             BEFORE any connect link or card, the trust line: \"I read so I can help. I never send, delete or accept \
+             anything without your OK.\" Then connect Google for yourself, installing each plugin if it isn't. \
+             Email: the {conn} plugin's connect with {{\"app\": \"{mail}\"}}. Unless it says {mail} is already \
+             connected, ask with ask_owner: the link it gave as the context ([Connect Gmail](<url>)), and two \
+             options meaning \"done\" and \"not now\"; the owner opens the link and signs in to Google there. \
+             Calendar: the {cal} plugin's connect card (the card is how the owner says yes). When both are \
+             connected, call onboarding(action: \"answer\", step: \"connect\", value: \"connected\"). If the \
+             owner skips or says not now, or a connection isn't ready, call it with value \"not_now\" — say \
+             nothing about errors and never apologize; the next step is the next-best thing.",
+            conn = CONNECTIONS,
+            mail = MAIL_APP,
+            cal = CALENDAR
         ),
         Step::Plate => format!(
             "Say \"No problem. Tell me three things on your plate this week and I'll turn them into a plan.\" \
@@ -433,7 +444,7 @@ pub(crate) struct Facts {
 }
 
 impl Facts {
-    fn read(state: &AppState) -> Facts {
+    async fn read(state: &AppState) -> Facts {
         let store = &state.store;
         let profile = store.get_user_profile().ok().flatten();
         let first_name = |n: &str| n.split_whitespace().next().map(str::to_string);
@@ -448,9 +459,7 @@ impl Facts {
                 )
             },
             focus: profile.as_ref().and_then(|p| p.onboarding_focus.as_deref()).and_then(Focus::parse),
-            google_connected: GOOGLE
-                .iter()
-                .all(|slug| tools::plugin_tool::plugin_connected(&state.plugin_store, store, slug)),
+            google_connected: not_connected(state).await.is_empty(),
             brief_daily: store
                 .get_cron_job_by_name(super::notification::MORNING_BRIEF)
                 .ok()
@@ -481,9 +490,52 @@ impl Facts {
     }
 }
 
+/// What "Connect Google" still lacks: the mail app when the connections
+/// plugin isn't ready or its `accounts` doesn't list it, the calendar
+/// plugin when it isn't connected.
+async fn not_connected(state: &AppState) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !mail_connected(state).await {
+        missing.push(MAIL_APP);
+    }
+    if !tools::plugin_tool::plugin_connected(&state.plugin_store, &state.store, CALENDAR) {
+        missing.push(CALENDAR);
+    }
+    missing
+}
+
+/// Whether the connections plugin's `accounts` lists the mail app: the hub
+/// reads it from the aggregator, the one place the connection lives.
+async fn mail_connected(state: &AppState) -> bool {
+    if !tools::plugin_tool::plugin_connected(&state.plugin_store, &state.store, CONNECTIONS) {
+        return false;
+    }
+    let Some(binary) = state.plugin_store.resolve(CONNECTIONS, "*") else { return false };
+    let runtime = napp::PluginRuntime::new(CONNECTIONS, binary, state.plugin_store.clone());
+    match runtime.run_capture_args(&["accounts".to_string()], ACCOUNTS_TIMEOUT).await {
+        Ok(out) if out.status.success() => lists_app(&out.stdout, MAIL_APP),
+        Ok(out) => {
+            warn!(code = ?out.status.code(), "onboarding: the connections plugin's accounts failed");
+            false
+        }
+        Err(e) => {
+            warn!(error = %e, "onboarding: the connections plugin's accounts didn't run");
+            false
+        }
+    }
+}
+
+/// Whether `accounts` output (`{"accounts": [{"app": …}, …]}`) lists `app`.
+fn lists_app(stdout: &[u8], app: &str) -> bool {
+    serde_json::from_slice::<Value>(stdout)
+        .ok()
+        .and_then(|v| v["accounts"].as_array().cloned())
+        .is_some_and(|a| a.iter().any(|x| x["app"].as_str().is_some_and(|s| s.eq_ignore_ascii_case(app))))
+}
+
 /// The state the apps and the assistant read.
-fn status(state: &AppState, step: Step) -> types::api::OnboardingStatus {
-    let f = Facts::read(state);
+async fn status(state: &AppState, step: Step) -> types::api::OnboardingStatus {
+    let f = Facts::read(state).await;
     types::api::OnboardingStatus {
         step: step.as_str().to_string(),
         owner_name: f.owner.clone(),
@@ -525,14 +577,10 @@ pub(crate) async fn answer(state: &AppState, step: Step, value: &str) -> Result<
             focus = Some(f.as_str());
         }
         Effect::Connected => {
-            let missing: Vec<&str> = GOOGLE
-                .iter()
-                .copied()
-                .filter(|slug| !tools::plugin_tool::plugin_connected(&state.plugin_store, &state.store, slug))
-                .collect();
+            let missing = not_connected(state).await;
             if !missing.is_empty() {
                 return Err(format!(
-                    "Not connected yet: {}. Show its connect card, or answer not_now.",
+                    "Not connected yet: {}. Hand the owner its connect link or card, or answer not_now.",
                     missing.join(", ")
                 ));
             }
@@ -604,7 +652,7 @@ pub(crate) async fn start(state: &AppState) -> Result<(Step, Option<String>), St
     if step == Step::Intro {
         step = answer(state, Step::Intro, "start").await?;
     }
-    let f = Facts::read(state);
+    let f = Facts::read(state).await;
     let prompt = turn_prompt(step, &f, resumed);
     let latest = state.store.get_latest_agent_chat(PRIMARY).ok().flatten();
     let (chat_id, session_key) = match latest.filter(|_| resumed) {
@@ -650,7 +698,7 @@ async fn fill_owner_name(state: &AppState) {
 /// GET /api/v1/onboarding
 pub async fn get_onboarding(State(state): State<AppState>) -> HandlerResult<types::api::OnboardingStatus> {
     let step = current(&state.store);
-    Ok(Json(status(&state, step)))
+    Ok(Json(status(&state, step).await))
 }
 
 /// POST /api/v1/onboarding/start — start the guided chat from the intro
@@ -659,7 +707,7 @@ pub async fn start_onboarding(State(state): State<AppState>) -> HandlerResult<ty
     let (step, thread_id) = start(&state)
         .await
         .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
-    Ok(Json(types::api::OnboardingStarted { status: status(&state, step), thread_id }))
+    Ok(Json(types::api::OnboardingStarted { status: status(&state, step).await, thread_id }))
 }
 
 /// The guided chat as the assistant's `onboarding` tool reads and answers
@@ -673,15 +721,15 @@ impl ServerFirstRun {
         Self { state }
     }
 
-    fn reply(&self, step: Step) -> String {
-        let f = Facts::read(&self.state);
+    async fn reply(&self, step: Step) -> String {
+        let f = Facts::read(&self.state).await;
         json!({ "step": step.as_str(), "next": guide(step, &f) }).to_string()
     }
 }
 
 impl tools::onboarding_tool::FirstRun for ServerFirstRun {
     fn status<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>> {
-        Box::pin(async move { self.reply(current(&self.state.store)) })
+        Box::pin(async move { self.reply(current(&self.state.store)).await })
     }
 
     fn answer<'a>(
@@ -693,7 +741,7 @@ impl tools::onboarding_tool::FirstRun for ServerFirstRun {
             let step = Step::parse(step)
                 .ok_or_else(|| "step is one of name, focus, connect, plate, day, daily, hire, set.".to_string())?;
             let next = answer(&self.state, step, value).await?;
-            Ok(self.reply(next))
+            Ok(self.reply(next).await)
         })
     }
 }
@@ -802,14 +850,33 @@ mod tests {
     }
 
     #[test]
+    fn gmail_connects_through_composio_with_its_link_in_the_ask_and_calendar_through_its_card() {
+        let connect = guide(Step::Connect, &Facts::default());
+        assert!(connect.contains("connections-composio plugin's connect with {\"app\": \"gmail\"}"), "{connect}");
+        assert!(connect.contains("ask_owner: the link it gave as the context"), "{connect}");
+        assert!(connect.contains("google-calendar plugin's connect card"), "{connect}");
+        assert!(!connect.contains("the gmail and"), "the gmail plugin is not the email path: {connect}");
+    }
+
+    #[test]
+    fn gmail_is_connected_only_when_accounts_lists_it() {
+        let listed = br#"{"accounts":[{"app":"slack"},{"app":"gmail","connected_at":"2026-10-19T00:00:00Z"}],"aggregator":"composio"}"#;
+        assert!(lists_app(listed, MAIL_APP));
+        assert!(!lists_app(br#"{"accounts":[{"app":"slack"}],"aggregator":"composio"}"#, MAIL_APP));
+        assert!(!lists_app(br#"{"accounts":[]}"#, MAIL_APP));
+        assert!(!lists_app(b"NeboAI didn't answer", MAIL_APP));
+    }
+
+    #[test]
     fn the_guide_says_the_trust_line_before_connecting_and_offers_the_names() {
         let f = Facts { owner: Some("Alma".into()), assistant: "Nebo".into(), names: name_choices(None, "en"), ..Default::default() };
         let name = guide(Step::Name, &f);
         assert!(name.contains("Hi Alma!") && name.contains("the names Nebo, Shasta, Rainier"));
         let connect = guide(Step::Connect, &f);
         let trust = connect.find("never send, delete or accept").unwrap();
-        let cards = connect.find("connect cards").unwrap();
-        assert!(trust < cards, "the trust line comes before the connect card");
+        let mail = connect.find("connections-composio plugin's connect").unwrap();
+        let card = connect.find("connect card (").unwrap();
+        assert!(trust < mail && trust < card, "the trust line comes before the connect link and card");
         let about = guide(Step::Focus, &f);
         assert!(about.contains("Nothing goes out without your OK"));
         assert!(!about.contains("I am a computer"));
