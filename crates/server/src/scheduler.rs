@@ -374,17 +374,15 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
     }
 }
 
-/// The conversation a prompt schedule was made in, as (session key, chat
-/// id): where its replies go. None for one made outside a conversation (by
-/// the owner's API, a workflow, another schedule) or whose conversation is
-/// gone.
-fn origin_chat(store: &Store, job: &CronJob) -> Option<(String, String)> {
+/// The conversation a prompt schedule was made in, as its chat id: where
+/// its Inbox item opens. None for one made outside a conversation (by the
+/// owner's API, a workflow, another schedule) or whose conversation is gone.
+fn origin_chat(store: &Store, job: &CronJob) -> Option<String> {
     if job.created_by != db::models::ScheduleCreator::Chat.as_str() {
         return None;
     }
     let session_key = job.created_in.as_deref().filter(|k| !k.is_empty())?;
-    let chat_id = tools::owner_notify::link::conversation(store, session_key);
-    (!chat_id.is_empty()).then(|| (session_key.to_string(), chat_id))
+    Some(tools::owner_notify::link::conversation(store, session_key)).filter(|chat_id| !chat_id.is_empty())
 }
 
 /// Whether a prompt job's replies reach the owner through [`deliver_reply`]:
@@ -398,22 +396,17 @@ fn delivers_reply(job: &CronJob) -> bool {
 /// A one-shot prompt job's run ended with `reply`: the system, not the
 /// model, brings it to the owner, so a timer or a "tell me when" never
 /// depends on the model choosing to send it. Once per run (`started` is
-/// when it began):
+/// when it began), it lands in his Inbox, loud, and on his phone (the hub
+/// copy pushes it) — unless the run already put it there itself
+/// (`push_notification`, `message_owner`). It opens the conversation it was
+/// asked in, and is never written into it: the owner's chat is only the
+/// conversation he is having (owner, 2026-10-18).
 ///
-/// - Made in a conversation: the reply is posted there as the employee's
-///   message, live in every open view of it. Not when the run already
-///   wrote into that conversation itself (`message_owner`), so it is never
-///   said twice.
-/// - It also lands in the Inbox, loud, and on the owner's phone (the hub
-///   copy pushes it) — unless the run already put one in the Inbox itself
-///   (`push_notification`).
-///
-/// A repeating job is background work and its reply goes nowhere: the
-/// owner's chat stays the conversation he is having, never a report per
-/// fire (2026-10-18: an hourly calendar check said "nothing actionable"
-/// into his chat at 4 PM). Its fire is a run in the Workforce; what it has
-/// for the owner it posts to his Inbox itself (`push_notification`), and a
-/// fire with nothing for him posts nowhere.
+/// A repeating job is background work and its reply goes nowhere: never a
+/// report per fire (2026-10-18: an hourly calendar check said "nothing
+/// actionable" into his chat at 4 PM). Its fire is a run in the Workforce;
+/// what it has for the owner it posts to his Inbox itself
+/// (`push_notification`), and a fire with nothing for him posts nowhere.
 pub(crate) fn deliver_reply(
     store: &Store,
     hub: &crate::handlers::ws::ClientHub,
@@ -428,18 +421,6 @@ pub(crate) fn deliver_reply(
     }
     let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID);
     let origin = origin_chat(store, job);
-    if let Some((session_key, chat_id)) = &origin {
-        let already = store
-            .get_chat_messages_after_timestamp(chat_id, started - 1)
-            .unwrap_or_default()
-            .iter()
-            .any(|m| m.role == "assistant");
-        if already {
-            info!(job = job.name.as_str(), chat = chat_id.as_str(), "scheduler: the run already wrote into its conversation; reply not posted again");
-        } else if crate::chat_dispatch::post_assistant_message(store, hub, chat_id, Some(session_key), agent_id, reply, &[]).is_some() {
-            info!(job = job.name.as_str(), chat = chat_id.as_str(), "scheduler: reply posted to the conversation the schedule was made in");
-        }
-    }
     let user = store.ensure_local_user_id().unwrap_or_default();
     let posted_itself = store
         .list_user_notifications(&user, db::models::InboxView::All, Some(agent_id), 20, 0)
@@ -452,7 +433,7 @@ pub(crate) fn deliver_reply(
     }
     let id = format!("schedule:{}:{started}", job.id);
     let link = match &origin {
-        Some((_, chat_id)) => tools::owner_notify::link::chat(agent_id, chat_id),
+        Some(chat_id) => tools::owner_notify::link::chat(agent_id, chat_id),
         None => tools::owner_notify::link::session_chat(store, agent_id, &job_session_key(job)),
     };
     let body = crate::truncate_str(reply, 500);
@@ -469,7 +450,7 @@ pub(crate) fn deliver_reply(
     };
     tools::owner_notify::emit(store, Some(&|ev, payload| hub.broadcast(ev, payload)), &n);
     let extra = match &origin {
-        Some((_, chat_id)) => serde_json::json!({ "chatId": chat_id }),
+        Some(chat_id) => serde_json::json!({ "chatId": chat_id }),
         None => serde_json::json!({}),
     };
     crate::codes::push_inbox_via(store, api_url, n.hub_item(extra));
@@ -907,51 +888,42 @@ mod tests {
         store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap()
     }
 
-    /// A timer made in chat X whose run ends in plain text: the reply is the
-    /// employee's message in X, live to every open view, and ONE loud Inbox
-    /// item that opens X. Delivering the same run again changes nothing.
+    /// A timer made in chat X whose run ends in plain text: ONE loud Inbox
+    /// item carries the reply and opens X, and nothing is written into X —
+    /// the owner's chat is only the conversation he is having. Delivering
+    /// the same run again changes nothing.
     #[tokio::test]
-    async fn a_one_shot_from_a_chat_delivers_its_reply_there_and_to_the_inbox() {
+    async fn a_one_shot_from_a_chat_delivers_its_reply_to_the_inbox_never_the_chat() {
         let (_d, store, job) = delivery_rig(true, true);
         let hub = crate::handlers::ws::ClientHub::new();
         let mut heard = hub.subscribe();
         let started = now_secs();
         deliver_reply(&store, &hub, "", &job, started, "  Ding! Your one-minute timer just went off.  ");
 
-        assert_eq!(said(&store, "X"), ["Ding! Your one-minute timer just went off."]);
+        assert!(said(&store, "X").is_empty(), "nothing is written into the chat it was asked in");
         let items = inbox(&store);
         assert_eq!(items.len(), 1, "{items:#?}");
         assert_eq!(items[0].title, "one-minute-timer");
         assert_eq!(items[0].body.as_deref(), Some("Ding! Your one-minute timer just went off."));
         assert_eq!(items[0].agent_id.as_deref(), Some("ava"));
-        assert_eq!(items[0].action_url.as_deref(), Some("/ava/threads/X"));
+        assert_eq!(items[0].action_url.as_deref(), Some("/ava/threads/X"), "it opens the chat it was asked in");
         let mut events = Vec::new();
         while let Ok(e) = heard.try_recv() {
             events.push(e);
         }
-        let message = events.iter().find(|e| e.event_type == "chat_message").expect("the open chat hears the message");
-        assert_eq!(message.payload["session_id"], "agent:ava:thread:X");
-        assert_eq!(message.payload["content"], "Ding! Your one-minute timer just went off.");
+        assert!(!events.iter().any(|e| e.event_type == "chat_message"), "no open chat hears it");
         assert!(events.iter().any(|e| e.event_type == "notification"), "a timer going off is loud");
 
         deliver_reply(&store, &hub, "", &job, started, "Ding! Your one-minute timer just went off.");
-        assert_eq!(said(&store, "X").len(), 1, "once per run");
         assert_eq!(inbox(&store).len(), 1, "once per run");
     }
 
-    /// The run already wrote into X itself (message_owner) and posted to the
-    /// Inbox itself (push_notification): nothing is said twice.
+    /// The run already posted to the Inbox itself (push_notification or
+    /// message_owner): its own item is the only one.
     #[tokio::test]
     async fn a_run_that_reached_the_owner_itself_is_not_repeated() {
-        let (_d, store, job) = delivery_rig(true, true);
         let hub = crate::handlers::ws::ClientHub::new();
-        let started = now_secs();
-        store.create_chat_message("m-own", "X", "assistant", "Your timer is up!", None).unwrap();
-        deliver_reply(&store, &hub, "", &job, started, "Ding!");
-        assert_eq!(said(&store, "X"), ["Your timer is up!"], "no second message in X");
-        assert_eq!(inbox(&store).len(), 1, "X has its message; the Inbox still gets the timer");
-
-        let (_d2, store, job) = delivery_rig(true, true);
+        let (_d, store, job) = delivery_rig(true, true);
         let started = now_secs();
         tools::owner_notify::emit(
             &store,
@@ -960,14 +932,14 @@ mod tests {
         );
         deliver_reply(&store, &hub, "", &job, started, "Ding!");
         assert_eq!(inbox(&store).len(), 1, "the run's own Inbox item is the only one");
-        assert_eq!(said(&store, "X"), ["Ding!"], "X still hears it");
+        assert!(said(&store, "X").is_empty());
     }
 
-    /// Made outside a conversation, a one-shot reaches the Inbox only. A
-    /// repeating job is background work: its reply is delivered nowhere,
-    /// wherever it was made — the 4 PM "nothing actionable" of 2026-10-18
-    /// stays out of the owner's chat and out of his Inbox. An empty reply
-    /// delivers nothing.
+    /// Made outside a conversation, a one-shot reaches the Inbox and opens
+    /// its run's thread. A repeating job is background work: its reply is
+    /// delivered nowhere, wherever it was made — the 4 PM "nothing
+    /// actionable" of 2026-10-18 stays out of the owner's chat and out of
+    /// his Inbox. An empty reply delivers nothing.
     #[tokio::test]
     async fn where_each_kind_of_schedule_delivers() {
         let hub = crate::handlers::ws::ClientHub::new();

@@ -1,5 +1,5 @@
-//! Reaching the owner outside a conversation: `message_owner` writes into
-//! their chat, `push_notification` posts to their Inbox (an update, or a
+//! Reaching the owner outside a conversation, always through their Inbox:
+//! `message_owner` leaves a message, `push_notification` posts (an update, or a
 //! question they answer on the card; an urgent one raises the alert),
 //! `check_dnd` reads whether Do Not Disturb is on, and `inbox` is the
 //! assistant's way into the Inbox: it reads it, shows a card in chat,
@@ -60,63 +60,38 @@ impl Owner {
             .collect()
     }
 
-    /// Into the owner's companion chat, with an OS notification, and one
-    /// Inbox item per employee carrying its newest message. Never from a
-    /// timer's fire: the owner's chat is the conversation he is having, and
-    /// what a schedule or a heartbeat has for him goes to his Inbox.
+    /// A message for the owner, left in their Inbox, never written into a
+    /// chat: the owner's chat is only the conversation he is having. One
+    /// item per thread the call comes from ([`briefing_id`]): a newer message
+    /// restates it and brings it back unread. It opens the work (the run, or
+    /// the thread).
     fn message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
-        if timer_fire(ctx) {
-            return ToolResult::error(
-                "A scheduled run doesn't write into the owner's chat. Post what they need to know or act on to \
-                 their Inbox with push_notification; when there is nothing for them, end without posting.",
-            );
-        }
         let text = input["message"].as_str().unwrap_or("");
-        let companion = match self.store.get_companion_chat_by_user("") {
-            Ok(Some(chat)) => Ok(chat),
-            _ => self
-                .store
-                .create_companion_chat(&uuid::Uuid::new_v4().to_string(), ""),
+        let agent = Some(types::keyparser::extract_agent_id(&ctx.session_key))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| crate::team_tool::PRIMARY_AGENT_ID.to_string());
+        let (link, link_label) = thread_link(&self.store, &agent, &ctx.session_key);
+        let n = crate::owner_notify::OwnerNotification {
+            id: &briefing_id(&ctx.session_key),
+            kind: "message",
+            title: "Sent you a message",
+            body: Some(text),
+            action_url: Some(&link),
+            agent_id: Some(&agent),
+            link_label: Some(link_label),
+            latest: true,
+            ..Default::default()
         };
-        match companion {
-            Ok(chat) => {
-                let _ = self.store.create_chat_message(
-                    &uuid::Uuid::new_v4().to_string(),
-                    &chat.id,
-                    "assistant",
-                    text,
-                    None,
-                );
-                let agent = Some(types::keyparser::extract_agent_id(&ctx.session_key))
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| crate::team_tool::PRIMARY_AGENT_ID.to_string());
-                let link = crate::owner_notify::link::chat(crate::team_tool::PRIMARY_AGENT_ID, &chat.id);
-                let n = crate::owner_notify::OwnerNotification {
-                    id: &format!("message:{agent}"),
-                    kind: "message",
-                    title: "Sent you a message",
-                    body: Some(text),
-                    action_url: Some(&link),
-                    agent_id: Some(&agent),
-                    link_label: Some("Chat"),
-                    latest: true,
-                    ..Default::default()
-                };
-                let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
-                match notify {
-                    Some(f) => crate::owner_notify::emit(&self.store, Some(&|ev, payload| f(ev, payload)), &n),
-                    None => crate::owner_notify::emit(&self.store, None, &n),
-                };
-                notify_crate::send("Nebo", text);
-                ToolResult::ok(format!(
-                    "Messaged the owner ({} chars)",
-                    text.chars().count()
-                ))
-            }
-            Err(e) => ToolResult::error(format!(
-                "Failed to message the owner: {e}. Do not retry — this is a database error."
-            )),
+        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+        let stored = match notify {
+            Some(f) => crate::owner_notify::emit(&self.store, Some(&|ev, payload| f(ev, payload)), &n),
+            None => crate::owner_notify::emit(&self.store, None, &n),
+        };
+        if !stored {
+            return ToolResult::error("The message could not be saved to the owner's Inbox. Do not retry — this is a database error.");
         }
+        notify_crate::send("Nebo", text);
+        ToolResult::ok(format!("Left the owner a message in their Inbox ({} chars)", text.chars().count()))
     }
 
     /// An Inbox item from the employee: an update (a title, one sentence, a
@@ -124,9 +99,10 @@ impl Owner {
     /// its card, whose answer comes back to this conversation. It is shown
     /// in the bell at once; an urgent one is the alert: a `notification`
     /// broadcast the desktop turns into the auto-dismissing HUD. Never a
-    /// modal. An update from a timer's fire is that schedule's briefing: one
-    /// item per schedule thread, restated and brought back unread by each
-    /// newer briefing ([`briefing_id`]).
+    /// modal. An update from a run no one is watching (a schedule's or a
+    /// heartbeat's fire, a workflow run) is that run's briefing: one item per
+    /// thread, restated and brought back unread by each newer briefing
+    /// ([`briefing_id`]).
     fn notify(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let text = input["message"].as_str().unwrap_or("");
         let title = input["title"]
@@ -138,17 +114,14 @@ impl Owner {
         let agent_id =
             Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
         let id = uuid::Uuid::new_v4().to_string();
-        // It opens the work it names, else the conversation it was sent from.
+        // It opens the work it names, else the run or conversation it was
+        // sent from.
         let link = input["link"]
             .as_str()
             .map(str::trim)
             .filter(|l| !l.is_empty())
             .map(str::to_string)
-            .or_else(|| {
-                agent_id
-                    .as_deref()
-                    .map(|a| crate::owner_notify::link::session_chat(&self.store, a, &ctx.session_key))
-            });
+            .or_else(|| agent_id.as_deref().map(|a| thread_link(&self.store, a, &ctx.session_key).0));
         let options: Vec<db::models::ItemOption> = input["options"]
             .as_array()
             .map(|a| a.iter().filter_map(Value::as_str).map(str::trim).filter(|o| !o.is_empty()))
@@ -157,7 +130,7 @@ impl Owner {
             .map(|o| db::models::ItemOption { label: o.to_string(), value: o.to_string() })
             .collect();
         let asks = !options.is_empty();
-        let briefing = (timer_fire(ctx) && !asks).then(|| briefing_id(&ctx.session_key));
+        let briefing = (unwatched_run(ctx) && !asks).then(|| briefing_id(&ctx.session_key));
         let id = briefing.clone().unwrap_or(id);
         let n = crate::owner_notify::OwnerNotification {
             id: &id,
@@ -345,16 +318,30 @@ impl Owner {
     }
 }
 
-/// Whether the call comes from a timer's fire (a schedule's, a heartbeat's),
-/// which no one is watching.
-fn timer_fire(ctx: &ToolContext) -> bool {
-    matches!(ctx.door, types::permissions::Door::Schedule | types::permissions::Door::Heartbeat)
+/// Whether the call comes from a run no one is watching that briefs the
+/// owner: a schedule's or a heartbeat's fire, or a workflow run.
+fn unwatched_run(ctx: &ToolContext) -> bool {
+    use types::permissions::Door;
+    matches!(ctx.door, Door::Schedule | Door::Heartbeat | Door::Workflow)
 }
 
-/// The one Inbox item a schedule's (or heartbeat's) fires brief the owner
-/// in, keyed by the thread they run in.
+/// The one Inbox item a thread briefs the owner in: a workflow run's (all
+/// of its steps are one thread), else the session's (a schedule's thread,
+/// a heartbeat's, a conversation).
 fn briefing_id(session_key: &str) -> String {
-    format!("briefing:{session_key}")
+    match types::keyparser::workflow_step(session_key) {
+        Some((run, _)) => format!("briefing:workflow:{run}"),
+        None => format!("briefing:{session_key}"),
+    }
+}
+
+/// Where an item from `session_key` opens, and its link's words: a workflow
+/// step's run, else the conversation the session holds.
+fn thread_link(store: &Store, agent_id: &str, session_key: &str) -> (String, &'static str) {
+    match types::keyparser::workflow_step(session_key) {
+        Some((run, _)) => (crate::owner_notify::link::run(agent_id, run), "Run"),
+        None => (crate::owner_notify::link::session_chat(store, agent_id, session_key), "Chat"),
+    }
 }
 
 /// The Inbox type of the assistant's daily brief.
@@ -397,7 +384,7 @@ impl DynTool for OwnerTool {
 
     fn description(&self) -> String {
         match self.op {
-            OwnerOp::Message => "Sends the owner a message in their chat with you, with a notification. For work nobody is watching (a workflow); in a conversation, just reply. A scheduled run posts to the Inbox with push_notification instead.".to_string(),
+            OwnerOp::Message => "Leaves the owner a message in their Inbox, with a notification; it never goes into a chat. For work nobody is watching (a schedule, a workflow), and only when there is something for them; in a conversation, just reply.".to_string(),
             OwnerOp::Notify => "Posts to the owner's Inbox, the one place employees leave updates for them.\n\
                  - An update: a short `title`, ONE plain sentence in `message`, and a `link` to the work (its chat, file or run) with `link_label`.\n\
                  - A question: add `options`; the owner answers on the card and the answer comes back to this conversation.\n\
@@ -556,42 +543,51 @@ mod tests {
         assert!(tools[2].validate_input(&json!({})).is_ok() && tools[2].read_only(&json!({})));
     }
 
-    /// A schedule's fire never writes into the owner's chat: message_owner
-    /// is refused there and nothing is written. What the fire has for him is
-    /// its schedule's ONE briefing in the Inbox: a newer briefing restates
-    /// it and brings it back unread. A question it asks is its own item, and
-    /// an update from his chat is not a briefing.
+    /// Nothing reaches the owner's chat unprompted: message_owner leaves its
+    /// message in his Inbox from every door. What a run no one watches has
+    /// for him is that thread's ONE briefing: a schedule's fire, and a
+    /// workflow run's steps (one item per run, opening the run), each newer
+    /// message or update restating it and bringing it back unread. A
+    /// question is its own item, and an update from his chat is not a
+    /// briefing.
     #[tokio::test]
-    async fn a_schedules_fire_briefs_the_owner_in_his_inbox_never_his_chat() {
+    async fn runs_brief_the_owner_in_his_inbox_never_his_chat() {
         use types::permissions::Door;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::new(&dir.path().join("o.db").to_string_lossy()).unwrap());
         let tools = Owner::new(store.clone(), Arc::new(std::sync::RwLock::new(None)), Arc::new(std::sync::RwLock::new(None))).tools();
         let tool = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
-        let fire = ToolContext { session_key: "agent:assistant:cron:hourly-calendar-check".into(), door: Door::Schedule, ..Default::default() };
         let user = store.ensure_local_user_id().unwrap();
         let items = || store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap();
+        let item = |id: &str| items().into_iter().find(|n| n.id == id).unwrap_or_else(|| panic!("{id}: {:#?}", items()));
 
-        let refused = tool("message_owner").execute_dyn(&fire, json!({ "message": "Nothing actionable right now." })).await;
-        assert!(refused.is_error && refused.content.contains("push_notification"), "{}", refused.content);
-        assert!(store.get_companion_chat_by_user("").unwrap().is_none(), "no chat was written");
-        assert!(items().is_empty());
+        let fire = ToolContext { session_key: "agent:assistant:cron:hourly-calendar-check".into(), door: Door::Schedule, ..Default::default() };
+        let r = tool("message_owner").execute_dyn(&fire, json!({ "message": "Tomorrow: packed Monday — three meetings from 9." })).await;
+        assert!(!r.is_error && r.content.contains("Inbox"), "{}", r.content);
+        let r = tool("push_notification").execute_dyn(&fire, json!({ "title": "Tomorrow", "message": "Tomorrow: packed Monday — four meetings from 9." })).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(items().len(), 1, "one briefing per schedule: {:#?}", items());
+        let briefing = item("briefing:agent:assistant:cron:hourly-calendar-check");
+        assert_eq!(briefing.body.as_deref(), Some("Tomorrow: packed Monday — four meetings from 9."));
+        assert!(briefing.read_at.is_none());
 
-        for text in ["Tomorrow: packed Monday — three meetings from 9.", "Tomorrow: packed Monday — four meetings from 9."] {
-            let r = tool("push_notification").execute_dyn(&fire, json!({ "title": "Tomorrow", "message": text })).await;
-            assert!(!r.is_error, "{}", r.content);
+        for (step, text) in [("agent:ops:workflow:run-1:pull-orders:0", "12 new orders."), ("agent:ops:workflow:run-1:report:0", "Orders sheet updated: 12 new.")] {
+            let step = ToolContext { session_key: step.into(), door: Door::Workflow, ..Default::default() };
+            assert!(!tool("message_owner").execute_dyn(&step, json!({ "message": text })).await.is_error);
         }
-        let briefings = items();
-        assert_eq!(briefings.len(), 1, "one briefing per schedule: {briefings:#?}");
-        assert_eq!(briefings[0].id, "briefing:agent:assistant:cron:hourly-calendar-check");
-        assert_eq!(briefings[0].body.as_deref(), Some("Tomorrow: packed Monday — four meetings from 9."));
-        assert!(briefings[0].read_at.is_none());
+        let run = item("briefing:workflow:run-1");
+        assert_eq!(run.body.as_deref(), Some("Orders sheet updated: 12 new."));
+        assert_eq!((run.action_url.as_deref(), run.agent_id.as_deref()), (Some("/ops/runs/run-1"), Some("ops")), "it opens the run");
+        assert_eq!(items().len(), 2, "one item per workflow run");
 
         let asked = tool("push_notification").execute_dyn(&fire, json!({ "message": "Move the 9:00?", "options": ["Yes", "No"] })).await;
         assert!(!asked.is_error, "{}", asked.content);
         let chat = ToolContext { session_key: "agent:assistant:web".into(), ..Default::default() };
         assert!(!tool("push_notification").execute_dyn(&chat, json!({ "message": "Sheet synced." })).await.is_error);
-        assert_eq!(items().len(), 3, "a question and an update from chat are their own items");
+        assert_eq!(items().len(), 4, "a question and an update from chat are their own items");
+
+        let chats = store.list_chats(100, 0).unwrap();
+        assert!(chats.is_empty(), "no chat was written: {chats:#?}");
     }
 
     /// Answers the `inbox` tool hands the server, recorded.
