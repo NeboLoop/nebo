@@ -1,5 +1,5 @@
-//! The person's default web browser: which one it is, and how to start it
-//! with arguments of our own. The ONE place Nebo asks the OS — the
+//! The person's default web browser: which one it is, and how to open a
+//! link in a window of its own there. The ONE place Nebo asks the OS — the
 //! extension bridge's routing and the desktop app's sign-in window both read
 //! it here.
 //!
@@ -19,21 +19,37 @@ const SIGN_IN_WINDOW_SIZE: (u32, u32) = (520, 720);
 /// How a browser takes "open this in its own window".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
-    /// Chrome, Edge, Brave, Vivaldi, Opera, Chromium: `--app=<url>` opens a
-    /// window with no tabs or toolbar, in the person's own profile.
+    /// Chrome, Edge, Brave, Vivaldi, Opera (and GX), Chromium and its forks:
+    /// `--app=<url>` opens a window with no tabs or toolbar, in the person's
+    /// own profile.
     Chromium,
-    /// `-new-window <url>`: a window of its own, not a tab in theirs.
+    /// Firefox and its forks: `-new-window <url>`, a window of its own, not a
+    /// tab in theirs.
     Firefox,
-    /// No way to ask for a window (Safari, Arc, anything unknown).
+    /// GNOME Web: `--new-window <url>`.
+    Epiphany,
+    /// Falkon: `--open-window=<url>`.
+    Falkon,
+    /// Safari has no command line: AppleScript makes it a new window and
+    /// sizes it (macOS asks the person once to let Nebo control Safari).
+    Safari,
+    /// Arc opens links from other apps in Little Arc, its own small window,
+    /// by default; it has no switch for one, so the ordinary open is it.
+    Arc,
+    /// No known way to ask for a window.
     Other,
 }
 
 /// The default browser, and the command that starts it.
 #[derive(Debug, Clone)]
 pub struct DefaultBrowser {
-    /// Short name: chrome, edge, brave, vivaldi, opera, chromium, firefox,
+    /// Short name: chrome, edge, brave, vivaldi, opera, chromium, thorium,
+    /// yandex, firefox, librewolf, waterfox, zen, floorp, epiphany, falkon,
     /// safari, arc — or `other`.
     pub name: &'static str,
+    /// What the OS calls it: a bundle id (macOS), the executable's last path
+    /// parts (Windows), a desktop entry and its program (Linux).
+    pub id: String,
     /// The program to run, and the arguments that come before ours.
     program: OsString,
     args: Vec<OsString>,
@@ -50,8 +66,9 @@ impl DefaultBrowser {
 /// program (Linux).
 fn identify(hint: &str) -> &'static str {
     let h = hint.to_lowercase();
-    // Order matters: Edge, Brave, Opera and Chromium before the "chrome"
-    // their names or vendors can contain.
+    let word = |w: &str| h.split(|c: char| !c.is_alphanumeric()).any(|x| x == w);
+    // Order matters: Edge, Brave, Opera and the Chromium forks before the
+    // "chrome" their names or vendors can contain.
     if h.contains("edge") {
         "edge"
     } else if h.contains("brave") {
@@ -60,15 +77,32 @@ fn identify(hint: &str) -> &'static str {
         "vivaldi"
     } else if h.contains("opera") {
         "opera"
-    } else if h.contains("chromium") {
+    } else if h.contains("thorium") {
+        "thorium"
+    } else if h.contains("yandex") {
+        "yandex"
+    } else if h.contains("chromium") || h.contains("cromite") || h.contains("supermium") {
         "chromium"
     } else if h.contains("chrome") {
         "chrome"
-    } else if h.contains("firefox") {
+    } else if h.contains("librewolf") {
+        "librewolf"
+    } else if h.contains("waterfox") {
+        "waterfox"
+    } else if h.contains("floorp") {
+        "floorp"
+    } else if word("zen") {
+        "zen"
+    } else if h.contains("firefox") || h.contains("mullvad") || h.contains("torbrowser") || h.contains("tor-browser") {
         "firefox"
+    } else if h.contains("epiphany") {
+        "epiphany"
+    } else if h.contains("falkon") {
+        "falkon"
     } else if h.contains("safari") {
         "safari"
-    } else if h.contains("thebrowser") || h.split(|c: char| !c.is_alphanumeric()).any(|w| w == "arc") {
+    } else if h.contains("company.thebrowser.browser") || word("arc") {
+        // Arc's bundle id; its sibling Dia (company.thebrowser.dia) is not Arc.
         "arc"
     } else {
         "other"
@@ -77,23 +111,83 @@ fn identify(hint: &str) -> &'static str {
 
 fn family_of(name: &str) -> Family {
     match name {
-        "chrome" | "edge" | "brave" | "vivaldi" | "opera" | "chromium" => Family::Chromium,
-        "firefox" => Family::Firefox,
+        "chrome" | "edge" | "brave" | "vivaldi" | "opera" | "chromium" | "thorium" | "yandex" => Family::Chromium,
+        "firefox" | "librewolf" | "waterfox" | "zen" | "floorp" => Family::Firefox,
+        "epiphany" => Family::Epiphany,
+        "falkon" => Family::Falkon,
+        "safari" => Family::Safari,
         // Arc is built on Chromium but is its own app: whether it honours
         // `--app` is unconfirmed, and a browser that ignores the switch opens
-        // nothing at all. It takes the plain open instead.
+        // nothing at all. Its own Little Arc is the window.
+        "arc" => Family::Arc,
         _ => Family::Other,
     }
 }
 
-/// The arguments that open `url` in a window of its own, or `None` when the
-/// browser has no way to ask for one.
+/// The arguments that open `url` in a window of its own, after the
+/// browser's own command, or `None` when that browser is not started that
+/// way (Safari, Arc, unknown).
 fn window_args(family: Family, url: &str) -> Option<Vec<OsString>> {
     let (w, h) = SIGN_IN_WINDOW_SIZE;
     match family {
         Family::Chromium => Some(vec![format!("--app={url}").into(), format!("--window-size={w},{h}").into()]),
         Family::Firefox => Some(vec!["-new-window".into(), url.into()]),
-        Family::Other => None,
+        Family::Epiphany => Some(vec!["--new-window".into(), url.into()]),
+        Family::Falkon => Some(vec![format!("--open-window={url}").into()]),
+        Family::Safari | Family::Arc | Family::Other => None,
+    }
+}
+
+/// Safari's new window: a new document at the URL, sized for a sign-in and
+/// brought to the front. The URL and the browser's bundle id arrive as
+/// arguments (`on run argv`), never as script text, so no link can change
+/// what the script does. `using terms from` keeps Safari's vocabulary while
+/// `application id` reaches the exact app that is the default (Safari or
+/// Safari Technology Preview). `launch` first: a Safari that a `make` starts
+/// opens its own start window after ours, and the resize lands on that one.
+/// Only the `make` can fail the script: once the window is open, a size
+/// Safari refuses must not send the caller on to open the link again.
+const SAFARI_WINDOW_SCRIPT: &str = r#"on run argv
+	set {theURL, appId, w, h} to argv
+	using terms from application "Safari"
+		tell application id appId
+			launch
+			make new document with properties {URL:theURL}
+			try
+				set {l, t} to bounds of front window
+				set bounds of front window to {l, t, l + (w as integer), t + (h as integer)}
+			end try
+			activate
+		end tell
+	end using terms from
+end run"#;
+
+/// The `osascript` arguments for Safari's new window.
+fn safari_args(bundle_id: &str, url: &str) -> Vec<OsString> {
+    let (w, h) = SIGN_IN_WINDOW_SIZE;
+    vec!["-e".into(), SAFARI_WINDOW_SCRIPT.into(), url.into(), bundle_id.into(), w.to_string().into(), h.to_string().into()]
+}
+
+/// Run Safari's new window and wait for it: `false` when macOS refused (the
+/// person said no to "Nebo wants to control Safari") or it failed.
+fn open_safari_window(browser: &DefaultBrowser, url: &str) -> bool {
+    let out = command::new::<std::process::Command>("osascript", command::Console::Hidden)
+        .args(safari_args(&browser.id, url))
+        .stdin(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            info!(browser = browser.name, "opened a window in the default browser");
+            true
+        }
+        Ok(o) => {
+            warn!(browser = browser.name, error = %String::from_utf8_lossy(&o.stderr).trim(), "Safari did not open a window");
+            false
+        }
+        Err(e) => {
+            warn!(browser = browser.name, error = %e, "osascript failed to start");
+            false
+        }
     }
 }
 
@@ -104,7 +198,10 @@ fn window_args(family: Family, url: &str) -> Option<Vec<OsString>> {
 ///
 /// `false` when that can't be done here (not an http(s) link, no default
 /// browser found, a browser with no such window, or it failed to start): the
-/// caller opens the link the ordinary way.
+/// caller opens the link the ordinary way — for Arc, that is Little Arc.
+///
+/// Blocking (Safari's waits on AppleScript, and on the person the first
+/// time macOS asks them): call it off an async runtime's workers.
 pub fn open_window(url: &str) -> bool {
     match reqwest::Url::parse(url) {
         Ok(u) if matches!(u.scheme(), "https" | "http") => {}
@@ -113,8 +210,16 @@ pub fn open_window(url: &str) -> bool {
     let Some(browser) = detect() else {
         return false;
     };
-    let Some(ours) = window_args(browser.family(), url) else {
-        info!(browser = browser.name, "default browser has no app window; opening the link plainly");
+    let family = browser.family();
+    if family == Family::Safari {
+        return open_safari_window(&browser, url);
+    }
+    let Some(ours) = window_args(family, url) else {
+        if family == Family::Arc {
+            info!(browser = browser.name, "Arc opens links from other apps in Little Arc; opening the link plainly");
+        } else {
+            info!(browser = browser.name, id = %browser.id, "default browser has no window switch; opening the link plainly");
+        }
         return false;
     };
     let mut cmd = command::new::<std::process::Command>(&browser.program, command::Console::Detached);
@@ -157,6 +262,7 @@ fn detect_os() -> Option<DefaultBrowser> {
     let bundle_id = NSBundle::bundleWithURL(&app)?.bundleIdentifier()?.to_string();
     Some(DefaultBrowser {
         name: identify(&bundle_id),
+        id: bundle_id,
         // `-n`: a new launch, so the arguments reach a browser that is
         // already running (Chromium hands them to its open instance).
         program: "open".into(),
@@ -186,10 +292,13 @@ fn detect_os() -> Option<DefaultBrowser> {
     if !exe.is_file() {
         return None;
     }
-    // Opera's executable is `launcher.exe`: its folder names it.
-    let folder = exe.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let stem = exe.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Some(DefaultBrowser { name: identify(&format!("{folder} {stem}")), program: exe.into_os_string(), args: Vec::new() })
+    // The executable and the two folders above it: Opera's executable is
+    // `launcher.exe` in `Opera GX`, Yandex's is `browser.exe` in
+    // `YandexBrowser\Application`. Never higher — the user folder's name is
+    // the person's, not the browser's.
+    let parts: Vec<String> = exe.with_extension("").iter().map(|c| c.to_string_lossy().into_owned()).collect();
+    let id = parts[parts.len().saturating_sub(3)..].join(" ");
+    Some(DefaultBrowser { name: identify(&id), id, program: exe.into_os_string(), args: Vec::new() })
 }
 
 #[cfg(target_os = "linux")]
@@ -212,8 +321,10 @@ fn detect_os() -> Option<DefaultBrowser> {
     }
     let program = tokens.remove(0);
     let base = std::path::Path::new(&program).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let id = format!("{desktop_id} {base}");
     Some(DefaultBrowser {
-        name: identify(&format!("{desktop_id} {base}")),
+        name: identify(&id),
+        id,
         program: program.into(),
         args: tokens.into_iter().map(OsString::from).collect(),
     })
@@ -315,17 +426,33 @@ mod tests {
         assert_eq!(identify("org.mozilla.firefox"), "firefox");
         assert_eq!(identify("com.apple.Safari"), "safari");
         assert_eq!(identify("company.thebrowser.Browser"), "arc");
-        // Windows: folder + executable
-        assert_eq!(identify("Application chrome"), "chrome");
-        assert_eq!(identify("Application msedge"), "edge");
-        assert_eq!(identify("Application brave"), "brave");
-        assert_eq!(identify("Opera launcher"), "opera");
-        assert_eq!(identify("Mozilla Firefox firefox"), "firefox");
+        assert_eq!(identify("company.thebrowser.dia"), "other");
+        assert_eq!(identify("com.apple.SafariTechnologyPreview"), "safari");
+        assert_eq!(identify("app.zen-browser.zen"), "zen");
+        assert_eq!(identify("org.mozilla.librewolf"), "librewolf");
+        assert_eq!(identify("org.torproject.torbrowser"), "firefox");
+        assert_eq!(identify("com.kagi.kagimacOS"), "other");
+        // Windows: the executable and the two folders above it
+        assert_eq!(identify("Chrome Application chrome"), "chrome");
+        assert_eq!(identify("Edge Application msedge"), "edge");
+        assert_eq!(identify("Brave-Browser Application brave"), "brave");
+        assert_eq!(identify("Programs Opera launcher"), "opera");
+        assert_eq!(identify("Programs Opera GX launcher"), "opera");
+        assert_eq!(identify("Vivaldi Application vivaldi"), "vivaldi");
+        assert_eq!(identify("YandexBrowser Application browser"), "yandex");
+        assert_eq!(identify("Thorium Application thorium"), "thorium");
+        assert_eq!(identify("Programs Mozilla Firefox firefox"), "firefox");
+        assert_eq!(identify("Programs LibreWolf librewolf"), "librewolf");
+        assert_eq!(identify("WindowsApps TheBrowserCompany.Arc_1.0.0.0_x64__ttt1ap7aakyb4 Arc"), "arc");
         // Linux: desktop id + program
         assert_eq!(identify("google-chrome.desktop google-chrome-stable"), "chrome");
         assert_eq!(identify("microsoft-edge.desktop microsoft-edge-stable"), "edge");
         assert_eq!(identify("firefox_firefox.desktop env"), "firefox");
-        assert_eq!(identify("org.gnome.Epiphany.desktop epiphany"), "other");
+        assert_eq!(identify("org.gnome.Epiphany.desktop epiphany"), "epiphany");
+        assert_eq!(identify("org.kde.falkon.desktop falkon"), "falkon");
+        assert_eq!(identify("waterfox.desktop waterfox"), "waterfox");
+        assert_eq!(identify("one.ablaze.floorp.desktop flatpak"), "floorp");
+        assert_eq!(identify("org.qutebrowser.qutebrowser.desktop qutebrowser"), "other");
     }
 
     #[test]
@@ -335,10 +462,24 @@ mod tests {
             window_args(family_of("edge"), url).unwrap(),
             vec![OsString::from(format!("--app={url}")), OsString::from("--window-size=520,720")]
         );
+        assert_eq!(window_args(family_of("yandex"), url).unwrap()[0], OsString::from(format!("--app={url}")));
         assert_eq!(window_args(family_of("firefox"), url).unwrap(), vec![OsString::from("-new-window"), OsString::from(url)]);
+        assert_eq!(window_args(family_of("zen"), url).unwrap(), vec![OsString::from("-new-window"), OsString::from(url)]);
+        assert_eq!(window_args(family_of("epiphany"), url).unwrap(), vec![OsString::from("--new-window"), OsString::from(url)]);
+        assert_eq!(window_args(family_of("falkon"), url).unwrap(), vec![OsString::from(format!("--open-window={url}"))]);
+        // Safari's window is AppleScript's, Arc's is Little Arc.
         assert!(window_args(family_of("safari"), url).is_none());
         assert!(window_args(family_of("arc"), url).is_none());
         assert!(window_args(family_of("other"), url).is_none());
+    }
+
+    #[test]
+    fn safari_gets_the_link_as_an_argument_never_as_script() {
+        let url = r#"https://x.test/?q="end tell" & do shell script "id""#;
+        let args = safari_args("com.apple.Safari", url);
+        assert_eq!(args[0], OsString::from("-e"));
+        assert_eq!(args[1], OsString::from(SAFARI_WINDOW_SCRIPT));
+        assert_eq!(&args[2..], &[url, "com.apple.Safari", "520", "720"].map(OsString::from));
     }
 
     #[test]
