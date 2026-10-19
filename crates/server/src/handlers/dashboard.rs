@@ -47,6 +47,12 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
         .store
         .count_chat_turns_by_day(history_start)
         .map_err(to_error_response)?;
+    // An employee's prompt schedule fires in its own thread; each fire is a
+    // run, counted and listed with the workflow runs.
+    let fires = state
+        .store
+        .engine_prompt_schedule_fires_since(history_start, 2000)
+        .map_err(to_error_response)?;
 
     let name_of: HashMap<String, String> = agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect();
     let name = |id: &str| name_of.get(id).cloned().unwrap_or_else(|| id.to_string());
@@ -197,6 +203,16 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             *per_employee.entry(agent_id.to_string()).or_default() += n;
         }
     }
+    for r in &fires {
+        let Some(day) = local_day(r.started_at.unwrap_or(r.created_at)) else { continue };
+        let d = days.entry(day.clone()).or_insert_with(|| DashboardDay { day, done: 0, skipped: 0, stopped: 0, waiting: 0, chat_turns: 0 });
+        match fire_outcome(r) {
+            "done" => d.done += 1,
+            "skipped" => d.skipped += 1,
+            _ => d.stopped += 1,
+        }
+        *per_employee.entry(fire_agent(r).to_string()).or_default() += 1;
+    }
     for (day, agent_id, count) in &chat_turns {
         let d = days.entry(day.clone()).or_insert_with(|| DashboardDay { day: day.clone(), done: 0, skipped: 0, stopped: 0, waiting: 0, chat_turns: 0 });
         d.chat_turns += *count as u32;
@@ -250,20 +266,29 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             }
         })
         .collect();
-    for r in runs.iter().take(RECENT_RUNS as usize) {
-        let agent_id = types::keyparser::agent_id_from_workflow_id(&r.workflow_id).unwrap_or("").to_string();
-        let outcome = outcome_of(&r.status, r.started_at, now_ts);
-        recent_runs.push(DashboardRun {
-            id: r.id.clone(),
-            agent_name: name(&agent_id),
-            agent_id,
-            title: r.trigger_detail.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| r.trigger_type.clone()),
-            started_at: r.started_at,
-            ended_at: r.completed_at,
-            outcome: outcome.into(),
-            detail: run_detail(outcome, r),
-        });
-    }
+    // The newest stored runs: workflow runs and prompt-schedule fires.
+    let mut stored: Vec<DashboardRun> = runs
+        .iter()
+        .take(RECENT_RUNS as usize)
+        .map(|r| {
+            let agent_id = types::keyparser::agent_id_from_workflow_id(&r.workflow_id).unwrap_or("").to_string();
+            let outcome = outcome_of(&r.status, r.started_at, now_ts);
+            DashboardRun {
+                id: r.id.clone(),
+                agent_name: name(&agent_id),
+                agent_id,
+                title: r.trigger_detail.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| r.trigger_type.clone()),
+                started_at: r.started_at,
+                ended_at: r.completed_at,
+                outcome: outcome.into(),
+                detail: run_detail(outcome, r),
+            }
+        })
+        .chain(fires.iter().take(RECENT_RUNS as usize).map(|r| fire_run(r, &name)))
+        .collect();
+    stored.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    stored.truncate(RECENT_RUNS as usize);
+    recent_runs.extend(stored);
 
     let temporary_work = state
         .store
@@ -364,6 +389,52 @@ fn run_detail(outcome: &str, r: &db::models::WorkflowRun) -> String {
     }
 }
 
+/// The employee an ended prompt-schedule fire belongs to: a job without one
+/// runs as the primary employee.
+fn fire_agent(r: &db::EngineRun) -> &str {
+    if r.agent_id.is_empty() { tools::team_tool::PRIMARY_AGENT_ID } else { &r.agent_id }
+}
+
+/// How an ended prompt-schedule fire went, in a run's words: done, skipped
+/// (triage found nothing to do, so it never ran) or stopped.
+fn fire_outcome(r: &db::EngineRun) -> &'static str {
+    match (r.state.as_str(), r.summary.as_str()) {
+        ("done", "skipped") => "skipped",
+        ("done", _) => "done",
+        _ => "stopped",
+    }
+}
+
+/// An ended prompt-schedule fire as a row of the runs table: who ran, when,
+/// which schedule and how it ended. Status only — what the run said stays
+/// in its own thread.
+fn fire_run(r: &db::EngineRun, name: &dyn Fn(&str) -> String) -> DashboardRun {
+    let agent_id = fire_agent(r).to_string();
+    let inputs: serde_json::Value = r.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let outcome = fire_outcome(r);
+    let detail = match outcome {
+        "done" => "Done".to_string(),
+        "skipped" => "Nothing to do".to_string(),
+        _ => r.error.as_deref().map(owner_wording).filter(|e| !e.is_empty()).map(|e| upper_first(&e)).unwrap_or_else(|| "Stopped".to_string()),
+    };
+    DashboardRun {
+        id: r.id.clone(),
+        agent_name: name(&agent_id),
+        agent_id,
+        title: inputs["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("Schedule").to_string(),
+        started_at: r.started_at.unwrap_or(r.created_at),
+        ended_at: r.ended_at,
+        outcome: outcome.into(),
+        detail,
+    }
+}
+
+/// The local calendar day of `ts`, as the run and chat counts' SQL reads it
+/// (`date(.., 'localtime')`).
+fn local_day(ts: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(ts, 0).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+}
+
 /// A run's error or exit reason as the owner should read it: the evaluator's
 /// "Step 2/8 evaluator:" bookkeeping dropped, a guard's counter turned into
 /// what happened, everything else its first line.
@@ -449,6 +520,45 @@ mod tests {
         assert_eq!(outcome_of("exited", 0, now), "skipped");
         assert_eq!(outcome_of("failed", 0, now), "stopped");
         assert_eq!(outcome_of("suspended", 0, now), "waiting");
+    }
+
+    /// A prompt schedule's ended fire is a row of the runs table: who, when,
+    /// which schedule, how it ended — never what the run said. A job without
+    /// an employee is the primary employee's.
+    #[test]
+    fn a_schedule_fire_is_a_run_row_with_status_only() {
+        let fire = |agent: &str, state: &str, summary: &str, error: Option<&str>| db::EngineRun {
+            id: "f1".into(),
+            kind: "task".into(),
+            state: state.into(),
+            session_key: "cron-hourly-calendar-check".into(),
+            agent_id: agent.into(),
+            lane: "main".into(),
+            parent_run_id: None,
+            definition: None,
+            inputs: Some(r#"{"job_id":2101,"name":"hourly-calendar-check","manual":false}"#.into()),
+            external_ref: Some("cron:2101".into()),
+            current_wait_id: None,
+            attempts: 1,
+            resume_attempted: 0,
+            result: Some("It's 4 PM Sunday — nothing actionable to act on right now.".into()),
+            error: error.map(str::to_string),
+            summary: summary.into(),
+            created_at: 100,
+            started_at: Some(110),
+            ended_at: Some(140),
+        };
+        let name = |id: &str| if id == "assistant" { "Jetson".to_string() } else { id.to_string() };
+        let row = fire_run(&fire("assistant", "done", "", None), &name);
+        assert_eq!(
+            (row.agent_name.as_str(), row.title.as_str(), row.started_at, row.ended_at, row.outcome.as_str(), row.detail.as_str()),
+            ("Jetson", "hourly-calendar-check", 110, Some(140), "done", "Done")
+        );
+        assert_eq!(fire_run(&fire("", "done", "", None), &name).agent_id, "assistant");
+        let skipped = fire_run(&fire("assistant", "done", "skipped", None), &name);
+        assert_eq!((skipped.outcome.as_str(), skipped.detail.as_str()), ("skipped", "Nothing to do"));
+        let failed = fire_run(&fire("assistant", "failed", "", Some("provider timed out\nretrying")), &name);
+        assert_eq!((failed.outcome.as_str(), failed.detail.as_str()), ("stopped", "Provider timed out"));
     }
 
     #[test]

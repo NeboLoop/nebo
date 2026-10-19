@@ -896,6 +896,29 @@ impl Store {
         Ok(rows)
     }
 
+    /// The ended fires of employees' prompt schedules (`task` runs of a job
+    /// whose task type is `agent`) that started at or after `since`, newest
+    /// first. Each is a run: the Workforce counts and lists it with the
+    /// workflow runs, never as a chat.
+    pub fn engine_prompt_schedule_fires_since(&self, since: i64, limit: i64) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs
+                 WHERE kind = 'task' AND state IN ('done', 'failed', 'cancelled', 'stopped')
+                   AND COALESCE(started_at, created_at) >= ?1
+                   AND external_ref IN (SELECT 'cron:' || id FROM cron_jobs WHERE task_type = 'agent')
+                 ORDER BY COALESCE(started_at, created_at) DESC, rowid DESC LIMIT ?2"
+            ))
+            .db_err("engine_prompt_schedule_fires_since")?;
+        let rows = stmt
+            .query_map(params![since, limit], row_to_run)
+            .db_err("engine_prompt_schedule_fires_since")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_prompt_schedule_fires_since")?;
+        Ok(rows)
+    }
+
     pub fn engine_count_runs_for_ref(&self, external_ref: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -1740,6 +1763,45 @@ mod tests {
 
     /// The next wake is the earliest undelivered timer — not a signal, not a
     /// delivered timer.
+    /// A prompt schedule's fires are runs: the ended ones are listed (a
+    /// done, a skipped and a failed fire), a live one and a shell job's are
+    /// not. Its prompt, written into its own thread, is not a chat turn; the
+    /// owner's own message in his conversation is.
+    #[test]
+    fn a_prompt_schedules_fires_are_runs_not_chats() {
+        use crate::models::{ScheduleCreator, ScheduleProvenance};
+        let s = store();
+        let by = ScheduleProvenance::new(ScheduleCreator::Chat, "").in_run(None, "agent:ava:thread:X");
+        let check = s.create_cron_job("hourly-calendar-check", "0 7-19 * * *", "", "agent", Some("Check the calendars"), None, None, true, Some("ava"), None, None, &by).unwrap();
+        let shell = s.create_cron_job("tidy", "0 9 * * *", "ls", "bash", None, None, None, true, Some("ava"), None, None, &by).unwrap();
+        let fire = |job: &crate::models::CronJob, at: i64, end: Option<&str>| {
+            let id = s.queue_cron_run(job, false, false).unwrap();
+            s.engine_set_run_state(&id, "running", at, None).unwrap();
+            if let Some(end) = end {
+                s.engine_set_run_state(&id, end, at + 30, None).unwrap();
+            }
+            id
+        };
+        let done = fire(&check, 1_000, Some("done"));
+        let skipped = fire(&check, 2_000, Some("done"));
+        s.engine_set_run_result_tag(&skipped, "skipped").unwrap();
+        let failed = fire(&check, 3_000, Some("failed"));
+        fire(&check, 4_000, None);
+        fire(&shell, 5_000, Some("done"));
+        let listed: Vec<String> = s.engine_prompt_schedule_fires_since(0, 50).unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(listed, [failed, skipped, done], "ended prompt fires, newest first");
+        assert!(s.engine_prompt_schedule_fires_since(2_500, 50).unwrap().len() == 1, "since bounds it");
+
+        for (key, chat) in [("agent:ava:cron:hourly-calendar-check", "C"), ("agent:ava:thread:X", "X")] {
+            s.create_session(key, Some(key), None, None, None).unwrap();
+            s.create_chat_for_session(chat, key, "t", None).unwrap();
+        }
+        s.create_chat_message("m-fire", "C", "user", "Check the calendars", None).unwrap();
+        s.create_chat_message("m-owner", "X", "user", "What's on tomorrow?", None).unwrap();
+        let turns = s.count_chat_turns_by_day(0).unwrap();
+        assert_eq!(turns.iter().map(|(_, agent, n)| (agent.as_str(), *n)).collect::<Vec<_>>(), [("ava", 1)], "{turns:?}");
+    }
+
     #[test]
     fn next_timer_due_is_the_earliest_undelivered_timer() {
         let s = store();

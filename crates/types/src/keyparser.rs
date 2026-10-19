@@ -255,15 +255,17 @@ impl Conversation {
 /// chats are the owner's conversations, which are its threads with
 /// colleagues or teams, and which are not conversations at all (`None`):
 /// internal help surfaces (`agent:<id>:help:…`), a workflow run's activity
-/// sessions (`agent:<id>:workflow:…`), and keys that are not an employee's.
-/// The conversation list, the latest conversation and the count all read it.
+/// sessions (`agent:<id>:workflow:…`), a schedule's own thread, where its
+/// fires run (`agent:<id>:cron:<job>`: each fire is a run, never a message
+/// to the owner), and keys that are not an employee's. The conversation
+/// list, the latest conversation and the count all read it.
 pub fn conversation_of(key: &str) -> Option<Conversation> {
     let info = parse_session_key(key);
     if info.agent_id.is_empty() {
         return None;
     }
     match info.channel.as_str() {
-        "help" | "workflow" => None,
+        "help" | "workflow" | "cron" => None,
         COWORKER_CHANNEL => {
             let ctx = info.rest.split_once(':').map(|(_, ctx)| ctx).unwrap_or("");
             Some(match ctx.split_once(':') {
@@ -405,7 +407,14 @@ mod tests {
             conversation_of("agent:cc:coworker:team:dev-1:project:p-9"),
             Some(Conversation::Team { team_id: "dev-1".to_string(), project_id: Some("p-9".to_string()) })
         );
-        for none in ["agent:cc:help:workflow", "agent:cc:workflow:run-1:step::0", "team:dev-1", "proof:dm:x", ""] {
+        for none in [
+            "agent:cc:help:workflow",
+            "agent:cc:workflow:run-1:step::0",
+            "agent:cc:cron:hourly-calendar-check",
+            "team:dev-1",
+            "proof:dm:x",
+            "",
+        ] {
             assert_eq!(conversation_of(none), None, "{none}");
         }
         assert_eq!(conversation_of("agent:cc:coworker:team:dev-1").map(|c| c.kind()), Some("team"));

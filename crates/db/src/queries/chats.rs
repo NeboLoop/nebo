@@ -1453,21 +1453,25 @@ impl Store {
     /// (local day, agent id, count) of owner messages in employee threads at
     /// or after `since` (unix seconds): one chat turn per message the owner
     /// sent. The agent id is the segment after "agent:" in the session name.
+    /// Only conversations count ([`Conversations::All`]): a schedule's fire
+    /// writes its prompt into its own thread as the owner's message, and is
+    /// a run, not a chat.
     pub fn count_chat_turns_by_day(
         &self,
         since: i64,
     ) -> Result<Vec<(String, String, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT date(m.created_at, 'unixepoch', 'localtime') AS day,
                         substr(c.session_name, 7, instr(substr(c.session_name, 7), ':') - 1) AS agent_id,
                         COUNT(*)
                  FROM chat_messages m JOIN chats c ON c.id = m.chat_id
                  WHERE m.role = 'user' AND m.created_at >= ?1
-                   AND c.session_name LIKE 'agent:%:%'
+                   AND c.session_name LIKE 'agent:%:%' AND {}
                  GROUP BY day, agent_id",
-            )
+                Conversations::All.sql("c.session_name")
+            ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![since], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))

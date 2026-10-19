@@ -255,6 +255,9 @@ pub enum Watching {
     Live,
     /// No one is watching; the final message is what gets read.
     Unattended,
+    /// A timer's fire (a schedule's, a heartbeat's): no one is watching, and
+    /// what the owner needs reaches him only through his Inbox.
+    Scheduled,
     /// A live voice call: each word is heard as it is said.
     Call,
 }
@@ -264,6 +267,17 @@ impl From<tools::ExecutionMode> for Watching {
         match m {
             tools::ExecutionMode::Interactive => Watching::Live,
             tools::ExecutionMode::Autonomous => Watching::Unattended,
+        }
+    }
+}
+
+impl Watching {
+    /// Who reads a turn that came in through `door` in `mode`: a timer's
+    /// fire is read by no one, whatever its mode.
+    pub fn of(mode: tools::ExecutionMode, door: &types::permissions::Door) -> Self {
+        match door {
+            types::permissions::Door::Schedule | types::permissions::Door::Heartbeat => Watching::Scheduled,
+            _ => mode.into(),
         }
     }
 }
@@ -378,6 +392,10 @@ pub fn environment_fields(
     let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
+        Watching::Scheduled => {
+            "no one is watching this run. What the owner needs to know or act on goes to their Inbox \
+             (push_notification); when there is nothing for them, end without posting anything"
+        }
         Watching::Call => "this is a live call: every word you say is heard as you say it",
     };
     let cloud = tools::cloud_bot();
@@ -438,6 +456,22 @@ pub fn owner_now(now: chrono::DateTime<chrono::Utc>, timezone: Option<&str>) -> 
 #[cfg(test)]
 mod owner_now_tests {
     use super::*;
+
+    /// A schedule's or a heartbeat's fire is told its words reach the owner
+    /// only through the Inbox, and that a fire with nothing for him posts
+    /// nothing; a workflow step still hands on its final message.
+    #[test]
+    fn a_timers_fire_is_told_the_inbox_is_how_it_reaches_the_owner() {
+        use types::permissions::Door;
+        let auto = tools::ExecutionMode::Autonomous;
+        assert_eq!(Watching::of(auto, &Door::Schedule), Watching::Scheduled);
+        assert_eq!(Watching::of(auto, &Door::Heartbeat), Watching::Scheduled);
+        assert_eq!(Watching::of(auto, &Door::Workflow), Watching::Unattended);
+        assert_eq!(Watching::of(tools::ExecutionMode::Interactive, &Door::Chat), Watching::Live);
+        let told = environment_fields(None, "cron", Watching::Scheduled, None, None);
+        let watching = &told.iter().find(|(k, _)| k == "Watching").unwrap().1;
+        assert!(watching.contains("Inbox (push_notification)") && watching.contains("end without posting"), "{watching}");
+    }
 
     fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc)
