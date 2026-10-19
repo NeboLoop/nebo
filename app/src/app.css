@@ -946,6 +946,12 @@
   border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-base-100));
   box-shadow: none;
 }
+/* What an ask is about (the brief, the draft), above its question: the
+   owner reads what he is deciding on beside the choices. Long ones scroll
+   inside the card, which keeps the question and its options in view. */
+.ask-context {
+  @apply mb-3 max-h-80 overflow-y-auto rounded-lg border border-base-300 bg-base-100 px-3 py-2 text-sm [&_p]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0;
+}
 .ask-select {
   @apply w-full;
 }

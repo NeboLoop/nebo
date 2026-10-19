@@ -2894,8 +2894,12 @@ pub(crate) mod tests {
     /// browser (run_command 1,151, +95): 17,509. The owner, 2026-10-17: a
     /// fan-out stalled near 37 helpers a response because every launch
     /// repeated the whole brief; delegate takes `pieces`, the brief once and
-    /// a task per helper (delegate +285): 17,794.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 17_794;
+    /// a task per helper (delegate +285): 17,794. The owner, 2026-10-19:
+    /// "Want this every morning?" sat far from the brief it meant and was
+    /// asked twice; ask_owner's `context` puts what he decides on above the
+    /// question, and the card is the one place the question appears
+    /// (ask_owner 1,353, +373): 18,167.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_167;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

@@ -183,3 +183,32 @@ describe('ask cards', () => {
 		expect(rule('.ask-receipt')).not.toMatch(/bg-|border|shadow/);
 	});
 });
+
+// 2026-10-19: "Want this waiting for you every morning?" sat under a
+// collapsed tool row holding the brief it meant. What the owner decides on
+// is on the card, above the question; the question stays the question.
+describe('an ask carries what it is about', () => {
+	const brief = 'Two meetings today. **Dana** is waiting on the lease.';
+	const withContext = [{ type: 'options' as const, context: brief, options: ['Every weekday at 7:30 AM', 'Not now'] }];
+	const card = (response?: string) =>
+		render(AskWidget, { props: { requestId: 'r2', prompt: 'Want this waiting for you every morning?', widgets: withContext, response, onSubmit: () => {} } }).body;
+
+	it('shows the brief on the open card, above the question', () => {
+		const html = card();
+		expect(html).toContain('ask-context');
+		expect(html).toContain('<strong>Dana</strong>');
+		expect(html.indexOf('ask-context')).toBeLessThan(html.indexOf('Want this waiting'));
+		expect(text(html).split('Want this waiting for you every morning?').length - 1).toBe(1);
+	});
+
+	it('keeps it in the answered receipt, folded with the question', () => {
+		const html = card('Not now');
+		expect(summary(html)).toContain('Want this waiting for you every morning?');
+		expect(summary(html)).not.toContain('Dana');
+		expect(html).toContain('<strong>Dana</strong>');
+	});
+
+	it('shows no context box for a question that stands alone', () => {
+		expect(ask()).not.toContain('ask-context');
+	});
+});

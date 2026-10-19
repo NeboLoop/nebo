@@ -112,6 +112,12 @@ impl AskOwnerTool {
         if input["style"].as_str() == Some("select") {
             widgets[0]["style"] = json!("select");
         }
+        // What he is deciding on travels on the card, above the question:
+        // the brief, the draft, the plan itself, not a tool row far above
+        // (2026-10-19: "Want this every morning?" under a collapsed brief).
+        if let Some(context) = input["context"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
+            widgets[0]["context"] = json!(context);
+        }
         match ctx.ask_user(question, widgets).await {
             Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
@@ -184,7 +190,9 @@ impl DynTool for AskOwnerTool {
          - Only for real ambiguity you can't resolve: readings that lead to different work, or a choice only the owner can make.\n\
          - A clear instruction your permission mode allows is carried out, never asked back to confirm it or how you'll do it.\n\
          - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer.\n\
-         - 6 or more options: set `style` to \"select\" for a dropdown."
+         - 6 or more options: set `style` to \"select\" for a dropdown.\n\
+         - About something you made or found (a brief, a draft, a plan)? Put it in `context`, not your message: the card shows it above the question.\n\
+         - The card is the one place the question appears: never write it in your message too."
             .to_string()
     }
 
@@ -193,6 +201,7 @@ impl DynTool for AskOwnerTool {
             "type": "object",
             "properties": {
                 "question": { "type": "string", "description": "The question, complete enough to answer without scrolling back." },
+                "context": { "type": "string", "description": "What he decides on, in markdown, shown above the question: the deliverable itself or a short summary." },
                 "options": { "type": "array", "items": { "type": "string" }, "description": "Short labels to choose from, the recommended one first. Leave out for a free answer." },
                 "multi_select": { "type": "boolean", "description": "Allow more than one option." },
                 "style": { "type": "string", "enum": ["buttons", "select"] }
@@ -301,6 +310,27 @@ mod tests {
         let id = card.error.clone().expect("the card has its request id");
         channels.lock().await.remove(&id).expect("the call waits on it").send(reply.to_string()).unwrap();
         (card, run.await.unwrap())
+    }
+
+    /// Live 2026-10-19: "Want this waiting for you every morning?" sat under
+    /// a collapsed tool row that held the brief it meant. What the owner is
+    /// deciding on travels on the card, above the question; the question
+    /// stays the question.
+    #[tokio::test]
+    async fn what_the_owner_decides_on_travels_on_the_card() {
+        let brief = "**Today**: 2 meetings; Dana is waiting on the lease.";
+        let q = json!({"question": "Want this every morning?", "context": format!("  {brief}\n"), "options": ["Weekdays at 7:30", "Not now"]});
+        let (card, r) = asked(q, "Not now").await;
+        assert_eq!(card.text, "Want this every morning?");
+        let widgets = card.widgets.expect("the card");
+        assert_eq!(widgets[0]["context"], brief);
+        assert!(!r.is_error, "{}", r.content);
+
+        // No context, or only whitespace: the card carries none.
+        let (card, _) = asked(json!({"question": "Which?", "context": "  ", "options": ["A", "B"]}), "A").await;
+        assert!(card.widgets.expect("the card")[0].get("context").is_none());
+        let schema = AskOwnerTool::new(Arc::new(Store::new(&tempfile::tempdir().unwrap().path().join("a.db").to_string_lossy()).unwrap()), crate::coworker::new_rail_cell()).schema();
+        assert!(schema["properties"]["context"].is_object());
     }
 
     /// Live 2026-10-02: asked "can you use the cards?", Chief drew an A2UI

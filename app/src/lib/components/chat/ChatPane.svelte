@@ -2202,6 +2202,9 @@
              it in the composer, like any reply. Skip lets the work go on
              without an answer. -->
         <div class="max-w-[640px] mt-3">
+          {#if msg.widgets?.[0]?.context}
+            <div dir="auto" class="ask-context prose prose-sm max-w-none">{@html renderMarkdown(msg.widgets[0].context)}</div>
+          {/if}
           <div dir="auto" class="text-sm leading-relaxed prose prose-sm max-w-none">
             {@html renderMarkdown(msg.prompt)}
           </div>
