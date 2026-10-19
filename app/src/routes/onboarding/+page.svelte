@@ -9,6 +9,7 @@
   import { logger } from '$lib/monitoring';
   import * as api from '$lib/api/nebo';
   import { neboAIOauthStart, neboAIOauthStatus } from '$lib/api/index';
+  import { openSignInWindow, signInFinished } from '$lib/utils/pluginSignIn';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
@@ -226,15 +227,10 @@
     neboAIAuthUrl = '';
 
     try {
-      // Start OAuth — backend opens browser with OAuth URL
       const result = await neboAIOauthStart('true');
       neboAIPendingState = result.state;
-
-      // Headless server (Android/remote) can't open a browser — open it here.
-      if (!result.opened) {
-        const popup = window.open(result.authorizeUrl, '_blank', 'noopener');
-        if (!popup) neboAIAuthUrl = result.authorizeUrl;
-      }
+      // A blocked popup (a browser page): show the link to open instead.
+      if (!openSignInWindow(result.authorizeUrl)) neboAIAuthUrl = result.authorizeUrl;
 
       // Set 3-minute timeout
       neboAITimeout = setTimeout(() => {
@@ -249,12 +245,14 @@
           const status = await neboAIOauthStatus(neboAIPendingState);
           if (status?.status === 'complete') {
             cleanupNeboAIOAuth();
+            signInFinished();
             neboAIConnected = true;
             neboAIEmail = status.email ?? '';
             neboAILoading = false;
             logger.info('NeboAI OAuth completed');
           } else if (status?.status === 'error') {
             cleanupNeboAIOAuth();
+            signInFinished();
             neboAILoading = false;
             neboAIError = status.error || $t('onboardingPage.oauthFailed');
           } else if (status?.status === 'expired') {

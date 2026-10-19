@@ -27,6 +27,7 @@ import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
 import { goto } from '$lib/nav';
+import { openSignInLink, signInFinished } from '$lib/utils/pluginSignIn';
 
 const log = logger.child({ component: 'WSListeners' });
 
@@ -263,13 +264,14 @@ export function attachWebSocketListeners(): void {
     ws.on('plugin_auth_url', (data: any) => {
       if (typeof window === 'undefined' || !data?.url) return;
       if (!opensHere(data, 'nowhere')) return;
-      // A blocked popup returns null. Silence here read as "Connect does
-      // nothing" — say so instead.
-      if (!window.open(data.url, '_blank')) {
-        addToast(get(t)('agentSettings.signInPopupBlocked'), 'error', 8000);
-      }
+      // A blocked popup toasts: silence here read as "Connect does nothing".
+      openSignInLink({ authUrl: data.url });
     })
   );
+  // A plugin's sign-in finished either way: Nebo comes back to the front if
+  // this page opened it.
+  unsubs.push(ws.on('plugin_auth_complete', () => signInFinished()));
+  unsubs.push(ws.on('plugin_auth_error', () => signInFinished()));
 
   // --- App update lifecycle (update store + error toast) ---
   unsubs.push(ws.on('update_available', (data: any) => onUpdateAvailable(data)));

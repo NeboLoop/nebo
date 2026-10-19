@@ -330,6 +330,42 @@ async fn set_keep_after_logout(webview: tauri::Webview, on: bool) -> Result<engi
         .map_err(|e| e.to_string())?
 }
 
+/// A sign-in (NeboAI, a plugin's or a connector's OAuth): in a window of its
+/// own in the person's default browser, so closing it leaves Nebo, not a tab
+/// among theirs (`browser::default_browser`). A browser with no such window
+/// gets the link the ordinary way. Google refuses sign-in inside an embedded
+/// web view, so it is never one of ours. From the main window only.
+#[tauri::command]
+async fn open_sign_in(webview: tauri::Webview, url: String) -> Result<(), String> {
+    if webview.label() != "main" {
+        return Err("only Nebo's own window opens a sign-in".into());
+    }
+    let windowed = {
+        let url = url.clone();
+        tauri::async_runtime::spawn_blocking(move || browser::default_browser::open_window(&url))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    if !windowed {
+        open_external(&url);
+    }
+    Ok(())
+}
+
+/// A sign-in this window opened has finished: Nebo comes back to the front,
+/// over the browser window it left the person in.
+#[tauri::command]
+fn sign_in_finished(app: tauri::AppHandle, webview: tauri::Webview) {
+    if webview.label() != "main" {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 /// The Login Items banner's button.
 #[tauri::command]
 fn open_login_items() {
@@ -974,7 +1010,9 @@ fn main() {
             engine_service,
             set_start_at_login,
             set_keep_after_logout,
-            open_login_items
+            open_login_items,
+            open_sign_in,
+            sign_in_finished
         ])
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())

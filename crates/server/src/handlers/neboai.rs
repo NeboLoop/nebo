@@ -93,10 +93,6 @@ pub struct OAuthStartParams {
 pub struct OAuthStartResponse {
     pub authorize_url: String,
     pub state: String,
-    /// Whether the server opened the system browser itself. False on headless
-    /// platforms (Android) or when spawning the opener failed — the client must
-    /// open `authorize_url` in that case.
-    pub opened: bool,
 }
 
 pub async fn oauth_start(
@@ -160,20 +156,13 @@ pub async fn oauth_start(
         );
     }
 
-    // Open browser (server-side, same pattern as Go implementation)
-    info!("Opening NeboAI OAuth URL in system browser");
-    let opened = match open::that(&authorize_url) {
-        Ok(()) => true,
-        Err(e) => {
-            warn!("Failed to open browser: {e}");
-            false
-        }
-    };
-
+    // The client that asked opens it — the desktop app in a sign-in window
+    // of the default browser, a browser page as a popup, the phone in its
+    // own browser — never this machine, which for a caller on another
+    // device (the phone, through the tunnel) is the wrong screen.
     Ok(Json(OAuthStartResponse {
         authorize_url,
         state: flow_state,
-        opened,
     }))
 }
 

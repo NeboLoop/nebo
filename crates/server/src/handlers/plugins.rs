@@ -545,8 +545,8 @@ fn spawn_plugin_login(
     );
 
     // Spawn background task — auth login may take minutes (user authorizes in browser).
-    // gws writes the OAuth URL to stderr, so we read both streams and open the URL
-    // with open::that(), mirroring how onboarding opens the browser.
+    // gws writes the OAuth URL to stderr, so we read both streams and hand the
+    // URL to the client that asked (`open_auth_url`), which opens the sign-in.
     let plugin_store_clone = state.plugin_store.clone();
     let neboai_api_url = state.config.neboai.api_url.clone();
     tokio::spawn(async move {
@@ -1783,8 +1783,8 @@ pub async fn plugin_proxy(
 }
 
 /// Hand the sign-in link to whoever opens it: the desktop app via a
-/// `plugin_auth_url` broadcast (`window.open()` there), or the remote
-/// caller waiting on its login response.
+/// `plugin_auth_url` broadcast (its sign-in window, `openSignInWindow`), or
+/// the remote caller waiting on its login response.
 fn open_auth_url(slug: &str, url: &str, link: &SignInLink) {
     match link {
         SignInLink::Broadcast(hub, origin) => {

@@ -11,8 +11,10 @@ vi.mock('$lib/api/nebo', () => ({
 	authLogin: (...a: unknown[]) => authLogin(...a),
 	authLoginAccount: (...a: unknown[]) => authLoginAccount(...a),
 }));
+const invoke = vi.fn();
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
-import { isSignInFor, openSignInLink, startPluginSignIn } from './pluginSignIn';
+import { isSignInFor, openSignInLink, openSignInWindow, signInFinished, startPluginSignIn } from './pluginSignIn';
 
 beforeEach(() => {
 	authLogin.mockClear();
@@ -55,7 +57,7 @@ describe('openSignInLink', () => {
 		vi.stubGlobal('window', { open });
 		authLogin.mockResolvedValueOnce({ started: true, authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' });
 		await startPluginSignIn('gmail', { multiAccount: false });
-		expect(open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?x=1', '_blank');
+		expect(open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?x=1', 'nebo-sign-in', 'popup,width=520,height=720');
 		vi.unstubAllGlobals();
 	});
 
@@ -64,6 +66,43 @@ describe('openSignInLink', () => {
 		vi.stubGlobal('window', { open });
 		openSignInLink({ started: true } as { authUrl?: string });
 		expect(open).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+});
+
+/**
+ * Every sign-in opened in a tab of the default browser: Nebo disappeared
+ * behind it and the person was lost (2026-10-19). The desktop app opens it in
+ * a window of its own and comes back to the front when it finishes.
+ */
+describe('openSignInWindow', () => {
+	beforeEach(() => invoke.mockReset().mockResolvedValue(undefined));
+	const flush = () => new Promise((r) => setTimeout(r, 0));
+
+	it('asks the desktop app for a sign-in window, and brings Nebo back when it finishes', async () => {
+		const open = vi.fn();
+		vi.stubGlobal('window', { open, __TAURI_INTERNALS__: {} });
+		expect(openSignInWindow('https://neboai.com/oauth/authorize?state=s')).toBe(true);
+		await flush();
+		expect(invoke).toHaveBeenCalledWith('open_sign_in', { url: 'https://neboai.com/oauth/authorize?state=s' });
+		expect(open).not.toHaveBeenCalled();
+		signInFinished();
+		await flush();
+		expect(invoke).toHaveBeenLastCalledWith('sign_in_finished');
+		vi.unstubAllGlobals();
+	});
+
+	it('never pulls Nebo forward for a sign-in this page did not open', async () => {
+		vi.stubGlobal('window', { open: vi.fn(), __TAURI_INTERNALS__: {} });
+		signInFinished();
+		await flush();
+		expect(invoke).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+
+	it('says so when a browser page blocks the popup', () => {
+		vi.stubGlobal('window', { open: vi.fn().mockReturnValue(null) });
+		expect(openSignInWindow('https://neboai.com/oauth/authorize')).toBe(false);
 		vi.unstubAllGlobals();
 	});
 });

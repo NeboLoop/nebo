@@ -3,6 +3,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import { neboAIOauthStart, neboAIOauthStatus } from '$lib/api/index';
+  import { openSignInWindow, signInFinished } from '$lib/utils/pluginSignIn';
   import { get } from 'svelte/store';
   import Building2 from 'lucide-svelte/icons/building-2';
   import { botName, botRenameUrl, loadBotName, openBotRename, offerMatchingRename } from '$lib/stores/botName';
@@ -158,11 +159,8 @@
       const result = await neboAIOauthStart();
       const pendingState = result.state;
 
-      // Headless server (Android/remote) can't open a browser — open it here.
-      if (!result.opened) {
-        const popup = window.open(result.authorizeUrl, '_blank', 'noopener');
-        if (!popup) authUrl = result.authorizeUrl;
-      }
+      // A blocked popup (a browser page): show the link to open instead.
+      if (!openSignInWindow(result.authorizeUrl)) authUrl = result.authorizeUrl;
 
       oauthTimeout = setTimeout(() => {
         if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
@@ -176,6 +174,7 @@
           if (status?.status === 'complete') {
             if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
             if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
+            signInFinished();
             connected = true;
             reconnecting = false;
             if (status.email) user.email = status.email;
@@ -183,6 +182,7 @@
           } else if (status?.status === 'error') {
             if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
             if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }
+            signInFinished();
             reconnecting = false;
             reconnectError = status.error || $t('settingsAccount.oauthFailed');
           } else if (status?.status === 'expired') {

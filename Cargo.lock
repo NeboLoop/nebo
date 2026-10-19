@@ -5947,6 +5947,8 @@ dependencies = [
  "nebo-command",
  "nebo-tls",
  "nebo-types",
+ "objc2-app-kit",
+ "objc2-foundation",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
@@ -5955,6 +5957,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

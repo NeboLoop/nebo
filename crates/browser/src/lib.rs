@@ -3,6 +3,7 @@ pub mod audit;
 pub mod cdp_bridge;
 pub mod chrome;
 pub mod config;
+pub mod default_browser;
 pub mod executor;
 pub mod extension_bridge;
 pub mod extension_relay;

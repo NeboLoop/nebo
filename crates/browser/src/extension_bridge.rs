@@ -566,61 +566,14 @@ fn teach_command(command: &str, session: &str) -> ToolRequest {
     }
 }
 
-/// Detect the system default browser on macOS.
-/// Returns a short name like "chrome", "brave", "firefox", "safari".
+/// The default browser's short name ("chrome", "brave", "firefox", "safari",
+/// …), or "unknown" when the OS doesn't say (`crate::default_browser`).
 async fn detect_default_browser() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        // Use macOS defaults command to read the HTTPS handler
-        let output = command::new::<tokio::process::Command>("defaults", command::Console::Hidden)
-            .args([
-                "read",
-                "com.apple.LaunchServices/com.apple.launchservices.secure",
-                "LSHandlers",
-            ])
-            .output()
-            .await;
-
-        if let Ok(output) = output {
-            let text = String::from_utf8_lossy(&output.stdout);
-            // Parse the plist-style output to find the https handler
-            // Format: { LSHandlerRoleAll = "com.brave.Browser"; LSHandlerURLScheme = https; }
-            let mut in_https_block = false;
-            for line in text.lines() {
-                let trimmed = line.trim();
-                if trimmed.contains("LSHandlerURLScheme")
-                    && trimmed.to_lowercase().contains("https")
-                {
-                    in_https_block = true;
-                }
-                if in_https_block && trimmed.contains("LSHandlerRoleAll") {
-                    // Extract the bundle ID
-                    if let Some(start) = trimmed.find('"') {
-                        if let Some(end) = trimmed[start + 1..].find('"') {
-                            let bundle_id = &trimmed[start + 1..start + 1 + end];
-                            return bundle_id_to_name(bundle_id);
-                        }
-                    }
-                    // Try without quotes (some plist formats)
-                    if let Some(eq) = trimmed.find('=') {
-                        let val = trimmed[eq + 1..]
-                            .trim()
-                            .trim_end_matches(';')
-                            .trim()
-                            .trim_matches('"');
-                        return bundle_id_to_name(val);
-                    }
-                }
-                // Reset if we hit a new block without finding the handler
-                if trimmed.contains('}') {
-                    in_https_block = false;
-                }
-            }
-        }
-    }
-
-    // Default fallback
-    "unknown".to_string()
+    tokio::task::spawn_blocking(|| crate::default_browser::detect().map(|b| b.name.to_string()))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]
@@ -712,25 +665,5 @@ mod teach_tests {
         assert_eq!(line["after"]["heading"], "Done", "what the flush carried is in the record");
         assert!(bridge.teach_stop(None).await.is_none(), "nothing is recording any more");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn bundle_id_to_name(bundle_id: &str) -> String {
-    let lower = bundle_id.to_lowercase();
-    if lower.contains("chrome") {
-        "chrome".to_string()
-    } else if lower.contains("brave") {
-        "brave".to_string()
-    } else if lower.contains("firefox") {
-        "firefox".to_string()
-    } else if lower.contains("safari") {
-        "safari".to_string()
-    } else if lower.contains("edge") {
-        "edge".to_string()
-    } else if lower.contains("arc") {
-        "arc".to_string()
-    } else {
-        bundle_id.to_string()
     }
 }

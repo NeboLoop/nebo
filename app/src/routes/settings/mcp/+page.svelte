@@ -26,7 +26,7 @@
   import Unlink from 'lucide-svelte/icons/unlink';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import type { ConnectorTool, McpIntegration, PermissionSwitch } from '$lib/api/neboComponents';
-  import { openSignInLink } from '$lib/utils/pluginSignIn';
+  import { openSignInLink, signInFinished } from '$lib/utils/pluginSignIn';
   import {
     allToolsEdits,
     allToolsValue,
@@ -135,6 +135,7 @@
         const r = (await api.connectIntegration(id)) as { success?: boolean; toolCount?: number };
         if (!r?.success) return;
         stopSignIn(id);
+        signInFinished();
         const { [id]: _, ...rest } = signIns;
         signIns = rest;
         patch(id, { isEnabled: true, connectionStatus: 'connected', toolCount: r.toolCount ?? 0, lastError: null });
