@@ -388,29 +388,32 @@ fn origin_chat(store: &Store, job: &CronJob) -> Option<(String, String)> {
 }
 
 /// Whether a prompt job's replies reach the owner through [`deliver_reply`]:
-/// a one-shot (a timer, a reminder) always does; a repeating one does when
-/// it was made in a conversation. The desktop's "completed" line would only
-/// repeat it.
-pub(crate) fn delivers_reply(store: &Store, job: &CronJob) -> bool {
-    job.task_type == "agent" && (db::is_one_shot(&job.schedule) || origin_chat(store, job).is_some())
+/// a one-shot (a timer, a reminder) does — it is the answer to what the
+/// owner asked for. A repeating one never does, wherever it was made. The
+/// desktop's "completed" line would only repeat it.
+fn delivers_reply(job: &CronJob) -> bool {
+    job.task_type == "agent" && db::is_one_shot(&job.schedule)
 }
 
-/// A prompt job's run ended with `reply`: the system, not the model, brings
-/// it to the owner, so a timer or a "tell me when" never depends on the
-/// model choosing to send it. Once per run (`started` is when it began):
+/// A one-shot prompt job's run ended with `reply`: the system, not the
+/// model, brings it to the owner, so a timer or a "tell me when" never
+/// depends on the model choosing to send it. Once per run (`started` is
+/// when it began):
 ///
 /// - Made in a conversation: the reply is posted there as the employee's
 ///   message, live in every open view of it. Not when the run already
 ///   wrote into that conversation itself (`message_owner`), so it is never
 ///   said twice.
-/// - A one-shot also lands in the Inbox, loud, and on the owner's phone
-///   (the hub copy pushes it) — unless the run already put one in the
-///   Inbox itself (`push_notification`).
+/// - It also lands in the Inbox, loud, and on the owner's phone (the hub
+///   copy pushes it) — unless the run already put one in the Inbox itself
+///   (`push_notification`).
 ///
-/// A repeating job is background work: a fire triage judged not worth a run
-/// never runs (`engine::triage_admits`), and one that runs posts only into
-/// the conversation it was made in, never a push per fire; made outside a
-/// conversation, it reaches the owner only with its own tools, as before.
+/// A repeating job is background work and its reply goes nowhere: the
+/// owner's chat stays the conversation he is having, never a report per
+/// fire (2026-10-18: an hourly calendar check said "nothing actionable"
+/// into his chat at 4 PM). Its fire is a run in the Workforce; what it has
+/// for the owner it posts to his Inbox itself (`push_notification`), and a
+/// fire with nothing for him posts nowhere.
 pub(crate) fn deliver_reply(
     store: &Store,
     hub: &crate::handlers::ws::ClientHub,
@@ -420,7 +423,7 @@ pub(crate) fn deliver_reply(
     reply: &str,
 ) {
     let reply = reply.trim();
-    if reply.is_empty() || !delivers_reply(store, job) {
+    if reply.is_empty() || !delivers_reply(job) {
         return;
     }
     let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID);
@@ -436,9 +439,6 @@ pub(crate) fn deliver_reply(
         } else if crate::chat_dispatch::post_assistant_message(store, hub, chat_id, Some(session_key), agent_id, reply, &[]).is_some() {
             info!(job = job.name.as_str(), chat = chat_id.as_str(), "scheduler: reply posted to the conversation the schedule was made in");
         }
-    }
-    if !db::is_one_shot(&job.schedule) {
-        return;
     }
     let user = store.ensure_local_user_id().unwrap_or_default();
     let posted_itself = store
@@ -964,16 +964,17 @@ mod tests {
     }
 
     /// Made outside a conversation, a one-shot reaches the Inbox only. A
-    /// repeating job is background work: made in a conversation, each run's
-    /// reply goes there, never to the Inbox; made outside one, nothing is
-    /// delivered for it. An empty reply delivers nothing.
+    /// repeating job is background work: its reply is delivered nowhere,
+    /// wherever it was made — the 4 PM "nothing actionable" of 2026-10-18
+    /// stays out of the owner's chat and out of his Inbox. An empty reply
+    /// delivers nothing.
     #[tokio::test]
     async fn where_each_kind_of_schedule_delivers() {
         let hub = crate::handlers::ws::ClientHub::new();
 
         let (_d, store, job) = delivery_rig(true, false);
         store.create_session("s-c", Some("agent:ava:cron:one-minute-timer"), None, None, None).unwrap();
-        assert!(delivers_reply(&store, &job));
+        assert!(delivers_reply(&job));
         deliver_reply(&store, &hub, "", &job, now_secs(), "Ding!");
         assert!(said(&store, "X").is_empty());
         let items = inbox(&store);
@@ -981,13 +982,13 @@ mod tests {
         assert_eq!(items[0].action_url.as_deref(), Some("/ava/threads/agent%3Aava%3Acron%3Aone-minute-timer"), "it opens the run's thread");
 
         let (_d, store, job) = delivery_rig(false, true);
-        assert!(delivers_reply(&store, &job));
-        deliver_reply(&store, &hub, "", &job, now_secs(), "Two meetings moved.");
-        assert_eq!(said(&store, "X"), ["Two meetings moved."]);
+        assert!(!delivers_reply(&job));
+        deliver_reply(&store, &hub, "", &job, now_secs(), "It's 4 PM Sunday, nothing actionable to act on right now.");
+        assert!(said(&store, "X").is_empty(), "the chat it was made in hears nothing per fire");
         assert!(inbox(&store).is_empty(), "no Inbox item per repeating fire");
 
         let (_d, store, job) = delivery_rig(false, false);
-        assert!(!delivers_reply(&store, &job));
+        assert!(!delivers_reply(&job));
         deliver_reply(&store, &hub, "", &job, now_secs(), "Nothing changed.");
         assert!(said(&store, "X").is_empty() && inbox(&store).is_empty());
 

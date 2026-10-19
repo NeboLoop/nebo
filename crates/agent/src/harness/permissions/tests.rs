@@ -896,7 +896,7 @@ async fn an_unattended_run_never_schedules_work() {
         c.session_key = key.into();
         let r = reg.execute(&c, "create_schedule", once(&format!("retry-{i}"))).await;
         assert!(r.is_error && r.content.contains("can't create, turn on or start"), "{door:?}: {}", r.content);
-        assert!(r.content.contains("message_owner"), "the refusal says how to report the need: {}", r.content);
+        assert!(r.content.contains("push_notification"), "the refusal says how to report the need: {}", r.content);
         for (tool, input) in [
             ("run_schedule_now", json!({ "name": "x" })),
             ("set_schedule_paused", json!({ "name": "x", "paused": false })),

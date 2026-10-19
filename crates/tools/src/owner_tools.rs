@@ -61,8 +61,16 @@ impl Owner {
     }
 
     /// Into the owner's companion chat, with an OS notification, and one
-    /// Inbox item per employee carrying its newest message.
+    /// Inbox item per employee carrying its newest message. Never from a
+    /// timer's fire: the owner's chat is the conversation he is having, and
+    /// what a schedule or a heartbeat has for him goes to his Inbox.
     fn message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
+        if timer_fire(ctx) {
+            return ToolResult::error(
+                "A scheduled run doesn't write into the owner's chat. Post what they need to know or act on to \
+                 their Inbox with push_notification; when there is nothing for them, end without posting.",
+            );
+        }
         let text = input["message"].as_str().unwrap_or("");
         let companion = match self.store.get_companion_chat_by_user("") {
             Ok(Some(chat)) => Ok(chat),
@@ -116,7 +124,9 @@ impl Owner {
     /// its card, whose answer comes back to this conversation. It is shown
     /// in the bell at once; an urgent one is the alert: a `notification`
     /// broadcast the desktop turns into the auto-dismissing HUD. Never a
-    /// modal.
+    /// modal. An update from a timer's fire is that schedule's briefing: one
+    /// item per schedule thread, restated and brought back unread by each
+    /// newer briefing ([`briefing_id`]).
     fn notify(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let text = input["message"].as_str().unwrap_or("");
         let title = input["title"]
@@ -147,6 +157,8 @@ impl Owner {
             .map(|o| db::models::ItemOption { label: o.to_string(), value: o.to_string() })
             .collect();
         let asks = !options.is_empty();
+        let briefing = (timer_fire(ctx) && !asks).then(|| briefing_id(&ctx.session_key));
+        let id = briefing.clone().unwrap_or(id);
         let n = crate::owner_notify::OwnerNotification {
             id: &id,
             kind: if urgent { "warning" } else { "info" },
@@ -159,7 +171,7 @@ impl Owner {
             options: &options,
             link_label: input["link_label"].as_str().map(str::trim).filter(|l| !l.is_empty()),
             reply_to: asks.then_some(ctx.session_key.as_str()),
-            latest: false,
+            latest: briefing.is_some(),
         };
         let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
         match notify {
@@ -333,6 +345,18 @@ impl Owner {
     }
 }
 
+/// Whether the call comes from a timer's fire (a schedule's, a heartbeat's),
+/// which no one is watching.
+fn timer_fire(ctx: &ToolContext) -> bool {
+    matches!(ctx.door, types::permissions::Door::Schedule | types::permissions::Door::Heartbeat)
+}
+
+/// The one Inbox item a schedule's (or heartbeat's) fires brief the owner
+/// in, keyed by the thread they run in.
+fn briefing_id(session_key: &str) -> String {
+    format!("briefing:{session_key}")
+}
+
 /// The Inbox type of the assistant's daily brief.
 pub const BRIEF_TYPE: &str = "brief";
 
@@ -373,7 +397,7 @@ impl DynTool for OwnerTool {
 
     fn description(&self) -> String {
         match self.op {
-            OwnerOp::Message => "Sends the owner a message in their chat with you, with a notification. For work nobody is watching (a schedule, a workflow); in a conversation, just reply.".to_string(),
+            OwnerOp::Message => "Sends the owner a message in their chat with you, with a notification. For work nobody is watching (a workflow); in a conversation, just reply. A scheduled run posts to the Inbox with push_notification instead.".to_string(),
             OwnerOp::Notify => "Posts to the owner's Inbox, the one place employees leave updates for them.\n\
                  - An update: a short `title`, ONE plain sentence in `message`, and a `link` to the work (its chat, file or run) with `link_label`.\n\
                  - A question: add `options`; the owner answers on the card and the answer comes back to this conversation.\n\
@@ -530,6 +554,44 @@ mod tests {
         assert!(tools[0].validate_input(&json!({"message": ""})).is_err());
         assert!(tools[1].validate_input(&json!({"title": "x"})).is_err());
         assert!(tools[2].validate_input(&json!({})).is_ok() && tools[2].read_only(&json!({})));
+    }
+
+    /// A schedule's fire never writes into the owner's chat: message_owner
+    /// is refused there and nothing is written. What the fire has for him is
+    /// its schedule's ONE briefing in the Inbox: a newer briefing restates
+    /// it and brings it back unread. A question it asks is its own item, and
+    /// an update from his chat is not a briefing.
+    #[tokio::test]
+    async fn a_schedules_fire_briefs_the_owner_in_his_inbox_never_his_chat() {
+        use types::permissions::Door;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("o.db").to_string_lossy()).unwrap());
+        let tools = Owner::new(store.clone(), Arc::new(std::sync::RwLock::new(None)), Arc::new(std::sync::RwLock::new(None))).tools();
+        let tool = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        let fire = ToolContext { session_key: "agent:assistant:cron:hourly-calendar-check".into(), door: Door::Schedule, ..Default::default() };
+        let user = store.ensure_local_user_id().unwrap();
+        let items = || store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap();
+
+        let refused = tool("message_owner").execute_dyn(&fire, json!({ "message": "Nothing actionable right now." })).await;
+        assert!(refused.is_error && refused.content.contains("push_notification"), "{}", refused.content);
+        assert!(store.get_companion_chat_by_user("").unwrap().is_none(), "no chat was written");
+        assert!(items().is_empty());
+
+        for text in ["Tomorrow: packed Monday — three meetings from 9.", "Tomorrow: packed Monday — four meetings from 9."] {
+            let r = tool("push_notification").execute_dyn(&fire, json!({ "title": "Tomorrow", "message": text })).await;
+            assert!(!r.is_error, "{}", r.content);
+        }
+        let briefings = items();
+        assert_eq!(briefings.len(), 1, "one briefing per schedule: {briefings:#?}");
+        assert_eq!(briefings[0].id, "briefing:agent:assistant:cron:hourly-calendar-check");
+        assert_eq!(briefings[0].body.as_deref(), Some("Tomorrow: packed Monday — four meetings from 9."));
+        assert!(briefings[0].read_at.is_none());
+
+        let asked = tool("push_notification").execute_dyn(&fire, json!({ "message": "Move the 9:00?", "options": ["Yes", "No"] })).await;
+        assert!(!asked.is_error, "{}", asked.content);
+        let chat = ToolContext { session_key: "agent:assistant:web".into(), ..Default::default() };
+        assert!(!tool("push_notification").execute_dyn(&chat, json!({ "message": "Sheet synced." })).await.is_error);
+        assert_eq!(items().len(), 3, "a question and an update from chat are their own items");
     }
 
     /// Answers the `inbox` tool hands the server, recorded.

@@ -1200,13 +1200,13 @@ async fn drive(state: &AppState) {
                 (Some(job), _) => {
                     let manual = inputs["manual"].as_bool().unwrap_or(false);
                     let (success, output, err) = crate::scheduler::execute_job(&state, &job, !manual).await;
-                    // A channel-bound job already delivered its response where
-                    // the owner reads it, as did a prompt job whose reply the
-                    // system brings him (`scheduler::deliver_reply`); a
-                    // desktop popup on top would be noise.
-                    let channel_bound = job.agent_id.as_deref().is_some_and(|s| !s.is_empty())
-                        && job.channel_ctx_json.as_deref().is_some_and(|s| !s.is_empty());
-                    let delivered = channel_bound || crate::scheduler::delivers_reply(&state.store, &job);
+                    // An employee's prompt job reaches the owner the ways it
+                    // has: a channel-bound job's response where he reads it,
+                    // a one-shot's reply the system brings him
+                    // (`scheduler::deliver_reply`), and what a repeating one
+                    // posts to his Inbox itself; a fire with nothing for him
+                    // posts nowhere. A desktop popup on top would be noise.
+                    let delivered = job.task_type == "agent";
                     let settle = Settle {
                         label: &job.name,
                         success_note: (!delivered).then(|| format!("{} completed", job.name)),

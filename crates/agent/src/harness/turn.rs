@@ -1257,7 +1257,8 @@ pub(crate) async fn prepare(
         permission_mode: permission_mode_name(grant.mode).to_string(),
         meaning: permission_mode_meaning(grant.mode).to_string(),
     };
-    let environment = h.environment_fields(&req.seat.agent_id, req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
+    let watching = prompt::sections::Watching::of(seat.execution_mode, &req.seat.door);
+    let environment = h.environment_fields(&req.seat.agent_id, req.seat.cwd.as_deref(), &channel, watching);
     let channel_plugin = h.tools.get(&format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX)).await.is_some();
     let files_dir = config::workspace_dir()
         .map(|d| d.to_string_lossy().into_owned())

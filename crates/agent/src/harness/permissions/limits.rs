@@ -314,7 +314,7 @@ fn arms_schedule(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
             "'{}' isn't allowed here: a run nobody is attending ({}) can't create, turn on or start \
              scheduled work. Do not retry it another way, and don't schedule a retry or a check: if something \
              has to wait, wait in this run or stop and say what is left. Tell the owner what you would \
-             schedule and why (message_owner); they can set it up from their chat.",
+             schedule and why in their Inbox (push_notification); they can set it up from their chat.",
             t.tool,
             cx.ctx.door.label()
         ),
