@@ -126,11 +126,8 @@ pub struct Asked {
 
 impl Asked {
     fn new(task_id: &str, q: &types::OwnerQuestion, taint: &[types::provenance::ProvenanceClass]) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
-            text: q.question.trim().to_string(),
-            block: question_block(task_id, q, taint),
-        }
+        let id = format!("q-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        Self { block: question_block(task_id, &id, q, taint), id, text: q.question.trim().to_string() }
     }
 }
 
@@ -147,11 +144,25 @@ pub struct Questions {
 }
 
 impl Questions {
-    /// Settle every pending question with `answer`.
-    pub fn answer(&mut self, answer: &str) {
-        for q in self.pending.drain(..) {
-            self.answered.push((q, answer.to_string()));
+    /// The open question an answer settles: the one `question` names (its
+    /// id), else the newest.
+    pub fn open(&self, question: Option<&str>) -> Option<&Asked> {
+        match question {
+            Some(id) => self.pending.iter().find(|q| q.id == id),
+            None => self.pending.last(),
         }
+    }
+
+    /// Settle the open question `question` names (the newest when none)
+    /// with `answer`; false when there is no such open question.
+    pub fn answer(&mut self, answer: &str, question: Option<&str>) -> bool {
+        let Some(id) = self.open(question).map(|q| q.id.clone()) else {
+            return false;
+        };
+        let at = self.pending.iter().position(|q| q.id == id).expect("open");
+        let q = self.pending.remove(at);
+        self.answered.push((q, answer.to_string()));
+        true
     }
 
     /// The pending questions are now with the parent.
@@ -271,8 +282,8 @@ fn best_words(report: &str, last_words: &str) -> String {
 /// that conversation came in by. Never spilled. The question is the
 /// helper's words and may carry what it read: when the helper read
 /// untrusted content, the block is marked so.
-fn question_block(task_id: &str, q: &types::OwnerQuestion, taint: &[types::provenance::ProvenanceClass]) -> String {
-    let mut out = String::from("It needs the owner's decision before it can go on.");
+fn question_block(task_id: &str, id: &str, q: &types::OwnerQuestion, taint: &[types::provenance::ProvenanceClass]) -> String {
+    let mut out = format!("It needs the owner's decision before it can go on (question {id}).");
     if let Some(mark) = types::labels::provenance_mark(taint) {
         out.push_str(&format!("\n{mark}"));
     }
@@ -305,8 +316,8 @@ fn question_block(task_id: &str, q: &types::OwnerQuestion, taint: &[types::prove
     out.push_str(&format!(
         "\nUnless the owner already settled this, ask them with ask_owner ({how}). If no one can answer it in \
          your conversation, decide it yourself or take it up the line as ask_owner says. Either way, \
-         send_message to {task_id} with the decision in `answer`: it continues from where it stopped. Never leave \
-         it waiting."
+         send_message to {task_id} with the decision in `answer` and `question: \"{id}\"`: it continues from \
+         where it stopped. Never leave it waiting."
     ));
     out
 }
@@ -693,7 +704,7 @@ mod tests {
             options: (0..400).map(|i| format!("Listing number {i} on Elm Street")).collect(),
             ..Default::default()
         };
-        let block = question_block("h-1", &q, &[]);
+        let block = question_block("h-1", "q-1", &q, &[]);
         assert!(block.chars().count() < 2_000, "{}", block.chars().count());
         assert!(block.contains("Question: Which listing goes first?") && block.contains("400 in all") && block.contains("all of them are in the report below"));
         let words = where_it_stands(&q, "");

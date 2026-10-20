@@ -153,7 +153,10 @@ impl Helpers {
         let to = input["to"].as_str().unwrap_or("").trim();
         let message = input["message"].as_str().unwrap_or("").trim();
         let conversation = input["conversation"].as_str().and_then(crate::coworker::Conversation::parse);
-        let answer = input["answer"].as_str().map(str::trim).filter(|a| !a.is_empty());
+        let answer = input["answer"].as_str().map(str::trim).filter(|a| !a.is_empty()).map(|text| crate::orchestrator::Answer {
+            question: input["question"].as_str().map(str::trim).filter(|q| !q.is_empty()).map(str::to_string),
+            text: text.to_string(),
+        });
         let recipient = self.recipient(to);
         if answer.is_some() && !matches!(recipient, Recipient::Helper) {
             return ToolResult::error(
@@ -392,7 +395,7 @@ impl DynTool for HelperTool {
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
-                 - The owner's decision on a helper's question goes in `answer`; nothing else settles it.\n\
+                 - The owner's decision on a helper's question goes in `answer` (its id in `question`, else the newest); nothing else settles it.\n\
                  - A coworker gets it in their own session and answers with their own tools and permissions; their answer comes to you as a notification. Several messages in one response go out together.\n\
                  - To a team: only teammates it addresses receive it (`mention`, @Name, @everyone); naming nobody sends it to the lead.\n\
                  - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message.\n\
@@ -431,6 +434,7 @@ impl DynTool for HelperTool {
                     "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
                     "message": { "type": "string", "description": "What to tell them." },
                     "answer": { "type": "string", "description": "To a helper: the owner's answer to its open question." },
+                    "question": { "type": "string", "description": "With `answer`: the question's id." },
                     "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: who receives it, by name." },
                     "conversation": { "type": "string", "description": "A linked employee's conversation id (as list_employees shows it) or \"new\"; leave out to continue your thread with it." }
                 },
@@ -597,7 +601,7 @@ mod tests {
             &self,
             task_id: &str,
             message: &str,
-            _answer: Option<&str>,
+            _answer: Option<crate::orchestrator::Answer>,
             parent: SpawnRequest,
         ) -> Fut<'_, Result<FollowUp, String>> {
             self.sent.lock().unwrap().push((

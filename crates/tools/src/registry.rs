@@ -2913,8 +2913,9 @@ pub(crate) mod tests {
     /// (ask_owner 1,477, +124): 18,461. 2026-10-20: the owner's decision on a
     /// helper's question goes back in send_message's `answer`, the one
     /// thing that settles it (send_message 1,527, +186; delegate +11):
-    /// 18,658.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_658;
+    /// 18,658. 2026-10-20: an answer names the question it settles
+    /// (send_message `question`, 1,646, +119): 18,777.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_777;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
