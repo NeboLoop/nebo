@@ -201,6 +201,45 @@ mod tests {
         }
     }
 
+    /// The conversation and its helpers split the work the same way for
+    /// every kind of work: the conversation keeps the owner, the decisions
+    /// and small direct steps; helpers take the wide, substantial, parallel
+    /// or long work from a self-contained brief; a helper's question comes
+    /// back to be asked; what ships is decided here, the owner's decisions
+    /// by the owner.
+    #[test]
+    fn the_conversation_directs_and_helpers_do_the_heavy_work() {
+        let text = system_prompt();
+        for line in [
+            "- You hold the owner's conversation, the decisions and the plan; keep it lean.",
+            "- Delegate work that means reading across many sources, producing something substantial, pieces that can run side by side, or anything long-running.",
+            "- A helper starts with only its brief, so make it self-contained: the goal, what you know or ruled out, the rules and what to leave alone, whether it may change things or only look, and the exact deliverable with its length.\n",
+            "- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner, then send_message the helper the answer; it continues.\n",
+            "You decide what ships; the owner's decisions go to the owner.",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from:\n{text}");
+        }
+    }
+
+    /// A helper can't reach the owner: a decision that is theirs goes back
+    /// through ask_owner, which ends its turn; smaller things it decides,
+    /// and says what it assumed. Its report leads with the conclusion.
+    #[test]
+    fn a_helper_sends_the_owners_decisions_back() {
+        for kind in HelperKind::ALL {
+            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind }).text();
+            for part in [
+                "You can't reach the owner. When the work can't go on without a decision that is the owner's, call ask_owner with the question, what they decide on as context, and options with the recommended one first: your turn ends, Nanna asks them and sends you the answer.",
+                "Anything smaller, decide sensibly, say what you assumed in your report, and keep going.",
+                "lead with the conclusion, not the raw material",
+                "Keep to the length the brief asks for.",
+            ] {
+                assert!(text.contains(part), "{kind:?}: {part:?} missing from:\n{text}");
+            }
+            assert!(!text.contains("No one can answer questions during this run"), "{kind:?}");
+        }
+    }
+
     #[test]
     fn helper_identity_says_last_message_is_the_report() {
         let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::Explore }).text();
@@ -265,7 +304,7 @@ mod tests {
             "- Example: to learn three skills and read two files, send one response with five calls, not five steps of one call each.\n",
             "load the ones the task needs with use_skill before starting.\n",
             "- Learning before you act, across many skills, files or pages, is a helper's reading: it reads them all and sends back a digest, and this conversation keeps only the digest. Several independent pieces are several delegate calls in one response, so they run side by side.\n",
-            "- One known file or skill, or a quick lookup, is yours: read it directly.\n",
+            "- Do small, direct things yourself: one lookup or status check, one short edit or reply, a calendar check, one known file or skill (read it directly).\n",
         ] {
             assert!(text.contains(line), "{line:?} missing from:\n{text}");
         }
@@ -390,13 +429,16 @@ mod tests {
     /// employee told "use chrome" wrote a Playwright script: browsing is the
     /// browser tools' alone and "Chrome" is the owner's own, +531; 8,643
     /// until 2026-10-16, when headings came back with emoji the owner never
-    /// asked for, +43.)
+    /// asked for, +43; 8,700 until 2026-10-19, when the helpers section
+    /// stated the split for every kind of work: the conversation keeps the
+    /// owner and small direct steps, a brief names its deliverable and
+    /// length, a helper's question comes back to be asked, +233.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 8_700);
+        assert!(chars < 9_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 8_686;
+    const SYSTEM_PROMPT_CHARS: usize = 8_919;
 }

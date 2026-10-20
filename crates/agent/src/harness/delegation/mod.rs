@@ -78,12 +78,16 @@ pub struct HelperSpec {
     pub skills: Vec<(String, String)>,
     /// The speed the helper works at (a model id); `None` = its parent's.
     pub speed: Option<String>,
+    /// How long its report may be, in characters, before it is saved to a
+    /// file and previewed; `None` = [`collect::REPORT_LIMIT`].
+    pub report_limit: Option<usize>,
 }
 
 impl HelperSpec {
     /// A `delegate` call's input: `description` and `prompt` required,
     /// `helper_type` one of the listed types (default general), `background`
-    /// default true, `speed` the parent's unless named.
+    /// default true, `speed` the parent's unless named, `report_limit` the
+    /// default unless set.
     pub fn from_input(input: &serde_json::Value) -> Result<Self, String> {
         let text = |key: &str| {
             input
@@ -102,7 +106,8 @@ impl HelperSpec {
             })?,
         };
         let background = input.get("background").and_then(|v| v.as_bool()).unwrap_or(true);
-        Ok(Self { description, prompt, kind, background, isolation: None, skills: Vec::new(), speed: text("speed") })
+        let report_limit = input.get("report_limit").and_then(|v| v.as_u64()).filter(|n| *n > 0).map(|n| n as usize);
+        Ok(Self { description, prompt, kind, background, isolation: None, skills: Vec::new(), speed: text("speed"), report_limit })
     }
 }
 
@@ -145,14 +150,16 @@ impl HelperKind {
     /// picks a type by the job in front of it and knows what it can do.
     pub fn when_to_use(self) -> &'static str {
         match self {
-            Self::General => "Researching open questions, searching when you aren't sure the first few tries will find \
-the match, and carrying out work of several steps. (Tools: all of yours.)",
-            Self::Explore => "Wide searches: when answering means going through many files, folders or naming \
-patterns and you need only the conclusion, not the file contents. It finds things; it doesn't review or audit \
-them. Say how wide to search: \"medium\", or \"very thorough\" for several places and naming conventions. \
-(Tools: yours that only look; it changes nothing and starts no helpers.)",
-            Self::Plan => "Designing how to carry out a piece of work: it returns the steps, the files that matter \
-and the trade-offs. (Tools: yours that only look; it changes nothing and starts no helpers.)",
+            Self::General => "Work of several steps that produces something: researching a batch, a draft, a \
+media piece, an outreach batch, a code change. It changes things only as far as its brief allows. (Tools: all \
+of yours.)",
+            Self::Explore => "Wide searches: when answering means going through many files, pages, listings or \
+records and you need only the conclusion, not their contents. It finds and sums up; it doesn't review, audit \
+or change anything. Say how wide to look: \"medium\", or \"very thorough\" for several places and naming \
+conventions. (Tools: yours that only look; it changes nothing and starts no helpers.)",
+            Self::Plan => "Designing how to carry out a piece of work of any kind: it returns the steps, the \
+sources or files that matter and the trade-offs. (Tools: yours that only look; it changes nothing and starts \
+no helpers.)",
         }
     }
 }
@@ -356,6 +363,8 @@ struct Helper {
     kind: HelperKind,
     /// The speed it was started at; `None` = its parent's.
     speed: Option<String>,
+    /// How long its report may be before it is saved and previewed.
+    report_limit: usize,
     /// The seat the helper was built from (its parent's), kept so a
     /// notification turn is built by the same constructor.
     parent_seat: SeatRequest,
@@ -634,6 +643,7 @@ impl Helpers {
             "user_id": parent_seat.user_id,
             "helper_kind": spec.kind.as_str(),
             "speed": spec.speed,
+            "report_limit": spec.report_limit,
         })
         .to_string();
         let created = self
@@ -678,6 +688,7 @@ impl Helpers {
                     description: spec.description.clone(),
                     kind: spec.kind,
                     speed: spec.speed.clone(),
+                    report_limit: spec.report_limit.unwrap_or(collect::REPORT_LIMIT),
                     parent_seat: parent_seat.clone(),
                     parent_grant: grant.cloned(),
                     parent_platform: turn.delivery.platform.clone(),
@@ -736,6 +747,7 @@ impl Helpers {
                     description: description.to_string(),
                     kind: HelperKind::General,
                     speed: None,
+                    report_limit: collect::REPORT_LIMIT,
                     parent_seat: turn.seat.clone(),
                     parent_grant: None,
                     parent_platform: turn.delivery.platform.clone(),
@@ -800,6 +812,7 @@ impl Helpers {
             isolation: None,
             skills: Vec::new(),
             speed: None,
+            report_limit: None,
         };
         let parent = Parent {
             session_key: work_key,
@@ -983,6 +996,7 @@ impl Helpers {
                 description: spec.description.clone(),
                 kind: spec.kind,
                 speed: spec.speed.clone(),
+                report_limit: spec.report_limit.unwrap_or(collect::REPORT_LIMIT),
                 parent_seat: turn.seat.clone(),
                 parent_grant: grant.cloned(),
                 parent_platform: turn.delivery.platform.clone(),
@@ -1178,12 +1192,13 @@ impl Helpers {
         isolation: Option<crate::worktree::Isolation>,
     ) -> Completion {
         let cancel = req.cancel.clone();
-        let (parent_key, description) = {
+        let (parent_key, description, report_limit) = {
             let state = self.state();
             let h = state.helpers.get(task_id);
             (
                 h.map(|h| h.parent_key.clone()).unwrap_or_default(),
                 h.map(|h| h.description.clone()).unwrap_or_default(),
+                h.map_or(collect::REPORT_LIMIT, |h| h.report_limit),
             )
         };
         self.emit(&parent_key, ai::StreamEvent::subagent_start(task_id, description.as_str()));
@@ -1208,7 +1223,7 @@ impl Helpers {
             .resolve_session_id_by_key(&parent_key)
             .map(|id| tools::result_shape::results_dir(&id))
             .unwrap_or_else(|_| tools::result_shape::results_dir(&parent_key.replace(':', "_")));
-        let mut completion = collected.into_completion(task_id, &description, &spill_dir);
+        let mut completion = collected.into_completion(task_id, &description, &spill_dir, report_limit);
         if let Some(iso) = isolation {
             let merged = crate::worktree::merge_all(std::slice::from_ref(&iso), &format!("nebo: helper {task_id}")).await;
             for (_, outcome) in &merged {
@@ -1305,6 +1320,7 @@ impl Helpers {
                     isolation: None,
                     skills: Vec::new(),
                     speed: h.speed.clone(),
+                    report_limit: Some(h.report_limit),
                 };
                 let parent = Parent {
                     session_key: &h.parent_key,
@@ -1467,6 +1483,7 @@ impl State {
             isolation: None,
             skills: Vec::new(),
             speed: p.speed.clone(),
+            report_limit: Some(p.report_limit),
         };
         let parent = Parent {
             session_key: &p.parent_key,
@@ -1551,6 +1568,7 @@ fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
         isolation: None,
         skills: Vec::new(),
         speed: field("speed"),
+        report_limit: inputs.as_ref().and_then(|v| v.get("report_limit")?.as_u64()).map(|n| n as usize),
     }
 }
 
@@ -2317,6 +2335,11 @@ mod tests {
         }))
         .unwrap();
         assert_eq!((spec.kind, spec.background), (HelperKind::Plan, false));
+        assert_eq!(spec.report_limit, None, "the default report limit unless set");
+        let spec = HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "report_limit": 12_000})).unwrap();
+        assert_eq!(spec.report_limit, Some(12_000));
+        let spec = HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "report_limit": 0})).unwrap();
+        assert_eq!(spec.report_limit, None, "0 is no limit set");
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d"})).is_err());
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "helper_type": "coder"})).is_err());
     }
@@ -2386,5 +2409,58 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("a finished helper never freed its place");
+    }
+
+    /// A delegate call's `report_limit`, and each piece's, is the helper's:
+    /// held while it runs and kept on its row, so a resumed helper keeps it.
+    /// A call that sets none gets the lean default.
+    #[tokio::test]
+    async fn a_report_limit_is_carried_per_helper() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:agent1:web");
+        let mut input = call("Research the 30 listings.", None);
+        input["report_limit"] = 20_000.into();
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
+        let plain = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Check one listing.", None)).await.unwrap());
+        assert_eq!(rig.helpers.state().helpers[&id].report_limit, 20_000);
+        assert_eq!(rig.helpers.state().helpers[&plain].report_limit, collect::REPORT_LIMIT);
+        let row = rig.store.get_pending_task(&id).unwrap().unwrap();
+        assert_eq!(spec_of_row(&rig.store, &row).report_limit, Some(20_000), "a restart keeps it");
+        let row = rig.store.get_pending_task(&plain).unwrap().unwrap();
+        assert_eq!(spec_of_row(&rig.store, &row).report_limit, None);
+        rig.next_turn().await;
+        rig.next_turn().await;
+    }
+
+    /// A helper's question for the owner comes back to the conversation
+    /// that started it as a partial report: the question, its options and
+    /// the recommended one, and how to answer. The answer, sent with
+    /// send_message, runs the helper again from where it stopped.
+    #[tokio::test]
+    async fn a_helpers_question_reaches_its_parent_and_the_answer_resumes_it() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Draft the outreach batch.", None)).await.unwrap());
+        let child = rig.next_turn().await;
+        let q = types::OwnerQuestion { question: "Which vendor?".into(), context: String::new(), options: vec!["Acme".into(), "Globex".into()] };
+        let _ = child.events.send(StreamEvent::text("Drafted 18 of 20.")).await;
+        let _ = child.events.send(StreamEvent::tool_call(ai::ToolCall { id: "c1".into(), name: "ask_owner".into(), input: serde_json::json!({}) })).await;
+        let _ = child.events.send(StreamEvent::owner_decision("Your question goes back.", &q)).await;
+        let _ = child.events.send(StreamEvent::done_with_reason("terminal_tool_error")).await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let pending = rig.pending_notifications("agent:sdr:web");
+        for part in [
+            format!("helper {id} \"read the ledger\": partial ({}", collect::NEEDS_OWNER_DECISION),
+            "Drafted 18 of 20.".to_string(),
+            "Question: Which vendor?".to_string(),
+            "Recommended: Acme".to_string(),
+            format!("send_message the answer to {id}"),
+        ] {
+            assert!(pending[0].contains(&part), "{part:?} missing from:\n{}", pending[0]);
+        }
+        let owner = rig.owner_turn("agent:sdr:web");
+        assert_eq!(rig.helpers.send(&owner, None, &[], &id, "The owner picked Acme.").await.unwrap(), launch_result(&id));
+        let resumed = rig.next_turn().await;
+        assert_eq!(resumed.request.session_key, helper_key("agent:sdr:web", &id));
     }
 }

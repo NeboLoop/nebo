@@ -11,7 +11,7 @@ use db::Store;
 use serde_json::{Value, json};
 
 use crate::coworker::CoworkerRailCell;
-use crate::orchestrator::{FollowUp, OrchestratorHandle, SpawnRequest, SubAgentOrchestrator};
+use crate::orchestrator::{FollowUp, OrchestratorHandle, REPORT_LIMIT, SpawnRequest, SubAgentOrchestrator};
 use crate::team_tool::Teams;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -134,6 +134,7 @@ impl Helpers {
                 String::new()
             },
             speed: input["speed"].as_str().unwrap_or("").trim().to_string(),
+            report_limit: report_limit(input),
             ..SpawnRequest::child_of(ctx)
         };
         if let Some(pieces) = input["pieces"].as_array() {
@@ -253,7 +254,8 @@ impl Helpers {
 /// task, all in the background: the many-helpers launch, so a wide fan-out
 /// is one call that states the context once rather than a response that
 /// repeats it per helper. Each piece starts through the same spawn as a
-/// single helper; the result lists every receipt.
+/// single helper, with its own `report_limit` when it sets one; the result
+/// lists every receipt.
 async fn fan_out(orch: &dyn SubAgentOrchestrator, base: SpawnRequest, pieces: &[Value]) -> ToolResult {
     if base.wait {
         return ToolResult::error("Pieces always run in the background. Nothing was started. Send it again without `background: false`.");
@@ -265,6 +267,10 @@ async fn fan_out(orch: &dyn SubAgentOrchestrator, base: SpawnRequest, pieces: &[
         let req = SpawnRequest {
             prompt: format!("{}\n\nYour piece: {task}", base.prompt),
             description: description.to_string(),
+            report_limit: match report_limit(piece) {
+                0 => base.report_limit,
+                own => own,
+            },
             ..base.clone()
         };
         lines.push(match orch.spawn(req).await {
@@ -273,6 +279,12 @@ async fn fan_out(orch: &dyn SubAgentOrchestrator, base: SpawnRequest, pieces: &[
         });
     }
     ToolResult::ok(lines.join("\n"))
+}
+
+/// The `report_limit` a delegate call or one of its pieces set, in
+/// characters; 0 when it set none.
+fn report_limit(input: &Value) -> usize {
+    input["report_limit"].as_u64().unwrap_or(0) as usize
 }
 
 fn employee_addressed(prompt: &str, helper_type: &str, names: &[String]) -> Option<String> {
@@ -348,29 +360,28 @@ impl DynTool for HelperTool {
         }
     }
 
-    /// `delegate` says when to use it and when not to, runs in the background
-    /// by default, never predicts a pending result, says how to write the
-    /// brief, and gives worked examples (a survey launched in the background
-    /// with the report in a later turn, and "Still waiting on the audit" when
-    /// asked mid-wait). Independent helpers are started together in one
-    /// response, with a third example from the 2026-09-26 billing employee
-    /// that loaded 28 skills one per step: a survey of many skills is helpers' reading,
-    /// started together, and the parent builds from their digests. What the
-    /// schema already says (the default type, `background`, `isolation`) is
-    /// said there only.
+    /// `delegate` says what the conversation keeps (the owner, the
+    /// decisions, small direct steps) and what goes to a helper, runs in the
+    /// background by default, never predicts a pending result, says what a
+    /// brief holds (the deliverable and its length, and whether the helper
+    /// may change things), and that a helper's question for the owner comes
+    /// back to be asked. Its worked examples span the work employees do: a
+    /// research batch in pieces with the summary drafted here, an ad with a
+    /// helper per shot (the film skill's limits), an outreach batch, a code
+    /// change, and "Still waiting" when asked mid-wait. What the schema
+    /// already says (the default type, `background`, `isolation`) is said
+    /// there only.
     fn description(&self) -> String {
         match self.op {
-            HelperOp::Delegate => "Starts a helper on a piece of work, so the conversation stays open while it runs. Helper types, and when each fits, are listed in reminders.\n\
-                 When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files, pages or skills. You keep the conclusion, not the raw output. When the owner asks for a helper, start it first.\n\
-                 When not to use: the target is known (a path, a name, a value, one skill): use read_file, run_command or use_skill. Once a search is delegated, don't also run it yourself.\n\
-                 - It runs in the background: only its final report comes back, as a notification.\n\
-                 - Until then you know nothing about the result. Never predict it; if the owner asks, say it's still running.\n\
-                 - It hasn't seen this conversation. Brief it: the goal, what you know or ruled out, what to report. For a lookup, the exact command; for an investigation, the question.\n\
+            HelperOp::Delegate => "Starts a helper on a piece of work in the background; you keep talking with the owner.\n\
+                 When to use: the work matches a helper type, means reading across many sources, produces something substantial, splits into pieces that run side by side, or runs long. When the owner asks for a helper, start it first.\n\
+                 When not to use: small direct things: one lookup, status or calendar check, short edit or reply, one known file or skill. Do those yourself. Once work is delegated, don't also do it yourself.\n\
+                 - Only its final report comes back, as a notification. Until then you know nothing about the result. Never predict it; if the owner asks, say it's still running.\n\
+                 - It sees only its brief: the goal, what you know or ruled out, what to leave alone, whether it may change things, and the exact deliverable with its length.\n\
                  - One job in many pieces: one call, the brief once in `prompt`, a task each in `pieces`.\n\
-                 - To continue a helper, send_message with its id. Work for a named employee is a message to them.\n\
-                 Example: owner: \"Find every place the retry setting is used.\" → delegate(helper_type: \"explore\", ...), reply \"A helper is searching; I'll report when it's back.\", and the turn ends. The report comes in a later turn.\n\
-                 Example: owner, before it's back: \"Is billing one?\" → \"Still waiting on the search; that's one of the things it checks.\"\n\
-                 Example: twenty skills to learn before building → two delegate(helper_type: \"explore\") calls in one response, each reading half and sending back a digest."
+                 - It can't ask the owner: its question comes back in its report. Ask the owner, then send_message the answer to its id. Work for a named employee is a message to them.\n\
+                 Examples: 30 listings → `pieces` of 10, one line per listing back; you draft the summary. A 30-second ad → a helper per shot, at most 4 at once, each reporting its clip and pass or fail; you compose. Outreach → a helper drafts the emails to a file and reports the path; the owner approves sending. A code change → the files, the change and the tests; it reports what changed and the test result.\n\
+                 Owner, while one runs: \"Is Elm Street in?\" → \"Still waiting on the research; that's one it checks.\""
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
@@ -393,12 +404,13 @@ impl DynTool for HelperTool {
                     "background": { "type": "boolean", "default": true, "description": "Run in the background and report by notification. false only when your very next step needs the result." },
                     "isolation": { "type": "string", "enum": ["worktree"], "description": "Its own copy of a code project, merged back when done, for helpers editing the same code. Never for media." },
                     "speed": { "type": "string", "description": "The speed the helper works at, by model name. Leave it out and it works at yours." },
+                    "report_limit": { "type": "integer", "description": format!("Most characters of its report you read (default {REPORT_LIMIT}); past it, its start and the file it was saved to.") },
                     "pieces": {
                         "type": "array",
                         "description": "A background helper per piece, briefed with `prompt` then its task. Any number.",
                         "items": {
                             "type": "object",
-                            "properties": { "description": { "type": "string" }, "task": { "type": "string" } },
+                            "properties": { "description": { "type": "string" }, "task": { "type": "string" }, "report_limit": { "type": "integer" } },
                             "required": ["description", "task"]
                         }
                     }
@@ -976,41 +988,69 @@ mod tests {
         assert!(r.payload.as_ref().is_some_and(|p| p.get("reply").is_none()), "{:?}", r.payload);
     }
 
-    /// D16: delegate says when to hand off and when not to, that a pending
-    /// result is never predicted, and shows both worked examples; the old
-    /// text only warned against using it.
+    /// D16: delegate says what the conversation keeps and what a helper
+    /// takes, that a pending result is never predicted, what a brief holds
+    /// (the deliverable and its length, and whether it may change things),
+    /// and that a helper's question comes back to be asked of the owner.
     #[test]
     fn delegate_says_when_to_hand_off() {
         let rig = Rig::new();
         let delegate = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().description();
         for part in [
-            "When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files, pages or skills.",
-            "When not to use: the target is known (a path, a name, a value, one skill): use read_file, run_command or use_skill.",
-            "Once a search is delegated, don't also run it yourself.",
+            "When to use: the work matches a helper type, means reading across many sources, produces something substantial, splits into pieces that run side by side, or runs long.",
+            "When not to use: small direct things: one lookup, status or calendar check, short edit or reply, one known file or skill. Do those yourself.",
+            "Once work is delegated, don't also do it yourself.",
             "Never predict it; if the owner asks, say it's still running.",
-            "delegate(helper_type: \"explore\", ...)",
-            "Still waiting on the search",
+            "whether it may change things, and the exact deliverable with its length",
+            "It can't ask the owner: its question comes back in its report. Ask the owner, then send_message the answer to its id.",
+            "Still waiting on the research",
         ] {
             assert!(delegate.contains(part), "{part:?} missing from:\n{delegate}");
         }
-        assert!(!delegate.contains("If you already know the file or answer, use the direct tool instead."));
         assert!(delegate.chars().count() <= 1_600, "a lean description: {}", delegate.chars().count());
     }
 
-    /// 2026-09-26: asked for a billing employee with all its workflows, an
-    /// employee loaded 28 skills one step at a time and never delegated. The
-    /// description now shows that survey as helpers started together in one
-    /// response, each sending back a digest; a wide fan-out of one job is
-    /// one call with `pieces`.
+    /// The worked examples span the work employees do, not only code: a
+    /// research batch in pieces with the summary drafted in the
+    /// conversation, an ad with a helper per shot (the film skill's limit
+    /// of 4 at once), an outreach batch the owner approves, and a code
+    /// change. A wide fan-out of one job is one call with `pieces`.
     #[test]
-    fn delegate_shows_a_skill_survey_fanned_out() {
+    fn delegate_examples_span_the_work() {
         let rig = Rig::new();
         let delegate = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().description();
         for part in [
             "One job in many pieces: one call, the brief once in `prompt`, a task each in `pieces`.",
-            "twenty skills to learn before building → two delegate(helper_type: \"explore\") calls in one response, each reading half and sending back a digest.",
+            "30 listings → `pieces` of 10, one line per listing back; you draft the summary.",
+            "A 30-second ad → a helper per shot, at most 4 at once",
+            "Outreach → a helper drafts the emails to a file and reports the path; the owner approves sending.",
+            "A code change → the files, the change and the tests; it reports what changed and the test result.",
         ] {
             assert!(delegate.contains(part), "{part:?} missing from:\n{delegate}");
         }
+    }
+
+    /// A delegate call sets how long its helper's report may be, for the
+    /// whole call or per piece; the schema says the lean default.
+    #[tokio::test]
+    async fn report_limit_is_set_per_call_and_per_piece() {
+        let rig = Rig::new();
+        let schema = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().schema();
+        assert_eq!(schema["properties"]["report_limit"]["type"], "integer");
+        assert!(schema["properties"]["report_limit"]["description"].as_str().unwrap().contains(&format!("default {REPORT_LIMIT}")));
+        assert_eq!(schema["properties"]["pieces"]["items"]["properties"]["report_limit"]["type"], "integer");
+
+        let r = rig.call("delegate", json!({"description": "one listing", "prompt": "Check it.", "report_limit": 3_000})).await;
+        assert!(!r.is_error, "{}", r.content);
+        let pieces = json!([
+            {"description": "batch 1", "task": "Listings 1-15."},
+            {"description": "batch 2", "task": "Listings 16-30.", "report_limit": 1_500},
+        ]);
+        let r = rig.call("delegate", json!({"description": "listings", "prompt": "One line each.", "report_limit": 4_000, "pieces": pieces})).await;
+        assert!(!r.is_error, "{}", r.content);
+        let r = rig.call("delegate", json!({"description": "no limit", "prompt": "Check it."})).await;
+        assert!(!r.is_error, "{}", r.content);
+        let limits: Vec<usize> = rig.rec.spawned.lock().unwrap().iter().map(|s| s.report_limit).collect();
+        assert_eq!(limits, [3_000, 4_000, 1_500, 0], "the call's, a piece's own, and none set");
     }
 }

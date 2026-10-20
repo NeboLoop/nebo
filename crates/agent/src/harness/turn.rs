@@ -5032,6 +5032,36 @@ mod tests {
         events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect()
     }
 
+    /// A helper can't reach the owner: its ask_owner ends its turn on a
+    /// typed decision carrying the question, never a card, and its model is
+    /// not called again. The conversation that started it asks the owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_helpers_question_for_the_owner_ends_its_turn() {
+        let ask = serde_json::json!({"question": "Which vendor gets the outreach?", "context": "Two quotes.", "options": ["Acme", "Globex"]});
+        let model = Scripted::new(vec![Step::NarratedCall("Drafted 18 of 20.", "ask_owner", ask), Step::Say("Went with Acme.")]);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let ask_owner = tools::ask_owner_tool::AskOwnerTool::new(store, tools::coworker::new_rail_cell());
+        let h = harness_with(&model, vec![Box::new(ask_owner)]).await;
+        let mut req = owner("x");
+        req.input = TurnInput::Platform { text: "Draft the outreach batch.".into() };
+        req.seat.origin = tools::Origin::System;
+        req.seat.door = types::permissions::Door::Helper;
+        req.mode = TurnMode::Helper {
+            parent_session_key: "agent:x:main".into(),
+            kind: crate::harness::delegation::HelperKind::General,
+            depth: 1,
+            answer: None,
+        };
+        let events = run_turn(&h, req).await;
+        assert_eq!(model.calls().len(), 1, "the turn ends on the question");
+        let question = events.iter().find_map(StreamEvent::owner_question).expect("the decision notice");
+        assert_eq!(question.question, "Which vendor gets the outreach?");
+        assert_eq!((question.context.as_str(), question.recommended()), ("Two quotes.", Some("Acme")));
+        assert!(!events.iter().any(|e| e.event_type == ai::StreamEventType::AskRequest), "no card: the owner isn't here");
+        assert!(tool_results(&h)[0].contains("goes back with your report"), "{:?}", tool_results(&h));
+    }
+
     /// In an unattended run the same call failing the same way, with
     /// nothing changed in between, stops the run on its eighth time. The
     /// model reads to change course from the second; the owner reads what
@@ -8715,7 +8745,7 @@ mod tests {
         assert!(listing.contains("- general: ") && listing.contains("- plan: "), "{listing}");
         let delegate = first.tools.iter().find(|t| t.name == "delegate").expect("delegate is always loaded");
         assert!(delegate.description.contains("When to use: the work matches a helper type"), "{}", delegate.description);
-        assert!(delegate.description.contains("When not to use: the target is known"), "{}", delegate.description);
+        assert!(delegate.description.contains("When not to use: small direct things"), "{}", delegate.description);
         assert!(first.system.contains("A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate."));
         let first_call = stored(&h)
             .iter()

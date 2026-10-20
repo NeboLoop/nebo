@@ -41,3 +41,24 @@ impl OwnerNeed {
         }
     }
 }
+
+/// A decision only the owner can make, asked by a run that can't reach them
+/// (a helper): it travels back to the conversation that started the run,
+/// which asks the owner and sends the answer on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerQuestion {
+    pub question: String,
+    /// What the owner decides on: a draft, a plan, what was found.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub context: String,
+    /// The choices, the recommended one first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+impl OwnerQuestion {
+    /// The recommended choice: the first option.
+    pub fn recommended(&self) -> Option<&str> {
+        self.options.first().map(String::as_str)
+    }
+}

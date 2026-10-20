@@ -617,7 +617,7 @@ pub(crate) async fn run_tool_round(
     // Terminal tool error (auth/permission/connection) → end the turn after
     // this batch and surface to the user, instead of feeding it back for the
     // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
-    let mut terminal_error: Option<(String, Option<types::OwnerNeed>)> = None;
+    let mut terminal_error: Option<(String, Option<types::OwnerNeed>, Option<types::OwnerQuestion>)> = None;
     // Lightweight snapshots for the background tool summary generator.
     let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
@@ -660,7 +660,7 @@ pub(crate) async fn run_tool_round(
                 warn!(session_id, tool = %tc.name, times, "the same call failed the same way again: the run stops");
                 result.content.push_str("\n\n");
                 result.content.push_str(STUCK_NOTE);
-                terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None));
+                terminal_error.get_or_insert_with(|| (STUCK_NOTICE.to_string(), None, None));
             }
         }
         if let Some(t) = target
@@ -687,11 +687,11 @@ pub(crate) async fn run_tool_round(
         // workflows: there's no human to ask or to hit stop, so a dead
         // account must fail the run cleanly, not spiral. (FRAMES Phase 1.)
         if result.terminal && terminal_error.is_none() {
-            terminal_error = Some((result.content.clone(), result.need.clone()));
+            terminal_error = Some((result.content.clone(), result.need.clone(), result.question.clone()));
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
-        summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+        summary_tool_results.push(ToolResult { payload: None, need: None, question: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None, more_files: Vec::new(),
@@ -755,11 +755,21 @@ pub(crate) async fn run_tool_round(
     // Typed termination: emitted as a ControlNotice status event, never Text —
     // the old emit-text-then-break made the notice indistinguishable from
     // assistant prose and it leaked verbatim into channel replies.
-    if let Some((msg, need)) = terminal_error {
-        warn!(session_id, iteration, "terminal tool error — ending run");
-        let _ = tx
-            .send(StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need))
-            .await;
+    // A helper's question for the owner ends its turn the same way, typed
+    // as a decision: its collector reports it to the conversation that
+    // started it, which asks the owner.
+    if let Some((msg, need, question)) = terminal_error {
+        let notice = match question {
+            Some(q) => {
+                info!(session_id, iteration, "a helper's question for the owner — ending its turn");
+                StreamEvent::owner_decision(msg, &q)
+            }
+            None => {
+                warn!(session_id, iteration, "terminal tool error — ending run");
+                StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need)
+            }
+        };
+        let _ = tx.send(notice).await;
         return RoundOutcome::Terminal;
     }
 

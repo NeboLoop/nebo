@@ -286,7 +286,7 @@ fn answer_text(who: &str, provenance: &[ProvenanceClass], answer: &str, spill_di
     if answer.trim().is_empty() {
         return format!("{who} finished without an answer.");
     }
-    let body = agent::harness::delegation::collect::spill_if_long(answer, spill_dir);
+    let body = agent::harness::delegation::collect::spill_if_long(answer, spill_dir, agent::harness::delegation::collect::REPORT_LIMIT);
     match types::labels::provenance_mark(provenance) {
         Some(mark) => format!("{who}:\n{mark}\n{body}"),
         None => format!("{who}:\n{body}"),
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(read, format!("Business Brainstormer:\n{icp}"));
         let read = answer_text("Scout", &[ProvenanceClass::Coworker, ProvenanceClass::Web], "Rivals charge $40.", &dir);
         assert_eq!(read, "Scout:\n[Contains content from: web]\nRivals charge $40.");
-        let huge = "x".repeat(agent::harness::delegation::collect::RESULT_CAP + 1);
+        let huge = "x".repeat(agent::harness::delegation::collect::REPORT_LIMIT + 1);
         let read = answer_text("Business Brainstormer", &[], &huge, &dir);
         assert!(read.contains("Saved in full at:"), "{}", &read[..300.min(read.len())]);
         assert!(read.len() < huge.len());

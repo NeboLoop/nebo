@@ -90,6 +90,11 @@ pub struct ToolResult {
     /// `content`'s words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<types::OwnerNeed>,
+    /// On a terminal result: a decision only the owner can make, asked from
+    /// a helper. The turn ends and the question goes back to the
+    /// conversation that started the helper (`ask_owner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<types::OwnerQuestion>,
     /// The call did not run: the permission check parked it on the owner.
     /// The ask's id, so a workflow activity can suspend on the same ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2898,8 +2903,12 @@ pub(crate) mod tests {
     /// "Want this every morning?" sat far from the brief it meant and was
     /// asked twice; ask_owner's `context` puts what he decides on above the
     /// question, and the card is the one place the question appears
-    /// (ask_owner 1,353, +373): 18,167.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_167;
+    /// (ask_owner 1,353, +373): 18,167. The owner, 2026-10-19: the
+    /// conversation and its helpers split every kind of work one way, so
+    /// delegate says what the conversation keeps, what a brief names, that a
+    /// helper's question comes back, with examples beyond code, and takes a
+    /// `report_limit` (delegate 2,922, +162): 18,329.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_329;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
