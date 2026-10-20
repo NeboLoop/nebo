@@ -14,11 +14,13 @@
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Terminal from 'lucide-svelte/icons/terminal';
   import X from 'lucide-svelte/icons/x';
+  import Info from 'lucide-svelte/icons/info';
+  import ModelInfo from '$lib/components/settings/ModelInfo.svelte';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Alert from '$lib/components/ui/Alert.svelte';
-  import type { AuthProfile, CatalogModel, ConnectionModel, ConnectionRoute } from '$lib/api/neboComponents';
+  import type { AuthProfile, CatalogModel, ConnectionModel, ConnectionRoute, ModelCard } from '$lib/api/neboComponents';
   import { ownKeyError } from '$lib/chat/ownKeyError';
   import {
     CONNECTION_KINDS,
@@ -32,6 +34,7 @@
     shortUrl,
     type HandModel,
   } from '$lib/models/connections';
+  import { cardPriceLine, cardTier } from '$lib/models/modelCard';
 
   // --- state ---
   let loading = $state(true);
@@ -461,11 +464,13 @@
     } finally { b.adding = false; }
   }
 
-  function price(m: CatalogModel): string {
-    if (!m.pricing) return '';
-    const usd = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 3 })}`;
-    return $t('settingsProviders.browse.price', { values: { input: usd(m.pricing.input), output: usd(m.pricing.output) } });
+  /** A model row's level and price ("Medium · $0.00015 per request; your provider bills the model"). */
+  function cardLine(card: ModelCard | undefined): string {
+    return [cardTier(card, $t), cardPriceLine(card, $t)].filter(Boolean).join(' · ');
   }
+
+  // The model whose card is open, and the connection it is on.
+  let info = $state<{ card?: ModelCard; modelId: string; provider: string } | null>(null);
 
   function refreshedLabel(at?: number): string {
     if (!at) return '';
@@ -689,11 +694,22 @@
                           {#if model.source === 'added'}
                             <span class="badge badge-outline badge-xs">{$t('settingsProviders.tagAddedByHand')}</span>
                           {/if}
+                          {#if cardLine(model.card)}
+                            <span class="text-xs text-base-content/50 basis-full truncate">{cardLine(model.card)}</span>
+                          {/if}
                         </div>
                         <div class="flex items-center gap-3 shrink-0">
                           {#if model.contextWindow}
                             <span class="text-xs text-base-content/50 font-mono">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow.toLocaleString() } })}</span>
                           {/if}
+                          <button
+                            type="button"
+                            class="model-info-open"
+                            onclick={() => (info = { card: model.card, modelId: model.modelId, provider: conn.name })}
+                            aria-label={$t('modelCard.about', { values: { model: model.modelId } })}
+                          >
+                            <Info class="w-3.5 h-3.5" />
+                          </button>
                           {#if model.source !== 'catalog'}
                             <button
                               type="button"
@@ -945,8 +961,16 @@
                   />
                   <span class="flex flex-col min-w-0 flex-1">
                     <span class="text-sm truncate">{m.displayName}</span>
-                    <span class="text-xs text-base-content/50 font-mono truncate">{m.modelId}{#if price(m)}{' · '}{price(m)}{/if}</span>
+                    <span class="text-xs text-base-content/50 font-mono truncate">{m.modelId}{#if cardLine(m.card)}{' · '}{cardLine(m.card)}{/if}</span>
                   </span>
+                  <button
+                    type="button"
+                    class="model-info-open"
+                    onclick={(e) => { e.preventDefault(); info = { card: m.card, modelId: m.modelId, provider: browse?.profile.name ?? '' }; }}
+                    aria-label={$t('modelCard.about', { values: { model: m.displayName } })}
+                  >
+                    <Info class="w-3.5 h-3.5" />
+                  </button>
                   {#if m.added}
                     <span class="badge badge-ghost badge-xs shrink-0">{$t('settingsProviders.browse.added')}</span>
                   {/if}
@@ -970,4 +994,8 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if info}
+  <ModelInfo card={info.card} modelId={info.modelId} provider={info.provider} onclose={() => (info = null)} />
 {/if}

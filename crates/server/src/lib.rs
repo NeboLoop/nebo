@@ -430,6 +430,86 @@ struct JanusEntry {
     /// A listing without it is still in ladder order: its position stands in.
     #[serde(default)]
     rank: Option<i64>,
+    // A model Nebo AI serves (the registry's customer fields): its card.
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    maker: String,
+    #[serde(default)]
+    tier: String,
+    #[serde(default)]
+    reasons: bool,
+    #[serde(default)]
+    abilities: Option<JanusAbilities>,
+    #[serde(default)]
+    max_output: Option<i64>,
+    #[serde(default)]
+    speed: String,
+    #[serde(default)]
+    pricing: Option<JanusPricing>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JanusAbilities {
+    vision: bool,
+    tools: bool,
+    reasoning: bool,
+    audio: bool,
+}
+
+/// Retail prices as Janus lists them: USD decimal strings per 1M tokens,
+/// and the request fee per request, from the price book in effect.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JanusPricing {
+    version: String,
+    currency: String,
+    input_per_1m: Option<String>,
+    output_per_1m: Option<String>,
+    cache_read_per_1m: Option<String>,
+    cache_write_per_1m: Option<String>,
+    request_fee: Option<String>,
+}
+
+impl JanusEntry {
+    /// The model's card, for a model Nebo AI serves at a price; None for a
+    /// speed (a speed has no price of its own: the model that serves it does).
+    /// Every field but the price may be missing.
+    fn card(&self, name: &str) -> Option<handlers::connections::ModelCard> {
+        use handlers::connections::{CardAbilities, CardPricing, ModelCard};
+        self.pricing.as_ref()?;
+        let a = self.abilities.as_ref();
+        Some(ModelCard {
+            display_name: name.to_string(),
+            family: self.family.clone(),
+            maker: self.maker.clone(),
+            description: self.description.clone(),
+            tier: self.tier.clone(),
+            reasons: self.reasons,
+            abilities: CardAbilities {
+                vision: a.is_some_and(|a| a.vision),
+                tools: a.is_some_and(|a| a.tools),
+                reasoning: a.is_some_and(|a| a.reasoning),
+                audio: a.is_some_and(|a| a.audio),
+            },
+            context_window: self.context_window.filter(|&w| w > 0),
+            max_output: self.max_output.filter(|&w| w > 0),
+            speed: self.speed.clone(),
+            pricing: self.pricing.as_ref().map(|p| CardPricing {
+                version: p.version.clone(),
+                currency: if p.currency.is_empty() { "USD".into() } else { p.currency.clone() },
+                input_per1m: p.input_per_1m.clone(),
+                output_per1m: p.output_per_1m.clone(),
+                cache_read_per1m: p.cache_read_per_1m.clone(),
+                cache_write_per1m: p.cache_write_per_1m.clone(),
+                request_fee: p.request_fee.clone(),
+                provider_bills: false,
+            }),
+        })
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -443,26 +523,40 @@ struct JanusListing {
 fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize, String> {
     let mut listed: Vec<String> = Vec::new();
     for (pos, m) in listing.data.into_iter().filter(|m| m.owned_by == "neboai").enumerate() {
-        let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
+        let name = [&m.display_name, &m.name].into_iter().find(|n| !n.is_empty()).unwrap_or(&m.id).clone();
+        let card = m.card(&name);
+        // A described model's abilities are its own; a speed reads, sees and
+        // calls tools whatever serves it.
+        let caps = match &card {
+            Some(c) => {
+                let mut caps = c.abilities.list();
+                caps.push("streaming".into());
+                serde_json::to_string(&caps).unwrap_or_default()
+            }
+            None => r#"["vision","tools","streaming","code","reasoning"]"#.to_string(),
+        };
+        let price = |v: &Option<String>| v.as_deref().and_then(|p| p.parse::<f64>().ok());
+        let (input, output) = m.pricing.as_ref().map_or((None, None), |p| (price(&p.input_per_1m), price(&p.output_per_1m)));
+        let id = format!("janus/{}", m.id);
         store
             .upsert_provider_model(
-                &format!("janus/{}", m.id),
+                &id,
                 "janus",
                 &m.id,
                 &name,
                 (!m.description.is_empty()).then_some(m.description.as_str()),
                 m.context_window.filter(|&w| w > 0),
-                None,
-                None,
-                Some(r#"["vision","tools","streaming","code","reasoning"]"#),
+                input,
+                output,
+                Some(&caps),
                 None,
                 None,
                 true,
             )
             .map_err(|e| e.to_string())?;
-        store
-            .set_provider_model_rank(&format!("janus/{}", m.id), m.rank.unwrap_or(pos as i64))
-            .map_err(|e| e.to_string())?;
+        store.set_provider_model_rank(&id, m.rank.unwrap_or(pos as i64)).map_err(|e| e.to_string())?;
+        let card = card.and_then(|c| serde_json::to_string(&c).ok());
+        store.set_provider_model_card(&id, card.as_deref()).map_err(|e| e.to_string())?;
         listed.push(m.id);
     }
     for row in store.list_provider_models("janus").map_err(|e| e.to_string())? {
@@ -4357,6 +4451,94 @@ mod janus_sync_tests {
         let catalog: config::ModelsConfig = serde_yaml::from_str(include_str!("../../config/src/models.yaml")).unwrap();
         seed_models_from_catalog(&store, &catalog);
         assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
+    }
+
+    /// A Janus listing as it lists a model Nebo AI serves beside a speed.
+    fn listing_with_a_model() -> JanusListing {
+        serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Auto", "context_window": 200000,
+             "abilities": {"vision": false, "tools": false, "reasoning": false, "audio": false}},
+            {"id": "claude-sonnet-5", "object": "model", "owned_by": "neboai", "display_name": "Claude Sonnet 5",
+             "family": "Claude Sonnet", "maker": "Anthropic", "description": "Everyday work with tools and images.",
+             "tier": "medium", "reasons": true,
+             "abilities": {"vision": true, "tools": true, "reasoning": true, "audio": false},
+             "context_window": 1000000, "max_output": 128000, "speed": "fast",
+             "pricing": {"version": "2026-10-19.9", "currency": "USD", "input_per_1m": "3", "output_per_1m": "15",
+                         "cache_read_per_1m": "0.3", "cache_write_per_1m": "3.75", "request_fee": "0.00015"}},
+            {"id": "gpt-6-luna", "owned_by": "neboai", "display_name": "GPT-6 Luna",
+             "abilities": {"vision": false, "tools": true, "reasoning": false, "audio": false},
+             "pricing": {"version": "2026-10-19.9", "input_per_1m": "0.75", "output_per_1m": "4.5", "request_fee": "0.00015"}}
+        ]}))
+        .unwrap()
+    }
+
+    /// A model Nebo AI serves is stored with its card (what it is, what it
+    /// is good for, its retail price), its own abilities and its per-1M
+    /// prices; a speed has no card and keeps the speeds' abilities.
+    #[test]
+    fn a_listed_model_is_stored_with_its_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        assert_eq!(store_janus_listing(&store, listing_with_a_model()).unwrap(), 3);
+        let row = |id: &str| store.list_provider_models("janus").unwrap().into_iter().find(|m| m.model_id == id).unwrap();
+        let sonnet = row("claude-sonnet-5");
+        assert_eq!(sonnet.display_name, "Claude Sonnet 5");
+        assert_eq!((sonnet.input_price, sonnet.output_price), (Some(3.0), Some(15.0)));
+        let caps: Vec<String> = serde_json::from_str(sonnet.capabilities.as_deref().unwrap()).unwrap();
+        assert_eq!(caps, ["vision", "tools", "thinking", "streaming"]);
+        let card = crate::handlers::connections::card_of_row(&sonnet).unwrap();
+        assert_eq!(card.maker, "Anthropic");
+        assert_eq!(card.tier, "medium");
+        assert_eq!(card.max_output, Some(128_000));
+        let price = card.pricing.unwrap();
+        assert_eq!((price.input_per1m.as_deref(), price.cache_write_per1m.as_deref()), (Some("3"), Some("3.75")));
+        assert_eq!(price.request_fee.as_deref(), Some("0.00015"));
+        assert!(!price.provider_bills);
+        assert!(row("nebo-1").card.is_none(), "a speed has no card");
+        let speed: Vec<String> = serde_json::from_str(row("nebo-1").capabilities.as_deref().unwrap()).unwrap();
+        assert!(speed.contains(&"vision".to_string()), "a speed keeps the speeds' abilities");
+        let luna: Vec<String> = serde_json::from_str(row("gpt-6-luna").capabilities.as_deref().unwrap()).unwrap();
+        assert!(!luna.contains(&"vision".to_string()), "a model's own abilities, not the speeds'");
+    }
+
+    /// The pack choices offer each model Nebo AI serves for every level
+    /// with its card, its abilities deciding the Vision slot; the owner's
+    /// own-key model reads Janus's card for the same model at the request
+    /// fee alone (his provider bills the model); a model on a URL he entered
+    /// goes direct and costs Nebo nothing.
+    #[test]
+    fn pack_choices_carry_cards_and_prices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        store_janus_listing(&store, listing_with_a_model()).unwrap();
+        store.create_auth_profile("a", "Company", "anthropic", "sk-ant", None, None, 0, 1, None, None).unwrap();
+        let a = store.get_auth_profile("a").unwrap().unwrap();
+        store.put_connection_model(&crate::handlers::connections::connection_key(&a), "claude-sonnet-5", "claude-sonnet-5", "chat", None, "[]", "added", true).unwrap();
+        store.create_auth_profile("c", "Lab", "openai_compatible", "sk-lab", None, Some("https://lab.example/v1"), 0, 1, None, None).unwrap();
+        let c = store.get_auth_profile("c").unwrap().unwrap();
+        store.put_connection_model(&crate::handlers::connections::connection_key(&c), "lab-1", "Lab 1", "chat", Some(32_000), r#"["tools"]"#, "added", true).unwrap();
+
+        let (chat, _, _) = crate::handlers::provider::store_choices(&store);
+        let find = |v: &str| chat.iter().find(|c| c["value"] == v).unwrap_or_else(|| panic!("{v} in {chat:?}"));
+        let nebo = find("janus/claude-sonnet-5");
+        assert_eq!(nebo["provider"], "Nebo AI");
+        assert_eq!(nebo["capabilities"], serde_json::json!(["vision", "tools", "thinking"]), "Vision may name it");
+        assert_eq!(nebo["card"]["family"], "Claude Sonnet");
+        assert_eq!(nebo["card"]["pricing"]["inputPer1m"], "3");
+        assert_eq!(nebo["card"]["pricing"]["providerBills"], false);
+        assert_eq!(find("janus/gpt-6-luna")["capabilities"], serde_json::json!(["tools"]));
+        assert!(find("janus/nebo-1").get("card").is_none());
+
+        let own = chat.iter().find(|c| c["provider"] == "Anthropic").unwrap();
+        assert_eq!(own["card"]["description"], "Everyday work with tools and images.", "Janus's word on the same model");
+        assert_eq!(own["card"]["pricing"]["requestFee"], "0.00015");
+        assert_eq!(own["card"]["pricing"]["providerBills"], true);
+        assert!(own["card"]["pricing"]["inputPer1m"].is_null(), "no retail price: his provider bills the model");
+
+        let direct = chat.iter().find(|c| c["provider"] == "OpenAI-compatible").unwrap();
+        assert!(direct["card"]["pricing"]["requestFee"].is_null(), "a URL he entered: direct, no fee");
+        assert_eq!(direct["card"]["contextWindow"], 32_000);
+        assert_eq!(direct["card"]["abilities"]["tools"], true);
     }
 
     /// The speeds list by their rank on the ladder, never by name (which

@@ -1467,7 +1467,6 @@
 			"sortNewest": "En yeni",
 			"sortPrice": "Fiyat",
 			"showing": "{total} modelden {shown} gösteriliyor",
-			"price": "M token başına {input} / {output}",
 			"added": "Eklendi",
 			"selected": "{count} seçildi",
 			"addN": "{count, plural, one {# model ekle} other {# model ekle}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "{provider} API anahtarınız reddedildi. Ayarlar > Sağlayıcılar bölümünden kontrol edin.",
 		"keyUnusable": "{provider} API anahtarınız bu modeli çalıştıramıyor. Modeli Ayarlar > Sağlayıcılar bölümünden kontrol edin.",
 		"connectionSignIn": "Bu anahtarı kullanmak için NeboAI'da oturum açın: kendi anahtarlarınız NeboAI hesabınızda çalışır."
+	},
+	"modelCard": {
+		"about": "{model} hakkında",
+		"aboutNone": "Ne olduğunu görmek için bir model seçin",
+		"level": "Uygun olduğu seviye",
+		"reasons": "Yanıtlamadan önce düşünür",
+		"yes": "Evet",
+		"no": "Hayır",
+		"abilities": "Yapabilir",
+		"ability": {
+			"vision": "Görselleri görmek",
+			"tools": "Araç kullanmak",
+			"reasoning": "Akıl yürütmek",
+			"audio": "Ses duymak"
+		},
+		"unknown": "Bilinmiyor",
+		"context": "Bağlam",
+		"maxOutput": "En uzun yanıt",
+		"tokens": "{count} token",
+		"speed": "Hız",
+		"speedValue": {
+			"fastest": "En hızlı",
+			"fast": "Hızlı",
+			"standard": "Standart",
+			"slow": "Daha yavaş"
+		},
+		"modelId": "Model kimliği",
+		"pricing": "Fiyat",
+		"noPrice": "Fiyat belirtilmemiş.",
+		"ownKeyPrice": "İstek başına {fee}; model ücretini sağlayıcınız alır",
+		"providerBills": "Model ücretini sağlayıcınız alır",
+		"per1m": "1M token başına {input} giriş / {output} çıkış",
+		"input": "Giriş",
+		"output": "Çıkış",
+		"cacheRead": "Önbellek okuma",
+		"cacheWrite": "Önbellek yazma",
+		"requestFee": "İstek ücreti",
+		"perMillion": "1M token başına {price}",
+		"perRequest": "İstek başına {price}",
+		"priceVersion": "{version} itibarıyla fiyatlar"
 	}
 }

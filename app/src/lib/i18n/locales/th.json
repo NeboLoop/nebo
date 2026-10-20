@@ -1467,7 +1467,6 @@
 			"sortNewest": "ใหม่ล่าสุด",
 			"sortPrice": "ราคา",
 			"showing": "แสดง {shown} จาก {total}",
-			"price": "{input} / {output} ต่อ 1 ล้านโทเค็น",
 			"added": "เพิ่มแล้ว",
 			"selected": "เลือก {count} รายการ",
 			"addN": "{count, plural, one {เพิ่ม # โมเดล} other {เพิ่ม # โมเดล}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "คีย์ API ของ {provider} ของคุณถูกปฏิเสธ ตรวจสอบได้ที่ การตั้งค่า > ผู้ให้บริการ",
 		"keyUnusable": "คีย์ API ของ {provider} ของคุณใช้งานโมเดลนี้ไม่ได้ ตรวจสอบโมเดลได้ที่ การตั้งค่า > ผู้ให้บริการ",
 		"connectionSignIn": "ลงชื่อเข้าใช้ NeboAI เพื่อใช้คีย์นี้: คีย์ของคุณเองทำงานบนบัญชี NeboAI ของคุณ"
+	},
+	"modelCard": {
+		"about": "เกี่ยวกับ {model}",
+		"aboutNone": "เลือกโมเดลเพื่อดูว่าคืออะไร",
+		"level": "เหมาะกับระดับ",
+		"reasons": "คิดก่อนตอบ",
+		"yes": "ใช่",
+		"no": "ไม่",
+		"abilities": "ทำได้",
+		"ability": {
+			"vision": "ดูรูปภาพ",
+			"tools": "ใช้เครื่องมือ",
+			"reasoning": "ใช้เหตุผล",
+			"audio": "ฟังเสียง"
+		},
+		"unknown": "ไม่ทราบ",
+		"context": "บริบท",
+		"maxOutput": "คำตอบที่ยาวที่สุด",
+		"tokens": "{count} โทเคน",
+		"speed": "ความเร็ว",
+		"speedValue": {
+			"fastest": "เร็วที่สุด",
+			"fast": "เร็ว",
+			"standard": "มาตรฐาน",
+			"slow": "ช้ากว่า"
+		},
+		"modelId": "รหัสโมเดล",
+		"pricing": "ราคา",
+		"noPrice": "ไม่มีราคาระบุ",
+		"ownKeyPrice": "{fee} ต่อคำขอ; ผู้ให้บริการของคุณเรียกเก็บค่าโมเดล",
+		"providerBills": "ผู้ให้บริการของคุณเรียกเก็บค่าโมเดล",
+		"per1m": "ขาเข้า {input} / ขาออก {output} ต่อ 1 ล้านโทเคน",
+		"input": "ขาเข้า",
+		"output": "ขาออก",
+		"cacheRead": "อ่านแคช",
+		"cacheWrite": "เขียนแคช",
+		"requestFee": "ค่าธรรมเนียมต่อคำขอ",
+		"perMillion": "{price} ต่อ 1 ล้านโทเคน",
+		"perRequest": "{price} ต่อคำขอ",
+		"priceVersion": "ราคา ณ {version}"
 	}
 }

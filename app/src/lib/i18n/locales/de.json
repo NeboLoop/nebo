@@ -1467,7 +1467,6 @@
 			"sortNewest": "Neueste",
 			"sortPrice": "Preis",
 			"showing": "Zeigt {shown} von {total}",
-			"price": "{input} / {output} pro Mio. Token",
 			"added": "Hinzugefügt",
 			"selected": "{count} ausgewählt",
 			"addN": "{count, plural, one {# Modell hinzufügen} other {# Modelle hinzufügen}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "Dein {provider}-API-Schlüssel wurde abgelehnt. Prüfe ihn unter Einstellungen > Anbieter.",
 		"keyUnusable": "Dein {provider}-API-Schlüssel kann dieses Modell nicht ausführen. Prüfe das Modell darauf unter Einstellungen > Anbieter.",
 		"connectionSignIn": "Melde dich bei NeboAI an, um diesen Schlüssel zu nutzen: Deine eigenen Schlüssel laufen über dein NeboAI-Konto."
+	},
+	"modelCard": {
+		"about": "Über {model}",
+		"aboutNone": "Wählen Sie ein Modell, um zu sehen, was es ist",
+		"level": "Passt zu",
+		"reasons": "Denkt vor der Antwort",
+		"yes": "Ja",
+		"no": "Nein",
+		"abilities": "Kann",
+		"ability": {
+			"vision": "Bilder sehen",
+			"tools": "Werkzeuge nutzen",
+			"reasoning": "Schlussfolgern",
+			"audio": "Audio hören"
+		},
+		"unknown": "Unbekannt",
+		"context": "Kontext",
+		"maxOutput": "Längste Antwort",
+		"tokens": "{count} Token",
+		"speed": "Geschwindigkeit",
+		"speedValue": {
+			"fastest": "Am schnellsten",
+			"fast": "Schnell",
+			"standard": "Standard",
+			"slow": "Langsamer"
+		},
+		"modelId": "Modell-ID",
+		"pricing": "Preis",
+		"noPrice": "Kein Preis angegeben.",
+		"ownKeyPrice": "{fee} pro Anfrage; Ihr Anbieter rechnet das Modell ab",
+		"providerBills": "Ihr Anbieter rechnet das Modell ab",
+		"per1m": "{input} Eingabe / {output} Ausgabe pro 1 Mio. Token",
+		"input": "Eingabe",
+		"output": "Ausgabe",
+		"cacheRead": "Cache lesen",
+		"cacheWrite": "Cache schreiben",
+		"requestFee": "Anfragegebühr",
+		"perMillion": "{price} pro 1 Mio. Token",
+		"perRequest": "{price} pro Anfrage",
+		"priceVersion": "Preise vom {version}"
 	}
 }

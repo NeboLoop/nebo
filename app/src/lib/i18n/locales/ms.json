@@ -1467,7 +1467,6 @@
 			"sortNewest": "Terbaharu",
 			"sortPrice": "Harga",
 			"showing": "Memaparkan {shown} daripada {total}",
-			"price": "{input} / {output} setiap M token",
 			"added": "Ditambah",
 			"selected": "{count} dipilih",
 			"addN": "{count, plural, one {Tambah # model} other {Tambah # model}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "Kunci API {provider} anda ditolak. Semak di Tetapan > Pembekal.",
 		"keyUnusable": "Kunci API {provider} anda tidak boleh menjalankan model ini. Semak modelnya di Tetapan > Pembekal.",
 		"connectionSignIn": "Log masuk ke NeboAI untuk menggunakan kunci ini: kunci anda sendiri berjalan pada akaun NeboAI anda."
+	},
+	"modelCard": {
+		"about": "Tentang {model}",
+		"aboutNone": "Pilih model untuk melihat apakah ia",
+		"level": "Sesuai untuk",
+		"reasons": "Berfikir sebelum menjawab",
+		"yes": "Ya",
+		"no": "Tidak",
+		"abilities": "Boleh",
+		"ability": {
+			"vision": "Melihat imej",
+			"tools": "Menggunakan alat",
+			"reasoning": "Menaakul",
+			"audio": "Mendengar audio"
+		},
+		"unknown": "Tidak diketahui",
+		"context": "Konteks",
+		"maxOutput": "Jawapan terpanjang",
+		"tokens": "{count} token",
+		"speed": "Kelajuan",
+		"speedValue": {
+			"fastest": "Paling pantas",
+			"fast": "Pantas",
+			"standard": "Standard",
+			"slow": "Lebih perlahan"
+		},
+		"modelId": "ID model",
+		"pricing": "Harga",
+		"noPrice": "Tiada harga disenaraikan.",
+		"ownKeyPrice": "{fee} setiap permintaan; pembekal anda mengebil model",
+		"providerBills": "Pembekal anda mengebil model",
+		"per1m": "{input} masuk / {output} keluar setiap 1 juta token",
+		"input": "Input",
+		"output": "Output",
+		"cacheRead": "Baca cache",
+		"cacheWrite": "Tulis cache",
+		"requestFee": "Yuran permintaan",
+		"perMillion": "{price} setiap 1 juta token",
+		"perRequest": "{price} setiap permintaan",
+		"priceVersion": "Harga setakat {version}"
 	}
 }

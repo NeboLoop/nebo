@@ -318,6 +318,8 @@ export interface RunDisplay {
 	name?: string
 	capabilities?: string[]
 	local: boolean
+	/** What the owner reads before picking it: what it is, what it is good for, its price. */
+	card?: ModelCard
 }`,
 
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {

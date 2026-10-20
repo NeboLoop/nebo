@@ -1467,7 +1467,6 @@
 			"sortNewest": "Nieuwste",
 			"sortPrice": "Prijs",
 			"showing": "{shown} van {total} weergegeven",
-			"price": "{input} / {output} per M tokens",
 			"added": "Toegevoegd",
 			"selected": "{count} geselecteerd",
 			"addN": "{count, plural, one {# model toevoegen} other {# modellen toevoegen}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "Je {provider}-API-sleutel is geweigerd. Controleer hem bij Instellingen > Providers.",
 		"keyUnusable": "Je {provider}-API-sleutel kan dit model niet uitvoeren. Controleer het model erop bij Instellingen > Providers.",
 		"connectionSignIn": "Meld je aan bij NeboAI om deze sleutel te gebruiken: je eigen sleutels draaien op je NeboAI-account."
+	},
+	"modelCard": {
+		"about": "Over {model}",
+		"aboutNone": "Kies een model om te zien wat het is",
+		"level": "Past bij",
+		"reasons": "Denkt na voor het antwoordt",
+		"yes": "Ja",
+		"no": "Nee",
+		"abilities": "Kan",
+		"ability": {
+			"vision": "Afbeeldingen zien",
+			"tools": "Tools gebruiken",
+			"reasoning": "Redeneren",
+			"audio": "Audio horen"
+		},
+		"unknown": "Onbekend",
+		"context": "Context",
+		"maxOutput": "Langste antwoord",
+		"tokens": "{count} tokens",
+		"speed": "Snelheid",
+		"speedValue": {
+			"fastest": "Snelst",
+			"fast": "Snel",
+			"standard": "Standaard",
+			"slow": "Langzamer"
+		},
+		"modelId": "Model-id",
+		"pricing": "Prijs",
+		"noPrice": "Geen prijs vermeld.",
+		"ownKeyPrice": "{fee} per verzoek; je provider rekent het model af",
+		"providerBills": "Je provider rekent het model af",
+		"per1m": "{input} invoer / {output} uitvoer per 1 mln. tokens",
+		"input": "Invoer",
+		"output": "Uitvoer",
+		"cacheRead": "Cache lezen",
+		"cacheWrite": "Cache schrijven",
+		"requestFee": "Kosten per verzoek",
+		"perMillion": "{price} per 1 mln. tokens",
+		"perRequest": "{price} per verzoek",
+		"priceVersion": "Prijzen per {version}"
 	}
 }

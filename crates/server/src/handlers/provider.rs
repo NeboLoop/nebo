@@ -754,6 +754,7 @@ mod picker_tests {
             model_kind: "chat".into(),
             source: "catalog".into(),
             rank: None,
+            card: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -921,6 +922,7 @@ fn kind_label(kind: &str) -> &str {
         "google" => "Google",
         "openrouter" => "OpenRouter",
         "deepseek" => "DeepSeek",
+        "xai" => "xAI",
         "openai_compatible" => "OpenAI-compatible",
         "systemone_compatible" => "SystemOne-compatible",
         other => other,
@@ -934,6 +936,29 @@ fn kind_label(kind: &str) -> &str {
 /// xAI's realtime protocol (`Harness::call_voice`): Nebo AI's Voice first,
 /// then each xAI connection's realtime models.
 pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let (mut chat, decision, voice) = store_choices(&state.store);
+    let catalog = config::ModelsConfig::load();
+    let clis = config::detect_all_clis();
+    for cp in catalog.cli_providers.iter().filter(|c| c.is_active()) {
+        let installed = match cp.command.as_str() {
+            "claude" => clis.claude.installed,
+            "codex" => clis.codex.installed,
+            "gemini" => clis.gemini.installed,
+            _ => false,
+        };
+        // The tool runs its own default model: Nebo names none.
+        if installed {
+            chat.push(serde_json::json!({ "value": format!("{}/", cp.id), "provider": cp.display_name, "connection": "", "modelId": "", "capabilities": [], "local": true }));
+        }
+    }
+    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision, "voice": voice })))
+}
+
+/// The pack choices the store holds (chat, decision, voice): Nebo AI's
+/// speeds and the models it serves, each with its card; each connection's
+/// models with theirs; Ollama's. The agents on this computer are the
+/// handler's to add.
+pub(crate) fn store_choices(store: &db::Store) -> (Vec<serde_json::Value>, Vec<serde_json::Value>, Vec<serde_json::Value>) {
     use types::packs::{NEBO_AI_VOICE, XAI_VOICE_MODEL, is_xai_connection, is_xai_voice_model};
     let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
         serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
@@ -942,25 +967,31 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
     let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
     let nebo_voice = NEBO_AI_VOICE.split_once('/').map_or(NEBO_AI_VOICE, |(_, m)| m);
     let mut voice = vec![choice(NEBO_AI_VOICE.into(), "Nebo AI", "", nebo_voice, &[], false)];
-    for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
+    for m in store.list_active_provider_models("janus").unwrap_or_default() {
         let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
         if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
             // A Nebo AI speed reads by the levels it serves ("High and Max"),
-            // never by its internal id.
-            let mut c = choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &[], false);
+            // never by its internal id. A model Nebo AI serves carries its
+            // card (abilities, what it is good for, its retail price), and
+            // its abilities decide the slots it may fill (Vision).
+            let card = super::connections::card_of_row(&m);
+            let abilities = card.as_ref().map(|c| c.abilities.list()).unwrap_or_default();
+            let mut c = choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &abilities, false);
             if !m.display_name.is_empty() && m.display_name != m.model_id {
                 c["name"] = serde_json::Value::String(m.display_name.clone());
+            }
+            if let Some(card) = card {
+                c["card"] = serde_json::to_value(card).unwrap_or_default();
             }
             chat.push(c);
         }
     }
-    let catalog = config::ModelsConfig::load();
-    for p in state.store.list_auth_profiles().unwrap_or_default() {
+    for p in store.list_auth_profiles().unwrap_or_default() {
         if p.is_active.unwrap_or(0) == 0 || matches!(p.provider.as_str(), "neboai" | "ollama") {
             continue;
         }
         let key = super::connections::connection_key(&p);
-        let models: Vec<_> = super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active).collect();
+        let models: Vec<_> = super::connections::connection_models(store, &p).into_iter().filter(|m| m.is_active).collect();
         if is_xai_connection(&p.provider) {
             let mut names = vec![XAI_VOICE_MODEL];
             for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
@@ -972,28 +1003,17 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
                 voice.push(choice(format!("{key}/{m}"), kind_label(&p.provider), &p.name, m, &[], false));
             }
         }
+        let via_janus = auth::credential::own_key(&p).is_some();
         for m in models {
-            let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
+            let mut c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
+            c["card"] = serde_json::to_value(super::connections::connection_card(store, &m, via_janus)).unwrap_or_default();
             if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
         }
     }
-    for m in state.store.list_active_provider_models("ollama").unwrap_or_default() {
+    for m in store.list_active_provider_models("ollama").unwrap_or_default() {
         chat.push(choice(format!("ollama/{}", m.model_id), "Ollama", "", &m.model_id, &[], true));
     }
-    let clis = config::detect_all_clis();
-    for cp in catalog.cli_providers.iter().filter(|c| c.is_active()) {
-        let installed = match cp.command.as_str() {
-            "claude" => clis.claude.installed,
-            "codex" => clis.codex.installed,
-            "gemini" => clis.gemini.installed,
-            _ => false,
-        };
-        // The tool runs its own default model: Nebo names none.
-        if installed {
-            chat.push(choice(format!("{}/", cp.id), &cp.display_name, "", "", &[], true));
-        }
-    }
-    Ok(Json(serde_json::json!({ "chat": chat, "decision": decision, "voice": voice })))
+    (chat, decision, voice)
 }
 
 /// POST /api/v1/intelligence-packs — make a pack.

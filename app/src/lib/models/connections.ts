@@ -5,6 +5,7 @@
  * no copy here — the pages own both.
  */
 import type { CatalogModel, Pack, PackChoice } from '$lib/api/neboComponents';
+import { cardPriceLine, cardTier, type Translate } from './modelCard';
 import { EFFORTS, type Effort } from './speeds';
 
 /** The connection kinds Add provider offers, in the order it shows them. */
@@ -195,4 +196,30 @@ export function handBody(m: HandModel) {
 		(c): c is string => Boolean(c)
 	);
 	return { modelId: m.modelId, kind: m.kind, contextWindow: parseContext(m.contextWindow), capabilities };
+}
+
+// ── Model rows ──────────────────────────────────────────────────────
+
+/** A choice as a picker row reads: provider, model, the level it fits and its price. */
+export function choiceRowLabel(c: PackChoice, t: Translate): string {
+	return [choiceProviderLabel(c), c.name || c.card?.displayName || c.modelId, cardTier(c.card, t), cardPriceLine(c.card, t)]
+		.filter(Boolean)
+		.join(' · ');
+}
+
+/**
+ * Choices grouped as a picker shows them: the models Nebo AI serves by their
+ * family ("Nebo AI · Claude Sonnet"), everything else by its provider, each
+ * group where its first choice sits.
+ */
+export function choiceGroups(choices: PackChoice[]): { label: string; choices: PackChoice[] }[] {
+	const groups = new Map<string, PackChoice[]>();
+	for (const c of choices) {
+		const family = c.card?.family?.trim();
+		const label = family ? `${choiceProviderLabel(c)} · ${family}` : choiceProviderLabel(c);
+		const g = groups.get(label);
+		if (g) g.push(c);
+		else groups.set(label, [c]);
+	}
+	return [...groups.entries()].map(([label, choices]) => ({ label, choices }));
 }

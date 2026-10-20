@@ -1467,7 +1467,6 @@
 			"sortNewest": "সবচেয়ে নতুন",
 			"sortPrice": "দাম",
 			"showing": "{total}-এর মধ্যে {shown} দেখানো হচ্ছে",
-			"price": "প্রতি M টোকেনে {input} / {output}",
 			"added": "যুক্ত হয়েছে",
 			"selected": "{count}টি নির্বাচিত",
 			"addN": "{count, plural, one {#টি মডেল যুক্ত করুন} other {#টি মডেল যুক্ত করুন}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "আপনার {provider} API কী প্রত্যাখ্যাত হয়েছে। সেটিংস > প্রদানকারী-এ এটি দেখুন।",
 		"keyUnusable": "আপনার {provider} API কী এই মডেলটি চালাতে পারে না। সেটিংস > প্রদানকারী-এ এর মডেলটি দেখুন।",
 		"connectionSignIn": "এই কী ব্যবহার করতে NeboAI-তে সাইন ইন করুন: আপনার নিজের কী আপনার NeboAI অ্যাকাউন্টে চলে।"
+	},
+	"modelCard": {
+		"about": "{model} সম্পর্কে",
+		"aboutNone": "এটি কী তা দেখতে একটি মডেল বেছে নিন",
+		"level": "যে স্তরের জন্য উপযুক্ত",
+		"reasons": "উত্তর দেওয়ার আগে ভাবে",
+		"yes": "হ্যাঁ",
+		"no": "না",
+		"abilities": "পারে",
+		"ability": {
+			"vision": "ছবি দেখা",
+			"tools": "টুল ব্যবহার করা",
+			"reasoning": "যুক্তি দেওয়া",
+			"audio": "অডিও শোনা"
+		},
+		"unknown": "জানা নেই",
+		"context": "প্রসঙ্গ",
+		"maxOutput": "দীর্ঘতম উত্তর",
+		"tokens": "{count} টোকেন",
+		"speed": "গতি",
+		"speedValue": {
+			"fastest": "সবচেয়ে দ্রুত",
+			"fast": "দ্রুত",
+			"standard": "সাধারণ",
+			"slow": "ধীর"
+		},
+		"modelId": "মডেল আইডি",
+		"pricing": "দাম",
+		"noPrice": "কোনো দাম দেওয়া নেই।",
+		"ownKeyPrice": "প্রতি অনুরোধে {fee}; মডেলের বিল আপনার প্রদানকারী করে",
+		"providerBills": "মডেলের বিল আপনার প্রদানকারী করে",
+		"per1m": "প্রতি ১০ লক্ষ টোকেনে {input} ইনপুট / {output} আউটপুট",
+		"input": "ইনপুট",
+		"output": "আউটপুট",
+		"cacheRead": "ক্যাশ পড়া",
+		"cacheWrite": "ক্যাশ লেখা",
+		"requestFee": "অনুরোধ ফি",
+		"perMillion": "প্রতি ১০ লক্ষ টোকেনে {price}",
+		"perRequest": "প্রতি অনুরোধে {price}",
+		"priceVersion": "{version} অনুযায়ী দাম"
 	}
 }

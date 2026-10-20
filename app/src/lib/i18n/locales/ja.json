@@ -1467,7 +1467,6 @@
 			"sortNewest": "新しい順",
 			"sortPrice": "価格",
 			"showing": "{total}件中{shown}件を表示",
-			"price": "{input} / {output}（Mトークンあたり）",
 			"added": "追加済み",
 			"selected": "{count}件選択中",
 			"addN": "{count, plural, one {#個のモデルを追加} other {#個のモデルを追加}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "{provider} の API キーが拒否されました。設定 > プロバイダー で確認してください。",
 		"keyUnusable": "{provider} の API キーではこのモデルを実行できません。設定 > プロバイダー でモデルを確認してください。",
 		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。"
+	},
+	"modelCard": {
+		"about": "{model} について",
+		"aboutNone": "モデルを選ぶと詳細が表示されます",
+		"level": "向いているレベル",
+		"reasons": "答える前に考える",
+		"yes": "はい",
+		"no": "いいえ",
+		"abilities": "できること",
+		"ability": {
+			"vision": "画像を見る",
+			"tools": "ツールを使う",
+			"reasoning": "推論する",
+			"audio": "音声を聞く"
+		},
+		"unknown": "不明",
+		"context": "コンテキスト",
+		"maxOutput": "最長の回答",
+		"tokens": "{count} トークン",
+		"speed": "速度",
+		"speedValue": {
+			"fastest": "最速",
+			"fast": "速い",
+			"standard": "標準",
+			"slow": "遅め"
+		},
+		"modelId": "モデル ID",
+		"pricing": "料金",
+		"noPrice": "料金の記載はありません。",
+		"ownKeyPrice": "1 リクエストあたり {fee}。モデル料金はプロバイダーから請求されます",
+		"providerBills": "モデル料金はプロバイダーから請求されます",
+		"per1m": "100 万トークンあたり 入力 {input} / 出力 {output}",
+		"input": "入力",
+		"output": "出力",
+		"cacheRead": "キャッシュ読み取り",
+		"cacheWrite": "キャッシュ書き込み",
+		"requestFee": "リクエスト料金",
+		"perMillion": "100 万トークンあたり {price}",
+		"perRequest": "1 リクエストあたり {price}",
+		"priceVersion": "{version} 時点の料金"
 	}
 }

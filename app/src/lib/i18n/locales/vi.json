@@ -1467,7 +1467,6 @@
 			"sortNewest": "Mới nhất",
 			"sortPrice": "Giá",
 			"showing": "Hiển thị {shown} trong {total}",
-			"price": "{input} / {output} mỗi triệu token",
 			"added": "Đã thêm",
 			"selected": "Đã chọn {count}",
 			"addN": "{count, plural, one {Thêm # mô hình} other {Thêm # mô hình}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "Khóa API {provider} của bạn bị từ chối. Hãy kiểm tra trong Cài đặt > Nhà cung cấp.",
 		"keyUnusable": "Khóa API {provider} của bạn không chạy được mô hình này. Hãy kiểm tra mô hình trong Cài đặt > Nhà cung cấp.",
 		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn."
+	},
+	"modelCard": {
+		"about": "Về {model}",
+		"aboutNone": "Chọn một mô hình để xem đó là gì",
+		"level": "Phù hợp với",
+		"reasons": "Suy nghĩ trước khi trả lời",
+		"yes": "Có",
+		"no": "Không",
+		"abilities": "Có thể",
+		"ability": {
+			"vision": "Xem hình ảnh",
+			"tools": "Dùng công cụ",
+			"reasoning": "Suy luận",
+			"audio": "Nghe âm thanh"
+		},
+		"unknown": "Chưa rõ",
+		"context": "Ngữ cảnh",
+		"maxOutput": "Câu trả lời dài nhất",
+		"tokens": "{count} token",
+		"speed": "Tốc độ",
+		"speedValue": {
+			"fastest": "Nhanh nhất",
+			"fast": "Nhanh",
+			"standard": "Tiêu chuẩn",
+			"slow": "Chậm hơn"
+		},
+		"modelId": "ID mô hình",
+		"pricing": "Giá",
+		"noPrice": "Chưa có giá.",
+		"ownKeyPrice": "{fee} mỗi yêu cầu; nhà cung cấp của bạn tính phí mô hình",
+		"providerBills": "Nhà cung cấp của bạn tính phí mô hình",
+		"per1m": "{input} đầu vào / {output} đầu ra cho mỗi 1 triệu token",
+		"input": "Đầu vào",
+		"output": "Đầu ra",
+		"cacheRead": "Đọc bộ nhớ đệm",
+		"cacheWrite": "Ghi bộ nhớ đệm",
+		"requestFee": "Phí mỗi yêu cầu",
+		"perMillion": "{price} cho mỗi 1 triệu token",
+		"perRequest": "{price} mỗi yêu cầu",
+		"priceVersion": "Giá tính đến {version}"
 	}
 }

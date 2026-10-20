@@ -1467,7 +1467,6 @@
 			"sortNewest": "Mais recentes",
 			"sortPrice": "Preço",
 			"showing": "Mostrando {shown} de {total}",
-			"price": "{input} / {output} por M tokens",
 			"added": "Adicionado",
 			"selected": "{count} selecionados",
 			"addN": "{count, plural, one {Adicionar # modelo} other {Adicionar # modelos}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "Sua chave de API da {provider} foi recusada. Verifique-a em Configurações > Provedores.",
 		"keyUnusable": "Sua chave de API da {provider} não pode executar este modelo. Verifique o modelo em Configurações > Provedores.",
 		"connectionSignIn": "Entre no NeboAI para usar esta chave: suas próprias chaves funcionam na sua conta NeboAI."
+	},
+	"modelCard": {
+		"about": "Sobre {model}",
+		"aboutNone": "Escolha um modelo para ver o que ele é",
+		"level": "Combina com",
+		"reasons": "Pensa antes de responder",
+		"yes": "Sim",
+		"no": "Não",
+		"abilities": "Pode",
+		"ability": {
+			"vision": "Ver imagens",
+			"tools": "Usar ferramentas",
+			"reasoning": "Raciocinar",
+			"audio": "Ouvir áudio"
+		},
+		"unknown": "Desconhecido",
+		"context": "Contexto",
+		"maxOutput": "Resposta mais longa",
+		"tokens": "{count} tokens",
+		"speed": "Velocidade",
+		"speedValue": {
+			"fastest": "A mais rápida",
+			"fast": "Rápida",
+			"standard": "Padrão",
+			"slow": "Mais lenta"
+		},
+		"modelId": "ID do modelo",
+		"pricing": "Preço",
+		"noPrice": "Nenhum preço informado.",
+		"ownKeyPrice": "{fee} por solicitação; seu provedor cobra o modelo",
+		"providerBills": "Seu provedor cobra o modelo",
+		"per1m": "{input} entrada / {output} saída por 1 M de tokens",
+		"input": "Entrada",
+		"output": "Saída",
+		"cacheRead": "Leitura de cache",
+		"cacheWrite": "Gravação de cache",
+		"requestFee": "Taxa por solicitação",
+		"perMillion": "{price} por 1 M de tokens",
+		"perRequest": "{price} por solicitação",
+		"priceVersion": "Preços de {version}"
 	}
 }

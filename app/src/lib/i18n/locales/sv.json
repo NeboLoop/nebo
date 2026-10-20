@@ -1467,7 +1467,6 @@
 			"sortNewest": "Nyast",
 			"sortPrice": "Pris",
 			"showing": "Visar {shown} av {total}",
-			"price": "{input} / {output} per M token",
 			"added": "Tillagd",
 			"selected": "{count} valda",
 			"addN": "{count, plural, one {Lägg till # modell} other {Lägg till # modeller}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "Din {provider}-API-nyckel nekades. Kontrollera den under Inställningar > Leverantörer.",
 		"keyUnusable": "Din {provider}-API-nyckel kan inte köra den här modellen. Kontrollera modellen under Inställningar > Leverantörer.",
 		"connectionSignIn": "Logga in på NeboAI för att använda den här nyckeln: dina egna nycklar körs på ditt NeboAI-konto."
+	},
+	"modelCard": {
+		"about": "Om {model}",
+		"aboutNone": "Välj en modell för att se vad den är",
+		"level": "Passar",
+		"reasons": "Tänker innan den svarar",
+		"yes": "Ja",
+		"no": "Nej",
+		"abilities": "Kan",
+		"ability": {
+			"vision": "Se bilder",
+			"tools": "Använda verktyg",
+			"reasoning": "Resonera",
+			"audio": "Höra ljud"
+		},
+		"unknown": "Okänt",
+		"context": "Kontext",
+		"maxOutput": "Längsta svar",
+		"tokens": "{count} tokens",
+		"speed": "Hastighet",
+		"speedValue": {
+			"fastest": "Snabbast",
+			"fast": "Snabb",
+			"standard": "Standard",
+			"slow": "Långsammare"
+		},
+		"modelId": "Modell-id",
+		"pricing": "Pris",
+		"noPrice": "Inget pris angivet.",
+		"ownKeyPrice": "{fee} per förfrågan; din leverantör fakturerar modellen",
+		"providerBills": "Din leverantör fakturerar modellen",
+		"per1m": "{input} in / {output} ut per 1 milj. tokens",
+		"input": "Indata",
+		"output": "Utdata",
+		"cacheRead": "Cacheläsning",
+		"cacheWrite": "Cacheskrivning",
+		"requestFee": "Avgift per förfrågan",
+		"perMillion": "{price} per 1 milj. tokens",
+		"perRequest": "{price} per förfrågan",
+		"priceVersion": "Priser per {version}"
 	}
 }

@@ -251,6 +251,14 @@ impl Store {
         Ok(())
     }
 
+    /// Set (or clear) a row's card: Janus's word on the model, as JSON.
+    pub fn set_provider_model_card(&self, id: &str, card: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE provider_models SET card = ?2 WHERE id = ?1", params![id, card])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_provider_model(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM provider_models WHERE id = ?1", params![id])
@@ -337,6 +345,7 @@ fn row_to_provider_model(row: &rusqlite::Row) -> rusqlite::Result<ProviderModel>
         model_kind: row.get("model_kind")?,
         source: row.get("source")?,
         rank: row.get("rank")?,
+        card: row.get("card")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })

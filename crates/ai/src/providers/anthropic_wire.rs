@@ -348,6 +348,18 @@ mod tests {
     use super::*;
     use crate::types::{RequestTrace, ToolCall};
 
+    /// A Claude model a pack names on Nebo AI (`janus/claude-…`, served at
+    /// retail through Janus) gets Claude's request extensions like one on
+    /// the owner's own key; Nebo AI's speeds and other makers' models don't.
+    #[test]
+    fn a_claude_model_on_nebo_ai_is_an_anthropic_request() {
+        assert!(is_anthropic(None, "janus", "claude-sonnet-5"));
+        assert!(is_anthropic(Some("anthropic"), "anthropic", "claude-opus-5-5"));
+        assert!(!is_anthropic(None, "janus", "nebo-1-pro"));
+        assert!(!is_anthropic(None, "janus", "gpt-6.1-sol"));
+        assert!(!is_anthropic(Some("openai"), "openai", "claude-x"));
+    }
+
     #[test]
     fn max_asks_for_the_models_top_effort() {
         use types::packs::ProviderEffort::*;

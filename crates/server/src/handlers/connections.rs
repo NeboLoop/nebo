@@ -33,6 +33,10 @@ pub struct ConnectionModel {
     /// `catalog`, `added` or `browsed`.
     pub source: String,
     pub is_active: bool,
+    /// What the owner reads about it and what it costs on this connection
+    /// (set when the list is shown; never stored with the model).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card: Option<ModelCard>,
 }
 
 /// A connection's key in `provider_models` and in model strings.
@@ -57,6 +61,7 @@ fn model_of_row(row: &db::models::ProviderModel) -> ConnectionModel {
         capabilities: abilities(&caps),
         source: row.source.clone(),
         is_active: row.is_active.unwrap_or(0) == 1,
+        card: None,
     }
 }
 
@@ -76,7 +81,14 @@ pub async fn list_connection_models(
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
     let p = profile(&state, &id).map_err(to_error_response)?;
-    let models = connection_models(&state.store, &p);
+    let via_janus = auth::credential::own_key(&p).is_some();
+    let models: Vec<ConnectionModel> = connection_models(&state.store, &p)
+        .into_iter()
+        .map(|mut m| {
+            m.card = Some(connection_card(&state.store, &m, via_janus));
+            m
+        })
+        .collect();
     Ok(Json(serde_json::json!({ "models": models })))
 }
 
@@ -137,6 +149,7 @@ pub async fn add_connection_model(
         capabilities: abilities(&body.capabilities.unwrap_or_default()),
         source: if body.source.as_deref() == Some("browsed") { "browsed".into() } else { "added".into() },
         is_active: body.is_active.unwrap_or(true),
+        card: None,
         model_id,
     };
     put(&state, &connection_key(&p), &model).map_err(to_error_response)?;
@@ -188,6 +201,120 @@ pub async fn delete_connection_model(
     Ok(Json(serde_json::json!({ "deleted": model_id })))
 }
 
+// ── Model cards ────────────────────────────────────────────────────
+
+/// What the owner reads about a model before he picks it: Janus's word on
+/// it (GET /v1/models; the registry is the one source), stored with the
+/// synced row (`provider_models.card`). A connection's model reads the card
+/// of the same model in Janus's list when Janus knows it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModelCard {
+    pub display_name: String,
+    pub family: String,
+    pub maker: String,
+    /// What it is good for, in a sentence or two.
+    pub description: String,
+    /// The Intelligence level it fits: instant, low, medium, high, max; "" unknown.
+    pub tier: String,
+    pub reasons: bool,
+    pub abilities: CardAbilities,
+    pub context_window: Option<i64>,
+    pub max_output: Option<i64>,
+    /// fastest, fast, standard, slow; "" unknown.
+    pub speed: String,
+    pub pricing: Option<CardPricing>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CardAbilities {
+    pub vision: bool,
+    pub tools: bool,
+    pub reasoning: bool,
+    pub audio: bool,
+}
+
+/// A model's customer price (USD decimal strings). Nebo AI's models carry
+/// the price book's retail rates per 1M tokens and the request fee; a model
+/// on the owner's own key only the request fee, its provider billing him
+/// for the model (`provider_bills`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CardPricing {
+    pub version: String,
+    pub currency: String,
+    pub input_per1m: Option<String>,
+    pub output_per1m: Option<String>,
+    pub cache_read_per1m: Option<String>,
+    pub cache_write_per1m: Option<String>,
+    pub request_fee: Option<String>,
+    pub provider_bills: bool,
+}
+
+impl CardAbilities {
+    /// The abilities as a model row lists them (`thinking` for reasoning).
+    pub fn list(&self) -> Vec<String> {
+        [(self.vision, "vision"), (self.tools, "tools"), (self.reasoning, "thinking")]
+            .into_iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, a)| a.to_string())
+            .collect()
+    }
+}
+
+/// A row's card, when it has one.
+pub fn card_of_row(row: &db::models::ProviderModel) -> Option<ModelCard> {
+    row.card.as_deref().and_then(|c| serde_json::from_str(c).ok())
+}
+
+/// The card Janus gives `model_id`, when its list holds the model (an
+/// OpenRouter id `anthropic/claude-x` is the same model as `claude-x`).
+pub fn janus_card(store: &db::Store, model_id: &str) -> Option<ModelCard> {
+    let rows = store.list_provider_models("janus").ok()?;
+    let bare = model_id.rsplit_once('/').map_or(model_id, |(_, m)| m);
+    rows.iter().find(|r| r.model_id == model_id).or_else(|| rows.iter().find(|r| r.model_id == bare)).and_then(card_of_row)
+}
+
+/// The request fee Janus's list states (the price book in effect), when it
+/// states one.
+pub fn janus_request_fee(store: &db::Store) -> Option<String> {
+    store
+        .list_provider_models("janus")
+        .ok()?
+        .iter()
+        .filter_map(card_of_row)
+        .find_map(|c| c.pricing.and_then(|p| p.request_fee))
+}
+
+/// The card of a model a connection offers. On the owner's own key through
+/// Janus (`via_janus`) it costs the request fee and its provider bills the
+/// model; on a URL he entered it goes direct and Nebo bills nothing. What it
+/// is comes from Janus's card for the same model when Janus knows it, else
+/// from what the connection knows (its name, window and abilities).
+pub fn connection_card(store: &db::Store, m: &ConnectionModel, via_janus: bool) -> ModelCard {
+    let mut card = janus_card(store, &m.model_id).unwrap_or_else(|| ModelCard {
+        display_name: m.display_name.clone(),
+        family: family_of(&m.display_name.replace(['-', '_'], " ")),
+        context_window: m.context_window,
+        abilities: CardAbilities {
+            vision: m.capabilities.iter().any(|c| c == "vision"),
+            tools: m.capabilities.iter().any(|c| c == "tools"),
+            reasoning: m.capabilities.iter().any(|c| c == "thinking"),
+            audio: false,
+        },
+        reasons: m.capabilities.iter().any(|c| c == "thinking"),
+        ..ModelCard::default()
+    });
+    card.pricing = Some(CardPricing {
+        currency: "USD".into(),
+        request_fee: if via_janus { janus_request_fee(store) } else { None },
+        provider_bills: true,
+        ..CardPricing::default()
+    });
+    card
+}
+
 // ── Browsing a provider's own list ─────────────────────────────────
 
 /// One model in a provider's own list.
@@ -205,6 +332,8 @@ pub struct CatalogModel {
     pub pricing: Option<Pricing>,
     pub created: Option<i64>,
     pub added: bool,
+    /// What Janus knows of the model and what it costs on this connection.
+    pub card: Option<ModelCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -263,6 +392,7 @@ pub fn parse_openrouter(body: &serde_json::Value) -> Vec<CatalogModel> {
                 pricing,
                 created: m["created"].as_i64(),
                 added: false,
+                card: None,
             })
         })
         .collect()
@@ -286,6 +416,7 @@ pub fn parse_openai_list(body: &serde_json::Value) -> Vec<CatalogModel> {
                 pricing: None,
                 created: m["created"].as_i64(),
                 added: false,
+                card: None,
             })
         })
         .collect()
@@ -297,34 +428,173 @@ fn cached() -> &'static Mutex<HashMap<String, (Instant, Vec<CatalogModel>)>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The provider's own list, or None when it has none worth browsing
-/// (Anthropic, OpenAI and Google list ids only: their models are added by id).
+/// Anthropic's `/v1/models`: ids, names and when each came out.
+pub fn parse_anthropic_list(body: &serde_json::Value) -> Vec<CatalogModel> {
+    body["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?.to_string();
+            let name = m["display_name"].as_str().unwrap_or(&id).to_string();
+            let created = m["created_at"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp());
+            Some(CatalogModel {
+                family: family_of(&name),
+                display_name: name,
+                model_id: id,
+                kind: "chat".into(),
+                context_window: None,
+                capabilities: Vec::new(),
+                pricing: None,
+                created,
+                added: false,
+                card: None,
+            })
+        })
+        .collect()
+}
+
+/// Google's `models` list: the models that write (generateContent), with
+/// their input window.
+pub fn parse_google_list(body: &serde_json::Value) -> Vec<CatalogModel> {
+    body["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["supportedGenerationMethods"].as_array().is_some_and(|a| a.iter().any(|x| x.as_str() == Some("generateContent"))))
+        .filter_map(|m| {
+            let id = m["name"].as_str()?.trim_start_matches("models/").to_string();
+            let name = m["displayName"].as_str().unwrap_or(&id).to_string();
+            Some(CatalogModel {
+                family: family_of(&name),
+                display_name: name,
+                model_id: id,
+                kind: "chat".into(),
+                context_window: m["inputTokenLimit"].as_i64(),
+                capabilities: Vec::new(),
+                pricing: None,
+                created: None,
+                added: false,
+                card: None,
+            })
+        })
+        .collect()
+}
+
+/// How a connection's provider lists its models: the URL, the key's header
+/// and the shape of the answer. A direct, unbilled call on the owner's own
+/// key (the list is not usage). A URL the owner entered is asked directly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogRequest {
+    pub url: String,
+    /// (header, value): the key as the provider takes it; None for a public list.
+    pub auth: Option<(String, String)>,
+    pub extra: Vec<(String, String)>,
+    pub shape: CatalogShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CatalogShape {
+    OpenRouter,
+    OpenAi,
+    Anthropic,
+    Google,
+}
+
+/// The listing call for a connection, or None when its provider has none.
+pub fn catalog_request(p: &db::models::AuthProfile) -> Option<CatalogRequest> {
+    let key = auth::credential::profile_key(p);
+    let base = p.base_url.as_deref().map(|u| u.trim().trim_end_matches('/')).filter(|u| !u.is_empty());
+    let bearer = || Some(("Authorization".to_string(), format!("Bearer {key}")));
+    let req = |url: String, auth, extra, shape| Some(CatalogRequest { url, auth, extra, shape });
+    match p.provider.as_str() {
+        "openrouter" => req(format!("{}/models", base.unwrap_or("https://openrouter.ai/api/v1")), None, vec![], CatalogShape::OpenRouter),
+        "anthropic" => req(
+            "https://api.anthropic.com/v1/models?limit=1000".into(),
+            Some(("x-api-key".into(), key.clone())),
+            vec![("anthropic-version".into(), "2023-06-01".into())],
+            CatalogShape::Anthropic,
+        ),
+        "google" => req(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000".into(),
+            Some(("x-goog-api-key".into(), key.clone())),
+            vec![],
+            CatalogShape::Google,
+        ),
+        "openai" => req(format!("{}/models", base.unwrap_or("https://api.openai.com/v1")), bearer(), vec![], CatalogShape::OpenAi),
+        "deepseek" => req(format!("{}/models", base.unwrap_or("https://api.deepseek.com/v1")), bearer(), vec![], CatalogShape::OpenAi),
+        "xai" => req(format!("{}/models", base.unwrap_or("https://api.x.ai/v1")), bearer(), vec![], CatalogShape::OpenAi),
+        "openai_compatible" => req(format!("{}/models", base?), bearer(), vec![], CatalogShape::OpenAi),
+        _ => None,
+    }
+}
+
+/// Parse a provider's list by its shape.
+pub fn parse_catalog(shape: CatalogShape, body: &serde_json::Value) -> Vec<CatalogModel> {
+    match shape {
+        CatalogShape::OpenRouter => parse_openrouter(body),
+        CatalogShape::OpenAi => parse_openai_list(body),
+        CatalogShape::Anthropic => parse_anthropic_list(body),
+        CatalogShape::Google => parse_google_list(body),
+    }
+}
+
+/// The provider's own list (`catalog_request`), or None when it has none or
+/// the call fails.
 pub(crate) async fn fetch_catalog(p: &db::models::AuthProfile) -> Option<Vec<CatalogModel>> {
     if let Some((at, list)) = cached().lock().ok()?.get(&p.id).cloned()
         && at.elapsed() < CATALOG_TTL
     {
         return Some(list);
     }
-    let client = tls::http_client().timeout(Duration::from_secs(15)).build().ok()?;
-    let list = match p.provider.as_str() {
-        "openrouter" => {
-            let body: serde_json::Value = client.get("https://openrouter.ai/api/v1/models").send().await.ok()?.json().await.ok()?;
-            parse_openrouter(&body)
-        }
-        "openai_compatible" => {
-            let base = p.base_url.as_deref()?.trim_end_matches('/');
-            let resp = client.get(format!("{base}/models")).bearer_auth(auth::credential::profile_key(p)).send().await.ok()?;
-            if !resp.status().is_success() {
-                return None;
-            }
-            parse_openai_list(&resp.json().await.ok()?)
-        }
-        _ => return None,
-    };
+    let r = catalog_request(p)?;
+    let list = fetch_list(&r).await?;
     if let Ok(mut c) = cached().lock() {
         c.insert(p.id.clone(), (Instant::now(), list.clone()));
     }
     Some(list)
+}
+
+/// Make one listing call and parse its answer.
+pub(crate) async fn fetch_list(r: &CatalogRequest) -> Option<Vec<CatalogModel>> {
+    let client = tls::http_client().timeout(Duration::from_secs(15)).build().ok()?;
+    let mut req = client.get(&r.url);
+    for (h, v) in r.auth.iter().chain(r.extra.iter()) {
+        req = req.header(h.as_str(), v.as_str());
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    Some(parse_catalog(r.shape, &resp.json().await.ok()?))
+}
+
+/// Each listed model with what Janus knows of it (its card, and its
+/// abilities when the provider's list names none).
+pub fn with_cards(store: &db::Store, list: Vec<CatalogModel>, via_janus: bool) -> Vec<CatalogModel> {
+    list.into_iter()
+        .map(|mut m| {
+            let row = ConnectionModel {
+                model_id: m.model_id.clone(),
+                display_name: m.display_name.clone(),
+                kind: m.kind.clone(),
+                context_window: m.context_window,
+                capabilities: m.capabilities.clone(),
+                source: "browsed".into(),
+                is_active: false,
+                card: None,
+            };
+            let card = connection_card(store, &row, via_janus);
+            if m.capabilities.is_empty() {
+                m.capabilities = card.abilities.list();
+            }
+            if m.context_window.is_none() {
+                m.context_window = card.context_window;
+            }
+            m.card = Some(card);
+            m
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -369,6 +639,7 @@ pub async fn browse_connection_catalog(
         .into_iter()
         .map(|m| m.model_id)
         .collect();
+    let list = with_cards(&state.store, list, auth::credential::own_key(&p).is_some());
     let models = filter_catalog(&list, &q, &have);
     let refreshed_at = cached()
         .lock()
@@ -380,6 +651,89 @@ pub async fn browse_connection_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_of(provider: &str, base_url: Option<&str>) -> db::models::AuthProfile {
+        let store = db::Store::new(":memory:").unwrap();
+        store.create_auth_profile("p", "P", provider, "sk-test", None, base_url, 0, 1, None, None).unwrap()
+    }
+
+    /// Each built-in provider lists its models with the owner's key as it
+    /// takes it, on its own API; a URL the owner entered is asked directly.
+    #[test]
+    fn each_provider_lists_its_models_its_own_way() {
+        let r = catalog_request(&profile_of("anthropic", None)).unwrap();
+        assert!(r.url.starts_with("https://api.anthropic.com/v1/models"));
+        assert_eq!(r.auth, Some(("x-api-key".into(), "sk-test".into())));
+        assert!(r.extra.contains(&("anthropic-version".into(), "2023-06-01".into())));
+        assert_eq!(r.shape, CatalogShape::Anthropic);
+        let r = catalog_request(&profile_of("google", None)).unwrap();
+        assert!(r.url.starts_with("https://generativelanguage.googleapis.com/v1beta/models"));
+        assert_eq!(r.auth, Some(("x-goog-api-key".into(), "sk-test".into())));
+        for (kind, url) in [
+            ("openai", "https://api.openai.com/v1/models"),
+            ("deepseek", "https://api.deepseek.com/v1/models"),
+            ("xai", "https://api.x.ai/v1/models"),
+        ] {
+            let r = catalog_request(&profile_of(kind, None)).unwrap();
+            assert_eq!((r.url.as_str(), r.shape), (url, CatalogShape::OpenAi), "{kind}");
+            assert_eq!(r.auth, Some(("Authorization".into(), "Bearer sk-test".into())));
+        }
+        let r = catalog_request(&profile_of("openrouter", None)).unwrap();
+        assert_eq!((r.url.as_str(), r.auth.is_none()), ("https://openrouter.ai/api/v1/models", true));
+        let r = catalog_request(&profile_of("openai_compatible", Some("https://lab.example/v1/"))).unwrap();
+        assert_eq!(r.url, "https://lab.example/v1/models");
+        assert!(catalog_request(&profile_of("openai_compatible", None)).is_none());
+        assert!(catalog_request(&profile_of("systemone_compatible", Some("https://x"))).is_none());
+    }
+
+    #[test]
+    fn anthropic_and_google_lists_parse() {
+        let a = parse_anthropic_list(&serde_json::json!({ "data": [
+            { "type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-05-01T00:00:00Z" }
+        ]}));
+        assert_eq!((a[0].model_id.as_str(), a[0].display_name.as_str(), a[0].family.as_str()), ("claude-sonnet-5", "Claude Sonnet 5", "Claude Sonnet"));
+        assert!(a[0].created.is_some());
+        let g = parse_google_list(&serde_json::json!({ "models": [
+            { "name": "models/gemini-3.1-pro", "displayName": "Gemini 3.1 Pro", "inputTokenLimit": 1048576,
+              "supportedGenerationMethods": ["generateContent", "countTokens"] },
+            { "name": "models/text-embedding-005", "displayName": "Embedding", "supportedGenerationMethods": ["embedContent"] }
+        ]}));
+        assert_eq!(g.len(), 1, "only the models that write");
+        assert_eq!((g[0].model_id.as_str(), g[0].context_window), ("gemini-3.1-pro", Some(1_048_576)));
+    }
+
+    /// A listed model Janus knows reads Janus's card and abilities; on the
+    /// owner's own key it costs the request fee and his provider bills it.
+    #[test]
+    fn a_listed_model_reads_what_janus_knows_of_it() {
+        let store = db::Store::new(":memory:").unwrap();
+        store.upsert_provider_model("janus/claude-sonnet-5", "janus", "claude-sonnet-5", "Claude Sonnet 5", None, None, None, None, None, None, None, true).unwrap();
+        let card = ModelCard {
+            display_name: "Claude Sonnet 5".into(),
+            description: "Everyday work.".into(),
+            abilities: CardAbilities { vision: true, tools: true, reasoning: true, audio: false },
+            context_window: Some(1_000_000),
+            pricing: Some(CardPricing { request_fee: Some("0.00015".into()), input_per1m: Some("3".into()), ..CardPricing::default() }),
+            ..ModelCard::default()
+        };
+        store.set_provider_model_card("janus/claude-sonnet-5", Some(&serde_json::to_string(&card).unwrap())).unwrap();
+        let listed = parse_anthropic_list(&serde_json::json!({ "data": [
+            { "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5" },
+            { "id": "claude-unknown-1", "display_name": "Claude Unknown 1" }
+        ]}));
+        let out = with_cards(&store, listed, true);
+        assert_eq!(out[0].capabilities, ["vision", "tools", "thinking"]);
+        assert_eq!(out[0].context_window, Some(1_000_000));
+        let c = out[0].card.as_ref().unwrap();
+        assert_eq!(c.description, "Everyday work.");
+        let p = c.pricing.as_ref().unwrap();
+        assert_eq!((p.request_fee.as_deref(), p.input_per1m.as_deref(), p.provider_bills), (Some("0.00015"), None, true));
+        let unknown = out[1].card.as_ref().unwrap();
+        assert_eq!(unknown.display_name, "Claude Unknown 1");
+        assert!(unknown.description.is_empty() && out[1].capabilities.is_empty());
+        assert_eq!(with_cards(&store, parse_anthropic_list(&serde_json::json!({"data":[{"id":"claude-sonnet-5"}]})), false)[0]
+            .card.as_ref().unwrap().pricing.as_ref().unwrap().request_fee, None, "direct: no fee");
+    }
 
     #[test]
     fn a_family_drops_the_vendor_and_the_version() {

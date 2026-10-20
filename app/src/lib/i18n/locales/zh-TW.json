@@ -1467,7 +1467,6 @@
 			"sortNewest": "最新",
 			"sortPrice": "價格",
 			"showing": "顯示 {total} 個中的 {shown} 個",
-			"price": "每百萬 token {input} / {output}",
 			"added": "已新增",
 			"selected": "已選 {count} 個",
 			"addN": "{count, plural, other {新增 # 個模型}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "你的 {provider} API 金鑰遭到拒絕。請在 設定 > 供應商 中檢查。",
 		"keyUnusable": "你的 {provider} API 金鑰無法執行此模型。請在 設定 > 供應商 中檢查該金鑰的模型。",
 		"connectionSignIn": "登入 NeboAI 才能使用此金鑰：你自己的金鑰在你的 NeboAI 帳戶上執行。"
+	},
+	"modelCard": {
+		"about": "關於 {model}",
+		"aboutNone": "選擇一個模型以查看詳情",
+		"level": "適合的等級",
+		"reasons": "回答前會思考",
+		"yes": "是",
+		"no": "否",
+		"abilities": "能力",
+		"ability": {
+			"vision": "看圖片",
+			"tools": "使用工具",
+			"reasoning": "推理",
+			"audio": "聽音訊"
+		},
+		"unknown": "未知",
+		"context": "上下文",
+		"maxOutput": "最長回答",
+		"tokens": "{count} 個權杖",
+		"speed": "速度",
+		"speedValue": {
+			"fastest": "最快",
+			"fast": "快",
+			"standard": "標準",
+			"slow": "較慢"
+		},
+		"modelId": "模型 ID",
+		"pricing": "價格",
+		"noPrice": "未列出價格。",
+		"ownKeyPrice": "每次請求 {fee}；模型費用由你的服務商收取",
+		"providerBills": "模型費用由你的服務商收取",
+		"per1m": "每 100 萬權杖 輸入 {input} / 輸出 {output}",
+		"input": "輸入",
+		"output": "輸出",
+		"cacheRead": "快取讀取",
+		"cacheWrite": "快取寫入",
+		"requestFee": "請求費",
+		"perMillion": "每 100 萬權杖 {price}",
+		"perRequest": "每次請求 {price}",
+		"priceVersion": "截至 {version} 的價格"
 	}
 }

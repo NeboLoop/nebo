@@ -1467,7 +1467,6 @@
 			"sortNewest": "सबसे नया",
 			"sortPrice": "कीमत",
 			"showing": "{total} में से {shown} दिखाए जा रहे हैं",
-			"price": "{input} / {output} प्रति M टोकन",
 			"added": "जोड़ा गया",
 			"selected": "{count} चुने गए",
 			"addN": "{count, plural, one {# मॉडल जोड़ें} other {# मॉडल जोड़ें}}",
@@ -4351,5 +4350,45 @@
 		"keyRejected": "आपकी {provider} API कुंजी अस्वीकार कर दी गई। सेटिंग्स > प्रदाता में इसे जाँचें।",
 		"keyUnusable": "आपकी {provider} API कुंजी यह मॉडल नहीं चला सकती। सेटिंग्स > प्रदाता में इस पर मॉडल जाँचें।",
 		"connectionSignIn": "यह कुंजी इस्तेमाल करने के लिए NeboAI में साइन इन करें: आपकी अपनी कुंजियाँ आपके NeboAI खाते पर चलती हैं।"
+	},
+	"modelCard": {
+		"about": "{model} के बारे में",
+		"aboutNone": "कोई मॉडल चुनें और देखें कि वह क्या है",
+		"level": "किस स्तर के लिए",
+		"reasons": "जवाब देने से पहले सोचता है",
+		"yes": "हाँ",
+		"no": "नहीं",
+		"abilities": "कर सकता है",
+		"ability": {
+			"vision": "चित्र देखना",
+			"tools": "टूल इस्तेमाल करना",
+			"reasoning": "तर्क करना",
+			"audio": "ऑडियो सुनना"
+		},
+		"unknown": "पता नहीं",
+		"context": "संदर्भ",
+		"maxOutput": "सबसे लंबा जवाब",
+		"tokens": "{count} टोकन",
+		"speed": "गति",
+		"speedValue": {
+			"fastest": "सबसे तेज़",
+			"fast": "तेज़",
+			"standard": "सामान्य",
+			"slow": "धीमा"
+		},
+		"modelId": "मॉडल आईडी",
+		"pricing": "कीमत",
+		"noPrice": "कोई कीमत नहीं दी गई।",
+		"ownKeyPrice": "प्रति अनुरोध {fee}; मॉडल का बिल आपका प्रदाता भेजता है",
+		"providerBills": "मॉडल का बिल आपका प्रदाता भेजता है",
+		"per1m": "प्रति 10 लाख टोकन {input} इनपुट / {output} आउटपुट",
+		"input": "इनपुट",
+		"output": "आउटपुट",
+		"cacheRead": "कैश पढ़ना",
+		"cacheWrite": "कैश लिखना",
+		"requestFee": "अनुरोध शुल्क",
+		"perMillion": "प्रति 10 लाख टोकन {price}",
+		"perRequest": "प्रति अनुरोध {price}",
+		"priceVersion": "{version} तक की कीमतें"
 	}
 }
