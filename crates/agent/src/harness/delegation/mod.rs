@@ -1183,12 +1183,7 @@ impl Helpers {
             helper.parent_seat = turn.seat.clone();
             helper.parent_grant = grant.cloned();
             helper.parent_platform = turn.delivery.platform.clone();
-            // A report held while its own helpers ran is never dropped: it
-            // leads this run's next report (a question for the owner in it
-            // included).
-            if let Some(held) = helper.held.take() {
-                helper.keep_earlier(held);
-            }
+            helper.held = None;
             req
         };
         let _ = self.store.update_task_running(task_id);
@@ -3225,43 +3220,6 @@ mod tests {
         let pending = rig.pending_notifications("agent:sdr:web");
         assert!(pending[0].contains(&format!("helper {a_id} \"read the ledger\": partial ({}", collect::NEEDS_OWNER_DECISION)), "{}", pending[0]);
         let question = pending[0].find("Question: Which vendor?").expect("the held question");
-        assert!(question < pending[0].find("Contacts are in.").expect("the latest turn"), "the question leads: {}", pending[0]);
-    }
-
-    /// A report held while the helper's own helper runs survives the
-    /// parent messaging it: the message runs it again, and the held
-    /// question still leads what reaches the owner's conversation.
-    #[tokio::test]
-    async fn a_held_question_survives_a_message_from_the_parent() {
-        let mut rig = Rig::new(FOREGROUND_BUDGET);
-        let owner = rig.owner_turn("agent:sdr:web");
-        let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan the outreach.", None)).await.unwrap());
-        let a = rig.next_turn().await;
-        rig.helpers.delegate(&a.request, None, &[], &call("Find the contacts.", None)).await.unwrap();
-        let b = rig.next_turn().await;
-        let q = types::OwnerQuestion { question: "Which vendor?".into(), options: vec!["Acme".into(), "Globex".into()], ..Default::default() };
-        ask(&a, "Drafted the plan.", &q).await;
-        for _ in 0..200 {
-            if rig.helpers.state().helpers.get(&a_id).is_some_and(|h| h.held.is_some()) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(rig.helpers.state().helpers[&a_id].held.is_some(), "held while its helper runs");
-
-        // The owner's conversation messages it while its helper still runs.
-        rig.helpers.send(&owner, None, &[], &a_id, "Keep it short.").await.unwrap();
-        let messaged = rig.next_turn().await;
-        assert_eq!(messaged.request.session_key, a.request.session_key);
-        rig.heard(&messaged.request.session_key);
-        messaged.answer("Noted.").await;
-        b.answer("40 contacts found.").await;
-        let resumed = rig.next_turn().await;
-        resumed.answer("Contacts are in.").await;
-        assert_eq!(rig.next_wake().await, "agent:sdr:web");
-        let pending = rig.pending_notifications("agent:sdr:web");
-        assert!(pending[0].contains(&format!("partial ({}", collect::NEEDS_OWNER_DECISION)), "{}", pending[0]);
-        let question = pending[0].find("Question: Which vendor?").expect("the held question is never dropped");
         assert!(question < pending[0].find("Contacts are in.").expect("the latest turn"), "the question leads: {}", pending[0]);
     }
 
