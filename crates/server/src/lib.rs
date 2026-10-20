@@ -395,7 +395,7 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     let Some(token) = auth::neboai_token(store) else {
         return Ok(0);
     };
-    let url = format!("{}/v1/models", cfg.neboai.janus_url);
+    let url = janus_models_url(&cfg.neboai.janus_url);
     let resp = tls::http_client()
         .user_agent(types::constants::USER_AGENT)
         .build()
@@ -412,6 +412,14 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     }
     let listing: JanusListing = resp.json().await.map_err(|e| e.to_string())?;
     store_janus_listing(store, listing)
+}
+
+/// Janus's model listing, with the catalog: `?catalog=1` asks for the models
+/// Nebo AI serves, with their cards and retail prices, beside nebo-1 and the
+/// speeds. Janus lists them only when asked, so a Nebo that predates the
+/// catalog never stores them.
+fn janus_models_url(janus_url: &str) -> String {
+    format!("{}/v1/models?catalog=1", janus_url.trim_end_matches('/'))
 }
 
 #[derive(serde::Deserialize)]
@@ -4499,6 +4507,14 @@ mod janus_sync_tests {
         assert!(speed.contains(&"vision".to_string()), "a speed keeps the speeds' abilities");
         let luna: Vec<String> = serde_json::from_str(row("gpt-6-luna").capabilities.as_deref().unwrap()).unwrap();
         assert!(!luna.contains(&"vision".to_string()), "a model's own abilities, not the speeds'");
+    }
+
+    /// The sync asks Janus for the catalog; without it Janus lists only nebo-1
+    /// and the speeds.
+    #[test]
+    fn the_sync_asks_for_the_catalog() {
+        assert_eq!(super::janus_models_url("https://janus.example/"), "https://janus.example/v1/models?catalog=1");
+        assert_eq!(super::janus_models_url("https://janus.example"), "https://janus.example/v1/models?catalog=1");
     }
 
     /// The pack choices offer each model Nebo AI serves for every level
