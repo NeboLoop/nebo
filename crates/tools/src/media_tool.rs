@@ -158,14 +158,18 @@ impl Media {
     ) -> (reqwest::Result<reqwest::Response>, bool) {
         let (bearer, signed_in) = crate::janus::bearer(self.store.as_deref(), &self.bot_id);
         let url = format!("{}{path}", self.base_url);
-        let resp = ai::http::send(|| {
-            finish(
-                self.client
-                    .request(method.clone(), &url)
-                    .bearer_auth(&bearer)
-                    .header("X-Bot-ID", &self.bot_id),
-            )
-        })
+        let mut waits = ai::ReservedWaits::default();
+        let resp = ai::http::send(
+            || {
+                finish(
+                    self.client
+                        .request(method.clone(), &url)
+                        .bearer_auth(&bearer)
+                        .header("X-Bot-ID", &self.bot_id),
+                )
+            },
+            Some(&mut waits),
+        )
         .await;
         (resp, signed_in)
     }

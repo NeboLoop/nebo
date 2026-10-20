@@ -1,7 +1,10 @@
 //! Janus's refusal of a request only because work already running holds
 //! the account's money: the balance itself covers it. The request was not
-//! served or charged. Every caller of Janus, over HTTP (`ai::http::send`)
-//! and over a WebSocket (`voice`), reads it and waits it out here.
+//! served or charged. Every caller of Janus reads it here and waits it out
+//! with [`ReservedWaits`], in the layer that owns what the wait must not
+//! hold: the chat runner (its concurrency slot), `ai::http::send` for a
+//! caller with no runner, the embedding gate (its permit) and the voice
+//! dial (its connect deadline).
 
 use std::time::Duration;
 
@@ -12,9 +15,14 @@ pub const BALANCE_RESERVED: &str = "BALANCE_RESERVED";
 /// "add funds": the balance covers the work.
 pub const BALANCE_BUSY: &str = "Your balance is busy with work that's running. Try again in a moment.";
 
-/// Whether a refusal (its HTTP status and body) is [`BALANCE_RESERVED`].
+/// Whether a refusal (its HTTP status and JSON body) is [`BALANCE_RESERVED`]:
+/// the code Janus writes at `error.code`, never a match anywhere in the text.
 pub fn is_balance_reserved(status: u16, body: &str) -> bool {
-    status == 429 && body.contains(BALANCE_RESERVED)
+    status == 429
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v.pointer("/error/code").and_then(|c| c.as_str()).map(|c| c == BALANCE_RESERVED))
+            .unwrap_or(false)
 }
 
 /// How many times a refused request is sent again, and the most all the
@@ -23,11 +31,17 @@ pub const RESERVED_RETRIES: usize = 3;
 const RESERVED_BUDGET: Duration = Duration::from_secs(30);
 /// The wait when the refusal names none.
 const RESERVED_WAIT: Duration = Duration::from_secs(2);
+/// The least wait, whatever the refusal asks: `Retry-After: 0` would send
+/// the refused request again at once, three times over.
+const RESERVED_FLOOR: Duration = Duration::from_secs(1);
 
-/// The waits one request gets while the balance is held: the refusal's
-/// `Retry-After` (else [`RESERVED_WAIT`]) plus up to a quarter more, so
-/// callers refused together do not all come back at once; at most
-/// [`RESERVED_RETRIES`] of them within [`RESERVED_BUDGET`].
+/// The waits one logical request gets while the balance is held, however
+/// many sends it takes: the refusal's `Retry-After` (else [`RESERVED_WAIT`],
+/// never under [`RESERVED_FLOOR`]) plus up to a quarter more, so callers
+/// refused together do not all come back at once; at most
+/// [`RESERVED_RETRIES`] of them within [`RESERVED_BUDGET`]. Made once per
+/// request and kept across its other retries, so they never start a fresh
+/// budget.
 #[derive(Debug, Default)]
 pub struct ReservedWaits {
     waited: Duration,
@@ -41,7 +55,7 @@ impl ReservedWaits {
         if self.retries == RESERVED_RETRIES {
             return None;
         }
-        let asked = retry_after.unwrap_or(RESERVED_WAIT);
+        let asked = retry_after.unwrap_or(RESERVED_WAIT).max(RESERVED_FLOOR);
         let wait = asked + jitter(asked / 4);
         if self.waited + wait > RESERVED_BUDGET {
             return None;
@@ -71,6 +85,21 @@ mod tests {
         assert!(is_balance_reserved(429, body));
         assert!(!is_balance_reserved(503, body));
         assert!(!is_balance_reserved(429, r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED"}}"#));
+        // The code, not the words: a message that names it is not the refusal.
+        assert!(!is_balance_reserved(
+            429,
+            r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"not BALANCE_RESERVED"}}"#
+        ));
+        assert!(!is_balance_reserved(429, "BALANCE_RESERVED"));
+    }
+
+    /// `Retry-After: 0` still waits the floor, so the request is never sent
+    /// again at once.
+    #[test]
+    fn a_zero_wait_still_waits_the_floor() {
+        let mut waits = ReservedWaits::default();
+        let w = waits.next(Some(Duration::ZERO)).expect("a wait");
+        assert!(w >= RESERVED_FLOOR, "{w:?}");
     }
 
     /// Three waits at most, each the asked wait plus up to a quarter, and

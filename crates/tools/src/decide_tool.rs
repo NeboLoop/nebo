@@ -78,7 +78,7 @@ impl From<ai::ProviderError> for DecideError {
             ai::ProviderError::Auth(_) => Self::Unavailable,
             ai::ProviderError::RateLimit { .. } => Self::Busy,
             ai::ProviderError::Api { code, .. } if code == ai::decide::USAGE_LIMIT_EXCEEDED => Self::Unfunded,
-            ai::ProviderError::Api { code, .. } if code == ai::BALANCE_RESERVED => Self::Reserved,
+            ai::ProviderError::BalanceReserved { .. } => Self::Reserved,
             ai::ProviderError::Api { code, message, .. } if code == "400" || code == "422" => Self::Invalid(message),
             other => Self::Failed(other.to_string()),
         }
@@ -225,7 +225,7 @@ mod tests {
     /// used up; the funding refusal keeps its own words.
     #[test]
     fn a_reserved_balance_is_busy_not_unfunded() {
-        let reserved = DecideError::from(ai::balance_reserved());
+        let reserved = DecideError::from(ai::ProviderError::BalanceReserved { retry_after_secs: Some(1) });
         assert_eq!(reserved, DecideError::Reserved);
         assert_eq!(reserved.to_string(), ai::BALANCE_BUSY);
         let unfunded = DecideError::from(ai::ProviderError::Api {

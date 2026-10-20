@@ -24,22 +24,31 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-/// Send the request `build` makes (built fresh per attempt). A gateway
-/// refusal that says work already running holds the balance
-/// ([`crate::BALANCE_RESERVED`]) is waited out here, for every HTTP caller,
-/// with the waits [`types::balance::ReservedWaits`] gives. The refused
-/// request was not served, so sending it again charges once. Any other
-/// answer, and a reserved one that outlasts the waits, is returned as it
-/// came for the caller to map ([`crate::balance_reserved`]).
-pub async fn send(build: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
-    let mut waits = types::balance::ReservedWaits::default();
+/// Send the request `build` makes (built fresh per attempt). With `waits`,
+/// a gateway refusal that says work already running holds the balance
+/// ([`crate::BALANCE_RESERVED`]) is waited out here, for a caller with no
+/// runner of its own, from the logical request's one
+/// [`crate::ReservedWaits`]: a caller that sends again for other reasons
+/// passes the same one, so its budget never starts over. The refused
+/// request was not served, so sending it again charges once. Without
+/// `waits` (the chat runner, the embedding gate: they wait without holding
+/// their slot) it is sent once. Any other answer, and a reserved one that
+/// is not waited out, is returned as it came for the caller to map
+/// ([`crate::ProviderError::BalanceReserved`]).
+pub async fn send(
+    build: impl Fn() -> reqwest::RequestBuilder,
+    mut waits: Option<&mut crate::ReservedWaits>,
+) -> reqwest::Result<reqwest::Response> {
     loop {
         let resp = build().send().await?;
+        let Some(waits) = waits.as_deref_mut() else {
+            return Ok(resp);
+        };
         if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Ok(resp);
         }
         // Reading the body is the only way to tell; the response is put back
-        // together for the caller when it is some other 429.
+        // together for the caller when it is not waited out.
         let (status, version, headers) = (resp.status(), resp.version(), resp.headers().clone());
         let body = resp.bytes().await?;
         let wait = if crate::is_balance_reserved(status.as_u16(), &String::from_utf8_lossy(&body)) {
@@ -171,7 +180,7 @@ mod tests {
     async fn a_reserved_balance_is_waited_out_and_the_request_served() {
         let (url, count) = scripted(vec![(429, RESERVED), (429, RESERVED), (200, r#"{"ok":true}"#)]).await;
         let client = reqwest::Client::new();
-        let resp = super::send(|| client.post(&url).body("{}")).await.unwrap();
+        let resp = super::send(|| client.post(&url).body("{}"), Some(&mut crate::ReservedWaits::default())).await.unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.text().await.unwrap(), r#"{"ok":true}"#);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
@@ -183,7 +192,7 @@ mod tests {
     async fn a_balance_held_past_the_waits_comes_back_as_it_was_sent() {
         let (url, count) = scripted(vec![(429, RESERVED)]).await;
         let client = reqwest::Client::new();
-        let resp = super::send(|| client.post(&url).body("{}")).await.unwrap();
+        let resp = super::send(|| client.post(&url).body("{}"), Some(&mut crate::ReservedWaits::default())).await.unwrap();
         assert_eq!(resp.status(), 429);
         assert_eq!(super::retry_after_secs(resp.headers()), Some(0));
         assert_eq!(resp.text().await.unwrap(), RESERVED);
@@ -197,7 +206,7 @@ mod tests {
         const UNFUNDED: &str = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#;
         let (url, count) = scripted(vec![(429, UNFUNDED)]).await;
         let client = reqwest::Client::new();
-        let resp = super::send(|| client.post(&url).body("{}")).await.unwrap();
+        let resp = super::send(|| client.post(&url).body("{}"), Some(&mut crate::ReservedWaits::default())).await.unwrap();
         assert_eq!(resp.status(), 429);
         assert_eq!(resp.text().await.unwrap(), UNFUNDED);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);

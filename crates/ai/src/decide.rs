@@ -349,12 +349,14 @@ impl DecideClient {
     }
 
     /// Send one decision request (built fresh per attempt), retrying once
-    /// after a rate limit or an overload.
+    /// after a rate limit or an overload. Both sends share the decision's one
+    /// budget for waiting out a held balance.
     async fn send(&self, req: impl Fn() -> reqwest::RequestBuilder) -> Result<Decision, ProviderError> {
+        let mut waits = crate::ReservedWaits::default();
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let resp = crate::http::send(&req)
+            let resp = crate::http::send(&req, Some(&mut waits))
                 .await
                 .map_err(|e| ProviderError::Request(e.to_string()))?;
             let status = resp.status();
@@ -395,7 +397,8 @@ fn classify(status: u16, text: String) -> ProviderError {
     };
     let message = field("message").unwrap_or_else(|| text.clone());
     if crate::is_balance_reserved(status, &text) {
-        return crate::balance_reserved();
+        // `http::send` already waited it out.
+        return ProviderError::BalanceReserved { retry_after_secs: None };
     }
     match status {
         401 | 403 => ProviderError::Auth(text),
@@ -495,13 +498,9 @@ mod tests {
     #[test]
     fn a_reserved_balance_is_busy_not_unfunded() {
         let body = r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved","retryable":true}}"#;
-        match classify(429, body.into()) {
-            ProviderError::Api { code, retryable, .. } => {
-                assert_eq!(code, crate::BALANCE_RESERVED);
-                assert!(!retryable);
-            }
-            other => panic!("expected the busy refusal, got {other:?}"),
-        }
+        let err = classify(429, body.into());
+        assert!(matches!(err, ProviderError::BalanceReserved { .. }), "{err:?}");
+        assert!(!err.is_retryable());
     }
 
     #[test]

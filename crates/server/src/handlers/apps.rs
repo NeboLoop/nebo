@@ -1760,6 +1760,7 @@ async fn start_janus_stream(
         cancel_token: Some(CancellationToken::new()),
         trace: ai::RequestTrace::new("app_llm"),
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,

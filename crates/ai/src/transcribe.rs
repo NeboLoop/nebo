@@ -88,18 +88,23 @@ pub async fn transcribe(
         .user_agent(types::constants::USER_AGENT)
         .build()
         .map_err(|e| ProviderError::Request(e.to_string()))?;
-    let response = crate::http::send(|| client.post(&url).bearer_auth(api_key).headers(trace.headers()).multipart(form()))
-        .await
-        .map_err(|e| ProviderError::Request(e.to_string()))?;
+    let mut waits = crate::ReservedWaits::default();
+    let response = crate::http::send(
+        || client.post(&url).bearer_auth(api_key).headers(trace.headers()).multipart(form()),
+        Some(&mut waits),
+    )
+    .await
+    .map_err(|e| ProviderError::Request(e.to_string()))?;
 
     let status = response.status();
+    let retry_after = crate::http::retry_after_secs(response.headers());
     let body = response
         .text()
         .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
 
     if crate::is_balance_reserved(status.as_u16(), &body) {
-        return Err(crate::balance_reserved());
+        return Err(ProviderError::BalanceReserved { retry_after_secs: retry_after });
     }
     if !status.is_success() {
         return Err(match status.as_u16() {

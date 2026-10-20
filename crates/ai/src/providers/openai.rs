@@ -818,8 +818,14 @@ impl Provider for OpenAIProvider {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let response = crate::http::send(|| client.post(&url).headers(headers.clone()).json(&body_val))
-            .await
+        // The chat runner waits out a held balance itself, its slot freed
+        // first; any other caller has it waited out here.
+        let mut waits = crate::ReservedWaits::default();
+        let response = crate::http::send(
+            || client.post(&url).headers(headers.clone()).json(&body_val),
+            (!req.caller_waits_for_balance).then_some(&mut waits),
+        )
+        .await
             .map_err(|e| ProviderError::Request(format!("{} (model: {} · {})", e, model, url)))?;
 
         if !response.status().is_success() {
@@ -1025,7 +1031,7 @@ fn map_http_error(
     };
 
     if crate::is_balance_reserved(status, body) {
-        return crate::balance_reserved();
+        return ProviderError::BalanceReserved { retry_after_secs };
     }
     match status {
         // Janus quota denial (all spend pools empty) — terminal, not a transient
@@ -1909,17 +1915,25 @@ mod tests {
         let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), url);
         provider.set_provider_id("janus");
         let err = provider.stream(&hello()).await.err().expect("refused");
-        assert!(!err.is_retryable(), "the waits already ran; the runner does not start over");
-        assert!(!matches!(err, ProviderError::RateLimit { .. }));
-        match &err {
-            ProviderError::Api { code, message, .. } => {
-                assert_eq!(code, crate::BALANCE_RESERVED);
-                assert!(message.contains(crate::BALANCE_BUSY), "{message}");
-                assert!(!message.contains("USAGE_LIMIT_EXCEEDED"), "{message}");
-            }
-            other => panic!("expected the busy refusal, got {other:?}"),
-        }
+        assert!(!err.is_retryable(), "the waits already ran; no other layer sends it again");
+        assert!(matches!(err, ProviderError::BalanceReserved { retry_after_secs: Some(0) }), "{err:?}");
+        assert!(err.to_string().contains(crate::BALANCE_BUSY), "{err}");
+        assert!(!err.to_string().contains("USAGE_LIMIT_EXCEEDED"), "{err}");
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 4, "the first send and three more");
+    }
+
+    /// The chat runner waits out a held balance itself, its slot freed
+    /// first: for its request the provider sends once and answers the
+    /// refusal with its wait, so nothing waits twice.
+    #[tokio::test]
+    async fn a_caller_that_waits_itself_gets_the_refusal_at_once() {
+        let (url, count) = gateway(vec![(429, RESERVED, "application/json")]).await;
+        let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), url);
+        provider.set_provider_id("janus");
+        let req = ChatRequest { caller_waits_for_balance: true, ..hello() };
+        let err = provider.stream(&req).await.err().expect("refused");
+        assert!(matches!(err, ProviderError::BalanceReserved { retry_after_secs: Some(0) }), "{err:?}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "sent once");
     }
 
     /// The out-of-balance refusal is unchanged: final, in its own code.
@@ -1936,7 +1950,7 @@ mod tests {
         }
         assert!(matches!(
             map_http_error(429, RESERVED, "nebo-1", "https://gateway.example.com/v1", Some(5)),
-            ProviderError::Api { ref code, .. } if code == crate::BALANCE_RESERVED
+            ProviderError::BalanceReserved { retry_after_secs: Some(5) }
         ));
     }
 

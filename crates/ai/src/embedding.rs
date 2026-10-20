@@ -81,25 +81,30 @@ impl EmbedGate {
     }
 
     /// Send the request `build` makes, retrying what can succeed on a retry.
+    /// A send holds one of the gate's permits; every wait between sends
+    /// (a backoff, a held balance) holds none. A held balance is waited out
+    /// from the request's one [`crate::ReservedWaits`], not counted as an
+    /// attempt.
     async fn send(
         &self,
         build: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, ProviderError> {
-        if let Some(left) = self.held_for() {
-            return Err(Self::held_error(left));
-        }
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .map_err(|_| ProviderError::Request("embedding gate closed".into()))?;
-        for attempt in 0..MAX_ATTEMPTS {
+        let mut waits = crate::ReservedWaits::default();
+        let mut attempt = 0;
+        loop {
             // Another caller may have been told to wait while this one queued.
             if let Some(left) = self.held_for() {
                 return Err(Self::held_error(left));
             }
+            let permit = self
+                .permits
+                .acquire()
+                .await
+                .map_err(|_| ProviderError::Request("embedding gate closed".into()))?;
             let last = attempt + 1 == MAX_ATTEMPTS;
-            let resp = match crate::http::send(&build).await {
+            let sent = build().send().await;
+            drop(permit);
+            let resp = match sent {
                 Ok(r) => r,
                 Err(e) => {
                     if last {
@@ -107,6 +112,7 @@ impl EmbedGate {
                     }
                     debug!(attempt, error = %e, "embedding request failed, retrying");
                     tokio::time::sleep(BACKOFF[attempt]).await;
+                    attempt += 1;
                     continue;
                 }
             };
@@ -120,7 +126,16 @@ impl EmbedGate {
             let retry_after = crate::http::retry_after_secs(resp.headers()).map(Duration::from_secs);
             let body = resp.text().await.unwrap_or_default();
             if crate::is_balance_reserved(status.as_u16(), &body) {
-                return Err(crate::balance_reserved());
+                match waits.next(retry_after) {
+                    Some(wait) => {
+                        debug!(wait_ms = wait.as_millis() as u64, "balance held by running work; embedding again after the wait");
+                        tokio::time::sleep(wait).await;
+                        continue;
+                    }
+                    None => {
+                        return Err(ProviderError::BalanceReserved { retry_after_secs: retry_after.map(|d| d.as_secs()) });
+                    }
+                }
             }
             let retryable = status == 429 || status == 408 || status.is_server_error();
             if !retryable {
@@ -149,8 +164,8 @@ impl EmbedGate {
             }
             debug!(attempt, status = %status, wait_ms = wait.as_millis() as u64, "embedding retry");
             tokio::time::sleep(wait).await;
+            attempt += 1;
         }
-        unreachable!("the last attempt always returns")
     }
 }
 
@@ -447,9 +462,11 @@ mod tests {
     struct Reply {
         status: u16,
         retry_after: Option<u64>,
+        /// A 429 that is Janus's `BALANCE_RESERVED`.
+        reserved: bool,
     }
 
-    const OK: Reply = Reply { status: 200, retry_after: None };
+    const OK: Reply = Reply { status: 200, retry_after: None, reserved: false };
 
     /// An embeddings stub answering requests with `script` in turn (the last
     /// entry repeats), keeping the input count of every request it read.
@@ -496,6 +513,8 @@ mod tests {
                         .map(|i| serde_json::json!({"index": i, "embedding": [i as f32, 1.0]}))
                         .collect();
                     serde_json::json!({ "data": data }).to_string()
+                } else if reply.reserved {
+                    r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#.to_string()
                 } else {
                     r#"{"error":{"message":"refused"}}"#.to_string()
                 };
@@ -527,9 +546,27 @@ mod tests {
         assert_eq!(out[128][0], 0.0, "the second request's first vector");
     }
 
+    /// A held balance is waited out with the gate's permits free for other
+    /// callers, then the same request is served.
+    #[tokio::test]
+    async fn a_held_balance_is_waited_out_without_holding_a_permit() {
+        let (url, seen) = stub(vec![Reply { status: 429, retry_after: Some(1), reserved: true }, OK]).await;
+        let p = std::sync::Arc::new(OpenAIEmbeddingProvider::with_base_url("k".to_string(), url));
+        let embedding = tokio::spawn({
+            let p = p.clone();
+            async move { p.embed(&texts(3)).await }
+        });
+        // Inside the wait (at least the one second asked for).
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(seen.lock().unwrap().len(), 1, "refused once, waiting");
+        assert_eq!(p.gate.permits.available_permits(), MAX_IN_FLIGHT, "no permit held while waiting");
+        assert_eq!(embedding.await.unwrap().unwrap().len(), 3);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn a_short_retry_after_is_waited_out_then_the_request_succeeds() {
-        let (url, seen) = stub(vec![Reply { status: 429, retry_after: Some(1) }, OK]).await;
+        let (url, seen) = stub(vec![Reply { status: 429, retry_after: Some(1), reserved: false }, OK]).await;
         let p = OpenAIEmbeddingProvider::with_base_url("k".to_string(), url);
         let started = Instant::now();
         let out = p.embed(&texts(3)).await.unwrap();
@@ -540,7 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_long_retry_after_fails_now_and_holds_every_caller_off() {
-        let (url, seen) = stub(vec![Reply { status: 503, retry_after: Some(300) }]).await;
+        let (url, seen) = stub(vec![Reply { status: 503, retry_after: Some(300), reserved: false }]).await;
         let p = OpenAIEmbeddingProvider::with_base_url("k".to_string(), url);
         let started = Instant::now();
         let err = p.embed(&texts(3)).await.unwrap_err();
@@ -553,7 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn refusals_without_a_wait_back_off_then_hold() {
-        let (url, seen) = stub(vec![Reply { status: 429, retry_after: None }]).await;
+        let (url, seen) = stub(vec![Reply { status: 429, retry_after: None, reserved: false }]).await;
         let p = OpenAIEmbeddingProvider::with_base_url("k".to_string(), url);
         let err = p.embed(&texts(1)).await.unwrap_err();
         assert!(matches!(err, ProviderError::RateLimit { .. }), "{err:?}");
@@ -564,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_request_is_not_retried() {
-        let (url, seen) = stub(vec![Reply { status: 400, retry_after: None }]).await;
+        let (url, seen) = stub(vec![Reply { status: 400, retry_after: None, reserved: false }]).await;
         let p = OpenAIEmbeddingProvider::with_base_url("k".to_string(), url);
         let err = p.embed(&texts(1)).await.unwrap_err();
         assert!(!err.is_retryable(), "{err:?}");

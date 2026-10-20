@@ -52,12 +52,11 @@ You see only the frames: say \"between 0:03 and 0:04\" rather than inventing wha
 them. Report only what you can actually see and say plainly what is illegible. Never invent content. \
 No preamble.";
 
-/// Most tokens one reading takes. Janus holds the balance for this many,
-/// so it is the readings' observed ceiling, not more.
+/// Most tokens one reading takes.
 const READING_TOKENS: i32 = 1_500;
 
-/// Most tokens one video's reading takes (the same observed ceiling).
-const WATCHING_TOKENS: i32 = 1_500;
+/// Most tokens one video's reading takes.
+const WATCHING_TOKENS: i32 = 2_000;
 
 /// The longest one look may take, from asking to the last word. The owner's
 /// message waits on the readings of its pictures before it is stored and
@@ -135,6 +134,7 @@ async fn read(
 ) -> Option<String> {
     let req = ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
@@ -320,7 +320,7 @@ mod tests {
         watch(ai::RequestTrace::new("video_read"), &eyes, &[(0.0, picture.clone())], Some(1.0), "attached").await;
         let sent: Vec<(String, i32)> =
             kept.0.lock().unwrap().iter().map(|r| (r.trace.purpose.to_string(), r.max_tokens)).collect();
-        assert_eq!(sent, vec![("image_read".to_string(), 1_500), ("video_read".to_string(), 1_500)]);
+        assert_eq!(sent, vec![("image_read".to_string(), 1_500), ("video_read".to_string(), 2_000)]);
     }
 
     /// A helper that never answers gives up within the limit, and the

@@ -33,7 +33,7 @@
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
   import { botName } from '$lib/stores/botName';
-  import { NOT_SIGNED_IN } from '$lib/chat/runEnd';
+  import { BALANCE_RESERVED, NOT_SIGNED_IN } from '$lib/chat/runEnd';
   import { parseMarkdown } from '$lib/markdown';
   import FileText from 'lucide-svelte/icons/file-text';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
@@ -2239,6 +2239,13 @@
           <a class="btn btn-primary btn-xs shrink-0" href="/settings/account">{$t('chat.connect')}</a>
         </div>
 
+      {:else if msg.type === 'runError' && msg.reason === BALANCE_RESERVED}
+        <!-- Running work held the balance (it covers the turn): one calm
+             sentence, never out of balance, never an error. -->
+        <div class="chat-run-notice" role="note">
+          <span class="min-w-0">{$t('chat.balanceBusy')}</span>
+        </div>
+
       {:else if msg.type === 'runError'}
         <!-- Where a run stopped on an error: it stays in the thread. -->
         {@const link = trailingLink(msg.content)}
@@ -2249,8 +2256,6 @@
             <div class="chat-run-error-text">
               {#if msg.content.includes('USAGE_LIMIT_EXCEEDED')}
                 {$t('chat.outOfBalance')}
-              {:else if msg.content.includes('BALANCE_RESERVED')}
-                {$t('chat.balanceBusy')}
               {:else if link}
                 {link.text} <a class="link" href={link.url} target="_blank" rel="noopener noreferrer">{link.label}</a>
               {:else}
@@ -2493,8 +2498,6 @@
         <span class="text-xs text-base-content">
           {#if isOutOfBalance}
             {$t('chat.outOfBalance')}
-          {:else if chatError.includes('BALANCE_RESERVED')}
-            {$t('chat.balanceBusy')}
           {:else}
             {@const link = trailingLink(chatError)}
             {#if link}

@@ -2578,6 +2578,7 @@ async fn review_failed_workflow_run(
 
     let req = ai::ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
@@ -3281,6 +3282,7 @@ fn tune_request(
 ) -> ai::ChatRequest {
     ai::ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
