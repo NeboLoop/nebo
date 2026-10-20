@@ -1891,7 +1891,7 @@ export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
 
 export type Mode = 'automatic' | 'ask' | 'plan' | 'full_access'
 
-export type ProviderEffort = 'low' | 'medium' | 'high'
+export type ProviderEffort = 'low' | 'medium' | 'high' | 'max'
 
 export type RosterKind = 'employee' | 'team'
 

@@ -743,16 +743,19 @@ impl Provider for OpenAIProvider {
         // (An owner's own model through Janus names its model itself: it
         // gets the effort only when it thinks, as on a direct call, since a
         // model that does not reason refuses the field.)
+        // Max (the model's top level) is Janus's to map per model; a provider
+        // reached directly knows nothing above high.
         let thinks = req.enable_thinking || self.provider_id == "janus";
-        if let (Some(effort), true, serde_json::Value::Object(map)) = (req.effort, thinks, &mut body_val) {
+        let effort = req.effort.map(|e| if self.via_janus() { e } else { e.standard() });
+        if let (Some(effort), true, serde_json::Value::Object(map)) = (effort, thinks, &mut body_val) {
             map.insert("reasoning_effort".to_string(), serde_json::json!(effort));
         }
         // An Anthropic model through Janus: cache markers per stable chunk,
         // deferred tools, the thinking budget and signed thinking sent back
         // (`anthropic_wire`).
-        if self.via_janus()
-            && super::anthropic_wire::is_anthropic(self.own_key.as_ref().map(|k| k.provider.as_str()), &self.provider_id, &model)
-        {
+        let claude_wire = self.via_janus()
+            && super::anthropic_wire::is_anthropic(self.own_key.as_ref().map(|k| k.provider.as_str()), &self.provider_id, &model);
+        if claude_wire {
             super::anthropic_wire::apply(&mut body_val, req, system_marked, &thinking);
         }
 
@@ -869,6 +872,14 @@ impl Provider for OpenAIProvider {
         // Purpose + trace headers — let Janus group usage by what the call was
         // for and attribute it to the agent/run/workflow/action/step behind it.
         headers.extend(req.trace.headers());
+        // A Claude reply's block order (`reasoning.order`) is sent only to a
+        // caller that asks for it: Nebo keeps it and sends it back.
+        if claude_wire {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-reasoning-order"),
+                reqwest::header::HeaderValue::from_static("1"),
+            );
+        }
         // A one-off request is cached nowhere (`ChatRequest::cache_breakpoints`).
         if req.cache_breakpoints.is_empty() {
             let (name, value) = crate::PROMPT_CACHE_OFF;
@@ -1858,6 +1869,75 @@ mod tests {
         assert!(!other.contains("reasoning"), "{other}");
     }
 
+    /// The request (head and body) a provider sends for `req`, answered
+    /// with an empty stream.
+    async fn request_sent(build: impl FnOnce(String) -> OpenAIProvider, req: ChatRequest) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n";
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let provider = build(format!("http://{addr}/v1"));
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        server.await.unwrap().to_ascii_lowercase()
+    }
+
+    // Max is each model's top effort through Janus ("max", mapped per model
+    // there); a provider reached directly knows nothing above high. A Claude
+    // route asks Janus for the reply's block order (x-reasoning-order) and
+    // its thinking at Max as reasoning.effort; no other route does.
+    #[tokio::test]
+    async fn max_is_the_models_top_effort_through_janus() {
+        let req = || ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            effort: Some(types::packs::ProviderEffort::Max),
+            enable_thinking: true,
+            ..ChatRequest::new(RequestTrace::new("chat"))
+        };
+        let sent = request_sent(
+            |url| {
+                let mut p = OpenAIProvider::with_base_url(String::from("nebo-token"), "nebo-1-pro".into(), url);
+                p.set_provider_id("janus");
+                p
+            },
+            req(),
+        )
+        .await;
+        assert!(sent.contains(r#""reasoning_effort":"max""#), "{sent}");
+        assert!(!sent.contains("x-reasoning-order"), "not a Claude route: {sent}");
+
+        let sent = request_sent(
+            |url| {
+                let mut p = OpenAIProvider::with_base_url(String::from("sk"), "m".into(), url);
+                p.set_provider_id("openai_compatible");
+                p
+            },
+            req(),
+        )
+        .await;
+        assert!(sent.contains(r#""reasoning_effort":"high""#), "a direct provider: high: {sent}");
+
+        let sent = request_sent(
+            |url| {
+                let mut p = OpenAIProvider::with_base_url(String::from("nebo-token"), "claude-x".into(), url);
+                p.set_provider_id("anthropic");
+                p.set_own_key(::types::own_key::OwnKey { provider: "anthropic".into(), key: "sk-own".into() });
+                p
+            },
+            req(),
+        )
+        .await;
+        assert!(sent.contains("x-reasoning-order: 1"), "{sent}");
+        assert!(sent.contains(r#""reasoning":{"effort":"max"}"#), "{sent}");
+        assert!(!sent.contains("reasoning_effort"), "{sent}");
+    }
+
     /// A provider on Janus with the owner's own key, answering once with
     /// `status` and `body`; the request head it sent comes back.
     async fn own_key_call(bearer: &str, status: &'static str, body: &'static str) -> (Result<EventReceiver, ProviderError>, String) {
@@ -2236,7 +2316,7 @@ mod anthropic_wire_tests {
                     thinking: vec![
                         ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() },
                         ThinkingBlock::RedactedThinking { data: "opaque".into() },
-                        ThinkingBlock::BlockOrder { blocks: order.clone() },
+                        ThinkingBlock::BlockOrder { blocks: order.clone(), content: None },
                     ],
                     ..Default::default()
                 },
@@ -2270,7 +2350,7 @@ mod anthropic_wire_tests {
             got,
             vec![
                 ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() },
-                ThinkingBlock::BlockOrder { blocks: vec![serde_json::json!({"type": "thinking"}), serde_json::json!({"type": "text", "length": 2})] },
+                ThinkingBlock::BlockOrder { blocks: vec![serde_json::json!({"type": "thinking"}), serde_json::json!({"type": "text", "length": 2})], content: None },
             ]
         );
     }

@@ -15,11 +15,15 @@
 //!   4.5 and later and falls back to a line naming the tool on older ones.)
 //! - A marker on a tool result's part goes on that `tool_result` block.
 //! - Thinking asks `reasoning: {max_tokens}` (the pack level's budget, 10,000
-//!   when none is set), and an assistant turn's signed thinking blocks go back
+//!   when none is set; at Max `reasoning: {effort: max}`, the model's top
+//!   level, which Janus maps per model), and an assistant turn's signed
+//!   thinking blocks go back
 //!   on it as `reasoning_details`, so thinking runs inside tool loops: every
 //!   item in the order and with the content it came in, in Claude's format,
-//!   the reply's block order (`reasoning.order`) included, so Janus replays
-//!   the turn exactly as Claude wrote it. Items in another format are dropped.
+//!   the reply's block order (`reasoning.order`, asked for with
+//!   `X-Reasoning-Order: 1`) included, with the turn's text as it was received
+//!   (`as_received`), so Janus replays the turn exactly as Claude wrote it.
+//!   Items in another format are dropped.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,15 +48,19 @@ pub(super) fn is_anthropic(own_key_provider: Option<&str>, provider_id: &str, mo
     }
 }
 
-/// The thinking budget a pack level's provider effort asks for; 10,000
-/// tokens when none is set.
-pub(super) fn thinking_budget(effort: Option<types::packs::ProviderEffort>) -> i32 {
+/// What thinking a pack level's provider effort asks for: a budget
+/// (`reasoning.max_tokens`; 10,000 tokens when none is set), or at `Max`
+/// the model's top effort (`reasoning.effort: max`, which Janus maps per
+/// model).
+pub(super) fn thinking_request(effort: Option<types::packs::ProviderEffort>) -> Value {
     use types::packs::ProviderEffort::*;
-    match effort {
+    let budget = match effort {
         Some(Low) => 4_000,
         Some(Medium) | None => 10_000,
         Some(High) => 24_000,
-    }
+        Some(Max) => return json!({"effort": "max"}),
+    };
+    json!({"max_tokens": budget})
 }
 
 /// A five-minute cache breakpoint: Janus prices five-minute writes only and
@@ -77,7 +85,7 @@ pub(super) fn reasoning_details(blocks: &[ThinkingBlock]) -> Value {
                 ThinkingBlock::RedactedThinking { data } => {
                     json!({"type": "reasoning.encrypted", "data": data, "format": CLAUDE_FORMAT})
                 }
-                ThinkingBlock::BlockOrder { blocks } => {
+                ThinkingBlock::BlockOrder { blocks, .. } => {
                     json!({"type": "reasoning.order", "format": CLAUDE_FORMAT, "blocks": blocks})
                 }
             })
@@ -137,6 +145,7 @@ impl ReasoningBlocks {
                     {
                         out.push(ThinkingBlock::BlockOrder {
                             blocks: blocks.clone(),
+                            content: None,
                         });
                     }
                 }
@@ -144,6 +153,27 @@ impl ReasoningBlocks {
             }
         }
         out
+    }
+}
+
+/// Keep a reply's thinking replayable as it was received, whatever the turn
+/// stores: the block order (`reasoning.order`) is given the reply's text as
+/// Claude wrote it (`received`), sent back in place of the stored text
+/// (a `message.post_receive` rewrite, a fold), and loses the tool calls the
+/// turn does not keep (cut by the output limit, on a broken stream, a call
+/// sent with tools off): a call that never ran has no result, and the API
+/// refuses one sent back without it.
+pub fn as_received(thinking: &mut [ThinkingBlock], received: &str, kept_calls: &[crate::types::ToolCall]) {
+    for block in thinking.iter_mut() {
+        if let ThinkingBlock::BlockOrder { blocks, content } = block {
+            blocks.retain(|b| {
+                b.get("type").and_then(|t| t.as_str()) != Some("tool_use")
+                    || b.get("id")
+                        .and_then(|id| id.as_str())
+                        .is_some_and(|id| kept_calls.iter().any(|c| c.id == id))
+            });
+            *content = Some(received.to_string());
+        }
     }
 }
 
@@ -172,10 +202,7 @@ pub(super) fn apply(
     };
 
     if req.enable_thinking {
-        map.insert(
-            "reasoning".to_string(),
-            json!({"max_tokens": thinking_budget(req.effort)}),
-        );
+        map.insert("reasoning".to_string(), thinking_request(req.effort));
         map.remove("reasoning_effort");
     }
 
@@ -232,6 +259,15 @@ pub(super) fn apply(
                 "assistant" => {
                     if let Some(blocks) = thinking.get(&i).filter(|b| !b.is_empty()) {
                         msg["reasoning_details"] = reasoning_details(blocks);
+                        // The turn's text as Claude wrote it, which its
+                        // block order counts: what the owner was shown may
+                        // have been rewritten since (`as_received`).
+                        if let Some(content) = blocks.iter().find_map(|b| match b {
+                            ThinkingBlock::BlockOrder { content: Some(c), .. } => Some(c.clone()),
+                            _ => None,
+                        }) {
+                            msg["content"] = Value::String(content);
+                        }
                     }
                 }
                 "tool" => {
@@ -304,5 +340,74 @@ pub(super) fn apply(
                 tool["cache_control"] = marker();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{RequestTrace, ToolCall};
+
+    #[test]
+    fn max_asks_for_the_models_top_effort() {
+        use types::packs::ProviderEffort::*;
+        assert_eq!(thinking_request(Some(Max)), json!({"effort": "max"}));
+        assert_eq!(thinking_request(Some(High)), json!({"max_tokens": 24_000}));
+        assert_eq!(thinking_request(None), json!({"max_tokens": 10_000}));
+    }
+
+    fn order() -> ThinkingBlock {
+        ThinkingBlock::BlockOrder {
+            blocks: vec![
+                json!({"type": "thinking"}),
+                json!({"type": "text", "length": 8}),
+                json!({"type": "tool_use", "id": "toolu_1"}),
+                json!({"type": "tool_use", "id": "toolu_cut"}),
+            ],
+            content: None,
+        }
+    }
+
+    // A reply's thinking replays as it was received: the order keeps the
+    // text Claude wrote and loses the calls the turn does not keep (one cut
+    // by the output limit has no result to send back).
+    #[test]
+    fn the_order_keeps_what_was_received() {
+        let mut thinking = vec![ThinkingBlock::Thinking { thinking: "t".into(), signature: "s".into() }, order()];
+        let kept = [ToolCall { id: "toolu_1".into(), name: "ledger".into(), input: json!({}) }];
+        as_received(&mut thinking, "Reading.", &kept);
+        assert_eq!(
+            thinking[1],
+            ThinkingBlock::BlockOrder {
+                blocks: vec![json!({"type": "thinking"}), json!({"type": "text", "length": 8}), json!({"type": "tool_use", "id": "toolu_1"})],
+                content: Some("Reading.".into()),
+            }
+        );
+        // The stored record round-trips with it; an order stored before
+        // reads with none.
+        let stored = serde_json::to_value(&thinking[1]).unwrap();
+        assert_eq!(serde_json::from_value::<ThinkingBlock>(stored).unwrap(), thinking[1]);
+        let old: ThinkingBlock = serde_json::from_value(json!({"type": "block_order", "blocks": []})).unwrap();
+        assert_eq!(old, ThinkingBlock::BlockOrder { blocks: vec![], content: None });
+    }
+
+    // The turn goes back to Janus with the text it was received with (the
+    // owner may have been shown it rewritten), and the order item carries
+    // the blocks only.
+    #[test]
+    fn a_rewritten_turn_replays_as_received() {
+        let mut thinking = vec![ThinkingBlock::Thinking { thinking: "t".into(), signature: "s".into() }, order()];
+        as_received(&mut thinking, "Reading.", &[ToolCall { id: "toolu_1".into(), name: "ledger".into(), input: json!({}) }]);
+        let mut body = json!({"messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "Reading, as the hook rewrote it."},
+        ]});
+        let req = ChatRequest::new(RequestTrace::new("chat"));
+        apply(&mut body, &req, 0, &HashMap::from([(1usize, thinking)]));
+        let asst = &body["messages"][1];
+        assert_eq!(asst["content"], "Reading.");
+        let order = asst["reasoning_details"].as_array().unwrap().last().unwrap();
+        assert_eq!(order["type"], "reasoning.order");
+        assert!(order.get("content").is_none(), "{order}");
     }
 }

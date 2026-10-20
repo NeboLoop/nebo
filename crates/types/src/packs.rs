@@ -167,13 +167,28 @@ impl PackLanes {
     }
 }
 
-/// A provider's own reasoning effort, set per level.
+/// A provider's own reasoning effort, set per level. `Max` is the model's
+/// top level: through Janus each model's own (`max` on the Claude models
+/// that offer it), and `High` on a provider with nothing above it
+/// ([`ProviderEffort::standard`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderEffort {
     Low,
     Medium,
     High,
+    Max,
+}
+
+impl ProviderEffort {
+    /// The effort as a provider that knows only low, medium and high takes
+    /// it: `Max` is `High`.
+    pub fn standard(self) -> Self {
+        match self {
+            ProviderEffort::Max => ProviderEffort::High,
+            e => e,
+        }
+    }
 }
 
 /// The provider effort each level runs at. Absent: the provider's default.
@@ -262,11 +277,12 @@ pub fn nebo_ai() -> Pack {
         fallback: false,
         built_in: true,
         lanes: PackLanes { workflow: Some(Effort::Instant), ..PackLanes::default() },
-        // Low is Instant with a little thinking; Max is High at its highest
-        // effort until Janus has a speed above `nebo-1-pro`.
+        // Low is Instant with a little thinking; Max is High at the model's
+        // top effort (Janus maps it per model; high where there is nothing
+        // above it) until Janus has a speed above `nebo-1-pro`.
         level_effort: LevelEffort {
             low: Some(ProviderEffort::Low),
-            max: Some(ProviderEffort::High),
+            max: Some(ProviderEffort::Max),
             ..LevelEffort::default()
         },
     }
@@ -404,7 +420,7 @@ mod tests {
         assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-pro"));
         assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Instant, thinking a little");
         assert_eq!(nebo.effort_for(Effort::High), None, "nebo-1-pro at its default");
-        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-pro at its highest");
+        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::Max), "nebo-1-pro at the model's top effort");
         assert_eq!(nebo.lanes.build, None, "building is not pinned");
         assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::High)), Some(Effort::High), "built at the level chosen");
         assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::Instant)), Some(Effort::Instant), "even Instant, when chosen");

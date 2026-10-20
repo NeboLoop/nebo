@@ -2163,7 +2163,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             stream_error,
             mut block_order,
             provider,
-            thinking,
+            mut thinking,
             thinking_model,
             text_call,
         } = reply;
@@ -2179,6 +2179,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.owner_heard = Some(latest.clone());
         }
         st.last_provider = Some(provider.clone());
+        // The reply as it came, for its thinking to replay as written
+        // (`ai::as_received`) whatever the hook or the cuts below store.
+        let received = text.clone();
         let text = post_receive(cx, text, tool_calls.len()).await;
         if stream_error.is_some() {
             // Calls that arrived on a broken stream are not run or stored.
@@ -2219,6 +2222,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             None => {}
         }
         let heard_through = st.seen.last().map(|m| m.id.as_str());
+        ai::as_received(&mut thinking, &received, &tool_calls);
         save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model), heard_through).await;
         // A stream error the call did not retry has been shown to the owner
         // once, and the call's ladder decided it is final: the step ends
@@ -3908,8 +3912,8 @@ mod tests {
         let empty = turn_model(h.resolver(), "pack/l/max", None).unwrap();
         assert_eq!(
             (empty.model.as_str(), empty.effort, empty.notice),
-            ("janus/nebo-1-pro", Some(ProviderEffort::High), None),
-            "an empty level runs on Nebo AI's Max at Nebo AI's effort for it"
+            ("janus/nebo-1-pro", Some(ProviderEffort::Max), None),
+            "an empty level runs on Nebo AI's Max at Nebo AI's effort for it (the model's top)"
         );
         assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
     }

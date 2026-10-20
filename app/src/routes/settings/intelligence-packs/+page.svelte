@@ -37,7 +37,7 @@
     build: 'settingsPacks.laneBuild',
     workflow: 'settingsPacks.laneWorkflow',
   };
-  const PROVIDER_EFFORTS = ['low', 'medium', 'high'] as const;
+  const PROVIDER_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
 
   let loading = $state(true);
   let error = $state('');

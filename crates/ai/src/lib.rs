@@ -15,6 +15,6 @@ pub use embedding::{
 };
 pub use providers::{
     CLIProvider, Connection, LinkedProvider, LocalHost, LocalProvider,
-    OllamaProvider, OpenAIProvider, Relay, connection_id,
+    OllamaProvider, OpenAIProvider, Relay, as_received, connection_id,
 };
 pub use types::*;

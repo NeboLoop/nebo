@@ -10,6 +10,7 @@ mod local_ffi;
 pub mod ollama;
 pub mod openai;
 
+pub use anthropic_wire::as_received;
 pub use cli::CLIProvider;
 pub use connection::{Connection, connection_id};
 pub use linked::{LinkedProvider, Relay};

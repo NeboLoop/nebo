@@ -616,8 +616,14 @@ pub enum ThinkingBlock {
     RedactedThinking { data: String },
     /// The order the turn's blocks were produced in (Janus's
     /// `reasoning.order`), kept as it came and sent back with the turn so
-    /// the provider replays the turn exactly as it wrote it.
-    BlockOrder { blocks: Vec<serde_json::Value> },
+    /// the provider replays the turn exactly as it wrote it, with the turn's
+    /// text as it was received (`content`; the stored text may have been
+    /// rewritten since: `providers::anthropic_wire::as_received`).
+    BlockOrder {
+        blocks: Vec<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    },
 }
 
 /// A message in a conversation.
