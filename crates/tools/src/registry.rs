@@ -2910,8 +2910,11 @@ pub(crate) mod tests {
     /// `report_limit` below the 30,000-character ceiling a report comes back
     /// in full under (delegate 2,930, +170); ask_owner says a helper's
     /// question ends its turn and goes to the conversation that started it
-    /// (ask_owner 1,477, +124): 18,461.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_461;
+    /// (ask_owner 1,477, +124): 18,461. 2026-10-20: the owner's decision on a
+    /// helper's question goes back in send_message's `answer`, the one
+    /// thing that settles it (send_message 1,527, +186; delegate +11):
+    /// 18,658.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_658;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
