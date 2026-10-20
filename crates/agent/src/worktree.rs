@@ -1073,45 +1073,77 @@ async fn touched_paths(dir: &Path, parent: &str, commit: &str) -> Vec<String> {
     out
 }
 
-/// What `rel` in `dir` holds as a review's snapshot records it: a link's
-/// target, a file's blob with its line endings as they are on disk (a
-/// snapshot never converts them). `None`: nothing there.
-pub async fn content_id(dir: &Path, rel: &str) -> Result<Option<String>, ()> {
-    disk_object(dir, rel, true).await
+/// What a path holds on the disk, read once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnDisk {
+    Nothing,
+    File(Vec<u8>),
+    /// A link: its target's text, never what it points at.
+    Link(Vec<u8>),
+    /// A submodule: the commit it has checked out.
+    Commit(String),
+    /// A folder where a file goes.
+    Folder,
 }
 
-/// What the disk under `root` holds at `rel` as git would record it: a
-/// link's target, a submodule's checked-out commit, a file's blob (its
-/// line endings as on disk with `endings_as_on_disk`, else converted as
-/// the repository would). `None` when there is nothing there; `Err` when
-/// it can't be read as any of them (a folder where a file goes).
-async fn disk_object(root: &Path, rel: &str, endings_as_on_disk: bool) -> Result<Option<String>, ()> {
+/// Read what `root` holds at `rel`, once.
+pub async fn read_disk(root: &Path, rel: &str) -> OnDisk {
     let disk = root.join(rel);
-    let Ok(meta) = std::fs::symlink_metadata(&disk) else { return Ok(None) };
+    let Ok(meta) = std::fs::symlink_metadata(&disk) else { return OnDisk::Nothing };
     if meta.file_type().is_symlink() {
-        // A link is recorded as its target's text, never what it points at.
-        let target = std::fs::read_link(&disk).map_err(|_| ())?;
-        let tmp = std::env::temp_dir().join(format!("nebo-link-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::write(&tmp, target.to_string_lossy().as_bytes()).map_err(|_| ())?;
-        let blob = git(root, &["hash-object", "--no-filters", "--", &tmp.to_string_lossy()]).await;
-        let _ = std::fs::remove_file(&tmp);
-        return blob.map(Some).map_err(|_| ());
+        return match std::fs::read_link(&disk) {
+            Ok(target) => OnDisk::Link(target.to_string_lossy().into_owned().into_bytes()),
+            Err(_) => OnDisk::Folder,
+        };
     }
     if meta.is_dir() {
-        // A submodule: the commit it has checked out (none when it isn't).
         if disk.join(".git").exists() {
-            return git(&disk, &["rev-parse", "HEAD"]).await.map(Some).map_err(|_| ());
+            return match git(&disk, &["rev-parse", "HEAD"]).await {
+                Ok(commit) => OnDisk::Commit(commit),
+                Err(_) => OnDisk::Folder,
+            };
         }
         let empty = std::fs::read_dir(&disk).map(|mut d| d.next().is_none()).unwrap_or(false);
-        return if empty { Ok(None) } else { Err(()) };
+        return if empty { OnDisk::Nothing } else { OnDisk::Folder };
     }
+    std::fs::read(&disk).map(OnDisk::File).unwrap_or(OnDisk::Folder)
+}
+
+/// The id git records for `what` at `rel`, hashed by git run with `prefix`
+/// in `cwd` (a repository's own settings, or a caller's): a file's blob
+/// through the attributes of `rel`, a link's target text unfiltered, a
+/// submodule's commit. `None`: nothing there; `Err`: a folder where a file
+/// goes, or git could not hash it.
+pub async fn object_id(cwd: &Path, prefix: &[&str], rel: &str, what: &OnDisk) -> Result<Option<String>, ()> {
     let path = format!("--path={rel}");
-    let args: &[&str] = if endings_as_on_disk {
-        &["-c", "core.autocrlf=false", "hash-object", &path, "--", rel]
-    } else {
-        &["hash-object", &path, "--", rel]
+    let (args, input): (Vec<&str>, &[u8]) = match what {
+        OnDisk::Nothing => return Ok(None),
+        OnDisk::Folder => return Err(()),
+        OnDisk::Commit(c) => return Ok(Some(c.clone())),
+        OnDisk::Link(target) => (prefix.iter().copied().chain(["hash-object", "--stdin", "--no-filters"]).collect(), target),
+        OnDisk::File(bytes) => (prefix.iter().copied().chain(["hash-object", "--stdin", path.as_str()]).collect(), bytes),
     };
-    git(root, args).await.map(Some).map_err(|_| ())
+    match git_io(cwd, &args, Some(input)).await {
+        Ok(out) => Ok(Some(String::from_utf8_lossy(&out).trim().to_string())),
+        Err(_) => Err(()),
+    }
+}
+
+/// How a review's snapshot hashes a file: line endings as they are on
+/// disk (a snapshot never converts them).
+pub const SNAPSHOT_HASH: &[&str] = &["-c", "core.autocrlf=false"];
+
+/// What `rel` in `dir` holds as a review's snapshot records it
+/// ([`SNAPSHOT_HASH`]). `None`: nothing there.
+pub async fn content_id(dir: &Path, rel: &str) -> Result<Option<String>, ()> {
+    object_id(dir, SNAPSHOT_HASH, rel, &read_disk(dir, rel).await).await
+}
+
+/// What the disk under `root` holds at `rel` as its repository would
+/// record it. `None` when there is nothing there; `Err` when it can't be
+/// read as any of them (a folder where a file goes).
+async fn disk_object(root: &Path, rel: &str) -> Result<Option<String>, ()> {
+    object_id(root, &[], rel, &read_disk(root, rel).await).await
 }
 
 /// The paths of `paths` where the owner's folder holds something that is
@@ -1139,7 +1171,7 @@ async fn owner_data_in_the_way(root: &Path, tip: &str, paths: &[String]) -> Vec<
     }
     for rel in paths {
         let at_tip = git(root, &["rev-parse", "--verify", "--quiet", &format!("{tip}:{rel}")]).await.ok().filter(|s| !s.is_empty());
-        let differs = match (disk_object(root, rel, false).await, at_tip) {
+        let differs = match (disk_object(root, rel).await, at_tip) {
             (Ok(None), None) => false,
             (Ok(Some(on_disk)), Some(blob)) => on_disk != blob,
             _ => true,
