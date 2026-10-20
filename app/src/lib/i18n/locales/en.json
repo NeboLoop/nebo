@@ -4441,7 +4441,9 @@
 			"turn_ended": "The run ended before the checking finished",
 			"restarted": "Nebo restarted while it was being checked",
 			"unreviewed": "Not landed: the copy holds changes nobody reviewed ({files})",
-			"needs_review": "Catching up changed files this change touches ({files}); it is reviewed again first"
+			"needs_review": "What would land differs from what was reviewed in {files}; it is reviewed again first",
+			"changed_after_review": "The copy changed after it was reviewed; it is reviewed again first",
+			"waiting_to_land": "Waiting for another landing on this project to finish"
 		},
 		"place": {
 			"app": "The change is in the app's pages; the app's history can undo it.",

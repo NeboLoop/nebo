@@ -4441,7 +4441,9 @@
 			"turn_ended": "Çalıştırma, kontrol bitmeden sona erdi",
 			"restarted": "Nebo kontrol sırasında yeniden başladı",
 			"unreviewed": "Aktarılmadı: kopyada kimsenin incelemediği değişiklikler var ({files})",
-			"needs_review": "Güncelleme bu değişikliğin dokunduğu dosyaları değiştirdi ({files}); önce yeniden incelenir"
+			"needs_review": "Aktarılacak olan, {files} içinde incelenenden farklı; önce yeniden incelenir",
+			"changed_after_review": "Kopya incelendikten sonra değişti; önce yeniden incelenir",
+			"waiting_to_land": "Bu projedeki başka bir aktarımın bitmesi bekleniyor"
 		},
 		"place": {
 			"app": "Değişiklik uygulamanın sayfalarında; uygulamanın geçmişi bunu geri alabilir.",

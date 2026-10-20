@@ -4441,7 +4441,9 @@
 			"turn_ended": "检查完成前运行已结束",
 			"restarted": "检查期间 Nebo 重新启动了",
 			"unreviewed": "未并入：副本中有没人审查过的更改（{files}）",
-			"needs_review": "同步更改了此更改涉及的文件（{files}）；先重新审查"
+			"needs_review": "将要合入的内容与 {files} 中审查过的内容不同；先重新审查",
+			"changed_after_review": "副本在审查后发生了变化；先重新审查",
+			"waiting_to_land": "正在等待此项目的另一次合入完成"
 		},
 		"place": {
 			"app": "更改位于应用的页面中；应用的历史记录可以撤销它。",

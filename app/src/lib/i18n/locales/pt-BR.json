@@ -4441,7 +4441,9 @@
 			"turn_ended": "A execução terminou antes de concluir a verificação",
 			"restarted": "O Nebo reiniciou durante a verificação",
 			"unreviewed": "Não integrado: a cópia tem mudanças que ninguém revisou ({files})",
-			"needs_review": "Atualizar mudou arquivos que esta mudança toca ({files}); primeiro ela é revisada de novo"
+			"needs_review": "O que seria incorporado difere do que foi revisado em {files}; primeiro é revisado de novo",
+			"changed_after_review": "A cópia mudou depois de revisada; primeiro ela é revisada de novo",
+			"waiting_to_land": "Aguardando outra incorporação neste projeto terminar"
 		},
 		"place": {
 			"app": "A mudança está nas páginas do app; o histórico do app pode desfazê-la.",

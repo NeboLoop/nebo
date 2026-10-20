@@ -4441,7 +4441,9 @@
 			"turn_ended": "Jalankan berakhir sebelum pemeriksaan selesai",
 			"restarted": "Nebo dimulai ulang saat sedang diperiksa",
 			"unreviewed": "Tidak dimasukkan: salinan berisi perubahan yang belum ditinjau siapa pun ({files})",
-			"needs_review": "Pembaruan mengubah file yang disentuh perubahan ini ({files}); perubahan ini ditinjau ulang dulu"
+			"needs_review": "Yang akan digabungkan berbeda dari yang ditinjau di {files}; perubahan ini ditinjau ulang dulu",
+			"changed_after_review": "Salinan berubah setelah ditinjau; perubahan ini ditinjau ulang dulu",
+			"waiting_to_land": "Menunggu penggabungan lain di proyek ini selesai"
 		},
 		"place": {
 			"app": "Perubahan ada di halaman aplikasi; riwayat aplikasi bisa membatalkannya.",

@@ -4441,7 +4441,9 @@
 			"turn_ended": "Lần chạy đã kết thúc trước khi kiểm tra xong",
 			"restarted": "Nebo đã khởi động lại trong lúc kiểm tra",
 			"unreviewed": "Chưa đưa vào: bản sao có thay đổi chưa ai xem xét ({files})",
-			"needs_review": "Việc cập nhật đã thay đổi các tệp mà thay đổi này đụng tới ({files}); nó được xem xét lại trước"
+			"needs_review": "Nội dung sẽ được đưa vào khác với nội dung đã xem xét trong {files}; nó được xem xét lại trước",
+			"changed_after_review": "Bản sao đã thay đổi sau khi được xem xét; nó được xem xét lại trước",
+			"waiting_to_land": "Đang chờ một lần đưa vào khác trong dự án này hoàn tất"
 		},
 		"place": {
 			"app": "Thay đổi nằm trong các trang của ứng dụng; lịch sử ứng dụng có thể hoàn tác nó.",

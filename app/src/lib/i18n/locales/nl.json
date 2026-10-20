@@ -4441,7 +4441,9 @@
 			"turn_ended": "De run eindigde voordat de controle klaar was",
 			"restarted": "Nebo is opnieuw gestart tijdens de controle",
 			"unreviewed": "Niet doorgevoerd: de kopie bevat wijzigingen die niemand heeft gereviewd ({files})",
-			"needs_review": "Het bijwerken veranderde bestanden die deze wijziging raakt ({files}); eerst wordt die opnieuw gereviewd"
+			"needs_review": "Wat zou landen verschilt in {files} van wat gereviewd is; eerst wordt het opnieuw gereviewd",
+			"changed_after_review": "De kopie veranderde nadat ze gereviewd was; eerst wordt ze opnieuw gereviewd",
+			"waiting_to_land": "Wacht tot een andere landing in dit project klaar is"
 		},
 		"place": {
 			"app": "De wijziging staat in de pagina's van de app; de geschiedenis van de app kan haar ongedaan maken.",

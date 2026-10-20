@@ -4441,7 +4441,9 @@
 			"turn_ended": "La ejecución terminó antes de acabar la comprobación",
 			"restarted": "Nebo se reinició mientras se comprobaba",
 			"unreviewed": "No integrado: la copia tiene cambios que nadie revisó ({files})",
-			"needs_review": "Ponerse al día cambió archivos que toca este cambio ({files}); primero se revisa de nuevo"
+			"needs_review": "Lo que se incorporaría difiere de lo revisado en {files}; primero se revisa de nuevo",
+			"changed_after_review": "La copia cambió después de revisarse; primero se revisa de nuevo",
+			"waiting_to_land": "Esperando a que termine otra incorporación en este proyecto"
 		},
 		"place": {
 			"app": "El cambio está en las páginas de la app; el historial de la app puede deshacerlo.",

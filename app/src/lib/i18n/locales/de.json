@@ -4441,7 +4441,9 @@
 			"turn_ended": "Der Lauf endete, bevor die Prüfung fertig war",
 			"restarted": "Nebo wurde während der Prüfung neu gestartet",
 			"unreviewed": "Nicht übernommen: die Kopie enthält Änderungen, die niemand geprüft hat ({files})",
-			"needs_review": "Der Abgleich hat Dateien geändert, die diese Änderung berührt ({files}); sie wird zuerst erneut geprüft"
+			"needs_review": "Was übernommen würde, weicht in {files} von dem ab, was geprüft wurde; es wird zuerst erneut geprüft",
+			"changed_after_review": "Die Kopie hat sich nach der Prüfung geändert; sie wird zuerst erneut geprüft",
+			"waiting_to_land": "Wartet, bis eine andere Übernahme in dieses Projekt abgeschlossen ist"
 		},
 		"place": {
 			"app": "Die Änderung ist in den Seiten der App; der Verlauf der App kann sie rückgängig machen.",

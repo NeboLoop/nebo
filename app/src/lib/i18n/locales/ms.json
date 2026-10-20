@@ -4441,7 +4441,9 @@
 			"turn_ended": "Larian tamat sebelum semakan selesai",
 			"restarted": "Nebo dimulakan semula semasa sedang disemak",
 			"unreviewed": "Tidak dimasukkan: salinan mengandungi perubahan yang belum disemak sesiapa ({files})",
-			"needs_review": "Kemas kini mengubah fail yang disentuh perubahan ini ({files}); ia disemak semula dahulu"
+			"needs_review": "Apa yang akan digabungkan berbeza daripada yang disemak dalam {files}; ia disemak semula dahulu",
+			"changed_after_review": "Salinan berubah selepas disemak; ia disemak semula dahulu",
+			"waiting_to_land": "Menunggu penggabungan lain dalam projek ini selesai"
 		},
 		"place": {
 			"app": "Perubahan ada dalam halaman aplikasi; sejarah aplikasi boleh membatalkannya.",

@@ -4441,7 +4441,9 @@
 			"turn_ended": "Uruchomienie zakończyło się przed końcem sprawdzania",
 			"restarted": "Nebo uruchomił się ponownie w trakcie sprawdzania",
 			"unreviewed": "Nie wdrożone: kopia zawiera zmiany, których nikt nie przejrzał ({files})",
-			"needs_review": "Aktualizacja zmieniła pliki, których dotyczy ta zmiana ({files}); najpierw zostanie ponownie przejrzana"
+			"needs_review": "To, co zostałoby wprowadzone, różni się od przejrzanego w {files}; najpierw zostanie ponownie przejrzane",
+			"changed_after_review": "Kopia zmieniła się po przejrzeniu; najpierw zostanie ponownie przejrzana",
+			"waiting_to_land": "Czeka na zakończenie innego wprowadzania w tym projekcie"
 		},
 		"place": {
 			"app": "Zmiana jest na stronach aplikacji; historia aplikacji może ją cofnąć.",

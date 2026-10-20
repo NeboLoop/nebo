@@ -4441,7 +4441,9 @@
 			"turn_ended": "L'esecuzione è terminata prima della fine del controllo",
 			"restarted": "Nebo si è riavviato durante il controllo",
 			"unreviewed": "Non integrato: la copia contiene modifiche che nessuno ha revisionato ({files})",
-			"needs_review": "L'aggiornamento ha cambiato file toccati da questa modifica ({files}); prima viene revisionata di nuovo"
+			"needs_review": "Ciò che verrebbe integrato differisce da ciò che è stato revisionato in {files}; prima viene revisionato di nuovo",
+			"changed_after_review": "La copia è cambiata dopo la revisione; prima viene revisionata di nuovo",
+			"waiting_to_land": "In attesa che finisca un'altra integrazione in questo progetto"
 		},
 		"place": {
 			"app": "La modifica è nelle pagine dell'app; la cronologia dell'app può annullarla.",

@@ -4441,7 +4441,9 @@
 			"turn_ended": "Körningen tog slut innan kontrollen var klar",
 			"restarted": "Nebo startade om medan det kontrollerades",
 			"unreviewed": "Inte infört: kopian har ändringar som ingen har granskat ({files})",
-			"needs_review": "Uppdateringen ändrade filer som den här ändringen rör ({files}); den granskas igen först"
+			"needs_review": "Det som skulle landa skiljer sig från det som granskades i {files}; det granskas igen först",
+			"changed_after_review": "Kopian ändrades efter granskningen; den granskas igen först",
+			"waiting_to_land": "Väntar på att en annan landning i det här projektet ska bli klar"
 		},
 		"place": {
 			"app": "Ändringen finns i appens sidor; appens historik kan ångra den.",

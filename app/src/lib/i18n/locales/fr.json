@@ -4441,7 +4441,9 @@
 			"turn_ended": "L'exécution s'est terminée avant la fin de la vérification",
 			"restarted": "Nebo a redémarré pendant la vérification",
 			"unreviewed": "Non intégré : la copie contient des modifications que personne n'a revues ({files})",
-			"needs_review": "La mise à jour a modifié des fichiers que ce changement touche ({files}) ; il est d'abord revu à nouveau"
+			"needs_review": "Ce qui serait intégré diffère de ce qui a été revu dans {files} ; il est d'abord revu à nouveau",
+			"changed_after_review": "La copie a changé après avoir été revue ; elle est d'abord revue à nouveau",
+			"waiting_to_land": "En attente de la fin d'une autre intégration dans ce projet"
 		},
 		"place": {
 			"app": "Le changement est dans les pages de l'app ; l'historique de l'app peut l'annuler.",
