@@ -64,31 +64,24 @@ impl Collected {
         Self { error: Some(error), ..Self::default() }
     }
 
-    /// The completion this turn reports. A result over `report_limit`
-    /// characters is saved in full in `spill_dir`, and its start and the
-    /// file's path are what the parent reads, as `reader` reads files.
+    /// The completion this turn reports, its words whole: the run's report
+    /// is assembled and held to its limit once the run ends ([`assemble`]).
     ///
     /// A question for the owner wins over a step or spending limit: the
     /// conversation that started the helper must hear it. Its block (the
-    /// question, the options, the recommended one, how to answer) leads the
-    /// report and is never spilled; only the helper's other words are.
-    pub fn into_completion(
-        self,
-        task_id: &str,
-        description: &str,
-        spill_dir: &Path,
-        report_limit: usize,
-        reader: tools::result_shape::Reader,
-    ) -> Completion {
+    /// question, the options, the recommended one, how to answer) is kept
+    /// apart in [`Completion::question`]: it leads the report and is never
+    /// spilled; only the helper's other words are.
+    pub fn into_completion(self, task_id: &str, description: &str) -> Completion {
         let report = self.final_message.trim();
-        let mut asked = None;
-        let (text, status) = if let Some(error) = self.error {
+        let mut question = None;
+        let (result, status) = if let Some(error) = self.error {
             (self.last_words.trim().to_string(), CompletionStatus::Failed { error })
         } else if self.cancelled {
             (self.last_words.trim().to_string(), CompletionStatus::Stopped)
-        } else if let Some(question) = &self.question {
-            asked = Some(question_block(task_id, question, &self.taint));
-            (where_it_stands(question, &self.last_words), CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.to_string() })
+        } else if let Some(asked) = &self.question {
+            question = Some(question_block(task_id, asked, &self.taint));
+            (where_it_stands(asked, &self.last_words), CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.to_string() })
         } else if let Some(window) = self.stalled {
             (
                 best_words(report, &self.last_words),
@@ -104,13 +97,75 @@ impl Collected {
         } else {
             (report.to_string(), CompletionStatus::Done)
         };
-        let rest = spill_if_long(&text, spill_dir, report_limit, reader);
-        let result = match asked {
-            Some(block) if rest.is_empty() => block,
-            Some(block) => format!("{block}\n\n{rest}"),
-            None => rest,
-        };
-        Completion { task_id: task_id.to_string(), description: description.to_string(), status, result, usage: self.usage, taint: self.taint }
+        Completion {
+            task_id: task_id.to_string(),
+            description: description.to_string(),
+            status,
+            result,
+            question,
+            usage: self.usage,
+            taint: self.taint,
+        }
+    }
+}
+
+/// A run's report from its `turns` (as each turn reported them, never
+/// assembled) and its `pending` question. While a question is pending (no
+/// answer has been sent to the helper since it asked), the run needs the
+/// owner's decision, whatever its later turns said, and that question leads
+/// the report, inline and never spilled. Earlier turns are marked
+/// "Earlier:" so their state doesn't read as current; a question block that
+/// leads is not repeated among them, and an answered one stays in its
+/// turn's words. What the turns read goes with the report. Past `limit`
+/// characters the words go through the one spill path, read back the way
+/// `reader` (the parent's door) reads files.
+pub fn assemble(
+    turns: &[Completion],
+    pending: Option<&str>,
+    spill_dir: &Path,
+    limit: usize,
+    reader: tools::result_shape::Reader,
+) -> Completion {
+    let latest = turns.last().expect("a run has a turn");
+    let mut taint: Vec<types::provenance::ProvenanceClass> = Vec::new();
+    let mut shown: Vec<&str> = pending.into_iter().collect();
+    let mut words = Vec::new();
+    for (i, t) in turns.iter().enumerate() {
+        for class in &t.taint {
+            if !taint.contains(class) {
+                taint.push(*class);
+            }
+        }
+        let mut part = Vec::new();
+        if let Some(q) = t.question.as_deref()
+            && !shown.contains(&q)
+        {
+            part.push(q.to_string());
+            shown.push(q);
+        }
+        if !t.result.trim().is_empty() {
+            part.push(t.result.trim().to_string());
+        }
+        if part.is_empty() {
+            continue;
+        }
+        let part = part.join("\n\n");
+        words.push(if i + 1 < turns.len() { format!("Earlier:\n{part}") } else { part });
+    }
+    let status = match (&latest.status, pending) {
+        (CompletionStatus::Done | CompletionStatus::Partial { .. }, Some(_)) => {
+            CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.to_string() }
+        }
+        (status, _) => status.clone(),
+    };
+    Completion {
+        task_id: latest.task_id.clone(),
+        description: latest.description.clone(),
+        status,
+        result: spill_if_long(&words.join("\n\n"), spill_dir, limit, reader),
+        question: pending.map(str::to_string),
+        usage: latest.usage.clone(),
+        taint,
     }
 }
 
@@ -280,7 +335,8 @@ pub fn spill_if_long(text: &str, spill_dir: &Path, limit: usize, reader: tools::
     if text.chars().count() <= limit {
         return text.to_string();
     }
-    tools::result_shape::persist(spill_dir, text, reader)
+    // The preview never runs past the limit it stands in for.
+    tools::result_shape::persist(spill_dir, text, reader, limit.min(tools::result_shape::PREVIEW_CHARS))
 }
 
 /// The first `max` characters of `s`, cut on a character boundary.
@@ -299,6 +355,13 @@ mod tests {
             name: "read_file".into(),
             input: serde_json::json!({"path": "a.txt"}),
         })
+    }
+
+    /// A one-turn run's report, as its parent gets it.
+    fn finished(got: Collected, id: &str, description: &str, dir: &Path, limit: usize) -> Completion {
+        let turn = got.into_completion(id, description);
+        let pending = turn.question.clone();
+        assemble(&[turn], pending.as_deref(), dir, limit, Reader::File)
     }
 
     async fn run(events: Vec<StreamEvent>) -> Collected {
@@ -323,7 +386,7 @@ mod tests {
             StreamEvent::done(),
         ])
         .await;
-        let c = got.into_completion("h-1", "find it", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "find it", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Done);
         assert_eq!(c.result, "The invoice is missing from March.", "narration never returns");
 
@@ -331,7 +394,7 @@ mod tests {
         // text saved, its start previewed.
         let long = format!("THE START{}THE END", "é".repeat(REPORT_LIMIT + 50));
         let got = run(vec![tool_call(), StreamEvent::text(long.clone()), StreamEvent::done()]).await;
-        let c = got.into_completion("h-1", "find it", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "find it", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Done);
         assert!(c.result.starts_with(tools::result_shape::SAVED_OUTPUT), "{}", &c.result[..200]);
         assert!(c.result.contains("THE START"));
@@ -351,7 +414,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let report = format!("30 listings checked.{}THE LAST LISTING", " row".repeat(1_000));
         let got = run(vec![tool_call(), StreamEvent::text(report.clone()), StreamEvent::done()]).await;
-        let c = got.into_completion("h-1", "listings", dir.path(), 2_000, Reader::File);
+        let c = finished(got, "h-1", "listings", dir.path(), 2_000);
         assert_eq!(c.status, CompletionStatus::Done, "a long report is still done");
         assert!(c.result.starts_with(tools::result_shape::SAVED_OUTPUT), "{}", c.result);
         assert!(c.result.contains("30 listings checked.") && !c.result.contains("THE LAST LISTING"));
@@ -359,14 +422,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(path).unwrap(), report, "the full report is on disk");
 
         let got = run(vec![tool_call(), StreamEvent::text(report.clone()), StreamEvent::done()]).await;
-        assert_eq!(got.into_completion("h-1", "listings", dir.path(), 10_000, Reader::File).result, report, "a raised limit keeps it whole");
+        assert_eq!(finished(got, "h-1", "listings", dir.path(), 10_000).result, report, "a raised limit keeps it whole");
         assert_eq!(REPORT_LIMIT, 30_000, "full by default, up to the safety ceiling");
         assert_eq!(report_limit(None), REPORT_LIMIT);
         assert_eq!(report_limit(Some(2_000)), 2_000, "a limit below the ceiling holds");
         assert_eq!(report_limit(Some(100_000)), REPORT_LIMIT, "never past the ceiling");
         let full = "x".repeat(REPORT_LIMIT);
         let got = run(vec![tool_call(), StreamEvent::text(full.clone()), StreamEvent::done()]).await;
-        assert_eq!(got.into_completion("h-1", "listings", dir.path(), report_limit(None), Reader::File).result, full, "in full up to the ceiling");
+        assert_eq!(finished(got, "h-1", "listings", dir.path(), report_limit(None)).result, full, "in full up to the ceiling");
     }
 
     /// A helper can't reach the owner: its `ask_owner` ends its turn on the
@@ -388,7 +451,7 @@ mod tests {
             StreamEvent::done_with_reason("terminal_tool_error"),
         ])
         .await;
-        let c = got.into_completion("h-7", "outreach batch", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-7", "outreach batch", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.into() });
         for part in [
             "Drafted 18 of 20 emails.",
@@ -399,10 +462,9 @@ mod tests {
             "ask them with ask_owner",
             "send_message the answer to h-7",
         ] {
-            assert!(c.result.contains(part), "{part:?} missing from:\n{}", c.result);
+            assert!(c.report().contains(part), "{part:?} missing from:\n{}", c.report());
         }
-
-        assert!(c.result.starts_with("It needs the owner's decision"), "the question leads: {}", c.result);
+        assert!(c.report().starts_with("It needs the owner's decision"), "the question leads: {}", c.report());
 
         // Any other terminal notice is no question.
         let got = run(vec![
@@ -435,10 +497,11 @@ mod tests {
             StreamEvent::done_with_reason(STOP_MAX_STEPS).with_provenance(vec![types::provenance::ProvenanceClass::Web]),
         ])
         .await;
-        let c = got.into_completion("h-9", "posting plan", dir.path(), 2_000, Reader::File);
+        let c = finished(got, "h-9", "posting plan", dir.path(), 2_000);
         assert_eq!(c.status, CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.into() }, "the question wins over the step limit");
         assert!(c.status.awaits_owner());
-        let (block, rest) = c.result.split_once(tools::result_shape::SAVED_OUTPUT).expect("the context spilled");
+        let report = c.report();
+        let (block, rest) = report.split_once(tools::result_shape::SAVED_OUTPUT).expect("the context spilled");
         for part in [
             "Question: Which days should the posts go out?",
             "Options (any of): Mon | Wed | Fri",
@@ -453,6 +516,60 @@ mod tests {
         assert!(!CompletionStatus::Done.awaits_owner() && !CompletionStatus::Partial { why: "hit its step limit".into() }.awaits_owner());
     }
 
+    fn turn(result: &str, question: Option<&str>) -> Completion {
+        Completion {
+            task_id: "h-1".into(),
+            description: "d".into(),
+            status: match question {
+                Some(_) => CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.into() },
+                None => CompletionStatus::Done,
+            },
+            result: result.into(),
+            question: question.map(str::to_string),
+            usage: Default::default(),
+            taint: Vec::new(),
+        }
+    }
+
+    /// A run of several turns with a question still pending (no answer
+    /// sent since it was asked): the run needs the owner's decision even
+    /// when its latest turn only reported progress; the question leads,
+    /// shown once however often a turn asked it; earlier turns are marked
+    /// "Earlier:"; and the whole is held to the limit with the question
+    /// inline and the preview inside the limit.
+    #[test]
+    fn a_pending_question_leads_until_it_is_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = "It needs the owner's decision before it can go on.\nQuestion: Which vendor?";
+        let turns = [turn("Drafted the plan.", Some(q)), turn("40 contacts found.", None), turn("Contacts are in.", None)];
+        let c = assemble(&turns, Some(q), dir.path(), REPORT_LIMIT, Reader::File);
+        assert!(c.status.awaits_owner(), "progress doesn't settle a question: {:?}", c.status);
+        let report = c.report();
+        assert!(report.starts_with(q), "the question leads: {report}");
+        assert!(report.contains("Earlier:\nDrafted the plan.") && report.contains("Earlier:\n40 contacts found."), "{report}");
+        assert!(report.ends_with("Contacts are in."), "{report}");
+
+        // Asked again: still shown once.
+        let turns = [turn("Drafted the plan.", Some(q)), turn("Still need the vendor.", Some(q))];
+        let report = assemble(&turns, Some(q), dir.path(), REPORT_LIMIT, Reader::File).report();
+        assert_eq!(report.matches("Question: Which vendor?").count(), 1, "shown once: {report}");
+
+        // Past the limit, the joined words spill; the question stays inline
+        // and leads, and the preview never runs past the limit.
+        let long = "x".repeat(3_000);
+        let report = assemble(&[turn(&long, Some(q)), turn(&long, None)], Some(q), dir.path(), 1_000, Reader::File).report();
+        assert!(report.starts_with(q), "{}", &report[..200]);
+        assert!(report.contains(tools::result_shape::SAVED_OUTPUT) && report.contains("First 1000 characters:"), "{}", &report[..400]);
+        assert!(report.chars().count() < 1_000 + q.len() + 800, "the preview keeps to the limit: {}", report.chars().count());
+
+        // Answered (nothing pending): the run is its latest state, and the
+        // question it asked stays in that turn's words.
+        let c = assemble(&[turn("Drafted the plan.", Some(q)), turn("Went with Acme, as you said.", None)], None, dir.path(), REPORT_LIMIT, Reader::File);
+        assert_eq!(c.status, CompletionStatus::Done);
+        assert!(c.question.is_none());
+        assert!(c.report().starts_with(&format!("Earlier:\n{q}")), "{}", c.report());
+    }
+
     /// A turn that ended at its step or spending limit is partial, whatever
     /// it last said.
     #[tokio::test]
@@ -460,7 +577,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (reason, why) in [(STOP_MAX_STEPS, "hit its step limit"), (STOP_SPEND_CAP, "hit its spending limit")] {
             let got = run(vec![tool_call(), StreamEvent::text("Got through March."), StreamEvent::done_with_reason(reason)]).await;
-            let c = got.into_completion("h-1", "find it", dir.path(), REPORT_LIMIT, Reader::File);
+            let c = finished(got, "h-1", "find it", dir.path(), REPORT_LIMIT);
             assert_eq!(c.status, CompletionStatus::Partial { why: why.into() });
             assert_eq!(c.result, "Got through March.");
         }
@@ -470,7 +587,7 @@ mod tests {
     async fn no_final_report_returns_marked_last_words_as_partial() {
         let dir = tempfile::tempdir().unwrap();
         let got = run(vec![StreamEvent::text("Checked March, now April."), tool_call(), StreamEvent::done()]).await;
-        let c = got.into_completion("h-1", "find it", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "find it", dir.path(), REPORT_LIMIT);
         assert!(matches!(c.status, CompletionStatus::Partial { .. }));
         assert_eq!(c.result, format!("{NO_FINAL_REPORT}\nChecked March, now April."));
     }
@@ -479,14 +596,14 @@ mod tests {
     async fn an_error_fails_and_a_cancel_stops() {
         let dir = tempfile::tempdir().unwrap();
         let got = run(vec![StreamEvent::text("x"), StreamEvent::error("provider down")]).await;
-        let c = got.into_completion("h-1", "d", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "d", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Failed { error: "provider down".into() });
 
         let (_tx, rx) = mpsc::channel::<StreamEvent>(1);
         let cancel = CancellationToken::new();
         cancel.cancel();
         let got = collect(rx, &cancel, Duration::from_secs(5), &tools::Waiting::default(), |_| {}).await;
-        assert_eq!(got.into_completion("h-1", "d", dir.path(), REPORT_LIMIT, Reader::File).status, CompletionStatus::Stopped);
+        assert_eq!(finished(got, "h-1", "d", dir.path(), REPORT_LIMIT).status, CompletionStatus::Stopped);
     }
 
     /// A turn that saw its cancel ends with `Done` saying so. The collector
@@ -497,7 +614,7 @@ mod tests {
     async fn a_turn_that_ended_on_its_cancel_is_stopped_whichever_arrives_first() {
         let dir = tempfile::tempdir().unwrap();
         let got = run(vec![tool_call(), StreamEvent::text("Got through March."), StreamEvent::done_with_reason(STOP_CANCELLED)]).await;
-        let c = got.into_completion("h-1", "find it", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "find it", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Stopped);
         assert_eq!(c.result, "Got through March.", "its last words, not a report");
     }
@@ -510,7 +627,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let got = collect(rx, &cancel, Duration::from_secs(600), &tools::Waiting::default(), |_| {}).await;
         assert!(cancel.is_cancelled(), "a stalled helper is ended");
-        let c = got.into_completion("h-1", "d", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "d", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Partial { why: "no activity for 600s".into() });
         assert!(c.result.ends_with("Half way."));
         drop(tx);
@@ -539,7 +656,7 @@ mod tests {
         let got = collect(rx, &cancel, Duration::from_secs(600), &waiting, |_| {}).await;
         helper.await.unwrap();
         assert!(!cancel.is_cancelled(), "a helper waiting on a render is never ended");
-        let c = got.into_completion("h-1", "shot 2", dir.path(), REPORT_LIMIT, Reader::File);
+        let c = finished(got, "h-1", "shot 2", dir.path(), REPORT_LIMIT);
         assert_eq!(c.status, CompletionStatus::Done);
         assert_eq!(c.result, "Shot 2 is at clips/s2.mp4.");
 
