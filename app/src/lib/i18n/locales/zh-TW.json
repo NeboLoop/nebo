@@ -1439,7 +1439,6 @@
 		"addModelById": "依 id 新增模型",
 		"addModelByIdPlaceholder": "例如 claude-opus-5",
 		"addModel": "新增模型",
-		"addModelHint": "能力來自 Nebo 針對已知模型系列的預設設定。",
 		"editProvider": "編輯供應商",
 		"nameHint": "為每個金鑰命名，以便輕鬆區分公司金鑰與個人金鑰。",
 		"baseUrlRequired": "必須填寫基礎 URL",

@@ -1439,7 +1439,6 @@
 		"addModelById": "Voeg een model toe via de id",
 		"addModelByIdPlaceholder": "bijv. claude-opus-5",
 		"addModel": "Model toevoegen",
-		"addModelHint": "Mogelijkheden komen van Nebo's standaardinstellingen voor bekende modelfamilies.",
 		"editProvider": "Provider bewerken",
 		"nameHint": "Geef elke sleutel een naam, zodat een bedrijfssleutel en een persoonlijke sleutel makkelijk te onderscheiden zijn.",
 		"baseUrlRequired": "Basis-URL is verplicht",

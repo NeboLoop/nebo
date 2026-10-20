@@ -168,3 +168,31 @@ export function parseContext(text: string): number | undefined {
 	const n = Number(text.replace(/[^\d]/g, ''));
 	return Number.isFinite(n) && n > 0 ? n : undefined;
 }
+
+/** A model the owner adds by hand, as the forms hold it. */
+export type HandModel = {
+	kind: string;
+	modelId: string;
+	contextWindow: string;
+	vision: boolean;
+	tools: boolean;
+	thinking: boolean;
+};
+
+/** A model added by hand starts as a chat model that reads images and calls tools. */
+export const blankHand = (modelId = ''): HandModel => ({
+	kind: 'chat',
+	modelId,
+	contextWindow: '',
+	vision: true,
+	tools: true,
+	thinking: false
+});
+
+/** The body that adds a hand model to a connection. */
+export function handBody(m: HandModel) {
+	const capabilities = [m.vision && 'vision', m.tools && 'tools', m.thinking && 'thinking'].filter(
+		(c): c is string => Boolean(c)
+	);
+	return { modelId: m.modelId, kind: m.kind, contextWindow: parseContext(m.contextWindow), capabilities };
+}

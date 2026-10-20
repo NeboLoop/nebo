@@ -1439,7 +1439,6 @@
 		"addModelById": "เพิ่มโมเดลโดยใช้ id",
 		"addModelByIdPlaceholder": "เช่น claude-opus-5",
 		"addModel": "เพิ่มโมเดล",
-		"addModelHint": "ความสามารถมาจากค่าเริ่มต้นของ Nebo สำหรับตระกูลโมเดลที่รู้จัก",
 		"editProvider": "แก้ไขผู้ให้บริการ",
 		"nameHint": "ตั้งชื่อแต่ละคีย์ เพื่อให้แยกคีย์ของบริษัทกับคีย์ส่วนตัวได้ง่าย",
 		"baseUrlRequired": "ต้องระบุ URL หลัก",

@@ -22,13 +22,15 @@
   import { ownKeyError } from '$lib/chat/ownKeyError';
   import {
     CONNECTION_KINDS,
+    blankHand,
     filterCatalog,
     groupByFamily,
+    handBody,
     isOwnConnection,
     needsBaseUrl,
-    parseContext,
     shortContext,
     shortUrl,
+    type HandModel,
   } from '$lib/models/connections';
 
   // --- state ---
@@ -259,7 +261,8 @@
     addingModelFor = id;
     try {
       const api = await import('$lib/api/nebo');
-      await api.addConnectionModel(id, { modelId });
+      // The same abilities a model added in Add provider starts with.
+      await api.addConnectionModel(id, handBody(blankHand(modelId)));
       newModelId[id] = '';
       await loadConnectionModels(id);
     } catch (err: any) {
@@ -303,8 +306,6 @@
   }
 
   // --- Add / Edit provider ---
-  type HandModel = { kind: string; modelId: string; contextWindow: string; vision: boolean; tools: boolean; thinking: boolean };
-  const blankHand = (): HandModel => ({ kind: 'chat', modelId: '', contextWindow: '', vision: true, tools: true, thinking: false });
 
   let showForm = $state(false);
   /** The connection being edited; '' when adding. */
@@ -340,11 +341,6 @@
     if (!hand.modelId.trim()) return;
     queued = [...queued, { ...hand, modelId: hand.modelId.trim() }];
     hand = blankHand();
-  }
-
-  function handBody(m: HandModel) {
-    const capabilities = [m.vision && 'vision', m.tools && 'tools', m.thinking && 'thinking'].filter(Boolean);
-    return { modelId: m.modelId, kind: m.kind, contextWindow: parseContext(m.contextWindow), capabilities };
   }
 
   async function saveProvider() {
@@ -740,7 +736,6 @@
                     {#if addingModelFor === conn.id}<Spinner size={14} />{:else}{$t('settingsProviders.addModel')}{/if}
                   </button>
                 </form>
-                <p class="text-xs text-base-content/40">{$t('settingsProviders.addModelHint')}</p>
               </div>
             {/if}
           </div>

@@ -1439,7 +1439,6 @@
 		"addModelById": "הוסף מודל לפי המזהה שלו",
 		"addModelByIdPlaceholder": "למשל claude-opus-5",
 		"addModel": "הוסף מודל",
-		"addModelHint": "היכולות מגיעות מברירות המחדל של Nebo למשפחות מודלים מוכרות.",
 		"editProvider": "ערוך ספק",
 		"nameHint": "תן שם לכל מפתח, כך שמפתח חברה ומפתח אישי יהיו קלים להבחין ביניהם.",
 		"baseUrlRequired": "כתובת בסיס נדרשת",

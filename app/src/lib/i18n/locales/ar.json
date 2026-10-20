@@ -1439,7 +1439,6 @@
 		"addModelById": "إضافة نموذج عبر معرّفه",
 		"addModelByIdPlaceholder": "مثل claude-opus-5",
 		"addModel": "إضافة نموذج",
-		"addModelHint": "تأتي القدرات من إعدادات Nebo الافتراضية لعائلات النماذج المعروفة.",
 		"editProvider": "تعديل المزوّد",
 		"nameHint": "سمِّ كل مفتاح، حتى يسهل تمييز مفتاح الشركة عن المفتاح الشخصي.",
 		"baseUrlRequired": "رابط القاعدة مطلوب",

@@ -1439,7 +1439,6 @@
 		"addModelById": "id로 모델 추가",
 		"addModelByIdPlaceholder": "예: claude-opus-5",
 		"addModel": "모델 추가",
-		"addModelHint": "알려진 모델 계열에 대한 능력은 Nebo의 기본값에서 가져옵니다.",
 		"editProvider": "제공업체 편집",
 		"nameHint": "회사 키와 개인 키를 쉽게 구분할 수 있도록 각 키에 이름을 지정하세요.",
 		"baseUrlRequired": "기본 URL이 필요합니다",

@@ -1439,7 +1439,6 @@
 		"addModelById": "Id'siyle bir model ekle",
 		"addModelByIdPlaceholder": "örn. claude-opus-5",
 		"addModel": "Model ekle",
-		"addModelHint": "Yetenekler, bilinen model ailelerine ait Nebo varsayılanlarından gelir.",
 		"editProvider": "Sağlayıcıyı düzenle",
 		"nameHint": "Her anahtarı adlandırın, böylece şirket anahtarıyla kişisel anahtarı birbirinden ayırt etmek kolay olur.",
 		"baseUrlRequired": "Temel URL gerekli",

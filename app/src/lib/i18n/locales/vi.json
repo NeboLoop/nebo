@@ -1439,7 +1439,6 @@
 		"addModelById": "Thêm một mô hình bằng id của nó",
 		"addModelByIdPlaceholder": "ví dụ: claude-opus-5",
 		"addModel": "Thêm mô hình",
-		"addModelHint": "Khả năng được lấy từ mặc định của Nebo cho các dòng mô hình đã biết.",
 		"editProvider": "Sửa nhà cung cấp",
 		"nameHint": "Đặt tên cho mỗi khóa, để khóa công ty và khóa cá nhân dễ phân biệt.",
 		"baseUrlRequired": "Cần có URL cơ sở",

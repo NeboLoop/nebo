@@ -1439,7 +1439,6 @@
 		"addModelById": "idでモデルを追加",
 		"addModelByIdPlaceholder": "例: claude-opus-5",
 		"addModel": "モデルを追加",
-		"addModelHint": "能力は、既知のモデルファミリーに対するNeboのデフォルトから決まります。",
 		"editProvider": "プロバイダーを編集",
 		"nameHint": "会社用のキーと個人用のキーを区別しやすくするため、各キーに名前を付けてください。",
 		"baseUrlRequired": "ベースURLは必須です",

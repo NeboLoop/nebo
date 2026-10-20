@@ -1439,7 +1439,6 @@
 		"addModelById": "Ajouter un modèle par son id",
 		"addModelByIdPlaceholder": "ex. claude-opus-5",
 		"addModel": "Ajouter un modèle",
-		"addModelHint": "Les capacités viennent des valeurs par défaut de Nebo pour les familles de modèles connues.",
 		"editProvider": "Modifier le fournisseur",
 		"nameHint": "Nommez chaque clé pour distinguer facilement une clé d'entreprise d'une clé personnelle.",
 		"baseUrlRequired": "L'URL de base est obligatoire",

@@ -1439,7 +1439,6 @@
 		"addModelById": "Lägg till en modell med dess id",
 		"addModelByIdPlaceholder": "t.ex. claude-opus-5",
 		"addModel": "Lägg till modell",
-		"addModelHint": "Förmågor kommer från Nebos standardinställningar för kända modellfamiljer.",
 		"editProvider": "Redigera leverantör",
 		"nameHint": "Namnge varje nyckel, så att en företagsnyckel och en personlig nyckel är lätta att skilja åt.",
 		"baseUrlRequired": "Bas-URL krävs",

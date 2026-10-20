@@ -1439,7 +1439,6 @@
 		"addModelById": "按 id 添加模型",
 		"addModelByIdPlaceholder": "例如 claude-opus-5",
 		"addModel": "添加模型",
-		"addModelHint": "能力来自 Nebo 针对已知模型系列的默认设置。",
 		"editProvider": "编辑提供商",
 		"nameHint": "为每个密钥命名，以便轻松区分公司密钥和个人密钥。",
 		"baseUrlRequired": "必须填写基础 URL",

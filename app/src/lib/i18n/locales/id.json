@@ -1439,7 +1439,6 @@
 		"addModelById": "Tambahkan model dengan id-nya",
 		"addModelByIdPlaceholder": "mis. claude-opus-5",
 		"addModel": "Tambah model",
-		"addModelHint": "Kemampuan berasal dari default Nebo untuk keluarga model yang dikenal.",
 		"editProvider": "Edit penyedia",
 		"nameHint": "Beri nama setiap kunci, agar kunci perusahaan dan kunci pribadi mudah dibedakan.",
 		"baseUrlRequired": "URL Dasar wajib diisi",

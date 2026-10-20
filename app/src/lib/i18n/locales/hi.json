@@ -1439,7 +1439,6 @@
 		"addModelById": "id से एक मॉडल जोड़ें",
 		"addModelByIdPlaceholder": "जैसे claude-opus-5",
 		"addModel": "मॉडल जोड़ें",
-		"addModelHint": "क्षमताएं जाने-माने मॉडल परिवारों के लिए Nebo के डिफ़ॉल्ट से आती हैं।",
 		"editProvider": "प्रदाता संपादित करें",
 		"nameHint": "हर कुंजी को नाम दें, ताकि कंपनी की कुंजी और पर्सनल कुंजी में अंतर करना आसान हो।",
 		"baseUrlRequired": "बेस URL आवश्यक है",
