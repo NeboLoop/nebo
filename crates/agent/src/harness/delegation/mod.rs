@@ -441,6 +441,10 @@ struct State {
     /// helper's start until its changes are landed or discarded, across its
     /// turns (a follow-up works in the same copy), never merged on their own.
     copies: HashMap<String, crate::worktree::Isolation>,
+    /// Isolated helpers that stopped to ask the owner a decision: their
+    /// copies wait, and nothing of theirs lands, until they are resumed with
+    /// the answer and finish.
+    waiting: std::collections::HashSet<String>,
 }
 
 /// A launch's place in its tree, given back when the launch ends: by then
@@ -1341,6 +1345,17 @@ impl Helpers {
             }
             return;
         }
+        // Stopped to ask the owner: its copy waits for the answer, and
+        // nothing of it lands until it is resumed and finishes.
+        if matches!(&completion.status, CompletionStatus::Partial { why } if why == collect::NEEDS_OWNER_DECISION) {
+            self.state().waiting.insert(task_id.to_string());
+            completion.result.push_str(&format!(
+                "\n\nIts work waits in its own copy at {} until it is resumed with the owner's answer; nothing of the owner's changed.",
+                iso.path().display()
+            ));
+            return;
+        }
+        self.state().waiting.remove(task_id);
         let files = crate::worktree::changed_files(&iso).await;
         if files.is_empty() {
             self.state().copies.remove(task_id);
@@ -1361,6 +1376,12 @@ impl Helpers {
         let row = self.own_row(caller, task_id)?;
         if self.state().helpers.get(task_id).is_some_and(|h| h.running) {
             return Err(format!("Helper {task_id} is still working; its changes are settled once it reports."));
+        }
+        if decision == Decision::Land && self.state().waiting.contains(task_id) {
+            return Err(format!(
+                "Helper {task_id} stopped to ask the owner a decision: resume it with the answer (send_message), and land \
+                 its changes once it has finished."
+            ));
         }
         let Some(mut iso) = self.state().copies.remove(task_id) else {
             return Err(format!("Helper {task_id} holds no changes to land or discard."));
@@ -2555,6 +2576,59 @@ mod tests {
                 assert!(repo.join("c.txt").exists());
                 assert!(!copy.exists(), "the copy is gone once it landed");
                 assert!(rig.helpers.settle(key, &id, Decision::Land, None).await.is_err(), "nothing left to land");
+            })
+        })
+    }
+
+    /// A helper that stopped to ask the owner a decision never lands: its
+    /// copy waits for the answer; resumed with it, it works in the same
+    /// copy, and once it finishes its changes land only when approved.
+    #[test]
+    fn an_isolated_helper_that_asks_the_owner_lands_nothing_until_resumed_finished_and_approved() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("b.txt"), "half\n").unwrap();
+                rig.heard(&child.request.session_key);
+                child.answer("Which tax rate?").await;
+                rig.next_wake().await;
+
+                // Its turn ended asking the owner.
+                let mut asked = Completion {
+                    task_id: id.clone(),
+                    description: "add b".into(),
+                    status: CompletionStatus::Partial { why: collect::NEEDS_OWNER_DECISION.into() },
+                    result: "Which tax rate?".into(),
+                    usage: Default::default(),
+                    taint: Vec::new(),
+                };
+                rig.helpers.report_copy(&id, "add b", &mut asked).await;
+                assert!(asked.result.contains("waits in its own copy"), "{}", asked.result);
+                assert!(rig.helpers.settle(key, &id, Decision::Land, None).await.is_err(), "nothing lands while it waits");
+                assert!(!repo.join("b.txt").exists());
+                assert!(copy.join("b.txt").exists(), "its copy is kept");
+
+                // Resumed with the answer: the same copy; it finishes.
+                rig.helpers.send(&owner, None, &[], &id, "The owner says 8%.").await.unwrap();
+                let resumed = rig.next_turn().await;
+                assert_eq!(resumed.request.seat.cwd.as_deref(), Some(copy.to_string_lossy().as_ref()));
+                std::fs::write(copy.join("b.txt"), "8%\n").unwrap();
+                rig.heard(&resumed.request.session_key);
+                resumed.answer("Done at 8%.").await;
+                rig.next_wake().await;
+                assert!(rig.helpers.read_output(key, &id).unwrap().contains("changes are ready"));
+
+                // Approved: it lands.
+                rig.helpers.settle(key, &id, Decision::Land, None).await.unwrap();
+                assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "8%\n");
             })
         })
     }
