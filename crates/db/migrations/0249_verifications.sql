@@ -17,7 +17,14 @@
 -- state: running | paused (asking the owner) | verified | not_verified |
 -- stopped. reason says why a row is not verified, in the owner's words.
 -- The open findings and the deferred minors are kept whole as JSON; the
--- counts are for lists and badges.
+-- counts are for lists and badges. pending_ask_json is the question a
+-- paused row waits on: after a restart it is asked again when the work
+-- resumes.
+--
+-- Cost is never stored here: reviewer_prefix is the session-key prefix of
+-- every reviewer the verification ran (a round's rows carry their own), and
+-- its cost is the sum of their run_usage rows, the ledger the spending
+-- limit reads.
 -- +goose Up
 CREATE TABLE verifications (
     id TEXT PRIMARY KEY,
@@ -44,7 +51,8 @@ CREATE TABLE verifications (
     open_json TEXT NOT NULL DEFAULT '[]',
     deferred_json TEXT NOT NULL DEFAULT '[]',
     summary TEXT NOT NULL DEFAULT '',
-    cost_microcents INTEGER NOT NULL DEFAULT 0,
+    reviewer_prefix TEXT NOT NULL DEFAULT '',
+    pending_ask_json TEXT,
     landed_ref TEXT NOT NULL DEFAULT '',
     landed_at INTEGER,
     created_at INTEGER NOT NULL,
@@ -53,6 +61,8 @@ CREATE TABLE verifications (
 CREATE INDEX idx_verifications_session ON verifications(session_key, created_at);
 CREATE INDEX idx_verifications_chat ON verifications(chat_id, created_at);
 CREATE INDEX idx_verifications_run ON verifications(workflow_run_id) WHERE workflow_run_id IS NOT NULL;
+CREATE INDEX idx_verifications_agent ON verifications(agent_id, created_at);
+CREATE INDEX idx_verifications_project ON verifications(project_root, created_at);
 CREATE INDEX idx_verifications_live ON verifications(project_root) WHERE state IN ('running', 'paused');
 
 -- kind: review (round 1 reviews the whole change, later rounds its delta),
@@ -76,7 +86,7 @@ CREATE TABLE verification_rounds (
     decisions_json TEXT NOT NULL DEFAULT '[]',
     detail_json TEXT NOT NULL DEFAULT '{}',
     outcome TEXT NOT NULL DEFAULT '',
-    cost_microcents INTEGER NOT NULL DEFAULT 0,
+    reviewer_prefix TEXT NOT NULL DEFAULT '',
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
     PRIMARY KEY (verification_id, round)
@@ -85,6 +95,8 @@ CREATE TABLE verification_rounds (
 -- +goose Down
 DROP TABLE verification_rounds;
 DROP INDEX idx_verifications_live;
+DROP INDEX idx_verifications_project;
+DROP INDEX idx_verifications_agent;
 DROP INDEX idx_verifications_run;
 DROP INDEX idx_verifications_chat;
 DROP INDEX idx_verifications_session;
