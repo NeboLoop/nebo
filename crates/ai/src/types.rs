@@ -41,6 +41,10 @@ pub const PLAN_WARN_PERCENT: u64 = 80;
 /// shown (the app words the warning in the owner's language).
 pub const PLAN_WARNING: &str = "plan_usage_warning";
 
+/// The stop reason of the ControlNotice that ends a helper's turn on a
+/// decision only the owner can make ([`StreamEvent::owner_decision`]).
+pub const OWNER_DECISION: &str = "owner_decision";
+
 /// Rate limit metadata extracted from provider response headers.
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitMeta {
@@ -178,6 +182,23 @@ impl StreamEvent {
     /// The owner need a `terminal_tool_error` ControlNotice carries.
     pub fn owner_need(&self) -> Option<types::OwnerNeed> {
         if self.event_type != StreamEventType::ControlNotice {
+            return None;
+        }
+        self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
+    }
+
+    /// The ControlNotice that ends a helper's turn on a decision only the
+    /// owner can make: `text` is what the helper was told, `question` goes
+    /// back to the conversation that started it ([`StreamEvent::owner_question`]).
+    pub fn owner_decision(text: impl Into<String>, question: &types::OwnerQuestion) -> Self {
+        let mut ev = Self::control_notice(text, OWNER_DECISION);
+        ev.payload = serde_json::to_value(question).ok();
+        ev
+    }
+
+    /// The question an [`OWNER_DECISION`] ControlNotice carries.
+    pub fn owner_question(&self) -> Option<types::OwnerQuestion> {
+        if self.event_type != StreamEventType::ControlNotice || self.stop_reason.as_deref() != Some(OWNER_DECISION) {
             return None;
         }
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())

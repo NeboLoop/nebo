@@ -562,6 +562,7 @@ fn background_child(marker: &str) -> tools::SpawnRequest {
         isolate: String::new(),
         workspace: String::new(),
         speed: String::new(),
+        report_limit: 0,
         seat: Default::default(),
     }
 }

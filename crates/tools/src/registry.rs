@@ -90,6 +90,11 @@ pub struct ToolResult {
     /// `content`'s words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<types::OwnerNeed>,
+    /// On a terminal result: a decision only the owner can make, asked from
+    /// a helper. The turn ends and the question goes back to the
+    /// conversation that started the helper (`ask_owner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<types::OwnerQuestion>,
     /// The call did not run: the permission check parked it on the owner.
     /// The ask's id, so a workflow activity can suspend on the same ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2898,13 +2903,20 @@ pub(crate) mod tests {
     /// "Want this every morning?" sat far from the brief it meant and was
     /// asked twice; ask_owner's `context` puts what he decides on above the
     /// question, and the card is the one place the question appears
-    /// (ask_owner 1,353, +373): 18,167. The owner, 2026-10-19: a helper
-    /// that changes his files works in its own copy, and its changes reach
-    /// them only when the conversation that started it lands them;
-    /// send_message takes `changes` (land or discard), and isolation is for
-    /// any helper that changes his files, not only code (send_message
-    /// 1,485, delegate 2,769, +153): 18,320.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_320;
+    /// (ask_owner 1,353, +373): 18,167. The owner, 2026-10-19: the
+    /// conversation and its helpers split every kind of work one way, so
+    /// delegate says what the conversation keeps, what a brief names, that a
+    /// helper's question comes back, with examples beyond code, and takes a
+    /// `report_limit` below the 30,000-character ceiling a report comes back
+    /// in full under (delegate 2,930, +170); ask_owner says a helper's
+    /// question ends its turn and goes to the conversation that started it
+    /// (ask_owner 1,477, +124): 18,461. The owner, 2026-10-19: a helper that
+    /// changes his files works in its own copy, and its changes reach them
+    /// only when the conversation that started it lands them; send_message
+    /// takes `changes` (land or discard), and isolation is for any helper
+    /// that changes his files, not only code (send_message 1,485, delegate
+    /// 2,939, +153): 18,614.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_614;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
