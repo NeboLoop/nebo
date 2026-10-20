@@ -81,6 +81,10 @@ pub enum DictationEvent {
     Done { text: String },
     /// Dictation could not go on. Plain words for logs; the phone has its own.
     Error(String),
+    /// The line was refused because running work holds the balance, past
+    /// the waits. Sent with the code `balance_reserved`, which the phone
+    /// words in the owner's language; never out of balance.
+    BalanceReserved,
 }
 
 impl DictationEvent {
@@ -93,6 +97,12 @@ impl DictationEvent {
             }
             Self::Done { text } => json!({"type": "done", "text": text}),
             Self::Error(m) => json!({"type": "error", "message": m}),
+            // The message stays for a phone that does not know the code.
+            Self::BalanceReserved => json!({
+                "type": "error",
+                "code": "balance_reserved",
+                "message": ::types::balance::BALANCE_BUSY,
+            }),
         }
     }
 }
@@ -183,7 +193,11 @@ pub async fn run(
                 Ok(ws) => break ws,
                 Err(e) => {
                     warn!(error = %e, "dictation dial failed");
-                    let _ = events.send(DictationEvent::Error(e.to_string())).await;
+                    let ended = match e {
+                        crate::VoiceError::BalanceReserved => DictationEvent::BalanceReserved,
+                        e => DictationEvent::Error(e.to_string()),
+                    };
+                    let _ = events.send(ended).await;
                     return;
                 }
             },
@@ -511,5 +525,38 @@ mod tests {
         let (ev_tx, mut ev_rx) = mpsc::channel(64);
         run(c, in_rx, ev_tx).await;
         assert!(matches!(ev_rx.recv().await, Some(DictationEvent::Error(_))));
+    }
+
+    /// A line refused while running work holds the balance, past the waits,
+    /// tells the phone with the code it words in the owner's language and
+    /// the English sentence for a phone that does not know it.
+    #[tokio::test]
+    async fn a_line_refused_for_a_held_balance_says_busy_with_its_code() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const RESERVED: &str = r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#;
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let c = cfg(format!("ws://{}/v1/stt", l.local_addr().unwrap()));
+        let far = tokio::spawn(async move {
+            for _ in 0..=::types::balance::RESERVED_RETRIES {
+                let (mut sock, _) = l.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{RESERVED}",
+                    RESERVED.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let (_in_tx, in_rx) = mpsc::channel(64);
+        let (ev_tx, mut ev_rx) = mpsc::channel(64);
+        run(c, in_rx, ev_tx).await;
+        let ended = ev_rx.recv().await;
+        assert_eq!(ended, Some(DictationEvent::BalanceReserved));
+        assert_eq!(
+            ended.unwrap().to_json(),
+            json!({"type": "error", "code": "balance_reserved", "message": ::types::balance::BALANCE_BUSY})
+        );
+        far.await.unwrap();
     }
 }

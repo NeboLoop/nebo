@@ -190,7 +190,7 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
         tokio::select! {
             ev = ev_rx.recv() => match ev {
                 Some(ev) => {
-                    let last = matches!(ev, DictationEvent::Done { .. } | DictationEvent::Error(_));
+                    let last = matches!(ev, DictationEvent::Done { .. } | DictationEvent::Error(_) | DictationEvent::BalanceReserved);
                     if socket.send(Message::Text(ev.to_json().to_string().into())).await.is_err() || last {
                         break;
                     }

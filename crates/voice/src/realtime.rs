@@ -1270,8 +1270,15 @@ mod tests {
             bearer: "jwt".into(),
             ..Default::default()
         };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), dial(&cfg)).await;
-        let request = seen.await.unwrap();
+        // The dial runs to its own end: the far end closes once it has read
+        // the request, so the dial fails then. A deadline on the dial raced
+        // the connect on a busy machine, and a dial given up before it
+        // connected left the far end waiting for it for good.
+        let _ = dial(&cfg).await;
+        let request = tokio::time::timeout(std::time::Duration::from_secs(30), seen)
+            .await
+            .expect("the dial never reached the far end")
+            .unwrap();
         let want = format!("user-agent: nebo/{}", env!("CARGO_PKG_VERSION"));
         assert!(request.contains(&want), "the dial sent no {want}: {request}");
         assert!(
@@ -1959,6 +1966,7 @@ mod tests {
     async fn a_dropped_line_is_redialled_and_the_call_carries_on() {
         let (l, cfg) = listener().await;
         let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<Vec<Value>>();
+        let (redialled_tx, redialled_rx) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let mut first = accept(&l).await;
             let update = next_json(&mut first).await;
@@ -1982,11 +1990,17 @@ mod tests {
             let mut second = accept(&l).await;
             let mut seen = vec![next_json(&mut second).await];
             say(&mut second, json!({"type": "session.created"})).await;
+            let _ = redialled_tx.send(());
             seen.push(next_json(&mut second).await); // the task's result
             seen.push(next_json(&mut second).await); // response.create
-            match second.next().await {
-                Some(Ok(WsMessage::Binary(b))) => assert_eq!(&b[..], &[1u8, 2, 3]),
-                other => panic!("expected the caller's audio on the new line, got {other:?}"),
+            // The session pings a quiet line (every 100 ms here), so a ping
+            // can come first when the machine is busy.
+            loop {
+                match second.next().await {
+                    Some(Ok(WsMessage::Binary(b))) => break assert_eq!(&b[..], &[1u8, 2, 3]),
+                    Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+                    other => panic!("expected the caller's audio on the new line, got {other:?}"),
+                }
             }
             let _ = seen_tx.send(seen);
             // Hold the line until the client closes it.
@@ -2011,8 +2025,13 @@ mod tests {
                 break;
             }
         }
-        // The task finishes after the line dropped.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // The task finishes after the line dropped and the call is on the
+        // new line: told by the far end, never a guessed wait (a busy
+        // machine ran the guess before the drop was even noticed).
+        tokio::time::timeout(std::time::Duration::from_secs(30), redialled_rx)
+            .await
+            .expect("the line was never dialled again")
+            .unwrap();
         tx.send(RealtimeCommand::ToolOutput { call_id: "c1".into(), output: "Booked, seat 12A.".into() })
             .await
             .unwrap();
@@ -2129,6 +2148,10 @@ mod tests {
             say(&mut ws, json!({"type": "session.created"})).await;
             let said = next_json(&mut ws).await;
             say(&mut ws, json!({"type": "error", "error": {"message": "unknown item type"}})).await;
+            // A frame the session answers with an event, after the refusal:
+            // frames are read in order, so once the client sees it the
+            // refusal has been taken in.
+            say(&mut ws, json!({"type": "conversation.created", "conversation": {"id": "after-refusal"}})).await;
             // The next frame is the typed text, not a second update.
             let next = next_json(&mut ws).await;
             // The line stays up while the call's events are read.
@@ -2136,7 +2159,20 @@ mod tests {
         });
         let (tx, mut rx) = connect(cfg).await.unwrap();
         tx.send(RealtimeCommand::Say("Now editing.".into())).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // The second update is asked for only once the refusal of the first
+        // has been taken in, never after a guessed wait.
+        let mut events = Vec::new();
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                .await
+                .expect("the refusal was never taken in")
+                .expect("session ended");
+            let taken_in = matches!(&e, ConversationEvent::ConversationId(id) if id == "after-refusal");
+            events.push(e);
+            if taken_in {
+                break;
+            }
+        }
         tx.send(RealtimeCommand::Say("Now checking.".into())).await.unwrap();
         tx.send(RealtimeCommand::Text("hello".into())).await.unwrap();
         let (said, next, _line, _l) = tokio::time::timeout(std::time::Duration::from_secs(5), server)
@@ -2148,7 +2184,6 @@ mod tests {
         assert_eq!(said["item"]["role"], "assistant");
         assert_eq!(said["item"]["content"][0]["text"], "Now editing.");
         assert_eq!(next["item"]["type"], "message", "a refused update was sent again: {next}");
-        let mut events = Vec::new();
         while let Ok(Some(e)) = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
             events.push(e);
         }
