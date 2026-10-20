@@ -101,7 +101,8 @@ impl HelperSpec {
         let prompt = text("prompt").ok_or("prompt is required: the whole job, since the helper sees nothing else")?;
         let kind = match text("helper_type") {
             None => HelperKind::General,
-            Some(t) => HelperKind::parse(&t).ok_or_else(|| {
+            // A reviewer is the verify loop's own: a model never starts one.
+            Some(t) => HelperKind::parse(&t).filter(|k| HelperKind::ALL.contains(k)).ok_or_else(|| {
                 format!("helper_type '{t}' is not a helper type. Use general, explore or plan.")
             })?,
         };
@@ -3059,6 +3060,10 @@ mod tests {
         assert_eq!(spec.report_limit, None, "0 is no limit set");
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d"})).is_err());
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "helper_type": "coder"})).is_err());
+        assert!(
+            HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "helper_type": "review"})).is_err(),
+            "a model never starts a reviewer"
+        );
     }
 
     /// D16: a run that can delegate is told each helper type and when it
