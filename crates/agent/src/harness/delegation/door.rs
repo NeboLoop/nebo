@@ -276,8 +276,20 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn recover(&self) -> Fut<'_, ()> {
         Box::pin(async move {
+            // Said once, in the Inbox, in the owner's words: never only a log.
             if let Err(e) = crate::worktree::check_git().await {
                 warn!(error = %e, "git is missing or too old");
+                tools::owner_notify::emit(
+                    &self.harness.store,
+                    None,
+                    &tools::owner_notify::OwnerNotification {
+                        id: "git-too-old",
+                        kind: "warning",
+                        title: "Update git to let your employees work on code",
+                        body: Some(&e),
+                        ..Default::default()
+                    },
+                );
             }
             let swept = crate::worktree::cleanup_stale(crate::worktree::STALE_AFTER_SECS).await;
             if !swept.is_empty() {

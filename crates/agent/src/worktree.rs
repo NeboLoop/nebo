@@ -235,19 +235,39 @@ const GIT_REDIRECTS: &[&str] = &[
 /// one way this crate runs git. Prompts are disabled, the caller's git
 /// redirects are cleared, and a command past [`GIT_TIMEOUT`] is stopped.
 pub(crate) async fn git_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    git_io(cwd, args, None).await
+}
+
+/// [`git_bytes`] with `input` on git's standard input (`--stdin -z`: paths
+/// cross to git NUL-separated, never quoted or split).
+pub(crate) async fn git_io(cwd: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let mut cmd = command::new::<Command>("git", command::Console::Hidden);
     cmd.args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
-        .stdin(std::process::Stdio::null())
+        .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     for var in GIT_REDIRECTS {
         cmd.env_remove(var);
     }
     let name = args.iter().find(|a| !a.starts_with('-') && !a.contains('=')).copied().unwrap_or("");
-    let out = match tokio::time::timeout(GIT_TIMEOUT, cmd.output()).await {
+    let run = async {
+        let mut child = cmd.spawn()?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            use tokio::io::AsyncWriteExt;
+            // Written while git reads; closed after, so git sees the end.
+            let input = input.to_vec();
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&input).await;
+            });
+        }
+        child.wait_with_output().await
+    };
+    let out = match tokio::time::timeout(GIT_TIMEOUT, run).await {
         Ok(out) => out.map_err(|e| format!("git {name}: {e}"))?,
         Err(_) => return Err(format!("git {name} took longer than {} minutes and was stopped", GIT_TIMEOUT.as_secs() / 60)),
     };
@@ -259,7 +279,10 @@ pub(crate) async fn git_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, Stri
     }
 }
 
-/// The oldest git Nebo works on code with (`rev-parse --path-format`).
+/// The oldest git Nebo works on code with: 2.31 brought
+/// `git rev-parse --path-format=absolute`, which finding a copy's own git
+/// files (`--git-path`) and a project's repository (`--git-common-dir`)
+/// rely on.
 pub const MIN_GIT: (u32, u32) = (2, 31);
 
 /// Whether this computer's git is [`MIN_GIT`] or newer: `Err` says what to
@@ -452,12 +475,25 @@ fn folder_rule(folder: &Path, git_dir: &Path) -> Result<(), String> {
 /// rules; a folder that is no repository is read through `git_dir`, by its
 /// own `.gitignore` files, or by [`EXCLUDED`] when it has none at its top.
 async fn over_folder(folder: &Path, git_dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
-    let Some(git_dir) = git_dir else { return git_bytes(folder, args).await };
+    over_folder_io(folder, git_dir, args, None).await
+}
+
+/// [`over_folder`] with `input` on git's standard input. A folder that is no
+/// repository is read with its names exactly as the disk holds them
+/// (`core.precomposeunicode` off), as the copy itself reads them: a name
+/// macOS stores decomposed is the same name on both sides.
+async fn over_folder_io(folder: &Path, git_dir: Option<&Path>, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    let Some(git_dir) = git_dir else { return git_io(folder, args, input).await };
     folder_rule(folder, git_dir)?;
-    let mut all = vec![format!("--git-dir={}", git_dir.display()), format!("--work-tree={}", folder.display())];
+    let mut all = vec![
+        format!("--git-dir={}", git_dir.display()),
+        format!("--work-tree={}", folder.display()),
+        "-c".into(),
+        "core.precomposeunicode=false".into(),
+    ];
     all.extend(args.iter().map(|a| a.to_string()));
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
-    git_bytes(folder, &all).await
+    git_io(folder, &all, input).await
 }
 
 /// `git ls-files` over a folder, by what it ignores ([`over_folder`]).
@@ -468,18 +504,20 @@ pub async fn ls_folder(folder: &Path, git_dir: Option<&Path>, args: &[&str]) -> 
 /// The paths of `paths` a folder ignores ([`over_folder`]), decided by the
 /// path alone: one that is gone is ignored as much as one that is there.
 pub async fn ignored_paths(folder: &Path, git_dir: Option<&Path>, paths: &[String]) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    for chunk in paths.chunks(256) {
-        let mut args = vec!["-c", "core.quotepath=off", "check-ignore", "--no-index", "--"];
-        args.extend(chunk.iter().map(String::as_str));
-        match over_folder(folder, git_dir, &args).await {
-            Ok(listed) => out.extend(String::from_utf8_lossy(&listed).lines().map(str::to_string)),
-            // `check-ignore` exits 1, saying nothing, when none is ignored.
-            Err(e) if e.is_empty() => {}
-            Err(e) => return Err(e),
-        }
+    if paths.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(out)
+    let mut input = Vec::new();
+    for p in paths {
+        input.extend_from_slice(p.as_bytes());
+        input.push(0);
+    }
+    match over_folder_io(folder, git_dir, &["check-ignore", "--no-index", "-z", "--stdin"], Some(&input)).await {
+        Ok(listed) => Ok(z_entries(&listed)),
+        // `check-ignore` exits 1, saying nothing, when none is ignored.
+        Err(e) if e.is_empty() => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
 }
 
 /// The paths of `paths` a scratch copy ignores ([`ignored_paths`]), read
@@ -1106,7 +1144,7 @@ async fn owner_data_in_the_way(root: &Path, tip: &str, paths: &[String]) -> Vec<
             (Ok(Some(on_disk)), Some(blob)) => on_disk != blob,
             _ => true,
         };
-        let staged = git(root, &["diff", "--cached", "--quiet", tip, "--", rel]).await.is_err();
+        let staged = git(root, &["--literal-pathspecs", "diff", "--cached", "--quiet", tip, "--", rel]).await.is_err();
         if differs || staged {
             out.push(rel.clone());
         }
@@ -3401,6 +3439,85 @@ mod tests {
     #[test]
     fn this_computers_git_is_new_enough() {
         rt().block_on(async { check_git().await.unwrap() });
+    }
+
+
+    /// Review round 6: an ignored owner file whose name git quotes
+    /// (a quote, a backslash, a tab, a newline) is never deleted by a landing.
+    #[test]
+    fn r6v_a_landing_never_deletes_an_ignored_file_git_quotes() {
+        with_home(|_| rt().block_on(async {
+            for name in ["a\"b.log", "back\\slash.log", "tab\there.log", "new\nline.log"] {
+                let f = folder();
+                std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
+                std::fs::write(f.path().join(name), "secret\n").unwrap();
+                let c = create_copy(f.path(), "sa-r6v-q").unwrap();
+                std::fs::remove_file(c.path.join(name)).unwrap();
+                let mut isos = [Isolation::Copy(c)];
+                let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
+                assert!(f.path().join(name).exists(), "{name:?} deleted: {:?}", out[0].1);
+            }
+        }))
+    }
+
+    /// Review round 6: a non-ASCII ignored name, as macOS writes it
+    /// (decomposed, NFD) and as most tools write it (NFC).
+    #[test]
+    fn r6v_a_landing_never_deletes_an_ignored_non_ascii_file() {
+        with_home(|_| rt().block_on(async {
+            for name in ["caf\u{e9}.log", "cafe\u{301}.log", "-dash.log", "with space.log"] {
+                let f = folder();
+                std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
+                std::fs::write(f.path().join(name), "secret\n").unwrap();
+                let c = create_copy(f.path(), "sa-r6v-u").unwrap();
+                std::fs::remove_file(c.path.join(name)).unwrap();
+                let mut isos = [Isolation::Copy(c)];
+                let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
+                assert!(f.path().join(name).exists(), "{name:?} deleted: {:?}", out[0].1);
+            }
+        }))
+    }
+
+    /// Review round 6: names git would quote or rewrite (a quote, a
+    /// backslash, a tab, a newline, decomposed and composed accents, a
+    /// leading dash, spaces, glob characters) land whole in both arms, held
+    /// to what was reviewed.
+    #[test]
+    fn names_git_would_quote_or_rewrite_land_in_both_arms() {
+        let names = ["a\"b.txt", "back\\slash.txt", "tab\there.txt", "new\nline.txt", "caf\u{e9}.txt", "cafe\u{301}x.txt", "-dash.txt", "with space.txt", "routes/[id]/page.txt"];
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            let c = create_copy(f.path(), "sa-r6-names-c").unwrap();
+            for n in names {
+                let p = c.path.join(n);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, format!("{n}\n")).unwrap();
+            }
+            let landing = reviewed(&c.path, &names).await;
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+            for n in names {
+                assert_eq!(std::fs::read_to_string(f.path().join(n)).unwrap(), format!("{n}\n"), "{n:?}");
+            }
+
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-r6-names-g").await.unwrap();
+            for n in names {
+                let p = wt.path.join(n);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, format!("{n}\n")).unwrap();
+            }
+            let paths: Vec<String> = z_paths(&wt.path, &["ls-files", "-z", "--others", "--exclude-standard"]).await;
+            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let landing = reviewed(&wt.path, &refs).await;
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "m", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+            for n in names {
+                assert!(r.path().join(n).exists(), "{n:?}");
+            }
+        }))
     }
 
 }
