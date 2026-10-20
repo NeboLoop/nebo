@@ -280,8 +280,12 @@ pub fn open_after(
         .cloned()
         .collect();
     for f in new {
-        if !open.iter().any(|o| o.same_as(f)) {
-            open.push(f.clone());
+        match open.iter_mut().find(|o| o.same_as(f)) {
+            // The same spot found again at a graver severity: the graver
+            // one stands. A match never lowers a severity.
+            Some(o) if f.severity < o.severity => *o = f.clone(),
+            Some(_) => {}
+            None => open.push(f.clone()),
         }
     }
     open
@@ -433,6 +437,22 @@ mod tests {
         let ids: Vec<&str> = open.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(ids, ["r1-c", "r2-x"]);
         assert_eq!(blocking(&open), 2);
+    }
+
+    /// Review round 3 B1: a blocker found at the same spot as a minor is
+    /// never dropped as that minor again: the graver severity stands,
+    /// whichever came first.
+    #[test]
+    fn a_match_never_lowers_a_severity() {
+        let minor = finding("r1-a", Severity::Minor, "total.py:1", "Rename the total variable");
+        let blocker = finding("r1-b", Severity::Blocker, "total.py:1", "The total ignores b");
+        for (earlier, new) in [(vec![], vec![minor.clone(), blocker.clone()]), (vec![minor.clone()], vec![blocker.clone()])] {
+            let open = open_after(&earlier, &[], &new);
+            assert_eq!(blocking(&open), 1, "{open:?}");
+            assert!(open.iter().any(|f| f.severity == Severity::Blocker && f.title == "The total ignores b"));
+        }
+        let open = open_after(&[blocker.clone()], &[], &[minor]);
+        assert_eq!(open[0].severity, Severity::Blocker, "never downgraded");
     }
 
     /// Review 2026-10-20: a blocker the builder deferred, and a reviewer

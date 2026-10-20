@@ -201,9 +201,13 @@ impl TurnWork {
             })
             .unwrap_or_default();
         for row in rows {
+            // Work still in hand: being checked, waiting on the owner, or
+            // finished in a copy (this loop's, or a helper's own) that
+            // hasn't landed: a change to it is checked again over the whole
+            // change, never landed or reported on the old verdict.
             let open = matches!(row.state.as_str(), "running" | "paused")
                 || (row.landed_ref.is_empty()
-                    && row.isolation != "none"
+                    && (row.isolation != "none" || row.work_kind == WorkKind::HelperCopy.as_str())
                     && Path::new(&row.work_dir).is_dir()
                     && row.state != "stopped");
             if !open
@@ -347,6 +351,12 @@ impl TurnWork {
         Ok(routed)
     }
 
+    /// A turn in which the linked agent ran no tools of its own: what
+    /// changed in its folder meanwhile is not its work.
+    pub async fn drop_folder(&self) {
+        self.folder.lock().await.take();
+    }
+
     /// A linked coding agent's turn changed its project: its work starts
     /// now, from the project as the turn found it. A turn that changed
     /// nothing records nothing.
@@ -464,23 +474,23 @@ async fn start_work_with_id(
     })
 }
 
-/// Whether `v`'s folder holds exactly what its last review round reviewed:
-/// a verification vouches for those bytes, never for what came after.
-pub async fn unchanged_since_review(store: &db::Store, v: &db::Verification) -> bool {
-    let Some(reviewed) = store
+/// The paths `v`'s change touches, when its folder holds exactly what its
+/// last review round reviewed (a verification vouches for those bytes,
+/// never for what came after); `None` otherwise.
+pub async fn reviewed_paths(store: &db::Store, v: &db::Verification) -> Option<Vec<String>> {
+    let reviewed = store
         .verification_rounds(&v.id)
         .unwrap_or_default()
         .into_iter()
         .rev()
         .find(|r| r.kind == "review" && !r.head_ref.is_empty())
-        .map(|r| Snapshot(r.head_ref))
-    else {
-        return false;
-    };
-    match Shadow::open(&Work::home(&v.id).join("shadow.git"), Path::new(&v.work_dir)).await {
-        Ok(shadow) => shadow.snapshot().await.is_ok_and(|now| now == reviewed),
-        Err(_) => false,
+        .map(|r| Snapshot(r.head_ref))?;
+    let kind = WorkKind::parse(&v.work_kind);
+    let shadow = Shadow::open(&Work::shadow_dir(&v.id, kind, Path::new(&v.project_root)), Path::new(&v.work_dir)).await.ok()?;
+    if shadow.snapshot().await.ok()? != reviewed {
+        return None;
     }
+    shadow.diff(&Snapshot(v.base_ref.clone()), &reviewed).await.ok().map(|c| c.paths())
 }
 
 /// A work as its row left it.
@@ -652,6 +662,35 @@ pub const KEEP_FINISHED_SECS: u64 = 7 * 24 * 3600;
 /// least recently used go first.
 pub const BUILD_CAP_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 
+/// Hold the build folders to [`BUILD_CAP_BYTES`] now, least recently used
+/// first: run before checks write into them, so the cap holds as they are
+/// written, not only at the daily sweep. Returns how many it removed.
+pub fn cap_builds() -> usize {
+    let root = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("verify").join("build");
+    let mut builds: Vec<(std::time::SystemTime, u64, PathBuf)> = std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| {
+            let at = std::fs::metadata(e.path()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            (at, size_of(&e.path()), e.path())
+        })
+        .collect();
+    builds.sort();
+    let mut total: u64 = builds.iter().map(|(_, n, _)| n).sum();
+    let mut removed = 0;
+    for (_, n, path) in builds {
+        if total <= BUILD_CAP_BYTES {
+            break;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            total = total.saturating_sub(n);
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Reclaim the verify loop's disk (run at boot and daily): the files of a
 /// verification finished more than [`KEEP_FINISHED_SECS`] ago (or with no
 /// row), a finished worktree copy that never landed put away on its branch
@@ -709,27 +748,7 @@ pub async fn sweep(store: &db::Store, now: i64) -> usize {
             }
         }
     }
-    let mut builds: Vec<(std::time::SystemTime, u64, PathBuf)> = std::fs::read_dir(root.join("build"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| {
-            let at = std::fs::metadata(e.path()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            (at, size_of(&e.path()), e.path())
-        })
-        .collect();
-    builds.sort();
-    let mut total: u64 = builds.iter().map(|(_, n, _)| n).sum();
-    for (_, n, path) in builds {
-        if total <= BUILD_CAP_BYTES {
-            break;
-        }
-        if std::fs::remove_dir_all(&path).is_ok() {
-            total = total.saturating_sub(n);
-            removed += 1;
-        }
-    }
-    removed
+    removed + cap_builds()
 }
 
 /// The bytes the files under `dir` hold.
@@ -933,6 +952,29 @@ mod tests {
                 assert_eq!(works[0].kind, WorkKind::Folder);
                 let change = works[0].shadow.diff(&works[0].base, &works[0].shadow.snapshot().await.unwrap()).await.unwrap();
                 assert_eq!(change.paths(), ["app.ts"], "measured from the project as the turn found it");
+            })
+        })
+    }
+
+    /// Review round 3: owner, editor or watcher changes in a linked agent's
+    /// folder during a turn in which the agent ran no tools are not its
+    /// work: nothing is recorded.
+    #[test]
+    fn changes_during_a_turn_the_agent_did_not_act_are_not_its_work() {
+        crate::test_home::with_home(|home| {
+            rt().block_on(async {
+                let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+                let projects = tempfile::tempdir().unwrap();
+                let project = projects.path().join("site");
+                std::fs::create_dir_all(&project).unwrap();
+                std::fs::write(project.join("package.json"), "{}").unwrap();
+                let w = who(&store);
+                let turn = TurnWork::load(&w, Some(&project.to_string_lossy()), true).await;
+                std::fs::write(project.join("notes.md"), "the owner's own note\n").unwrap();
+                turn.drop_folder().await;
+                turn.start_folder_if_changed(&w).await;
+                assert!(turn.is_empty().await);
+                assert!(store.list_verifications(&db::VerificationQuery::default()).unwrap().is_empty());
             })
         })
     }

@@ -408,6 +408,16 @@ impl Shadow {
         Ok(())
     }
 
+    /// The text of the regular file `rel` as `snapshot` holds it; `None`
+    /// for a link, a folder or nothing there.
+    pub async fn read(&self, snapshot: &Snapshot, rel: &str) -> Option<String> {
+        let entry = self.run(&["ls-tree", &snapshot.0, "--", rel]).await.ok()?;
+        if !entry.starts_with("100") {
+            return None;
+        }
+        self.run(&["cat-file", "-p", &format!("{}:{rel}", snapshot.0)]).await.ok()
+    }
+
     /// Remove the shadow repository (the folder itself is untouched).
     pub fn remove(&self) {
         if let Err(e) = std::fs::remove_dir_all(&self.git_dir) {

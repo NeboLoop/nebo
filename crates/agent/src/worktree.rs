@@ -62,9 +62,12 @@ pub struct Worktree {
     /// The owner's commit a catch-up in progress (a conflict being
     /// resolved) is rebasing onto.
     pub onto: Option<String>,
-    /// The builder said the conflicts in the copy are resolved
-    /// ([`Isolation::mark_resolved`]).
-    pub resolved: bool,
+    /// The files that catch-up left in conflict. Each is resolved only when
+    /// the builder stages its resolution (`git add`, or `git rm` to keep a
+    /// deletion), the explicit word git itself reads; one still holding
+    /// conflict markers never lands.
+    #[serde(default)]
+    pub conflicted: Vec<String>,
 }
 
 /// A copy of a non-repo folder plus the fingerprints it was copied from, so
@@ -80,11 +83,9 @@ pub struct ScratchCopy {
     pub skipped: Vec<PathBuf>,
     /// Files the owner and the copy both changed, whose owner's version
     /// waits next to the file in the copy until the builder has folded it
-    /// in, deleted the twin and said so.
+    /// in and deleted the owner's version: deleting it is the builder's
+    /// explicit word that the file is resolved.
     pub pending: Vec<Pending>,
-    /// The builder said the conflicts in the copy are resolved
-    /// ([`Isolation::mark_resolved`]).
-    pub resolved: bool,
 }
 
 /// One conflict waiting in a scratch copy.
@@ -136,15 +137,6 @@ impl Isolation {
             Isolation::Copy(_) => "",
         }
     }
-
-    /// The builder says the conflicts it was given are resolved: the next
-    /// catch-up takes the copy as it is now.
-    pub fn mark_resolved(&mut self) {
-        match self {
-            Isolation::Git(w) => w.resolved = true,
-            Isolation::Copy(c) => c.resolved = true,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,8 +167,30 @@ pub enum MergeOutcome {
     RetestFailed { error: String, kept_at: PathBuf, branch: String },
     /// An earlier copy of the set did not land, so this one was not tried.
     NotAttempted { kept_at: PathBuf, branch: String },
+    /// The copy holds changes outside what was reviewed (`Landing::only`):
+    /// a file the review never saw (too big to snapshot, a nested
+    /// repository, one added after the snapshot). Nothing landed; it goes
+    /// back to the builder, or the owner decides.
+    Unreviewed { files: Vec<String>, kept_at: PathBuf, branch: String },
+    /// Catching up with the owner's project changed files the change
+    /// touches: what would land was not reviewed. Nothing landed; it is
+    /// reviewed again first (`Landing::review_overlap`).
+    NeedsReview { files: Vec<String>, kept_at: PathBuf, branch: String },
     /// Refused or failed otherwise; nothing of the owner's changed.
     Failed { error: String, kept_at: PathBuf, branch: String },
+}
+
+/// What a landing may land, and when it must stop for another review.
+#[derive(Debug, Clone, Default)]
+pub struct Landing {
+    /// The paths that were reviewed (relative to the project): a change to
+    /// any other is refused ([`MergeOutcome::Unreviewed`]), except build
+    /// output, which is never landed. `None`: the owner chose to land the
+    /// copy as it is.
+    pub only: Option<Vec<String>>,
+    /// Stop with [`MergeOutcome::NeedsReview`] when catching up changed
+    /// files the change touches, instead of landing what nobody reviewed.
+    pub review_overlap: bool,
 }
 
 impl MergeOutcome {
@@ -290,13 +304,13 @@ pub async fn create_worktree(root: &Path, task_id: &str) -> Result<Worktree, Str
     if git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok() {
         // The task's work sits on the owner's commit it shares with them.
         let base = git(root, &["merge-base", &branch, &head]).await.map_err(|e| format!("where {branch} left the project: {e}"))?;
-        let wt = Worktree { task_id: task_id.to_string(), root: root.to_path_buf(), path, branch, start_branch, base, onto: None, resolved: false };
+        let wt = Worktree { task_id: task_id.to_string(), root: root.to_path_buf(), path, branch, start_branch, base, onto: None, conflicted: Vec::new() };
         return reattach_worktree(wt).await;
     }
     git(root, &["worktree", "add", "-b", &branch, path.to_str().unwrap_or_default(), &head])
         .await
         .map_err(|e| format!("git worktree add: {e}"))?;
-    Ok(Worktree { task_id: task_id.to_string(), root: root.to_path_buf(), path, branch, start_branch, base: head, onto: None, resolved: false })
+    Ok(Worktree { task_id: task_id.to_string(), root: root.to_path_buf(), path, branch, start_branch, base: head, onto: None, conflicted: Vec::new() })
 }
 
 /// A worktree's copy on disk again: as it is when it is still there, or
@@ -357,6 +371,28 @@ fn fingerprint_file(path: &Path) -> Option<u64> {
     std::fs::read(path).ok().map(|b| tools::checkpoint::fingerprint(&b))
 }
 
+/// Write `bytes` to `dst` with the permissions `like` has (the executable
+/// bit kept), creating its folder.
+fn write_like(dst: &Path, bytes: &[u8], like: &Path) -> Result<(), String> {
+    dst.parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(dst, bytes))
+        .map_err(|e| format!("write {}: {e}", dst.display()))?;
+    if let Ok(meta) = std::fs::metadata(like) {
+        let _ = std::fs::set_permissions(dst, meta.permissions());
+    }
+    Ok(())
+}
+
+/// Whether a path is build output (installed packages, build folders,
+/// caches): rebuilt from its sources, never reviewed and never landed.
+pub fn build_output(rel: &str) -> bool {
+    const DIRS: &[&str] = &["node_modules", "target", "dist", "build", ".svelte-kit", ".next", "__pycache__", ".venv", "venv", ".dart_tool"];
+    let parts: Vec<&str> = rel.split(['/', '\\']).collect();
+    parts[..parts.len().saturating_sub(1)].iter().any(|p| DIRS.contains(p)) || parts.last() == Some(&".DS_Store")
+}
+
 /// Copy a non-repo folder into a scratch directory and remember what every
 /// file looked like.
 pub fn create_copy(workspace: &Path, task_id: &str) -> Result<ScratchCopy, String> {
@@ -383,17 +419,13 @@ pub fn create_copy(workspace: &Path, task_id: &str) -> Result<ScratchCopy, Strin
     let mut snapshot = HashMap::with_capacity(files.len());
     for (rel, _) in &files {
         let src = root.join(rel);
-        let dst = path.join(rel);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-        }
         let bytes = std::fs::read(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
-        std::fs::write(&dst, &bytes).map_err(|e| format!("write {}: {e}", dst.display()))?;
+        write_like(&path.join(rel), &bytes, &src)?;
         snapshot.insert(rel.clone(), tools::checkpoint::fingerprint(&bytes));
     }
     // An empty folder still needs its directory.
     std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    Ok(ScratchCopy { task_id: task_id.to_string(), root, path, snapshot, skipped, pending: Vec::new(), resolved: false })
+    Ok(ScratchCopy { task_id: task_id.to_string(), root, path, snapshot, skipped, pending: Vec::new() })
 }
 
 /// What one hand did to one file, relative to the snapshot.
@@ -561,56 +593,80 @@ async fn owner_busy(wt: &Worktree) -> Option<Busy> {
 /// commit` in the worktree so the project's own pre-commit and commit-msg
 /// hooks run on it, on the commit the copy was made from; it is then
 /// rebased onto the tip of the owner's branch. A conflict leaves the rebase
-/// in progress in the worktree, and it stays a conflict (whatever the files
-/// say) until the builder has resolved it and said so
-/// ([`Isolation::mark_resolved`]). Copy arm: every file the owner changed
-/// meanwhile that the copy did not is taken in; one both changed gets the
-/// owner's version next to it, and is resolved once the builder has
-/// deleted that and said so, unless the owner changed it again since.
+/// in progress in the worktree. It stays a conflict until the builder has
+/// staged each file's resolution (`git add`, or `git rm` to keep a
+/// deletion: git's own explicit word, binary and modify/delete conflicts
+/// included) and no file it was given still holds conflict markers. Copy
+/// arm: every file the owner changed meanwhile that the copy did not is
+/// taken in; one both changed gets the owner's version next to it, and is
+/// resolved once the builder has deleted that, unless the owner changed it
+/// again since.
+///
+/// With `landing.only` set, a change outside what was reviewed is refused
+/// before anything is committed ([`MergeOutcome::Unreviewed`]).
 ///
 /// `Err` is the outcome that ends the landing (the project busy, a hook's
-/// refusal, a failure).
-pub async fn catch_up(iso: &mut Isolation, message: &str) -> Result<CatchUp, MergeOutcome> {
+/// refusal, unreviewed changes, a failure).
+pub async fn catch_up(iso: &mut Isolation, message: &str, landing: &Landing) -> Result<CatchUp, MergeOutcome> {
     match iso {
-        Isolation::Git(wt) => catch_up_git(wt, message).await,
-        Isolation::Copy(c) => catch_up_copy(c).map_err(|error| MergeOutcome::Failed { error, kept_at: c.path.clone(), branch: String::new() }),
+        Isolation::Git(wt) => catch_up_git(wt, message, landing).await,
+        Isolation::Copy(c) => {
+            let kept_at = c.path.clone();
+            match outside_review(&copy_changes(c).map_err(|error| MergeOutcome::Failed { error, kept_at: kept_at.clone(), branch: String::new() })?, landing) {
+                files if !files.is_empty() => Err(MergeOutcome::Unreviewed { files, kept_at, branch: String::new() }),
+                _ => catch_up_copy(c).map_err(|error| MergeOutcome::Failed { error, kept_at, branch: String::new() }),
+            }
+        }
     }
 }
 
-async fn catch_up_git(wt: &mut Worktree, message: &str) -> Result<CatchUp, MergeOutcome> {
+/// The paths a scratch copy's work changed, as strings.
+fn copy_changes(c: &ScratchCopy) -> Result<Vec<String>, String> {
+    Ok(changes_of(c)?.into_iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect())
+}
+
+/// The changed paths `landing` does not allow: outside what was reviewed,
+/// and not build output (which is never landed either way).
+fn outside_review(changed: &[String], landing: &Landing) -> Vec<String> {
+    match &landing.only {
+        None => Vec::new(),
+        Some(only) => changed.iter().filter(|p| !only.contains(p) && !build_output(p)).cloned().collect(),
+    }
+}
+
+async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Result<CatchUp, MergeOutcome> {
     let failed = |wt: &Worktree, error: String| MergeOutcome::Failed { error, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     if let Some(why) = owner_busy(wt).await {
         return Err(MergeOutcome::OwnerBusy { why, kept_at: wt.path.clone(), branch: wt.branch.clone() });
     }
     let owner_ref = format!("refs/heads/{}", wt.start_branch);
     if rebasing(wt).await {
-        let conflicts = unmerged(wt).await;
-        if !std::mem::take(&mut wt.resolved) {
-            let files = if conflicts.is_empty() { vec!["(the files given to resolve)".to_string()] } else { conflicts };
-            return Ok(CatchUp { conflicts: files, ..Default::default() });
-        }
-        // Resolved, as the builder says, unless a file it was given still
-        // holds markers: what is in the copy now is the resolution (a
-        // deletion included).
-        let marked = with_markers(&wt.path, &conflicts);
-        if !marked.is_empty() {
-            return Ok(CatchUp { conflicts: marked, ..Default::default() });
-        }
-        git(&wt.path, &["add", "-A"]).await.map_err(|e| failed(wt, format!("git add in the copy: {e}")))?;
+        // Resolved only as the builder staged it, and with no markers left.
         let left = unmerged(wt).await;
         if !left.is_empty() {
             return Ok(CatchUp { conflicts: left, ..Default::default() });
         }
+        let marked = with_markers(&wt.path, &wt.conflicted).await;
+        if !marked.is_empty() {
+            return Ok(CatchUp { conflicts: marked, ..Default::default() });
+        }
+        git(&wt.path, &["add", "-A"]).await.map_err(|e| failed(wt, format!("git add in the copy: {e}")))?;
         git_as_nebo(&wt.path, &["-c", "core.editor=true", "rebase", "--continue"])
             .await
             .map_err(|e| failed(wt, format!("git rebase --continue: {e}")))?;
         if let Some(onto) = wt.onto.take() {
             wt.base = onto;
         }
+        wt.conflicted.clear();
     }
     let owner = git(&wt.root, &["rev-parse", &owner_ref]).await.map_err(|e| failed(wt, format!("the project's branch: {e}")))?;
     let base = wt.base.clone();
     git(&wt.path, &["add", "-A"]).await.map_err(|e| failed(wt, format!("git add in the copy: {e}")))?;
+    let staged = z_paths(&wt.path, &["diff", "-z", "--cached", "--name-only", "--no-renames", &base]).await;
+    let unreviewed = outside_review(&staged, landing);
+    if !unreviewed.is_empty() {
+        return Err(MergeOutcome::Unreviewed { files: unreviewed, kept_at: wt.path.clone(), branch: wt.branch.clone() });
+    }
     let tree = git(&wt.path, &["write-tree"]).await.map_err(|e| failed(wt, format!("git write-tree: {e}")))?;
     let base_tree = git(&wt.path, &["rev-parse", &format!("{base}^{{tree}}")]).await.map_err(|e| failed(wt, format!("the base tree: {e}")))?;
     if tree == base_tree {
@@ -634,6 +690,13 @@ async fn catch_up_git(wt: &mut Worktree, message: &str) -> Result<CatchUp, Merge
             let _ = git(&wt.path, &["update-ref", &format!("refs/heads/{}", wt.branch), &head]).await;
             return Err(MergeOutcome::HookFailed { output, kept_at: wt.path.clone(), branch: wt.branch.clone() });
         }
+        // A hook may have staged files of its own: what is committed is
+        // still only what was reviewed.
+        let committed = z_paths(&wt.path, &["diff", "-z", "--name-only", "--no-renames", &base, "HEAD"]).await;
+        let unreviewed = outside_review(&committed, landing);
+        if !unreviewed.is_empty() {
+            return Err(MergeOutcome::Unreviewed { files: unreviewed, kept_at: wt.path.clone(), branch: wt.branch.clone() });
+        }
     }
     let changed = z_paths(&wt.path, &["diff", "-z", "--name-only", "--no-renames", &base, "HEAD"]).await;
     if base == owner {
@@ -647,7 +710,7 @@ async fn catch_up_git(wt: &mut Worktree, message: &str) -> Result<CatchUp, Merge
             return Err(failed(wt, format!("git rebase onto the project's branch: {e}")));
         }
         wt.onto = Some(owner.clone());
-        wt.resolved = false;
+        wt.conflicted = conflicts.clone();
         return Ok(CatchUp { onto: owner, changed, overlap, conflicts, ..Default::default() });
     }
     wt.base = owner.clone();
@@ -655,14 +718,15 @@ async fn catch_up_git(wt: &mut Worktree, message: &str) -> Result<CatchUp, Merge
 }
 
 fn catch_up_copy(c: &mut ScratchCopy) -> Result<CatchUp, String> {
-    let resolved = std::mem::take(&mut c.resolved);
-    // Conflicts the builder says it resolved: the owner's version it was
-    // given is folded in, unless the owner changed the file again since.
+    // A conflict whose owner's version the builder deleted is resolved:
+    // that version is folded in, unless the owner changed the file again
+    // since, or the file still holds conflict markers.
     let mut still = Vec::new();
     for p in std::mem::take(&mut c.pending) {
         let twin_left = std::fs::symlink_metadata(c.path.join(&p.twin)).is_ok();
+        let marked = std::fs::read(c.path.join(&p.rel)).is_ok_and(|b| has_markers(&b, DEFAULT_MARKER_SIZE));
         let owner_now = fingerprint_file(&c.root.join(&p.rel));
-        if !resolved || twin_left {
+        if twin_left || marked {
             still.push(p);
         } else if owner_now == p.owner_fp {
             match owner_now {
@@ -696,6 +760,11 @@ fn catch_up_copy(c: &mut ScratchCopy) -> Result<CatchUp, String> {
         if c.pending.iter().any(|p| p.rel == rel) {
             continue;
         }
+        // A file of ours where the owner's goes into a folder: theirs isn't
+        // taken in, and the landing asks about the folder.
+        if rel.ancestors().skip(1).any(|a| ours_paths.contains(a)) {
+            continue;
+        }
         if ours_paths.contains(&rel) {
             // Both changed it: the owner's version waits next to it.
             let pending = put_twin(c, &rel)?;
@@ -704,14 +773,11 @@ fn catch_up_copy(c: &mut ScratchCopy) -> Result<CatchUp, String> {
             continue;
         }
         // Only the owner changed it: the copy takes it in.
+        let src = c.root.join(&rel);
         let dst = c.path.join(&rel);
-        match std::fs::read(c.root.join(&rel)).ok() {
+        match std::fs::read(&src).ok() {
             Some(bytes) => {
-                dst.parent()
-                    .map(std::fs::create_dir_all)
-                    .unwrap_or(Ok(()))
-                    .and_then(|_| std::fs::write(&dst, &bytes))
-                    .map_err(|e| format!("write {}: {e}", dst.display()))?;
+                write_like(&dst, &bytes, &src)?;
                 c.snapshot.insert(rel, tools::checkpoint::fingerprint(&bytes));
             }
             None => {
@@ -767,15 +833,17 @@ fn free_twin(c: &ScratchCopy, rel: &Path, deleted: bool) -> PathBuf {
 /// hold anything of the owner's that differs from that tip, whether git
 /// tracks it, ignores it or has never seen it: an ignored note or a local
 /// secrets file in the way is the owner's, and nothing lands over it. Then
-/// the branch is fast-forwarded (never a merge commit, never a force) and
-/// the worktree and task branch are removed. Copy arm: the changed files
-/// are staged next to their places and moved in together, unless the owner
-/// changed one since the catch-up or a folder on the way is a link out of
-/// the project. Anything else lands nothing.
-pub async fn land(iso: &Isolation) -> MergeOutcome {
+/// the branch is fast-forwarded to that commit (never a merge commit, never
+/// a force), the move is checked, and the worktree and task branch are
+/// removed. Copy arm: the changed files are staged next to their places and
+/// moved in together, unless the owner changed one since the catch-up or a
+/// folder on the way is a link out of the project. With `landing.only`, a
+/// change outside what was reviewed lands nothing. Anything else lands
+/// nothing.
+pub async fn land(iso: &Isolation, landing: &Landing) -> MergeOutcome {
     match iso {
-        Isolation::Git(wt) => land_git(wt).await,
-        Isolation::Copy(c) => land_copy(c),
+        Isolation::Git(wt) => land_git(wt, landing).await,
+        Isolation::Copy(c) => land_copy(c, landing),
     }
 }
 
@@ -798,11 +866,40 @@ async fn touched_paths(dir: &Path, parent: &str, commit: &str) -> Vec<String> {
     out
 }
 
+/// What the owner's disk holds at `rel` as git would record it: a link's
+/// target, a submodule's checked-out commit, a file's blob. `None` when
+/// there is nothing there; `Err` when it can't be read as any of them (a
+/// folder where a file goes).
+async fn disk_object(root: &Path, rel: &str) -> Result<Option<String>, ()> {
+    let disk = root.join(rel);
+    let Ok(meta) = std::fs::symlink_metadata(&disk) else { return Ok(None) };
+    if meta.file_type().is_symlink() {
+        // A link is recorded as its target's text, never what it points at.
+        let target = std::fs::read_link(&disk).map_err(|_| ())?;
+        let tmp = std::env::temp_dir().join(format!("nebo-link-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&tmp, target.to_string_lossy().as_bytes()).map_err(|_| ())?;
+        let blob = git(root, &["hash-object", "--no-filters", "--", &tmp.to_string_lossy()]).await;
+        let _ = std::fs::remove_file(&tmp);
+        return blob.map(Some).map_err(|_| ());
+    }
+    if meta.is_dir() {
+        // A submodule: the commit it has checked out (none when it isn't).
+        if disk.join(".git").exists() {
+            return git(&disk, &["rev-parse", "HEAD"]).await.map(Some).map_err(|_| ());
+        }
+        let empty = std::fs::read_dir(&disk).map(|mut d| d.next().is_none()).unwrap_or(false);
+        return if empty { Ok(None) } else { Err(()) };
+    }
+    git(root, &["hash-object", &format!("--path={rel}"), "--", rel]).await.map(Some).map_err(|_| ())
+}
+
 /// The paths of `paths` where the owner's folder holds something that is
 /// not `tip`'s version: an edit, staged or not, a new or ignored file in
-/// the way, a deletion. A folder the change writes into must be a folder on
-/// the owner's disk too: a file or a link of the owner's where it goes
-/// (one the change does not itself replace) is in the way.
+/// the way, a deletion, a folder where the change puts a file. A folder the
+/// change writes into must be a folder on the owner's disk too: a file or a
+/// link of the owner's where it goes (one the change does not itself
+/// replace) is in the way. A tracked link and a submodule compare as git
+/// records them.
 async fn owner_data_in_the_way(root: &Path, tip: &str, paths: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for rel in paths {
@@ -820,13 +917,11 @@ async fn owner_data_in_the_way(root: &Path, tip: &str, paths: &[String]) -> Vec<
         }
     }
     for rel in paths {
-        let disk = root.join(rel);
-        let on_disk = std::fs::symlink_metadata(&disk).is_ok();
         let at_tip = git(root, &["rev-parse", "--verify", "--quiet", &format!("{tip}:{rel}")]).await.ok().filter(|s| !s.is_empty());
-        let differs = match (on_disk, at_tip) {
-            (false, None) => false,
-            (true, None) | (false, Some(_)) => true,
-            (true, Some(blob)) => git(root, &["hash-object", &format!("--path={rel}"), "--", rel]).await.map(|h| h != blob).unwrap_or(true),
+        let differs = match (disk_object(root, rel).await, at_tip) {
+            (Ok(None), None) => false,
+            (Ok(Some(on_disk)), Some(blob)) => on_disk != blob,
+            _ => true,
         };
         let staged = git(root, &["diff", "--cached", "--quiet", tip, "--", rel]).await.is_err();
         if differs || staged {
@@ -836,27 +931,51 @@ async fn owner_data_in_the_way(root: &Path, tip: &str, paths: &[String]) -> Vec<
     out
 }
 
-/// Whether a file still holds conflict markers: a line opening one
-/// (`<<<<<<< `) and a later line closing it (`>>>>>>> `). A heading's
-/// `=======` underline alone is no marker.
-fn has_markers(bytes: &[u8]) -> bool {
+/// Git's own conflict marker width; `conflict-marker-size` in a project's
+/// `.gitattributes` may set another.
+const DEFAULT_MARKER_SIZE: usize = 7;
+
+/// Whether a file still holds conflict markers of `size`: a line opening
+/// one (`<<<<<<<` and a space or the line's end) and a later line closing
+/// it. A heading's `=======` underline alone is no marker.
+fn has_markers(bytes: &[u8], size: usize) -> bool {
+    let is = |line: &str, c: char| {
+        line.len() >= size && line.chars().take(size).all(|x| x == c) && line[size..].chars().next().is_none_or(|n| n == ' ')
+    };
     let mut open = false;
     for line in String::from_utf8_lossy(bytes).lines() {
-        if line == "<<<<<<<" || line.starts_with("<<<<<<< ") {
+        if is(line, '<') {
             open = true;
-        } else if open && (line == ">>>>>>>" || line.starts_with(">>>>>>> ")) {
+        } else if open && is(line, '>') {
             return true;
         }
     }
     false
 }
 
-/// The files of `files` under `dir` that still hold conflict markers.
-fn with_markers(dir: &Path, files: &[String]) -> Vec<String> {
-    files.iter().filter(|f| std::fs::read(dir.join(f)).is_ok_and(|b| has_markers(&b))).cloned().collect()
+/// The marker width git uses for `rel` in the repository at `dir`.
+async fn marker_size(dir: &Path, rel: &str) -> usize {
+    git(dir, &["check-attr", "conflict-marker-size", "--", rel])
+        .await
+        .ok()
+        .and_then(|out| out.rsplit(": ").next().and_then(|n| n.trim().parse().ok()))
+        .unwrap_or(DEFAULT_MARKER_SIZE)
 }
 
-async fn land_git(wt: &Worktree) -> MergeOutcome {
+/// The files of `files` in the repository at `dir` that still hold
+/// conflict markers, each of the width git uses for it.
+async fn with_markers(dir: &Path, files: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in files {
+        let size = marker_size(dir, f).await;
+        if std::fs::read(dir.join(f)).is_ok_and(|b| has_markers(&b, size)) {
+            out.push(f.clone());
+        }
+    }
+    out
+}
+
+async fn land_git(wt: &Worktree, landing: &Landing) -> MergeOutcome {
     let failed = |error: String| MergeOutcome::Failed { error, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     if rebasing(wt).await {
         return failed("catching up is not finished: a conflict is still being resolved in the copy".into());
@@ -864,12 +983,17 @@ async fn land_git(wt: &Worktree) -> MergeOutcome {
     if let Some(why) = owner_busy(wt).await {
         return MergeOutcome::OwnerBusy { why, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     }
-    let Ok(owner) = git(&wt.root, &["rev-parse", &format!("refs/heads/{}", wt.start_branch)]).await else {
+    let owner_ref = format!("refs/heads/{}", wt.start_branch);
+    let Ok(owner) = git(&wt.root, &["rev-parse", &owner_ref]).await else {
         return failed("the project's branch has no commit".into());
     };
     let Ok(head) = git(&wt.path, &["rev-parse", "HEAD"]).await else {
         return failed("the copy has no HEAD".into());
     };
+    // What lands is the copy's own branch, exactly.
+    if git(&wt.path, &["rev-parse", &format!("refs/heads/{}", wt.branch)]).await.ok().as_deref() != Some(head.as_str()) {
+        return failed(format!("the copy is not on its own branch {}", wt.branch));
+    }
     if head == owner {
         return finish_no_changes(&Isolation::Git(wt.clone())).await;
     }
@@ -877,7 +1001,11 @@ async fn land_git(wt: &Worktree) -> MergeOutcome {
         return failed("the project moved on since the copy caught up; catch up again".into());
     }
     let paths = touched_paths(&wt.path, &owner, "HEAD").await;
-    let marked = with_markers(&wt.path, &paths);
+    let unreviewed = outside_review(&paths, landing);
+    if !unreviewed.is_empty() {
+        return MergeOutcome::Unreviewed { files: unreviewed, kept_at: wt.path.clone(), branch: wt.branch.clone() };
+    }
+    let marked = with_markers(&wt.path, &paths).await;
     if !marked.is_empty() {
         return MergeOutcome::Conflict { files: marked, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     }
@@ -886,8 +1014,12 @@ async fn land_git(wt: &Worktree) -> MergeOutcome {
         return MergeOutcome::OwnerEdits { files: in_the_way, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     }
     let files = z_paths(&wt.path, &["diff", "-z", "--name-only", &owner, "HEAD"]).await;
-    if let Err(e) = git(&wt.root, &["merge", "--ff-only", "--quiet", &wt.branch]).await {
+    if let Err(e) = git(&wt.root, &["merge", "--ff-only", "--quiet", &head]).await {
         return failed(format!("fast-forward refused: {e}"));
+    }
+    // Landed only if the owner's branch is now that commit.
+    if git(&wt.root, &["rev-parse", &owner_ref]).await.ok().as_deref() != Some(head.as_str()) {
+        return failed("the project's branch did not move to the change".into());
     }
     // Landed: the commit is on the owner's branch, and whatever is left in
     // the worktree is what the checks wrote (a change of theirs to a landed
@@ -928,8 +1060,12 @@ fn through_a_link(root: &Path, target: &Path) -> bool {
     false
 }
 
-fn land_copy(c: &ScratchCopy) -> MergeOutcome {
+fn land_copy(c: &ScratchCopy, landing: &Landing) -> MergeOutcome {
     let failed = |error: String| MergeOutcome::Failed { error, kept_at: c.path.clone(), branch: String::new() };
+    // A copy that is gone is nothing to land, never a set of deletions.
+    if !c.path.is_dir() {
+        return failed(format!("its copy at {} is gone", c.path.display()));
+    }
     if !c.pending.is_empty() {
         return MergeOutcome::Conflict {
             files: c.pending.iter().map(|p| p.rel.to_string_lossy().into_owned()).collect(),
@@ -938,24 +1074,48 @@ fn land_copy(c: &ScratchCopy) -> MergeOutcome {
         };
     }
     let changes = match changes_of(c) {
-        Ok(ch) => ch,
+        // Build output is rebuilt from its sources: never landed.
+        Ok(ch) => ch.into_iter().filter(|(rel, _)| !build_output(&rel.to_string_lossy())).collect::<Vec<_>>(),
         Err(e) => return failed(e),
     };
     if changes.is_empty() {
         remove_copy(&c.path);
         return MergeOutcome::NoChanges;
     }
+    let paths: Vec<String> = changes.iter().map(|(rel, _)| rel.to_string_lossy().into_owned()).collect();
+    let unreviewed = outside_review(&paths, landing);
+    if !unreviewed.is_empty() {
+        return MergeOutcome::Unreviewed { files: unreviewed, kept_at: c.path.clone(), branch: String::new() };
+    }
     let written: Vec<String> =
         changes.iter().filter(|(_, ch)| matches!(ch, Change::Written(_))).map(|(rel, _)| rel.to_string_lossy().into_owned()).collect();
-    let marked = with_markers(&c.path, &written);
+    let marked: Vec<String> =
+        written.iter().filter(|f| std::fs::read(c.path.join(f)).is_ok_and(|b| has_markers(&b, DEFAULT_MARKER_SIZE))).cloned().collect();
     if !marked.is_empty() {
         return MergeOutcome::Conflict { files: marked, kept_at: c.path.clone(), branch: String::new() };
     }
+    // A name whose case alone changed: on a disk that ignores case the new
+    // name reads as the old file, which is what the owner should still have.
+    let deleted: Vec<&PathBuf> = changes.iter().filter(|(_, ch)| matches!(ch, Change::Deleted)).map(|(rel, _)| rel).collect();
+    let renamed_from = |rel: &PathBuf| -> Option<&PathBuf> {
+        let lower = rel.to_string_lossy().to_lowercase();
+        (!c.snapshot.contains_key(rel)).then(|| deleted.iter().copied().find(|d| d.to_string_lossy().to_lowercase() == lower)).flatten()
+    };
+    let expected = |rel: &PathBuf| -> Option<u64> {
+        match renamed_from(rel) {
+            Some(old) if fingerprint_file(&c.root.join(rel)).is_some() => c.snapshot.get(old).copied(),
+            _ => c.snapshot.get(rel).copied(),
+        }
+    };
     // The owner changed one of these files since the catch-up (a deletion
-    // included): theirs is never overwritten.
+    // included), or has a folder where the change puts a file: theirs is
+    // never overwritten or hidden.
     let touched: Vec<String> = changes
         .iter()
-        .filter(|(rel, _)| c.snapshot.get(rel).copied() != fingerprint_file(&c.root.join(rel)))
+        .filter(|(rel, _)| {
+            let target = c.root.join(rel);
+            std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_dir()) || expected(rel) != fingerprint_file(&target)
+        })
         .map(|(rel, _)| rel.to_string_lossy().into_owned())
         .collect();
     if !touched.is_empty() {
@@ -964,51 +1124,69 @@ fn land_copy(c: &ScratchCopy) -> MergeOutcome {
     if let Some((rel, _)) = changes.iter().find(|(rel, _)| through_a_link(&c.root, &c.root.join(rel))) {
         return failed(format!("{} is reached through a link out of the project", rel.display()));
     }
+    // Deletions go first: a rename that only changes a name's case deletes
+    // the old name before the new one is written, and on a disk that
+    // ignores case both are the one file, set aside once.
+    let mut order: Vec<usize> = (0..changes.len()).collect();
+    order.sort_by_key(|&i| !matches!(changes[i].1, Change::Deleted));
     // One journal for the landing: every file staged next to its place,
     // the owner's version set aside, then all moved in together. A failure
     // (or a restart midway, [`cleanup_stale`]) puts every file back.
     let beside = |target: &Path, what: &str| {
         target.with_file_name(format!(".{}.{}.{what}", target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), c.task_id))
     };
-    let mut journal = Journal { steps: Vec::new(), done: false };
-    for (rel, change) in &changes {
+    let mut journal = Journal { steps: Vec::new(), done: false, copy: Some(c.path.clone()) };
+    for &i in &order {
+        let (rel, change) = &changes[i];
         let target = c.root.join(rel);
         let (staged, fp) = match change {
             Change::Written(bytes) => (Some(beside(&target, "nebo-landing")), Some(tools::checkpoint::fingerprint(bytes))),
             Change::Deleted => (None, None),
         };
-        let backup = std::fs::symlink_metadata(&target).is_ok().then(|| beside(&target, "nebo-backup"));
+        let renamed_case = matches!(change, Change::Written(_)) && renamed_from(rel).is_some();
+        let backup = (!renamed_case && std::fs::symlink_metadata(&target).is_ok()).then(|| beside(&target, "nebo-backup"));
         if let Some(taken) = staged.iter().chain(backup.iter()).find(|p| std::fs::symlink_metadata(p).is_ok()) {
             return failed(format!("{} is in the way of landing {}", taken.display(), rel.display()));
         }
-        journal.steps.push(Step { target, staged, backup, fp });
+        journal.steps.push(Step { target, staged, backup, fp, was: c.snapshot.get(rel).copied() });
     }
     let journal_at = journal_path(c);
     if let Err(e) = journal.write(&journal_at) {
         return failed(e);
     }
-    for ((rel, change), step) in changes.iter().zip(&journal.steps) {
-        if let (Change::Written(bytes), Some(staged)) = (change, &step.staged) {
-            let written = step.target.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(staged, bytes));
-            if let Err(e) = written {
-                journal.roll_back(&journal_at);
-                return failed(format!("stage {}: {e}", rel.display()));
-            }
+    for (&i, step) in order.iter().zip(&journal.steps) {
+        let (rel, change) = &changes[i];
+        if let (Change::Written(bytes), Some(staged)) = (change, &step.staged)
+            && let Err(e) = write_like(staged, bytes, &c.path.join(rel))
+        {
+            journal.roll_back(&journal_at);
+            return failed(format!("stage {}: {e}", rel.display()));
         }
     }
-    for ((rel, _), step) in changes.iter().zip(&journal.steps) {
-        // Checked again right before it is replaced: an owner's edit since
-        // is never overwritten.
-        if c.snapshot.get(rel).copied() != fingerprint_file(&step.target) {
+    for (&i, step) in order.iter().zip(&journal.steps) {
+        let rel = &changes[i].0;
+        #[cfg(test)]
+        before_replace(&step.target);
+        // Checked again right before it is replaced, and the set-aside
+        // version checked after: an owner's edit since is never overwritten.
+        let owner_kept = |at: &Path| step.backup.is_none() || fingerprint_file(at) == step.was;
+        if !owner_kept(&step.target) && std::fs::symlink_metadata(&step.target).is_ok() {
             journal.roll_back(&journal_at);
             return MergeOutcome::OwnerEdits { files: vec![rel.to_string_lossy().into_owned()], kept_at: c.path.clone(), branch: String::new() };
         }
-        let moved = step
-            .backup
-            .as_ref()
-            .map_or(Ok(()), |b| std::fs::rename(&step.target, b))
-            .and_then(|_| step.staged.as_ref().map_or(Ok(()), |st| std::fs::rename(st, &step.target)));
-        if let Err(e) = moved {
+        if let Some(b) = &step.backup {
+            if let Err(e) = std::fs::rename(&step.target, b) {
+                journal.roll_back(&journal_at);
+                return failed(format!("write {}: {e}", rel.display()));
+            }
+            if !owner_kept(b) {
+                journal.roll_back(&journal_at);
+                return MergeOutcome::OwnerEdits { files: vec![rel.to_string_lossy().into_owned()], kept_at: c.path.clone(), branch: String::new() };
+            }
+        }
+        if let Some(st) = &step.staged
+            && let Err(e) = std::fs::rename(st, &step.target)
+        {
             journal.roll_back(&journal_at);
             return failed(format!("write {}: {e}", rel.display()));
         }
@@ -1019,8 +1197,23 @@ fn land_copy(c: &ScratchCopy) -> MergeOutcome {
     }
     journal.finish(&journal_at);
     remove_copy(&c.path);
-    MergeOutcome::Merged { files: changes.iter().map(|(rel, _)| rel.to_string_lossy().into_owned()).collect(), commit: String::new(), caught_up_to: String::new() }
+    MergeOutcome::Merged { files: paths, commit: String::new(), caught_up_to: String::new() }
 }
+
+/// Run just before a scratch copy's landing replaces `target` (a test
+/// stands in for the owner editing it then).
+#[cfg(test)]
+fn before_replace(target: &Path) {
+    if let Some(hook) = BEFORE_REPLACE.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        hook(target);
+    }
+}
+
+#[cfg(test)]
+type ReplaceHook = Box<dyn Fn(&Path) + Send>;
+
+#[cfg(test)]
+static BEFORE_REPLACE: std::sync::Mutex<Option<ReplaceHook>> = std::sync::Mutex::new(None);
 
 /// A copy's landing in progress: what each owner file it writes or deletes
 /// is staged as and set aside as, kept next to the copy until it is done.
@@ -1029,6 +1222,9 @@ struct Journal {
     steps: Vec<Step>,
     /// Every file is in place; only the set-aside versions are left to drop.
     done: bool,
+    /// The copy that is landing: removed once the landing is done.
+    #[serde(default)]
+    copy: Option<PathBuf>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -1041,6 +1237,9 @@ struct Step {
     backup: Option<PathBuf>,
     /// The new version's fingerprint.
     fp: Option<u64>,
+    /// The owner's version's fingerprint when the copy caught up.
+    #[serde(default)]
+    was: Option<u64>,
 }
 
 const JOURNAL_SUFFIX: &str = ".nebo-landing.json";
@@ -1080,12 +1279,16 @@ impl Journal {
         let _ = std::fs::remove_file(at);
     }
 
-    /// A landing that is done drops the owner's set-aside versions.
+    /// A landing that is done drops the owner's set-aside versions, and
+    /// its copy: everything in it is landed.
     fn finish(&self, at: &Path) {
         for step in &self.steps {
             for p in step.staged.iter().chain(step.backup.iter()) {
                 let _ = std::fs::remove_file(p);
             }
+        }
+        if let Some(copy) = &self.copy {
+            remove_copy(copy);
         }
         let _ = std::fs::remove_file(at);
     }
@@ -1099,29 +1302,6 @@ fn recover_landing(at: &Path) {
         Some(j) => j.roll_back(at),
         None => warn!(path = %at.display(), "an unreadable landing journal is kept"),
     }
-}
-
-/// The last resort when the builder cannot resolve a conflict and the owner
-/// has chosen to keep both: the copy's version of each file is written next
-/// to the owner's as `<file>.<task_id>.nebo-conflict`. The owner's files are
-/// untouched and the copy is kept.
-pub fn keep_both(iso: &Isolation, files: &[String]) -> Result<Vec<PathBuf>, String> {
-    let (root, copy) = (iso.root(), iso.path());
-    let mut kept = Vec::new();
-    for rel in files {
-        let bytes = std::fs::read(copy.join(rel)).map_err(|e| format!("read {rel}: {e}"))?;
-        let keep = root.join(format!("{rel}.{}.nebo-conflict", iso.task_id()));
-        if through_a_link(root, &keep) {
-            return Err(format!("{rel} is reached through a link out of the project"));
-        }
-        keep.parent()
-            .map(std::fs::create_dir_all)
-            .unwrap_or(Ok(()))
-            .and_then(|_| std::fs::write(&keep, bytes))
-            .map_err(|e| format!("write {}: {e}", keep.display()))?;
-        kept.push(keep);
-    }
-    Ok(kept)
 }
 
 /// The order a set of copies lands in: a copy of a project another one's
@@ -1226,22 +1406,33 @@ pub async fn after_checks(iso: &Isolation, before: Checked) -> Result<(), String
 /// A copy's re-test after catching up: `Err` with what failed.
 pub type Retest<'a> = &'a (dyn Fn(&Isolation) -> futures::future::BoxFuture<'static, Result<(), String>> + Sync);
 
-/// One landing at a time per project: two sets landing on one repository
-/// at once would race for its branch.
-fn project_lock(root: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
-    let mut locks = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
-    locks.entry(root.to_path_buf()).or_default().clone()
+/// One landing at a time per project, across Nebo's processes: a lock file
+/// per project (by its canonical path), held while a copy lands. Released
+/// when the returned file is dropped.
+async fn project_lock(root: &Path) -> Result<std::fs::File, String> {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let dir = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("worktrees").join(".locks");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let at = dir.join(format!("{:016x}.lock", tools::checkpoint::fingerprint(canonical.to_string_lossy().as_bytes())));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&at)
+        .map_err(|e| format!("open {}: {e}", at.display()))?;
+    tokio::task::spawn_blocking(move || file.lock().map(|_| file))
+        .await
+        .map_err(|e| format!("the landing lock: {e}"))?
+        .map_err(|e| format!("lock {}: {e}", at.display()))
 }
 
 /// Land every copy of a set on the owner's project ([`dependency_order`],
-/// one at a time, one landing per project at a time): each is caught up
-/// ([`catch_up`]), re-tested with `retest` when one is given, and landed
-/// ([`land`]). A copy with nothing to land is removed and does not stop the
-/// set. The first copy that does not land stops the set: it says why, the
-/// copies after it are not tried, and every copy not landed is kept.
-/// Outcomes come back in the order the copies were given.
-pub async fn merge_all(isos: &mut [Isolation], message: &str, retest: Option<Retest<'_>>) -> Vec<(String, MergeOutcome)> {
+/// one at a time, each through [`land_one`]). A copy with nothing to land
+/// is removed and does not stop the set. The first copy that does not land
+/// stops the set: it says why, the copies after it are not tried, and
+/// every copy not landed is kept. Outcomes come back in the order the
+/// copies were given.
+pub async fn merge_all(isos: &mut [Isolation], message: &str, retest: Option<Retest<'_>>, landing: &Landing) -> Vec<(String, MergeOutcome)> {
     let order = dependency_order(isos);
     let mut outcomes: Vec<Option<MergeOutcome>> = vec![None; isos.len()];
     let mut stopped = false;
@@ -1251,29 +1442,47 @@ pub async fn merge_all(isos: &mut [Isolation], message: &str, retest: Option<Ret
             outcomes[idx] = Some(MergeOutcome::NotAttempted { kept_at: iso.path().to_path_buf(), branch: iso.branch().to_string() });
             continue;
         }
-        let lock = project_lock(iso.root());
-        let _one_at_a_time = lock.lock().await;
-        let outcome = land_one(iso, message, retest).await;
+        let (_, outcome) = land_one(iso, message, retest, landing).await;
         stopped = !outcome.landed();
         outcomes[idx] = Some(outcome);
     }
     isos.iter().zip(outcomes).map(|(iso, o)| (iso.task_id().to_string(), o.expect("every copy has an outcome"))).collect()
 }
 
-async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<'_>>) -> MergeOutcome {
+/// The one way a copy lands, for the verify loop and for a helper's
+/// changes alike, under its project's landing lock: caught up with the
+/// owner's project ([`catch_up`]); stopped for another review when catching
+/// up changed files the change touches and `landing.review_overlap` asks
+/// for that; re-tested with `retest`, held to what was checked
+/// ([`after_checks`]); landed ([`land`]). Returns the catch-up (when it
+/// got that far) and the outcome.
+pub async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<'_>>, landing: &Landing) -> (Option<CatchUp>, MergeOutcome) {
     let kept = |iso: &Isolation| (iso.path().to_path_buf(), iso.branch().to_string());
+    let _one_at_a_time = match project_lock(iso.root()).await {
+        Ok(lock) => lock,
+        Err(error) => {
+            let (kept_at, branch) = kept(iso);
+            return (None, MergeOutcome::Failed { error, kept_at, branch });
+        }
+    };
     // A fast-forward lost to the owner's own commit is caught up again once.
+    let mut last = None;
     for attempt in 0..2 {
-        let caught = match catch_up(iso, message).await {
+        let caught = match catch_up(iso, message, landing).await {
             Ok(c) => c,
-            Err(outcome) => return outcome,
+            Err(outcome) => return (last, outcome),
         };
+        last = Some(caught.clone());
         if caught.no_changes {
-            return finish_no_changes(iso).await;
+            return (last, finish_no_changes(iso).await);
         }
         if !caught.conflicts.is_empty() {
             let (kept_at, branch) = kept(iso);
-            return MergeOutcome::Conflict { files: caught.conflicts, kept_at, branch };
+            return (last, MergeOutcome::Conflict { files: caught.conflicts, kept_at, branch });
+        }
+        if landing.review_overlap && !caught.overlap.is_empty() {
+            let (kept_at, branch) = kept(iso);
+            return (last, MergeOutcome::NeedsReview { files: caught.overlap, kept_at, branch });
         }
         if let Some(retest) = retest {
             let before = before_checks(iso);
@@ -1283,16 +1492,16 @@ async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<'_>>
             };
             if let Err(error) = checked {
                 let (kept_at, branch) = kept(iso);
-                return MergeOutcome::RetestFailed { error, kept_at, branch };
+                return (last, MergeOutcome::RetestFailed { error, kept_at, branch });
             }
         }
-        match land(iso).await {
+        match land(iso, landing).await {
             MergeOutcome::Failed { error, .. } if attempt == 0 && error.contains("catch up again") => continue,
-            other => return other,
+            other => return (last, other),
         }
     }
     let (kept_at, branch) = kept(iso);
-    MergeOutcome::Failed { error: "the project kept moving while the copy caught up; try again when it is quiet".into(), kept_at, branch }
+    (last, MergeOutcome::Failed { error: "the project kept moving while the copy caught up; try again when it is quiet".into(), kept_at, branch })
 }
 
 /// A merged scratch copy has nothing left to keep; a failure to delete it is
@@ -1378,11 +1587,16 @@ pub async fn put_away(iso: &mut Isolation, message: &str) -> Option<String> {
 
 /// Commit whatever a worktree holds on its own task branch and remove the
 /// worktree, keeping the branch: its work is stored and the disk freed.
-/// Midway through catching up (a conflict being resolved), the copy as the
-/// builder left it is committed on the owner's commit it was catching up
-/// to and the catch-up ends there, so the branch holds the resolution so
-/// far; markers left in it keep it a conflict when it is landed.
+/// Midway through catching up (a conflict being resolved), a copy whose
+/// every conflict the builder has staged a resolution for is committed on
+/// the owner's commit it was catching up to and the catch-up ends there, so
+/// the branch holds the resolution; markers left in it keep it a conflict
+/// when it is landed. One with a conflict not yet resolved is kept as it is
+/// (`Err`): staging it here would resolve it without the builder's word.
 pub async fn shelve(wt: &mut Worktree, message: &str) -> Result<(), String> {
+    if rebasing(wt).await && !unmerged(wt).await.is_empty() {
+        return Err(format!("{} holds a conflict not resolved yet; it is kept as it is", wt.path.display()));
+    }
     git(&wt.path, &["add", "-A"]).await?;
     if rebasing(wt).await {
         let onto = match wt.onto.clone() {
@@ -1397,7 +1611,7 @@ pub async fn shelve(wt: &mut Worktree, message: &str) -> Result<(), String> {
         git(&wt.path, &["symbolic-ref", "HEAD", &branch_ref]).await?;
         wt.base = onto;
         wt.onto = None;
-        wt.resolved = false;
+        wt.conflicted.clear();
     } else if git(&wt.path, &["diff", "--cached", "--quiet"]).await.is_err() {
         git_as_nebo(&wt.path, &["commit", "-q", "--no-verify", "-m", message]).await?;
     }
@@ -1418,6 +1632,7 @@ async fn rebase_onto(wt: &Worktree) -> Result<String, String> {
 /// Drop a copy and everything in it, at the owner's (or the primary's)
 /// word: the worktree and its task branch, or the scratch copy. The owner's
 /// project is untouched.
+/// Discarding what is already gone (the copy, its branch) succeeds.
 pub async fn discard(iso: &Isolation) -> Result<(), String> {
     match iso {
         Isolation::Git(wt) => {
@@ -1425,9 +1640,17 @@ pub async fn discard(iso: &Isolation) -> Result<(), String> {
             if wt.path.exists() {
                 git(&wt.root, &["worktree", "remove", "--force", wt.path.to_str().unwrap_or_default()]).await?;
             }
-            git(&wt.root, &["branch", "-D", &wt.branch]).await.map(|_| ())
+            let _ = git(&wt.root, &["worktree", "prune"]).await;
+            if git(&wt.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", wt.branch)]).await.is_ok() {
+                git(&wt.root, &["branch", "-D", &wt.branch]).await?;
+            }
+            Ok(())
         }
-        Isolation::Copy(c) => std::fs::remove_dir_all(&c.path).map_err(|e| format!("remove {}: {e}", c.path.display())),
+        Isolation::Copy(c) => match std::fs::remove_dir_all(&c.path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("remove {}: {e}", c.path.display())),
+        },
     }
 }
 
@@ -1481,7 +1704,7 @@ pub async fn cleanup_stale(cutoff_secs: u64) -> Vec<PathBuf> {
                     start_branch: String::new(),
                     base: String::new(),
                     onto: None,
-                    resolved: false,
+                    conflicted: Vec::new(),
                 };
                 if remove(&wt, false).await.is_ok() {
                     removed.push(path);
@@ -1538,9 +1761,9 @@ pub fn render_outcome(desc: &str, outcome: &MergeOutcome) -> String {
             branch_note(branch),
             kept_at.display(),
             if branch.is_empty() {
-                format!(" (the owner's version is next to each file as <file>{OWNER_SUFFIX}, or <file>{OWNER_DELETED_SUFFIX} if they deleted it; delete it once combined, then say it is resolved)")
+                format!(" (the owner's version is next to each file as <file>{OWNER_SUFFIX}, or <file>{OWNER_DELETED_SUFFIX} if they deleted it; deleting it once combined is the word that the file is resolved)")
             } else {
-                " (the rebase is in progress there; resolve the files, then say it is resolved)".to_string()
+                " (the rebase is in progress there: resolve each file, then stage it with `git add`, or `git rm` to keep a deletion; staging it is the word that it is resolved)".to_string()
             }
         ),
         MergeOutcome::OwnerEdits { files, kept_at, branch } => format!(
@@ -1567,6 +1790,18 @@ pub fn render_outcome(desc: &str, outcome: &MergeOutcome) -> String {
         ),
         MergeOutcome::NotAttempted { kept_at, branch } => format!(
             "- {desc}: not tried, because an earlier piece did not land; the work is kept{} at {}",
+            branch_note(branch),
+            kept_at.display()
+        ),
+        MergeOutcome::Unreviewed { files, kept_at, branch } => format!(
+            "- {desc}: not landed. The copy holds changes nobody reviewed ({}): too big to snapshot, a repository of its own, or made after the review. Nothing of the owner's changed; the work is kept{} at {}. Remove them, or the owner decides.",
+            files.join(", "),
+            branch_note(branch),
+            kept_at.display()
+        ),
+        MergeOutcome::NeedsReview { files, kept_at, branch } => format!(
+            "- {desc}: not landed yet. Catching up with the project changed files this change touches ({}), so it is reviewed again first; the work is kept{} at {}.",
+            files.join(", "),
             branch_note(branch),
             kept_at.display()
         ),
@@ -1599,6 +1834,15 @@ mod tests {
         dir
     }
 
+    /// The builder's word that a conflict is resolved: its resolution
+    /// staged (`git add`). A scratch copy's word is deleting the owner's
+    /// version, which the tests do themselves.
+    async fn stage_resolution(iso: &Isolation) {
+        if let Isolation::Git(wt) = iso {
+            git(&wt.path, &["add", "-A"]).await.unwrap();
+        }
+    }
+
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
     }
@@ -1626,7 +1870,7 @@ mod tests {
             std::fs::write(wt.path.join("a.txt"), "changed\n").unwrap();
             let path = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add b and change a", None).await;
+            let out = merge_all(&mut isos, "Add b and change a", None, &Landing::default()).await;
             assert_eq!(landed_files(&out[0].1), vec!["a.txt".to_string(), "b.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(r.path().join("b.txt")).unwrap(), "child\n");
             let history = log(r.path()).await;
@@ -1657,7 +1901,7 @@ mod tests {
                 Box::pin(async move { if caught_up { Ok(()) } else { Err("not caught up".into()) } })
             };
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add b", Some(&retest)).await;
+            let out = merge_all(&mut isos, "Add b", Some(&retest), &Landing::default()).await;
             match &out[0].1 {
                 MergeOutcome::Merged { caught_up_to, .. } => assert_eq!(caught_up_to, &owner),
                 other => panic!("{other:?}"),
@@ -1678,24 +1922,24 @@ mod tests {
             git(r.path(), &["commit", "-q", "-am", "parent"]).await.unwrap();
             let copy = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Change a", None).await;
+            let out = merge_all(&mut isos, "Change a", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::Conflict { files, .. } if files == &["a.txt".to_string()]), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "parent\n", "the owner's tree is as it was");
             assert!(git(r.path(), &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).await.is_err());
             assert!(std::fs::read_to_string(copy.join("a.txt")).unwrap().contains("<<<<<<< "), "the conflict waits in the copy");
 
             // Still unresolved: it stays a conflict.
-            assert!(matches!(merge_all(&mut isos, "Change a", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             // Resolved in the files but not said: still a conflict.
             std::fs::write(copy.join("a.txt"), "parent and child\n").unwrap();
-            assert!(matches!(merge_all(&mut isos, "Change a", None).await[0].1, MergeOutcome::Conflict { .. }), "only the builder's word resolves it");
+            assert!(matches!(merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }), "only the builder's word resolves it");
             // The builder says so; the re-test runs on the result.
-            isos[0].mark_resolved();
+            stage_resolution(&isos[0]).await;
             let retest = |iso: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
                 let text = std::fs::read_to_string(iso.path().join("a.txt")).unwrap_or_default();
                 Box::pin(async move { if text == "parent and child\n" { Ok(()) } else { Err(text) } })
             };
-            let out = merge_all(&mut isos, "Change a", Some(&retest)).await;
+            let out = merge_all(&mut isos, "Change a", Some(&retest), &Landing::default()).await;
             assert_eq!(landed_files(&out[0].1), vec!["a.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "parent and child\n");
         }))
@@ -1709,7 +1953,7 @@ mod tests {
             let wt = create_worktree(r.path(), "sa-4").await.unwrap();
             let path = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            assert_eq!(merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::NoChanges);
+            assert_eq!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::NoChanges);
             assert_eq!(git(r.path(), &["rev-parse", "HEAD"]).await.unwrap(), before);
             assert!(!path.exists());
         }))
@@ -1723,7 +1967,7 @@ mod tests {
             std::fs::write(wt.path.join("a.txt"), "child\n").unwrap();
             std::fs::write(r.path().join("a.txt"), "owner wip\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            match &merge_all(&mut isos, "Change a", None).await[0].1 {
+            match &merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1 {
                 MergeOutcome::OwnerEdits { files, kept_at, branch } => {
                     assert_eq!(files, &vec!["a.txt".to_string()]);
                     assert!(kept_at.exists());
@@ -1747,7 +1991,7 @@ mod tests {
             std::fs::write(wt.path.join("a.txt"), "child\n").unwrap();
             std::fs::write(r.path().join("notes.txt"), "owner wip\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            assert_eq!(landed_files(&merge_all(&mut isos, "Change a", None).await[0].1), vec!["a.txt".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1), vec!["a.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(r.path().join("notes.txt")).unwrap(), "owner wip\n", "kept as the owner left it");
         }))
     }
@@ -1760,7 +2004,7 @@ mod tests {
             std::fs::write(wt.path.join("b.txt"), "child\n").unwrap();
             let retest = |_: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> { Box::pin(async { Err("2 tests failed".to_string()) }) };
             let mut isos = [Isolation::Git(wt)];
-            assert!(matches!(&merge_all(&mut isos, "Add b", Some(&retest)).await[0].1, MergeOutcome::RetestFailed { error, .. } if error == "2 tests failed"));
+            assert!(matches!(&merge_all(&mut isos, "Add b", Some(&retest), &Landing::default()).await[0].1, MergeOutcome::RetestFailed { error, .. } if error == "2 tests failed"));
             assert!(!r.path().join("b.txt").exists());
         }))
     }
@@ -1791,7 +2035,7 @@ mod tests {
                 order.lock().unwrap().push(iso.task_id().to_string());
                 Box::pin(async { Ok(()) })
             };
-            let out = merge_all(&mut isos, "Use f", Some(&retest)).await;
+            let out = merge_all(&mut isos, "Use f", Some(&retest), &Landing::default()).await;
             assert!(out.iter().all(|(_, o)| o.landed()), "{out:?}");
             assert_eq!(*order.lock().unwrap(), ["sa-9", "sa-8"]);
 
@@ -1806,7 +2050,7 @@ mod tests {
                 let id = iso.task_id().to_string();
                 Box::pin(async move { if id == "sa-10" { Err("tests failed".to_string()) } else { Ok(()) } })
             };
-            let out = merge_all(&mut isos, "Use g", Some(&fail_first)).await;
+            let out = merge_all(&mut isos, "Use g", Some(&fail_first), &Landing::default()).await;
             assert!(matches!(out[0].1, MergeOutcome::RetestFailed { .. }), "{out:?}");
             assert!(matches!(&out[1].1, MergeOutcome::NotAttempted { kept_at, .. } if kept_at == &kept), "{out:?}");
             assert_eq!(std::fs::read_to_string(app.join("main.rs")).unwrap(), "use lib;\n", "never a half-applied set");
@@ -1889,7 +2133,7 @@ mod tests {
             std::fs::remove_file(iso.path().join("b.txt")).unwrap();
             let path = iso.path().to_path_buf();
             let mut isos = [iso];
-            let out = merge_all(&mut isos, "m", None).await;
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
             assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string(), "new.txt".to_string(), "src/a.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(f.path().join("src/a.txt")).unwrap(), "a1\n");
             assert_eq!(std::fs::read_to_string(f.path().join("new.txt")).unwrap(), "n\n");
@@ -1909,7 +2153,7 @@ mod tests {
             std::fs::write(f.path().join("src/a.txt"), "owner a\n").unwrap();
             let copy = iso.path().to_path_buf();
             let mut isos = [iso];
-            let out = merge_all(&mut isos, "m", None).await;
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::Conflict { files, .. } if files == &["b.txt".to_string()]), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner meanwhile\n", "never overwritten");
             assert_eq!(std::fs::read_to_string(copy.join("b.txt.nebo-owner")).unwrap(), "owner meanwhile\n");
@@ -1919,8 +2163,8 @@ mod tests {
             // The builder folds the owner's version in, in the copy.
             std::fs::write(copy.join("b.txt"), "owner meanwhile\nchild\n").unwrap();
             std::fs::remove_file(copy.join("b.txt.nebo-owner")).unwrap();
-            isos[0].mark_resolved();
-            let out = merge_all(&mut isos, "m", None).await;
+            stage_resolution(&isos[0]).await;
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
             assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner meanwhile\nchild\n");
             assert_eq!(std::fs::read_to_string(f.path().join("src/a.txt")).unwrap(), "owner a\n");
@@ -1940,23 +2184,9 @@ mod tests {
                 std::fs::write(&owner_file, "owner, during the re-test\n").unwrap();
                 Box::pin(async { Ok(()) })
             };
-            let out = merge_all(&mut isos, "m", Some(&retest)).await;
+            let out = merge_all(&mut isos, "m", Some(&retest), &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files == &["b.txt".to_string()]), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner, during the re-test\n");
-        }))
-    }
-
-    #[test]
-    fn keeping_both_writes_the_copys_version_beside_the_owners_and_changes_nothing_else() {
-        with_home(|_| rt().block_on(async {
-            let f = folder();
-            let iso = create(f.path(), "sa-24").await.unwrap();
-            std::fs::write(iso.path().join("b.txt"), "child\n").unwrap();
-            let kept = keep_both(&iso, &["b.txt".to_string()]).unwrap();
-            assert_eq!(kept, vec![f.path().join("b.txt.sa-24.nebo-conflict")]);
-            assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(), "child\n");
-            assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "b0\n");
-            assert!(iso.path().exists(), "the copy is kept");
         }))
     }
 
@@ -2015,14 +2245,14 @@ mod tests {
             std::fs::write(f.path().join("b.txt"), "owner1\n").unwrap();
             let copy = c.path.clone();
             let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             assert_eq!(std::fs::read_to_string(copy.join("b.txt.nebo-owner")).unwrap(), "owner1\n");
             // The owner keeps working on the file while the builder resolves.
             std::fs::write(f.path().join("b.txt"), "owner1\nowner2 IMPORTANT\n").unwrap();
             std::fs::write(copy.join("b.txt"), "child\nowner1\n").unwrap();
             std::fs::remove_file(copy.join("b.txt.nebo-owner")).unwrap();
-            isos[0].mark_resolved();
-            let out = merge_all(&mut isos, "m", None).await;
+            stage_resolution(&isos[0]).await;
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::Conflict { files, .. } if files == &["b.txt".to_string()]), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "owner1\nowner2 IMPORTANT\n", "the owner's newer edit is kept");
             assert_eq!(std::fs::read_to_string(copy.join("b.txt.nebo-owner")).unwrap(), "owner1\nowner2 IMPORTANT\n", "and handed to the builder");
@@ -2041,7 +2271,7 @@ mod tests {
             git(&wt.path, &["add", "-f", "config.local"]).await.unwrap();
             std::fs::write(r.path().join("config.local"), "SECRET=hunter2\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add a config template", None).await;
+            let out = merge_all(&mut isos, "Add a config template", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files == &["config.local".to_string()]), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(r.path().join("config.local")).unwrap(), "SECRET=hunter2\n");
         }))
@@ -2055,20 +2285,20 @@ mod tests {
             std::fs::write(wt.path.join("b.txt"), "child\n").unwrap();
             git(r.path(), &["checkout", "-q", "-b", "experiment"]).await.unwrap();
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add b", None).await;
+            let out = merge_all(&mut isos, "Add b", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::OwnerBusy { why, .. } if why.to_string().contains("experiment")), "{:?}", out[0].1);
             assert!(!r.path().join("b.txt").exists());
 
             git(r.path(), &["checkout", "-q", "--detach"]).await.unwrap();
-            assert!(matches!(&merge_all(&mut isos, "Add b", None).await[0].1, MergeOutcome::OwnerBusy { why, .. } if why.to_string().contains("no branch")));
+            assert!(matches!(&merge_all(&mut isos, "Add b", None, &Landing::default()).await[0].1, MergeOutcome::OwnerBusy { why, .. } if why.to_string().contains("no branch")));
 
             git(r.path(), &["checkout", "-q", "main"]).await.unwrap();
             let merge_head = git(r.path(), &["rev-parse", "--git-path", "MERGE_HEAD"]).await.unwrap();
             let merge_head = r.path().join(merge_head);
             std::fs::write(&merge_head, git(r.path(), &["rev-parse", "HEAD"]).await.unwrap()).unwrap();
-            assert!(matches!(&merge_all(&mut isos, "Add b", None).await[0].1, MergeOutcome::OwnerBusy { why, .. } if why.to_string().contains("a merge")));
+            assert!(matches!(&merge_all(&mut isos, "Add b", None, &Landing::default()).await[0].1, MergeOutcome::OwnerBusy { why, .. } if why.to_string().contains("a merge")));
             std::fs::remove_file(&merge_head).unwrap();
-            assert_eq!(landed_files(&merge_all(&mut isos, "Add b", None).await[0].1), vec!["b.txt".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "Add b", None, &Landing::default()).await[0].1), vec!["b.txt".to_string()]);
         }))
     }
 
@@ -2081,9 +2311,9 @@ mod tests {
             git(r.path(), &["rm", "-q", "a.txt"]).await.unwrap();
             git(r.path(), &["commit", "-q", "-m", "owner deletes a"]).await.unwrap();
             let mut isos = [Isolation::Git(wt)];
-            assert!(matches!(merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             // Tried again with nobody resolving anything: still a conflict.
-            assert!(matches!(merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             assert!(!r.path().join("a.txt").exists(), "the owner's deletion stands");
         }))
     }
@@ -2098,10 +2328,10 @@ mod tests {
             git(r.path(), &["commit", "-q", "-am", "parent"]).await.unwrap();
             let copy = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            merge_all(&mut isos, "m", None).await;
+            merge_all(&mut isos, "m", None, &Landing::default()).await;
             std::fs::write(copy.join("a.txt"), "Title\n=======\nparent and child\n").unwrap();
-            isos[0].mark_resolved();
-            assert_eq!(landed_files(&merge_all(&mut isos, "m", None).await[0].1), vec!["a.txt".to_string()]);
+            stage_resolution(&isos[0]).await;
+            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1), vec!["a.txt".to_string()]);
         }))
     }
 
@@ -2117,7 +2347,7 @@ mod tests {
             let busy = create_worktree(r.path(), "sa-r7").await.unwrap();
             std::fs::write(busy.path.join("z.txt"), "z\n").unwrap();
             let mut isos = [Isolation::Git(idle), Isolation::Git(busy)];
-            let out = merge_all(&mut isos, "Add z", None).await;
+            let out = merge_all(&mut isos, "Add z", None, &Landing::default()).await;
             assert_eq!(out[0].1, MergeOutcome::NoChanges);
             assert!(!idle_path.exists(), "its worktree is cleaned up");
             assert_eq!(landed_files(&out[1].1), vec!["z.txt".to_string()]);
@@ -2145,12 +2375,12 @@ mod tests {
             std::fs::write(wt.path.join("b.txt"), "TODO\n").unwrap();
             let copy = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add b", None).await;
+            let out = merge_all(&mut isos, "Add b", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::HookFailed { output, .. } if output.contains("TODO left in b.txt")), "{:?}", out[0].1);
             assert!(!r.path().join("b.txt").exists());
             assert!(copy.join("b.txt").exists(), "the work is kept for the builder");
             std::fs::write(copy.join("b.txt"), "done\n").unwrap();
-            assert_eq!(landed_files(&merge_all(&mut isos, "Add b", None).await[0].1), vec!["b.txt".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "Add b", None, &Landing::default()).await[0].1), vec!["b.txt".to_string()]);
             assert!(std::fs::read_to_string(&log).unwrap().contains("commit-msg"), "the commit-msg hook ran on it");
         }))
     }
@@ -2163,7 +2393,7 @@ mod tests {
             git(&wt.path, &["mv", "a.txt", "b.txt"]).await.unwrap();
             std::fs::write(r.path().join("a.txt"), "owner wip\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Rename a to b", None).await;
+            let out = merge_all(&mut isos, "Rename a to b", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files.contains(&"a.txt".to_string())), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "owner wip\n");
         }))
@@ -2190,7 +2420,7 @@ mod tests {
                 })
             };
             let mut isos = [Isolation::Git(wt)];
-            assert_eq!(landed_files(&merge_all(&mut isos, "Add b", Some(&retest)).await[0].1), vec!["b.txt".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "Add b", Some(&retest), &Landing::default()).await[0].1), vec!["b.txt".to_string()]);
             assert!(r.path().join("c.txt").exists() && r.path().join("b.txt").exists());
         }))
     }
@@ -2215,7 +2445,7 @@ mod tests {
             std::fs::remove_file(f.path().join("b.txt")).unwrap();
             let copy = c.path.clone();
             let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             assert!(copy.join("b.txt.nebo-owner-deleted").exists(), "a deletion, not an empty file");
             assert!(!copy.join("b.txt.nebo-owner").exists());
         }))
@@ -2232,7 +2462,7 @@ mod tests {
             std::fs::write(c.path.join("out/x.txt"), "x\n").unwrap();
             std::os::unix::fs::symlink(outside.path(), f.path().join("out")).unwrap();
             let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(&merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::Failed { error, .. } if error.contains("link")));
+            assert!(matches!(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Failed { error, .. } if error.contains("link")));
             assert!(!outside.path().join("x.txt").exists());
         }))
     }
@@ -2244,7 +2474,7 @@ mod tests {
             let wt = create_worktree(r.path(), "sa-r14").await.unwrap();
             std::fs::write(wt.path.join("naïve résumé.txt"), "x\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            assert_eq!(landed_files(&merge_all(&mut isos, "Add the résumé", None).await[0].1), vec!["naïve résumé.txt".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "Add the résumé", None, &Landing::default()).await[0].1), vec!["naïve résumé.txt".to_string()]);
             assert!(r.path().join("naïve résumé.txt").exists());
         }))
     }
@@ -2306,7 +2536,7 @@ mod tests {
                     std::os::unix::fs::symlink(elsewhere.path(), r.path().join("docs")).unwrap();
                 }
                 let mut isos = [Isolation::Git(wt)];
-                let out = merge_all(&mut isos, "Add a readme", None).await;
+                let out = merge_all(&mut isos, "Add a readme", None, &Landing::default()).await;
                 assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files == &vec![folder.to_string()]), "{:?}", out[0].1);
             }
             assert_eq!(std::fs::read_to_string(r.path().join("cache")).unwrap(), "OWNER NOTES\n");
@@ -2327,15 +2557,15 @@ mod tests {
             git(r.path(), &["commit", "-q", "-am", "parent"]).await.unwrap();
             let copy = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            assert!(matches!(&merge_all(&mut isos, "Change a", None).await[0].1, MergeOutcome::Conflict { .. }));
-            assert!(matches!(&merge_all(&mut isos, "Change a", None).await[0].1, MergeOutcome::Conflict { .. }), "not resolved by anyone");
-            isos[0].mark_resolved();
-            let out = merge_all(&mut isos, "Change a", None).await;
+            assert!(matches!(&merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(&merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }), "not resolved by anyone");
+            stage_resolution(&isos[0]).await;
+            let out = merge_all(&mut isos, "Change a", None, &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::Conflict { files, .. } if files == &vec!["a.txt".to_string()]), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "parent\n");
             std::fs::write(copy.join("a.txt"), "parent and child\n").unwrap();
-            isos[0].mark_resolved();
-            assert_eq!(landed_files(&merge_all(&mut isos, "Change a", None).await[0].1), vec!["a.txt".to_string()]);
+            stage_resolution(&isos[0]).await;
+            assert_eq!(landed_files(&merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1), vec!["a.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "parent and child\n");
         }))
     }
@@ -2354,10 +2584,16 @@ mod tests {
             let owner = git(r.path(), &["rev-parse", "HEAD"]).await.unwrap();
             let copy = wt.path.clone();
             let mut isos = [Isolation::Git(wt)];
-            assert!(matches!(&merge_all(&mut isos, "Change a", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(&merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             std::fs::write(copy.join("a.txt"), "parent and child\n").unwrap();
             std::fs::write(copy.join("more.txt"), "more work\n").unwrap();
             let [mut iso] = isos;
+            // Not resolved yet: kept as it is, nothing staged for the builder.
+            let note = put_away(&mut iso, "Unfinished").await.unwrap();
+            assert!(note.contains("kept in its copy") && copy.exists(), "{note}");
+            assert!(!unmerged(match &iso { Isolation::Git(w) => w, _ => unreachable!() }).await.is_empty(), "the conflict is still the builder's");
+            // Resolved (staged): put away on its branch.
+            stage_resolution(&iso).await;
             let note = put_away(&mut iso, "Unfinished").await.unwrap();
             assert!(note.contains("branch nebo/sa-m3"), "{note}");
             assert!(!copy.exists(), "the disk is freed");
@@ -2369,7 +2605,7 @@ mod tests {
             assert_eq!(again.path, copy, "the same copy, on the same branch");
             assert_eq!(std::fs::read_to_string(copy.join("more.txt")).unwrap(), "more work\n");
             let mut isos = [Isolation::Git(again)];
-            let landed = landed_files(&merge_all(&mut isos, "Change a", None).await[0].1);
+            let landed = landed_files(&merge_all(&mut isos, "Change a", None, &Landing::default()).await[0].1);
             assert_eq!(landed, vec!["a.txt".to_string(), "more.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "parent and child\n");
         }))
@@ -2395,14 +2631,25 @@ mod tests {
                 })
             };
             let mut isos = [Isolation::Git(wt)];
-            let out = merge_all(&mut isos, "Add b", Some(&formatter)).await;
+            let out = merge_all(&mut isos, "Add b", Some(&formatter), &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::RetestFailed { error, .. } if error.contains("the checks changed b.txt")), "{:?}", out[0].1);
             assert!(!r.path().join("b.txt").exists());
-            // Taken in as the work, it is checked again and lands; the
-            // checks' output does not, and the copy goes.
-            let out = merge_all(&mut isos, "Add b", Some(&formatter)).await;
+            // The rewrite waits in the copy for the builder; nothing of it
+            // landed. The builder undoes it, and checks that only write
+            // output beside the change let it land; their output does not.
+            assert_eq!(std::fs::read_to_string(path.join("b.txt")).unwrap(), "formatted\n");
+            std::fs::write(path.join("b.txt"), "child\n").unwrap();
+            let output_only = |iso: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
+                let p = iso.path().to_path_buf();
+                Box::pin(async move {
+                    std::fs::create_dir_all(p.join("build")).unwrap();
+                    std::fs::write(p.join("build/out.txt"), "output").unwrap();
+                    Ok(())
+                })
+            };
+            let out = merge_all(&mut isos, "Add b", Some(&output_only), &Landing::default()).await;
             assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string()]);
-            assert_eq!(std::fs::read_to_string(r.path().join("b.txt")).unwrap(), "formatted\n");
+            assert_eq!(std::fs::read_to_string(r.path().join("b.txt")).unwrap(), "child\n");
             assert!(!r.path().join("build").exists(), "the checks' output never lands");
             assert!(!path.exists(), "the landed copy is removed, the checks' output with it");
         }))
@@ -2427,9 +2674,11 @@ mod tests {
                 })
             };
             let mut isos = [Isolation::Copy(c)];
-            let out = merge_all(&mut isos, "Edit doc", Some(&rewrites)).await;
+            let out = merge_all(&mut isos, "Edit doc", Some(&rewrites), &Landing::default()).await;
             assert!(matches!(&out[0].1, MergeOutcome::RetestFailed { error, .. } if error.contains("the checks changed doc.txt")), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "base\n");
+            // The builder undoes the checks' rewrite before it can land.
+            std::fs::write(isos[0].path().join("doc.txt"), "edited\n").unwrap();
             let caches = |iso: &Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
                 let p = iso.path().to_path_buf();
                 Box::pin(async move {
@@ -2438,8 +2687,9 @@ mod tests {
                     Ok(())
                 })
             };
-            let out = merge_all(&mut isos, "Edit doc", Some(&caches)).await;
+            let out = merge_all(&mut isos, "Edit doc", Some(&caches), &Landing::default()).await;
             assert_eq!(landed_files(&out[0].1), vec!["doc.txt".to_string()]);
+            assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "edited\n");
             assert!(!f.path().join("__pycache__").exists(), "the checks' output never lands");
         }))
     }
@@ -2458,13 +2708,13 @@ mod tests {
             std::fs::write(copy.join("doc.txt"), "child\n").unwrap();
             std::fs::write(f.path().join("doc.txt"), "owner\n").unwrap();
             let mut isos = [Isolation::Copy(c)];
-            assert!(matches!(&merge_all(&mut isos, "m", None).await[0].1, MergeOutcome::Conflict { .. }));
+            assert!(matches!(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
             assert_eq!(std::fs::read_to_string(copy.join("doc.txt.nebo-owner-1")).unwrap(), "owner\n");
             assert_eq!(std::fs::read_to_string(copy.join("doc.txt.nebo-owner")).unwrap(), "OWNER'S OWN FILE\n");
             std::fs::write(copy.join("doc.txt"), "owner and child\n").unwrap();
             std::fs::remove_file(copy.join("doc.txt.nebo-owner-1")).unwrap();
-            isos[0].mark_resolved();
-            assert_eq!(landed_files(&merge_all(&mut isos, "m", None).await[0].1), vec!["doc.txt".to_string()]);
+            stage_resolution(&isos[0]).await;
+            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1), vec!["doc.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(f.path().join("doc.txt.nebo-owner")).unwrap(), "OWNER'S OWN FILE\n");
             assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "owner and child\n");
         }))
@@ -2487,13 +2737,13 @@ mod tests {
             let wt = create_worktree(r.path(), "sa-lfs1").await.unwrap();
             std::fs::write(wt.path.join("x.bin"), "v2\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            assert_eq!(landed_files(&merge_all(&mut isos, "v2", None).await[0].1), vec!["x.bin".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "v2", None, &Landing::default()).await[0].1), vec!["x.bin".to_string()]);
             assert_eq!(std::fs::read_to_string(r.path().join("x.bin")).unwrap(), "v2\n");
             let wt = create_worktree(r.path(), "sa-lfs2").await.unwrap();
             std::fs::write(wt.path.join("x.bin"), "v3\n").unwrap();
             std::fs::write(r.path().join("x.bin"), "OWNER UNSAVED\n").unwrap();
             let mut isos = [Isolation::Git(wt)];
-            assert!(matches!(&merge_all(&mut isos, "v3", None).await[0].1, MergeOutcome::OwnerEdits { .. }));
+            assert!(matches!(&merge_all(&mut isos, "v3", None, &Landing::default()).await[0].1, MergeOutcome::OwnerEdits { .. }));
             assert_eq!(std::fs::read_to_string(r.path().join("x.bin")).unwrap(), "OWNER UNSAVED\n");
         }))
     }
@@ -2515,7 +2765,7 @@ mod tests {
                 Box::pin(async { Ok(()) })
             };
             let mut isos = [Isolation::Git(wt)];
-            landed_files(&merge_all(&mut isos, "Add b", Some(&retest)).await[0].1);
+            landed_files(&merge_all(&mut isos, "Add b", Some(&retest), &Landing::default()).await[0].1);
             assert_eq!(std::fs::read_to_string(r.path().join("b.txt")).unwrap(), *seen.lock().unwrap());
             assert_eq!(*seen.lock().unwrap(), "child\nhooked\n");
         }))
@@ -2535,7 +2785,7 @@ mod tests {
             let iso = reattach(iso).await.unwrap();
             assert_eq!(std::fs::read_to_string(iso.path().join("doc.txt")).unwrap(), "half\n");
             let mut isos = [iso];
-            assert_eq!(landed_files(&merge_all(&mut isos, "m", None).await[0].1), vec!["doc.txt".to_string()]);
+            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1), vec!["doc.txt".to_string()]);
             assert_eq!(std::fs::read_to_string(f.path().join("doc.txt")).unwrap(), "half\n");
         }))
     }
@@ -2552,9 +2802,10 @@ mod tests {
         let made = f.path().join("new.txt");
         let new_fp = Some(tools::checkpoint::fingerprint(b"new\n"));
         let journal = |done| Journal {
+            copy: None,
             steps: vec![
-                Step { target: target.clone(), staged: Some(f.path().join(".doc.txt.t.nebo-landing")), backup: Some(backup.clone()), fp: new_fp },
-                Step { target: made.clone(), staged: Some(f.path().join(".new.txt.t.nebo-landing")), backup: None, fp: new_fp },
+                Step { target: target.clone(), staged: Some(f.path().join(".doc.txt.t.nebo-landing")), backup: Some(backup.clone()), fp: new_fp, was: None },
+                Step { target: made.clone(), staged: Some(f.path().join(".new.txt.t.nebo-landing")), backup: None, fp: new_fp, was: None },
             ],
             done,
         };
@@ -2573,5 +2824,213 @@ mod tests {
         recover_landing(&at);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
         assert!(!backup.exists() && !at.exists());
+        // Done, with its copy: the copy goes too, everything in it landed.
+        let copy = f.path().join("the-copy");
+        std::fs::create_dir_all(&copy).unwrap();
+        let mut done = journal(true);
+        done.copy = Some(copy.clone());
+        done.write(&at).unwrap();
+        recover_landing(&at);
+        assert!(!copy.exists(), "a recovered landing that was done frees its copy");
+    }
+
+    /// Review round 3 M1: conflict markers of the width a project's
+    /// `.gitattributes` sets are markers too: staged with them still in,
+    /// it is still a conflict.
+    #[test]
+    fn markers_of_any_width_keep_a_conflict() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            std::fs::write(r.path().join(".gitattributes"), "a.txt conflict-marker-size=32\n").unwrap();
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            git(r.path(), &["commit", "-q", "-m", "attrs"]).await.unwrap();
+            let wt = create_worktree(r.path(), "sa-mk").await.unwrap();
+            std::fs::write(wt.path.join("a.txt"), "child\n").unwrap();
+            std::fs::write(r.path().join("a.txt"), "parent\n").unwrap();
+            git(r.path(), &["commit", "-q", "-am", "parent"]).await.unwrap();
+            let copy = wt.path.clone();
+            let mut isos = [Isolation::Git(wt)];
+            assert!(matches!(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { .. }));
+            let text = std::fs::read_to_string(copy.join("a.txt")).unwrap();
+            assert!(text.contains(&"<".repeat(32)), "git wrote wide markers: {text}");
+            stage_resolution(&isos[0]).await;
+            assert!(matches!(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1, MergeOutcome::Conflict { files, .. } if files == &vec!["a.txt".to_string()]));
+            assert_eq!(std::fs::read_to_string(r.path().join("a.txt")).unwrap(), "parent\n");
+        }))
+    }
+
+    /// Review round 3 B3: only what was reviewed lands. A file the review
+    /// never saw (too big to snapshot, added after it) is refused in both
+    /// arms; build output in a scratch copy is never landed.
+    #[test]
+    fn only_the_reviewed_paths_land() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-only").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
+            std::fs::write(wt.path.join("video.mov"), "never reviewed").unwrap();
+            let landing = Landing { only: Some(vec!["b.txt".into()]), review_overlap: false };
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add b", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["video.mov".to_string()]), "{:?}", out[0].1);
+            assert!(!r.path().join("b.txt").exists() && !r.path().join("video.mov").exists());
+
+            let f = folder();
+            let c = create_copy(f.path(), "sa-only-c").unwrap();
+            std::fs::write(c.path.join("b.txt"), "reviewed\n").unwrap();
+            std::fs::create_dir_all(c.path.join("node_modules/x")).unwrap();
+            std::fs::write(c.path.join("node_modules/x/index.js"), "installed").unwrap();
+            std::fs::write(c.path.join("notes.txt"), "never reviewed").unwrap();
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["notes.txt".to_string()]), "{:?}", out[0].1);
+            std::fs::remove_file(isos[0].path().join("notes.txt")).unwrap();
+            assert_eq!(landed_files(&merge_all(&mut isos, "m", None, &landing).await[0].1), vec!["b.txt".to_string()]);
+            assert!(!f.path().join("node_modules").exists(), "build output never lands");
+        }))
+    }
+
+    /// Review round 3 M3: what lands is the copy's own branch, and the
+    /// owner's branch must have moved to it.
+    #[test]
+    fn a_copy_off_its_branch_never_lands() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-off").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "b\n").unwrap();
+            let mut iso = Isolation::Git(wt);
+            let caught = catch_up(&mut iso, "Add b", &Landing::default()).await.unwrap();
+            assert!(!caught.no_changes);
+            git(iso.path(), &["checkout", "-q", "--detach"]).await.unwrap();
+            std::fs::write(iso.path().join("c.txt"), "c\n").unwrap();
+            git(iso.path(), &["add", "-A"]).await.unwrap();
+            git(iso.path(), &["commit", "-q", "-m", "off the branch"]).await.unwrap();
+            let out = land(&iso, &Landing::default()).await;
+            assert!(matches!(&out, MergeOutcome::Failed { error, .. } if error.contains("not on its own branch")), "{out:?}");
+            assert!(!r.path().join("c.txt").exists());
+            assert!(iso.path().exists(), "never force-removed");
+        }))
+    }
+
+    /// Review round 3 M10: discarding what is already gone succeeds.
+    #[test]
+    fn discarding_twice_succeeds() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let iso = Isolation::Git(create_worktree(r.path(), "sa-dd").await.unwrap());
+            discard(&iso).await.unwrap();
+            discard(&iso).await.unwrap();
+            let f = folder();
+            let c = Isolation::Copy(create_copy(f.path(), "sa-dd-c").unwrap());
+            discard(&c).await.unwrap();
+            discard(&c).await.unwrap();
+        }))
+    }
+
+    /// A scratch copy keeps the executable bit, through the copy and the
+    /// landing.
+    #[cfg(unix)]
+    #[test]
+    fn the_executable_bit_is_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::write(f.path().join("run.sh"), "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(f.path().join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let c = create_copy(f.path(), "sa-x").unwrap();
+            assert_eq!(std::fs::metadata(c.path.join("run.sh")).unwrap().permissions().mode() & 0o111, 0o111);
+            std::fs::write(c.path.join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
+            let mut isos = [Isolation::Copy(c)];
+            landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1);
+            assert_eq!(std::fs::metadata(f.path().join("run.sh")).unwrap().permissions().mode() & 0o111, 0o111);
+        }))
+    }
+
+    /// A rename that only changes a name's case lands as that name, on any
+    /// disk.
+    #[test]
+    fn a_case_only_rename_lands() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::write(f.path().join("Total.py"), "x = 1\n").unwrap();
+            let c = create_copy(f.path(), "sa-case").unwrap();
+            std::fs::remove_file(c.path.join("Total.py")).unwrap();
+            std::fs::write(c.path.join("total.py"), "x = 2\n").unwrap();
+            let mut isos = [Isolation::Copy(c)];
+            landed_files(&merge_all(&mut isos, "m", None, &Landing::default()).await[0].1);
+            let names: Vec<String> = std::fs::read_dir(f.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            assert!(names.contains(&"total.py".to_string()), "{names:?}");
+            assert_eq!(std::fs::read_to_string(f.path().join("total.py")).unwrap(), "x = 2\n");
+        }))
+    }
+
+    /// A tracked link and a submodule are compared as git records them: a
+    /// change to either lands, and nothing of the owner's is mistaken for
+    /// an edit.
+    #[cfg(unix)]
+    #[test]
+    fn a_tracked_link_and_a_submodule_bump_land() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            std::os::unix::fs::symlink("a.txt", r.path().join("link")).unwrap();
+            let sub = repo().await;
+            git(r.path(), &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.path().to_string_lossy(), "sub"]).await.unwrap();
+            git(r.path(), &["add", "-A"]).await.unwrap();
+            git(r.path(), &["commit", "-q", "-m", "link and sub"]).await.unwrap();
+            std::fs::write(sub.path().join("s.txt"), "s\n").unwrap();
+            git(sub.path(), &["add", "-A"]).await.unwrap();
+            git(sub.path(), &["commit", "-q", "-m", "next"]).await.unwrap();
+            let next = git(sub.path(), &["rev-parse", "HEAD"]).await.unwrap();
+            let wt = create_worktree(r.path(), "sa-ln").await.unwrap();
+            std::fs::remove_file(wt.path.join("link")).unwrap();
+            std::os::unix::fs::symlink("b.txt", wt.path.join("link")).unwrap();
+            git(&wt.path, &["update-index", "--add", "--cacheinfo", &format!("160000,{next},sub")]).await.unwrap();
+            let landing = Landing { only: Some(vec!["link".into(), "sub".into()]), review_overlap: false };
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Point the link at b; bump sub", None, &landing).await;
+            let mut files = landed_files(&out[0].1);
+            files.sort();
+            assert_eq!(files, vec!["link".to_string(), "sub".to_string()]);
+            assert_eq!(git(r.path(), &["rev-parse", "HEAD:sub"]).await.unwrap(), next);
+        }))
+    }
+
+    /// A file of the copy where the owner has a folder asks: the folder is
+    /// never hidden.
+    #[test]
+    fn a_file_where_the_owner_has_a_folder_asks() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            let c = create_copy(f.path(), "sa-dir").unwrap();
+            std::fs::write(c.path.join("docs"), "a file\n").unwrap();
+            std::fs::create_dir_all(f.path().join("docs")).unwrap();
+            std::fs::write(f.path().join("docs/owner.md"), "mine\n").unwrap();
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
+            assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { files, .. } if files == &vec!["docs".to_string()]), "{:?}", out[0].1);
+            assert_eq!(std::fs::read_to_string(f.path().join("docs/owner.md")).unwrap(), "mine\n");
+        }))
+    }
+
+    /// The owner's edit in the instant before a file is replaced is caught
+    /// right there: every file goes back, the owner's edit stays.
+    #[test]
+    fn an_owner_edit_just_before_the_replace_is_never_overwritten() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            let c = create_copy(f.path(), "sa-race").unwrap();
+            std::fs::write(c.path.join("b.txt"), "child\n").unwrap();
+            let owner_file = f.path().join("b.txt");
+            *BEFORE_REPLACE.lock().unwrap() = Some(Box::new(move |target: &Path| {
+                if target.ends_with("b.txt") {
+                    let _ = std::fs::write(target, "owner, just now\n");
+                }
+            }));
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
+            *BEFORE_REPLACE.lock().unwrap() = None;
+            assert!(matches!(&out[0].1, MergeOutcome::OwnerEdits { .. }), "{:?}", out[0].1);
+            assert_eq!(std::fs::read_to_string(&owner_file).unwrap(), "owner, just now\n");
+        }))
     }
 }

@@ -54,7 +54,8 @@ impl HelperDoor {
         Ok(HelperSpec {
             description: req.description.clone(),
             prompt: req.prompt.clone(),
-            kind: HelperKind::parse(&req.agent_type).unwrap_or(HelperKind::General),
+            // A reviewer is the verify loop's own: a model never starts one.
+            kind: HelperKind::parse(&req.agent_type).filter(|k| HelperKind::ALL.contains(k)).unwrap_or(HelperKind::General),
             background,
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
@@ -173,9 +174,9 @@ fn finished(c: Completion) -> SpawnResult {
 }
 
 impl HelperDoor {
-    /// Whether helper `task_id` of `caller`'s work in its copy was verified
-    /// (its own turn's verify loop) and hasn't changed since.
-    async fn verified(&self, caller: &str, task_id: &str) -> bool {
+    /// The paths of helper `task_id`'s change, when its work in its copy
+    /// was verified (its own turn's verify loop) and hasn't changed since.
+    async fn verified(&self, caller: &str, task_id: &str) -> Option<Vec<String>> {
         let key = super::helper_key(caller, task_id);
         let Some(v) = self
             .harness
@@ -186,9 +187,9 @@ impl HelperDoor {
             .next()
             .filter(|v| v.state == "verified" && v.work_kind == "helper_copy")
         else {
-            return false;
+            return None;
         };
-        crate::harness::verify::work::unchanged_since_review(&self.harness.store, &v).await
+        crate::harness::verify::work::reviewed_paths(&self.harness.store, &v).await
     }
 }
 
@@ -248,7 +249,16 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn settle<'a>(&'a self, task_id: &'a str, land: bool, ctx: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
         Box::pin(async move {
-            if land && !self.verified(&ctx.session_key, task_id).await {
+            // Verified work lands like the verify loop's own: held to what
+            // was reviewed, and reviewed again when catching up changed
+            // files it touches. Work that isn't verified lands only at the
+            // owner's word, as it is.
+            let reviewed = if land { self.verified(&ctx.session_key, task_id).await } else { None };
+            let landing = match &reviewed {
+                Some(paths) => crate::worktree::Landing { only: Some(paths.clone()), review_overlap: true },
+                None => crate::worktree::Landing::default(),
+            };
+            if land && reviewed.is_none() {
                 // Work that isn't verified lands in the owner's files only at
                 // their own word, on a card; a run nobody watches holds it.
                 let question = format!(
@@ -260,7 +270,7 @@ impl SubAgentOrchestrator for HelperDoor {
                     Some("Discard them") => {
                         return self
                             .helpers
-                            .settle(&ctx.session_key, task_id, super::Decision::Discard, None)
+                            .settle(&ctx.session_key, task_id, super::Decision::Discard, None, Default::default())
                             .await
                             .map(|text| format!("The owner chose to discard them. {text}"));
                     }
@@ -290,7 +300,7 @@ impl SubAgentOrchestrator for HelperDoor {
                     if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
                 })
             };
-            self.helpers.settle(&caller, task_id, decision, Some(&retest)).await
+            self.helpers.settle(&caller, task_id, decision, Some(&retest), landing).await
         })
     }
 
