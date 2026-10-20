@@ -740,3 +740,15 @@ fn a_broken_picture_is_named_with_what_to_do() {
     assert_eq!(warning_lines(&[failed_fonts(&["Gone".to_string()])]), "\nWarning: these fonts didn't load, so the page draws with a fallback font: Gone.");
     assert_eq!(warning_lines(&[]), "");
 }
+
+/// Review round 4 Y2: a live check never passes by default: with no view of
+/// the app that can be opened, it fails.
+#[test]
+fn a_live_load_with_no_browser_to_open_a_view_fails() {
+    let (dir, store) = temp_store();
+    seed_app(&store, dir.path(), "app-live", "kart");
+    let app = store.get_agent("app-live").unwrap().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let got = rt.block_on(live_load(None, &app));
+    assert!(got.is_err_and(|e| e.contains("no built-in browser")));
+}

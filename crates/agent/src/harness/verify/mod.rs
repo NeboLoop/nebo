@@ -98,7 +98,9 @@ pub fn english(why: &Why) -> String {
         "turn_ended" => "the run ended before the checking finished".into(),
         "restarted" => "Nebo restarted while it was being checked".into(),
         "unreviewed" => format!("the copy holds changes nobody reviewed: {}", a("files")),
-        "needs_review" => format!("catching up changed files the change touches ({}); reviewed again first", a("files")),
+        "needs_review" => format!("what would land differs from what was reviewed in {}; reviewed again first", a("files")),
+        "changed_after_review" => "the copy changed after it was reviewed; reviewed again first".into(),
+        "waiting_to_land" => "waiting for another landing on this project to finish".into(),
         other => other.replace('_', " "),
     }
 }

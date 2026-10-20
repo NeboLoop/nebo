@@ -474,10 +474,11 @@ async fn start_work_with_id(
     })
 }
 
-/// The paths `v`'s change touches, when its folder holds exactly what its
-/// last review round reviewed (a verification vouches for those bytes,
-/// never for what came after); `None` otherwise.
-pub async fn reviewed_paths(store: &db::Store, v: &db::Verification) -> Option<Vec<String>> {
+/// What `v`'s change was reviewed as (each path it touches, with what the
+/// review saw there), when its folder holds exactly what its last review
+/// round reviewed (a verification vouches for those bytes, never for what
+/// came after); `None` otherwise.
+pub async fn reviewed(store: &db::Store, v: &db::Verification) -> Option<worktree::Reviewed> {
     let reviewed = store
         .verification_rounds(&v.id)
         .unwrap_or_default()
@@ -490,7 +491,8 @@ pub async fn reviewed_paths(store: &db::Store, v: &db::Verification) -> Option<V
     if shadow.snapshot().await.ok()? != reviewed {
         return None;
     }
-    shadow.diff(&Snapshot(v.base_ref.clone()), &reviewed).await.ok().map(|c| c.paths())
+    let paths = shadow.diff(&Snapshot(v.base_ref.clone()), &reviewed).await.ok()?.paths();
+    shadow.contents(&reviewed, &paths).await.ok()
 }
 
 /// A work as its row left it.

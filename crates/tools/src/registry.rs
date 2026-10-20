@@ -503,6 +503,11 @@ impl Registry {
         }
     }
 
+    /// The bot's browser, when one is wired.
+    pub fn browser(&self) -> Option<Arc<browser::Manager>> {
+        self.browser_manager.read().unwrap().clone()
+    }
+
     /// Close the browser tab/page a session opened — the canonical cleanup for a
     /// finished sub-agent. No-op when no browser manager is wired or the session
     /// never opened anything. Routes to whichever backend served the calls.

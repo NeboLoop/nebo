@@ -658,8 +658,8 @@ pub fn status_text(name: &str, dir: &Path, errors: usize) -> String {
 
 /// Why the app served from `dir` would not pass a live check, if it would
 /// not: its folder missing, no entry page, a script or style it loads (or
-/// imports) missing, or `errors` console errors in its open views. `None`:
-/// the page loads with zero console errors.
+/// imports) missing, or `errors` errors in the load that was checked.
+/// `None`: the page loads with zero errors.
 pub fn live_problem(dir: &Path, errors: usize) -> Option<&'static str> {
     if !dir.is_dir() {
         return Some("the app's folder does not exist");
