@@ -33,6 +33,10 @@ pub struct Verification {
     pub work_dir: String,
     /// worktree | copy | none
     pub isolation: String,
+    /// isolated | app_pages | helper_copy | folder
+    pub work_kind: String,
+    /// The copy's whole state, to resume the work in a later turn.
+    pub isolation_state: Option<serde_json::Value>,
     pub branch: String,
     pub base_ref: String,
     /// running | paused | verified | not_verified | stopped
@@ -74,6 +78,8 @@ pub struct NewVerification<'a> {
     pub project_root: &'a str,
     pub work_dir: &'a str,
     pub isolation: &'a str,
+    pub work_kind: &'a str,
+    pub isolation_state: Option<&'a serde_json::Value>,
     pub branch: &'a str,
     pub base_ref: &'a str,
     pub reviewer_prefix: &'a str,
@@ -137,7 +143,7 @@ pub struct VerificationQuery<'a> {
 }
 
 const COLUMNS: &str = "id, agent_id, session_key, chat_id, message_id, workflow_run_id, activity_id, handoff_id, \
-     project_id, spec, project_root, work_dir, isolation, branch, base_ref, state, reason, rounds, open_blockers, \
+     project_id, spec, project_root, work_dir, isolation, work_kind, isolation_json, branch, base_ref, state, reason, rounds, open_blockers, \
      open_majors, open_minors, open_json, deferred_json, summary, reviewer_prefix, pending_ask_json, landed_ref, \
      landed_at, created_at, finished_at";
 
@@ -164,23 +170,25 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Verification> {
         project_root: r.get(10)?,
         work_dir: r.get(11)?,
         isolation: r.get(12)?,
-        branch: r.get(13)?,
-        base_ref: r.get(14)?,
-        state: r.get(15)?,
-        reason: r.get(16)?,
-        rounds: r.get(17)?,
-        open_blockers: r.get(18)?,
-        open_majors: r.get(19)?,
-        open_minors: r.get(20)?,
-        open: json(r.get(21)?),
-        deferred: json(r.get(22)?),
-        summary: r.get(23)?,
-        reviewer_prefix: r.get(24)?,
-        pending_ask: r.get::<_, Option<String>>(25)?.map(json),
-        landed_ref: r.get(26)?,
-        landed_at: r.get(27)?,
-        created_at: r.get(28)?,
-        finished_at: r.get(29)?,
+        work_kind: r.get(13)?,
+        isolation_state: r.get::<_, Option<String>>(14)?.map(json),
+        branch: r.get(15)?,
+        base_ref: r.get(16)?,
+        state: r.get(17)?,
+        reason: r.get(18)?,
+        rounds: r.get(19)?,
+        open_blockers: r.get(20)?,
+        open_majors: r.get(21)?,
+        open_minors: r.get(22)?,
+        open: json(r.get(23)?),
+        deferred: json(r.get(24)?),
+        summary: r.get(25)?,
+        reviewer_prefix: r.get(26)?,
+        pending_ask: r.get::<_, Option<String>>(27)?.map(json),
+        landed_ref: r.get(28)?,
+        landed_at: r.get(29)?,
+        created_at: r.get(30)?,
+        finished_at: r.get(31)?,
     })
 }
 
@@ -229,8 +237,9 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO verifications (id, agent_id, session_key, chat_id, workflow_run_id, activity_id, handoff_id,
-                 project_id, spec, project_root, work_dir, isolation, branch, base_ref, reviewer_prefix, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 project_id, spec, project_root, work_dir, isolation, branch, base_ref, reviewer_prefix, created_at,
+                 work_kind, isolation_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 v.id,
                 v.agent_id,
@@ -247,7 +256,9 @@ impl Store {
                 v.branch,
                 v.base_ref,
                 v.reviewer_prefix,
-                now
+                now,
+                if v.work_kind.is_empty() { "isolated" } else { v.work_kind },
+                v.isolation_state.map(|j| j.to_string())
             ],
         )
         .db_err("create_verification")?;
@@ -318,6 +329,35 @@ impl Store {
                 params![id, work_dir, isolation, branch],
             )
             .db_err("set_verification_work_dir")?;
+        Ok(())
+    }
+
+    /// The copy's whole state now (after it caught up, or met a conflict).
+    pub fn set_verification_isolation(
+        &self,
+        id: &str,
+        state: &serde_json::Value,
+    ) -> Result<(), NeboError> {
+        self.conn()?
+            .execute(
+                "UPDATE verifications SET isolation_json = ?2 WHERE id = ?1",
+                params![id, state.to_string()],
+            )
+            .db_err("set_verification_isolation")?;
+        Ok(())
+    }
+
+    /// Drop a verification that turned out to have nothing to verify (its
+    /// work changed nothing), with its steps.
+    pub fn delete_verification(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM verification_rounds WHERE verification_id = ?1",
+            params![id],
+        )
+        .db_err("delete_verification rounds")?;
+        conn.execute("DELETE FROM verifications WHERE id = ?1", params![id])
+            .db_err("delete_verification")?;
         Ok(())
     }
 
@@ -582,6 +622,13 @@ mod tests {
             ("verified", Some(40), 2)
         );
         assert_eq!(done.landed_ref, "", "still in its copy");
+        assert_eq!(done.work_kind, "isolated");
+        s.set_verification_isolation("v-1", &serde_json::json!({"Git": {"base": "abc"}}))
+            .unwrap();
+        assert_eq!(
+            s.get_verification("v-1").unwrap().unwrap().isolation_state,
+            Some(serde_json::json!({"Git": {"base": "abc"}}))
+        );
         s.set_verification_landed("v-1", "def", 41).unwrap();
         let landed = s.get_verification("v-1").unwrap().unwrap();
         assert_eq!(
@@ -721,5 +768,22 @@ mod tests {
             s.get_verification("v-1").unwrap().unwrap().pending_ask,
             None
         );
+    }
+
+    #[test]
+    fn a_verification_with_nothing_to_verify_is_dropped_with_its_steps() {
+        let s = store();
+        s.create_verification(&new("v-1", "agent:a:web", "/site"), 10)
+            .unwrap();
+        s.put_verification_round(&VerificationRound {
+            verification_id: "v-1".into(),
+            round: 1,
+            started_at: 11,
+            ..Default::default()
+        })
+        .unwrap();
+        s.delete_verification("v-1").unwrap();
+        assert!(s.get_verification("v-1").unwrap().is_none());
+        assert!(s.verification_rounds("v-1").unwrap().is_empty());
     }
 }

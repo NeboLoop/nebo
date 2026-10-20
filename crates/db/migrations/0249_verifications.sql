@@ -10,7 +10,12 @@
 -- (session_key, chat_id, the reply the badge sits on), a workflow run and
 -- its activity, a hand-off and a project. project_root is the owner's
 -- folder; work_dir the isolated copy the work happens in (the folder itself
--- for an app's pages); base_ref the snapshot the change is measured from;
+-- for an app's pages); work_kind what the work is (a copy this loop made,
+-- an app's own pages, a helper's own copy, a coding agent's own folder);
+-- isolation_json the copy's whole state (where it was made from, what it is
+-- catching up to, the conflicts waiting in it), so the work resumes in a
+-- later turn exactly where it was; base_ref the snapshot the change is
+-- measured from;
 -- landed_ref the commit it landed as on the owner's branch (landed_at when),
 -- empty while the work is still in its copy.
 --
@@ -40,6 +45,8 @@ CREATE TABLE verifications (
     project_root TEXT NOT NULL DEFAULT '',
     work_dir TEXT NOT NULL DEFAULT '',
     isolation TEXT NOT NULL DEFAULT 'none' CHECK (isolation IN ('worktree', 'copy', 'none')),
+    work_kind TEXT NOT NULL DEFAULT 'isolated' CHECK (work_kind IN ('isolated', 'app_pages', 'helper_copy', 'folder')),
+    isolation_json TEXT,
     branch TEXT NOT NULL DEFAULT '',
     base_ref TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL DEFAULT 'running' CHECK (state IN ('running', 'paused', 'verified', 'not_verified', 'stopped')),
