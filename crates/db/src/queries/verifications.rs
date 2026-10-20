@@ -513,7 +513,8 @@ impl Store {
     }
 
     /// Verifications still running when the process that ran them ended:
-    /// they can never finish on their own. Each ends as stopped, with its
+    /// they can never finish on their own. Each ends as stopped (its reason
+    /// the `restarted` code the apps word), with its
     /// copy kept where its row says, and every step of theirs left without
     /// an end is closed as stopped. A paused one waits on the owner: it
     /// stays paused, and its question is asked again when its work resumes.
@@ -522,14 +523,14 @@ impl Store {
         let conn = self.conn()?;
         let stopped = conn
             .execute(
-                "UPDATE verifications SET state = 'stopped', reason = 'Nebo restarted while it was being checked',
+                "UPDATE verifications SET state = 'stopped', reason = '{\"code\":\"restarted\"}',
                      finished_at = ?2
                  WHERE state = 'running' AND created_at < ?1",
                 params![booted, now],
             )
             .db_err("stop_orphaned_verifications")?;
         conn.execute(
-            "UPDATE verification_rounds SET finished_at = ?2, outcome = 'stopped'
+            "UPDATE verification_rounds SET finished_at = ?2, outcome = '{\"code\":\"restarted\"}'
              WHERE finished_at IS NULL AND started_at < ?1",
             params![booted, now],
         )
@@ -760,8 +761,8 @@ mod tests {
         let rounds = s.verification_rounds("v-1").unwrap();
         assert_eq!(
             (rounds[0].outcome.as_str(), rounds[0].finished_at),
-            ("stopped", Some(101)),
-            "a step left open is closed"
+            (r#"{"code":"restarted"}"#, Some(101)),
+            "a step left open is closed, saying why"
         );
         s.set_verification_pending_ask("v-1", None).unwrap();
         assert_eq!(

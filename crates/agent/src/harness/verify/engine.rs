@@ -36,6 +36,7 @@ use super::lenses::{self, Lens};
 use super::review::{self, LensReview, RoundInput};
 use super::shadow::{ChangeSet, Snapshot};
 use super::work::{TurnWork, Work, WorkKind};
+use super::Why;
 use crate::harness::delegation::{Helpers, child::Parent};
 use crate::harness::events::TurnEvent;
 use crate::harness::turn_end::{EndCheck, EndVerdict, TurnEnd};
@@ -263,12 +264,12 @@ fn record_for_report(store: &db::Store, v: &db::Verification) -> String {
             "verified" => "VERIFIED",
             _ => "NOT VERIFIED",
         },
-        if v.reason.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", v.reason)
+        match Why::read(&v.reason) {
+            Some(why) => format!(" ({})", why.english()),
+            None => String::new(),
         }
     );
+    let said = |r: &db::VerificationRound| Why::read(&r.outcome).map(|w| w.english()).unwrap_or_default();
     for r in &rounds {
         let findings: Vec<Finding> = serde_json::from_value(r.findings.clone()).unwrap_or_default();
         let checks: Vec<CheckRun> = serde_json::from_value(r.checks.clone()).unwrap_or_default();
@@ -299,9 +300,9 @@ fn record_for_report(store: &db::Store, v: &db::Verification) -> String {
                         .join(", ")
                 }
             )),
-            "catch_up" => out.push_str(&format!("\n- Caught up with the project: {}.", r.outcome)),
-            "land" => out.push_str(&format!("\n- Landing: {}.", r.outcome)),
-            "live" => out.push_str(&format!("\n- Live check: {}.", r.outcome)),
+            "catch_up" => out.push_str(&format!("\n- Caught up with the project: {}.", said(r))),
+            "land" => out.push_str(&format!("\n- Landing: {}.", said(r))),
+            "live" => out.push_str(&format!("\n- Live check: {}.", said(r))),
             _ => {}
         }
     }
@@ -450,12 +451,13 @@ impl VerifyCheck {
         }
     }
 
-    /// Finish a verification: its state and reason written, its copy kept or
-    /// landed as the caller left it.
-    fn finish(&self, v: &db::Verification, state: &str, reason: &str) {
+    /// Finish a verification: its state and why written (a code the apps
+    /// word), its copy kept or landed as the caller left it.
+    fn finish(&self, v: &db::Verification, state: &str, why: Option<Why>) {
+        let reason = why.map(|w| w.text()).unwrap_or_default();
         let _ =
             self.store()
-                .set_verification_state(&v.id, &state_of(v, state, reason), Self::now());
+                .set_verification_state(&v.id, &state_of(v, state, &reason), Self::now());
     }
 
     /// One work's next step.
@@ -489,22 +491,15 @@ impl VerifyCheck {
                 )
                 .await;
             if answer.is_none() {
-                self.finish(
-                    &v,
-                    "not_verified",
-                    "Needs your answer to a question it asked",
-                );
+                self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
                 return Step::Finished;
             }
         }
         let head = match work.shadow.snapshot().await {
             Ok(h) => h,
             Err(e) => {
-                self.finish(
-                    &v,
-                    "not_verified",
-                    &format!("Could not read what changed: {e}"),
-                );
+                tracing::warn!(verification = %v.id, error = %e, "what changed could not be read");
+                self.finish(&v, "not_verified", Some(Why::new("unreadable")));
                 return Step::Finished;
             }
         };
@@ -537,11 +532,7 @@ impl VerifyCheck {
         if cap_cents > 0
             && store.reviewers_cost(&v.reviewer_prefix).unwrap_or(0) >= cap_cents * 1_000_000
         {
-            self.finish(
-                &v,
-                "not_verified",
-                "Reached this employee's spending limit for a run",
-            );
+            self.finish(&v, "not_verified", Some(Why::new("spend_limit")));
             return Step::Finished;
         }
 
@@ -768,12 +759,13 @@ impl VerifyCheck {
         row.detail =
             json!({ "openBlocking": blocking_now, "nested": nested, "failedReviewers": failed });
         row.outcome = if !failed.is_empty() {
-            "review incomplete".into()
+            Why::new("review_incomplete")
         } else if blocking_now == 0 {
-            "clean".into()
+            Why::new("review_clean")
         } else {
-            format!("{blocking_now} blocking")
-        };
+            Why::new("review_blocking").with("count", blocking_now)
+        }
+        .text();
         row.finished_at = Some(Self::now());
 
         // The owner's calls, asked now, with the recommended one first.
@@ -820,20 +812,13 @@ impl VerifyCheck {
         self.verify.work.put(work.clone()).await;
 
         if !failed.is_empty() {
-            self.finish(
-                &after,
-                "not_verified",
-                &format!("A review could not finish ({})", failed.join("; ")),
-            );
+            tracing::warn!(verification = %v.id, failed = %failed.join("; "), "a review could not finish");
+            self.finish(&after, "not_verified", Some(Why::new("review_incomplete")));
             return RoundEnd::Finished;
         }
         if !unanswered.is_empty() {
             let titles: Vec<&str> = unanswered.iter().map(|d| d.title.as_str()).collect();
-            self.finish(
-                &after,
-                "not_verified",
-                &format!("Needs your decision: {}", titles.join("; ")),
-            );
+            self.finish(&after, "not_verified", Some(Why::new("needs_decision").with("items", titles.join("; "))));
             return RoundEnd::Finished;
         }
         if blocking_now > 0 {
@@ -863,11 +848,7 @@ impl VerifyCheck {
                     Some("Keep going") => {}
                     Some("Land it anyway") => {
                         return match self
-                            .land_unverified(
-                                work,
-                                &after,
-                                "Landed without passing review, at your choice",
-                            )
+                            .land_unverified(work, &after, Why::new("landed_unreviewed"))
                             .await
                         {
                             Some(text) => RoundEnd::Continue(text),
@@ -875,19 +856,11 @@ impl VerifyCheck {
                         };
                     }
                     Some(_) => {
-                        self.finish(
-                            &after,
-                            "not_verified",
-                            &format!("Stopped by you with {blocking_now} open issue(s)"),
-                        );
+                        self.finish(&after, "not_verified", Some(Why::new("stopped_by_owner").with("open", blocking_now)));
                         return RoundEnd::Finished;
                     }
                     None => {
-                        self.finish(
-                            &after,
-                            "not_verified",
-                            &format!("Stopped making progress with {blocking_now} open issue(s)"),
-                        );
+                        self.finish(&after, "not_verified", Some(Why::new("stalled").with("open", blocking_now)));
                         return RoundEnd::Finished;
                     }
                 }
@@ -929,7 +902,7 @@ impl VerifyCheck {
         }
         if runs.is_empty() {
             // Reviewed, but no build or test could run: not verified.
-            let reason = "No tests or build could run";
+            let reason = Why::new("no_checks");
             if work.kind == WorkKind::Isolated {
                 let question = format!(
                     "The change to {} was reviewed, but the project has no build or tests that could run, so it isn't verified. \
@@ -953,12 +926,12 @@ impl VerifyCheck {
                         }
                     }
                     _ => {
-                        self.finish(&after, "not_verified", reason);
+                        self.finish(&after, "not_verified", Some(reason));
                         RoundEnd::Finished
                     }
                 };
             }
-            self.finish(&after, "not_verified", reason);
+            self.finish(&after, "not_verified", Some(reason));
             return RoundEnd::Finished;
         }
         RoundEnd::Clean
@@ -976,18 +949,22 @@ impl VerifyCheck {
         };
         match work.kind {
             WorkKind::Isolated => {}
+            // An app's pages are live where they are: verified only when
+            // the page reloads and checks out.
             WorkKind::AppPages => {
-                self.live_check_app(&work, &v).await;
-                self.finish(&v, "verified", "");
+                match self.live_check_app(&work, &v).await {
+                    false => self.finish(&v, "not_verified", Some(Why::new("live_failed"))),
+                    true => self.finish(&v, "verified", None),
+                }
                 return Step::Finished;
             }
             WorkKind::HelperCopy | WorkKind::Folder => {
-                self.finish(&v, "verified", "");
+                self.finish(&v, "verified", None);
                 return Step::Finished;
             }
         }
         let Some(mut iso) = work.iso.clone() else {
-            self.finish(&v, "verified", "");
+            self.finish(&v, "verified", None);
             return Step::Finished;
         };
         let message = landing_message(&v.spec);
@@ -1010,7 +987,7 @@ impl VerifyCheck {
         let caught = match caught {
             Ok(c) => c,
             Err(outcome) => {
-                step.outcome = outcome_word(&outcome);
+                step.outcome = Why::of(&outcome).text();
                 step.detail =
                     json!({ "outcome": worktree::render_outcome("the change", &outcome) });
                 step.finished_at = Some(Self::now());
@@ -1020,7 +997,7 @@ impl VerifyCheck {
         };
         step.detail = json!({ "onto": caught.onto, "overlap": caught.overlap, "conflicts": caught.conflicts });
         if !caught.conflicts.is_empty() {
-            step.outcome = format!("conflicts in {}", caught.conflicts.join(", "));
+            step.outcome = Why::new("conflicts").with("files", caught.conflicts.join(", ")).text();
             step.finished_at = Some(Self::now());
             let _ = store.put_verification_round(&step);
             return Step::Continue(format!(
@@ -1044,10 +1021,11 @@ impl VerifyCheck {
         .await;
         step.checks = json!(runs);
         step.outcome = if caught.onto.is_empty() {
-            "up to date".into()
+            Why::new("up_to_date")
         } else {
-            format!("caught up to {}", &caught.onto[..caught.onto.len().min(10)])
-        };
+            Why::new("caught_up").with("commit", super::short(&caught.onto))
+        }
+        .text();
         step.finished_at = Some(Self::now());
         let _ = store.put_verification_round(&step);
         if runs.iter().any(|r| !r.passed) {
@@ -1077,12 +1055,12 @@ impl VerifyCheck {
         self.record_landing(&v, round + 1, &landed);
         if let MergeOutcome::Merged { commit, .. } = &landed {
             let _ = store.set_verification_landed(&v.id, commit, Self::now());
-            self.finish(&v, "verified", "");
+            self.finish(&v, "verified", None);
             work.clean_up();
             return Step::Finished;
         }
         if matches!(landed, MergeOutcome::NoChanges) {
-            self.finish(&v, "verified", "");
+            self.finish(&v, "verified", None);
             return Step::Finished;
         }
         self.not_landed(&work, &v, landed, notes).await
@@ -1093,7 +1071,7 @@ impl VerifyCheck {
             verification_id: v.id.clone(),
             round,
             kind: "land".into(),
-            outcome: outcome_word(landed),
+            outcome: Why::of(landed).text(),
             detail: match landed {
                 MergeOutcome::Merged {
                     files,
@@ -1163,44 +1141,23 @@ impl VerifyCheck {
                             let _ =
                                 self.store()
                                     .set_verification_landed(&v.id, commit, Self::now());
-                            self.finish(v, "verified", "");
+                            self.finish(v, "verified", None);
                         } else {
-                            self.finish(
-                                v,
-                                "verified",
-                                "Not landed yet: your edits are still in the way",
-                            );
+                            self.finish(v, "verified", Some(Why::new("edits_in_way")));
                         }
                         Step::Finished
                     }
                     _ => {
-                        self.finish(
-                            v,
-                            "verified",
-                            "Not landed: you kept your own edits; the change waits in its copy",
-                        );
+                        self.finish(v, "verified", Some(Why::new("kept_own_edits")));
                         Step::Finished
                     }
                 }
             }
-            MergeOutcome::OwnerBusy { why, .. } => {
-                self.finish(
-                    v,
-                    "verified",
-                    &format!("Not landed yet: {why}; the change waits in its copy"),
-                );
-                Step::Finished
-            }
             other => {
-                self.finish(
-                    v,
-                    "verified",
-                    &format!(
-                        "Not landed: {}",
-                        worktree::render_outcome("the change", &other)
-                            .trim_start_matches("- the change: ")
-                    ),
-                );
+                // Why it did not land, as a code; the raw words (a git
+                // error) are in the landing's step and the log.
+                tracing::info!(verification = %v.id, outcome = %worktree::render_outcome("the change", &other), "verified work not landed");
+                self.finish(v, "verified", Some(Why::of(&other)));
                 Step::Finished
             }
         }
@@ -1213,10 +1170,10 @@ impl VerifyCheck {
         &self,
         work: &mut Work,
         v: &db::Verification,
-        reason: &str,
+        reason: Why,
     ) -> Option<String> {
         let Some(mut iso) = work.iso.clone() else {
-            self.finish(v, "not_verified", reason);
+            self.finish(v, "not_verified", Some(reason));
             return None;
         };
         let mut isos = [iso.clone()];
@@ -1239,13 +1196,15 @@ impl VerifyCheck {
                 .store()
                 .set_verification_landed(&v.id, commit, Self::now());
         }
-        self.finish(v, "not_verified", reason);
+        self.finish(v, "not_verified", Some(reason));
         None
     }
 
     /// An app's pages after a clean round: reloaded where they are open and
-    /// checked live (its page loads, its console has no errors).
-    async fn live_check_app(&self, work: &Work, v: &db::Verification) {
+    /// checked live (its page loads, its console has no errors). Whether it
+    /// checked out; an app with no live page to check (none matches the
+    /// folder) has nothing that failed.
+    async fn live_check_app(&self, work: &Work, v: &db::Verification) -> bool {
         let store = self.store();
         let app = store
             .list_agents(1_000, 0)
@@ -1255,7 +1214,7 @@ impl VerifyCheck {
                 tools::app_dev::served_dir(a)
                     .is_some_and(|d| std::path::Path::new(d) == work.work_dir)
             });
-        let Some(app) = app else { return };
+        let Some(app) = app else { return true };
         let ctx = self.tool_ctx();
         let reload = self
             .harness
@@ -1267,6 +1226,7 @@ impl VerifyCheck {
             .tools
             .execute(&ctx, tools::app_dev::APP_STATUS, json!({ "app": app.name }))
             .await;
+        let ok = !reload.is_error && !status.is_error;
         let round = store
             .verification_rounds(&v.id)
             .map(|r| r.len() as i64 + 1)
@@ -1275,33 +1235,13 @@ impl VerifyCheck {
             verification_id: v.id.clone(),
             round,
             kind: "live".into(),
-            outcome: if reload.is_error || status.is_error {
-                "the page didn't check out".into()
-            } else {
-                "the page reloaded and checked out".into()
-            },
+            outcome: Why::new(if ok { "live_ok" } else { "live_failed" }).text(),
             detail: json!({ "reload": reload.content, "status": status.content }),
             started_at: Self::now(),
             finished_at: Some(Self::now()),
             ..Default::default()
         });
-    }
-}
-
-/// One word for a landing's outcome, for the record.
-fn outcome_word(o: &MergeOutcome) -> String {
-    match o {
-        MergeOutcome::NoChanges => "nothing to land".into(),
-        MergeOutcome::Merged { commit, .. } => {
-            format!("landed as {}", &commit[..commit.len().min(10)])
-        }
-        MergeOutcome::Conflict { files, .. } => format!("conflicts in {}", files.join(", ")),
-        MergeOutcome::OwnerEdits { files, .. } => format!("your edits in {}", files.join(", ")),
-        MergeOutcome::OwnerBusy { why, .. } => why.to_string(),
-        MergeOutcome::HookFailed { .. } => "refused by the project's commit hooks".into(),
-        MergeOutcome::RetestFailed { .. } => "checks failed after catching up".into(),
-        MergeOutcome::NotAttempted { .. } => "not tried".into(),
-        MergeOutcome::Failed { error, .. } => error.clone(),
+        ok
     }
 }
 

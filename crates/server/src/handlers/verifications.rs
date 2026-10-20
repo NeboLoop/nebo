@@ -27,10 +27,16 @@ pub struct Badge {
     pub open_minors: i64,
     /// Minors deferred with a reason.
     pub deferred: usize,
-    /// Why it is not verified, or why it hasn't landed, in the owner's words.
-    pub reason: String,
+    /// Why it is not verified, or why it hasn't landed: a code the app
+    /// words in the owner's language, never a sentence or a raw error.
+    pub reason: Option<agent::harness::verify::Why>,
     /// The commit it landed as; empty while it waits in its copy.
     pub landed: String,
+    /// Where the work is: `landed`, `copy` (waiting in its own copy), `app`
+    /// (an app's own pages: its history is the undo), `helper` (a helper's
+    /// copy, landed by the conversation that started it), `folder` (made in
+    /// place: a coding agent's own folder) or `nothing` (nothing to land).
+    pub place: String,
 }
 
 /// One step of a verification's history, as the app shows it.
@@ -39,6 +45,8 @@ pub struct Badge {
 pub struct RoundView {
     #[serde(flatten)]
     pub round: db::VerificationRound,
+    /// What the step came to: a code the app words.
+    pub result: Option<agent::harness::verify::Why>,
     /// What its reviewers cost, from the run ledger (microcents).
     pub cost_microcents: i64,
 }

@@ -10439,7 +10439,7 @@ mod tests {
                 let h = verifying_harness(&model).await;
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", "No tests or build could run"));
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"no_checks"}"#));
                 assert!(v.landed_ref.is_empty());
                 assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
                 assert!(std::path::Path::new(&v.work_dir).join("total.py").exists(), "the work waits in its copy");
@@ -10471,7 +10471,7 @@ mod tests {
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!(v.state, "not_verified");
-                assert!(v.reason.starts_with("Stopped making progress"), "{}", v.reason);
+                assert_eq!(v.reason, r#"{"code":"stalled","args":{"open":1}}"#);
                 assert_eq!((v.rounds, v.open_blockers), (3, 1));
                 assert_eq!(model.calls().len(), 8, "it stopped instead of going round again");
             })
