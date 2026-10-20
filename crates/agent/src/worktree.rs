@@ -259,6 +259,25 @@ pub(crate) async fn git_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, Stri
     }
 }
 
+/// The oldest git Nebo works on code with (`rev-parse --path-format`).
+pub const MIN_GIT: (u32, u32) = (2, 31);
+
+/// Whether this computer's git is [`MIN_GIT`] or newer: `Err` says what to
+/// do. Checked once at startup.
+pub async fn check_git() -> Result<(), String> {
+    let said = git(&std::env::temp_dir(), &["--version"]).await.map_err(|e| format!("Nebo needs git to work on code, and it could not run: {e}"))?;
+    let version = said.split_whitespace().nth(2).unwrap_or_default();
+    let mut parts = version.split('.').map(|n| n.parse::<u32>().unwrap_or(0));
+    let have = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    if have < MIN_GIT {
+        return Err(format!(
+            "Nebo needs git {}.{} or newer to work on code in its own copies; this computer has git {version}. Update git.",
+            MIN_GIT.0, MIN_GIT.1
+        ));
+    }
+    Ok(())
+}
+
 /// [`git_bytes`], its output as trimmed text.
 pub(crate) async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     git_bytes(cwd, args).await.map(|out| String::from_utf8_lossy(&out).trim().to_string())
@@ -417,39 +436,66 @@ pub const EXCLUDED: &[&str] = &[
     ".DS_Store",
 ];
 
-/// `git ls-files` over a folder, by what the folder ignores: the one rule
-/// of what is build output, for a review's snapshot and a landing alike.
-/// In a repository (`git_dir` `None`) git reads the repository's own
-/// ignore rules; a folder that is no repository is listed through
-/// `git_dir`, by its own `.gitignore` files, or by [`EXCLUDED`] when it has
-/// none at its top.
-pub async fn ls_folder(folder: &Path, git_dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
+/// Set `git_dir`'s own exclude file to the rule of a folder that is no
+/// repository: [`EXCLUDED`] when the folder has no `.gitignore` at its top,
+/// nothing otherwise (its `.gitignore` files then decide).
+fn folder_rule(folder: &Path, git_dir: &Path) -> Result<(), String> {
+    let info = git_dir.join("info");
+    std::fs::create_dir_all(&info).map_err(|e| format!("create {}: {e}", info.display()))?;
+    let rule = if folder.join(".gitignore").is_file() { String::new() } else { EXCLUDED.join("\n") + "\n" };
+    std::fs::write(info.join("exclude"), rule).map_err(|e| format!("write {}: {e}", info.display()))
+}
+
+/// Run git over a folder by what the folder ignores: the one rule of what
+/// is build output, for a review's snapshot and a landing alike. In a
+/// repository (`git_dir` `None`) git reads the repository's own ignore
+/// rules; a folder that is no repository is read through `git_dir`, by its
+/// own `.gitignore` files, or by [`EXCLUDED`] when it has none at its top.
+async fn over_folder(folder: &Path, git_dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
     let Some(git_dir) = git_dir else { return git_bytes(folder, args).await };
+    folder_rule(folder, git_dir)?;
     let mut all = vec![format!("--git-dir={}", git_dir.display()), format!("--work-tree={}", folder.display())];
     all.extend(args.iter().map(|a| a.to_string()));
-    if !folder.join(".gitignore").is_file() {
-        all.extend(EXCLUDED.iter().map(|p| format!("--exclude={p}")));
-    }
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
     git_bytes(folder, &all).await
 }
 
-/// What a scratch copy ignores ([`ls_folder`]): paths, a folder's ending
-/// in `/`. Listed through a throwaway repository that holds nothing.
-async fn copy_ignored(c: &ScratchCopy) -> Result<Vec<String>, String> {
+/// `git ls-files` over a folder, by what it ignores ([`over_folder`]).
+pub async fn ls_folder(folder: &Path, git_dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
+    over_folder(folder, git_dir, args).await
+}
+
+/// The paths of `paths` a folder ignores ([`over_folder`]), decided by the
+/// path alone: one that is gone is ignored as much as one that is there.
+pub async fn ignored_paths(folder: &Path, git_dir: Option<&Path>, paths: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for chunk in paths.chunks(256) {
+        let mut args = vec!["-c", "core.quotepath=off", "check-ignore", "--no-index", "--"];
+        args.extend(chunk.iter().map(String::as_str));
+        match over_folder(folder, git_dir, &args).await {
+            Ok(listed) => out.extend(String::from_utf8_lossy(&listed).lines().map(str::to_string)),
+            // `check-ignore` exits 1, saying nothing, when none is ignored.
+            Err(e) if e.is_empty() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
+}
+
+/// The paths of `paths` a scratch copy ignores ([`ignored_paths`]), read
+/// through a throwaway repository that holds nothing.
+async fn copy_ignored(c: &ScratchCopy, paths: &[String]) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
     let lister = std::env::temp_dir().join(format!("nebo-ls-{}", uuid::Uuid::new_v4().simple()));
     let dir = lister.to_string_lossy().into_owned();
-    let listed = match git(&std::env::temp_dir(), &["init", "-q", "--bare", &dir]).await {
-        Ok(_) => ls_folder(&c.path, Some(&lister), &["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]).await,
+    let ignored = match git(&std::env::temp_dir(), &["init", "-q", "--bare", &dir]).await {
+        Ok(_) => ignored_paths(&c.path, Some(&lister), paths).await,
         Err(e) => Err(e),
     };
     let _ = std::fs::remove_dir_all(&lister);
-    Ok(z_entries(&listed.map_err(|e| format!("what {} ignores: {e}", c.path.display()))?))
-}
-
-/// Whether `rel` is among `ignored` ([`copy_ignored`]), or inside one.
-fn is_ignored(ignored: &[String], rel: &str) -> bool {
-    ignored.iter().any(|e| e == rel || (e.ends_with('/') && rel.starts_with(e.as_str())))
+    ignored.map_err(|e| format!("what {} ignores: {e}", c.path.display()))
 }
 
 /// A path relative to a folder as git names it: '/'-separated.
@@ -684,14 +730,21 @@ pub async fn catch_up(iso: &mut Isolation, message: &str, landing: &Landing) -> 
 }
 
 /// The changes of a scratch copy that land: never what the folder ignores
-/// ([`copy_ignored`], build output), unless it was reviewed.
+/// ([`copy_ignored`], build output, by path, so a build folder the copy
+/// removed is no change either), unless it was reviewed; and never the
+/// deletion of an ignored file, whatever was reviewed or chosen.
 async fn copy_landing_changes(c: &ScratchCopy, landing: &Landing) -> Result<Vec<(PathBuf, Change)>, String> {
-    let ignored = copy_ignored(c).await?;
-    Ok(changes_of(c)?
+    let changes = changes_of(c)?;
+    let paths: Vec<String> = changes.iter().map(|(rel, _)| rel_str(rel)).collect();
+    let ignored = copy_ignored(c, &paths).await?;
+    Ok(changes
         .into_iter()
-        .filter(|(rel, _)| {
+        .filter(|(rel, ch)| {
             let rel = rel_str(rel);
-            landing.only.as_ref().is_some_and(|o| o.contains_key(&rel)) || !is_ignored(&ignored, &rel)
+            if !ignored.contains(&rel) {
+                return true;
+            }
+            !matches!(ch, Change::Deleted) && landing.only.as_ref().is_some_and(|o| o.contains_key(&rel))
         })
         .collect())
 }
@@ -1544,8 +1597,9 @@ pub type Retest<'a> = &'a (dyn Fn(&Isolation) -> futures::future::BoxFuture<'sta
 /// released when the returned file is dropped. A landing that has to wait
 /// says so once (`landing.waiting`), and `landing.stop` ends the wait.
 async fn project_lock(root: &Path, landing: &Landing) -> Result<std::fs::File, String> {
-    let at = match git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
-        Ok(dir) => PathBuf::from(dir.trim()).join("nebo-land.lock"),
+    // The git directory as git names it, relative to `root` or absolute.
+    let at = match git(root, &["rev-parse", "--git-common-dir"]).await {
+        Ok(dir) => root.join(dir.trim()).join("nebo-land.lock"),
         Err(_) => {
             let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
             std::env::temp_dir().join(format!("nebo-land-{:016x}.lock", tools::checkpoint::fingerprint(canonical.to_string_lossy().as_bytes())))
@@ -3279,6 +3333,74 @@ mod tests {
             drop(held);
             assert_eq!(landed_files(&land_one(&mut iso, "Add b", None, &Landing::default()).await.1), vec!["b.txt".to_string()]);
         }))
+    }
+
+    /// Review round 5: a copy whose build folder the builder removed
+    /// (a clean build) is not a change nobody reviewed; the folder is
+    /// ignored whether or not it is there now.
+    #[test]
+    fn r5v_a_removed_build_folder_is_not_unreviewed() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::write(f.path().join(".gitignore"), "dist/\n").unwrap();
+            std::fs::create_dir_all(f.path().join("dist")).unwrap();
+            std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
+            let c = create_copy(f.path(), "sa-r5v1").unwrap();
+            std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
+            std::fs::remove_dir_all(c.path.join("dist")).unwrap();
+            let landing = reviewed(&c.path, &["b.txt"]).await;
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &landing).await;
+            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+        }))
+    }
+
+    /// Review round 5: landing a copy as it is (the owner's word) never
+    /// deletes the owner's ignored files because the copy no longer has them.
+    #[test]
+    fn r5v_land_as_is_never_deletes_the_owners_ignored_files() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::write(f.path().join(".gitignore"), "dist/\n.env\n").unwrap();
+            std::fs::create_dir_all(f.path().join("dist")).unwrap();
+            std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
+            let c = create_copy(f.path(), "sa-r5v2").unwrap();
+            std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
+            std::fs::remove_dir_all(c.path.join("dist")).unwrap();
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
+            eprintln!("R5V2 {:?}", out[0].1);
+            assert!(f.path().join("dist/app.js").exists(), "the owner's ignored build output was deleted");
+        }))
+    }
+
+    /// Review round 5 M1: a landing never deletes an ignored file of the
+    /// owner's, under any option: as it is, or with the deletion reviewed.
+    #[test]
+    fn a_landing_never_deletes_an_ignored_owner_file() {
+        with_home(|_| rt().block_on(async {
+            for as_is in [true, false] {
+                let f = folder();
+                std::fs::write(f.path().join(".gitignore"), "dist/\n.env\n").unwrap();
+                std::fs::create_dir_all(f.path().join("dist")).unwrap();
+                std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
+                std::fs::write(f.path().join(".env"), "KEY=1\n").unwrap();
+                let c = create_copy(f.path(), &format!("sa-r5-del-{as_is}")).unwrap();
+                std::fs::remove_dir_all(c.path.join("dist")).unwrap();
+                std::fs::remove_file(c.path.join(".env")).unwrap();
+                let landing = if as_is { Landing::default() } else { reviewed(&c.path, &["dist/app.js", ".env"]).await };
+                let mut isos = [Isolation::Copy(c)];
+                let out = merge_all(&mut isos, "m", None, &landing).await;
+                assert_eq!(out[0].1, MergeOutcome::NoChanges, "as is: {as_is}");
+                assert!(f.path().join("dist/app.js").exists() && f.path().join(".env").exists(), "as is: {as_is}");
+            }
+        }))
+    }
+
+    /// Review round 5: the git Nebo needs is checked by version.
+    #[test]
+    fn this_computers_git_is_new_enough() {
+        rt().block_on(async { check_git().await.unwrap() });
     }
 
 }
