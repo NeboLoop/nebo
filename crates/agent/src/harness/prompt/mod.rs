@@ -215,7 +215,7 @@ mod tests {
             "- You hold the owner's conversation, the decisions and the plan; keep it lean.",
             "- Delegate work that means reading across many sources, producing something substantial, pieces that can run side by side, or anything long-running.",
             "- A helper starts with only its brief, so make it self-contained: the goal, what you know or ruled out, the rules and what to leave alone, whether it may change things or only look, and the exact deliverable with its length.\n",
-            "- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner (if no one can answer, decide or take it up the line as ask_owner says), then send_message the helper the answer; it continues. Never leave it waiting.\n",
+            "- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner (if no one can answer, decide or take it up the line as ask_owner says), then send_message the helper the decision in `answer`: only that settles it. Never leave it waiting.\n",
             "You decide what ships; the owner's decisions go to the owner.",
         ] {
             assert!(text.contains(line), "{line:?} missing from:\n{text}");
@@ -440,13 +440,17 @@ mod tests {
     /// stated the split for every kind of work: the conversation keeps the
     /// owner and small direct steps, a brief names its deliverable and
     /// length, a helper's question comes back to be asked and is never left
-    /// waiting, +329.)
+    /// waiting, +329; 9,015 until 2026-10-20, when the decision goes back in
+    /// send_message's `answer`, the one thing that settles a question, +22;
+    /// 9,037 until 2026-10-20, when an employee couldn't see or stop research
+    /// its helper's helper started: list_runs and stop_task reach all it
+    /// started, at any depth, +127.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 9_100);
+        assert!(chars < 9_200);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 9_015;
+    const SYSTEM_PROMPT_CHARS: usize = 9_164;
 }

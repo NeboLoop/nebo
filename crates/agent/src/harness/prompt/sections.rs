@@ -195,10 +195,11 @@ out, the rules and what to leave alone, whether it may change things or only loo
 deliverable with its length.
 - Its result comes back later as a notification. Until it arrives you know nothing about it: don't \
 report it, guess it or redo the work. If the owner asks, say it's still running. To give a running \
-helper more direction, use send_message.
+helper more direction, use send_message. list_runs shows all you started, at any depth (helpers, \
+theirs, research); stop_task stops any of it with everything under it.
 - A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner (if no \
 one can answer, decide or take it up the line as ask_owner says), then send_message the helper the \
-answer; it continues. Never leave it waiting.
+decision in `answer`: only that settles it. Never leave it waiting.
 - A helper's report is its own account. Check anything that matters, then give the owner the \
 conclusion plainly. You decide what ships; the owner's decisions go to the owner.";
 

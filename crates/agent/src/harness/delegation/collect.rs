@@ -26,6 +26,10 @@ pub fn report_limit(set: Option<usize>) -> usize {
 /// ([`CompletionStatus::Partial`]).
 pub const NEEDS_OWNER_DECISION: &str = "needs owner decision";
 
+/// Why a run whose latest turn asked is partial once the answer was sent:
+/// it goes on with the answer.
+pub const ANSWERED: &str = "its question was answered; it goes on with the answer";
+
 /// The `stop_reason` of a helper turn's `Done` event when the turn ended at
 /// its step limit (`TurnExit::MaxSteps`). The turn driver sets it.
 pub const STOP_MAX_STEPS: &str = "max_steps";
@@ -80,7 +84,7 @@ impl Collected {
         } else if self.cancelled {
             (self.last_words.trim().to_string(), CompletionStatus::Stopped)
         } else if let Some(asked) = &self.question {
-            question = Some(question_block(task_id, asked, &self.taint));
+            question = Some(Asked::new(task_id, asked, &self.taint));
             (where_it_stands(asked, &self.last_words), CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.to_string() })
         } else if let Some(window) = self.stalled {
             (
@@ -103,32 +107,100 @@ impl Collected {
             status,
             result,
             question,
+            lead: String::new(),
             usage: self.usage,
             taint: self.taint,
         }
     }
 }
 
+/// A question a helper asked the owner, as its turn reported it: an id of
+/// its own, the question's words, and its block (the question, options,
+/// recommended one and how to answer, [`Asked::new`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Asked {
+    pub id: String,
+    pub text: String,
+    pub block: String,
+}
+
+impl Asked {
+    fn new(task_id: &str, q: &types::OwnerQuestion, taint: &[types::provenance::ProvenanceClass]) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+            text: q.question.trim().to_string(),
+            block: question_block(task_id, q, taint),
+        }
+    }
+}
+
+/// A run's questions for the owner. A question is `pending` from the turn
+/// that asked it until an answer is sent to the helper
+/// (`send_message` with `answer`); then it is `answered`, with the
+/// answer. `reported` holds the pending questions its parent has already
+/// been given, so a later report doesn't give one again.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Questions {
+    pub pending: Vec<Asked>,
+    pub answered: Vec<(Asked, String)>,
+    pub reported: Vec<String>,
+}
+
+impl Questions {
+    /// Settle every pending question with `answer`.
+    pub fn answer(&mut self, answer: &str) {
+        for q in self.pending.drain(..) {
+            self.answered.push((q, answer.to_string()));
+        }
+    }
+
+    /// The pending questions are now with the parent.
+    pub fn reported(&mut self) {
+        for q in &self.pending {
+            if !self.reported.contains(&q.id) {
+                self.reported.push(q.id.clone());
+            }
+        }
+    }
+}
+
 /// A run's report from its `turns` (as each turn reported them, never
-/// assembled) and its `pending` question. While a question is pending (no
-/// answer has been sent to the helper since it asked), the run needs the
-/// owner's decision, whatever its later turns said, and that question leads
-/// the report, inline and never spilled. Earlier turns are marked
-/// "Earlier:" so their state doesn't read as current; a question block that
-/// leads is not repeated among them, and an answered one stays in its
-/// turn's words. What the turns read goes with the report. Past `limit`
+/// assembled) and its `questions`. While any question is pending (no answer
+/// has been sent to the helper since it asked), the run needs the owner's
+/// decision, whatever its later turns said, and the pending questions lead
+/// the report, newest first, inline and never spilled. With `fresh_only`, a
+/// pending question its parent was already given is named, not repeated.
+/// Earlier turns are marked "Earlier:" so their state doesn't read as
+/// current; an answered question shows as what was asked and what was
+/// answered. What the turns read goes with the report. Past `limit`
 /// characters the words go through the one spill path, read back the way
 /// `reader` (the parent's door) reads files.
 pub fn assemble(
     turns: &[Completion],
-    pending: Option<&str>,
+    questions: &Questions,
+    fresh_only: bool,
     spill_dir: &Path,
     limit: usize,
     reader: tools::result_shape::Reader,
 ) -> Completion {
     let latest = turns.last().expect("a run has a turn");
+    let mut lead = Vec::new();
+    let mut reported_before = 0;
+    for q in questions.pending.iter().rev() {
+        if fresh_only && questions.reported.contains(&q.id) {
+            reported_before += 1;
+        } else {
+            lead.push(q.block.clone());
+        }
+    }
+    if reported_before > 0 {
+        lead.push(format!(
+            "{reported_before} question(s) for the owner it reported before still wait for an answer: send_message \
+             the owner's decision to {} in `answer` when it comes.",
+            latest.task_id
+        ));
+    }
     let mut taint: Vec<types::provenance::ProvenanceClass> = Vec::new();
-    let mut shown: Vec<&str> = pending.into_iter().collect();
     let mut words = Vec::new();
     for (i, t) in turns.iter().enumerate() {
         for class in &t.taint {
@@ -137,11 +209,10 @@ pub fn assemble(
             }
         }
         let mut part = Vec::new();
-        if let Some(q) = t.question.as_deref()
-            && !shown.contains(&q)
+        if let Some(q) = &t.question
+            && let Some((_, answer)) = questions.answered.iter().find(|(a, _)| a.id == q.id)
         {
-            part.push(q.to_string());
-            shown.push(q);
+            part.push(format!("Asked: {}\nAnswered: {answer}", q.text));
         }
         if !t.result.trim().is_empty() {
             part.push(t.result.trim().to_string());
@@ -152,18 +223,21 @@ pub fn assemble(
         let part = part.join("\n\n");
         words.push(if i + 1 < turns.len() { format!("Earlier:\n{part}") } else { part });
     }
-    let status = match (&latest.status, pending) {
-        (CompletionStatus::Done | CompletionStatus::Partial { .. }, Some(_)) => {
+    let status = match &latest.status {
+        CompletionStatus::Done | CompletionStatus::Partial { .. } if !questions.pending.is_empty() => {
             CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.to_string() }
         }
-        (status, _) => status.clone(),
+        // Its latest turn asked, and the answer has been sent: it goes on.
+        status if status.awaits_owner() => CompletionStatus::Partial { why: ANSWERED.to_string() },
+        status => status.clone(),
     };
     Completion {
         task_id: latest.task_id.clone(),
         description: latest.description.clone(),
         status,
         result: spill_if_long(&words.join("\n\n"), spill_dir, limit, reader),
-        question: pending.map(str::to_string),
+        question: None,
+        lead: lead.join("\n\n"),
         usage: latest.usage.clone(),
         taint,
     }
@@ -202,10 +276,21 @@ fn question_block(task_id: &str, q: &types::OwnerQuestion, taint: &[types::prove
     if let Some(mark) = types::labels::provenance_mark(taint) {
         out.push_str(&format!("\n{mark}"));
     }
-    out.push_str(&format!("\nQuestion: {}", q.question.trim()));
+    let question = q.question.trim();
+    match clip_chars(question, QUESTION_CAP) {
+        Some(head) => out.push_str(&format!("\nQuestion: {head}… (it runs on; the whole question is in the report below)")),
+        None => out.push_str(&format!("\nQuestion: {question}")),
+    }
     if !q.options.is_empty() {
         let pick = if q.multi_select { "any of" } else { "one of" };
-        out.push_str(&format!("\nOptions ({pick}): {}", q.options.join(" | ")));
+        let all = q.options.join(" | ");
+        match clip_chars(&all, OPTIONS_CAP) {
+            Some(head) => out.push_str(&format!(
+                "\nOptions ({pick}, {} in all): {head}… (all of them are in the report below)",
+                q.options.len()
+            )),
+            None => out.push_str(&format!("\nOptions ({pick}): {all}")),
+        }
     }
     if let Some(recommended) = q.recommended() {
         out.push_str(&format!("\nRecommended: {recommended}"));
@@ -220,15 +305,28 @@ fn question_block(task_id: &str, q: &types::OwnerQuestion, taint: &[types::prove
     out.push_str(&format!(
         "\nUnless the owner already settled this, ask them with ask_owner ({how}). If no one can answer it in \
          your conversation, decide it yourself or take it up the line as ask_owner says. Either way, \
-         send_message the answer to {task_id}: it continues from where it stopped. Never leave it waiting."
+         send_message to {task_id} with the decision in `answer`: it continues from where it stopped. Never leave \
+         it waiting."
     ));
     out
 }
+
+/// Longest question a block shows; a longer one is shown whole in the
+/// report's words. The block is never spilled, so it is kept to a size.
+const QUESTION_CAP: usize = 2_000;
+/// Longest run of options a block shows; all of them are in the words.
+const OPTIONS_CAP: usize = 1_000;
 
 /// What else a helper that asked said: the context it gave the owner, and
 /// where the work stands. Spilled like any report.
 fn where_it_stands(q: &types::OwnerQuestion, last_words: &str) -> String {
     let mut parts = Vec::new();
+    if clip_chars(q.question.trim(), QUESTION_CAP).is_some() {
+        parts.push(format!("The whole question: {}", q.question.trim()));
+    }
+    if clip_chars(&q.options.join(" | "), OPTIONS_CAP).is_some() {
+        parts.push(format!("All the options: {}", q.options.join(" | ")));
+    }
     if !q.context.trim().is_empty() {
         parts.push(format!("Context: {}", q.context.trim()));
     }
@@ -360,8 +458,8 @@ mod tests {
     /// A one-turn run's report, as its parent gets it.
     fn finished(got: Collected, id: &str, description: &str, dir: &Path, limit: usize) -> Completion {
         let turn = got.into_completion(id, description);
-        let pending = turn.question.clone();
-        assemble(&[turn], pending.as_deref(), dir, limit, Reader::File)
+        let questions = Questions { pending: turn.question.iter().cloned().collect(), ..Default::default() };
+        assemble(&[turn], &questions, false, dir, limit, Reader::File)
     }
 
     async fn run(events: Vec<StreamEvent>) -> Collected {
@@ -460,7 +558,7 @@ mod tests {
             "Options (one of): Acme | Globex",
             "Recommended: Acme",
             "ask them with ask_owner",
-            "send_message the answer to h-7",
+            "send_message to h-7 with the decision in `answer`",
         ] {
             assert!(c.report().contains(part), "{part:?} missing from:\n{}", c.report());
         }
@@ -507,7 +605,7 @@ mod tests {
             "Options (any of): Mon | Wed | Fri",
             "Recommended: Mon",
             "multi_select: true, style: \"select\"",
-            "send_message the answer to h-9",
+            "send_message to h-9 with the decision in `answer`",
             "[Contains content from: web]",
         ] {
             assert!(block.contains(part), "{part:?} missing inline:\n{block}");
@@ -516,7 +614,15 @@ mod tests {
         assert!(!CompletionStatus::Done.awaits_owner() && !CompletionStatus::Partial { why: "hit its step limit".into() }.awaits_owner());
     }
 
-    fn turn(result: &str, question: Option<&str>) -> Completion {
+    fn asked(id: &str, text: &str) -> Asked {
+        Asked {
+            id: id.into(),
+            text: text.into(),
+            block: format!("It needs the owner's decision before it can go on.\nQuestion: {text}\nUnless the owner already settled this, ask them with ask_owner."),
+        }
+    }
+
+    fn turn(result: &str, question: Option<&Asked>) -> Completion {
         Completion {
             task_id: "h-1".into(),
             description: "d".into(),
@@ -525,7 +631,8 @@ mod tests {
                 None => CompletionStatus::Done,
             },
             result: result.into(),
-            question: question.map(str::to_string),
+            question: question.cloned(),
+            lead: String::new(),
             usage: Default::default(),
             taint: Vec::new(),
         }
@@ -533,41 +640,64 @@ mod tests {
 
     /// A run of several turns with a question still pending (no answer
     /// sent since it was asked): the run needs the owner's decision even
-    /// when its latest turn only reported progress; the question leads,
-    /// shown once however often a turn asked it; earlier turns are marked
-    /// "Earlier:"; and the whole is held to the limit with the question
-    /// inline and the preview inside the limit.
+    /// when its latest turn only reported progress; pending questions lead,
+    /// newest first, each once; earlier turns are marked "Earlier:"; a
+    /// question the parent already has is named, not given again; and the
+    /// whole is held to the limit with the questions inline and the preview
+    /// inside the limit. An answered question reads as asked and answered.
     #[test]
-    fn a_pending_question_leads_until_it_is_answered() {
+    fn pending_questions_lead_until_they_are_answered() {
         let dir = tempfile::tempdir().unwrap();
-        let q = "It needs the owner's decision before it can go on.\nQuestion: Which vendor?";
-        let turns = [turn("Drafted the plan.", Some(q)), turn("40 contacts found.", None), turn("Contacts are in.", None)];
-        let c = assemble(&turns, Some(q), dir.path(), REPORT_LIMIT, Reader::File);
-        assert!(c.status.awaits_owner(), "progress doesn't settle a question: {:?}", c.status);
+        let vendor = asked("q1", "Which vendor?");
+        let budget = asked("q2", "What budget?");
+        let turns = [turn("Drafted the plan.", Some(&vendor)), turn("40 contacts found.", None), turn("Need the budget.", Some(&budget))];
+        let questions = Questions { pending: vec![vendor.clone(), budget.clone()], ..Default::default() };
+        let c = assemble(&turns, &questions, false, dir.path(), REPORT_LIMIT, Reader::File);
+        assert!(c.status.awaits_owner());
         let report = c.report();
-        assert!(report.starts_with(q), "the question leads: {report}");
+        assert!(report.starts_with(&budget.block), "the newest leads: {report}");
+        assert_eq!(report.matches("Question: Which vendor?").count(), 1, "{report}");
+        assert!(report.find("What budget?").unwrap() < report.find("Which vendor?").unwrap());
         assert!(report.contains("Earlier:\nDrafted the plan.") && report.contains("Earlier:\n40 contacts found."), "{report}");
-        assert!(report.ends_with("Contacts are in."), "{report}");
+        assert!(report.ends_with("Need the budget."), "{report}");
 
-        // Asked again: still shown once.
-        let turns = [turn("Drafted the plan.", Some(q)), turn("Still need the vendor.", Some(q))];
-        let report = assemble(&turns, Some(q), dir.path(), REPORT_LIMIT, Reader::File).report();
-        assert_eq!(report.matches("Question: Which vendor?").count(), 1, "shown once: {report}");
+        // The parent already has the vendor question: it is named, not given.
+        let mut given = questions.clone();
+        given.reported = vec!["q1".into()];
+        let report = assemble(&turns, &given, true, dir.path(), REPORT_LIMIT, Reader::File).report();
+        assert!(!report.contains("Which vendor?") && report.contains("1 question(s) for the owner it reported before"), "{report}");
 
-        // Past the limit, the joined words spill; the question stays inline
-        // and leads, and the preview never runs past the limit.
+        // Past the limit, the joined words spill; the questions stay inline
+        // and lead, and the preview never runs past the limit.
         let long = "x".repeat(3_000);
-        let report = assemble(&[turn(&long, Some(q)), turn(&long, None)], Some(q), dir.path(), 1_000, Reader::File).report();
-        assert!(report.starts_with(q), "{}", &report[..200]);
+        let report = assemble(&[turn(&long, Some(&vendor)), turn(&long, None)], &Questions { pending: vec![vendor.clone()], ..Default::default() }, false, dir.path(), 1_000, Reader::File).report();
+        assert!(report.starts_with(&vendor.block), "{}", &report[..200]);
         assert!(report.contains(tools::result_shape::SAVED_OUTPUT) && report.contains("First 1000 characters:"), "{}", &report[..400]);
-        assert!(report.chars().count() < 1_000 + q.len() + 800, "the preview keeps to the limit: {}", report.chars().count());
+        assert!(report.chars().count() < 1_000 + vendor.block.len() + 800, "the preview keeps to the limit: {}", report.chars().count());
 
-        // Answered (nothing pending): the run is its latest state, and the
-        // question it asked stays in that turn's words.
-        let c = assemble(&[turn("Drafted the plan.", Some(q)), turn("Went with Acme, as you said.", None)], None, dir.path(), REPORT_LIMIT, Reader::File);
+        // Answered: the run is its latest state; the question reads as asked
+        // and answered, without the instructions to ask.
+        let answered = Questions { answered: vec![(vendor.clone(), "Acme".into())], ..Default::default() };
+        let c = assemble(&[turn("Drafted the plan.", Some(&vendor)), turn("Went with Acme.", None)], &answered, false, dir.path(), REPORT_LIMIT, Reader::File);
         assert_eq!(c.status, CompletionStatus::Done);
-        assert!(c.question.is_none());
-        assert!(c.report().starts_with(&format!("Earlier:\n{q}")), "{}", c.report());
+        assert!(c.report().starts_with("Earlier:\nAsked: Which vendor?\nAnswered: Acme"), "{}", c.report());
+        assert!(!c.report().contains("ask them with ask_owner"), "{}", c.report());
+    }
+
+    /// The block a question leads with keeps to a size: a very long list of
+    /// options is cut there with a note, and every option is in the words.
+    #[test]
+    fn a_question_block_keeps_to_a_size() {
+        let q = types::OwnerQuestion {
+            question: "Which listing goes first?".into(),
+            options: (0..400).map(|i| format!("Listing number {i} on Elm Street")).collect(),
+            ..Default::default()
+        };
+        let block = question_block("h-1", &q, &[]);
+        assert!(block.chars().count() < 2_000, "{}", block.chars().count());
+        assert!(block.contains("Question: Which listing goes first?") && block.contains("400 in all") && block.contains("all of them are in the report below"));
+        let words = where_it_stands(&q, "");
+        assert!(words.contains("Listing number 399 on Elm Street"));
     }
 
     /// A turn that ended at its step or spending limit is partial, whatever

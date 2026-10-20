@@ -152,6 +152,7 @@ mod tests {
             status,
             result: "Three errors, all from the nightly job.".into(),
             question: None,
+            lead: String::new(),
             usage: ai::UsageInfo::default(),
             taint: Vec::new(),
         }
