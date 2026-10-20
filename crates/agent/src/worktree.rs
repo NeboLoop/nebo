@@ -88,7 +88,8 @@ pub enum MergeOutcome {
     Failed { error: String, kept_at: PathBuf, branch: String },
 }
 
-async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+/// Run git in `cwd` with prompts disabled: the one way this crate runs git.
+pub(crate) async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let out = command::new::<Command>("git", command::Console::Hidden)
         .args(args)
         .current_dir(cwd)

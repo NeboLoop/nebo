@@ -1,0 +1,365 @@
+//! The project's own build and tests: the plain-code step of every round.
+//!
+//! Read from the project's manifests, never guessed by a model: the same
+//! project always runs the same checks. Each check runs in the copy the work
+//! happens in, with its own build folder ([`Check::build_dir_env`]) under the
+//! verification's folder, deleted when the verification ends, so parallel
+//! work never shares (or fills the disk with) one build output.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// One check command for a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Check {
+    /// What the owner reads: "Rust tests", "pnpm check".
+    pub label: String,
+    /// The command, run in `dir`.
+    pub command: String,
+    /// Where it runs: the project folder, or one of its packages.
+    pub dir: PathBuf,
+}
+
+/// The checks for the project at `root`, scoped to the packages `changed`
+/// (paths relative to `root`) touch where the project is a workspace.
+/// Empty when the project declares none: the round then says no build or
+/// test could run, and the work is not verified.
+pub fn detect(root: &Path, changed: &[String]) -> Vec<Check> {
+    let mut checks = Vec::new();
+    if root.join("Cargo.toml").is_file() {
+        checks.extend(cargo(root, changed));
+    }
+    if root.join("package.json").is_file() {
+        checks.extend(node(root, root));
+    } else {
+        // A repository whose web app is a package of its own (`app/`).
+        for dir in changed_package_dirs(root, changed, "package.json") {
+            checks.extend(node(root, &dir));
+        }
+    }
+    if root.join("go.mod").is_file() {
+        checks.push(Check {
+            label: "Go build and tests".into(),
+            command: "go build ./... && go test ./...".into(),
+            dir: root.to_path_buf(),
+        });
+    }
+    let python = root.join("pyproject.toml").is_file()
+        || root.join("setup.py").is_file()
+        || root.join("pytest.ini").is_file();
+    if python
+        && (root.join("tests").is_dir()
+            || root.join("pytest.ini").is_file()
+            || has_pytest_files(root))
+    {
+        checks.push(Check {
+            label: "Python tests".into(),
+            command: "python3 -m pytest -q".into(),
+            dir: root.to_path_buf(),
+        });
+    }
+    if root.join("pubspec.yaml").is_file() {
+        checks.push(Check {
+            label: "Flutter analyze".into(),
+            command: "flutter analyze".into(),
+            dir: root.to_path_buf(),
+        });
+        if root.join("test").is_dir() {
+            checks.push(Check {
+                label: "Flutter tests".into(),
+                command: "flutter test".into(),
+                dir: root.to_path_buf(),
+            });
+        }
+    }
+    if checks.is_empty() && makefile_has(root, "test") {
+        checks.push(Check {
+            label: "make test".into(),
+            command: "make test".into(),
+            dir: root.to_path_buf(),
+        });
+    }
+    checks
+}
+
+impl Check {
+    /// The environment prefix that gives the check its own build folder,
+    /// `build_dir`, where the tool has one.
+    pub fn with_build_dir(&self, build_dir: &Path) -> String {
+        if self.command.starts_with("cargo ") {
+            format!(
+                "CARGO_TARGET_DIR={} {}",
+                shell_quote(&build_dir.to_string_lossy()),
+                self.command
+            )
+        } else {
+            self.command.clone()
+        }
+    }
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `cargo test` for the crates the change touches (all of them when it
+/// touches the workspace's own files).
+fn cargo(root: &Path, changed: &[String]) -> Vec<Check> {
+    let mut packages: Vec<String> = Vec::new();
+    let mut whole = false;
+    for path in changed
+        .iter()
+        .filter(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml") || p.ends_with(".sql"))
+    {
+        match package_of(root, path) {
+            Some(name) => {
+                if !packages.contains(&name) {
+                    packages.push(name);
+                }
+            }
+            None => whole = true,
+        }
+    }
+    if packages.is_empty() && !whole {
+        // The change touches no Rust: the build still has to hold.
+        return vec![Check {
+            label: "Rust build".into(),
+            command: "cargo check --all-targets".into(),
+            dir: root.to_path_buf(),
+        }];
+    }
+    let scope = if whole || packages.is_empty() {
+        "--workspace".to_string()
+    } else {
+        packages
+            .iter()
+            .map(|p| format!("-p {p}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    vec![Check {
+        label: "Rust tests".into(),
+        command: format!("cargo test {scope}"),
+        dir: root.to_path_buf(),
+    }]
+}
+
+/// The package that owns `path`: the nearest `Cargo.toml` with a
+/// `[package]` name, below `root`.
+fn package_of(root: &Path, path: &str) -> Option<String> {
+    let mut dir = root.join(path).parent()?.to_path_buf();
+    while dir.starts_with(root) {
+        let manifest = dir.join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&manifest)
+            && let Some(name) = package_name(&text)
+        {
+            return Some(name);
+        }
+        if dir == root {
+            break;
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+/// The `name` under `[package]` in a Cargo manifest.
+fn package_name(manifest: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package && let Some(rest) = line.strip_prefix("name") {
+            let value = rest
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .trim_matches('"');
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// The node package at `dir`: its `check`, `test` and (when it has neither)
+/// `build` scripts, with the package manager its lockfile names.
+fn node(root: &Path, dir: &Path) -> Vec<Check> {
+    let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let scripts = json
+        .get("scripts")
+        .and_then(|s| s.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let manager = if dir.join("pnpm-lock.yaml").is_file() || root.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if dir.join("yarn.lock").is_file() || root.join("yarn.lock").is_file() {
+        "yarn"
+    } else if dir.join("bun.lockb").is_file() || dir.join("bun.lock").is_file() {
+        "bun"
+    } else {
+        "npm"
+    };
+    let mut out = Vec::new();
+    for script in ["check", "test"] {
+        if scripts
+            .get(script)
+            .and_then(|s| s.as_str())
+            .is_some_and(|s| !s.contains("no test specified"))
+        {
+            let command = match (manager, script) {
+                ("npm", "test") => "npm test".to_string(),
+                ("npm", s) => format!("npm run {s}"),
+                (m, s) => format!("{m} run {s}"),
+            };
+            out.push(Check {
+                label: format!("{manager} {script}"),
+                command,
+                dir: dir.to_path_buf(),
+            });
+        }
+    }
+    if out.is_empty() && scripts.contains_key("build") {
+        let command = if manager == "npm" {
+            "npm run build".to_string()
+        } else {
+            format!("{manager} run build")
+        };
+        out.push(Check {
+            label: format!("{manager} build"),
+            command,
+            dir: dir.to_path_buf(),
+        });
+    }
+    out
+}
+
+/// The package folders (holding `manifest`) the changed paths sit in.
+fn changed_package_dirs(root: &Path, changed: &[String], manifest: &str) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for path in changed {
+        let mut dir = root.join(path).parent().map(Path::to_path_buf);
+        while let Some(d) = dir {
+            if !d.starts_with(root) || d == root {
+                break;
+            }
+            if d.join(manifest).is_file() {
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+                break;
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+    }
+    dirs
+}
+
+fn has_pytest_files(root: &Path) -> bool {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.starts_with("test_") && name.ends_with(".py")
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn makefile_has(root: &Path, target: &str) -> bool {
+    std::fs::read_to_string(root.join("Makefile"))
+        .map(|m| m.lines().any(|l| l.starts_with(&format!("{target}:"))))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    #[test]
+    fn a_rust_workspace_tests_only_the_crates_the_change_touches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        write(
+            root,
+            "crates/db/Cargo.toml",
+            "[package]\nname = \"nebo-db\"\n",
+        );
+        write(
+            root,
+            "crates/agent/Cargo.toml",
+            "[package]\nname = \"nebo-agent\"\nversion = \"1\"\n",
+        );
+        let checks = detect(
+            root,
+            &[
+                "crates/db/src/a.rs".into(),
+                "crates/agent/src/b.rs".into(),
+                "crates/db/migrations/1.sql".into(),
+            ],
+        );
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].command, "cargo test -p nebo-db -p nebo-agent");
+        let build = tempfile::tempdir().unwrap();
+        assert!(
+            checks[0]
+                .with_build_dir(build.path())
+                .starts_with("CARGO_TARGET_DIR='"),
+            "its own build folder"
+        );
+    }
+
+    #[test]
+    fn a_web_package_runs_its_own_scripts_with_its_own_package_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "Cargo.toml", "[package]\nname = \"x\"\n");
+        write(
+            root,
+            "app/package.json",
+            r#"{"scripts":{"check":"svelte-check","test":"vitest --run","build":"vite build"}}"#,
+        );
+        write(root, "app/pnpm-lock.yaml", "");
+        let checks = detect(root, &["app/src/routes/+page.svelte".into()]);
+        let commands: Vec<&str> = checks.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(
+            commands,
+            [
+                "cargo check --all-targets",
+                "pnpm run check",
+                "pnpm run test"
+            ]
+        );
+        assert_eq!(checks[1].dir, root.join("app"));
+    }
+
+    #[test]
+    fn a_project_with_no_build_or_tests_has_no_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        );
+        assert!(detect(dir.path(), &["index.js".into()]).is_empty());
+    }
+}
