@@ -206,7 +206,7 @@ pub use orchestrator::{
 };
 pub use origin::{
     ApprovalCard, ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Judgement, Origin, PendingApproval,
-    ToolContext, Waiting,
+    ToolContext, ToolSlot, Waiting,
     workflow_session_key,
 };
 pub use os_tool::OsTool;

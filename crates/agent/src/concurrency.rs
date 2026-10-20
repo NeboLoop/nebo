@@ -277,6 +277,12 @@ impl ConcurrencyController {
         self.background.acquire(round, Priority::Work).await
     }
 
+    /// A slot in the tool pool for one call in a tool round, which the call
+    /// gives back while it waits out a held balance (`tools::Registry`).
+    pub async fn acquire_tool_slot(&self) -> Arc<tools::ToolSlot> {
+        tools::ToolSlot::take(self.tool_semaphore.clone()).await
+    }
+
     /// Acquire a permit for parallel tool execution within a turn.
     pub async fn acquire_tool_permit(&self) -> OwnedSemaphorePermit {
         self.tool_semaphore
@@ -400,17 +406,40 @@ impl Provider for BackgroundProvider {
         self.inner.supports_vision()
     }
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
-        let permit = self.concurrency.acquire_background_permit().await;
-        let round = permit.round();
-        let mut rx = match self.inner.stream(req).await {
-            Ok(rx) => rx,
-            Err(e) => {
-                if let ProviderError::RateLimit { .. } = &e {
-                    self.concurrency.report_rate_limit(round);
+        // A held balance is waited out here, as the chat runner does it: the
+        // provider sends once and answers with Janus's wait, and the permit
+        // is given back before waiting, from the call's one budget.
+        let mut req = req.clone();
+        req.caller_waits_for_balance = true;
+        let mut waits = ai::ReservedWaits::default();
+        let (permit, mut rx) = loop {
+            let permit = self.concurrency.acquire_background_permit().await;
+            match self.inner.stream(&req).await {
+                Ok(rx) => break (permit, rx),
+                Err(ProviderError::BalanceReserved { retry_after_secs }) => {
+                    drop(permit);
+                    let held = ProviderError::BalanceReserved { retry_after_secs };
+                    let Some(wait) = waits.next(retry_after_secs.map(Duration::from_secs)) else {
+                        return Err(held);
+                    };
+                    // A stopped run stops waiting: the call was never served.
+                    match &req.cancel_token {
+                        Some(cancel) => tokio::select! {
+                            _ = cancel.cancelled() => return Err(held),
+                            _ = tokio::time::sleep(wait) => {}
+                        },
+                        None => tokio::time::sleep(wait).await,
+                    }
                 }
-                return Err(e);
+                Err(e) => {
+                    if let ProviderError::RateLimit { .. } = &e {
+                        self.concurrency.report_rate_limit(permit.round());
+                    }
+                    return Err(e);
+                }
             }
         };
+        let round = permit.round();
         // Hold the permit for the whole stream and judge it the way the
         // runner judges a foreground stream: an error event that classifies
         // as a rate limit is a 429; anything else that finishes is a success.
@@ -809,6 +838,87 @@ mod tests {
         while rx.recv().await.is_some() {}
         tokio::task::yield_now().await;
         assert_eq!(ctrl.effective_permits(), before + 1, "a completed housekeeping stream grows the pool");
+    }
+
+    /// Housekeeping refused because running work holds the balance gives its
+    /// background permit back before waiting, the same as the chat runner:
+    /// the provider sends once (it never waits for this caller) and the
+    /// wrapper waits, then the same request is served.
+    #[tokio::test]
+    async fn housekeeping_gives_its_slot_back_while_a_held_balance_is_waited_out() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        struct HeldOnce(AtomicUsize);
+        #[async_trait::async_trait]
+        impl Provider for HeldOnce {
+            fn id(&self) -> &str {
+                "held-once"
+            }
+            async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+                assert!(req.caller_waits_for_balance, "the wrapper waits, never the provider inside the slot");
+                if self.0.fetch_add(1, SeqCst) == 0 {
+                    return Err(ProviderError::BalanceReserved { retry_after_secs: Some(1) });
+                }
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                let _ = tx.send(ai::StreamEvent::text("ok")).await;
+                let _ = tx.send(ai::StreamEvent::done()).await;
+                Ok(rx)
+            }
+        }
+        let ctrl = Arc::new(ConcurrencyController::new(Some(16)));
+        ctrl.set_ceiling(16);
+        let inner = Arc::new(HeldOnce(AtomicUsize::new(0)));
+        let prov = ctrl.background(inner.clone());
+        let req = ChatRequest::new(ai::RequestTrace::new("test"));
+        let all = ctrl.background_permits();
+        let probe = async {
+            // Inside the wait (at least the one second Janus asked for).
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            assert_eq!(inner.0.load(SeqCst), 1, "refused once, waiting");
+            let mut held = Vec::new();
+            for _ in 0..all {
+                let permit = tokio::time::timeout(Duration::from_millis(500), ctrl.acquire_background_permit())
+                    .await
+                    .expect("every background slot is free while the call waits");
+                held.push(permit);
+            }
+        };
+        let (streamed, ()) = tokio::join!(prov.stream(&req), probe);
+        let mut rx = streamed.expect("served after the wait");
+        let mut text = String::new();
+        while let Some(ev) = rx.recv().await {
+            text.push_str(&ev.text);
+        }
+        assert_eq!(text, "ok");
+        assert_eq!(inner.0.load(SeqCst), 2, "the same request once more, never twice");
+    }
+
+    /// A stopped run stops waiting out a held balance at once: the call
+    /// ends unserved, without the wait Janus asked for.
+    #[tokio::test]
+    async fn housekeeping_stops_waiting_when_its_run_is_stopped() {
+        struct AlwaysHeld;
+        #[async_trait::async_trait]
+        impl Provider for AlwaysHeld {
+            fn id(&self) -> &str {
+                "always-held"
+            }
+            async fn stream(&self, _req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+                Err(ProviderError::BalanceReserved { retry_after_secs: Some(10) })
+            }
+        }
+        let ctrl = Arc::new(ConcurrencyController::new(Some(16)));
+        let prov = ctrl.background(Arc::new(AlwaysHeld));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let req = ChatRequest { cancel_token: Some(cancel.clone()), ..ChatRequest::new(ai::RequestTrace::new("test")) };
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            stopper.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = prov.stream(&req).await.err().expect("never served");
+        assert!(matches!(err, ProviderError::BalanceReserved { .. }), "{err:?}");
+        assert!(started.elapsed() < Duration::from_secs(5), "stopped waiting at once: {:?}", started.elapsed());
     }
 
 }

@@ -758,6 +758,12 @@ pub struct ChatRequest {
     /// back so they execute as this run. Never serialized.
     #[serde(skip)]
     pub tool_credential: Option<String>,
+    /// The caller waits out a held balance itself: the chat runner, which
+    /// frees its concurrency slot first. The provider then answers
+    /// [`ProviderError::BalanceReserved`] at once; otherwise it waits it out
+    /// ([`crate::http::send`]). Never serialized.
+    #[serde(skip)]
+    pub caller_waits_for_balance: bool,
     /// The Nebo conversation this turn belongs to (the chat row's id), for a
     /// provider that keeps one remote conversation per Nebo chat (the linked
     /// provider). Empty for calls that are not a conversation's turn. Never
@@ -846,6 +852,7 @@ impl ChatRequest {
             cancel_token: None,
             trace,
             tool_credential: None,
+            caller_waits_for_balance: false,
             chat_id: String::new(),
             ask_channels: None,
             permission_mode: None,
@@ -953,6 +960,8 @@ pub trait ProfileTracker {
 /// route it could take. Final: the gateway already tried them all.
 pub const CONTENT_FILTERED: &str = "CONTENT_FILTERED";
 
+pub use ::types::balance::{BALANCE_BUSY, BALANCE_RESERVED, ReservedWaits, is_balance_reserved};
+
 /// Error from an AI provider.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ProviderError {
@@ -970,6 +979,16 @@ pub enum ProviderError {
     /// sent one — the runner waits that long instead of its own backoff.
     #[error("rate limit exceeded")]
     RateLimit { retry_after_secs: Option<u64> },
+
+    /// Janus's [`BALANCE_RESERVED`]: running work holds the balance, which
+    /// covers this request; it was not served or charged. `retry_after_secs`
+    /// is its `Retry-After`. Waited out once, by the layer that owns the
+    /// request ([`ReservedWaits`]): the chat runner, or [`crate::http::send`]
+    /// for a caller with no runner. Not [`ProviderError::is_retryable`], so
+    /// no other retry layer sends it again; reaching a caller, the waits have
+    /// run out. Never another provider, never out of balance.
+    #[error("BALANCE_RESERVED: {}", BALANCE_BUSY)]
+    BalanceReserved { retry_after_secs: Option<u64> },
 
     #[error("authentication error: {0}")]
     Auth(String),
@@ -1154,6 +1173,7 @@ pub fn is_role_ordering_error(err: &ProviderError) -> bool {
 pub fn classify_error_reason(err: &ProviderError) -> &str {
     match err {
         ProviderError::RateLimit { .. } => "rate_limit",
+        ProviderError::BalanceReserved { .. } => "balance_reserved",
         ProviderError::Auth(_) => "auth",
         ProviderError::ContextOverflow => "context_overflow",
         ProviderError::Api { code, message, .. } => {

@@ -17,6 +17,7 @@ tokio-util = { workspace = true }
 
 # HTTP
 reqwest = { workspace = true }
+http = "1"
 tokio-tungstenite = { workspace = true }
 
 # Coding agents hosted on this computer, and every linked agent reached

@@ -3034,6 +3034,17 @@ mod tests {
         let meta: serde_json::Value = serde_json::from_str(thread.last().unwrap().metadata.as_deref().unwrap()).unwrap();
         assert_eq!(meta[super::STOP_REASON_KEY], not_signed_in);
 
+        // Running work held the balance: the typed stop, which the apps word
+        // as busy in the owner's language, never the raw code.
+        let held = agent::harness::model_call::BALANCE_RESERVED;
+        super::record_run_error(&harness, key, ai::BALANCE_BUSY, Some(held));
+        let thread = harness.sessions().get_messages(&session.id).unwrap();
+        let last = thread.last().unwrap();
+        assert_eq!(last.content, ai::BALANCE_BUSY);
+        assert!(!last.content.contains("BALANCE_RESERVED"));
+        let meta: serde_json::Value = serde_json::from_str(last.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta[super::STOP_REASON_KEY], held);
+
         let model = harness.sessions().get_messages_since_checkpoint(&session.id).unwrap();
         assert_eq!(model.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["Hello"], "the model never reads it");
     }

@@ -410,6 +410,7 @@
 		"tokensInOut": "입력 {input} · 출력 {output}",
 		"tokenTooltip": "전체 프롬프트 {total} · 시스템+도구 {overhead} · 캐시 읽기 {cacheRead}",
 		"outOfBalance": "이번 달 플랜을 모두 사용했습니다. 계속하려면 플랜을 업그레이드하세요.",
+		"balanceBusy": "실행 중인 작업이 잔액을 사용하고 있습니다. 잠시 후 다시 시도하세요.",
 		"viewPlans": "플랜 보기",
 		"choosePlan": "플랜 선택",
 		"documents": "문서",
