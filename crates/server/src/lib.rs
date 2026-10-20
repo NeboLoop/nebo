@@ -569,6 +569,11 @@ fn build_embedding_provider(
             // OpenAI on it and charges the platform fee.
             "openai" => {
                 let Some(own) = auth::credential::own_key(profile) else { continue };
+                // Through Janus, on his NeboAI account: signed out, the
+                // next option (Ollama) embeds instead.
+                if auth::neboai_token(store).unwrap_or_default().is_empty() {
+                    continue;
+                }
                 let token = store.clone();
                 let mut headers: Vec<(String, String)> = own.headers().into_iter().map(|(k, v)| (k.to_string(), v)).collect();
                 headers.push(("X-Bot-ID".into(), config::read_bot_id().unwrap_or_default()));
@@ -707,11 +712,9 @@ const SYSTEMONE_COMPATIBLE: &str = "systemone_compatible";
 
 /// Where decisions go when the active pack (`model`) is a pack whose Decisions slot
 /// names one of the owner's SystemOne-compatible connections that exists
-/// and is active: the slot's model, through Janus on his key for a hosted
-/// service (`auth::credential::own_key`), or direct to a server on his own
-/// machine or network. `None` (the default is not a pack, the slot is empty
-/// or Nebo AI's `janus/…`, the connection is gone or off) keeps decisions
-/// on Nebo AI's Jev. Local reads only.
+/// and is active: its base URL, its key, the slot's model. `None` (the
+/// default is not a pack, the slot is empty or Nebo AI's `janus/…`, the
+/// connection is gone or off) keeps decisions on Janus. Local reads only.
 pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEndpoint> {
     let (pack_id, _) = types::packs::parse_ref(model)?;
     let pack = store.get_intelligence_pack(pack_id).ok()??;
@@ -726,11 +729,12 @@ pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEnd
         return None;
     }
     let base_url = profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty())?.to_string();
-    let route = match auth::credential::own_key(&profile) {
-        Some(key) => ai::DecideRoute::Janus(key),
-        None => ai::DecideRoute::Direct { base_url, key: auth::credential::profile_key(&profile) },
-    };
-    Some(ai::DecideEndpoint { model: model.to_string(), profile_id: profile.id, route })
+    Some(ai::DecideEndpoint {
+        base_url,
+        key: auth::credential::profile_key(&profile),
+        model: model.to_string(),
+        profile_id: profile.id,
+    })
 }
 
 /// A chat client on Janus: Nebo AI (`own_key` None, id `janus`, its models
@@ -788,12 +792,11 @@ pub fn build_providers(
             continue;
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
-            // A paid hosted provider on the owner's own key reaches it
-            // through Janus (`auth::credential::own_key`), which charges the
-            // platform fee; a compatible server (or a DeepSeek-kind base URL)
-            // on his own machine or network is no paid service and is
-            // reached direct.
-            kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "openai_compatible") => {
+            // A key for a provider Nebo knows by name reaches it through
+            // Janus (`auth::credential::own_key`), which charges the platform
+            // fee; a connection at a URL the owner entered is reached direct
+            // at that URL, in the OpenAI format.
+            kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "xai" | "openai_compatible") => {
                 match auth::credential::own_key(profile) {
                     Some(own) => Some(Arc::new(janus_chat_provider(
                         store,
@@ -806,7 +809,7 @@ pub fn build_providers(
                         .base_url
                         .as_deref()
                         .map(str::trim)
-                        .filter(|u| !u.is_empty() && matches!(kind, "openai_compatible" | "deepseek"))
+                        .filter(|u| !u.is_empty() && matches!(kind, "openai_compatible" | "deepseek" | "openai" | "openrouter" | "xai"))
                     {
                         Some(url) => {
                             let mut p = ai::OpenAIProvider::with_base_url(
@@ -7671,32 +7674,12 @@ mod decision_endpoint_tests {
             .unwrap();
         save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
         let ep = decision_endpoint(&store, "pack/mine").expect("the owner's endpoint");
-        match &ep.route {
-            ai::DecideRoute::Janus(k) => {
-                assert_eq!((k.provider.as_str(), k.key.as_str()), ("systemone_compatible", "owner-key"));
-                assert_eq!(k.base_url.as_deref(), Some("https://api.typesafe.ai"));
-            }
-            ai::DecideRoute::Direct { .. } => panic!("a hosted service goes through Janus"),
-        }
+        // An owner-entered URL is reached direct, never through Janus.
+        assert_eq!(ep.base_url, "https://api.typesafe.ai");
+        assert_eq!(ep.key, "owner-key");
         assert_eq!(ep.model, "jev-latest");
         assert_eq!(ep.profile_id, "p1");
         assert!(decision_endpoint(&store, "pack/mine/low").is_some(), "any level of the pack");
-    }
-
-    /// A SystemOne-compatible server on the owner's own network is no paid
-    /// service: it is reached direct.
-    #[test]
-    fn a_server_on_the_owners_network_takes_the_decisions_direct() {
-        let (_d, store) = store();
-        store
-            .create_auth_profile("p1", "Lab", "systemone_compatible", "lab-key", None, Some("http://192.168.1.9:8080"), 0, 1, None, None)
-            .unwrap();
-        save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
-        let ep = decision_endpoint(&store, "pack/mine").expect("the owner's endpoint");
-        match ep.route {
-            ai::DecideRoute::Direct { base_url, key } => assert_eq!((base_url.as_str(), key.as_str()), ("http://192.168.1.9:8080", "lab-key")),
-            ai::DecideRoute::Janus(_) => panic!("a local server never goes through Janus"),
-        }
     }
 
     /// An employee's decisions follow its own pack, else the bot's default.
@@ -7765,5 +7748,17 @@ mod own_key_embedding_tests {
         assert!(lower.contains("x-provider: openai"));
         assert!(!lower.contains("authorization: bearer sk-own-embed"), "his key is never the Janus bearer");
         assert!(request.contains(r#""model":"text-embedding-3-small""#));
+    }
+
+    /// Signed out of NeboAI, his own OpenAI key cannot embed (Janus carries
+    /// it on his account): the next option, Ollama, embeds instead.
+    #[test]
+    fn signed_out_an_own_openai_key_falls_through_to_ollama() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store.create_auth_profile("o", "Mine", "openai", "sk-own-embed", None, None, 0, 1, None, None).unwrap();
+        store.create_auth_profile("l", "Local", "ollama", "", None, Some("http://localhost:11434"), 1, 1, None, None).unwrap();
+        let ep = super::build_embedding_provider(&store, &config::Config::default()).expect("an embedding provider");
+        assert_eq!(ep.id(), "ollama");
     }
 }

@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "কোনো OpenAI-compatible URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "কোনো SystemOne-compatible URL (সিদ্ধান্ত মডেল: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Lumen থেকে ৪০ ইউনিট আবার অর্ডার করা হয়েছে",
 		"taskVideo": "মঙ্গলবারের ভিডিও পোস্ট করা হয়েছে",
 		"taskInvoices": "৩টি ইনভয়েস রিমাইন্ডার পাঠানো হয়েছে"
+	},
+	"ownKey": {
+		"signedOut": "নিজের {provider} কী ব্যবহার করতে NeboAI-তে সাইন ইন করুন।",
+		"keyRejected": "আপনার {provider} API কী প্রত্যাখ্যাত হয়েছে। সেটিংস > প্রদানকারী-এ এটি দেখুন।",
+		"keyUnusable": "আপনার {provider} API কী এই মডেলটি চালাতে পারে না। সেটিংস > প্রদানকারী-এ এর মডেলটি দেখুন।",
+		"connectionSignIn": "এই কী ব্যবহার করতে NeboAI-তে সাইন ইন করুন: আপনার নিজের কী আপনার NeboAI অ্যাকাউন্টে চলে।"
 	}
 }

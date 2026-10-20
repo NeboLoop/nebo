@@ -1,10 +1,10 @@
 //! xAI Grok realtime (speech-to-speech) client.
 //!
-//! One WebSocket to a realtime endpoint — either Janus's metered relay
-//! (`wss://janus.neboai.com/v1/realtime`, Bearer = the user's Janus JWT) or
-//! xAI direct (`wss://api.x.ai/v1/realtime`, Bearer = a user-owned xAI key).
-//! Both speak the same protocol; Janus forwards frames verbatim and bills
-//! wall-clock minutes.
+//! One WebSocket to Janus's metered realtime relay
+//! (`wss://janus.neboai.com/v1/realtime`, Bearer = the owner's NeboAI token),
+//! on Nebo's keys or on his own xAI key (`X-Provider-API-Key`, the platform
+//! fee only). Janus speaks xAI's protocol, forwards frames verbatim and
+//! bills wall-clock minutes.
 //!
 //! The session exposes the same channel shape as the old cascade
 //! orchestrator: commands in, [`ConversationEvent`]s out — so the
@@ -96,12 +96,13 @@ impl AudioFormat {
 /// Configuration for one realtime session.
 #[derive(Debug, Clone)]
 pub struct RealtimeConfig {
-    /// `wss://.../v1/realtime` (Janus relay or xAI direct).
+    /// `wss://.../v1/realtime`: Janus's relay, on Nebo's keys or the
+    /// owner's own xAI key (`own_key`). Always set by the caller.
     pub endpoint: String,
     /// The model the endpoint is asked for: the call's intelligence pack's
-    /// Voice model (`agent::harness::turn::CallVoice`), `nebo-1-voice` on
-    /// Janus's relay or an xAI realtime model such as `grok-voice-latest`
-    /// direct. Always set by the caller: nothing here picks one.
+    /// Voice model (`agent::harness::turn::CallVoice`), `nebo-1-voice` or
+    /// an xAI realtime model such as `grok-voice-latest` on the owner's
+    /// key. Always set by the caller: nothing here picks one.
     pub model: String,
     /// Bearer token: the owner's NeboAI token (Janus's relay).
     pub bearer: String,
@@ -135,7 +136,8 @@ pub struct RealtimeConfig {
 impl Default for RealtimeConfig {
     fn default() -> Self {
         Self {
-            endpoint: "wss://api.x.ai/v1/realtime".into(),
+            // No call dials a provider direct: the caller names Janus's relay.
+            endpoint: String::new(),
             model: String::new(),
             bearer: String::new(),
             bot_id: None,
@@ -1254,11 +1256,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(realtime_url(&cfg), "wss://janus.example/v1/realtime?model=nebo-1-voice");
-        cfg.endpoint = "wss://api.x.ai/v1/realtime".into();
         cfg.model = "grok-voice-latest".into();
         cfg.conversation_id = Some("c1".into());
-        assert_eq!(realtime_url(&cfg), "wss://api.x.ai/v1/realtime?model=grok-voice-latest&conversation_id=c1");
-        assert!(RealtimeConfig::default().model.is_empty(), "no model is hard-coded");
+        assert_eq!(realtime_url(&cfg), "wss://janus.example/v1/realtime?model=grok-voice-latest&conversation_id=c1");
+        let default = RealtimeConfig::default();
+        assert!(default.model.is_empty(), "no model is hard-coded");
+        assert!(default.endpoint.is_empty(), "no provider is dialed direct");
     }
 
     /// The session.update frame must pin the invariants the relay depends on:

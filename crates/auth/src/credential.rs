@@ -73,31 +73,25 @@ pub fn profile_key(profile: &db::models::AuthProfile) -> String {
 /// The owner's own key on a paid hosted provider, as Janus takes it
 /// (`types::own_key`): the ONE place a connection kind is named the way
 /// Janus names its provider, and the ONE place it is decided which keys go
-/// through Janus. `None` for what is not a paid service Janus can reach
-/// (Ollama, a server on his own machine or network, a NeboAI profile),
-/// which stays direct, and for a connection with no key.
+/// through Janus. A key for one of the providers Nebo knows by name with no
+/// URL of the owner's goes through Janus; `None` for every connection whose
+/// URL he entered (an OpenAI- or SystemOne-compatible endpoint, a typed
+/// provider URL, Ollama), which is reached direct and never sent to Janus,
+/// for a NeboAI profile, and for a connection with no key.
 pub fn own_key(profile: &db::models::AuthProfile) -> Option<types::own_key::OwnKey> {
-    let base_url = profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
-    let (provider, base_url) = match profile.provider.as_str() {
-        kind @ ("anthropic" | "openai" | "google" | "openrouter" | "xai") => (kind, None),
-        // DeepSeek takes a base URL: its own API, else an OpenAI-compatible
-        // endpoint like any other.
-        "deepseek" => match base_url {
-            Some(url) if types::own_key::is_local_url(url) => return None,
-            Some(url) if !url.contains("api.deepseek.com") => ("openai_compatible", Some(url.to_string())),
-            _ => ("deepseek", None),
-        },
-        "openai_compatible" | "systemone_compatible" if base_url.is_none_or(types::own_key::is_local_url) => return None,
-        "openai_compatible" if types::packs::is_xai_connection("openai_compatible", base_url) => ("xai", None),
-        kind @ ("openai_compatible" | "systemone_compatible") => (kind, base_url.map(str::to_string)),
-        "search-brave" => ("brave", None),
-        "search-tavily" => ("tavily", None),
-        "search-google" => ("google_cse", None),
-        "search-serpapi" => ("serpapi", None),
+    if profile.base_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+        return None;
+    }
+    let provider = match profile.provider.as_str() {
+        kind @ ("anthropic" | "openai" | "google" | "openrouter" | "deepseek" | "xai") => kind,
+        "search-brave" => "brave",
+        "search-tavily" => "tavily",
+        "search-google" => "google_cse",
+        "search-serpapi" => "serpapi",
         _ => return None,
     };
     let key = profile_key(profile);
-    (!key.is_empty()).then(|| types::own_key::OwnKey { provider: provider.to_string(), key, base_url })
+    (!key.is_empty()).then(|| types::own_key::OwnKey { provider: provider.to_string(), key })
 }
 
 /// Encrypt every provider key still stored in the clear, in place — in the
@@ -191,37 +185,32 @@ mod tests {
         }
     }
 
-    /// Every paid hosted key goes through Janus under Janus's name for its
-    /// provider; servers on the owner's machine or network, Ollama and a
-    /// connection with no key stay direct.
+    /// A key for a provider Nebo knows by name, with no URL of the owner's,
+    /// goes through Janus under Janus's name for its provider; every
+    /// connection whose URL he entered is reached direct, never through Janus.
     #[test]
-    fn paid_hosted_keys_go_through_janus_and_local_servers_stay_direct() {
-        let own = |kind: &str, base: Option<&str>| own_key(&profile(kind, "sk-1", base)).map(|k| (k.provider, k.base_url));
+    fn built_in_keys_go_through_janus_and_owner_urls_stay_direct() {
+        let own = |kind: &str, base: Option<&str>| own_key(&profile(kind, "sk-1", base)).map(|k| k.provider);
         for kind in ["anthropic", "openai", "google", "deepseek", "openrouter", "xai"] {
-            assert_eq!(own(kind, None), Some((kind.to_string(), None)), "{kind}");
+            assert_eq!(own(kind, None).as_deref(), Some(kind), "{kind}");
         }
-        assert_eq!(own("deepseek", Some("https://api.deepseek.com/v1")), Some(("deepseek".into(), None)));
-        assert_eq!(
-            own("deepseek", Some("https://api.together.xyz/v1")),
-            Some(("openai_compatible".into(), Some("https://api.together.xyz/v1".into())))
-        );
-        assert_eq!(own("deepseek", Some("http://127.0.0.1:8080")), None);
-        assert_eq!(own("search-brave", None), Some(("brave".into(), None)));
-        assert_eq!(own("search-tavily", None), Some(("tavily".into(), None)));
-        assert_eq!(own("search-google", None), Some(("google_cse".into(), None)));
-        assert_eq!(own("search-serpapi", None), Some(("serpapi".into(), None)));
-        assert_eq!(own("openai_compatible", Some("https://api.x.ai/v1")), Some(("xai".into(), None)));
-        assert_eq!(
-            own("openai_compatible", Some("https://api.groq.com/openai/v1")),
-            Some(("openai_compatible".into(), Some("https://api.groq.com/openai/v1".into())))
-        );
-        assert_eq!(
-            own("systemone_compatible", Some("https://api.typesafe.ai")),
-            Some(("systemone_compatible".into(), Some("https://api.typesafe.ai".into())))
-        );
-        assert_eq!(own("openai_compatible", Some("http://localhost:1234/v1")), None);
-        assert_eq!(own("openai_compatible", Some("https://192.168.1.9:8000/v1")), None);
+        assert_eq!(own("search-brave", None).as_deref(), Some("brave"));
+        assert_eq!(own("search-tavily", None).as_deref(), Some("tavily"));
+        assert_eq!(own("search-google", None).as_deref(), Some("google_cse"));
+        assert_eq!(own("search-serpapi", None).as_deref(), Some("serpapi"));
+        for (kind, url) in [
+            ("openai_compatible", "https://api.groq.com/openai/v1"),
+            ("openai_compatible", "https://api.x.ai/v1"),
+            ("openai_compatible", "http://localhost:1234/v1"),
+            ("xai", "https://api.x.ai/v1"),
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            ("deepseek", "https://api.deepseek.com/v1"),
+            ("systemone_compatible", "https://api.typesafe.ai"),
+        ] {
+            assert_eq!(own(kind, Some(url)), None, "{kind} at {url}: his URL, direct");
+        }
         assert_eq!(own("openai_compatible", None), None);
+        assert_eq!(own("systemone_compatible", None), None);
         assert_eq!(own("ollama", None), None);
         assert_eq!(own("neboai", None), None);
         assert_eq!(own_key(&profile("anthropic", "", None)), None, "no key, nothing to send");

@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Qualquer URL compatível com OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Qualquer URL compatível com SystemOne (modelos de decisão: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Repôs 40 unidades da Lumen",
 		"taskVideo": "Publicou o vídeo de terça",
 		"taskInvoices": "Enviou 3 lembretes de fatura"
+	},
+	"ownKey": {
+		"signedOut": "Entre no NeboAI para usar sua própria chave da {provider}.",
+		"keyRejected": "Sua chave de API da {provider} foi recusada. Verifique-a em Configurações > Provedores.",
+		"keyUnusable": "Sua chave de API da {provider} não pode executar este modelo. Verifique o modelo em Configurações > Provedores.",
+		"connectionSignIn": "Entre no NeboAI para usar esta chave: suas próprias chaves funcionam na sua conta NeboAI."
 	}
 }

@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Будь-яка URL-адреса, сумісна з OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Будь-яка URL-адреса, сумісна з SystemOne (моделі для рішень: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Дозамовлено 40 одиниць у Lumen",
 		"taskVideo": "Опубліковано відео за вівторок",
 		"taskInvoices": "Надіслано 3 нагадування про рахунки"
+	},
+	"ownKey": {
+		"signedOut": "Увійдіть у NeboAI, щоб використовувати власний ключ {provider}.",
+		"keyRejected": "Ваш API-ключ {provider} відхилено. Перевірте його в розділі Налаштування > Провайдери.",
+		"keyUnusable": "Ваш API-ключ {provider} не може запускати цю модель. Перевірте модель у розділі Налаштування > Провайдери.",
+		"connectionSignIn": "Увійдіть у NeboAI, щоб використовувати цей ключ: ваші власні ключі працюють через ваш обліковий запис NeboAI."
 	}
 }

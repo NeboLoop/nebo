@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "任意兼容 OpenAI 的 URL（Groq、Together、DeepSeek、xAI、Mistral…）",
 			"systemone_compatible": "任意兼容 SystemOne 的 URL（决策模型：Jev、Clef…）"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "已向 Lumen 补订 40 件",
 		"taskVideo": "已发布周二的视频",
 		"taskInvoices": "已发送 3 条发票提醒"
+	},
+	"ownKey": {
+		"signedOut": "登录 NeboAI 才能使用你自己的 {provider} 密钥。",
+		"keyRejected": "你的 {provider} API 密钥被拒绝。请在 设置 > 提供商 中检查。",
+		"keyUnusable": "你的 {provider} API 密钥无法运行此模型。请在 设置 > 提供商 中检查该密钥的模型。",
+		"connectionSignIn": "登录 NeboAI 才能使用此密钥：你自己的密钥在你的 NeboAI 账户上运行。"
 	}
 }

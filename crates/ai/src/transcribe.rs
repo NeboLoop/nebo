@@ -291,7 +291,7 @@ mod tests {
             base_url,
             model: "whisper-1".into(),
             bot_id: Some("bot-1".into()),
-            own_key: Some(::types::own_key::OwnKey { provider: "openai".into(), key: "sk-own".into(), base_url: None }),
+            own_key: Some(::types::own_key::OwnKey { provider: "openai".into(), key: "sk-own".into() }),
         };
         let heard = transcribe(&RequestTrace::new("transcribe"), &endpoint, "a.wav", b"RIFF....".to_vec()).await.unwrap();
         assert_eq!(heard.text, "hello there");

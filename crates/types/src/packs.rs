@@ -316,10 +316,12 @@ pub const NEBO_AI_VOICE: &str = "janus/nebo-1-voice";
 /// its own.
 pub const XAI_VOICE_MODEL: &str = "grok-voice-latest";
 
-/// Whether a connection (its provider kind and base URL) is xAI's: the only
-/// realtime protocol calls speak today.
-pub fn is_xai_connection(kind: &str, base_url: Option<&str>) -> bool {
-    kind.split('@').next() == Some("xai") || base_url.is_some_and(|u| u.contains("api.x.ai"))
+/// Whether a connection (its provider kind) is xAI's, the only realtime
+/// protocol calls speak today: the built-in xAI kind, whose key goes through
+/// Janus. A URL the owner typed is his own endpoint, reached direct, never
+/// read as xAI's.
+pub fn is_xai_connection(kind: &str) -> bool {
+    kind.split('@').next() == Some("xai")
 }
 
 /// Whether `model` (a model name, no provider) is one of xAI's realtime
@@ -433,9 +435,8 @@ mod tests {
         assert_eq!(nebo_ai().levels.voice.as_deref(), Some("janus/nebo-1-voice"));
         assert!(is_xai_voice_model("grok-voice-latest") && is_xai_voice_model(XAI_VOICE_MODEL));
         assert!(!is_xai_voice_model("grok-4") && !is_xai_voice_model("gpt-realtime-2") && !is_xai_voice_model("nebo-1-voice"));
-        assert!(is_xai_connection("xai", None) && is_xai_connection("xai@k1", None));
-        assert!(is_xai_connection("openai_compatible@k1", Some("https://api.x.ai/v1")));
-        assert!(!is_xai_connection("openai@k1", Some("https://api.openai.com/v1")) && !is_xai_connection("janus", None));
+        assert!(is_xai_connection("xai") && is_xai_connection("xai@k1"));
+        assert!(!is_xai_connection("openai_compatible@k1") && !is_xai_connection("openai@k1") && !is_xai_connection("janus"));
     }
 
     #[test]

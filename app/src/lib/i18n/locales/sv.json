@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Valfri OpenAI-kompatibel URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Valfri SystemOne-kompatibel URL (beslutsmodeller: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Beställde 40 enheter från Lumen",
 		"taskVideo": "Publicerade tisdagens video",
 		"taskInvoices": "Skickade 3 fakturapåminnelser"
+	},
+	"ownKey": {
+		"signedOut": "Logga in på NeboAI för att använda din egen {provider}-nyckel.",
+		"keyRejected": "Din {provider}-API-nyckel nekades. Kontrollera den under Inställningar > Leverantörer.",
+		"keyUnusable": "Din {provider}-API-nyckel kan inte köra den här modellen. Kontrollera modellen under Inställningar > Leverantörer.",
+		"connectionSignIn": "Logga in på NeboAI för att använda den här nyckeln: dina egna nycklar körs på ditt NeboAI-konto."
 	}
 }

@@ -2547,6 +2547,7 @@ export interface ListProjectsResponse {
 
 export interface ListProvidersResponse {
 	profiles: AuthProfile[]
+	routes: Record<string, ConnectionRoute>
 }
 
 export interface ListRegistryResponse {
@@ -3335,6 +3336,11 @@ export interface CommanderNode {
 	role: string
 	type: string
 	parentId?: string
+}
+
+export interface ConnectionRoute {
+	via: 'janus' | 'direct'
+	signInRequired: boolean
 }
 
 export interface EnrichedChat {

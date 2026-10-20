@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "URL yang kompatibel dengan OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "URL yang kompatibel dengan SystemOne (model keputusan: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Memesan ulang 40 unit dari Lumen",
 		"taskVideo": "Memposting video hari Selasa",
 		"taskInvoices": "Mengirim 3 pengingat faktur"
+	},
+	"ownKey": {
+		"signedOut": "Masuk ke NeboAI untuk memakai kunci {provider} milik Anda.",
+		"keyRejected": "Kunci API {provider} Anda ditolak. Periksa di Pengaturan > Penyedia.",
+		"keyUnusable": "Kunci API {provider} Anda tidak dapat menjalankan model ini. Periksa modelnya di Pengaturan > Penyedia.",
+		"connectionSignIn": "Masuk ke NeboAI untuk memakai kunci ini: kunci milik Anda berjalan di akun NeboAI Anda."
 	}
 }

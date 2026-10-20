@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "URL ที่ใช้ร่วมกับ OpenAI ได้ (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "URL ที่ใช้ร่วมกับ SystemOne ได้ (โมเดลสำหรับการตัดสินใจ: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "สั่งซื้อเพิ่ม 40 ชิ้นจาก Lumen",
 		"taskVideo": "โพสต์วิดีโอของวันอังคารแล้ว",
 		"taskInvoices": "ส่งการแจ้งเตือนใบแจ้งหนี้ 3 รายการแล้ว"
+	},
+	"ownKey": {
+		"signedOut": "ลงชื่อเข้าใช้ NeboAI เพื่อใช้คีย์ {provider} ของคุณเอง",
+		"keyRejected": "คีย์ API ของ {provider} ของคุณถูกปฏิเสธ ตรวจสอบได้ที่ การตั้งค่า > ผู้ให้บริการ",
+		"keyUnusable": "คีย์ API ของ {provider} ของคุณใช้งานโมเดลนี้ไม่ได้ ตรวจสอบโมเดลได้ที่ การตั้งค่า > ผู้ให้บริการ",
+		"connectionSignIn": "ลงชื่อเข้าใช้ NeboAI เพื่อใช้คีย์นี้: คีย์ของคุณเองทำงานบนบัญชี NeboAI ของคุณ"
 	}
 }

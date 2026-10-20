@@ -13,6 +13,8 @@ export const CONNECTION_KINDS = [
 	'openai',
 	'google',
 	'openrouter',
+	'deepseek',
+	'xai',
 	'openai_compatible',
 	'systemone_compatible'
 ] as const;

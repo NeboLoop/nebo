@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "OpenAI互換の任意のURL（Groq、Together、DeepSeek、xAI、Mistral…）",
 			"systemone_compatible": "SystemOne互換の任意のURL（判断モデル: Jev、Clef…）"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Lumenに40個を再注文しました",
 		"taskVideo": "火曜日の動画を投稿しました",
 		"taskInvoices": "請求書のリマインダーを3件送りました"
+	},
+	"ownKey": {
+		"signedOut": "自分の {provider} キーを使うには NeboAI にサインインしてください。",
+		"keyRejected": "{provider} の API キーが拒否されました。設定 > プロバイダー で確認してください。",
+		"keyUnusable": "{provider} の API キーではこのモデルを実行できません。設定 > プロバイダー でモデルを確認してください。",
+		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。"
 	}
 }

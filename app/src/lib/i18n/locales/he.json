@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "כל כתובת URL תואמת OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "כל כתובת URL תואמת SystemOne (מודלי החלטה: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "הוזמנו מחדש 40 יחידות מ-Lumen",
 		"taskVideo": "הסרטון של יום שלישי פורסם",
 		"taskInvoices": "נשלחו 3 תזכורות לחשבוניות"
+	},
+	"ownKey": {
+		"signedOut": "התחבר ל-NeboAI כדי להשתמש במפתח {provider} שלך.",
+		"keyRejected": "מפתח ה-API שלך של {provider} נדחה. בדוק אותו בהגדרות > ספקים.",
+		"keyUnusable": "מפתח ה-API שלך של {provider} לא יכול להריץ את המודל הזה. בדוק את המודל שלו בהגדרות > ספקים.",
+		"connectionSignIn": "התחבר ל-NeboAI כדי להשתמש במפתח הזה: המפתחות שלך פועלים דרך חשבון ה-NeboAI שלך."
 	}
 }

@@ -18,7 +18,8 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Alert from '$lib/components/ui/Alert.svelte';
-  import type { AuthProfile, CatalogModel, ConnectionModel } from '$lib/api/neboComponents';
+  import type { AuthProfile, CatalogModel, ConnectionModel, ConnectionRoute } from '$lib/api/neboComponents';
+  import { ownKeyError } from '$lib/chat/ownKeyError';
   import {
     CONNECTION_KINDS,
     filterCatalog,
@@ -34,6 +35,8 @@
   let loading = $state(true);
   let error = $state('');
   let providers = $state<AuthProfile[]>([]);
+  /** How a turn reaches each connection, by id: a built-in key through NeboAI (needs a sign-in), or direct to a URL he entered. */
+  let routes = $state<Record<string, ConnectionRoute>>({});
   let models = $state<Record<string, any[]>>({});
   let cliProviders = $state<any[]>([]);
   let janusStatus = $state<any>(null);
@@ -105,6 +108,17 @@
     return providerOptions.find(p => p.value === kind)?.label || kind;
   }
 
+  /** A test's answer in the owner's language when it is about his own connection. */
+  function worded(message: string): string {
+    const own = ownKeyError(message);
+    return own ? $t(own.key, { values: { provider: own.provider } }) : message;
+  }
+
+  /** Why chat would refuse this connection right now, in his language; '' when it would not. */
+  function refusal(conn: AuthProfile): string {
+    return routes[conn.id]?.signInRequired ? $t('ownKey.connectionSignIn') : '';
+  }
+
   /** The line under a connection's name: its kind (when the name doesn't say it) and its URL. */
   function connectionDetail(p: AuthProfile): string {
     const parts: string[] = [];
@@ -141,6 +155,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listProviders();
       providers = resp.profiles || [];
+      routes = resp.routes || {};
     } catch (err: any) {
       error = err?.message || $t('settingsProviders.loadFailed');
     } finally { loading = false; }
@@ -192,7 +207,7 @@
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.testProvider(id);
-      testResult = { id, success: resp.success, message: resp.message };
+      testResult = { id, success: resp.success, message: worded(resp.message) };
     } catch (err: any) {
       testResult = { id, success: false, message: err?.message || $t('settingsMcp.testFailed') };
     } finally { testingId = null; }
@@ -601,7 +616,7 @@
                 aria-expanded={isOpen}
               >
                 {#if isOpen}<ChevronDown class="w-3.5 h-3.5 text-base-content/50 shrink-0" />{:else}<ChevronRight class="w-3.5 h-3.5 text-base-content/50 shrink-0" />{/if}
-                <span class="w-2 h-2 rounded-full shrink-0 {testResult?.id === conn.id && !testResult.success ? 'bg-error' : conn.isActive ? 'bg-success' : 'bg-warning'}"></span>
+                <span class="w-2 h-2 rounded-full shrink-0 {(testResult?.id === conn.id && !testResult.success) || (conn.isActive && refusal(conn)) ? 'bg-error' : conn.isActive ? 'bg-success' : 'bg-warning'}"></span>
                 <span class="text-sm font-medium truncate">{conn.name}</span>
                 {#if connectionDetail(conn)}
                   <span class="text-xs text-base-content/50 font-mono truncate">{connectionDetail(conn)}</span>
@@ -640,6 +655,12 @@
                 </button>
               </div>
             </div>
+
+            {#if refusal(conn)}
+              <div class="px-4 pb-3 -mt-1">
+                <Alert type="warning">{refusal(conn)}</Alert>
+              </div>
+            {/if}
 
             {#if isOpen}
               <div class="px-4 pb-4 flex flex-col gap-3">

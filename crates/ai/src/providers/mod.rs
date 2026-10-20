@@ -1,3 +1,4 @@
+mod anthropic_wire;
 pub mod cli;
 pub mod connection;
 pub mod linked;

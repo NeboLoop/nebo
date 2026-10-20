@@ -29,12 +29,30 @@ pub(crate) async fn reload_providers(
 }
 
 /// GET /api/v1/providers
+///
+/// Beside the profiles, how each is reached (`routes`, by profile id), the
+/// way a turn reaches it: `janus` (a key for a provider Nebo knows by name,
+/// through Janus, which needs a NeboAI sign-in: `signInRequired` when there
+/// is none) or `direct` (a URL the owner entered, Ollama, a key-less
+/// connection). The page shows a connection chat would refuse as one, never
+/// as healthy.
 pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
         .list_auth_profiles()
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "profiles": profiles })))
+    let signed_in = !auth::neboai_token(&state.store).unwrap_or_default().is_empty();
+    let routes: serde_json::Map<String, serde_json::Value> = profiles
+        .iter()
+        .map(|p| {
+            let route = match auth::credential::own_key(p) {
+                Some(_) => serde_json::json!({ "via": "janus", "signInRequired": !signed_in }),
+                None => serde_json::json!({ "via": "direct", "signInRequired": false }),
+            };
+            (p.id.clone(), route)
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "profiles": profiles, "routes": routes })))
 }
 
 /// POST /api/v1/providers
@@ -224,15 +242,15 @@ pub async fn test_provider(
         return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
     }
     let test_result: Result<String, String> = match profile.provider.as_str() {
-        // The same client a turn uses: a paid hosted key through Janus, a
-        // compatible server on the owner's own machine or network direct.
-        kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "openai_compatible") => {
+        // The same client a turn uses: a built-in key through Janus, a URL
+        // the owner entered direct.
+        kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "xai" | "openai_compatible") => {
             match auth::credential::own_key(&profile) {
                 Some(own) => {
                     let provider = crate::janus_chat_provider(&state.store, &state.config, kind, model, Some(own));
                     test_provider_connection(&provider).await
                 }
-                None => match profile.base_url.clone().filter(|u| matches!(kind, "openai_compatible" | "deepseek") && !u.trim().is_empty()) {
+                None => match profile.base_url.clone().filter(|u| matches!(kind, "openai_compatible" | "deepseek" | "openai" | "openrouter" | "xai") && !u.trim().is_empty()) {
                     Some(url) => {
                         let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
                         provider.set_provider_id(kind);
@@ -943,7 +961,7 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
         }
         let key = super::connections::connection_key(&p);
         let models: Vec<_> = super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active).collect();
-        if is_xai_connection(&p.provider, p.base_url.as_deref()) {
+        if is_xai_connection(&p.provider) {
             let mut names = vec![XAI_VOICE_MODEL];
             for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
                 if !names.contains(&m) {
@@ -1110,8 +1128,8 @@ mod key_egress_tests {
 
 /// Provider keys are stored encrypted and opened only where a client that
 /// presents them is built: the provider still sends the key the owner typed —
-/// through Janus for a paid hosted provider, direct to a server on his own
-/// machine or network.
+/// through Janus for a provider Nebo knows by name, direct to a URL he
+/// entered.
 #[cfg(test)]
 mod key_at_rest_tests {
     use std::sync::Arc;
@@ -1153,56 +1171,52 @@ mod key_at_rest_tests {
     }
 
     #[tokio::test]
-    async fn an_own_key_rides_to_janus_and_a_local_server_gets_it_direct() {
+    async fn a_built_in_key_rides_to_janus_and_an_owner_url_gets_it_direct() {
         auth::credential::init(mcp::crypto::Encryptor::generate());
         let (janus, janus_seen) = stub().await;
-        let (local, local_seen) = stub().await;
+        let (own, own_seen) = stub().await;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
         let sealed = auth::credential::encrypt(SENTINEL).unwrap();
         store.create_auth_profile("nebo", "NeboAI", "neboai", "nebo-token", None, None, 0, 1, Some("token"), None).unwrap();
-        for kind in ["anthropic", "openai", "google", "deepseek", "openrouter"] {
+        for kind in ["anthropic", "openai", "google", "deepseek", "openrouter", "xai"] {
             store.create_auth_profile(kind, "Mine", kind, &sealed, Some("m-1"), None, 0, 1, None, None).unwrap();
         }
-        store
-            .create_auth_profile("groq", "Groq", "openai_compatible", &sealed, Some("llama-x"), Some("https://api.groq.com/openai/v1"), 0, 1, None, None)
-            .unwrap();
-        store
-            .create_auth_profile("lab", "Lab", "openai_compatible", "lab-key", Some("qwen-local"), Some(&format!("{local}/v1")), 0, 1, None, None)
-            .unwrap();
+        // URLs the owner entered, public-looking or not, are his own
+        // endpoints (the stub stands in for each).
+        for (id, kind) in [("groq", "openai_compatible"), ("typed-xai", "xai"), ("lab", "openai_compatible")] {
+            store.create_auth_profile(id, id, kind, &sealed, Some("m-2"), Some(&format!("{own}/v1")), 0, 1, None, None).unwrap();
+        }
         assert!(!store.get_auth_profile("anthropic").unwrap().unwrap().api_key.contains(SENTINEL));
 
         let mut cfg = config::Config::default();
         cfg.neboai.janus_url = janus.clone();
         let providers = crate::build_providers(&store, &cfg, None, None);
-        for id in ["anthropic@anthropic", "openai@openai", "google@google", "deepseek@deepseek", "openrouter@openrouter", "openai_compatible@groq"] {
+        for id in [
+            "anthropic@anthropic", "openai@openai", "google@google", "deepseek@deepseek", "openrouter@openrouter", "xai@xai",
+            "openai_compatible@groq", "xai@typed-xai", "openai_compatible@lab",
+        ] {
             let p = providers.iter().find(|p| p.id() == id).unwrap_or_else(|| panic!("{id} is built"));
             let _ = super::test_provider_connection(p.as_ref()).await;
         }
-        let lab = providers.iter().find(|p| p.id() == "openai_compatible@lab").expect("the local server is built");
-        let _ = super::test_provider_connection(lab.as_ref()).await;
 
         let to_janus = janus_seen.lock().unwrap().clone();
-        assert_eq!(to_janus.len(), 6, "every paid hosted key went to Janus");
         let mut kinds = Vec::new();
         for request in &to_janus {
             assert!(request.starts_with("POST /v1/chat/completions "), "not Janus's chat door");
             assert_eq!(header(request, "x-provider-api-key").as_deref(), Some(SENTINEL), "the key the owner typed rides along");
             assert!(header(request, "authorization").is_some_and(|a| !a.contains(SENTINEL)), "his key is never the Janus bearer");
-            let kind = header(request, "x-provider").unwrap();
-            if kind == "openai_compatible" {
-                assert_eq!(header(request, "x-provider-base-url").as_deref(), Some("https://api.groq.com/openai/v1"));
-            } else {
-                assert!(header(request, "x-provider-base-url").is_none());
-            }
-            kinds.push(kind);
+            assert!(header(request, "x-provider-base-url").is_none(), "no URL of his is ever sent to Janus");
+            kinds.push(header(request, "x-provider").unwrap());
         }
         kinds.sort();
-        assert_eq!(kinds, ["anthropic", "deepseek", "google", "openai", "openai_compatible", "openrouter"]);
+        assert_eq!(kinds, ["anthropic", "deepseek", "google", "openai", "openrouter", "xai"], "every built-in key, and only those");
 
-        let direct = local_seen.lock().unwrap().clone();
-        assert_eq!(direct.len(), 1, "the local server is reached direct");
-        assert_eq!(header(&direct[0], "authorization").as_deref(), Some("Bearer lab-key"));
-        assert!(header(&direct[0], "x-provider").is_none() && header(&direct[0], "x-provider-api-key").is_none());
+        let direct = own_seen.lock().unwrap().clone();
+        assert_eq!(direct.len(), 3, "every URL he entered is reached direct");
+        for request in &direct {
+            assert_eq!(header(request, "authorization").as_deref(), Some(format!("Bearer {SENTINEL}").as_str()));
+            assert!(header(request, "x-provider").is_none() && header(request, "x-provider-api-key").is_none());
+        }
     }
 }

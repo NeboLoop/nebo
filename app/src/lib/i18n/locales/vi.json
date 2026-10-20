@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Bất kỳ URL tương thích OpenAI nào (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Bất kỳ URL tương thích SystemOne nào (mô hình quyết định: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Đã đặt lại 40 sản phẩm từ Lumen",
 		"taskVideo": "Đã đăng video thứ Ba",
 		"taskInvoices": "Đã gửi 3 lời nhắc hóa đơn"
+	},
+	"ownKey": {
+		"signedOut": "Đăng nhập NeboAI để dùng khóa {provider} của riêng bạn.",
+		"keyRejected": "Khóa API {provider} của bạn bị từ chối. Hãy kiểm tra trong Cài đặt > Nhà cung cấp.",
+		"keyUnusable": "Khóa API {provider} của bạn không chạy được mô hình này. Hãy kiểm tra mô hình trong Cài đặt > Nhà cung cấp.",
+		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn."
 	}
 }

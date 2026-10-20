@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "OpenAI 호환 URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "SystemOne 호환 URL (판단 모델: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Lumen에 40개 재주문함",
 		"taskVideo": "화요일 영상 게시함",
 		"taskInvoices": "청구서 알림 3건 보냄"
+	},
+	"ownKey": {
+		"signedOut": "내 {provider} 키를 사용하려면 NeboAI에 로그인하세요.",
+		"keyRejected": "{provider} API 키가 거부되었습니다. 설정 > 제공업체에서 확인하세요.",
+		"keyUnusable": "{provider} API 키로 이 모델을 실행할 수 없습니다. 설정 > 제공업체에서 모델을 확인하세요.",
+		"connectionSignIn": "이 키를 사용하려면 NeboAI에 로그인하세요. 내 키는 NeboAI 계정으로 실행됩니다."
 	}
 }

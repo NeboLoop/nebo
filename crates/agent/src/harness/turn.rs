@@ -911,7 +911,7 @@ fn voice_model(h: Resolver<'_>, chosen: &str) -> Result<CallVoice, VoiceRefusal>
         None => h.store.get_best_auth_profile(connection).ok().flatten(),
     };
     match profile {
-        Some(p) if !is_xai_connection(&p.provider, p.base_url.as_deref()) => Err(VoiceRefusal::Unsupported),
+        Some(p) if !is_xai_connection(&p.provider) => Err(VoiceRefusal::Unsupported),
         Some(p) if p.is_active.unwrap_or(0) != 0 => Ok(CallVoice::Own { profile: p, model: model.to_string() }),
         _ if pack.fallback => {
             warn!(pack = %pack.name, slot, "the pack's Voice connection is gone or off: the call speaks with Nebo AI's Voice");
@@ -3817,13 +3817,15 @@ mod tests {
     }
 
     /// A call speaks through its pack's Voice model: Nebo AI's is Janus's
-    /// relay alias; an xAI realtime model on the owner's xAI connection is
-    /// used with that connection; anything else is refused, never swapped.
+    /// relay alias; an xAI realtime model on the owner's built-in xAI key is
+    /// used with that key (through Janus); anything else, a URL he entered
+    /// included, is refused, never swapped.
     #[tokio::test]
     async fn a_call_speaks_through_the_packs_voice_model() {
         use types::packs::{Pack, PackLevels};
         let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
-        h.store.create_auth_profile("xk", "Grok", "openai_compatible", "key", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
+        h.store.create_auth_profile("xk", "Grok", "xai", "key", None, None, 0, 1, None, None).unwrap();
+        h.store.create_auth_profile("xt", "Grok typed", "openai_compatible", "key", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
         h.store.create_auth_profile("xoff", "Grok off", "xai", "key", None, None, 0, 0, None, None).unwrap();
         h.store.create_auth_profile("oa", "OpenAI", "openai", "key", None, None, 0, 1, None, None).unwrap();
         let save = |id: &str, voice: Option<&str>, fallback: bool| {
@@ -3838,7 +3840,8 @@ mod tests {
                 })
                 .unwrap()
         };
-        save("own", Some("openai_compatible@xk/grok-voice-latest"), false);
+        save("own", Some("xai@xk/grok-voice-latest"), false);
+        save("typed", Some("openai_compatible@xt/grok-voice-latest"), false);
         save("empty", None, false);
         save("chat", Some("anthropic/claude-x"), true);
         save("other", Some("openai@oa/gpt-realtime-2"), true);
@@ -3862,6 +3865,7 @@ mod tests {
         assert_eq!(v("pack/chat").unwrap_err(), VoiceRefusal::Unsupported, "a chat model doesn't speak realtime");
         assert_eq!(v("pack/other").unwrap_err(), VoiceRefusal::Unsupported, "another realtime protocol: refused, not swapped");
         assert_eq!(v("pack/notxai").unwrap_err(), VoiceRefusal::Unsupported, "an xAI model name on another provider");
+        assert_eq!(v("pack/typed").unwrap_err(), VoiceRefusal::Unsupported, "a URL he entered is his own endpoint, not xAI's");
         assert_eq!(v("pack/off").unwrap_err(), VoiceRefusal::Unreachable, "connection off, set not to fall back");
         assert_eq!(janus(v("pack/offfalls")).as_deref(), Some("nebo-1-voice"), "connection off, the pack falls back");
         // An employee's own pack wins over the bot's default.

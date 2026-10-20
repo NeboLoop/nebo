@@ -326,7 +326,7 @@ mod tests {
             endpoint,
             bearer: "token".into(),
             bot_id: Some("bot-1".into()),
-            own_key: Some(types::own_key::OwnKey { provider: "xai".into(), key: "xai-own".into(), base_url: None }),
+            own_key: Some(types::own_key::OwnKey { provider: "xai".into(), key: "xai-own".into() }),
             sample_rate: 16_000,
             language: Some("en".into()),
             keyterms: Vec::new(),

@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "أي رابط متوافق مع OpenAI (Groq، Together، DeepSeek، xAI، Mistral…)",
 			"systemone_compatible": "أي رابط متوافق مع SystemOne (نماذج القرار: Jev، Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "أُعيد طلب 40 وحدة من Lumen",
 		"taskVideo": "نُشر فيديو يوم الثلاثاء",
 		"taskInvoices": "أُرسلت 3 تذكيرات بالفواتير"
+	},
+	"ownKey": {
+		"signedOut": "سجّل الدخول إلى NeboAI لاستخدام مفتاح {provider} الخاص بك.",
+		"keyRejected": "رُفض مفتاح API الخاص بك لدى {provider}. تحقق منه في الإعدادات > المزودون.",
+		"keyUnusable": "لا يمكن لمفتاح API الخاص بك لدى {provider} تشغيل هذا النموذج. تحقق من النموذج عليه في الإعدادات > المزودون.",
+		"connectionSignIn": "سجّل الدخول إلى NeboAI لاستخدام هذا المفتاح: مفاتيحك الخاصة تعمل على حسابك في NeboAI."
 	}
 }

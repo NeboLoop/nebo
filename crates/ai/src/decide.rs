@@ -249,23 +249,14 @@ pub fn clip(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
 /// (`systemone_compatible@<connection>/<model>`), TypeSafe with his key or
 /// another SystemOne-compatible service. Same API as Janus's door.
 pub struct DecideEndpoint {
+    /// The API root (`https://api.typesafe.ai`); `/v1/systemone` is added.
+    pub base_url: String,
+    /// His key, sent as the bearer. Never logged.
+    pub key: String,
     /// The model id the slot names, sent as `model`.
     pub model: String,
     /// The connection the endpoint came from: what the logs name.
     pub profile_id: String,
-    pub route: DecideRoute,
-}
-
-/// Where the owner's decision goes.
-pub enum DecideRoute {
-    /// A hosted service, through Janus on his key (`X-Provider:
-    /// systemone_compatible` with his API root): Janus calls it and charges
-    /// the platform fee.
-    Janus(::types::own_key::OwnKey),
-    /// A SystemOne-compatible server on his own machine or network, direct:
-    /// its API root (`/v1/systemone` is added) and his key, sent as the
-    /// bearer. Never logged.
-    Direct { base_url: String, key: String },
 }
 
 /// Client for `/v1/systemone`: Janus's (Nebo AI's Jev), or the owner's own
@@ -308,34 +299,33 @@ impl DecideClient {
 
     /// Ask every question in `questions` about `state` in one round trip.
     /// `trace` names what the decision is for, sent to Janus as `X-Purpose`
-    /// with the ids in scope, the same headers the chat path sends (a server
-    /// on the owner's own machine or network gets the decision alone).
+    /// with the ids in scope, the same headers the chat path sends (the
+    /// owner's endpoint gets the decision alone).
     pub async fn decide(
         &self,
         trace: &RequestTrace,
         state: &serde_json::Value,
         questions: &BTreeMap<&str, Question>,
     ) -> Result<Decision, ProviderError> {
-        let endpoint = (self.endpoint)(trace);
-        let (model, own_key) = match endpoint {
-            Some(DecideEndpoint { model, profile_id, route: DecideRoute::Direct { base_url, key } }) => {
-                // A server on his own machine or network: a failure there
-                // fails to the caller's safe default like a Janus failure,
-                // never a retry on Janus (that would bill Nebo for his slot).
-                let body = serde_json::json!({ "model": model, "state": state, "questions": questions });
-                let url = systemone_url(&base_url);
-                let req = || self.http.post(&url).timeout(DECIDE_TIMEOUT).bearer_auth(&key).json(&body);
-                let result = self.send(req).await;
-                if let Err(e) = &result {
-                    tracing::warn!(profile = %profile_id, model = %model, error = %e, "the owner's decision endpoint failed");
-                }
-                return result;
+        if let Some(endpoint) = (self.endpoint)(trace) {
+            // The owner pointed this slot at his own endpoint: a failure there
+            // fails to the caller's safe default like a Janus failure, never
+            // a retry on Janus (that would bill Nebo for his slot).
+            let body = serde_json::json!({
+                "model": endpoint.model,
+                "state": state,
+                "questions": questions,
+            });
+            let url = systemone_url(&endpoint.base_url);
+            let req = || self.http.post(&url).timeout(DECIDE_TIMEOUT).bearer_auth(&endpoint.key).json(&body);
+            let result = self.send(req).await;
+            if let Err(e) = &result {
+                tracing::warn!(profile = %endpoint.profile_id, model = %endpoint.model, error = %e, "the owner's decision endpoint failed");
             }
-            Some(DecideEndpoint { model, profile_id, route: DecideRoute::Janus(key) }) => (model, Some((key, profile_id))),
-            None => (JEV_MODEL.to_string(), None),
-        };
+            return result;
+        }
         let body = serde_json::json!({
-            "model": model,
+            "model": JEV_MODEL,
             "state": state,
             "questions": questions,
         });
@@ -343,28 +333,19 @@ impl DecideClient {
             return Err(ProviderError::Auth("no NeboAI token".into()));
         };
         let req = || {
-            let mut req = self
+            let req = self
                 .http
                 .post(&self.url)
                 .timeout(DECIDE_TIMEOUT)
                 .bearer_auth(&bearer.token)
                 .headers(trace.headers())
                 .json(&body);
-            // The owner's own service: Janus calls it on his key, never
-            // on Nebo's account in its place.
-            for (name, value) in own_key.iter().flat_map(|(k, _)| k.headers()) {
-                req = req.header(name, value);
-            }
             match &bearer.bot_id {
                 Some(bot_id) => req.header("X-Bot-ID", bot_id),
                 None => req,
             }
         };
-        let result = self.send(req).await;
-        if let (Err(e), Some((_, profile_id))) = (&result, &own_key) {
-            tracing::warn!(profile = %profile_id, model = %model, error = %e, "the owner's decision service failed");
-        }
-        result
+        self.send(req).await
     }
 
     /// Send one decision request (built fresh per attempt), retrying once
@@ -597,77 +578,46 @@ mod tests {
         BTreeMap::from([("done", Question::noul("The turn finished"))])
     }
 
-    fn own(base_url: &str, key: &str) -> DecideRoute {
-        DecideRoute::Janus(::types::own_key::OwnKey {
-            provider: "systemone_compatible".into(),
-            key: key.into(),
-            base_url: Some(base_url.into()),
-        })
-    }
-
     #[tokio::test]
-    async fn the_owners_service_goes_through_janus_on_his_key_and_model() {
+    async fn the_owner_endpoint_gets_his_url_key_and_model_and_janus_nothing() {
+        let (owner, owner_seen) = stub(200, ANSWER).await;
         let (janus, janus_seen) = stub(200, ANSWER).await;
         let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
             .with_endpoint(move |_| {
-                Some(DecideEndpoint { model: "jev-owner".into(), profile_id: "p1".into(), route: own("https://api.typesafe.ai", "owner-key") })
+                Some(DecideEndpoint { base_url: owner.clone(), key: "owner-key".into(), model: "jev-owner".into(), profile_id: "p1".into() })
             });
         let d = client
             .decide(&RequestTrace::new("test"), &serde_json::json!({"text": "hi"}), &one_question())
             .await
             .unwrap();
         assert_eq!(d.model, "jev-1.13.0", "the versioned model that answered");
-        let seen = janus_seen.lock().unwrap().clone();
+        let seen = owner_seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         let req = seen[0].to_ascii_lowercase();
         assert!(req.starts_with("post /v1/systemone "), "{req}");
-        assert!(req.contains("authorization: bearer nebo-token") && req.contains("x-bot-id: bot-1"), "{req}");
-        assert!(req.contains("x-provider-api-key: owner-key"), "{req}");
-        assert!(req.contains("x-provider: systemone_compatible"), "{req}");
-        assert!(req.contains("x-provider-base-url: https://api.typesafe.ai"), "{req}");
-        assert!(req.contains("x-purpose: test"), "{req}");
+        assert!(req.contains("authorization: bearer owner-key"), "{req}");
+        assert!(!req.contains("x-bot-id"), "{req}");
         let body: serde_json::Value = serde_json::from_str(seen[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(body["model"], "jev-owner");
         assert_eq!(body["questions"]["done"]["type"], "noul");
+        assert!(janus_seen.lock().unwrap().is_empty(), "nothing reaches Janus");
     }
 
     #[tokio::test]
-    async fn a_refused_owner_key_fails_once_and_is_never_served_on_nebos_account() {
-        let (janus, janus_seen) = stub(400, r#"{"error":{"code":"PROVIDER_KEY_REJECTED","message":"bad key"}}"#).await;
+    async fn a_failing_owner_endpoint_fails_without_trying_janus() {
+        let (owner, owner_seen) = stub(401, r#"{"error":{"message":"bad key"}}"#).await;
+        let (janus, janus_seen) = stub(200, ANSWER).await;
         let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: None }))
             .with_endpoint(move |_| {
-                Some(DecideEndpoint { model: "jev-latest".into(), profile_id: "p1".into(), route: own("https://api.typesafe.ai", "stale") })
+                Some(DecideEndpoint { base_url: owner.clone(), key: "stale".into(), model: "jev-latest".into(), profile_id: "p1".into() })
             });
         let err = client
             .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
             .await
             .unwrap_err();
-        assert!(matches!(err, ProviderError::Api { retryable: false, .. }), "{err:?}");
-        let seen = janus_seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 1, "one attempt, on his key");
-        assert!(seen[0].to_ascii_lowercase().contains("x-provider-api-key: stale"));
-    }
-
-    #[tokio::test]
-    async fn a_server_on_the_owners_network_is_reached_direct_and_janus_gets_nothing() {
-        let (owner, owner_seen) = stub(200, ANSWER).await;
-        let (janus, janus_seen) = stub(200, ANSWER).await;
-        let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
-            .with_endpoint(move |_| {
-                Some(DecideEndpoint {
-                    model: "jev-owner".into(),
-                    profile_id: "p1".into(),
-                    route: DecideRoute::Direct { base_url: owner.clone(), key: "owner-key".into() },
-                })
-            });
-        client
-            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
-            .await
-            .unwrap();
-        let seen = owner_seen.lock().unwrap().clone();
-        let req = seen[0].to_ascii_lowercase();
-        assert!(req.contains("authorization: bearer owner-key") && !req.contains("x-bot-id"), "{req}");
-        assert!(janus_seen.lock().unwrap().is_empty(), "nothing reaches Janus");
+        assert!(matches!(err, ProviderError::Auth(_)), "{err:?}");
+        assert_eq!(owner_seen.lock().unwrap().len(), 1);
+        assert!(janus_seen.lock().unwrap().is_empty(), "never billed to Nebo");
     }
 
     #[tokio::test]

@@ -1414,6 +1414,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "कोई भी OpenAI-संगत URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "कोई भी SystemOne-संगत URL (डिसीज़न मॉडल: Jev, Clef…)"
 		},
@@ -4344,5 +4346,11 @@
 		"taskReorder": "Lumen से 40 यूनिट दोबारा मंगाए",
 		"taskVideo": "मंगलवार का वीडियो पोस्ट किया",
 		"taskInvoices": "इनवॉइस के 3 रिमाइंडर भेजे"
+	},
+	"ownKey": {
+		"signedOut": "अपनी {provider} कुंजी इस्तेमाल करने के लिए NeboAI में साइन इन करें।",
+		"keyRejected": "आपकी {provider} API कुंजी अस्वीकार कर दी गई। सेटिंग्स > प्रदाता में इसे जाँचें।",
+		"keyUnusable": "आपकी {provider} API कुंजी यह मॉडल नहीं चला सकती। सेटिंग्स > प्रदाता में इस पर मॉडल जाँचें।",
+		"connectionSignIn": "यह कुंजी इस्तेमाल करने के लिए NeboAI में साइन इन करें: आपकी अपनी कुंजियाँ आपके NeboAI खाते पर चलती हैं।"
 	}
 }
