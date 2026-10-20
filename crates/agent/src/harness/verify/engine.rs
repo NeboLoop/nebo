@@ -655,8 +655,9 @@ impl VerifyCheck {
                 return Step::Finished;
             }
         };
-        // Nothing changed since a clean review: its verdict stands and it
-        // goes on to land; no reviewer reads the same bytes again.
+        // Nothing changed since a clean review (no blocking issue, no call
+        // of the owner's to carry out): its verdict stands and it goes on
+        // to land; no reviewer reads the same bytes again.
         if v.rounds > 0
             && work.last.as_ref() == Some(&head)
             && store
@@ -665,7 +666,9 @@ impl VerifyCheck {
                 .iter()
                 .rev()
                 .find(|r| r.kind == "review")
-                .is_some_and(|r| r.detail["openBlocking"].as_u64() == Some(0))
+                .is_some_and(|r| {
+                    r.detail["openBlocking"].as_u64() == Some(0) && r.decisions.as_array().is_none_or(|d| d.is_empty())
+                })
         {
             return self.land(work, notes).await;
         }
