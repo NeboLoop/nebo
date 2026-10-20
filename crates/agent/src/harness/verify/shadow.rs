@@ -18,7 +18,8 @@
 //!   and never a file it tracks, even one an ignore pattern matches.
 //! - In a folder that is no repository: its own `.gitignore` when it has
 //!   one; otherwise the usual build output and installed packages
-//!   ([`EXCLUDED`]).
+//!   ([`EXCLUDED`]). The same rule decides what a landing leaves out
+//!   ([`crate::worktree::ls_folder`]): one definition of build output.
 //! - Anywhere: an untracked file over [`BIG_FILE_BYTES`] (a video, a
 //!   dataset, a disk image) is not hashed.
 //!
@@ -31,24 +32,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::worktree::{git, git_bytes};
-
-/// Left out of a snapshot of a folder that is no repository and has no
-/// `.gitignore` of its own: installed packages, build output and caches,
-/// rebuilt from their sources.
-pub const EXCLUDED: &[&str] = &[
-    "node_modules/",
-    "target/",
-    "dist/",
-    "build/",
-    ".svelte-kit/",
-    ".next/",
-    "__pycache__/",
-    ".venv/",
-    "venv/",
-    ".dart_tool/",
-    ".DS_Store",
-];
+use crate::worktree::{EXCLUDED, git, git_bytes};
 
 /// An untracked file larger than this is not hashed into a snapshot.
 pub const BIG_FILE_BYTES: u64 = 50 * 1024 * 1024;
@@ -241,19 +225,10 @@ impl Shadow {
         Ok(Snapshot(tree.trim().to_string()))
     }
 
-    /// `git ls-files` over the folder: read by its repository when it is
-    /// in one, else by the shadow (which reads the folder's own
-    /// `.gitignore`). A folder with neither leaves out [`EXCLUDED`].
+    /// `git ls-files` over the folder ([`crate::worktree::ls_folder`]):
+    /// read by its repository when it is in one, else through the shadow.
     async fn ls(&self, in_repo: bool, args: &[&str]) -> Result<Vec<u8>, String> {
-        if in_repo {
-            return git_bytes(&self.work_tree, args).await;
-        }
-        let mut all: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        if !self.work_tree.join(".gitignore").is_file() {
-            all.extend(EXCLUDED.iter().map(|p| format!("--exclude={p}")));
-        }
-        let all: Vec<&str> = all.iter().map(String::as_str).collect();
-        self.run_bytes(&all).await
+        crate::worktree::ls_folder(&self.work_tree, (!in_repo).then_some(self.git_dir.as_path()), args).await
     }
 
     /// What a snapshot leaves out, as exclude pathspecs.
@@ -406,6 +381,27 @@ impl Shadow {
             return Err(format!("export (tar): {}", String::from_utf8_lossy(&done.stderr).trim()));
         }
         Ok(())
+    }
+
+    /// What `snapshot` holds at each of `paths`, as a landing compares it
+    /// ([`crate::worktree::content_id`]; `None`: nothing there).
+    pub async fn contents(&self, snapshot: &Snapshot, paths: &[String]) -> Result<crate::worktree::Reviewed, String> {
+        let mut out: crate::worktree::Reviewed = paths.iter().map(|p| (p.clone(), None)).collect();
+        if paths.is_empty() {
+            return Ok(out);
+        }
+        let mut args = vec!["ls-tree", "-r", "-z", "--full-tree", snapshot.0.as_str(), "--"];
+        args.extend(paths.iter().map(String::as_str));
+        let listed = self.run_bytes(&args).await.map_err(|e| format!("ls-tree: {e}"))?;
+        for entry in nul_split(&listed) {
+            // `<mode> <type> <object>\t<path>`
+            if let Some((meta, path)) = entry.split_once('\t')
+                && let Some(slot) = out.get_mut(path)
+            {
+                *slot = meta.split(' ').nth(2).map(str::to_string);
+            }
+        }
+        Ok(out)
     }
 
     /// The text of the regular file `rel` as `snapshot` holds it; `None`
@@ -760,4 +756,47 @@ mod tests {
             })
         })
     }
+
+    /// Review round 4: what a review saw is compared by content when the
+    /// change lands, so a snapshot's record of each path is exactly what a
+    /// landing reads off the disk ([`crate::worktree::content_id`]), in a
+    /// repository and in a folder that is none, line endings and links
+    /// included; a path with nothing there is `None`.
+    #[test]
+    fn a_snapshot_records_each_path_as_a_landing_reads_it() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                for in_repo in [true, false] {
+                    let folder = tempfile::tempdir().unwrap();
+                    let shadows = tempfile::tempdir().unwrap();
+                    if in_repo {
+                        repo(folder.path()).await;
+                        std::fs::write(folder.path().join("keep.txt"), "k\n").unwrap();
+                        commit_all(folder.path()).await;
+                    }
+                    std::fs::create_dir_all(folder.path().join("scripts/build")).unwrap();
+                    std::fs::write(folder.path().join("scripts/build/run.sh"), "echo hi\r\n").unwrap();
+                    std::fs::write(folder.path().join("a b.txt"), "spaced\n").unwrap();
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink("a b.txt", folder.path().join("link")).unwrap();
+                    let shadow = Shadow::open(&shadows.path().join("s.git"), folder.path()).await.unwrap();
+                    let snap = shadow.snapshot().await.unwrap();
+                    let mut paths = vec!["a b.txt".to_string(), "gone.txt".to_string()];
+                    if in_repo {
+                        // A folder that is no repository leaves build folders out.
+                        paths.push("scripts/build/run.sh".into());
+                    }
+                    #[cfg(unix)]
+                    paths.push("link".into());
+                    let seen = shadow.contents(&snap, &paths).await.unwrap();
+                    for p in &paths {
+                        let on_disk = crate::worktree::content_id(folder.path(), p).await.unwrap();
+                        assert_eq!(seen.get(p), Some(&on_disk), "{p} (in a repository: {in_repo})");
+                    }
+                    assert_eq!(seen["gone.txt"], None);
+                }
+            })
+        })
+    }
+
 }

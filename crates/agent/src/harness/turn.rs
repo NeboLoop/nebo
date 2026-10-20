@@ -10980,6 +10980,138 @@ mod tests {
         })
     }
 
+    /// Review round 4 Y3: a verified change that keeps failing to land
+    /// makes no progress: a hook that refuses every commit is never
+    /// reviewed again on unchanged bytes, and the loop pauses for the owner
+    /// after two tries with nothing landed. A hook that rewrites the change
+    /// sends it back to review, and what lands is what that review read.
+    #[test]
+    fn landings_that_keep_failing_stop_the_loop_and_unchanged_work_is_not_reviewed_again() {
+        for (hook, reviews) in [("echo 'not on this branch' >&2; exit 1", 1), ("echo '# hooked' >> total.py; git add total.py", 2)] {
+            crate::test_home::with_home(|_| {
+                let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+                rt.block_on(async {
+                    let (project, file) = small_project(true).await;
+                    let hooks = project.path().join(".git/hooks");
+                    std::fs::create_dir_all(&hooks).unwrap();
+                    std::fs::write(hooks.join("pre-commit"), format!("#!/bin/sh\n{hook}\n")).unwrap();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
+                    }
+                    let clean = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#;
+                    let mut steps = vec![
+                        Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                        Step::Say("Done."),
+                        Step::Say(clean),
+                        Step::Say("Looked it over."),
+                    ];
+                    if reviews == 2 {
+                        steps.push(Step::Say(clean));
+                    }
+                    steps.push(Step::Say("It is reviewed, but it can't land."));
+                    let model = Scripted::new(steps);
+                    let h = verifying_harness(&model).await;
+                    run_turn(&h, owner("Make total() add a and b")).await;
+                    let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    let rounds = h.store.verification_rounds(&v.id).unwrap();
+                    let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
+                    assert_eq!(rounds.iter().filter(|r| r.kind == "review").count(), reviews, "{kinds:?}");
+                    let landed = std::fs::read_to_string(project.path().join("total.py")).unwrap();
+                    if reviews == 1 {
+                        assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"stalled","args":{"open":1}}"#), "{kinds:?}");
+                        assert!(v.landed_ref.is_empty());
+                        assert_eq!(landed, "def total(a, b): return 0\n", "nothing landed");
+                    } else {
+                        assert_eq!(kinds, ["review", "land", "review", "catch_up", "land"]);
+                        assert_eq!(rounds[1].outcome, r#"{"code":"needs_review","args":{"files":"total.py"}}"#);
+                        assert_eq!(v.state, "verified", "{kinds:?}");
+                        assert_eq!(landed, "def total(a, b): return a + b\n# hooked\n", "the bytes the second review read");
+                    }
+                })
+            });
+        }
+    }
+
+    /// A tool that fails in a way only the owner can fix: the turn ends
+    /// waiting on them.
+    struct NeedsTheOwner;
+
+    impl tools::registry::DynTool for NeedsTheOwner {
+        fn name(&self) -> &str {
+            "connect_account"
+        }
+        fn description(&self) -> String {
+            "connects an account".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::terminal("The account needs the owner to sign in again.") })
+        }
+    }
+
+    /// Review round 4 (b): a turn that ends waiting on the owner with no
+    /// question of the loop's saved leaves its work paused; the next turn
+    /// picks it up into a normal round, and a run stopped while it waits
+    /// ends it as stopped, never paused forever.
+    #[test]
+    fn work_paused_on_the_owner_goes_on_next_turn_and_a_stop_ends_it() {
+        for stopped in [false, true] {
+            crate::test_home::with_home(|_| {
+                let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+                rt.block_on(async {
+                    let (project, file) = small_project(true).await;
+                    let next = owner("Go on");
+                    let stop = next.cancel.clone();
+                    let hook: Hook = Box::pin(async move { stop.cancel() });
+                    let mut steps = vec![
+                        Step::Call("save_code", serde_json::json!({"path": file.clone(), "content": "def total(a, b): return a + b\n"})),
+                        Step::Call("connect_account", serde_json::json!({})),
+                    ];
+                    if stopped {
+                        steps.push(Step::During(Box::new(Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"}))), hook));
+                        steps.push(Step::Say("unreached"));
+                    } else {
+                        steps.extend([
+                            Step::Say("Carrying on: total() adds a and b."),
+                            Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#),
+                            Step::Say("Verified and landed."),
+                        ]);
+                    }
+                    let model = Scripted::new(steps);
+                    let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(NeedsTheOwner)]).await;
+                    let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                    h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+
+                    run_turn(&h, owner("Make total() add a and b")).await;
+                    let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    assert_eq!(v.state, "paused", "{v:?}");
+                    assert!(v.pending_ask.is_none(), "no question of the loop's");
+
+                    run_turn(&h, next).await;
+                    let after = h.store.get_verification(&v.id).unwrap().unwrap();
+                    if stopped {
+                        assert_eq!(after.state, "stopped", "{after:?}");
+                    } else {
+                        assert_eq!((after.state.as_str(), after.rounds), ("verified", 1), "{after:?}");
+                        assert!(!after.landed_ref.is_empty(), "a normal round, then it landed");
+                        assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return a + b\n");
+                    }
+                })
+            });
+        }
+    }
+
     /// Review 2026-10-20 M3: the owner's Stop while the builder works ends
     /// its verification as stopped, never a row left running.
     #[test]

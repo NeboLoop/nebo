@@ -655,6 +655,20 @@ impl VerifyCheck {
                 return Step::Finished;
             }
         };
+        // Nothing changed since a clean review: its verdict stands and it
+        // goes on to land; no reviewer reads the same bytes again.
+        if v.rounds > 0
+            && work.last.as_ref() == Some(&head)
+            && store
+                .verification_rounds(&v.id)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .find(|r| r.kind == "review")
+                .is_some_and(|r| r.detail["openBlocking"].as_u64() == Some(0))
+        {
+            return self.land(work, notes).await;
+        }
         let whole = work
             .shadow
             .diff(&work.base, &head)
@@ -795,9 +809,12 @@ impl VerifyCheck {
         let store = self.store().clone();
         let started = Self::now();
         let prefix = format!("{}r{round}-", v.reviewer_prefix);
+        // Its step in the history: after every step so far (a landing's
+        // included), never over one.
+        let at = next_step(&store, &v.id);
         let mut row = db::VerificationRound {
             verification_id: v.id.clone(),
-            round: round as i64,
+            round: at,
             kind: "review".into(),
             lenses: json!(lenses.iter().map(|l| l.as_str()).collect::<Vec<_>>()),
             base_ref: work.last.as_ref().unwrap_or(&work.base).0.clone(),
@@ -930,7 +947,7 @@ impl VerifyCheck {
         // counts against progress.
         let asked_before: Vec<(Finding, String)> = earlier
             .iter()
-            .filter(|r| r.round < round as i64)
+            .filter(|r| r.round < at)
             .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
             .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
             .collect();
@@ -941,11 +958,7 @@ impl VerifyCheck {
             }
         }
         let repeated = calls.iter().filter(|d| asked_before.iter().any(|(f, _)| f.same_call(d))).count();
-        let mut counts: Vec<usize> = earlier
-            .iter()
-            .filter(|r| r.kind == "review" && r.round < round as i64)
-            .filter_map(|r| r.detail["openBlocking"].as_u64().map(|n| n as usize))
-            .collect();
+        let mut counts = progress_counts(&earlier, at);
         // A round the checks rewrote can't pass: it counts against progress
         // like an open issue, so checks that rewrite differently every run
         // stop the loop.
@@ -1159,30 +1172,55 @@ impl VerifyCheck {
     }
 
     /// Land a copy this loop made, through the one landing path
-    /// ([`worktree::land_one`]): only if the copy is byte for byte what was
-    /// reviewed; held to the reviewed paths; caught up with the owner's
-    /// project, stopped for another review when that changed files the
-    /// change touches; re-tested; landed as one commit.
+    /// ([`worktree::land_one`]): exactly what was reviewed, compared by
+    /// content; caught up with the owner's project, reviewed again when
+    /// anything of it changed; re-tested; landed as one commit. A landing
+    /// that fails for want of review counts against progress.
     async fn land_reviewed(&self, work: &mut Work, v: &db::Verification, notes: &str) -> Step {
         let store = self.store().clone();
         let Some(mut iso) = work.iso.clone() else {
             self.finish(v, "verified", None);
             return Step::Finished;
         };
+        let round = next_step(&store, &v.id);
         // Only what was reviewed and tested lands, byte for byte.
         let reviewed = match (work.shadow.snapshot().await, work.last.clone()) {
-            (Ok(now), Some(last)) if now == last => work.shadow.diff(&work.base, &last).await.map(|c| c.paths()).unwrap_or_default(),
-            _ => {
-                return Step::Continue(
+            (Ok(now), Some(last)) if now == last => match work.shadow.diff(&work.base, &last).await {
+                Ok(change) => work.shadow.contents(&last, &change.paths()).await.ok(),
+                Err(_) => None,
+            },
+            _ => None,
+        };
+        let Some(reviewed) = reviewed else {
+            return self
+                .no_progress(
+                    work,
+                    v,
+                    round,
+                    None,
                     "Your working copy changed after it was reviewed, so it can't land as it is. End your reply; the \
                      next round reviews what changed."
                         .into(),
-                );
-            }
+                )
+                .await;
         };
-        let landing = worktree::Landing { only: Some(reviewed), review_overlap: true };
+        // A landing waiting for another one on the project says so in the
+        // verification's history; the owner's Stop ends the wait.
+        let waiting = {
+            let (store, id) = (store.clone(), v.id.clone());
+            std::sync::Arc::new(move || {
+                let _ = store.put_verification_round(&db::VerificationRound {
+                    verification_id: id.clone(),
+                    round: round + 1,
+                    kind: "land".into(),
+                    outcome: Why::new("waiting_to_land").text(),
+                    started_at: Self::now(),
+                    ..Default::default()
+                });
+            }) as std::sync::Arc<dyn Fn() + Send + Sync>
+        };
+        let landing = worktree::Landing { only: Some(reviewed), stop: self.cancel.clone(), waiting: Some(waiting) };
         let message = landing_message(&v.spec);
-        let round = store.verification_rounds(&v.id).map(|r| r.len() as i64 + 1).unwrap_or(1);
         let started = Self::now();
         // Re-test in the copy as it is after catching up: what was verified
         // is what lands.
@@ -1249,23 +1287,27 @@ impl VerifyCheck {
                     work.work_dir.display()
                 ))
             }
-            MergeOutcome::NeedsReview { files, .. } => Step::Continue(format!(
-                "Catching up with the owner's project changed files your change touches ({}). The next round reviews the \
-                 result: end your reply when you have looked it over in your copy.",
-                files.join(", ")
-            )),
+            MergeOutcome::NeedsReview { ref files, .. } => {
+                let text = format!(
+                    "What would land differs from what was reviewed in {}: catching up with the owner's project or the \
+                     project's commit hooks changed it. The next round reviews the result: end your reply when you have \
+                     looked it over in your copy.",
+                    files.join(", ")
+                );
+                self.no_progress(work, v, round + 1, Some(&landed), text).await
+            }
             MergeOutcome::RetestFailed { .. } => {
-                self.record_landing(v, round + 1, &landed);
-                Step::Continue(findings_brief(&work.project_root.display().to_string(), round as u32, &[], &[], &runs, &[]))
+                let text = findings_brief(&work.project_root.display().to_string(), round as u32, &[], &[], &runs, &[]);
+                self.no_progress(work, v, round + 1, Some(&landed), text).await
             }
             MergeOutcome::Unreviewed { ref files, .. } => {
-                self.record_landing(v, round + 1, &landed);
-                Step::Continue(format!(
+                let text = format!(
                     "Your working copy holds changes nobody reviewed ({}): too big to snapshot, a repository of its own, or \
                      made after the review. Remove them from your copy, or move them into the change so they are reviewed, \
                      and end your reply.",
                     files.join(", ")
-                ))
+                );
+                self.no_progress(work, v, round + 1, Some(&landed), text).await
             }
             MergeOutcome::Merged { ref commit, .. } => {
                 self.record_landing(v, round + 1, &landed);
@@ -1306,6 +1348,46 @@ impl VerifyCheck {
         });
     }
 
+    /// A verified change that could not land for want of review (what
+    /// would land isn't what was reviewed, holds changes nobody reviewed,
+    /// or failed its checks or hooks): back to the builder with `text`, and
+    /// no progress. Its landing step counts as one open issue, so landings
+    /// that keep failing without a new low pause for the owner after
+    /// [`findings::ROUNDS_WITHOUT_PROGRESS`] tries, like a review that
+    /// stalls. `landed`: `None` when the copy changed after the review.
+    async fn no_progress(&self, work: &mut Work, v: &db::Verification, round: i64, landed: Option<&MergeOutcome>, text: String) -> Step {
+        let store = self.store().clone();
+        let (outcome, said) = match landed {
+            Some(l) => (super::landing_why(l), worktree::render_outcome("the change", l)),
+            None => (Why::new("changed_after_review"), "The copy changed after it was reviewed.".to_string()),
+        };
+        let _ = store.put_verification_round(&db::VerificationRound {
+            verification_id: v.id.clone(),
+            round,
+            kind: "land".into(),
+            outcome: outcome.text(),
+            detail: json!({ "outcome": said, "openBlocking": 1 }),
+            started_at: Self::now(),
+            finished_at: Some(Self::now()),
+            ..Default::default()
+        });
+        if findings::stalled(&progress_counts(&store.verification_rounds(&v.id).unwrap_or_default(), i64::MAX), false) {
+            let question = format!(
+                "The change to {} passed review, but it can't land as it was reviewed: {} It hasn't got closer in the last {} \
+                 tries. What should happen?",
+                work.project_root.display(),
+                said,
+                findings::ROUNDS_WITHOUT_PROGRESS
+            );
+            let purpose = Purpose::Stalled { open: 1 };
+            let answer = self.ask_owner(&v.id, &question, &text, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+            if let Some(step) = self.answered(work, v, &purpose, answer.as_deref()).await {
+                return step;
+            }
+        }
+        Step::Continue(text)
+    }
+
     /// A verified change that could not land: the builder fixes what is its
     /// to fix; the owner decides what is theirs.
     async fn not_landed(
@@ -1316,11 +1398,16 @@ impl VerifyCheck {
         _notes: &str,
     ) -> Step {
         match outcome {
-            MergeOutcome::HookFailed { output, .. } => Step::Continue(format!(
-                "The project's own commit hooks refused your change when it was about to land:\n```\n{output}\n```\nFix it in your \
-                 working copy ({}) and end your reply; it is checked again.",
-                work.work_dir.display()
-            )),
+            MergeOutcome::HookFailed { ref output, .. } => {
+                let text = format!(
+                    "The project's own commit hooks refused your change when it was about to land:\n```\n{output}\n```\nFix it in your \
+                     working copy ({}) and end your reply; it is checked again.",
+                    work.work_dir.display()
+                );
+                // Its landing step, recorded already, is the one that counts.
+                let round = next_step(self.store(), &v.id) - 1;
+                self.no_progress(work, v, round, Some(&outcome), text).await
+            }
             MergeOutcome::RetestFailed { error, .. } => Step::Continue(format!(
                 "After catching up, the project's checks failed:\n{error}\nFix it in your working copy and end your reply."
             )),
@@ -1411,14 +1498,12 @@ impl VerifyCheck {
             self.finish(v, "not_verified", Some(reason));
             return None;
         };
-        let (_, outcome) = worktree::land_one(&mut iso, &landing_message(&v.spec), None, &worktree::Landing::default()).await;
+        let landing = worktree::Landing { stop: self.cancel.clone(), ..Default::default() };
+        let (_, outcome) = worktree::land_one(&mut iso, &landing_message(&v.spec), None, &landing).await;
         work.iso = Some(iso);
         self.record_landing(
             v,
-            self.store()
-                .verification_rounds(&v.id)
-                .map(|r| r.len() as i64 + 1)
-                .unwrap_or(1),
+            next_step(self.store(), &v.id),
             &outcome,
         );
         if let MergeOutcome::Merged { commit, .. } = &outcome {
@@ -1431,9 +1516,10 @@ impl VerifyCheck {
     }
 
     /// An app's pages after a clean round: reloaded where they are open and
-    /// checked live. It checks out only when the app exists, its page loads
-    /// (its folder, its entry page, every file it loads) and its console has
-    /// zero errors.
+    /// checked live in a view of their own. It checks out only when the app
+    /// exists, its page loads (its folder, its entry page, every file it
+    /// loads) and that load had zero errors. No view that can be opened is
+    /// a failure, never a pass.
     async fn live_check_app(&self, work: &Work, v: &db::Verification) -> bool {
         let store = self.store();
         let app = store
@@ -1449,28 +1535,28 @@ impl VerifyCheck {
             self.record_live(v, false, json!({ "problem": "no app is served from these pages" }));
             return false;
         };
+        // The owner's open views load the new build too.
         let reload = self
             .harness
             .tools
             .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.name }))
             .await;
-        let status = self
-            .harness
-            .tools
-            .execute(&ctx, tools::app_dev::APP_STATUS, json!({ "app": app.name }))
-            .await;
-        let problem = if reload.is_error || status.is_error {
-            Some("the page could not be reloaded")
-        } else {
-            tools::app_dev::live_problem(&work.work_dir, tools::app_console::error_count(&app.id))
+        let loaded = tools::app_publish::live_load(self.harness.tools.browser().as_ref(), &app).await;
+        let problem = match &loaded {
+            Err(_) => tools::app_dev::live_problem(&work.work_dir, 0).or(Some("no view of the app could be opened")),
+            Ok(failed) => tools::app_dev::live_problem(&work.work_dir, failed.len()),
         };
-        self.record_live(v, problem.is_none(), json!({ "problem": problem, "reload": reload.content, "status": status.content }));
+        let seen = match &loaded {
+            Ok(failed) => json!(failed),
+            Err(e) => json!(e),
+        };
+        self.record_live(v, problem.is_none(), json!({ "problem": problem, "errors": seen, "reload": reload.content }));
         problem.is_none()
     }
 
     fn record_live(&self, v: &db::Verification, ok: bool, detail: serde_json::Value) {
         let store = self.store();
-        let round = store.verification_rounds(&v.id).map(|r| r.len() as i64 + 1).unwrap_or(1);
+        let round = next_step(store, &v.id);
         let _ = store.put_verification_round(&db::VerificationRound {
             verification_id: v.id.clone(),
             round,
@@ -1482,6 +1568,21 @@ impl VerifyCheck {
             ..Default::default()
         });
     }
+}
+
+/// The next step of a verification's history: after every step so far.
+fn next_step(store: &db::Store, id: &str) -> i64 {
+    store.verification_rounds(id).unwrap_or_default().iter().map(|r| r.round).max().unwrap_or(0) + 1
+}
+
+/// The open blockers and majors of each round before `before`, oldest
+/// first, for [`findings::stalled`]: each review's, and one for each
+/// landing that failed for want of review.
+fn progress_counts(rows: &[db::VerificationRound], before: i64) -> Vec<usize> {
+    rows.iter()
+        .filter(|r| (r.kind == "review" || r.kind == "land") && r.round < before)
+        .filter_map(|r| r.detail["openBlocking"].as_u64().map(|n| n as usize))
+        .collect()
 }
 
 /// The one commit a change lands as: the request's first line, as a

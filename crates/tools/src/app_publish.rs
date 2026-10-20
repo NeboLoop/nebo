@@ -1406,6 +1406,41 @@ const PAGE_IMAGES: &str = r#"(async ()=>{const T=window.__neboTimeout||setTimeou
 /// What the probe saw, and the answer the page itself came with.
 const PAGE_FAILURES: &str = r#"(()=>{const n=performance.getEntriesByType('navigation')[0];const s=n&&n.responseStatus||0;if(!window.__neboPageErrors)return JSON.stringify(['The page did not load'+(s?' (it answered '+s+')':'')+'.']);const e=window.__neboPageErrors.slice();if(s>=400)e.unshift('The page answered '+s+'.');return JSON.stringify(e);})()"#;
 
+/// Waits for the page's load event, 10 s at most: `complete`, or
+/// `timeout`.
+const PAGE_LOADED: &str = r#"new Promise(r=>{if(document.readyState==='complete')return r('complete');window.addEventListener('load',()=>r('complete'),{once:true});(window.__neboTimeout||setTimeout)(()=>r('timeout'),10000);})"#;
+
+/// An app's page as it is served now, loaded fresh in the bot's own
+/// headless browser for a live check: what went wrong in this load alone,
+/// read after its load event (what the probe saw, and the console errors
+/// sent since it opened, none from before). `Err`: no view of the app could
+/// be opened.
+pub async fn live_load(browser: Option<&Arc<browser::Manager>>, app: &db::models::Agent) -> Result<Vec<String>, String> {
+    let executor = headless(browser, "open the app to check it live")?;
+    let page = page_path(app, &json!({}))?;
+    let mark = crate::app_console::recent(&app.id, None, 1).last().map(|e| e.seq);
+    let view = AppPage::open(&executor, app, &page, viewport(app, &json!({}), (390, 844)), &[], Duration::from_secs(60)).await?;
+    let checked = async {
+        if view.eval(PAGE_LOADED).await? != "complete" {
+            return Ok(vec!["The page did not finish loading.".to_string()]);
+        }
+        // Errors right after the load, and the developer script's last
+        // batch (sent every 400 ms), arrive before they are read.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        view.check(false).await.map(|c| c.failed)
+    }
+    .await;
+    view.close().await;
+    let mut failed = checked?;
+    failed.extend(
+        crate::app_console::recent(&app.id, mark, 200)
+            .into_iter()
+            .filter(|e| e.level == "error")
+            .map(|e| e.message),
+    );
+    Ok(failed)
+}
+
 /// An app's page open in the bot's own headless browser, for a pack tool
 /// (`app_screenshot`, `app_record`): one tab of its own, behind a pass that
 /// opens this app alone, laid out at the size it is drawn at before its

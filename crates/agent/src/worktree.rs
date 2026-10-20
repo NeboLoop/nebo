@@ -172,25 +172,40 @@ pub enum MergeOutcome {
     /// repository, one added after the snapshot). Nothing landed; it goes
     /// back to the builder, or the owner decides.
     Unreviewed { files: Vec<String>, kept_at: PathBuf, branch: String },
-    /// Catching up with the owner's project changed files the change
-    /// touches: what would land was not reviewed. Nothing landed; it is
-    /// reviewed again first (`Landing::review_overlap`).
+    /// Files the change touches hold something other than what was
+    /// reviewed (catching up with the owner's project changed them, or a
+    /// commit hook rewrote them). Nothing landed; it is reviewed again
+    /// first.
     NeedsReview { files: Vec<String>, kept_at: PathBuf, branch: String },
     /// Refused or failed otherwise; nothing of the owner's changed.
     Failed { error: String, kept_at: PathBuf, branch: String },
 }
 
-/// What a landing may land, and when it must stop for another review.
-#[derive(Debug, Clone, Default)]
+/// What was reviewed: every path the change touches, with what the review
+/// saw there ([`content_id`]; `None`: no file).
+pub type Reviewed = std::collections::BTreeMap<String, Option<String>>;
+
+/// What a landing may land, and how it waits its turn.
+#[derive(Clone, Default)]
 pub struct Landing {
-    /// The paths that were reviewed (relative to the project): a change to
-    /// any other is refused ([`MergeOutcome::Unreviewed`]), except build
-    /// output, which is never landed. `None`: the owner chose to land the
-    /// copy as it is.
-    pub only: Option<Vec<String>>,
-    /// Stop with [`MergeOutcome::NeedsReview`] when catching up changed
-    /// files the change touches, instead of landing what nobody reviewed.
-    pub review_overlap: bool,
+    /// What was reviewed. Exactly that lands: a change to any other path
+    /// is refused ([`MergeOutcome::Unreviewed`]) unless the folder ignores
+    /// it (build output, which never lands), and a reviewed path holding
+    /// anything else now (catching up with the owner's changes, a commit
+    /// hook's rewrite) goes back to review ([`MergeOutcome::NeedsReview`]).
+    /// `None`: the owner chose to land the copy as it is.
+    pub only: Option<Reviewed>,
+    /// Stops a landing that waits for another one on the same project.
+    pub stop: tokio_util::sync::CancellationToken,
+    /// Told once when the landing has to wait for another one on the same
+    /// project.
+    pub waiting: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl std::fmt::Debug for Landing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Landing").field("only", &self.only).field("stopped", &self.stop.is_cancelled()).finish()
+    }
 }
 
 impl MergeOutcome {
@@ -385,12 +400,61 @@ fn write_like(dst: &Path, bytes: &[u8], like: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether a path is build output (installed packages, build folders,
-/// caches): rebuilt from its sources, never reviewed and never landed.
-pub fn build_output(rel: &str) -> bool {
-    const DIRS: &[&str] = &["node_modules", "target", "dist", "build", ".svelte-kit", ".next", "__pycache__", ".venv", "venv", ".dart_tool"];
-    let parts: Vec<&str> = rel.split(['/', '\\']).collect();
-    parts[..parts.len().saturating_sub(1)].iter().any(|p| DIRS.contains(p)) || parts.last() == Some(&".DS_Store")
+/// Left out of review and landing in a folder that is no repository and
+/// has no `.gitignore` of its own: installed packages, build output and
+/// caches, rebuilt from their sources.
+pub const EXCLUDED: &[&str] = &[
+    "node_modules/",
+    "target/",
+    "dist/",
+    "build/",
+    ".svelte-kit/",
+    ".next/",
+    "__pycache__/",
+    ".venv/",
+    "venv/",
+    ".dart_tool/",
+    ".DS_Store",
+];
+
+/// `git ls-files` over a folder, by what the folder ignores: the one rule
+/// of what is build output, for a review's snapshot and a landing alike.
+/// In a repository (`git_dir` `None`) git reads the repository's own
+/// ignore rules; a folder that is no repository is listed through
+/// `git_dir`, by its own `.gitignore` files, or by [`EXCLUDED`] when it has
+/// none at its top.
+pub async fn ls_folder(folder: &Path, git_dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
+    let Some(git_dir) = git_dir else { return git_bytes(folder, args).await };
+    let mut all = vec![format!("--git-dir={}", git_dir.display()), format!("--work-tree={}", folder.display())];
+    all.extend(args.iter().map(|a| a.to_string()));
+    if !folder.join(".gitignore").is_file() {
+        all.extend(EXCLUDED.iter().map(|p| format!("--exclude={p}")));
+    }
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    git_bytes(folder, &all).await
+}
+
+/// What a scratch copy ignores ([`ls_folder`]): paths, a folder's ending
+/// in `/`. Listed through a throwaway repository that holds nothing.
+async fn copy_ignored(c: &ScratchCopy) -> Result<Vec<String>, String> {
+    let lister = std::env::temp_dir().join(format!("nebo-ls-{}", uuid::Uuid::new_v4().simple()));
+    let dir = lister.to_string_lossy().into_owned();
+    let listed = match git(&std::env::temp_dir(), &["init", "-q", "--bare", &dir]).await {
+        Ok(_) => ls_folder(&c.path, Some(&lister), &["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]).await,
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&lister);
+    Ok(z_entries(&listed.map_err(|e| format!("what {} ignores: {e}", c.path.display()))?))
+}
+
+/// Whether `rel` is among `ignored` ([`copy_ignored`]), or inside one.
+fn is_ignored(ignored: &[String], rel: &str) -> bool {
+    ignored.iter().any(|e| e == rel || (e.ends_with('/') && rel.starts_with(e.as_str())))
+}
+
+/// A path relative to a folder as git names it: '/'-separated.
+fn rel_str(rel: &Path) -> String {
+    rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 /// Copy a non-repo folder into a scratch directory and remember what every
@@ -603,7 +667,8 @@ async fn owner_busy(wt: &Worktree) -> Option<Busy> {
 /// again since.
 ///
 /// With `landing.only` set, a change outside what was reviewed is refused
-/// before anything is committed ([`MergeOutcome::Unreviewed`]).
+/// before anything is committed ([`MergeOutcome::Unreviewed`]), and what
+/// is committed must be what was reviewed ([`held_to_review`]).
 ///
 /// `Err` is the outcome that ends the landing (the project busy, a hook's
 /// refusal, unreviewed changes, a failure).
@@ -611,27 +676,78 @@ pub async fn catch_up(iso: &mut Isolation, message: &str, landing: &Landing) -> 
     match iso {
         Isolation::Git(wt) => catch_up_git(wt, message, landing).await,
         Isolation::Copy(c) => {
+            held_to_review(&Isolation::Copy(c.clone()), landing).await?;
             let kept_at = c.path.clone();
-            match outside_review(&copy_changes(c).map_err(|error| MergeOutcome::Failed { error, kept_at: kept_at.clone(), branch: String::new() })?, landing) {
-                files if !files.is_empty() => Err(MergeOutcome::Unreviewed { files, kept_at, branch: String::new() }),
-                _ => catch_up_copy(c).map_err(|error| MergeOutcome::Failed { error, kept_at, branch: String::new() }),
-            }
+            catch_up_copy(c).map_err(|error| MergeOutcome::Failed { error, kept_at, branch: String::new() })
         }
     }
 }
 
-/// The paths a scratch copy's work changed, as strings.
-fn copy_changes(c: &ScratchCopy) -> Result<Vec<String>, String> {
-    Ok(changes_of(c)?.into_iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect())
+/// The changes of a scratch copy that land: never what the folder ignores
+/// ([`copy_ignored`], build output), unless it was reviewed.
+async fn copy_landing_changes(c: &ScratchCopy, landing: &Landing) -> Result<Vec<(PathBuf, Change)>, String> {
+    let ignored = copy_ignored(c).await?;
+    Ok(changes_of(c)?
+        .into_iter()
+        .filter(|(rel, _)| {
+            let rel = rel_str(rel);
+            landing.only.as_ref().is_some_and(|o| o.contains_key(&rel)) || !is_ignored(&ignored, &rel)
+        })
+        .collect())
 }
 
-/// The changed paths `landing` does not allow: outside what was reviewed,
-/// and not build output (which is never landed either way).
+/// The changed paths outside what `landing` reviewed.
 fn outside_review(changed: &[String], landing: &Landing) -> Vec<String> {
     match &landing.only {
         None => Vec::new(),
-        Some(only) => changed.iter().filter(|p| !only.contains(p) && !build_output(p)).cloned().collect(),
+        Some(only) => changed.iter().filter(|p| !only.contains_key(*p)).cloned().collect(),
     }
+}
+
+/// Whether what a copy would land is exactly what was reviewed
+/// (`landing.only`): every path it changes was reviewed, and each reviewed
+/// path holds what the review saw, compared by content. A worktree's
+/// commit must also be what its folder holds: a commit hook that rewrote a
+/// file, or committed something else, is caught. `Err` is the outcome:
+/// [`MergeOutcome::Unreviewed`] for changes nobody reviewed,
+/// [`MergeOutcome::NeedsReview`] for reviewed paths holding anything else.
+pub async fn held_to_review(iso: &Isolation, landing: &Landing) -> Result<(), MergeOutcome> {
+    let Some(only) = &landing.only else { return Ok(()) };
+    let (kept_at, branch) = (iso.path().to_path_buf(), iso.branch().to_string());
+    let failed = |error: String| MergeOutcome::Failed { error, kept_at: kept_at.clone(), branch: branch.clone() };
+    let (changed, mut differs) = match iso {
+        Isolation::Git(wt) => {
+            let changed = touched_paths(&wt.path, &wt.base, "HEAD").await;
+            let mut all: Vec<String> = changed.clone();
+            all.extend(only.keys().filter(|p| !changed.contains(p)).cloned());
+            // What is on disk is what is committed, for every path.
+            let mut args = vec!["--literal-pathspecs", "status", "-z", "--porcelain", "--untracked-files=all", "--no-renames", "--"];
+            args.extend(all.iter().map(String::as_str));
+            let dirty: Vec<String> = z_entries(&git_bytes(&wt.path, &args).await.map_err(|e| failed(format!("git status in the copy: {e}")))?)
+                .into_iter()
+                .filter_map(|e| e.get(3..).map(str::to_string))
+                .collect();
+            (changed, dirty)
+        }
+        Isolation::Copy(c) => {
+            let changed = copy_landing_changes(c, landing).await.map_err(failed)?.into_iter().map(|(p, _)| rel_str(&p)).collect();
+            (changed, Vec::new())
+        }
+    };
+    let unreviewed = outside_review(&changed, landing);
+    if !unreviewed.is_empty() {
+        return Err(MergeOutcome::Unreviewed { files: unreviewed, kept_at, branch });
+    }
+    for (rel, seen) in only {
+        if !differs.contains(rel) && content_id(iso.path(), rel).await != Ok(seen.clone()) {
+            differs.push(rel.clone());
+        }
+    }
+    if differs.is_empty() {
+        return Ok(());
+    }
+    differs.sort();
+    Err(MergeOutcome::NeedsReview { files: differs, kept_at, branch })
 }
 
 async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Result<CatchUp, MergeOutcome> {
@@ -661,12 +777,16 @@ async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Re
     }
     let owner = git(&wt.root, &["rev-parse", &owner_ref]).await.map_err(|e| failed(wt, format!("the project's branch: {e}")))?;
     let base = wt.base.clone();
-    git(&wt.path, &["add", "-A"]).await.map_err(|e| failed(wt, format!("git add in the copy: {e}")))?;
-    let staged = z_paths(&wt.path, &["diff", "-z", "--cached", "--name-only", "--no-renames", &base]).await;
-    let unreviewed = outside_review(&staged, landing);
+    // Nothing outside what was reviewed is ever staged: a file the review
+    // never saw (too big to snapshot, a repository of its own, made after
+    // it) is refused first. What the project ignores git never stages.
+    let mut changed = z_paths(&wt.path, &["diff", "-z", "--name-only", "--no-renames", &base]).await;
+    changed.extend(z_paths(&wt.path, &["ls-files", "-z", "--others", "--exclude-standard"]).await);
+    let unreviewed = outside_review(&changed, landing);
     if !unreviewed.is_empty() {
         return Err(MergeOutcome::Unreviewed { files: unreviewed, kept_at: wt.path.clone(), branch: wt.branch.clone() });
     }
+    git(&wt.path, &["add", "-A"]).await.map_err(|e| failed(wt, format!("git add in the copy: {e}")))?;
     let tree = git(&wt.path, &["write-tree"]).await.map_err(|e| failed(wt, format!("git write-tree: {e}")))?;
     let base_tree = git(&wt.path, &["rev-parse", &format!("{base}^{{tree}}")]).await.map_err(|e| failed(wt, format!("the base tree: {e}")))?;
     if tree == base_tree {
@@ -690,13 +810,9 @@ async fn catch_up_git(wt: &mut Worktree, message: &str, landing: &Landing) -> Re
             let _ = git(&wt.path, &["update-ref", &format!("refs/heads/{}", wt.branch), &head]).await;
             return Err(MergeOutcome::HookFailed { output, kept_at: wt.path.clone(), branch: wt.branch.clone() });
         }
-        // A hook may have staged files of its own: what is committed is
-        // still only what was reviewed.
-        let committed = z_paths(&wt.path, &["diff", "-z", "--name-only", "--no-renames", &base, "HEAD"]).await;
-        let unreviewed = outside_review(&committed, landing);
-        if !unreviewed.is_empty() {
-            return Err(MergeOutcome::Unreviewed { files: unreviewed, kept_at: wt.path.clone(), branch: wt.branch.clone() });
-        }
+        // A hook may have rewritten or staged files of its own: what is
+        // committed is still only what was reviewed, byte for byte.
+        held_to_review(&Isolation::Git(wt.clone()), landing).await?;
     }
     let changed = z_paths(&wt.path, &["diff", "-z", "--name-only", "--no-renames", &base, "HEAD"]).await;
     if base == owner {
@@ -843,7 +959,7 @@ fn free_twin(c: &ScratchCopy, rel: &Path, deleted: bool) -> PathBuf {
 pub async fn land(iso: &Isolation, landing: &Landing) -> MergeOutcome {
     match iso {
         Isolation::Git(wt) => land_git(wt, landing).await,
-        Isolation::Copy(c) => land_copy(c, landing),
+        Isolation::Copy(c) => land_copy(c, landing).await,
     }
 }
 
@@ -866,11 +982,19 @@ async fn touched_paths(dir: &Path, parent: &str, commit: &str) -> Vec<String> {
     out
 }
 
-/// What the owner's disk holds at `rel` as git would record it: a link's
-/// target, a submodule's checked-out commit, a file's blob. `None` when
-/// there is nothing there; `Err` when it can't be read as any of them (a
-/// folder where a file goes).
-async fn disk_object(root: &Path, rel: &str) -> Result<Option<String>, ()> {
+/// What `rel` in `dir` holds as a review's snapshot records it: a link's
+/// target, a file's blob with its line endings as they are on disk (a
+/// snapshot never converts them). `None`: nothing there.
+pub async fn content_id(dir: &Path, rel: &str) -> Result<Option<String>, ()> {
+    disk_object(dir, rel, true).await
+}
+
+/// What the disk under `root` holds at `rel` as git would record it: a
+/// link's target, a submodule's checked-out commit, a file's blob (its
+/// line endings as on disk with `endings_as_on_disk`, else converted as
+/// the repository would). `None` when there is nothing there; `Err` when
+/// it can't be read as any of them (a folder where a file goes).
+async fn disk_object(root: &Path, rel: &str, endings_as_on_disk: bool) -> Result<Option<String>, ()> {
     let disk = root.join(rel);
     let Ok(meta) = std::fs::symlink_metadata(&disk) else { return Ok(None) };
     if meta.file_type().is_symlink() {
@@ -890,7 +1014,13 @@ async fn disk_object(root: &Path, rel: &str) -> Result<Option<String>, ()> {
         let empty = std::fs::read_dir(&disk).map(|mut d| d.next().is_none()).unwrap_or(false);
         return if empty { Ok(None) } else { Err(()) };
     }
-    git(root, &["hash-object", &format!("--path={rel}"), "--", rel]).await.map(Some).map_err(|_| ())
+    let path = format!("--path={rel}");
+    let args: &[&str] = if endings_as_on_disk {
+        &["-c", "core.autocrlf=false", "hash-object", &path, "--", rel]
+    } else {
+        &["hash-object", &path, "--", rel]
+    };
+    git(root, args).await.map(Some).map_err(|_| ())
 }
 
 /// The paths of `paths` where the owner's folder holds something that is
@@ -918,7 +1048,7 @@ async fn owner_data_in_the_way(root: &Path, tip: &str, paths: &[String]) -> Vec<
     }
     for rel in paths {
         let at_tip = git(root, &["rev-parse", "--verify", "--quiet", &format!("{tip}:{rel}")]).await.ok().filter(|s| !s.is_empty());
-        let differs = match (disk_object(root, rel).await, at_tip) {
+        let differs = match (disk_object(root, rel, false).await, at_tip) {
             (Ok(None), None) => false,
             (Ok(Some(on_disk)), Some(blob)) => on_disk != blob,
             _ => true,
@@ -1001,9 +1131,8 @@ async fn land_git(wt: &Worktree, landing: &Landing) -> MergeOutcome {
         return failed("the project moved on since the copy caught up; catch up again".into());
     }
     let paths = touched_paths(&wt.path, &owner, "HEAD").await;
-    let unreviewed = outside_review(&paths, landing);
-    if !unreviewed.is_empty() {
-        return MergeOutcome::Unreviewed { files: unreviewed, kept_at: wt.path.clone(), branch: wt.branch.clone() };
+    if let Err(outcome) = held_to_review(&Isolation::Git(wt.clone()), landing).await {
+        return outcome;
     }
     let marked = with_markers(&wt.path, &paths).await;
     if !marked.is_empty() {
@@ -1014,7 +1143,9 @@ async fn land_git(wt: &Worktree, landing: &Landing) -> MergeOutcome {
         return MergeOutcome::OwnerEdits { files: in_the_way, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     }
     let files = z_paths(&wt.path, &["diff", "-z", "--name-only", &owner, "HEAD"]).await;
-    if let Err(e) = git(&wt.root, &["merge", "--ff-only", "--quiet", &head]).await {
+    // An ignored file of the owner's made since it was checked is never
+    // overwritten: git refuses instead.
+    if let Err(e) = git(&wt.root, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head]).await {
         return failed(format!("fast-forward refused: {e}"));
     }
     // Landed only if the owner's branch is now that commit.
@@ -1060,7 +1191,7 @@ fn through_a_link(root: &Path, target: &Path) -> bool {
     false
 }
 
-fn land_copy(c: &ScratchCopy, landing: &Landing) -> MergeOutcome {
+async fn land_copy(c: &ScratchCopy, landing: &Landing) -> MergeOutcome {
     let failed = |error: String| MergeOutcome::Failed { error, kept_at: c.path.clone(), branch: String::new() };
     // A copy that is gone is nothing to land, never a set of deletions.
     if !c.path.is_dir() {
@@ -1073,20 +1204,20 @@ fn land_copy(c: &ScratchCopy, landing: &Landing) -> MergeOutcome {
             branch: String::new(),
         };
     }
-    let changes = match changes_of(c) {
-        // Build output is rebuilt from its sources: never landed.
-        Ok(ch) => ch.into_iter().filter(|(rel, _)| !build_output(&rel.to_string_lossy())).collect::<Vec<_>>(),
+    if let Err(outcome) = held_to_review(&Isolation::Copy(c.clone()), landing).await {
+        return outcome;
+    }
+    // What the folder ignores is rebuilt from its sources: never landed,
+    // unless it was reviewed.
+    let changes = match copy_landing_changes(c, landing).await {
+        Ok(ch) => ch,
         Err(e) => return failed(e),
     };
     if changes.is_empty() {
         remove_copy(&c.path);
         return MergeOutcome::NoChanges;
     }
-    let paths: Vec<String> = changes.iter().map(|(rel, _)| rel.to_string_lossy().into_owned()).collect();
-    let unreviewed = outside_review(&paths, landing);
-    if !unreviewed.is_empty() {
-        return MergeOutcome::Unreviewed { files: unreviewed, kept_at: c.path.clone(), branch: String::new() };
-    }
+    let paths: Vec<String> = changes.iter().map(|(rel, _)| rel_str(rel)).collect();
     let written: Vec<String> =
         changes.iter().filter(|(_, ch)| matches!(ch, Change::Written(_))).map(|(rel, _)| rel.to_string_lossy().into_owned()).collect();
     let marked: Vec<String> =
@@ -1406,24 +1537,45 @@ pub async fn after_checks(iso: &Isolation, before: Checked) -> Result<(), String
 /// A copy's re-test after catching up: `Err` with what failed.
 pub type Retest<'a> = &'a (dyn Fn(&Isolation) -> futures::future::BoxFuture<'static, Result<(), String>> + Sync);
 
-/// One landing at a time per project, across Nebo's processes: a lock file
-/// per project (by its canonical path), held while a copy lands. Released
-/// when the returned file is dropped.
-async fn project_lock(root: &Path) -> Result<std::fs::File, String> {
-    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let dir = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("worktrees").join(".locks");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let at = dir.join(format!("{:016x}.lock", tools::checkpoint::fingerprint(canonical.to_string_lossy().as_bytes())));
+/// One landing at a time per project, for every Nebo on this computer
+/// whatever its data folder: a lock file in the repository's own git
+/// directory (`nebo-land.lock`), or for a folder that is no repository in
+/// the system's temp folder by the folder's path. Held while a copy lands,
+/// released when the returned file is dropped. A landing that has to wait
+/// says so once (`landing.waiting`), and `landing.stop` ends the wait.
+async fn project_lock(root: &Path, landing: &Landing) -> Result<std::fs::File, String> {
+    let at = match git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+        Ok(dir) => PathBuf::from(dir.trim()).join("nebo-land.lock"),
+        Err(_) => {
+            let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            std::env::temp_dir().join(format!("nebo-land-{:016x}.lock", tools::checkpoint::fingerprint(canonical.to_string_lossy().as_bytes())))
+        }
+    };
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&at)
         .map_err(|e| format!("open {}: {e}", at.display()))?;
-    tokio::task::spawn_blocking(move || file.lock().map(|_| file))
-        .await
-        .map_err(|e| format!("the landing lock: {e}"))?
-        .map_err(|e| format!("lock {}: {e}", at.display()))
+    let mut told = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {}: {e}", at.display())),
+        }
+        if !told {
+            told = true;
+            tracing::info!(project = %root.display(), "waiting for another landing on this project to finish");
+            if let Some(waiting) = &landing.waiting {
+                waiting();
+            }
+        }
+        tokio::select! {
+            _ = landing.stop.cancelled() => return Err("stopped while waiting for another landing on this project to finish".into()),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+        }
+    }
 }
 
 /// Land every copy of a set on the owner's project ([`dependency_order`],
@@ -1451,14 +1603,13 @@ pub async fn merge_all(isos: &mut [Isolation], message: &str, retest: Option<Ret
 
 /// The one way a copy lands, for the verify loop and for a helper's
 /// changes alike, under its project's landing lock: caught up with the
-/// owner's project ([`catch_up`]); stopped for another review when catching
-/// up changed files the change touches and `landing.review_overlap` asks
-/// for that; re-tested with `retest`, held to what was checked
+/// owner's project ([`catch_up`]); stopped for another review when what
+/// would land is not what was reviewed ([`held_to_review`]); re-tested with `retest`, held to what was checked
 /// ([`after_checks`]); landed ([`land`]). Returns the catch-up (when it
 /// got that far) and the outcome.
 pub async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<'_>>, landing: &Landing) -> (Option<CatchUp>, MergeOutcome) {
     let kept = |iso: &Isolation| (iso.path().to_path_buf(), iso.branch().to_string());
-    let _one_at_a_time = match project_lock(iso.root()).await {
+    let _one_at_a_time = match project_lock(iso.root(), landing).await {
         Ok(lock) => lock,
         Err(error) => {
             let (kept_at, branch) = kept(iso);
@@ -1480,9 +1631,10 @@ pub async fn land_one(iso: &mut Isolation, message: &str, retest: Option<Retest<
             let (kept_at, branch) = kept(iso);
             return (last, MergeOutcome::Conflict { files: caught.conflicts, kept_at, branch });
         }
-        if landing.review_overlap && !caught.overlap.is_empty() {
-            let (kept_at, branch) = kept(iso);
-            return (last, MergeOutcome::NeedsReview { files: caught.overlap, kept_at, branch });
+        // Catching up may have changed what was reviewed: reviewed again
+        // first, never re-tested and landed as it is.
+        if let Err(outcome) = held_to_review(iso, landing).await {
+            return (last, outcome);
         }
         if let Some(retest) = retest {
             let before = before_checks(iso);
@@ -1850,6 +2002,16 @@ mod tests {
 
     async fn log(dir: &Path) -> Vec<String> {
         git(dir, &["log", "--format=%s|%p"]).await.unwrap().lines().map(str::to_string).collect()
+    }
+
+    /// A landing held to `paths` as `dir` holds them now: what a review of
+    /// it saw.
+    async fn reviewed(dir: &Path, paths: &[&str]) -> Landing {
+        let mut only = Reviewed::new();
+        for p in paths {
+            only.insert(p.to_string(), content_id(dir, p).await.unwrap());
+        }
+        Landing { only: Some(only), ..Default::default() }
     }
 
     fn landed_files(o: &MergeOutcome) -> Vec<String> {
@@ -2869,7 +3031,7 @@ mod tests {
             let wt = create_worktree(r.path(), "sa-only").await.unwrap();
             std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
             std::fs::write(wt.path.join("video.mov"), "never reviewed").unwrap();
-            let landing = Landing { only: Some(vec!["b.txt".into()]), review_overlap: false };
+            let landing = reviewed(&wt.path, &["b.txt"]).await;
             let mut isos = [Isolation::Git(wt)];
             let out = merge_all(&mut isos, "Add b", None, &landing).await;
             assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["video.mov".to_string()]), "{:?}", out[0].1);
@@ -2985,7 +3147,7 @@ mod tests {
             std::fs::remove_file(wt.path.join("link")).unwrap();
             std::os::unix::fs::symlink("b.txt", wt.path.join("link")).unwrap();
             git(&wt.path, &["update-index", "--add", "--cacheinfo", &format!("160000,{next},sub")]).await.unwrap();
-            let landing = Landing { only: Some(vec!["link".into(), "sub".into()]), review_overlap: false };
+            let landing = reviewed(&wt.path, &["link", "sub"]).await;
             let mut isos = [Isolation::Git(wt)];
             let out = merge_all(&mut isos, "Point the link at b; bump sub", None, &landing).await;
             let mut files = landed_files(&out[0].1);
@@ -3033,4 +3195,90 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&owner_file).unwrap(), "owner, just now\n");
         }))
     }
+
+    #[test]
+    fn r4v_git_build_output_lands_unreviewed() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let wt = create_worktree(r.path(), "sa-r4v1").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
+            std::fs::create_dir_all(wt.path.join("dist")).unwrap();
+            std::fs::write(wt.path.join("dist/app.js"), "never reviewed").unwrap();
+            let landing = reviewed(&wt.path, &["b.txt"]).await;
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add b", None, &landing).await;
+            eprintln!("R4V1 {:?}", out[0].1);
+            assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["dist/app.js".to_string()]), "{:?}", out[0].1);
+            assert!(!r.path().join("dist/app.js").exists(), "unreviewed build output landed on the owner's branch");
+        }))
+    }
+
+    #[test]
+    fn r4v_copy_reviewed_file_under_a_build_folder_is_dropped() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::create_dir_all(f.path().join("scripts/build")).unwrap();
+            std::fs::write(f.path().join("scripts/build/run.sh"), "old\n").unwrap();
+            let c = create_copy(f.path(), "sa-r4v2").unwrap();
+            std::fs::write(c.path.join("scripts/build/run.sh"), "new\n").unwrap();
+            let landing = reviewed(&c.path, &["scripts/build/run.sh"]).await;
+            let mut isos = [Isolation::Copy(c)];
+            let out = merge_all(&mut isos, "m", None, &landing).await;
+            eprintln!("R4V2 {:?} copy_still_there={}", out[0].1, isos[0].path().exists());
+            assert_eq!(std::fs::read_to_string(f.path().join("scripts/build/run.sh")).unwrap(), "new\n", "reviewed work silently dropped");
+        }))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r4v_a_hook_rewrite_lands_bytes_nobody_reviewed() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            hook(r.path(), "pre-commit", "echo injected >> b.txt\ngit add b.txt");
+            let wt = create_worktree(r.path(), "sa-r4v3").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
+            let landing = reviewed(&wt.path, &["b.txt"]).await;
+            let mut isos = [Isolation::Git(wt)];
+            let out = merge_all(&mut isos, "Add b", None, &landing).await;
+            eprintln!("R4V3 {:?}", out[0].1);
+            // The rewrite goes back to review; nothing of it lands.
+            assert!(matches!(&out[0].1, MergeOutcome::NeedsReview { files, .. } if files == &vec!["b.txt".to_string()]), "{:?}", out[0].1);
+            assert!(!std::fs::read_to_string(r.path().join("b.txt")).unwrap_or_default().contains("injected"));
+        }))
+    }
+
+    /// Review round 4: landings on one project take turns through a lock in
+    /// the repository's own git directory, whatever Nebo's data folder; one
+    /// that waits says so, and Stop ends the wait with nothing landed.
+    #[test]
+    fn a_landing_waits_its_turn_and_stop_ends_the_wait() {
+        with_home(|_| rt().block_on(async {
+            let r = repo().await;
+            let held = project_lock(r.path(), &Landing::default()).await.unwrap();
+            assert!(r.path().join(".git/nebo-land.lock").is_file());
+            let wt = create_worktree(r.path(), "sa-wait").await.unwrap();
+            std::fs::write(wt.path.join("b.txt"), "b\n").unwrap();
+            let told = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let saw = told.clone();
+            let landing = Landing {
+                waiting: Some(std::sync::Arc::new(move || {
+                    saw.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                })),
+                ..Default::default()
+            };
+            let stop = landing.stop.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                stop.cancel();
+            });
+            let mut iso = Isolation::Git(wt);
+            let (_, out) = land_one(&mut iso, "Add b", None, &landing).await;
+            assert!(matches!(&out, MergeOutcome::Failed { error, .. } if error.contains("waiting for another landing")), "{out:?}");
+            assert_eq!(told.load(std::sync::atomic::Ordering::SeqCst), 1, "said once");
+            assert!(!r.path().join("b.txt").exists());
+            drop(held);
+            assert_eq!(landed_files(&land_one(&mut iso, "Add b", None, &Landing::default()).await.1), vec!["b.txt".to_string()]);
+        }))
+    }
+
 }

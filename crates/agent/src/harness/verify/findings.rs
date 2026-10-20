@@ -282,8 +282,12 @@ pub fn open_after(
     for f in new {
         match open.iter_mut().find(|o| o.same_as(f)) {
             // The same spot found again at a graver severity: the graver
-            // one stands. A match never lowers a severity.
-            Some(o) if f.severity < o.severity => *o = f.clone(),
+            // one stands, under the id the builder and the owner already
+            // know it by. A match never lowers a severity.
+            Some(o) if f.severity < o.severity => {
+                let id = std::mem::take(&mut o.id);
+                *o = Finding { id, ..f.clone() };
+            }
             Some(_) => {}
             None => open.push(f.clone()),
         }
@@ -451,8 +455,11 @@ mod tests {
             assert_eq!(blocking(&open), 1, "{open:?}");
             assert!(open.iter().any(|f| f.severity == Severity::Blocker && f.title == "The total ignores b"));
         }
-        let open = open_after(&[blocker.clone()], &[], &[minor]);
+        let open = open_after(&[blocker.clone()], &[], &[minor.clone()]);
         assert_eq!(open[0].severity, Severity::Blocker, "never downgraded");
+        // Review round 4: the graver finding keeps the id it was known by.
+        let open = open_after(&[minor], &[], &[blocker]);
+        assert_eq!((open[0].id.as_str(), open[0].severity), ("r1-a", Severity::Blocker));
     }
 
     /// Review 2026-10-20: a blocker the builder deferred, and a reviewer

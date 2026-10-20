@@ -174,9 +174,10 @@ fn finished(c: Completion) -> SpawnResult {
 }
 
 impl HelperDoor {
-    /// The paths of helper `task_id`'s change, when its work in its copy
-    /// was verified (its own turn's verify loop) and hasn't changed since.
-    async fn verified(&self, caller: &str, task_id: &str) -> Option<Vec<String>> {
+    /// What helper `task_id`'s change was reviewed as, when its work in its
+    /// copy was verified (its own turn's verify loop) and hasn't changed
+    /// since.
+    async fn verified(&self, caller: &str, task_id: &str) -> Option<crate::worktree::Reviewed> {
         let key = super::helper_key(caller, task_id);
         let Some(v) = self
             .harness
@@ -189,7 +190,7 @@ impl HelperDoor {
         else {
             return None;
         };
-        crate::harness::verify::work::reviewed_paths(&self.harness.store, &v).await
+        crate::harness::verify::work::reviewed(&self.harness.store, &v).await
     }
 }
 
@@ -249,15 +250,12 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn settle<'a>(&'a self, task_id: &'a str, land: bool, ctx: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
         Box::pin(async move {
-            // Verified work lands like the verify loop's own: held to what
-            // was reviewed, and reviewed again when catching up changed
-            // files it touches. Work that isn't verified lands only at the
-            // owner's word, as it is.
+            // Verified work lands like the verify loop's own: exactly what
+            // was reviewed, reviewed again when anything of it changed.
+            // Work that isn't verified lands only at the owner's word, as it
+            // is. The run's Stop ends a landing waiting for another.
             let reviewed = if land { self.verified(&ctx.session_key, task_id).await } else { None };
-            let landing = match &reviewed {
-                Some(paths) => crate::worktree::Landing { only: Some(paths.clone()), review_overlap: true },
-                None => crate::worktree::Landing::default(),
-            };
+            let landing = crate::worktree::Landing { only: reviewed.clone(), stop: ctx.cancel_token.clone(), waiting: None };
             if land && reviewed.is_none() {
                 // Work that isn't verified lands in the owner's files only at
                 // their own word, on a card; a run nobody watches holds it.
