@@ -2907,8 +2907,11 @@ pub(crate) mod tests {
     /// conversation and its helpers split every kind of work one way, so
     /// delegate says what the conversation keeps, what a brief names, that a
     /// helper's question comes back, with examples beyond code, and takes a
-    /// `report_limit` (delegate 2,922, +162): 18,329.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_329;
+    /// `report_limit` below the 30,000-character ceiling a report comes back
+    /// in full under (delegate 2,930, +170); ask_owner says a helper's
+    /// question ends its turn and goes to the conversation that started it
+    /// (ask_owner 1,477, +124): 18,461.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_461;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

@@ -434,6 +434,9 @@ pub(crate) enum RoundOutcome {
     Ran(RoundResults),
     /// A tool's terminal error ended the turn; its notice is already sent.
     Terminal,
+    /// A helper's question for the owner ended its turn; its notice is
+    /// already sent.
+    OwnerQuestion,
     /// A workflow primitive ended the turn (`workflow_exit:…`,
     /// `awaiting_approval`, `suspension_failed:…`).
     Workflow(String),
@@ -686,7 +689,10 @@ pub(crate) async fn run_tool_round(
         // letting the model retry/improvise. Critical for autonomous
         // workflows: there's no human to ask or to hit stop, so a dead
         // account must fail the run cleanly, not spiral. (FRAMES Phase 1.)
-        if result.terminal && terminal_error.is_none() {
+        // A helper's question wins over any other ending in the batch: the
+        // conversation that started it must hear it.
+        let asks = result.question.is_some() && terminal_error.as_ref().is_none_or(|(_, _, q)| q.is_none());
+        if result.terminal && (terminal_error.is_none() || asks) {
             terminal_error = Some((result.content.clone(), result.need.clone(), result.question.clone()));
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
@@ -759,17 +765,13 @@ pub(crate) async fn run_tool_round(
     // as a decision: its collector reports it to the conversation that
     // started it, which asks the owner.
     if let Some((msg, need, question)) = terminal_error {
-        let notice = match question {
-            Some(q) => {
-                info!(session_id, iteration, "a helper's question for the owner — ending its turn");
-                StreamEvent::owner_decision(msg, &q)
-            }
-            None => {
-                warn!(session_id, iteration, "terminal tool error — ending run");
-                StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need)
-            }
-        };
-        let _ = tx.send(notice).await;
+        if let Some(q) = question {
+            info!(session_id, iteration, "a helper's question for the owner — ending its turn");
+            let _ = tx.send(StreamEvent::owner_decision(msg, &q)).await;
+            return RoundOutcome::OwnerQuestion;
+        }
+        warn!(session_id, iteration, "terminal tool error — ending run");
+        let _ = tx.send(StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need)).await;
         return RoundOutcome::Terminal;
     }
 

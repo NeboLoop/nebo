@@ -122,12 +122,12 @@ impl SpawnRequest {
     }
 }
 
-/// The default length of a helper's report its parent reads inline, in
-/// characters: a longer one is saved to a file and the parent reads its
-/// start and the path. A delegate call sets its own with `report_limit`.
-/// Lean, so a conversation that hears from many helpers keeps its room: a
-/// report is a conclusion, not a dump. (100,000 until 2026-10-19.)
-pub const REPORT_LIMIT: usize = 8_000;
+/// The safety ceiling on a helper's or coworker's report, in characters. A
+/// report comes back in full up to it; its length is the brief's to set (the
+/// deliverable and its length, and `report_limit` below this). Past it, the
+/// full text is saved to a file and the reader gets a short preview and the
+/// path. (100,000 until 2026-10-20.)
+pub const REPORT_LIMIT: usize = 30_000;
 
 /// Result from a helper.
 #[derive(Debug, Clone)]

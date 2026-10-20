@@ -289,6 +289,9 @@ pub enum TurnExit {
         notice: String,
         need: Option<types::OwnerNeed>,
     },
+    /// A helper asked the owner a question it can't put to them: its turn
+    /// ends and the question goes to the conversation that started it.
+    OwnerQuestion,
     /// A workflow primitive ended the turn (`workflow_exit:…`,
     /// `suspension_failed:…`); the engine reads the reason.
     WorkflowEnded(String),
@@ -322,6 +325,7 @@ impl TurnExit {
             TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
             TurnExit::AppHalted { .. } => "app_halted".into(),
             TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
+            TurnExit::OwnerQuestion => ai::OWNER_DECISION.into(),
             TurnExit::WorkflowEnded(reason) => reason.clone(),
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
             TurnExit::Refused(_) => "refused".into(),
@@ -1150,7 +1154,11 @@ pub(crate) async fn prepare(
         .unwrap_or_else(|| "Nebo".to_string());
     let role = match &req.mode {
         TurnMode::Helper { parent_session_key, kind, .. } => {
-            prompt::Role::Helper { parent: parent_name(h, parent_session_key).await, kind: *kind }
+            prompt::Role::Helper {
+                parent: parent_name(h, parent_session_key).await,
+                kind: *kind,
+                can_ask: req.seat.tool_allowlist.as_ref().is_none_or(|tools| tools.contains("ask_owner")),
+            }
         }
         _ => prompt::Role::Employee,
     };
@@ -2964,6 +2972,7 @@ async fn tool_round(
         }
         RoundOutcome::Workflow(reason) => return Some(TurnExit::WorkflowEnded(reason)),
         // The round sent the owner its notice (with the need a tool named).
+        RoundOutcome::OwnerQuestion => return Some(TurnExit::OwnerQuestion),
         RoundOutcome::Terminal => {
             return Some(TurnExit::TerminalTool {
                 notice: "terminal_tool_error".into(),

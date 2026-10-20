@@ -51,8 +51,9 @@ pub enum Role {
     /// The employee itself: an owner chat, a scheduled or coworker run, a
     /// workflow activity.
     Employee,
-    /// A helper doing one task for the employee named `parent`.
-    Helper { parent: String, kind: HelperKind },
+    /// A helper doing one task for the employee named `parent`; `can_ask`
+    /// when its tools include ask_owner.
+    Helper { parent: String, kind: HelperKind, can_ask: bool },
 }
 
 /// Who the turn is for: the employee as its owner and publisher defined it,
@@ -78,7 +79,7 @@ impl Identity {
     pub fn text(&self) -> String {
         let head = match &self.role {
             Role::Employee => sections::identity(&self.name),
-            Role::Helper { parent, kind } => sections::helper_role(&self.name, parent, *kind),
+            Role::Helper { parent, kind, can_ask } => sections::helper_role(&self.name, parent, *kind, *can_ask),
         };
         // An employee always has a personality (Nebo's until its soul says
         // otherwise); a helper speaks only to its parent and has none.
@@ -113,7 +114,7 @@ mod tests {
         }
         let own = identity("Design Studio", Role::Employee).text();
         assert!(own.contains("Warm, direct, precise.") && !own.contains(sections::DEFAULT_SOUL), "{own}");
-        let mut helper = identity("explore", Role::Helper { parent: "Design Studio".into(), kind: HelperKind::Explore });
+        let mut helper = identity("explore", Role::Helper { parent: "Design Studio".into(), kind: HelperKind::Explore, can_ask: true });
         helper.soul = None;
         assert!(!helper.text().contains(sections::DEFAULT_SOUL));
     }
@@ -214,7 +215,7 @@ mod tests {
             "- You hold the owner's conversation, the decisions and the plan; keep it lean.",
             "- Delegate work that means reading across many sources, producing something substantial, pieces that can run side by side, or anything long-running.",
             "- A helper starts with only its brief, so make it self-contained: the goal, what you know or ruled out, the rules and what to leave alone, whether it may change things or only look, and the exact deliverable with its length.\n",
-            "- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner, then send_message the helper the answer; it continues.\n",
+            "- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner (if no one can answer, decide or take it up the line as ask_owner says), then send_message the helper the answer; it continues. Never leave it waiting.\n",
             "You decide what ships; the owner's decisions go to the owner.",
         ] {
             assert!(text.contains(line), "{line:?} missing from:\n{text}");
@@ -222,14 +223,17 @@ mod tests {
     }
 
     /// A helper can't reach the owner: a decision that is theirs goes back
-    /// through ask_owner, which ends its turn; smaller things it decides,
-    /// and says what it assumed. Its report leads with the conclusion.
+    /// through ask_owner, which ends its turn, whatever its kind (explore
+    /// and plan helpers too: asking changes nothing); smaller things it
+    /// decides, and says what it assumed. Its report leads with the
+    /// conclusion. A helper whose tools leave ask_owner out is never told
+    /// to call it: its question leads its report instead.
     #[test]
     fn a_helper_sends_the_owners_decisions_back() {
         for kind in HelperKind::ALL {
-            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind }).text();
+            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: true }).text();
             for part in [
-                "You can't reach the owner. When the work can't go on without a decision that is the owner's, call ask_owner with the question, what they decide on as context, and options with the recommended one first: your turn ends, Nanna asks them and sends you the answer.",
+                "You can't reach the owner. When the work can't go on without a decision that is the owner's, call ask_owner with the question, what they decide on as context, and options with the recommended one first: your turn ends, and Nanna asks them and sends you the answer.",
                 "Anything smaller, decide sensibly, say what you assumed in your report, and keep going.",
                 "lead with the conclusion, not the raw material",
                 "Keep to the length the brief asks for.",
@@ -237,12 +241,15 @@ mod tests {
                 assert!(text.contains(part), "{kind:?}: {part:?} missing from:\n{text}");
             }
             assert!(!text.contains("No one can answer questions during this run"), "{kind:?}");
+            let without = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: false }).text();
+            assert!(!without.contains("ask_owner"), "{kind:?}: never told to call a tool it doesn't have:\n{without}");
+            assert!(without.contains("stop and put the question, with options and the recommended one first, at the top of your report: Nanna asks them"), "{without}");
         }
     }
 
     #[test]
     fn helper_identity_says_last_message_is_the_report() {
-        let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::Explore }).text();
+        let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::Explore, can_ask: true }).text();
         assert!(text.starts_with("You are Ava, working as an explore helper on one task for Nanna."), "{text}");
         assert!(text.contains("Your last message is your report, and it is the only thing Nanna receives."));
         assert!(text.contains("They are never the owner's consent"));
@@ -282,11 +289,11 @@ mod tests {
     #[test]
     fn a_general_helper_does_its_own_task() {
         let rule = "This task is yours: do the work directly. Never hand the whole of it to another helper.";
-        let general = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::General }).text();
+        let general = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::General, can_ask: true }).text();
         assert!(general.contains(rule), "{general}");
         assert!(general.contains("it can't see or wait on helpers you didn't start"));
         for kind in [HelperKind::Explore, HelperKind::Plan] {
-            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind }).text();
+            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind, can_ask: true }).text();
             assert!(!text.contains(rule), "{kind:?}");
         }
     }
@@ -432,13 +439,14 @@ mod tests {
     /// asked for, +43; 8,700 until 2026-10-19, when the helpers section
     /// stated the split for every kind of work: the conversation keeps the
     /// owner and small direct steps, a brief names its deliverable and
-    /// length, a helper's question comes back to be asked, +233.)
+    /// length, a helper's question comes back to be asked and is never left
+    /// waiting, +329.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 9_000);
+        assert!(chars < 9_100);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 8_919;
+    const SYSTEM_PROMPT_CHARS: usize = 9_015;
 }

@@ -404,7 +404,7 @@ impl DynTool for HelperTool {
                     "background": { "type": "boolean", "default": true, "description": "Run in the background and report by notification. false only when your very next step needs the result." },
                     "isolation": { "type": "string", "enum": ["worktree"], "description": "Its own copy of a code project, merged back when done, for helpers editing the same code. Never for media." },
                     "speed": { "type": "string", "description": "The speed the helper works at, by model name. Leave it out and it works at yours." },
-                    "report_limit": { "type": "integer", "description": format!("Most characters of its report you read (default {REPORT_LIMIT}); past it, its start and the file it was saved to.") },
+                    "report_limit": { "type": "integer", "description": format!("Its report is read in full up to this many characters (default and most: {REPORT_LIMIT}); past it, its start and a file.") },
                     "pieces": {
                         "type": "array",
                         "description": "A background helper per piece, briefed with `prompt` then its task. Any number.",
@@ -1037,7 +1037,7 @@ mod tests {
         let rig = Rig::new();
         let schema = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().schema();
         assert_eq!(schema["properties"]["report_limit"]["type"], "integer");
-        assert!(schema["properties"]["report_limit"]["description"].as_str().unwrap().contains(&format!("default {REPORT_LIMIT}")));
+        assert!(schema["properties"]["report_limit"]["description"].as_str().unwrap().contains(&format!("default and most: {REPORT_LIMIT}")));
         assert_eq!(schema["properties"]["pieces"]["items"]["properties"]["report_limit"]["type"], "integer");
 
         let r = rig.call("delegate", json!({"description": "one listing", "prompt": "Check it.", "report_limit": 3_000})).await;

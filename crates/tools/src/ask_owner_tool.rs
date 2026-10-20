@@ -59,7 +59,7 @@ impl AskOwnerTool {
                 "Nobody is at the keyboard, so this went to {name}, who you answer to. They decide \
                  in their own session, and their answer comes to you as a notification. Until \
                  then carry on with anything that doesn't depend on it, and don't treat it as \
-                 decided.",
+                 decided. If a helper asked it, send_message the answer to the helper once it comes.",
                 name = delivery.to_name
             ))
             // The same hand-off line a message to a coworker shows.
@@ -103,7 +103,8 @@ impl AskOwnerTool {
             return ToolResult::error(
                 "Nobody is at the keyboard in this run, and you answer to the owner directly \
                  rather than to another employee — make a reasonable decision and proceed, and \
-                 tell the owner what you assumed.",
+                 tell the owner what you assumed. If a helper asked it, send_message the helper \
+                 your decision so it goes on.",
             );
         }
         let options = input.get("options").cloned().unwrap_or_else(|| json!([]));
@@ -153,7 +154,13 @@ fn back_to_the_starter(input: &Value) -> ToolResult {
                   the owner and sends you the answer; you continue from here then. This turn ends now."
             .to_string(),
         terminal: true,
-        question: Some(types::OwnerQuestion { question: text("question"), context: text("context"), options }),
+        question: Some(types::OwnerQuestion {
+            question: text("question"),
+            context: text("context"),
+            options,
+            multi_select: input["multi_select"].as_bool().unwrap_or(false),
+            style: text("style"),
+        }),
         ..Default::default()
     }
 }
@@ -218,7 +225,8 @@ impl DynTool for AskOwnerTool {
          - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer.\n\
          - 6 or more options: set `style` to \"select\" for a dropdown.\n\
          - About something you made or found (a brief, a draft, a plan)? Put it in `context`, not your message: the card shows it above the question.\n\
-         - The card is the one place the question appears: never write it in your message too."
+         - The card is the one place the question appears: never write it in your message too.\n\
+         - In a helper run your turn ends here: the question goes to the conversation that started you, which sends the answer back."
             .to_string()
     }
 
@@ -315,6 +323,8 @@ mod tests {
             "{}",
             r.content
         );
+        // A run that asked for its helper can't leave the helper waiting.
+        assert!(r.content.contains("If a helper asked it, send_message the helper your decision so it goes on."), "{}", r.content);
     }
 
     /// A helper can't reach the owner, whether or not an app could show a
@@ -336,13 +346,15 @@ mod tests {
             ask_channels: Some(Default::default()),
             ..Default::default()
         };
-        let input = json!({"question": " Which vendor? ", "context": "Two quotes.", "options": ["Acme", "Globex"]});
+        let input = json!({"question": " Which vendor? ", "context": "Two quotes.", "options": ["Acme", "Globex"], "multi_select": true, "style": "select"});
         let r = tool.execute_dyn(&ctx, input).await;
         assert!(r.terminal && !r.is_error, "it ends the turn, and is no failure: {r:?}");
         assert!(r.content.contains("goes back with your report"), "{}", r.content);
         let q = r.question.expect("the question travels on the result");
         assert_eq!((q.question.as_str(), q.context.as_str(), q.recommended()), ("Which vendor?", "Two quotes.", Some("Acme")));
         assert_eq!(q.options, ["Acme", "Globex"]);
+        assert!(q.multi_select && q.style == "select", "the card's shape travels with it");
+        assert!(tool.description().contains("In a helper run your turn ends here"), "{}", tool.description());
         assert!(rx.try_recv().is_err(), "no card goes out");
     }
 

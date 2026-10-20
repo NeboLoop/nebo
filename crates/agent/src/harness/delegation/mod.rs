@@ -79,7 +79,7 @@ pub struct HelperSpec {
     /// The speed the helper works at (a model id); `None` = its parent's.
     pub speed: Option<String>,
     /// How long its report may be, in characters, before it is saved to a
-    /// file and previewed; `None` = [`collect::REPORT_LIMIT`].
+    /// file and previewed; `None` = in full up to [`collect::REPORT_LIMIT`].
     pub report_limit: Option<usize>,
 }
 
@@ -380,8 +380,9 @@ struct Helper {
     /// A completion held back while the helper's own helpers still run.
     held: Option<Completion>,
     /// Reports of earlier turns of this run, when input reached it as a
-    /// turn ended; they lead the run's final result.
-    earlier_reports: Vec<String>,
+    /// turn ended or a held report was waiting as it ran again; they lead
+    /// the run's final result ([`Helper::keep_earlier`]).
+    earlier_reports: Vec<Completion>,
     /// The call it is making now, as the owner's screen was sent it.
     call: Option<tools::humanize::Call>,
     /// Background work's latest progress line, as the owner's screen was
@@ -389,6 +390,39 @@ struct Helper {
     activity: String,
     /// When its current run started (unix seconds).
     started_at: i64,
+}
+
+impl Helper {
+    /// Keep the report of a turn this run goes on from. Nothing in it is
+    /// dropped: it leads the run's final report.
+    fn keep_earlier(&mut self, c: Completion) {
+        self.earlier_reports.push(c);
+    }
+
+    /// The run's final completion: earlier reports lead `c`, what they read
+    /// goes with it, and a question an earlier turn asked the owner stays
+    /// the run's status until the answer reaches it.
+    fn final_completion(&mut self, mut c: Completion) -> Completion {
+        if self.earlier_reports.is_empty() {
+            return c;
+        }
+        let earlier = std::mem::take(&mut self.earlier_reports);
+        if !c.status.awaits_owner()
+            && matches!(c.status, CompletionStatus::Done | CompletionStatus::Partial { .. })
+            && let Some(asked) = earlier.iter().rev().find(|e| e.status.awaits_owner())
+        {
+            c.status = asked.status.clone();
+        }
+        for class in earlier.iter().flat_map(|e| e.taint.iter()) {
+            if !c.taint.contains(class) {
+                c.taint.push(*class);
+            }
+        }
+        let mut reports: Vec<String> = earlier.into_iter().map(|e| e.result).collect();
+        reports.push(std::mem::take(&mut c.result));
+        c.result = reports.join("\n\n");
+        c
+    }
 }
 
 /// The `helper_kind` a background work run is stored under: it runs code,
@@ -688,7 +722,7 @@ impl Helpers {
                     description: spec.description.clone(),
                     kind: spec.kind,
                     speed: spec.speed.clone(),
-                    report_limit: spec.report_limit.unwrap_or(collect::REPORT_LIMIT),
+                    report_limit: collect::report_limit(spec.report_limit),
                     parent_seat: parent_seat.clone(),
                     parent_grant: grant.cloned(),
                     parent_platform: turn.delivery.platform.clone(),
@@ -996,7 +1030,7 @@ impl Helpers {
                 description: spec.description.clone(),
                 kind: spec.kind,
                 speed: spec.speed.clone(),
-                report_limit: spec.report_limit.unwrap_or(collect::REPORT_LIMIT),
+                report_limit: collect::report_limit(spec.report_limit),
                 parent_seat: turn.seat.clone(),
                 parent_grant: grant.cloned(),
                 parent_platform: turn.delivery.platform.clone(),
@@ -1192,13 +1226,15 @@ impl Helpers {
         isolation: Option<crate::worktree::Isolation>,
     ) -> Completion {
         let cancel = req.cancel.clone();
-        let (parent_key, description, report_limit) = {
+        let (parent_key, description, report_limit, reader) = {
             let state = self.state();
             let h = state.helpers.get(task_id);
             (
                 h.map(|h| h.parent_key.clone()).unwrap_or_default(),
                 h.map(|h| h.description.clone()).unwrap_or_default(),
                 h.map_or(collect::REPORT_LIMIT, |h| h.report_limit),
+                // A spilled report is read back the way its parent reads files.
+                h.map_or(tools::result_shape::Reader::File, |h| tools::result_shape::Reader::of(&h.parent_seat.door)),
             )
         };
         self.emit(&parent_key, ai::StreamEvent::subagent_start(task_id, description.as_str()));
@@ -1223,7 +1259,7 @@ impl Helpers {
             .resolve_session_id_by_key(&parent_key)
             .map(|id| tools::result_shape::results_dir(&id))
             .unwrap_or_else(|_| tools::result_shape::results_dir(&parent_key.replace(':', "_")));
-        let mut completion = collected.into_completion(task_id, &description, &spill_dir, report_limit);
+        let mut completion = collected.into_completion(task_id, &description, &spill_dir, report_limit, reader);
         if let Some(iso) = isolation {
             let merged = crate::worktree::merge_all(std::slice::from_ref(&iso), &format!("nebo: helper {task_id}")).await;
             for (_, outcome) in &merged {
@@ -1298,7 +1334,7 @@ impl Helpers {
     /// foreground launch still waiting gets the completion, or it notifies
     /// its parent, unless its own helpers still run: then it notifies once
     /// they are done and it has heard them.
-    fn finish(self: &Arc<Self>, task_id: &str, mut completion: Completion) -> Option<TurnRequest> {
+    fn finish(self: &Arc<Self>, task_id: &str, completion: Completion) -> Option<TurnRequest> {
         let (parent_key, completion, depth) = {
             let mut state = self.state();
             let h = state.helpers.get_mut(task_id)?;
@@ -1311,7 +1347,7 @@ impl Helpers {
                     .is_ok_and(|messages| input_unheard(&messages));
             if continues {
                 info!(task_id = %task_id, "input reached the helper as its turn ended: running a turn to hear it");
-                h.earlier_reports.push(completion.result);
+                h.keep_earlier(completion);
                 let spec = HelperSpec {
                     description: h.description.clone(),
                     prompt: String::new(),
@@ -1333,10 +1369,7 @@ impl Helpers {
                 return Some(child::child_request(&parent, task_id, &spec, None, TurnInput::None));
             }
             h.running = false;
-            if !h.earlier_reports.is_empty() {
-                h.earlier_reports.push(std::mem::take(&mut completion.result));
-                completion.result = std::mem::take(&mut h.earlier_reports).join("\n\n");
-            }
+            let completion = h.final_completion(completion);
             let waiter = h.waiter.take();
             let (session_key, parent_key, depth) = (h.session_key.clone(), h.parent_key.clone(), h.parent_seat.handoff_depth);
             let completion = match waiter {
@@ -1496,7 +1529,12 @@ impl State {
         let req = child::child_request(&parent, pid, &spec, None, input);
         p.running = true;
         p.cancel = cancel;
-        p.held = None;
+        // A report held while its own helpers ran is never dropped: it
+        // leads this run's next report (a question for the owner in it
+        // included).
+        if let Some(held) = p.held.take() {
+            p.keep_earlier(held);
+        }
         Some(req)
     }
 }
@@ -1937,13 +1975,14 @@ mod tests {
         ));
         assert!(rig.wake.try_recv().is_err(), "the owner is not the one told");
 
-        // Then the parent notifies its own parent, once.
+        // Then the parent notifies its own parent, once. The report it held
+        // while its helper ran is never dropped: it leads.
         rig.heard(&parent_key);
         resumed.answer("Close plan ready.").await;
         assert_eq!(rig.next_wake().await, "agent:bookkeeper:web");
         let pending = rig.pending_notifications("agent:bookkeeper:web");
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].contains("done\nClose plan ready.\n"), "{}", pending[0]);
+        assert!(pending[0].contains("done\nWaiting on March.\n\nClose plan ready.\n"), "{}", pending[0]);
     }
 
     #[tokio::test]
@@ -2442,7 +2481,7 @@ mod tests {
         let owner = rig.owner_turn("agent:sdr:web");
         let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Draft the outreach batch.", None)).await.unwrap());
         let child = rig.next_turn().await;
-        let q = types::OwnerQuestion { question: "Which vendor?".into(), context: String::new(), options: vec!["Acme".into(), "Globex".into()] };
+        let q = types::OwnerQuestion { question: "Which vendor?".into(), options: vec!["Acme".into(), "Globex".into()], ..Default::default() };
         let _ = child.events.send(StreamEvent::text("Drafted 18 of 20.")).await;
         let _ = child.events.send(StreamEvent::tool_call(ai::ToolCall { id: "c1".into(), name: "ask_owner".into(), input: serde_json::json!({}) })).await;
         let _ = child.events.send(StreamEvent::owner_decision("Your question goes back.", &q)).await;
@@ -2462,5 +2501,77 @@ mod tests {
         assert_eq!(rig.helpers.send(&owner, None, &[], &id, "The owner picked Acme.").await.unwrap(), launch_result(&id));
         let resumed = rig.next_turn().await;
         assert_eq!(resumed.request.session_key, helper_key("agent:sdr:web", &id));
+    }
+
+    /// The question the scripted helper turn `t` asks: a few words, the
+    /// ask_owner call, the decision notice and the turn's end.
+    async fn ask(t: &Started, words: &str, q: &types::OwnerQuestion) {
+        let _ = t.events.send(StreamEvent::text(words)).await;
+        let _ = t.events.send(StreamEvent::tool_call(ai::ToolCall { id: "c1".into(), name: "ask_owner".into(), input: serde_json::json!({}) })).await;
+        let _ = t.events.send(StreamEvent::owner_decision("Your question goes back.", q)).await;
+        let _ = t.events.send(StreamEvent::done_with_reason(ai::OWNER_DECISION)).await;
+    }
+
+    /// A helper two levels down asks while a helper of its own still runs:
+    /// its report is held. When that helper reports, the held report is
+    /// never dropped as the run goes on: the question leads what reaches
+    /// the owner's conversation, and it is still a question.
+    #[tokio::test]
+    async fn a_held_question_survives_the_turn_that_hears_its_child() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan the outreach.", None)).await.unwrap());
+        let a = rig.next_turn().await;
+        rig.helpers.delegate(&a.request, None, &[], &call("Find the contacts.", None)).await.unwrap();
+        let b = rig.next_turn().await;
+        let q = types::OwnerQuestion { question: "Which vendor?".into(), options: vec!["Acme".into(), "Globex".into()], ..Default::default() };
+        ask(&a, "Drafted the plan.", &q).await;
+        for _ in 0..200 {
+            if rig.helpers.state().helpers.get(&a_id).is_some_and(|h| h.held.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(rig.helpers.state().helpers[&a_id].held.is_some(), "held while its helper runs");
+
+        b.answer("40 contacts found.").await;
+        let resumed = rig.next_turn().await;
+        assert_eq!(resumed.request.session_key, a.request.session_key, "the helper hears its child");
+        resumed.answer("Contacts are in.").await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let pending = rig.pending_notifications("agent:sdr:web");
+        assert!(pending[0].contains(&format!("helper {a_id} \"read the ledger\": partial ({}", collect::NEEDS_OWNER_DECISION)), "{}", pending[0]);
+        let question = pending[0].find("Question: Which vendor?").expect("the held question");
+        assert!(question < pending[0].find("Contacts are in.").expect("the latest turn"), "the question leads: {}", pending[0]);
+    }
+
+    /// A helper's question goes to the turn that started it, whatever its
+    /// door. A scheduled run that started it is woken with it and told what
+    /// to do when nobody can answer: decide or take it up the line, and
+    /// send the helper the answer either way, never leaving it waiting.
+    #[tokio::test]
+    async fn an_unattended_parent_is_woken_and_must_answer_its_helper() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let mut owner = rig.owner_turn("agent:sdr:schedule:daily");
+        owner.seat.door = types::permissions::Door::Schedule;
+        owner.seat.origin = tools::Origin::System;
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Draft the batch.", None)).await.unwrap());
+        let child = rig.next_turn().await;
+        let q = types::OwnerQuestion { question: "Send today or Monday?".into(), options: vec!["Monday".into(), "Today".into()], ..Default::default() };
+        ask(&child, "Drafted 20.", &q).await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:schedule:daily", "the unattended parent is woken");
+        let pending = rig.pending_notifications("agent:sdr:schedule:daily");
+        for part in [
+            "Question: Send today or Monday?".to_string(),
+            "If no one can answer it in your conversation, decide it yourself or take it up the line as ask_owner says.".to_string(),
+            format!("send_message the answer to {id}"),
+            "Never leave it waiting.".to_string(),
+        ] {
+            assert!(pending[0].contains(&part), "{part:?} missing from:\n{}", pending[0]);
+        }
+        let row = rig.store.get_pending_task(&id).unwrap().unwrap();
+        assert_eq!(row.status, "completed", "its row is readable and it can be resumed");
+        assert_eq!(rig.helpers.send(&owner, None, &[], &id, "Monday.").await.unwrap(), launch_result(&id));
+        assert_eq!(rig.next_turn().await.request.session_key, helper_key("agent:sdr:schedule:daily", &id));
     }
 }

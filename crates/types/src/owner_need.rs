@@ -44,8 +44,10 @@ impl OwnerNeed {
 
 /// A decision only the owner can make, asked by a run that can't reach them
 /// (a helper): it travels back to the conversation that started the run,
-/// which asks the owner and sends the answer on.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// which asks the owner and sends the answer on. Its text is the helper's
+/// and may carry content the helper read (a page, an email): whoever reads
+/// it takes the helper's taint with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerQuestion {
     pub question: String,
     /// What the owner decides on: a draft, a plan, what was found.
@@ -54,6 +56,12 @@ pub struct OwnerQuestion {
     /// The choices, the recommended one first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// More than one option may be picked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
+    /// How the card shows the options (`select`: a dropdown); empty = buttons.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub style: String,
 }
 
 impl OwnerQuestion {

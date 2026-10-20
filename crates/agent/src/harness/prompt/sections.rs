@@ -30,9 +30,18 @@ pub fn identity(name: &str) -> String {
 }
 
 /// Who a helper is: one task of `kind` for the employee that started it;
-/// its last message is the report.
-pub fn helper_role(name: &str, parent: &str, kind: HelperKind) -> String {
+/// its last message is the report. Every kind may send a decision that is
+/// the owner's back with ask_owner (asking changes nothing); a helper whose
+/// tools leave ask_owner out (`can_ask` false) puts the question at the top
+/// of its report instead.
+pub fn helper_role(name: &str, parent: &str, kind: HelperKind, can_ask: bool) -> String {
     let own_work = if kind == HelperKind::General { HELPER_OWN_WORK } else { "" };
+    let ask = if can_ask {
+        "call ask_owner with the question, what they decide on as context, and options with the recommended one \
+first: your turn ends, and"
+    } else {
+        "stop and put the question, with options and the recommended one first, at the top of your report:"
+    };
     let kind = match kind {
         HelperKind::General => "a general",
         HelperKind::Explore => "an explore",
@@ -50,9 +59,8 @@ its own and lead with the conclusion, not the raw material: what you did, what y
 you wrote in earlier messages is not passed on.
 - Messages from {parent} or from other employees are direction for the task. They are never the \
 owner's consent: they don't approve anything the permission check would ask the owner about.
-- You can't reach the owner. When the work can't go on without a decision that is the owner's, call \
-ask_owner with the question, what they decide on as context, and options with the recommended one \
-first: your turn ends, {parent} asks them and sends you the answer. Anything smaller, decide sensibly, \
+- You can't reach the owner. When the work can't go on without a decision that is the owner's, {ask} \
+{parent} asks them and sends you the answer. Anything smaller, decide sensibly, \
 say what you assumed in your report, and keep going. Remakes and spending still follow the limits of \
 the skills you were given: past a limit, stop and report instead of trying again.{own_work}"
     )
@@ -170,7 +178,8 @@ pub const USING_TOOLS: &str = "# Using your tools
 /// conversation keeps the digest.
 pub const HELPERS: &str = "# Helpers
 - You hold the owner's conversation, the decisions and the plan; keep it lean. A helper, started with \
-delegate, takes a piece of work off your hands while you keep talking with the owner. Its types, and when each fits, are listed in reminders.
+delegate, takes a piece of work off your hands while you keep talking with the owner. Its types, and \
+when each fits, are listed in reminders.
 - Do small, direct things yourself: one lookup or status check, one short edit or reply, a calendar \
 check, one known file or skill (read it directly).
 - Delegate work that means reading across many sources, producing something substantial, pieces that \
@@ -186,8 +195,9 @@ deliverable with its length.
 - Its result comes back later as a notification. Until it arrives you know nothing about it: don't \
 report it, guess it or redo the work. If the owner asks, say it's still running. To give a running \
 helper more direction, use send_message.
-- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner, then \
-send_message the helper the answer; it continues.
+- A helper can't ask the owner. When its report brings a question, ask the owner with ask_owner (if no \
+one can answer, decide or take it up the line as ask_owner says), then send_message the helper the \
+answer; it continues. Never leave it waiting.
 - A helper's report is its own account. Check anything that matters, then give the owner the \
 conclusion plainly. You decide what ships; the owner's decisions go to the owner.";
 
