@@ -441,12 +441,21 @@ struct State {
     starting: HashMap<String, usize>,
     /// The copies isolated helpers work in, by helper id: held from the
     /// helper's start until its changes are landed or discarded, across its
-    /// turns (a follow-up works in the same copy), never merged on their own.
-    copies: HashMap<String, crate::worktree::Isolation>,
-    /// Isolated helpers that stopped to ask the owner a decision: their
-    /// copies wait, and nothing of theirs lands, until they are resumed with
-    /// the answer and finish.
-    waiting: std::collections::HashSet<String>,
+    /// turns and restarts (a follow-up works in the same copy), never merged
+    /// on their own. Each is kept on its helper's run too
+    /// ([`Helpers::hold`]).
+    copies: HashMap<String, Held>,
+}
+
+/// A copy an isolated helper holds, as it is kept on the helper's run.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct Held {
+    iso: crate::worktree::Isolation,
+    /// Why its changes can't land yet: it stopped to ask the owner, failed,
+    /// was stopped or hit a limit before it finished. `None` once it
+    /// finished.
+    #[serde(default)]
+    unfinished: Option<String>,
 }
 
 /// A launch's place in its tree, given back when the launch ends: by then
@@ -669,8 +678,8 @@ impl Helpers {
         let session_key = helper_key(parent_key, &task_id);
         let parent_seat = &turn.seat;
 
-        let isolation = match spec.isolation {
-            Some(Isolation::Worktree) => Some(isolate(parent_seat, grant, &task_id).await?),
+        let mut isolation = match spec.isolation {
+            Some(Isolation::Worktree) => Some(isolate(parent_seat, grant, &task_id, None).await?),
             None => None,
         };
         let mut brief = spec.prompt.clone();
@@ -687,6 +696,7 @@ impl Helpers {
             "speed": spec.speed,
             "report_limit": spec.report_limit,
             "isolation": isolation.as_ref().map(|_| "worktree"),
+            "project": isolation.as_ref().map(|iso| iso.root().to_string_lossy().into_owned()),
             "copy": isolation.as_ref().map(|iso| iso.path().to_string_lossy().into_owned()),
         })
         .to_string();
@@ -703,11 +713,14 @@ impl Helpers {
             })
             .map_err(|e| format!("Could not start the helper: {e}"));
         if let Err(e) = created {
-            if let Some(iso) = &isolation {
+            if let Some(iso) = &mut isolation {
                 // Never used: nothing in it.
                 crate::worktree::put_away(iso, &spec.description).await;
             }
             return Err(e);
+        }
+        if let Some(iso) = &isolation {
+            self.keep(&task_id, Some(&Held { iso: iso.clone(), unfinished: None }));
         }
         let _ = self.store.update_task_running(&task_id);
 
@@ -726,7 +739,7 @@ impl Helpers {
             };
             let req = child::child_request(&parent, &task_id, &spec, copy.as_deref(), TurnInput::Platform { text: brief });
             if let Some(iso) = isolation {
-                state.copies.insert(task_id.clone(), iso);
+                state.copies.insert(task_id.clone(), Held { iso, unfinished: None });
             }
             state.helpers.insert(
                 task_id.clone(),
@@ -998,13 +1011,24 @@ impl Helpers {
             ));
         }
         let spec = spec_of_row(&self.store, &row);
-        // An isolated helper continues in its own copy. One whose copy is
-        // gone (Nebo restarted, and its work was put away) gets a fresh one:
-        // a follow-up never writes into the owner's own files.
-        let needs_copy = spec.isolation.is_some() && !self.state().copies.contains_key(task_id);
-        if needs_copy {
-            let iso = isolate(&turn.seat, grant, task_id).await?;
-            self.state().copies.insert(task_id.to_string(), iso);
+        // An isolated helper continues in the copy it holds, checked out
+        // again when its work was put away on its branch. One holding none
+        // (its changes were landed or discarded) gets a fresh copy of the
+        // project it was started on: a follow-up never writes into the
+        // owner's own files.
+        if spec.isolation.is_some() {
+            let held = self.state().copies.get(task_id).cloned();
+            let held = match held {
+                Some(held) => Held {
+                    iso: crate::worktree::reattach(held.iso).await.map_err(|e| format!("Helper {task_id}'s copy can't be opened again: {e}"))?,
+                    unfinished: held.unfinished,
+                },
+                None => {
+                    let project = row_inputs(&self.store, &row).and_then(|v| v.get("project")?.as_str().map(std::path::PathBuf::from));
+                    Held { iso: isolate(&turn.seat, grant, task_id, project).await?, unfinished: None }
+                }
+            };
+            self.hold(task_id, held);
         }
         let from = crate::harness::conversation::MidTurnFrom::Parent {
             session_key: caller.to_string(),
@@ -1045,7 +1069,7 @@ impl Helpers {
                 cancel: cancel.clone(),
                 platform: turn.delivery.platform.as_deref(),
             };
-            let copy = state.copies.get(task_id).map(|iso| iso.path().to_string_lossy().into_owned());
+            let copy = state.copies.get(task_id).map(|h| h.iso.path().to_string_lossy().into_owned());
             let req = child::child_request(&parent, task_id, &spec, copy.as_deref(), TurnInput::None);
             let helper = state.helpers.entry(task_id.to_string()).or_insert_with(|| Helper {
                 parent_key: caller.to_string(),
@@ -1072,7 +1096,12 @@ impl Helpers {
             helper.parent_seat = turn.seat.clone();
             helper.parent_grant = grant.cloned();
             helper.parent_platform = turn.delivery.platform.clone();
-            helper.held = None;
+            // A report held while its own helpers ran is never dropped: it
+            // leads this run's next report (a question for the owner in it
+            // included).
+            if let Some(held) = helper.held.take() {
+                helper.keep_earlier(held);
+            }
             req
         };
         let _ = self.store.update_task_running(task_id);
@@ -1115,6 +1144,21 @@ impl Helpers {
     /// that started one is told as it is of any failed helper. A nested
     /// helper's parent was interrupted too and reports for its own work.
     pub async fn recover(self: &Arc<Self>) {
+        // The copies helpers hold, finished or not, are theirs again: their
+        // changes can still be landed, discarded or continued.
+        match self.store.engine_runs_holding_copies(ROW_KIND) {
+            Ok(held) => {
+                for (id, copy) in held {
+                    match serde_json::from_str::<Held>(&copy) {
+                        Ok(held) => {
+                            self.state().copies.insert(id, held);
+                        }
+                        Err(e) => warn!(task_id = %id, error = %e, "a helper's held copy could not be read; it stays on its run"),
+                    }
+                }
+            }
+            Err(e) => warn!(error = %e, "the copies helpers hold could not be read"),
+        }
         let runs = match self.store.engine_live_runs_of_kind(ROW_KIND) {
             Ok(runs) => runs,
             Err(e) => {
@@ -1127,8 +1171,16 @@ impl Helpers {
                 continue;
             }
             let mut error = "interrupted by a restart; send_message continues it from where it stopped".to_string();
-            if let Some(kept) = put_away_after_restart(&run.id).await {
-                error.push_str(&format!("; {kept}, and a follow-up works in a fresh copy"));
+            let held = self.state().copies.get(&run.id).cloned();
+            if let Some(mut held) = held {
+                match crate::worktree::put_away(&mut held.iso, "Unfinished work, put away when Nebo restarted").await {
+                    Some(kept) => {
+                        error.push_str(&format!("; {kept}, and a follow-up continues in it"));
+                        held.unfinished = Some("it was interrupted by a restart before it finished".into());
+                        self.hold(&run.id, held);
+                    }
+                    None => self.release(&run.id),
+                }
             }
             if let Err(e) = self.store.engine_set_run_state(&run.id, "failed", chrono::Utc::now().timestamp(), Some(&error)) {
                 warn!(task_id = %run.id, error = %e, "an interrupted helper could not be marked failed");
@@ -1299,35 +1351,77 @@ impl Helpers {
 
     /// After an isolated helper's turn: its changes are held in its copy
     /// for the primary (or the owner) to land or discard, never merged on
-    /// their own. A stopped helper's work is put away (on its branch, or in
-    /// its copy) and the copy freed; a copy with nothing in it is removed.
+    /// their own, and offered as ready only when it finished. A helper that
+    /// stopped to ask the owner, failed, hit a limit or was stopped keeps
+    /// them, said so and why, until a follow-up finishes them (a stopped
+    /// one's are put away, on its branch or in its copy, and the disk
+    /// freed). A copy with nothing in it is removed. A finished turn is the
+    /// builder's word that conflicts it was handed are resolved.
     async fn report_copy(&self, task_id: &str, description: &str, completion: &mut Completion) {
-        let Some(iso) = self.state().copies.get(task_id).cloned() else { return };
-        if completion.status == CompletionStatus::Stopped {
-            self.state().copies.remove(task_id);
-            if let Some(where_) = crate::worktree::put_away(&iso, &format!("Unfinished: {description}")).await {
-                completion.result.push_str(&format!("\n\nIt was stopped before its changes landed: {where_}. Nothing of the owner's changed."));
+        let Some(mut held) = self.state().copies.get(task_id).cloned() else { return };
+        let files = crate::worktree::changed_files(&held.iso).await;
+        let catching_up = matches!(&held.iso, crate::worktree::Isolation::Git(wt) if wt.onto.is_some());
+        if files.is_empty() && !catching_up {
+            self.release(task_id);
+            crate::worktree::put_away(&mut held.iso, description).await;
+            return;
+        }
+        let at = held.iso.path().display().to_string();
+        // A question an earlier turn of this run asked stays the run's
+        // status until the answer reaches it ([`Helper::final_completion`]).
+        let asked = completion.status.awaits_owner()
+            || self.state().helpers.get(task_id).is_some_and(|h| h.earlier_reports.iter().any(|e| e.status.awaits_owner()));
+        let note = match &completion.status {
+            _ if asked => {
+                held.unfinished = Some("it stopped to ask the owner a decision".into());
+                format!("Its work waits in its own copy at {at} until it is resumed with the owner's answer; nothing of the owner's changed.")
             }
-            return;
+            CompletionStatus::Done => {
+                held.unfinished = None;
+                held.iso.mark_resolved();
+                changes_ready(task_id, &held.iso, &files)
+            }
+            CompletionStatus::Stopped => {
+                held.unfinished = Some("it was stopped before it finished".into());
+                let kept = crate::worktree::put_away(&mut held.iso, &format!("Unfinished: {description}")).await.unwrap_or_default();
+                format!(
+                    "It was stopped before its changes landed: {kept}. Nothing of the owner's changed. A follow-up \
+                     (send_message to {task_id}) continues it there, or drop them with changes: \"discard\"."
+                )
+            }
+            CompletionStatus::Partial { why } | CompletionStatus::Failed { error: why } => {
+                let how = if matches!(completion.status, CompletionStatus::Failed { .. }) { "failed" } else { "stopped" };
+                held.unfinished = Some(format!("it {how} before it finished ({why})"));
+                format!(
+                    "It {how} before it finished ({why}), so its changes are not ready: {} unfinished file{} kept in its \
+                     own copy at {at}, not in the owner's files. A follow-up (send_message to {task_id}) finishes them \
+                     there, or drop them with changes: \"discard\".",
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" }
+                )
+            }
+        };
+        completion.result.push_str(&format!("\n\n{note}"));
+        self.hold(task_id, held);
+    }
+
+    /// Keep a helper's copy, here and on its run, so a restart finds it.
+    fn hold(&self, task_id: &str, held: Held) {
+        self.keep(task_id, Some(&held));
+        self.state().copies.insert(task_id.to_string(), held);
+    }
+
+    /// A helper's copy is gone: its changes landed or were discarded.
+    fn release(&self, task_id: &str) {
+        self.state().copies.remove(task_id);
+        self.keep(task_id, None);
+    }
+
+    fn keep(&self, task_id: &str, held: Option<&Held>) {
+        let json = held.and_then(|h| serde_json::to_string(h).ok());
+        if let Err(e) = self.store.engine_set_run_held_copy(task_id, json.as_deref()) {
+            warn!(task_id, error = %e, "a helper's copy could not be kept on its run");
         }
-        // Stopped to ask the owner: its copy waits for the answer, and
-        // nothing of it lands until it is resumed and finishes.
-        if matches!(&completion.status, CompletionStatus::Partial { why } if why == collect::NEEDS_OWNER_DECISION) {
-            self.state().waiting.insert(task_id.to_string());
-            completion.result.push_str(&format!(
-                "\n\nIts work waits in its own copy at {} until it is resumed with the owner's answer; nothing of the owner's changed.",
-                iso.path().display()
-            ));
-            return;
-        }
-        self.state().waiting.remove(task_id);
-        let files = crate::worktree::changed_files(&iso).await;
-        if files.is_empty() {
-            self.state().copies.remove(task_id);
-            crate::worktree::put_away(&iso, description).await;
-            return;
-        }
-        completion.result.push_str(&format!("\n\n{}", changes_ready(task_id, &iso, &files)));
     }
 
     /// Land or discard the changes an isolated helper of `caller`'s holds
@@ -1335,42 +1429,43 @@ impl Helpers {
     /// isolated helper's work reaches the owner's files. Landing catches the
     /// copy up with the project, re-tests it with `retest`, and lands it as
     /// one commit ([`crate::worktree::merge_all`]); anything short of that
-    /// keeps the copy and says what is needed. A land asked for after a
-    /// conflict was handed back counts as the word that it is resolved.
+    /// keeps the copy and says what is needed. Changes of a helper that did
+    /// not finish never land.
     pub async fn settle(&self, caller: &str, task_id: &str, decision: Decision, retest: Option<crate::worktree::Retest<'_>>) -> Result<String, String> {
         let row = self.own_row(caller, task_id)?;
         if self.state().helpers.get(task_id).is_some_and(|h| h.running) {
             return Err(format!("Helper {task_id} is still working; its changes are settled once it reports."));
         }
-        if decision == Decision::Land && self.state().waiting.contains(task_id) {
-            return Err(format!(
-                "Helper {task_id} stopped to ask the owner a decision: resume it with the answer (send_message), and land \
-                 its changes once it has finished."
-            ));
-        }
-        let Some(mut iso) = self.state().copies.remove(task_id) else {
+        let Some(held) = self.state().copies.get(task_id).cloned() else {
             return Err(format!("Helper {task_id} holds no changes to land or discard."));
         };
         let description = row.description.clone().unwrap_or_default();
         match decision {
-            Decision::Discard => match crate::worktree::discard(&iso).await {
-                Ok(()) => Ok(format!("Helper {task_id}'s changes were discarded. Nothing of the owner's changed.")),
-                Err(e) => {
-                    self.state().copies.insert(task_id.to_string(), iso);
-                    Err(format!("Could not discard helper {task_id}'s changes: {e}"))
+            Decision::Discard => match crate::worktree::discard(&held.iso).await {
+                Ok(()) => {
+                    self.release(task_id);
+                    Ok(format!("Helper {task_id}'s changes were discarded. Nothing of the owner's changed."))
                 }
+                Err(e) => Err(format!("Could not discard helper {task_id}'s changes: {e}")),
             },
             Decision::Land => {
-                iso.mark_resolved();
+                if let Some(why) = &held.unfinished {
+                    return Err(format!(
+                        "Helper {task_id}'s changes can't land: {why}. Resume it (send_message, with the owner's answer \
+                         if it asked one) and land them once it has finished, or discard them."
+                    ));
+                }
+                let iso = crate::worktree::reattach(held.iso).await.map_err(|e| format!("Helper {task_id}'s changes can't be landed: {e}"))?;
                 let message = landing_message(&description);
                 let mut isos = [iso];
                 let outcome = crate::worktree::merge_all(&mut isos, &message, retest).await.remove(0).1;
                 let [iso] = isos;
                 let text = crate::worktree::render_outcome(&description, &outcome);
                 if outcome.landed() {
+                    self.release(task_id);
                     return Ok(text);
                 }
-                self.state().copies.insert(task_id.to_string(), iso);
+                self.hold(task_id, Held { iso, unfinished: None });
                 Ok(format!(
                     "{text}\nThe changes stay in helper {task_id}'s copy. Send them back to the helper to fix \
                      (send_message to {task_id}), ask the owner, or discard them."
@@ -1434,7 +1529,7 @@ impl Helpers {
         let (parent_key, completion, depth) = {
             let mut guard = self.state();
             let state = &mut *guard;
-            let copy = state.copies.get(task_id).map(|iso| iso.path().to_string_lossy().into_owned());
+            let copy = state.copies.get(task_id).map(|h| h.iso.path().to_string_lossy().into_owned());
             let h = state.helpers.get_mut(task_id)?;
             let continues = matches!(completion.status, CompletionStatus::Done | CompletionStatus::Partial { .. })
                 && !h.cancel.is_cancelled()
@@ -1624,7 +1719,7 @@ impl State {
             cancel: cancel.clone(),
             platform: p.parent_platform.as_deref(),
         };
-        let copy = self.copies.get(pid).map(|iso| iso.path().to_string_lossy().into_owned());
+        let copy = self.copies.get(pid).map(|h| h.iso.path().to_string_lossy().into_owned());
         let req = child::child_request(&parent, pid, &spec, copy.as_deref(), input);
         let p = self.helpers.get_mut(pid)?;
         p.running = true;
@@ -1688,53 +1783,19 @@ fn landing_message(description: &str) -> String {
     format!("{first}{}", chars.as_str())
 }
 
-/// An interrupted helper's copy after a restart: a worktree's work is
-/// committed on its task branch and the worktree removed (nothing lost,
-/// the disk freed); a scratch copy is kept where it is. Returns where its
-/// work is, if it had a copy.
-async fn put_away_after_restart(task_id: &str) -> Option<String> {
-    let copies = config::data_dir().ok()?.join("worktrees");
-    let path = std::fs::read_dir(&copies).ok()?.flatten().map(|project| project.path().join(task_id)).find(|p| p.is_dir())?;
-    if !path.join(".git").exists() {
-        return Some(format!("its work is kept in its copy at {}", path.display()));
-    }
-    let common = crate::worktree::git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok()?;
-    let root = std::path::PathBuf::from(common.trim()).parent()?.to_path_buf();
-    let branch = format!("nebo/{task_id}");
-    let wt = crate::worktree::Worktree {
-        task_id: task_id_of(&path),
-        root: root.clone(),
-        path: path.clone(),
-        branch: branch.clone(),
-        start_branch: String::new(),
-        base: String::new(),
-        onto: None,
-        resolved: false,
-    };
-    Some(match crate::worktree::shelve(&wt, "Unfinished work, put away when Nebo restarted").await {
-        Ok(()) => format!("its work is kept on branch {branch} in {}", root.display()),
-        Err(e) => {
-            warn!(task_id, error = %e, "an interrupted helper's copy could not be put away; it is kept");
-            format!("its work is kept in its copy at {}", path.display())
-        }
-    })
-}
-
-fn task_id_of(path: &std::path::Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-/// Fence an isolated helper to its own copy of the parent's project. A
-/// fenced parent may only isolate a project inside its fence: the copy is
-/// merged back there.
+/// Fence an isolated helper to its own copy of `project` (a follow-up's:
+/// the one it was started on), or else of the parent's. A fenced parent may
+/// only isolate a project inside its fence: the copy is merged back there.
 async fn isolate(
     parent: &SeatRequest,
     grant: Option<&Grant>,
     task_id: &str,
+    project: Option<std::path::PathBuf>,
 ) -> Result<crate::worktree::Isolation, String> {
-    let workspace = match parent.cwd.as_deref() {
-        Some(cwd) => std::path::PathBuf::from(cwd),
-        None => std::env::current_dir().map_err(|e| format!("No project folder to isolate: {e}"))?,
+    let workspace = match (project, parent.cwd.as_deref()) {
+        (Some(project), _) => project,
+        (None, Some(cwd)) => std::path::PathBuf::from(cwd),
+        (None, None) => std::env::current_dir().map_err(|e| format!("No project folder to isolate: {e}"))?,
     };
     let strings = |v: &[std::path::PathBuf]| -> Vec<String> { v.iter().map(|p| p.to_string_lossy().into_owned()).collect() };
     let target = [workspace.to_string_lossy().into_owned()];
@@ -2570,21 +2631,18 @@ mod tests {
                 let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
                 std::fs::write(copy.join("b.txt"), "half\n").unwrap();
                 rig.heard(&child.request.session_key);
-                child.answer("Which tax rate?").await;
+                // Its turn ends on ask_owner: the question comes back.
+                let q = types::OwnerQuestion { question: "Which tax rate?".into(), options: vec!["8%".into(), "10%".into()], ..Default::default() };
+                let _ = child.events.send(StreamEvent::text("Half done.")).await;
+                let _ = child.events.send(StreamEvent::tool_call(ai::ToolCall { id: "c1".into(), name: "ask_owner".into(), input: serde_json::json!({}) })).await;
+                let _ = child.events.send(StreamEvent::owner_decision("Your question goes back.", &q)).await;
+                let _ = child.events.send(StreamEvent::done_with_reason("terminal_tool_error")).await;
                 rig.next_wake().await;
-
-                // Its turn ended asking the owner.
-                let mut asked = Completion {
-                    task_id: id.clone(),
-                    description: "add b".into(),
-                    status: CompletionStatus::Partial { why: collect::NEEDS_OWNER_DECISION.into() },
-                    result: "Which tax rate?".into(),
-                    usage: Default::default(),
-                    taint: Vec::new(),
-                };
-                rig.helpers.report_copy(&id, "add b", &mut asked).await;
-                assert!(asked.result.contains("waits in its own copy"), "{}", asked.result);
-                assert!(rig.helpers.settle(key, &id, Decision::Land, None).await.is_err(), "nothing lands while it waits");
+                let report = rig.helpers.read_output(key, &id).unwrap();
+                assert!(report.contains("Question: Which tax rate?") && report.contains("waits in its own copy"), "{report}");
+                assert!(!report.contains("changes are ready"), "{report}");
+                let refused = rig.helpers.settle(key, &id, Decision::Land, None).await.unwrap_err();
+                assert!(refused.contains("stopped to ask the owner"), "nothing lands while it waits: {refused}");
                 assert!(!repo.join("b.txt").exists());
                 assert!(copy.join("b.txt").exists(), "its copy is kept");
 
@@ -2678,13 +2736,101 @@ mod tests {
                 // A restart: the registry knows the helper only by its row.
                 let Rig { store, _dir, .. } = rig;
                 let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+                rig.helpers.recover().await;
+                // The conversation is in another folder now: the follow-up
+                // still copies the project the helper was started on.
+                let elsewhere = tempfile::tempdir().unwrap();
                 let mut owner = rig.owner_turn(key);
-                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                owner.seat.cwd = Some(elsewhere.path().to_string_lossy().into_owned());
                 rig.helpers.send(&owner, None, &[], &id, "Now add b.").await.unwrap();
                 let resumed = rig.next_turn().await;
                 let cwd = std::path::PathBuf::from(resumed.request.seat.cwd.clone().unwrap());
                 assert_ne!(cwd, repo, "a fresh copy, never the owner's folder");
-                assert!(cwd.join("a.txt").exists());
+                assert!(cwd.join("a.txt").exists(), "a copy of the project it was started on");
+            })
+        })
+    }
+
+    /// A helper that failed holds unfinished changes: they are never
+    /// offered as ready nor landed; its report says it failed and why.
+    #[test]
+    fn a_failed_isolated_helpers_changes_are_never_offered_as_ready() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("b.txt"), "half\n").unwrap();
+                let _ = child.events.send(StreamEvent::error("the model went away")).await;
+                let _ = child.events.send(StreamEvent::done()).await;
+                rig.next_wake().await;
+                let report = rig.pending_notifications(key).join("\n");
+                assert!(report.contains("It failed before it finished (the model went away)") && !report.contains("changes are ready"), "{report}");
+                let refused = rig.helpers.settle(key, &id, Decision::Land, None).await.unwrap_err();
+                assert!(refused.contains("it failed before it finished"), "{refused}");
+                assert!(!repo.join("b.txt").exists());
+                rig.helpers.settle(key, &id, Decision::Discard, None).await.unwrap();
+            })
+        })
+    }
+
+    /// A held copy outlives a restart: a finished helper's changes can
+    /// still be landed, and an interrupted one's work is put away on its
+    /// branch and continued there by a follow-up, never a second copy.
+    #[test]
+    fn held_copies_outlive_a_restart() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: done } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                std::fs::write(std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap()).join("b.txt"), "b\n").unwrap();
+                rig.heard(&child.request.session_key);
+                child.answer("Added b.").await;
+                rig.next_wake().await;
+                let Launch::Background { task_id: cut } = rig.helpers.launch(&owner, None, &[], isolated_spec("add c")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("c.txt"), "half\n").unwrap();
+
+                // A restart while the second still works.
+                let Rig { store, _dir, .. } = rig;
+                // Its turn never ends in this process: Nebo stopped.
+                let _cut_short = child;
+                let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+                rig.helpers.recover().await;
+                assert_eq!(rig.next_wake().await, key, "the conversation hears it was interrupted");
+                assert!(!copy.exists(), "the interrupted copy's work is put away and the disk freed");
+                assert_eq!(crate::worktree::git(&repo, &["show", &format!("nebo/{cut}:c.txt")]).await.unwrap(), "half");
+
+                let owner = rig.owner_turn(key);
+                rig.helpers.settle(key, &done, Decision::Land, None).await.unwrap();
+                assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "b\n", "a finished helper's changes land after a restart");
+
+                assert!(rig.helpers.settle(key, &cut, Decision::Land, None).await.unwrap_err().contains("interrupted by a restart"));
+                rig.helpers.send(&owner, None, &[], &cut, "Finish c.").await.unwrap();
+                let resumed = rig.next_turn().await;
+                assert_eq!(resumed.request.seat.cwd.as_deref(), Some(copy.to_string_lossy().as_ref()), "the same copy, on its branch");
+                assert_eq!(std::fs::read_to_string(copy.join("c.txt")).unwrap(), "half\n");
+                std::fs::write(copy.join("c.txt"), "c\n").unwrap();
+                rig.heard(&resumed.request.session_key);
+                resumed.answer("Added c.").await;
+                rig.next_wake().await;
+                rig.helpers.settle(key, &cut, Decision::Land, None).await.unwrap();
+                assert_eq!(std::fs::read_to_string(repo.join("c.txt")).unwrap(), "c\n");
             })
         })
     }
@@ -2930,6 +3076,43 @@ mod tests {
         let pending = rig.pending_notifications("agent:sdr:web");
         assert!(pending[0].contains(&format!("helper {a_id} \"read the ledger\": partial ({}", collect::NEEDS_OWNER_DECISION)), "{}", pending[0]);
         let question = pending[0].find("Question: Which vendor?").expect("the held question");
+        assert!(question < pending[0].find("Contacts are in.").expect("the latest turn"), "the question leads: {}", pending[0]);
+    }
+
+    /// A report held while the helper's own helper runs survives the
+    /// parent messaging it: the message runs it again, and the held
+    /// question still leads what reaches the owner's conversation.
+    #[tokio::test]
+    async fn a_held_question_survives_a_message_from_the_parent() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan the outreach.", None)).await.unwrap());
+        let a = rig.next_turn().await;
+        rig.helpers.delegate(&a.request, None, &[], &call("Find the contacts.", None)).await.unwrap();
+        let b = rig.next_turn().await;
+        let q = types::OwnerQuestion { question: "Which vendor?".into(), options: vec!["Acme".into(), "Globex".into()], ..Default::default() };
+        ask(&a, "Drafted the plan.", &q).await;
+        for _ in 0..200 {
+            if rig.helpers.state().helpers.get(&a_id).is_some_and(|h| h.held.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(rig.helpers.state().helpers[&a_id].held.is_some(), "held while its helper runs");
+
+        // The owner's conversation messages it while its helper still runs.
+        rig.helpers.send(&owner, None, &[], &a_id, "Keep it short.").await.unwrap();
+        let messaged = rig.next_turn().await;
+        assert_eq!(messaged.request.session_key, a.request.session_key);
+        rig.heard(&messaged.request.session_key);
+        messaged.answer("Noted.").await;
+        b.answer("40 contacts found.").await;
+        let resumed = rig.next_turn().await;
+        resumed.answer("Contacts are in.").await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let pending = rig.pending_notifications("agent:sdr:web");
+        assert!(pending[0].contains(&format!("partial ({}", collect::NEEDS_OWNER_DECISION)), "{}", pending[0]);
+        let question = pending[0].find("Question: Which vendor?").expect("the held question is never dropped");
         assert!(question < pending[0].find("Contacts are in.").expect("the latest turn"), "the question leads: {}", pending[0]);
     }
 
