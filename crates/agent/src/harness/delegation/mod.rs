@@ -1197,10 +1197,19 @@ impl Helpers {
                 // helper asks later is never the one it settles. A later
                 // answer to the same question replaces the earlier one, and
                 // the thread says so.
-                let bound = answer.clone().map(|a| tools::orchestrator::Answer {
-                    question: h.questions.open(a.question.as_deref()).map(|q| q.id.clone()).or(a.question),
-                    text: a.text,
-                });
+                let bound = match answer.clone() {
+                    Some(a) => match h.questions.open(a.question.as_deref()) {
+                        Some(q) => Some(tools::orchestrator::Answer { question: Some(q.id.clone()), text: a.text }),
+                        // Never bound later, to a question asked after it.
+                        None => {
+                            return Err(format!(
+                                "Helper {task_id} has no open question to answer. Nothing was sent. Send it as a \
+                                 plain message, without `answer`."
+                            ));
+                        }
+                    },
+                    None => None,
+                };
                 let queued = h.questions.rerun.get_or_insert_with(Vec::new);
                 let replaced = bound.as_ref().and_then(|b| {
                     let id = b.question.as_ref()?;
@@ -1407,27 +1416,38 @@ impl Helpers {
                 }
                 self.keep_questions(&run.id, &questions);
             });
-            let error = if handback.is_some() {
-                "stopped, with your message waiting for a fresh turn when Nebo restarted; its answers are settled \
-                 and the message is in its thread: send_message to it to run it now"
-            } else {
-                "interrupted by a restart; send_message continues it from where it stopped"
+            let parent_key = split_helper_key(&run.session_key).filter(|(_, id)| *id == run.id).map(|(p, _)| p);
+            // What its reader can do: only the helper's own parent can run it
+            // again (send_message reaches a conversation's own helpers);
+            // anyone above it reads it and stops it (read_output, stop_task).
+            let error = match (handback.is_some(), parent_key.is_some_and(|p| depth_of(p) == 0)) {
+                (true, true) => "stopped, with your message waiting for a fresh turn when Nebo restarted; its answers are \
+                                 settled and the message is in its thread: send_message to it to run it now",
+                (true, false) => "stopped, with a message waiting for a fresh turn when Nebo restarted; its answers are \
+                                  settled and the message is in its thread. Only the helper that started it runs it again \
+                                  (send_message); from here, read_output shows it and stop_task stops it",
+                (false, _) => "interrupted by a restart; send_message continues it from where it stopped",
             };
             if let Err(e) = self.store.engine_set_run_state(&run.id, "failed", chrono::Utc::now().timestamp(), Some(error)) {
                 warn!(task_id = %run.id, error = %e, "an interrupted helper could not be marked failed");
                 continue;
             }
-            let Some(parent_key) = split_helper_key(&run.session_key).filter(|(_, id)| *id == run.id).map(|(p, _)| p) else {
+            let Some(parent_key) = parent_key else {
                 continue;
             };
             info!(task_id = %run.id, parent = %parent_key, "a helper was interrupted by a restart");
-            if handback.is_some() {
-                let c = self.from_row(&run, CompletionStatus::Failed { error: error.to_string() }, "It was stopped when Nebo restarted.");
-                self.deliver(parent_key, c, 0);
+            let handed = handback.map(|()| {
+                self.from_row(&run, CompletionStatus::Failed { error: error.to_string() }, "It was stopped when Nebo restarted.")
+            });
+            // Under a helper: up the tree through the one release path, the
+            // handback carried in the report it releases (a parent holding
+            // its report for this helper reports it, once).
+            if depth_of(parent_key) > 0 {
+                self.release_held_after_restart(parent_key, &run.id, handed);
                 continue;
             }
-            if depth_of(parent_key) > 0 {
-                self.release_held_after_restart(parent_key, &run.id);
+            if let Some(c) = handed {
+                self.deliver(parent_key, c, 0);
                 continue;
             }
             // It stays failed; one that was waiting on the owner says so,
@@ -1482,21 +1502,34 @@ impl Helpers {
     /// any depth reaches the owner's conversation even when the helpers
     /// between never run again, and a pending question anywhere below makes
     /// the report a question for the owner.
-    fn release_held_after_restart(self: &Arc<Self>, parent_key: &str, child: &str) {
+    /// `report` is what the interrupted helper itself has to say (a turn
+    /// handed back), carried in the report released above it; when no
+    /// helper above was holding, it goes to its parent through the one
+    /// delivery path instead. Each reaches the owner's side once.
+    fn release_held_after_restart(self: &Arc<Self>, parent_key: &str, child: &str, report: Option<Completion>) {
         let mut key = parent_key.to_string();
         let mut child = child.to_string();
-        let mut below: Option<(String, bool)> = None;
+        let mut below: Option<(String, bool)> = report.as_ref().map(|c| (notify::render_result(c), c.status.awaits_owner()));
+        let mut released = false;
+        // Nothing above releases it: the interrupted helper's own report
+        // goes to its parent, and bubbles up the tree from there.
+        let unreleased = |report: Option<Completion>, released: bool| {
+            if let (Some(c), false) = (report, released) {
+                self.deliver(parent_key, c, 0);
+            }
+        };
         while let Some((up, pid)) = split_helper_key(&key).map(|(u, p)| (u.to_string(), p.to_string())) {
             if self.state().helpers.contains_key(&pid) {
-                return;
+                return unreleased(report, released);
             }
             let Some(row) = self.store.engine_get_run(&pid).ok().flatten() else {
-                return;
+                return unreleased(report, released);
             };
             let tags: Vec<&str> = row.summary.split_whitespace().collect();
             if row.state != "done" || !tags.contains(&ROW_HELD) {
-                return;
+                return unreleased(report, released);
             }
+            released = true;
             let asks_owner = tags.contains(&ROW_ASKS_OWNER) || below.as_ref().is_some_and(|(_, asks)| *asks);
             self.tag_row(&pid, false, tags.contains(&ROW_ASKS_OWNER));
             let note = match &below {
@@ -1517,7 +1550,7 @@ impl Helpers {
                 return;
             }
             self.append_notification(&up, &render_notification(&c), &[], false);
-            below = Some((c.report(), asks_owner));
+            below = Some((notify::render_result(&c), asks_owner));
             child = pid;
             key = up;
         }
@@ -1874,6 +1907,9 @@ impl Helpers {
             // wait in `spawn_turn`); its answers stay queued until then.
             if h.questions.rerun.is_some() {
                 info!(task_id = %task_id, "a stopped helper runs again with the message that reached it");
+                // The stopped turn's end marked its row cancelled; a fresh
+                // turn waits, so the row says so and a restart finds it.
+                let _ = self.store.engine_set_run_state(task_id, "queued", chrono::Utc::now().timestamp(), None);
                 return Some(h.next_turn(task_id));
             }
             h.running = false;
@@ -4025,5 +4061,64 @@ mod tests {
         rig.busy.store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(tokio::time::timeout(Duration::from_millis(400), rig.started.recv()).await.is_err(), "no fresh turn");
         assert_eq!(questions_of_row(&rig.store, &id).pending.len(), 1, "the answer settled nothing");
+    }
+
+    /// A helper P stops its child C, sends C an answer while C's stopped
+    /// turn ends, and finishes holding its report for C. After a restart,
+    /// C's handback travels up the one release path inside P's released
+    /// report: both reach the owner's conversation, once. The owner, not
+    /// C's parent, is told what it can do from there.
+    #[tokio::test]
+    async fn a_nested_handback_is_released_with_the_report_holding_it() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let (p_id, p, c) = a_with_running_child(&mut rig, &owner).await;
+        let c_id = split_helper_key(&c.request.session_key).unwrap().1.to_string();
+        ask(&c, "Drafted.", &vendor()).await;
+        for _ in 0..200 {
+            if !rig.notification_rows(&p.request.session_key).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        rig.helpers.send(&p.request, None, &[], &c_id, "Keep going on the rest.", None).await.unwrap();
+        let _c2 = rig.next_turn().await;
+        // C's stopped turn is still ending (inside a tool) when Nebo restarts.
+        rig.busy.store(true, std::sync::atomic::Ordering::SeqCst);
+        rig.helpers.stop(&p.request.session_key, &c_id).unwrap();
+        rig.helpers.send(&p.request, None, &[], &c_id, "", Some(ans("Acme"))).await.unwrap();
+        rig.heard(&p.request.session_key);
+        p.answer("Plan drafted.").await;
+        until_held(&rig, &p_id).await;
+        assert!(questions_of_row(&rig.store, &c_id).rerun.is_some(), "C's fresh turn waits");
+        assert_eq!(rig.store.engine_get_run(&c_id).unwrap().unwrap().state, "queued", "its row says a fresh turn waits");
+
+        let Rig { store, _dir, .. } = rig;
+        let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+        rig.helpers.recover();
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let p_all = rig.pending_notifications("agent:sdr:web");
+        let mine: Vec<&String> = p_all.iter().filter(|x| x.contains(&format!("helper {p_id} "))).collect();
+        assert_eq!(mine.len(), 1, "P's report once: {}", p_all.join("\n---\n"));
+        let report = mine[0];
+        assert!(report.contains("Plan drafted.") && report.contains(&format!("helper {c_id} ")), "C's handback rides in it: {report}");
+        assert!(report.contains("read_output shows it and stop_task stops it") && !report.contains("send_message to it to run it now"), "{report}");
+        assert_eq!(p_all.iter().filter(|x| x.matches(&format!("helper {c_id} ")).count() > 0).count(), 1, "C's handback once");
+        assert!(questions_of_row(&rig.store, &c_id).answered.iter().any(|(_, t)| t == "Acme"));
+    }
+
+    /// An unnamed answer to a stopped helper with no open question is
+    /// refused, never bound later to a question asked after it.
+    #[tokio::test]
+    async fn an_answer_with_no_open_question_is_refused_while_stopped() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan.", None)).await.unwrap());
+        let running = rig.next_turn().await;
+        rig.helpers.stop("agent:sdr:web", &id).unwrap();
+        let refused = rig.helpers.send(&owner, None, &[], &id, "", Some(ans("Acme"))).await;
+        assert!(refused.is_err_and(|e| e.contains("no open question to answer")));
+        assert!(questions_of_row(&rig.store, &id).rerun.is_none(), "nothing queued");
+        let _ = running;
     }
 }
