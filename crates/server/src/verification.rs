@@ -12,7 +12,7 @@
 
 pub use crate::handlers::verifications::{Badge, RoundView, VerificationView};
 use crate::state::AppState;
-use agent::harness::verify::Why;
+use types::Why;
 
 /// Where `v`'s work is, by what it is and whether it landed: an app's pages,
 /// a helper's copy and a coding agent's folder are changed where they are;

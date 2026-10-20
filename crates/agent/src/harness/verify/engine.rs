@@ -320,11 +320,11 @@ fn record_for_report(store: &db::Store, v: &db::Verification) -> String {
             _ => "NOT VERIFIED",
         },
         match Why::read(&v.reason) {
-            Some(why) => format!(" ({})", why.english()),
+            Some(why) => format!(" ({})", super::english(&why)),
             None => String::new(),
         }
     );
-    let said = |r: &db::VerificationRound| Why::read(&r.outcome).map(|w| w.english()).unwrap_or_default();
+    let said = |r: &db::VerificationRound| Why::read(&r.outcome).map(|w| super::english(&w)).unwrap_or_default();
     for r in &rounds {
         let findings: Vec<Finding> = serde_json::from_value(r.findings.clone()).unwrap_or_default();
         let checks: Vec<CheckRun> = serde_json::from_value(r.checks.clone()).unwrap_or_default();
@@ -1094,7 +1094,7 @@ impl VerifyCheck {
         let caught = match caught {
             Ok(c) => c,
             Err(outcome) => {
-                step.outcome = Why::of(&outcome).text();
+                step.outcome = super::landing_why(&outcome).text();
                 step.detail =
                     json!({ "outcome": worktree::render_outcome("the change", &outcome) });
                 step.finished_at = Some(Self::now());
@@ -1178,7 +1178,7 @@ impl VerifyCheck {
             verification_id: v.id.clone(),
             round,
             kind: "land".into(),
-            outcome: Why::of(landed).text(),
+            outcome: super::landing_why(landed).text(),
             detail: match landed {
                 MergeOutcome::Merged {
                     files,
@@ -1228,7 +1228,7 @@ impl VerifyCheck {
                 // Why it did not land, as a code; the raw words (a git
                 // error) are in the landing's step and the log.
                 tracing::info!(verification = %v.id, outcome = %worktree::render_outcome("the change", &other), "verified work not landed");
-                self.finish(v, "verified", Some(Why::of(&other)));
+                self.finish(v, "verified", Some(super::landing_why(&other)));
                 Step::Finished
             }
         }

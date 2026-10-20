@@ -15,6 +15,8 @@ pub mod redact;
 pub mod stall;
 pub mod strutil;
 pub mod timeutil;
+pub mod verification;
 
 pub use error::NeboError;
 pub use owner_need::{OwnerNeed, OwnerQuestion};
+pub use verification::Why;

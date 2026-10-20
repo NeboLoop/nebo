@@ -29,7 +29,7 @@ pub struct Badge {
     pub deferred: usize,
     /// Why it is not verified, or why it hasn't landed: a code the app
     /// words in the owner's language, never a sentence or a raw error.
-    pub reason: Option<agent::harness::verify::Why>,
+    pub reason: Option<types::Why>,
     /// The commit it landed as; empty while it waits in its copy.
     pub landed: String,
     /// Where the work is: `landed`, `copy` (waiting in its own copy), `app`
@@ -46,7 +46,7 @@ pub struct RoundView {
     #[serde(flatten)]
     pub round: db::VerificationRound,
     /// What the step came to: a code the app words.
-    pub result: Option<agent::harness::verify::Why>,
+    pub result: Option<types::Why>,
     /// What its reviewers cost, from the run ledger (microcents).
     pub cost_microcents: i64,
 }
