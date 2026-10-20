@@ -20,7 +20,9 @@
 -- empty while the work is still in its copy.
 --
 -- state: running | paused (asking the owner) | verified | not_verified |
--- stopped. reason says why a row is not verified, in the owner's words.
+-- stopped. reason says why a row is not verified (or not landed), as a code
+-- the apps word in the owner's language with its values (JSON, verify::Why);
+-- a round's outcome likewise.
 -- The open findings and the deferred minors are kept whole as JSON; the
 -- counts are for lists and badges. pending_ask_json is the question a
 -- paused row waits on: after a restart it is asked again when the work

@@ -33,6 +33,77 @@ pub mod work;
 
 use std::path::{Path, PathBuf};
 
+/// What the owner reads about a verification or one of its steps
+/// ([`types::Why`]): a code the apps word, with its values.
+pub use types::Why;
+
+/// What a landing came to, as the owner reads it.
+pub fn landing_why(outcome: &crate::worktree::MergeOutcome) -> Why {
+    use crate::worktree::{Busy, MergeOutcome};
+    match outcome {
+        MergeOutcome::NoChanges => Why::new("nothing_to_land"),
+        MergeOutcome::Merged { commit, .. } => Why::new("landed").with("commit", short(commit)),
+        MergeOutcome::Conflict { files, .. } => Why::new("conflicts").with("files", files.join(", ")),
+        MergeOutcome::OwnerEdits { files, .. } => Why::new("owner_edits").with("files", files.join(", ")),
+        MergeOutcome::OwnerBusy { why, .. } => match why {
+            Busy::Detached | Busy::MadeDetached => Why::new("busy_no_branch"),
+            Busy::OtherBranch { now, made_from } => {
+                Why::new("busy_branch").with("now", now.as_str()).with("from", made_from.as_str())
+            }
+            Busy::InProgress(op) => Why::new("busy_in_progress").with("op", op.replace('_', "-")),
+        },
+        MergeOutcome::HookFailed { .. } => Why::new("hook_failed"),
+        MergeOutcome::RetestFailed { .. } => Why::new("retest_failed"),
+        MergeOutcome::NotAttempted { .. } => Why::new("not_attempted"),
+        MergeOutcome::Failed { .. } => Why::new("land_failed"),
+    }
+    }
+
+/// `why` in plain English, for the builder's report brief (the model reads
+/// it; the owner's screen words the code itself).
+pub fn english(why: &Why) -> String {
+    let a = |k: &str| why.args.get(k).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+    match why.code.as_str() {
+        "needs_answer" => "needs the owner's answer to a question it asked".into(),
+        "unreadable" => "could not read what changed".into(),
+        "spend_limit" => "reached this employee's spending limit for a run".into(),
+        "review_incomplete" => "a review could not finish".into(),
+        "needs_decision" => format!("needs the owner's decision: {}", a("items")),
+        "stopped_by_owner" => format!("stopped by the owner with {} open issue(s)", a("open")),
+        "stalled" => format!("stopped making progress with {} open issue(s)", a("open")),
+        "no_checks" => "no tests or build could run".into(),
+        "landed_unreviewed" => "landed without passing review, at the owner's choice".into(),
+        "edits_in_way" => "not landed yet: the owner's edits are still in the way".into(),
+        "kept_own_edits" => "not landed: the owner kept their own edits; the change waits in its copy".into(),
+        "live_failed" => "the live check failed".into(),
+        "live_ok" => "the page reloaded and checked out".into(),
+        "review_clean" => "no blocking or major issues".into(),
+        "review_blocking" => format!("{} blocking issue(s)", a("count")),
+        "up_to_date" => "already up to date with the project".into(),
+        "caught_up" => format!("caught up to {}", a("commit")),
+        "conflicts" => format!("the owner's changes and this one meet in {}", a("files")),
+        "landed" => format!("landed as {}", a("commit")),
+        "nothing_to_land" => "nothing to land".into(),
+        "owner_edits" => format!("the owner's own edits in {} are in the way", a("files")),
+        "busy_no_branch" => "not landed yet: the project is on no branch".into(),
+        "busy_branch" => format!("not landed yet: the project is on branch {}, and the copy was made from {}", a("now"), a("from")),
+        "busy_in_progress" => format!("not landed yet: a {} is in progress in the project", a("op")),
+        "hook_failed" => "the project's commit hooks refused it".into(),
+        "retest_failed" => "the checks failed after catching up with the project".into(),
+        "not_attempted" => "not tried, because an earlier piece did not land".into(),
+        "land_failed" => "it could not land; nothing of the owner's changed".into(),
+        "step_limit" => "the run reached its step limit before the checking finished".into(),
+        "turn_ended" => "the run ended before the checking finished".into(),
+        "restarted" => "Nebo restarted while it was being checked".into(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// A commit as the owner reads it: its first ten characters.
+pub fn short(commit: &str) -> String {
+    commit.chars().take(10).collect()
+}
+
 /// The input fields that name a path a call works on.
 pub const PATH_FIELDS: &[&str] = &["path", "file_path", "notebook_path", "cwd", "dir", "folder"];
 

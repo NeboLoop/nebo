@@ -293,6 +293,9 @@ pub enum TurnExit {
         notice: String,
         need: Option<types::OwnerNeed>,
     },
+    /// A helper asked the owner a question it can't put to them: its turn
+    /// ends and the question goes to the conversation that started it.
+    OwnerQuestion,
     /// A workflow primitive ended the turn (`workflow_exit:…`,
     /// `suspension_failed:…`); the engine reads the reason.
     WorkflowEnded(String),
@@ -326,6 +329,7 @@ impl TurnExit {
             TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
             TurnExit::AppHalted { .. } => "app_halted".into(),
             TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
+            TurnExit::OwnerQuestion => ai::OWNER_DECISION.into(),
             TurnExit::WorkflowEnded(reason) => reason.clone(),
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
             TurnExit::Refused(_) => "refused".into(),
@@ -1157,7 +1161,11 @@ pub(crate) async fn prepare(
         .unwrap_or_else(|| "Nebo".to_string());
     let role = match &req.mode {
         TurnMode::Helper { parent_session_key, kind, .. } => {
-            prompt::Role::Helper { parent: parent_name(h, parent_session_key).await, kind: *kind }
+            prompt::Role::Helper {
+                parent: parent_name(h, parent_session_key).await,
+                kind: *kind,
+                can_ask: req.seat.tool_allowlist.as_ref().is_none_or(|tools| tools.contains("ask_owner")),
+            }
         }
         _ => prompt::Role::Employee,
     };
@@ -2017,8 +2025,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if let Some(verify) = &st.verify {
             verify.set_tool_ctx(tool_scope.tool_context());
         }
+        let run_verify = st.verify.clone();
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
+            let run_verify = run_verify.clone();
             move |chat: Option<&str>| {
                 // The CLI was sent every tool's definition (`tools/list` on
                 // /agent/mcp), deferred ones too: none of its calls is to a
@@ -2029,6 +2039,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                     crate::tool_credentials::RunGrant {
                         ctx,
                         agent_id: cx.agent_id().to_string(),
+                        verify: run_verify.clone(),
                     },
                     chat,
                 )
@@ -2278,10 +2289,18 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
 
         if !tool_calls.is_empty() {
-            // A CLI provider ran its tools itself over /agent/mcp; its
-            // answer still passes every end check (its code work is
-            // verified like any other).
+            // A CLI provider ran its tools itself over /agent/mcp, each
+            // routed into the run's copies there (`RunGrant::verify`), so its
+            // answer passes every end check with its code work verified like
+            // any other; a command it ran is one the owner's words asked for,
+            // never asked for again.
             if provider.handles_tools() {
+                for tc in tool_calls.iter() {
+                    if h.tools.target(&tc.name, &tc.input).await.is_some_and(|t| t.key == super::owner_command::RUN_COMMAND) {
+                        st.commands.ran();
+                        break;
+                    }
+                }
                 if let Some(next) = end_checks(cx, st).await {
                     match next {
                         Ok(()) => continue,
@@ -3015,6 +3034,7 @@ async fn tool_round(
         }
         RoundOutcome::Workflow(reason) => return Some(TurnExit::WorkflowEnded(reason)),
         // The round sent the owner its notice (with the need a tool named).
+        RoundOutcome::OwnerQuestion => return Some(TurnExit::OwnerQuestion),
         RoundOutcome::Terminal => {
             return Some(TurnExit::TerminalTool {
                 notice: "terminal_tool_error".into(),
@@ -3175,6 +3195,7 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
             grant: (*cx.grant).clone(),
             platform: cx.request.delivery.platform.clone(),
             cancel: cx.request.cancel.clone(),
+            taint: cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect(),
         }),
         _ => None,
     };
@@ -3253,6 +3274,26 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         "turn ended"
     );
     usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
+    // A turn that ended before its checking did ends its verifications
+    // honestly; one waiting on the owner (an approval, a question) keeps
+    // them for the turn that goes on.
+    if let Some(verify) = &st.verify {
+        let why = match exit {
+            TurnExit::Answered
+            | TurnExit::AwaitingApproval
+            | TurnExit::TerminalTool { .. }
+            | TurnExit::OwnerQuestion
+            | TurnExit::Compacted => None,
+            TurnExit::Cancelled if !cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) => Some(None),
+            TurnExit::MaxSteps { .. } => Some(Some(super::verify::Why::new("step_limit"))),
+            _ => Some(Some(super::verify::Why::new("turn_ended"))),
+        };
+        if let Some(why) = why {
+            for id in verify.close(&h.store, why).await {
+                h.verification_changed(&id);
+            }
+        }
+    }
     // The badge of verified work sits on the reply that reported it.
     if let Some(verify) = &st.verify {
         let reported = verify.reported();
@@ -5106,6 +5147,36 @@ mod tests {
 
     fn notices(events: &[StreamEvent]) -> String {
         events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).map(|e| e.text.clone()).collect()
+    }
+
+    /// A helper can't reach the owner: its ask_owner ends its turn on a
+    /// typed decision carrying the question, never a card, and its model is
+    /// not called again. The conversation that started it asks the owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_helpers_question_for_the_owner_ends_its_turn() {
+        let ask = serde_json::json!({"question": "Which vendor gets the outreach?", "context": "Two quotes.", "options": ["Acme", "Globex"]});
+        let model = Scripted::new(vec![Step::NarratedCall("Drafted 18 of 20.", "ask_owner", ask), Step::Say("Went with Acme.")]);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let ask_owner = tools::ask_owner_tool::AskOwnerTool::new(store, tools::coworker::new_rail_cell());
+        let h = harness_with(&model, vec![Box::new(ask_owner)]).await;
+        let mut req = owner("x");
+        req.input = TurnInput::Platform { text: "Draft the outreach batch.".into() };
+        req.seat.origin = tools::Origin::System;
+        req.seat.door = types::permissions::Door::Helper;
+        req.mode = TurnMode::Helper {
+            parent_session_key: "agent:x:main".into(),
+            kind: crate::harness::delegation::HelperKind::General,
+            depth: 1,
+            answer: None,
+        };
+        let events = run_turn(&h, req).await;
+        assert_eq!(model.calls().len(), 1, "the turn ends on the question");
+        let question = events.iter().find_map(StreamEvent::owner_question).expect("the decision notice");
+        assert_eq!(question.question, "Which vendor gets the outreach?");
+        assert_eq!((question.context.as_str(), question.recommended()), ("Two quotes.", Some("Acme")));
+        assert!(!events.iter().any(|e| e.event_type == ai::StreamEventType::AskRequest), "no card: the owner isn't here");
+        assert!(tool_results(&h)[0].contains("goes back with your report"), "{:?}", tool_results(&h));
     }
 
     /// In an unattended run the same call failing the same way, with
@@ -8791,7 +8862,7 @@ mod tests {
         assert!(listing.contains("- general: ") && listing.contains("- plan: "), "{listing}");
         let delegate = first.tools.iter().find(|t| t.name == "delegate").expect("delegate is always loaded");
         assert!(delegate.description.contains("When to use: the work matches a helper type"), "{}", delegate.description);
-        assert!(delegate.description.contains("When not to use: the target is known"), "{}", delegate.description);
+        assert!(delegate.description.contains("When not to use: small direct things"), "{}", delegate.description);
         assert!(first.system.contains("A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate."));
         let first_call = stored(&h)
             .iter()
@@ -10400,10 +10471,266 @@ mod tests {
                 let h = verifying_harness(&model).await;
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
-                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", "No tests or build could run"));
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"no_checks"}"#));
                 assert!(v.landed_ref.is_empty());
                 assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
                 assert!(std::path::Path::new(&v.work_dir).join("total.py").exists(), "the work waits in its copy");
+            })
+        })
+    }
+
+    /// The owner's answer on the card, as the ask_owner tool returns it.
+    struct Answers(&'static str);
+
+    impl tools::registry::DynTool for Answers {
+        fn name(&self) -> &str {
+            "ask_owner"
+        }
+        fn description(&self) -> String {
+            "asks the owner".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok(serde_json::json!({"picked": self.0}).to_string()) })
+        }
+    }
+
+    /// The project's checks, the first of which rewrites a file of the
+    /// change in the folder it runs in (a formatter, a lockfile).
+    struct RewritingChecks(Arc<Mutex<usize>>);
+
+    impl tools::registry::DynTool for RewritingChecks {
+        fn name(&self) -> &str {
+            "run_command"
+        }
+        fn description(&self) -> String {
+            "runs a command".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {
+                "command": {"type": "string"}, "cwd": {"type": "string"}, "description": {"type": "string"}, "timeout": {"type": "integer"}
+            }})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let first = {
+                    let mut n = self.0.lock().unwrap();
+                    *n += 1;
+                    *n == 1
+                };
+                if first {
+                    let file = std::path::Path::new(input["cwd"].as_str().unwrap_or("")).join("total.py");
+                    let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+                    text.push_str("# formatted\n");
+                    let _ = std::fs::write(&file, text);
+                }
+                tools::ToolResult::ok("ok: 3 passed")
+            })
+        }
+    }
+
+    /// Review 2026-10-20 B1: a blocker the builder defers, and a reviewer
+    /// accepts as deferred, is still open: the work is never Verified and
+    /// nothing lands.
+    #[test]
+    fn a_blocker_the_builder_defers_is_never_verified() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let deferred: &'static str = r#"{"findings": [], "verified_ok": [{"checked": "the module imports"}], "prior": [{"id": "r1-correctness-1", "state": "deferred", "note": "the builder says later"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
+                    Step::Say("Done."),
+                    Step::Say(ONE_BLOCKER),
+                    Step::Say("r1-correctness-1: deferred: I'll do it later."),
+                    Step::Say(deferred),
+                    Step::Say("r1-correctness-1: deferred: still later."),
+                    Step::Say(deferred),
+                    Step::Say("It isn't verified: the total still ignores b."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "not_verified", "{v:?}");
+                assert_eq!(v.open_blockers, 1, "the deferral closed nothing");
+                assert!(v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n");
+            })
+        })
+    }
+
+    /// Review 2026-10-20 B2: reviewers read their own copy of what was
+    /// snapshotted, never the builder's; a check that rewrites the builder's
+    /// copy during a round means what was reviewed is not what is there, so
+    /// the round can't pass: the next round reviews the change, and only
+    /// then does it land.
+    #[test]
+    fn only_what_was_reviewed_lands() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    Step::Say("The formatter's change is fine."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "the comment changes nothing"}]}"#),
+                    Step::Say("Verified and landed."),
+                ]);
+                let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(RewritingChecks(Arc::new(Mutex::new(0))))]).await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 2), "{v:?}");
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("total.py")).unwrap(),
+                    "def total(a, b): return a + b\n# formatted\n",
+                    "it landed once round 2 reviewed what the check wrote"
+                );
+                let calls = model.calls();
+                let reviewer = calls.iter().find(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).unwrap();
+                let heard: String = reviewer.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
+                assert!(heard.contains("review-r1"), "the reviewer works in its own copy");
+                assert!(!heard.contains(&v.work_dir), "never the builder's copy");
+                assert!(calls[3].messages.iter().any(|m| m.content.contains("changed files in your working copy while this round ran")));
+            })
+        })
+    }
+
+    /// Review 2026-10-20 B3: work reported once is never reported again: a
+    /// turn with no code after a turn whose work was not verified costs
+    /// exactly one model call.
+    #[test]
+    fn work_is_reported_once_and_a_later_turn_costs_nothing_more() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(false).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    Step::Say("Reviewed, but not verified: no tests."),
+                    Step::Say("Sunny and 22."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(model.calls().len(), 4);
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "not_verified");
+                assert!(v.message_id.is_some(), "reported, its badge on that reply");
+                run_turn(&h, owner("What's the weather?")).await;
+                assert_eq!(model.calls().len(), 5, "one call: no report again");
+            })
+        })
+    }
+
+    /// Review 2026-10-20 M2: a question the loop asked before a restart is
+    /// asked again, and its answer does what it did when it was first
+    /// asked.
+    #[test]
+    fn an_answer_after_a_restart_does_what_it_did_before() {
+        for (purpose, picked, state, reason) in [
+            (serde_json::json!({"kind": "stalled", "open": 2}), "Stop here", "not_verified", r#"{"code":"stopped_by_owner","args":{"open":2}}"#),
+            (serde_json::json!({"kind": "no_checks"}), "Keep it in its copy", "not_verified", r#"{"code":"no_checks"}"#),
+            (serde_json::json!({"kind": "owner_edits"}), "Keep mine, don't land it", "verified", r#"{"code":"kept_own_edits"}"#),
+        ] {
+            crate::test_home::with_home(|_| {
+                let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+                rt.block_on(async {
+                    let (_project, file) = small_project(false).await;
+                    let model = Scripted::new(vec![
+                        Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                        Step::Say("Done."),
+                        Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                        Step::Say("Not verified yet."),
+                        Step::Say("Thanks."),
+                    ]);
+                    let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(Answers(picked))]).await;
+                    let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                    h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                    run_turn(&h, owner("Make total() add a and b")).await;
+                    // A question asked before a restart, never answered.
+                    let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    let ask = serde_json::json!({"question": "What should happen?", "context": "", "options": [picked], "purpose": purpose});
+                    h.store.set_verification_pending_ask(&v.id, Some(&ask)).unwrap();
+                    h.store
+                        .set_verification_state(&v.id, &db::VerificationState { state: "paused", rounds: v.rounds, ..Default::default() }, 5)
+                        .unwrap();
+                    run_turn(&h, owner("Anything else?")).await;
+                    let after = h.store.get_verification(&v.id).unwrap().unwrap();
+                    assert_eq!((after.state.as_str(), after.reason.as_str()), (state, reason), "{purpose}");
+                    assert!(after.pending_ask.is_none());
+                })
+            });
+        }
+    }
+
+    /// A review that found nothing must say what it checked: a clean answer
+    /// with nothing behind it is no review, and the work isn't verified.
+    #[test]
+    fn a_clean_review_that_checked_nothing_is_no_review() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(r#"{"findings": [], "verified_ok": []}"#),
+                    Step::Say("Not verified: the review didn't finish."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#));
+            })
+        })
+    }
+
+    /// Review 2026-10-20 M3: the owner's Stop while the builder works ends
+    /// its verification as stopped, never a row left running.
+    #[test]
+    fn a_stopped_turn_ends_its_verification_as_stopped() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let req = owner("Make total() add a and b");
+                let stop = req.cancel.clone();
+                let hook: Hook = Box::pin(async move { stop.cancel() });
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file.clone(), "content": "def total(a, b): return a\n"})),
+                    Step::During(Box::new(Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"}))), hook),
+                    Step::Say("unreached"),
+                ]);
+                let h = verifying_harness(&model).await;
+                let events = run_turn(&h, req).await;
+                assert_eq!(exit_of(&events), "cancelled");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "stopped", "{v:?}");
             })
         })
     }
@@ -10432,7 +10759,7 @@ mod tests {
                 run_turn(&h, owner("Make total() add a and b")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!(v.state, "not_verified");
-                assert!(v.reason.starts_with("Stopped making progress"), "{}", v.reason);
+                assert_eq!(v.reason, r#"{"code":"stalled","args":{"open":1}}"#);
                 assert_eq!((v.rounds, v.open_blockers), (3, 1));
                 assert_eq!(model.calls().len(), 8, "it stopped instead of going round again");
             })

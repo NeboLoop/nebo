@@ -12,6 +12,25 @@
 
 pub use crate::handlers::verifications::{Badge, RoundView, VerificationView};
 use crate::state::AppState;
+use types::Why;
+
+/// Where `v`'s work is, by what it is and whether it landed: an app's pages,
+/// a helper's copy and a coding agent's folder are changed where they are;
+/// work in a copy this loop made has landed, waits in that copy, or had
+/// nothing to land.
+fn place(v: &db::Verification, rounds: &[db::VerificationRound]) -> &'static str {
+    if !v.landed_ref.is_empty() {
+        return "landed";
+    }
+    match v.work_kind.as_str() {
+        "app_pages" => "app",
+        "helper_copy" => "helper",
+        "folder" => "folder",
+        _ if v.isolation == "none" => "folder",
+        _ if rounds.iter().rev().find(|r| r.kind == "land").and_then(|r| Why::read(&r.outcome)).is_some_and(|w| w.code == "nothing_to_land") => "nothing",
+        _ => "copy",
+    }
+}
 
 /// Hub event carrying one verification ([`VerificationView`]) whenever it
 /// changes.
@@ -75,8 +94,9 @@ pub fn view(store: &db::Store, v: db::Verification) -> VerificationView {
         open_majors: v.open_majors,
         open_minors: v.open_minors,
         deferred: v.deferred.as_array().map(|a| a.len()).unwrap_or(0),
-        reason: v.reason.clone(),
+        reason: Why::read(&v.reason),
         landed: v.landed_ref.clone(),
+        place: place(&v, &rounds).to_string(),
     };
     let agent_name = store
         .get_agent(&v.agent_id)
@@ -89,6 +109,7 @@ pub fn view(store: &db::Store, v: db::Verification) -> VerificationView {
         .map(|round| {
             let cost_microcents = store.reviewers_cost(&round.reviewer_prefix).unwrap_or(0);
             RoundView {
+                result: Why::read(&round.outcome),
                 round,
                 cost_microcents,
             }
@@ -186,7 +207,7 @@ mod tests {
             "v-1",
             &db::VerificationState {
                 state: "not_verified",
-                reason: "Stopped by you with 1 open issue(s)",
+                reason: r#"{"code":"stopped_by_owner","args":{"open":1}}"#,
                 rounds: 2,
                 open_majors: 1,
                 ..Default::default()
@@ -195,15 +216,13 @@ mod tests {
         )
         .unwrap();
         let v = view(&s, s.get_verification("v-1").unwrap().unwrap());
-        assert_eq!(
-            (
-                v.badge.state.as_str(),
-                v.badge.reason.as_str(),
-                v.badge.open_majors
-            ),
-            ("not_verified", "Stopped by you with 1 open issue(s)", 1)
-        );
+        assert_eq!((v.badge.state.as_str(), v.badge.open_majors, v.badge.place.as_str()), ("not_verified", 1, "copy"));
         let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            json["badge"]["reason"],
+            serde_json::json!({"code": "stopped_by_owner", "args": {"open": 1}}),
+            "a code and its values, never a sentence"
+        );
         assert_eq!(
             json["history"][0]["kind"], "review",
             "a round's own fields sit beside its cost"
@@ -211,5 +230,38 @@ mod tests {
         assert_eq!(json["history"][0]["costMicrocents"], 0);
         assert_eq!(json["rounds"], 2, "the count of review rounds");
         assert_eq!(json["projectRoot"], "/site");
+    }
+
+    /// Where the work is follows what it is and whether it landed: never "in
+    /// its own copy" for work that has none.
+    #[test]
+    fn the_badge_says_where_the_work_is() {
+        let s = store();
+        for (id, kind, isolation) in [("v-app", "app_pages", "none"), ("v-help", "helper_copy", "none"), ("v-dir", "folder", "none"), ("v-own", "isolated", "none"), ("v-cp", "isolated", "worktree")] {
+            s.create_verification(
+                &db::NewVerification { id, session_key: "agent:dev:web", work_kind: kind, isolation, ..Default::default() },
+                1,
+            )
+            .unwrap();
+        }
+        let place = |id: &str| view(&s, s.get_verification(id).unwrap().unwrap()).badge.place;
+        assert_eq!(
+            ["v-app", "v-help", "v-dir", "v-own", "v-cp"].map(place),
+            ["app", "helper", "folder", "folder", "copy"]
+        );
+        s.put_verification_round(&db::VerificationRound {
+            verification_id: "v-cp".into(),
+            round: 1,
+            kind: "land".into(),
+            outcome: r#"{"code":"nothing_to_land"}"#.into(),
+            started_at: 2,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(place("v-cp"), "nothing");
+        s.set_verification_landed("v-cp", "abc", 3).unwrap();
+        assert_eq!(place("v-cp"), "landed");
+        let json = serde_json::to_value(view(&s, s.get_verification("v-cp").unwrap().unwrap())).unwrap();
+        assert_eq!(json["history"][0]["result"], serde_json::json!({"code": "nothing_to_land"}));
     }
 }

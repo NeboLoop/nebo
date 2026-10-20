@@ -387,6 +387,27 @@ impl Shadow {
         })
     }
 
+    /// Write `snapshot` out as a folder of its own at `dest` (made new): a
+    /// copy of exactly what was snapshotted, for reading and building, that
+    /// shares nothing with the folder it was taken from.
+    pub async fn export(&self, snapshot: &Snapshot, dest: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
+        let tar = dest.with_extension("tar");
+        let out = format!("--output={}", tar.display());
+        self.run(&["archive", "--format=tar", &out, &snapshot.0])
+            .await
+            .map_err(|e| format!("export (archive): {e}"))?;
+        let mut cmd = command::new::<tokio::process::Command>("tar", command::Console::Hidden);
+        cmd.arg("-xf").arg(&tar).arg("-C").arg(dest).stdin(std::process::Stdio::null()).kill_on_drop(true);
+        let done = cmd.output().await.map_err(|e| format!("export (tar): {e}"));
+        let _ = std::fs::remove_file(&tar);
+        let done = done?;
+        if !done.status.success() {
+            return Err(format!("export (tar): {}", String::from_utf8_lossy(&done.stderr).trim()));
+        }
+        Ok(())
+    }
+
     /// Remove the shadow repository (the folder itself is untouched).
     pub fn remove(&self) {
         if let Err(e) = std::fs::remove_dir_all(&self.git_dir) {

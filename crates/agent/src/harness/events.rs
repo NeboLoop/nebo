@@ -435,7 +435,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         ),
         TurnEvent::GoalCheck { reason, condition } => (
             "goal_check",
-            format!("The agreed goal isn't met yet: {}. Keep working toward: {}.", reason.trim(), condition.trim()),
+            format!("{} {}. Keep working toward: {}.", ai::GOAL_NOTE, reason.trim(), condition.trim()),
         ),
         TurnEvent::Usage(t) => ("usage", threshold_text(t)),
         TurnEvent::ToolsAvailable(d) => {

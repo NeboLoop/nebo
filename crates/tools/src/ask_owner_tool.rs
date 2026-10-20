@@ -1,5 +1,6 @@
-//! `ask_owner`: one question to the owner, and the wait for the answer. In a
-//! run nobody is watching, the question goes up the reporting line instead.
+//! `ask_owner`: one question to the owner, and the wait for the answer. A
+//! helper's question goes back to the conversation that started it. In
+//! another run nobody is watching, it goes up the reporting line instead.
 
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ impl AskOwnerTool {
                 "Nobody is at the keyboard, so this went to {name}, who you answer to. They decide \
                  in their own session, and their answer comes to you as a notification. Until \
                  then carry on with anything that doesn't depend on it, and don't treat it as \
-                 decided.",
+                 decided. If a helper asked it, send_message the answer to the helper once it comes.",
                 name = delivery.to_name
             ))
             // The same hand-off line a message to a coworker shows.
@@ -80,6 +81,12 @@ impl AskOwnerTool {
 
     async fn ask(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let question = input["question"].as_str().unwrap_or("");
+        // A helper never talks with the owner: the conversation that
+        // started it does. Its question ends its turn and goes back in its
+        // report; that conversation asks and sends the answer on.
+        if ctx.door == types::permissions::Door::Helper {
+            return back_to_the_starter(input);
+        }
         // Asking needs someone at the keyboard: an automated, workflow,
         // channel or helper run would wait on a card nobody sees.
         if crate::origin::ExecutionMode::from(ctx.origin)
@@ -96,7 +103,8 @@ impl AskOwnerTool {
             return ToolResult::error(
                 "Nobody is at the keyboard in this run, and you answer to the owner directly \
                  rather than to another employee — make a reasonable decision and proceed, and \
-                 tell the owner what you assumed.",
+                 tell the owner what you assumed. If a helper asked it, send_message the helper \
+                 your decision so it goes on.",
             );
         }
         let options = input.get("options").cloned().unwrap_or_else(|| json!([]));
@@ -129,6 +137,31 @@ impl AskOwnerTool {
                  proceed, or set out the options in your reply.",
             ),
         }
+    }
+}
+
+/// A helper's question for the owner, as the result that ends its turn: the
+/// question travels on the result ([`ToolResult::question`]) to the
+/// conversation that started the helper.
+fn back_to_the_starter(input: &Value) -> ToolResult {
+    let text = |key: &str| input[key].as_str().map(str::trim).unwrap_or("").to_string();
+    let options = input["options"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|o| o.as_str()).map(str::trim).filter(|o| !o.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    ToolResult {
+        content: "Your question goes back with your report to the conversation that started you. It asks \
+                  the owner and sends you the answer; you continue from here then. This turn ends now."
+            .to_string(),
+        terminal: true,
+        question: Some(types::OwnerQuestion {
+            question: text("question"),
+            context: text("context"),
+            options,
+            multi_select: input["multi_select"].as_bool().unwrap_or(false),
+            style: text("style"),
+        }),
+        ..Default::default()
     }
 }
 
@@ -192,7 +225,8 @@ impl DynTool for AskOwnerTool {
          - To have the owner pick, give `options`: buttons in his chat on desktop and in the mobile app. Never list them in text or draw a panel. Leave them out for a free answer.\n\
          - 6 or more options: set `style` to \"select\" for a dropdown.\n\
          - About something you made or found (a brief, a draft, a plan)? Put it in `context`, not your message: the card shows it above the question.\n\
-         - The card is the one place the question appears: never write it in your message too."
+         - The card is the one place the question appears: never write it in your message too.\n\
+         - In a helper run your turn ends here: the question goes to the conversation that started you, which sends the answer back."
             .to_string()
     }
 
@@ -289,6 +323,39 @@ mod tests {
             "{}",
             r.content
         );
+        // A run that asked for its helper can't leave the helper waiting.
+        assert!(r.content.contains("If a helper asked it, send_message the helper your decision so it goes on."), "{}", r.content);
+    }
+
+    /// A helper can't reach the owner, whether or not an app could show a
+    /// card and whoever its employee answers to: its question ends its turn
+    /// and travels on the result, with the context and the options (the
+    /// recommended one first), back to the conversation that started it.
+    /// No card goes out and nothing goes up the reporting line.
+    #[tokio::test]
+    async fn a_helpers_question_goes_back_to_the_conversation_that_started_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("a.db").to_string_lossy()).unwrap());
+        let tool = AskOwnerTool::new(store, crate::coworker::new_rail_cell());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let ctx = ToolContext {
+            origin: crate::origin::Origin::User,
+            door: types::permissions::Door::Helper,
+            session_key: "subagent:agent:sdr:web:h-1".into(),
+            stream_tx: Some(tx),
+            ask_channels: Some(Default::default()),
+            ..Default::default()
+        };
+        let input = json!({"question": " Which vendor? ", "context": "Two quotes.", "options": ["Acme", "Globex"], "multi_select": true, "style": "select"});
+        let r = tool.execute_dyn(&ctx, input).await;
+        assert!(r.terminal && !r.is_error, "it ends the turn, and is no failure: {r:?}");
+        assert!(r.content.contains("goes back with your report"), "{}", r.content);
+        let q = r.question.expect("the question travels on the result");
+        assert_eq!((q.question.as_str(), q.context.as_str(), q.recommended()), ("Which vendor?", "Two quotes.", Some("Acme")));
+        assert_eq!(q.options, ["Acme", "Globex"]);
+        assert!(q.multi_select && q.style == "select", "the card's shape travels with it");
+        assert!(tool.description().contains("In a helper run your turn ends here"), "{}", tool.description());
+        assert!(rx.try_recv().is_err(), "no card goes out");
     }
 
     /// Ask with the owner at the keyboard: the card that goes out, and the

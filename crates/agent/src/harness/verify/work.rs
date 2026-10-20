@@ -87,6 +87,21 @@ impl Work {
             .join(id)
     }
 
+    /// The shadow repository a work snapshots its folder with: its own, or
+    /// for a coding agent's own folder the folder's, kept across turns so a
+    /// snapshot only rehashes what changed since the last one.
+    pub fn shadow_dir(id: &str, kind: WorkKind, root: &Path) -> PathBuf {
+        match kind {
+            WorkKind::Folder => config::data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join("verify")
+                .join("folders")
+                .join(format!("{:016x}", tools::checkpoint::fingerprint(root.to_string_lossy().as_bytes())))
+                .join("shadow.git"),
+            _ => Self::home(id).join("shadow.git"),
+        }
+    }
+
     /// Remove the verification's own files. The copy itself is the
     /// landing's to remove.
     pub fn clean_up(&self) {
@@ -129,6 +144,9 @@ pub struct Starting<'a> {
 #[derive(Clone, Default)]
 pub struct TurnWork {
     works: Arc<tokio::sync::Mutex<Vec<Work>>>,
+    /// A linked coding agent's own project, as it was when the turn began:
+    /// its work starts (a row, a review) only if the turn changed it.
+    folder: Arc<tokio::sync::Mutex<Option<(PathBuf, Snapshot)>>>,
     /// A new app's pages a call is about to write (`writes_app_pages`): the
     /// work starts once the call has made the app.
     pending_app: Arc<std::sync::Mutex<Option<String>>>,
@@ -204,7 +222,10 @@ impl TurnWork {
         }
         // A linked coding agent runs its own tools in its own folder: when
         // that folder is a project, it is the agent's work, checked where it
-        // is (Nebo can't move another runtime's writes into a copy).
+        // is (Nebo can't move another runtime's writes into a copy). The
+        // folder is snapshotted now (only what changed since its last
+        // snapshot is rehashed); its work starts only if the turn changes it
+        // ([`TurnWork::start_folder_if_changed`]).
         if linked
             && let Some(Folder::Project(root)) =
                 cwd.and_then(|c| project::code_folder(Path::new(c), &[]))
@@ -214,9 +235,10 @@ impl TurnWork {
                 .await
                 .iter()
                 .any(|w| w.project_root == root)
-            && let Ok(work) = start_work(who, WorkKind::Folder, &root, &root, None, None).await
+            && let Ok(shadow) = Shadow::open(&Work::shadow_dir("", WorkKind::Folder, &root), &root).await
+            && let Ok(base) = shadow.snapshot().await
         {
-            turn.works.lock().await.push(work);
+            *turn.folder.lock().await = Some((root, base));
         }
         // A helper working in its own copy: its work is that copy.
         if let Some(copy) = cwd.and_then(|c| match project::code_folder(Path::new(c), &[]) {
@@ -297,7 +319,8 @@ impl TurnWork {
                     {
                         Ok(w) => w,
                         Err(e) => {
-                            worktree::put_away(&iso, "Not started").await;
+                            let mut iso = iso;
+                            worktree::put_away(&mut iso, "Not started").await;
                             return Err(e);
                         }
                     }
@@ -322,6 +345,21 @@ impl TurnWork {
             }
         }
         Ok(routed)
+    }
+
+    /// A linked coding agent's turn changed its project: its work starts
+    /// now, from the project as the turn found it. A turn that changed
+    /// nothing records nothing.
+    pub async fn start_folder_if_changed(&self, who: &Starting<'_>) {
+        let Some((root, base)) = self.folder.lock().await.take() else { return };
+        let Ok(shadow) = Shadow::open(&Work::shadow_dir("", WorkKind::Folder, &root), &root).await else { return };
+        if shadow.snapshot().await.is_ok_and(|now| now == base) {
+            return;
+        }
+        match start_work(who, WorkKind::Folder, &root, &root, None, Some(base)).await {
+            Ok(work) => self.works.lock().await.push(work),
+            Err(e) => tracing::warn!(project = %root.display(), error = %e, "a coding agent's change could not be recorded for review"),
+        }
     }
 
     /// After a call ran: a new app it made starts its pages' work, from
@@ -380,7 +418,7 @@ async fn start_work_with_id(
     iso: Option<worktree::Isolation>,
     base: Option<Snapshot>,
 ) -> Result<Work, String> {
-    let shadow = Shadow::open(&Work::home(id).join("shadow.git"), work_dir).await?;
+    let shadow = Shadow::open(&Work::shadow_dir(id, kind, root), work_dir).await?;
     let base = match base {
         Some(b) => b,
         None => shadow.snapshot().await?,
@@ -426,10 +464,30 @@ async fn start_work_with_id(
     })
 }
 
+/// Whether `v`'s folder holds exactly what its last review round reviewed:
+/// a verification vouches for those bytes, never for what came after.
+pub async fn unchanged_since_review(store: &db::Store, v: &db::Verification) -> bool {
+    let Some(reviewed) = store
+        .verification_rounds(&v.id)
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .find(|r| r.kind == "review" && !r.head_ref.is_empty())
+        .map(|r| Snapshot(r.head_ref))
+    else {
+        return false;
+    };
+    match Shadow::open(&Work::home(&v.id).join("shadow.git"), Path::new(&v.work_dir)).await {
+        Ok(shadow) => shadow.snapshot().await.is_ok_and(|now| now == reviewed),
+        Err(_) => false,
+    }
+}
+
 /// A work as its row left it.
 async fn resume(store: &db::Store, row: &db::Verification) -> Option<Work> {
+    let kind = WorkKind::parse(&row.work_kind);
     let shadow = Shadow::open(
-        &Work::home(&row.id).join("shadow.git"),
+        &Work::shadow_dir(&row.id, kind, Path::new(&row.project_root)),
         Path::new(&row.work_dir),
     )
     .await
@@ -447,7 +505,7 @@ async fn resume(store: &db::Store, row: &db::Verification) -> Option<Work> {
         .map(|r| Snapshot(r.head_ref));
     Some(Work {
         id: row.id.clone(),
-        kind: WorkKind::parse(&row.work_kind),
+        kind,
         project_root: PathBuf::from(&row.project_root),
         work_dir: PathBuf::from(&row.work_dir),
         iso,
@@ -586,6 +644,110 @@ fn rewrite(input: &mut serde_json::Value, from: &str, to: &str) -> bool {
     }
 }
 
+/// How long a finished verification's own files (its shadow, its patches)
+/// are kept, and how long a build folder or a folder's shadow may sit
+/// unused before it goes.
+pub const KEEP_FINISHED_SECS: u64 = 7 * 24 * 3600;
+/// The most the verify loop's build folders may hold together; past it the
+/// least recently used go first.
+pub const BUILD_CAP_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+
+/// Reclaim the verify loop's disk (run at boot and daily): the files of a
+/// verification finished more than [`KEEP_FINISHED_SECS`] ago (or with no
+/// row), a finished worktree copy that never landed put away on its branch
+/// (its work kept, the disk freed), build folders and folder shadows unused
+/// that long, and the build folders over [`BUILD_CAP_BYTES`], least recently
+/// used first. A scratch copy is never removed: its work lives only there.
+/// Returns how many folders it removed.
+pub async fn sweep(store: &db::Store, now: i64) -> usize {
+    let root = config::data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("verify");
+    let Ok(entries) = std::fs::read_dir(&root) else { return 0 };
+    let old = |at: i64| now.saturating_sub(at) as u64 > KEEP_FINISHED_SECS;
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("v-") {
+            continue;
+        }
+        let idle = std::fs::metadata(entry.path())
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > KEEP_FINISHED_SECS);
+        let finished = match store.get_verification(&name).ok().flatten() {
+            // No row: an orphan, once nothing has touched it for as long.
+            None => idle,
+            Some(v) if matches!(v.state.as_str(), "running" | "paused") => false,
+            Some(v) => {
+                if !old(v.finished_at.unwrap_or(v.created_at)) {
+                    false
+                } else {
+                    // Its copy, never landed: put away on its branch.
+                    if v.landed_ref.is_empty()
+                        && let Some(mut iso) = v.isolation_state.clone().and_then(|s| serde_json::from_value::<worktree::Isolation>(s).ok())
+                        && matches!(iso, worktree::Isolation::Git(_))
+                        && iso.path().exists()
+                    {
+                        worktree::put_away(&mut iso, "Verified work never landed, put away to free the disk").await;
+                        let _ = store.set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
+                    }
+                    true
+                }
+            }
+        };
+        if finished && std::fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    let unused = |p: &Path| {
+        std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age.as_secs() > KEEP_FINISHED_SECS)
+    };
+    for dir in ["folders", "build"] {
+        for entry in std::fs::read_dir(root.join(dir)).into_iter().flatten().flatten() {
+            if unused(&entry.path()) && std::fs::remove_dir_all(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    let mut builds: Vec<(std::time::SystemTime, u64, PathBuf)> = std::fs::read_dir(root.join("build"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| {
+            let at = std::fs::metadata(e.path()).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            (at, size_of(&e.path()), e.path())
+        })
+        .collect();
+    builds.sort();
+    let mut total: u64 = builds.iter().map(|(_, n, _)| n).sum();
+    for (_, n, path) in builds {
+        if total <= BUILD_CAP_BYTES {
+            break;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            total = total.saturating_sub(n);
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// The bytes the files under `dir` hold.
+fn size_of(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            match e.metadata() {
+                Ok(m) if m.is_dir() => stack.push(e.path()),
+                Ok(m) => total += m.len(),
+                Err(_) => {}
+            }
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +871,68 @@ mod tests {
                     (works[0].kind, works[0].work_dir.as_path()),
                     (WorkKind::HelperCopy, copy.as_path())
                 );
+            })
+        })
+    }
+
+    /// The verify loop reclaims its disk: a verification finished long ago
+    /// leaves nothing behind; one still running, one finished lately, and a
+    /// fresh folder with no row are kept.
+    #[test]
+    fn finished_verifications_leave_no_files_behind() {
+        crate::test_home::with_home(|home| {
+            rt().block_on(async {
+                let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+                let now = 10 * KEEP_FINISHED_SECS as i64;
+                for (id, state, at) in [("v-old", "verified", 1), ("v-live", "running", 1), ("v-new", "not_verified", now - 60)] {
+                    store
+                        .create_verification(&db::NewVerification { id, session_key: "agent:a:web", isolation: "none", work_kind: "isolated", ..Default::default() }, at)
+                        .unwrap();
+                    store
+                        .set_verification_state(id, &db::VerificationState { state, ..Default::default() }, at)
+                        .unwrap();
+                    std::fs::create_dir_all(Work::home(id).join("shadow.git")).unwrap();
+                }
+                std::fs::create_dir_all(Work::home("v-orphan")).unwrap();
+                assert_eq!(sweep(&store, now).await, 1);
+                assert!(!Work::home("v-old").exists(), "finished long ago: gone");
+                for kept in ["v-live", "v-new", "v-orphan"] {
+                    assert!(Work::home(kept).exists(), "{kept} is kept");
+                }
+            })
+        })
+    }
+
+    /// Review 2026-10-20 M8: a linked coding agent's turn that changed
+    /// nothing records nothing (no row made and deleted), and one that
+    /// changed its project starts the work from the project as the turn
+    /// found it.
+    #[test]
+    fn a_coding_agents_turn_records_work_only_when_it_changed_its_project() {
+        crate::test_home::with_home(|home| {
+            rt().block_on(async {
+                let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+                let projects = tempfile::tempdir().unwrap();
+                let project = projects.path().join("site");
+                std::fs::create_dir_all(&project).unwrap();
+                std::fs::write(project.join("package.json"), "{}").unwrap();
+                std::fs::write(project.join("app.ts"), "export const a = 1;\n").unwrap();
+                let w = who(&store);
+                let cwd = project.to_string_lossy().into_owned();
+
+                let quiet = TurnWork::load(&w, Some(&cwd), true).await;
+                quiet.start_folder_if_changed(&w).await;
+                assert!(quiet.is_empty().await);
+                assert!(store.list_verifications(&db::VerificationQuery::default()).unwrap().is_empty(), "no row for a turn that wrote nothing");
+
+                let busy = TurnWork::load(&w, Some(&cwd), true).await;
+                std::fs::write(project.join("app.ts"), "export const a = 2;\n").unwrap();
+                busy.start_folder_if_changed(&w).await;
+                let works = busy.snapshot().await;
+                assert_eq!(works.len(), 1);
+                assert_eq!(works[0].kind, WorkKind::Folder);
+                let change = works[0].shadow.diff(&works[0].base, &works[0].shadow.snapshot().await.unwrap()).await.unwrap();
+                assert_eq!(change.paths(), ["app.ts"], "measured from the project as the turn found it");
             })
         })
     }
