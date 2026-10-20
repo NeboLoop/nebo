@@ -21,6 +21,9 @@
     CFG.socket ||
     (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + prefix + '/ws/app/' + encodeURIComponent(appId);
   var devlogUrl = api + '/devlog';
+  // The view this page is: set by whoever opened it to tell its lines apart
+  // from every other open view's (the bot's live check), else none.
+  var VIEW = String(window.__neboViewId || '');
   var KEEP = 300;
   var logs = [];
   var queue = [];
@@ -50,7 +53,7 @@
     if (busy) return;
     busy = true;
     try {
-      var e = { level: level, message: String(message).slice(0, 2000), source: source, time: Date.now() };
+      var e = { level: level, message: String(message).slice(0, 2000), source: source, time: Date.now(), view: VIEW };
       logs.push(e);
       if (logs.length > KEEP) logs.shift();
       if (level === 'error') unseen++;
@@ -293,6 +296,24 @@
       }
       return xsend.apply(this, arguments);
     };
+  }
+
+  // A worker's uncaught error reaches the page as an error event on the
+  // worker; it goes in the same log. (Its own console stays in the worker:
+  // reading it would mean running the worker from another script, which
+  // changes where its relative imports load from.)
+  if (typeof window.Worker === 'function') {
+    var NativeWorker = window.Worker;
+    var NeboWorker = function (url, opts) {
+      var w = new NativeWorker(url, opts);
+      w.addEventListener('error', function (ev) {
+        var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
+        push('error', 'Worker: ' + (ev.message || 'Error') + where, 'worker');
+      });
+      return w;
+    };
+    NeboWorker.prototype = NativeWorker.prototype;
+    window.Worker = NeboWorker;
   }
 
   // app_reload: the employee asked every open view of this app to reload.
