@@ -1321,7 +1321,7 @@ pub async fn janus_decide(
 /// itself fails.
 async fn decide_for_app(client: Option<&ai::DecideClient>, app_id: &str, body: &serde_json::Value) -> Response {
     let trace = ai::RequestTrace { agent_id: app_id.to_string(), ..ai::RequestTrace::new("app_decide") };
-    match tools::decide_tool::decide(client, &trace, body).await {
+    match tools::decide_tool::decide(client, &trace, body, Some(&mut ai::ReservedWaits::default())).await {
         Ok(out) => axum::Json(out).into_response(),
         Err(e) => {
             let status = match e {
@@ -1329,7 +1329,7 @@ async fn decide_for_app(client: Option<&ai::DecideClient>, app_id: &str, body: &
                 tools::decide_tool::DecideError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
                 tools::decide_tool::DecideError::Unfunded
                 | tools::decide_tool::DecideError::Busy
-                | tools::decide_tool::DecideError::Reserved => {
+                | tools::decide_tool::DecideError::Reserved(_) => {
                     StatusCode::TOO_MANY_REQUESTS
                 }
                 tools::decide_tool::DecideError::Failed(_) => StatusCode::BAD_GATEWAY,

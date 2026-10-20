@@ -48,7 +48,7 @@ pub enum DecideError {
     Busy,
     /// The balance covers it but running work holds it (Janus's
     /// `BALANCE_RESERVED` after the waits ran out). Never out of balance.
-    Reserved,
+    Reserved(types::balance::Held),
     /// The decision service failed.
     Failed(String),
 }
@@ -62,7 +62,7 @@ impl std::fmt::Display for DecideError {
                 "Your plan is used up this month. Upgrade your plan to continue.",
             ),
             Self::Busy => f.write_str("Too many decisions at once. Try again in a moment."),
-            Self::Reserved => f.write_str(ai::BALANCE_BUSY),
+            Self::Reserved(_) => f.write_str(ai::BALANCE_BUSY),
             Self::Failed(e) => write!(f, "The decision could not be made: {e}"),
         }
     }
@@ -78,7 +78,9 @@ impl From<ai::ProviderError> for DecideError {
             ai::ProviderError::Auth(_) => Self::Unavailable,
             ai::ProviderError::RateLimit { .. } => Self::Busy,
             ai::ProviderError::Api { code, .. } if code == ai::decide::USAGE_LIMIT_EXCEEDED => Self::Unfunded,
-            ai::ProviderError::BalanceReserved { .. } => Self::Reserved,
+            ai::ProviderError::BalanceReserved { retry_after_secs } => {
+                Self::Reserved(types::balance::Held { retry_after: retry_after_secs.map(std::time::Duration::from_secs) })
+            }
             ai::ProviderError::Api { code, message, .. } if code == "400" || code == "422" => Self::Invalid(message),
             other => Self::Failed(other.to_string()),
         }
@@ -115,13 +117,19 @@ pub fn request(input: &Value) -> Result<(Value, BTreeMap<String, Question>), Str
 
 /// Ask `input`'s questions about its state: `{model, answers, usage}`, each
 /// answer in the Jev shape (`choice`/`score`/`noul`, `confidence`,
-/// `probabilities`).
-pub async fn decide(client: Option<&DecideClient>, trace: &RequestTrace, input: &Value) -> Result<Value, DecideError> {
+/// `probabilities`). `waits` as [`DecideClient::decide`] takes it: a tool
+/// call sends once (its registry waits out a held balance).
+pub async fn decide(
+    client: Option<&DecideClient>,
+    trace: &RequestTrace,
+    input: &Value,
+    waits: Option<&mut ai::ReservedWaits>,
+) -> Result<Value, DecideError> {
     let (state, questions) = request(input).map_err(DecideError::Invalid)?;
     let client = client.ok_or(DecideError::Unavailable)?;
     let asked: BTreeMap<&str, Question> = questions.iter().map(|(k, q)| (k.as_str(), q.clone())).collect();
     let d = client
-        .decide(trace, &state, &asked)
+        .decide(trace, &state, &asked, waits)
         .await
         .map_err(DecideError::from)?;
     Ok(json!({
@@ -211,8 +219,9 @@ async fn run(client: Option<&DecideClient>, ctx: &ToolContext, input: &Value) ->
         agent_id: types::keyparser::extract_agent_id(&ctx.session_key),
         ..RequestTrace::new("employee_decide")
     };
-    match decide(client, &trace, input).await {
+    match decide(client, &trace, input, None).await {
         Ok(out) => ToolResult::ok(out.to_string()),
+        Err(DecideError::Reserved(held)) => ToolResult::error(ai::BALANCE_BUSY).with_held_balance(held),
         Err(e) => ToolResult::error(e.to_string()),
     }
 }
@@ -226,7 +235,8 @@ mod tests {
     #[test]
     fn a_reserved_balance_is_busy_not_unfunded() {
         let reserved = DecideError::from(ai::ProviderError::BalanceReserved { retry_after_secs: Some(1) });
-        assert_eq!(reserved, DecideError::Reserved);
+        let held = types::balance::Held { retry_after: Some(std::time::Duration::from_secs(1)) };
+        assert_eq!(reserved, DecideError::Reserved(held));
         assert_eq!(reserved.to_string(), ai::BALANCE_BUSY);
         let unfunded = DecideError::from(ai::ProviderError::Api {
             code: ai::decide::USAGE_LIMIT_EXCEEDED.into(),

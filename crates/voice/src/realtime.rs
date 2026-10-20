@@ -187,7 +187,7 @@ pub enum RealtimeCommand {
 pub async fn connect(
     cfg: RealtimeConfig,
 ) -> Result<(mpsc::Sender<RealtimeCommand>, mpsc::Receiver<ConversationEvent>), VoiceError> {
-    let ws = dial(&cfg, None).await?;
+    let ws = dial(&cfg, None, &mut ::types::balance::ReservedWaits::default()).await?;
     info!(endpoint = %cfg.endpoint, model = %cfg.model, "realtime session connected");
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<RealtimeCommand>(64);
@@ -213,10 +213,16 @@ fn realtime_url(cfg: &RealtimeConfig) -> String {
 }
 
 /// Open the socket to the realtime endpoint, each connect bounded by
-/// `connect_limit` when given (a redial).
-async fn dial(cfg: &RealtimeConfig, connect_limit: Option<std::time::Duration>) -> Result<Socket, VoiceError> {
+/// `connect_limit` when given (a redial), waiting out a held balance from
+/// `waits`: one budget per connection or per reconnection, however many
+/// dials it takes.
+async fn dial(
+    cfg: &RealtimeConfig,
+    connect_limit: Option<std::time::Duration>,
+    waits: &mut ::types::balance::ReservedWaits,
+) -> Result<Socket, VoiceError> {
     // Janus groups usage by purpose; a realtime session is always voice.
-    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), "voice", connect_limit).await
+    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), "voice", connect_limit, waits).await
 }
 
 /// Open a socket to a Janus (or direct) audio endpoint: the bearer, the bot
@@ -226,15 +232,16 @@ async fn dial(cfg: &RealtimeConfig, connect_limit: Option<std::time::Duration>) 
 /// waits `types::balance::ReservedWaits` gives, and one that outlasts them is
 /// [`VoiceError::BalanceReserved`]. `connect_limit` bounds each connect
 /// alone, never the waits between them: a redial waits out a held balance
-/// as long as Janus asks.
+/// as long as Janus asks. `waits` is the caller's one budget for the
+/// connection (a reconnection passes the same one to every redial).
 pub(crate) async fn open(
     url: &str,
     bearer: &str,
     bot_id: Option<&str>,
     purpose: &'static str,
     connect_limit: Option<std::time::Duration>,
+    waits: &mut ::types::balance::ReservedWaits,
 ) -> Result<Socket, VoiceError> {
-    let mut waits = ::types::balance::ReservedWaits::default();
     loop {
         let dialing = dial_once(url, bearer, bot_id, purpose);
         let dialed = match connect_limit {
@@ -300,12 +307,7 @@ async fn dial_once(
                 &String::from_utf8_lossy(resp.body().as_deref().unwrap_or_default()),
             ) =>
         {
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse().ok())
-                .map(std::time::Duration::from_secs);
+            let retry_after = ::types::balance::retry_after(resp.headers().get("retry-after").and_then(|v| v.to_str().ok()));
             Err(Dialed::Reserved(retry_after))
         }
         Err(e) => Err(failed(format!("realtime dial failed: {e}"))),
@@ -456,6 +458,11 @@ async fn run_session(
                 let _ = event_tx
                     .send(ConversationEvent::Error(CALL_ENDED.to_string()))
                     .await;
+                break;
+            }
+            Redial::BalanceReserved => {
+                warn!("realtime line held by running work past the waits; ending the call");
+                let _ = event_tx.send(ConversationEvent::BalanceReserved).await;
                 break;
             }
         }
@@ -712,6 +719,9 @@ enum Redial {
     Done,
     /// Every redial failed.
     Failed,
+    /// The last redial was refused because running work holds the balance,
+    /// past the reconnection's one budget.
+    BalanceReserved,
 }
 
 /// Dial the line again, at most `REDIAL_DELAYS.len()` times counting the
@@ -724,13 +734,17 @@ async fn redial(
     deferred: &mut Vec<RealtimeCommand>,
     failures: &mut usize,
 ) -> Redial {
+    // One budget for waiting out a held balance across this reconnection's
+    // dials, never one per dial.
+    let mut waits = ::types::balance::ReservedWaits::default();
+    let mut held = false;
     while *failures < REDIAL_DELAYS.len() {
         let delay = REDIAL_DELAYS[*failures];
         *failures += 1;
         let attempt = *failures;
         let dialling = async {
             tokio::time::sleep(delay).await;
-            dial(cfg, Some(DIAL_TIMEOUT)).await
+            dial(cfg, Some(DIAL_TIMEOUT), &mut waits).await
         };
         tokio::pin!(dialling);
         loop {
@@ -738,7 +752,10 @@ async fn redial(
                 dialled = &mut dialling => {
                     match dialled {
                         Ok(socket) => return Redial::Connected(Box::new(socket)),
-                        Err(e) => warn!(attempt, error = %e, "realtime redial failed"),
+                        Err(e) => {
+                            held = matches!(e, VoiceError::BalanceReserved);
+                            warn!(attempt, error = %e, "realtime redial failed");
+                        }
                     }
                     break;
                 }
@@ -750,7 +767,11 @@ async fn redial(
             }
         }
     }
-    Redial::Failed
+    if held {
+        Redial::BalanceReserved
+    } else {
+        Redial::Failed
+    }
 }
 
 /// What a redialled session needs to carry the call on: the call so far, the
@@ -1285,7 +1306,7 @@ mod tests {
         // then; the bound only catches a dial that never does. (A 2 s bound
         // here once raced the connect on a busy machine and left the far end
         // waiting for good.)
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), dial(&cfg, None)).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), dial(&cfg, None, &mut ::types::balance::ReservedWaits::default())).await;
         let request = tokio::time::timeout(std::time::Duration::from_secs(30), seen)
             .await
             .expect("the dial never reached the far end")
@@ -2249,7 +2270,7 @@ mod tests {
             refuse_reserved(&l, 0).await;
             let _ws = accept(&l).await;
         });
-        let opened = open(&cfg.endpoint, "tok", None, "voice", None).await;
+        let opened = open(&cfg.endpoint, "tok", None, "voice", None, &mut ::types::balance::ReservedWaits::default()).await;
         assert!(opened.is_ok(), "{:?}", opened.err());
         far.await.unwrap();
     }
@@ -2264,7 +2285,7 @@ mod tests {
                 refuse_reserved(&l, 0).await;
             }
         });
-        let err = open(&cfg.endpoint, "tok", None, "voice", None).await.err().expect("refused");
+        let err = open(&cfg.endpoint, "tok", None, "voice", None, &mut ::types::balance::ReservedWaits::default()).await.err().expect("refused");
         assert!(matches!(err, VoiceError::BalanceReserved), "{err:?}");
         assert_eq!(err.to_string(), ::types::balance::BALANCE_BUSY);
         far.await.unwrap();
@@ -2314,5 +2335,46 @@ mod tests {
         tx.send(RealtimeCommand::Close).await.unwrap();
         let update = tokio::time::timeout(std::time::Duration::from_secs(10), server).await.unwrap().unwrap();
         assert_eq!(update["type"], "session.update");
+    }
+
+    /// The line drops and every redial is refused while running work holds
+    /// the balance. The reconnection has ONE budget for waiting it out, not
+    /// one per dial, and when it runs out the client hears the balance is
+    /// busy, never that the call ended.
+    #[tokio::test]
+    async fn a_reconnection_held_past_its_one_budget_ends_busy() {
+        let (l, cfg) = listener().await;
+        let refused = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = refused.clone();
+        let server = tokio::spawn(async move {
+            let mut first = accept(&l).await;
+            next_json(&mut first).await; // session.update
+            say(&mut first, json!({"type": "session.created"})).await;
+            drop(first);
+            // Refuse every redial until the client stops dialling.
+            while tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                refuse_reserved(&l, 1).await;
+            })
+            .await
+            .is_ok()
+            {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let (_tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(60), rx.recv()).await.expect("the call never ended") {
+                Some(ConversationEvent::BalanceReserved) => break,
+                Some(e) => events.push(e),
+                None => panic!("the call ended without saying the balance is busy: {events:?}"),
+            }
+        }
+        assert!(errors(&events).is_empty(), "never the call-ended words: {:?}", errors(&events));
+        server.await.unwrap();
+        let dials = refused.load(std::sync::atomic::Ordering::SeqCst);
+        // The first redial waits the whole budget (1 + RESERVED_RETRIES
+        // dials); the rest have no waits left and dial once each.
+        assert_eq!(dials, 1 + ::types::balance::RESERVED_RETRIES + (REDIAL_DELAYS.len() - 1), "one budget per reconnection");
     }
 }

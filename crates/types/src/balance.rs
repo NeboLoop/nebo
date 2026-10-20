@@ -55,15 +55,37 @@ impl ReservedWaits {
         if self.retries == RESERVED_RETRIES {
             return None;
         }
+        // Any wait the budget has no room for is not taken, so nothing past
+        // it (a huge `Retry-After`) reaches the arithmetic below.
+        let left = RESERVED_BUDGET.saturating_sub(self.waited);
         let asked = retry_after.unwrap_or(RESERVED_WAIT).max(RESERVED_FLOOR);
-        let wait = asked + jitter(asked / 4);
-        if self.waited + wait > RESERVED_BUDGET {
+        if asked > left {
+            return None;
+        }
+        let wait = asked.saturating_add(jitter(asked / 4));
+        if wait > left {
             return None;
         }
         self.retries += 1;
-        self.waited += wait;
+        self.waited = self.waited.saturating_add(wait);
         Some(wait)
     }
+}
+
+/// A `Retry-After` value (the delta-seconds form; the HTTP-date form is not
+/// sent by any service Nebo calls). The one parser: every Janus caller, HTTP
+/// or WebSocket, reads the header through it.
+pub fn retry_after(value: Option<&str>) -> Option<Duration> {
+    value.and_then(|v| v.trim().parse().ok()).map(Duration::from_secs)
+}
+
+/// A call refused because running work holds the balance, with the wait the
+/// refusal asked for: what a tool hands back so the one layer that runs it
+/// waits it out (`tools::Registry::execute`) and sends it again. Set only
+/// when nothing in the call was served, so sending it again charges once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub retry_after: Option<Duration>,
 }
 
 /// Up to `max`.
@@ -95,6 +117,25 @@ mod tests {
 
     /// `Retry-After: 0` still waits the floor, so the request is never sent
     /// again at once.
+    /// A huge `Retry-After` is a wait the budget has no room for: never a
+    /// panic, never taken.
+    #[test]
+    fn a_huge_wait_is_not_taken_and_never_overflows() {
+        let mut waits = ReservedWaits::default();
+        assert_eq!(waits.next(Some(Duration::from_secs(u64::MAX))), None);
+        assert_eq!(waits.next(Some(Duration::MAX)), None);
+        // The budget is untouched: an ordinary wait still comes.
+        assert!(waits.next(Some(Duration::from_secs(1))).is_some());
+        assert_eq!(retry_after(Some(&u64::MAX.to_string())), Some(Duration::from_secs(u64::MAX)));
+    }
+
+    #[test]
+    fn retry_after_reads_seconds() {
+        assert_eq!(retry_after(Some(" 5 ")), Some(Duration::from_secs(5)));
+        assert_eq!(retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT")), None);
+        assert_eq!(retry_after(None), None);
+    }
+
     #[test]
     fn a_zero_wait_still_waits_the_floor() {
         let mut waits = ReservedWaits::default();

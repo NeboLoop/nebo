@@ -718,7 +718,7 @@ async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String
         }
         why
     };
-    let decision = client.decide(&trace, &state, &questions).await.map_err(|e| miss(format!("Jev did not answer ({e}); choose the ref yourself")))?;
+    let decision = client.decide(&trace, &state, &questions, Some(&mut ai::ReservedWaits::default())).await.map_err(|e| miss(format!("Jev did not answer ({e}); choose the ref yourself")))?;
     let Some(ans) = decision.answer("element") else {
         return Err(miss("Jev returned no choice; choose the ref yourself".into()));
     };
@@ -2672,7 +2672,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, held_balance: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -3218,6 +3218,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
     };
     let saved = persist_path.clone();
     ToolResult {
+        held_balance: None,
         payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h, "path": saved })),
         content,
         is_error: false,

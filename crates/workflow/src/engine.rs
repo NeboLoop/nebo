@@ -1320,7 +1320,8 @@ async fn evaluate_step(
         ),
     )]);
 
-    let call = client.decide(trace, &state, &questions);
+    let mut waits = ai::ReservedWaits::default();
+    let call = client.decide(trace, &state, &questions, Some(&mut waits));
     let deadline = std::time::Duration::from_secs(DECISION_TIMEOUT_SECS);
     match tokio::time::timeout(deadline, call).await {
         Ok(Ok(decision)) => {

@@ -658,7 +658,8 @@ async fn micro_curate_pair(
     ]);
 
     let trace = ai::RequestTrace::new("memory_pair");
-    let call = decide.decide(&trace, &state, &questions);
+    let mut waits = ai::ReservedWaits::default();
+    let call = decide.decide(&trace, &state, &questions, Some(&mut waits));
     let deadline = std::time::Duration::from_secs(PAIR_CHECK_TIMEOUT_SECS);
     let decision = match tokio::time::timeout(deadline, call).await {
         Ok(Ok(decision)) => decision,

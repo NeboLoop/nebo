@@ -185,7 +185,8 @@ pub async fn run(
     // Dial while the phone already talks: its audio is held, not dropped.
     // Janus files the minutes under Transcription, with every other
     // transcription the bot asks for.
-    let dial = open(&url, &cfg.bearer, cfg.bot_id.as_deref(), "transcribe", None);
+    let mut waits = ::types::balance::ReservedWaits::default();
+    let dial = open(&url, &cfg.bearer, cfg.bot_id.as_deref(), "transcribe", None, &mut waits);
     tokio::pin!(dial);
     let ws: Socket = loop {
         tokio::select! {

@@ -196,6 +196,32 @@ pub struct ChannelContext {
 /// run that is waiting is not stalled, however long the answer takes; the
 /// dispatcher's idle bound, and a helper's collector, count only time when
 /// nothing is waited on (`agent::guardrails`).
+/// The slot a call holds from the bounded pool tool calls run in (the tool
+/// round's). A call that has to wait (a held balance) gives it back for the
+/// wait, so the wait never keeps another call from running.
+#[derive(Debug)]
+pub struct ToolSlot {
+    pool: std::sync::Arc<tokio::sync::Semaphore>,
+    held: std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+}
+
+impl ToolSlot {
+    /// A slot from `pool`, once one is free.
+    pub async fn take(pool: std::sync::Arc<tokio::sync::Semaphore>) -> std::sync::Arc<Self> {
+        let permit = pool.clone().acquire_owned().await.expect("tool pool closed");
+        std::sync::Arc::new(Self { pool, held: std::sync::Mutex::new(Some(permit)) })
+    }
+
+    /// Run `wait` with the slot given back, then take one again.
+    pub async fn given_back<F: std::future::Future>(&self, wait: F) -> F::Output {
+        drop(self.held.lock().unwrap_or_else(|e| e.into_inner()).take());
+        let out = wait.await;
+        let permit = self.pool.clone().acquire_owned().await.expect("tool pool closed");
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some(permit);
+        out
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Waiting {
     count: std::sync::atomic::AtomicUsize,
@@ -368,6 +394,10 @@ pub struct ToolContext {
     /// The run's count of calls waiting on the owner or on a render, shared
     /// by every call of the run and read by its dispatcher.
     pub waiting: std::sync::Arc<Waiting>,
+    /// The slot this call holds in the tool round's pool, when it runs in
+    /// one: given back while the call waits out a held balance
+    /// ([`crate::Registry::execute`]). `None` elsewhere.
+    pub slot: Option<std::sync::Arc<ToolSlot>>,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,

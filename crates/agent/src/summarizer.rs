@@ -8,6 +8,10 @@ use tools::truncate_str;
 
 /// Total prompt cap to keep the summarizer call cheap.
 const PROMPT_CAP: usize = 2_000;
+/// Most tokens one tool summary takes; Janus holds the balance for this
+/// many. Summaries run about 10 (Janus, 7 days to 2026-10-20: 14,465
+/// requests, 10 output tokens on average), so 100 is ample.
+const SUMMARY_TOKENS: i32 = 100;
 /// Max chars of each tool input/output included in the prompt.
 const IO_TRUNCATE: usize = 300;
 /// Max chars of assistant intent context.
@@ -82,7 +86,7 @@ pub async fn summarize_tool_batch(
             ..Default::default()
         }],
         tools: vec![],
-        max_tokens: 100,
+        max_tokens: SUMMARY_TOKENS,
         temperature: 0.0,
         system: SYSTEM_PROMPT.to_string(),
         model: route.model.clone(),
@@ -267,7 +271,7 @@ mod tests {
         super::summarize_tool_batch(ai::RequestTrace::new("tool_summary"), &route, &[call], &[result], "").await;
         let sent = kept.0.lock().unwrap();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].max_tokens, 100);
+        assert_eq!(sent[0].max_tokens, super::SUMMARY_TOKENS);
     }
 
     #[test]

@@ -3055,6 +3055,9 @@ async fn handle_conversation_session(
                         Some(serde_json::json!({"type": "conversation_id", "id": id})),
                     ConversationEvent::Error(message) =>
                         Some(serde_json::json!({"type": "Error", "message": message})),
+                    // The line could not come back while running work holds
+                    // the balance: the same words as a refused connect.
+                    ConversationEvent::BalanceReserved => Some(connect_failure_words(&voice::VoiceError::BalanceReserved)),
                     ConversationEvent::AudioChunk(data) => {
                         if socket.send(Message::Binary(data.to_vec().into())).await.is_err() {
                             break;

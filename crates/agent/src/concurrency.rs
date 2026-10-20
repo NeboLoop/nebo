@@ -278,6 +278,12 @@ impl ConcurrencyController {
     }
 
     /// Acquire a permit for parallel tool execution within a turn.
+    /// A slot in the tool pool for one call in a tool round, which the call
+    /// gives back while it waits out a held balance (`tools::Registry`).
+    pub async fn acquire_tool_slot(&self) -> Arc<tools::ToolSlot> {
+        tools::ToolSlot::take(self.tool_semaphore.clone()).await
+    }
+
     pub async fn acquire_tool_permit(&self) -> OwnedSemaphorePermit {
         self.tool_semaphore
             .clone()
@@ -412,9 +418,17 @@ impl Provider for BackgroundProvider {
                 Ok(rx) => break (permit, rx),
                 Err(ProviderError::BalanceReserved { retry_after_secs }) => {
                     drop(permit);
-                    match waits.next(retry_after_secs.map(Duration::from_secs)) {
-                        Some(wait) => tokio::time::sleep(wait).await,
-                        None => return Err(ProviderError::BalanceReserved { retry_after_secs }),
+                    let held = ProviderError::BalanceReserved { retry_after_secs };
+                    let Some(wait) = waits.next(retry_after_secs.map(Duration::from_secs)) else {
+                        return Err(held);
+                    };
+                    // A stopped run stops waiting: the call was never served.
+                    match &req.cancel_token {
+                        Some(cancel) => tokio::select! {
+                            _ = cancel.cancelled() => return Err(held),
+                            _ = tokio::time::sleep(wait) => {}
+                        },
+                        None => tokio::time::sleep(wait).await,
                     }
                 }
                 Err(e) => {
@@ -876,6 +890,35 @@ mod tests {
         }
         assert_eq!(text, "ok");
         assert_eq!(inner.0.load(SeqCst), 2, "the same request once more, never twice");
+    }
+
+    /// A stopped run stops waiting out a held balance at once: the call
+    /// ends unserved, without the wait Janus asked for.
+    #[tokio::test]
+    async fn housekeeping_stops_waiting_when_its_run_is_stopped() {
+        struct AlwaysHeld;
+        #[async_trait::async_trait]
+        impl Provider for AlwaysHeld {
+            fn id(&self) -> &str {
+                "always-held"
+            }
+            async fn stream(&self, _req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+                Err(ProviderError::BalanceReserved { retry_after_secs: Some(10) })
+            }
+        }
+        let ctrl = Arc::new(ConcurrencyController::new(Some(16)));
+        let prov = ctrl.background(Arc::new(AlwaysHeld));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let req = ChatRequest { cancel_token: Some(cancel.clone()), ..ChatRequest::new(ai::RequestTrace::new("test")) };
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            stopper.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = prov.stream(&req).await.err().expect("never served");
+        assert!(matches!(err, ProviderError::BalanceReserved { .. }), "{err:?}");
+        assert!(started.elapsed() < Duration::from_secs(5), "stopped waiting at once: {:?}", started.elapsed());
     }
 
 }
