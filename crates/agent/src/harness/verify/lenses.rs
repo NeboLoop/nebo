@@ -291,11 +291,13 @@ mod tests {
                 .map(|p| FileChange {
                     status: "modified".into(),
                     path: p.to_string(),
+                    from: None,
                     added_lines: 2,
                     removed_lines: 1,
                 })
                 .collect(),
             patch: patch.to_string(),
+            patch_cut: false,
         }
     }
 
