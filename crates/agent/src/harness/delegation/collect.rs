@@ -141,6 +141,12 @@ pub struct Questions {
     pub pending: Vec<Asked>,
     pub answered: Vec<(Asked, String)>,
     pub reported: Vec<String>,
+    /// Messages reached it after it was stopped, while its stopped turn was
+    /// still ending: a fresh turn runs once that turn ends, and each answer
+    /// here settles its own question as that turn begins. `None` = no fresh
+    /// turn waits. Any stop clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun: Option<Vec<tools::orchestrator::Answer>>,
 }
 
 impl Questions {
@@ -196,20 +202,12 @@ pub fn assemble(
 ) -> Completion {
     let latest = turns.last().expect("a run has a turn");
     let mut lead = Vec::new();
-    let mut reported_before = 0;
     for q in questions.pending.iter().rev() {
         if fresh_only && questions.reported.contains(&q.id) {
-            reported_before += 1;
+            lead.push(given_before(&latest.task_id, q));
         } else {
             lead.push(q.block.clone());
         }
-    }
-    if reported_before > 0 {
-        lead.push(format!(
-            "{reported_before} question(s) for the owner it reported before still wait for an answer: send_message \
-             the owner's decision to {} in `answer` when it comes.",
-            latest.task_id
-        ));
     }
     let mut taint: Vec<types::provenance::ProvenanceClass> = Vec::new();
     let mut words = Vec::new();
@@ -252,6 +250,17 @@ pub fn assemble(
         usage: latest.usage.clone(),
         taint,
     }
+}
+
+/// How a report names an open question its parent already has, in place of
+/// its block: the ONE wording, for a report assembled from turns and one
+/// rebuilt from a row after a restart.
+pub fn given_before(task_id: &str, q: &Asked) -> String {
+    format!(
+        "A question for the owner it reported before (question {}) still waits for an answer: send_message the \
+         owner's decision to {task_id} in `answer` with `question: \"{}\"` when it comes.",
+        q.id, q.id
+    )
 }
 
 impl CompletionStatus {
@@ -676,7 +685,7 @@ mod tests {
         let mut given = questions.clone();
         given.reported = vec!["q1".into()];
         let report = assemble(&turns, &given, true, dir.path(), REPORT_LIMIT, Reader::File).report();
-        assert!(!report.contains("Which vendor?") && report.contains("1 question(s) for the owner it reported before"), "{report}");
+        assert!(!report.contains("Which vendor?") && report.contains("A question for the owner it reported before (question q1)"), "{report}");
 
         // Past the limit, the joined words spill; the questions stay inline
         // and lead, and the preview never runs past the limit.

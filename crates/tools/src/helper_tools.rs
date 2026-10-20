@@ -1050,8 +1050,6 @@ mod tests {
         }
     }
 
-    /// A delegate call sets how long its helper's report may be, for the
-    /// whole call or per piece; the schema says the lean default.
     /// `question` names the question an `answer` settles: alone, it is
     /// refused and nothing is sent.
     #[tokio::test]
@@ -1062,6 +1060,9 @@ mod tests {
         assert!(rig.rec.sent.lock().unwrap().is_empty(), "nothing sent");
     }
 
+    /// A delegate call sets how long its helper's report may be, for the
+    /// whole call or per piece; the schema says the default, which is also
+    /// the most.
     #[tokio::test]
     async fn report_limit_is_set_per_call_and_per_piece() {
         let rig = Rig::new();

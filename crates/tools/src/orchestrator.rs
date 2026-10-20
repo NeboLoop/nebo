@@ -131,7 +131,7 @@ pub const REPORT_LIMIT: usize = 30_000;
 
 /// The owner's answer to a helper's open question, as `send_message`
 /// relays it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Answer {
     /// The question's id from the helper's report; `None` answers its
     /// newest open question.
