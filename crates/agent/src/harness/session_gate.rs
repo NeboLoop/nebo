@@ -201,6 +201,30 @@ impl Drop for TurnGuard {
         // Recover a poisoned lock: a panic elsewhere must not leave the session
         // marked busy, which would queue every later message forever.
         self.turns.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.session_key);
+        TURN_ENDED.notify_waiters();
+    }
+}
+
+/// Signalled each time a turn's slot frees ([`TurnGuard`]'s drop): what
+/// [`wait_until_free`] waits on instead of polling.
+static TURN_ENDED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Wait, up to `limit`, until no turn runs on `session_key`; false when one
+/// still does. Woken when a turn's slot frees, never by polling.
+pub async fn wait_until_free(turns: &ActiveTurns, session_key: &str, limit: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let ended = TURN_ENDED.notified();
+        tokio::pin!(ended);
+        // Registered before the check, so a slot freed in between still
+        // wakes this wait.
+        ended.as_mut().enable();
+        if !session_is_busy(turns, session_key) {
+            return true;
+        }
+        if tokio::time::timeout_at(deadline, ended).await.is_err() {
+            return !session_is_busy(turns, session_key);
+        }
     }
 }
 

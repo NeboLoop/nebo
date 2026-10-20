@@ -221,7 +221,7 @@ pub fn assemble(
         if let Some(q) = &t.question
             && let Some((_, answer)) = questions.answered.iter().find(|(a, _)| a.id == q.id)
         {
-            part.push(format!("Asked: {}\nAnswered: {answer}", q.text));
+            part.push(asked_and_answered(q, answer));
         }
         if !t.result.trim().is_empty() {
             part.push(t.result.trim().to_string());
@@ -250,6 +250,13 @@ pub fn assemble(
         usage: latest.usage.clone(),
         taint,
     }
+}
+
+/// How a report shows a question that was answered: what was asked and
+/// what the answer was, without the instructions to ask. The ONE wording,
+/// for an assembled report and one rebuilt from a row after a restart.
+pub fn asked_and_answered(q: &Asked, answer: &str) -> String {
+    format!("Asked: {}\nAnswered: {answer}", q.text)
 }
 
 /// How a report names an open question its parent already has, in place of
