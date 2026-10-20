@@ -363,6 +363,7 @@ impl DynTool for StopTaskTool {
     fn description(&self) -> String {
         "Stops a background command, a helper, a run or a workflow run.\n\
          - `task_id` is the id run_command (background: true), delegate, list_runs or run_workflow gave you.\n\
+         - A helper or research run this conversation started, at any depth, stops with everything under it.\n\
          - To end another process on this computer, use run_command (kill)."
             .to_string()
     }

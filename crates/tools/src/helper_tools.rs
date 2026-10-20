@@ -156,7 +156,14 @@ impl Helpers {
             return self.settle_changes(to, changes, ctx).await;
         }
         let conversation = input["conversation"].as_str().and_then(crate::coworker::Conversation::parse);
+        let answer = input["answer"].as_str().map(str::trim).filter(|a| !a.is_empty());
         let recipient = self.recipient(to);
+        if answer.is_some() && !matches!(recipient, Recipient::Helper) {
+            return ToolResult::error(
+                "`answer` carries the owner's answer to a helper's question; a coworker or a team asked none. \
+                 Nothing was sent. Send it again without `answer`.",
+            );
+        }
         if conversation.is_some() && !matches!(recipient, Recipient::Coworker(_)) {
             return ToolResult::error(
                 "`conversation` picks one of a linked employee's conversations; a team or a helper has one \
@@ -173,7 +180,7 @@ impl Helpers {
             Err(e) => return ToolResult::error(e),
         };
         match orch
-            .send(to, message, SpawnRequest::child_of(ctx))
+            .send(to, message, answer, SpawnRequest::child_of(ctx))
             .await
         {
             Ok(FollowUp::Delivered { task_id }) => ToolResult::ok(format!(
@@ -435,12 +442,13 @@ impl DynTool for HelperTool {
                  - Only its final report comes back, as a notification. Until then you know nothing about the result. Never predict it; if the owner asks, say it's still running.\n\
                  - It sees only its brief: the goal, what you know or ruled out, what to leave alone, whether it may change things, and the exact deliverable with its length.\n\
                  - One job in many pieces: one call, the brief once in `prompt`, a task each in `pieces`.\n\
-                 - It can't ask the owner: its question comes back in its report. Ask the owner, then send_message the answer to its id. Work for a named employee is a message to them.\n\
+                 - It can't ask the owner: its question comes back in its report. Ask the owner, then send_message its id the decision in `answer`. Work for a named employee is a message to them.\n\
                  Examples: 30 listings → `pieces` of 10, one line per listing back; you draft the summary. A 30-second ad → a helper per shot, at most 4 at once, each reporting its clip and pass or fail; you compose. Outreach → a helper drafts the emails to a file and reports the path; the owner approves sending. A code change → the files, the change and the tests; it reports what changed and the test result.\n\
                  Owner, while one runs: \"Is Elm Street in?\" → \"Still waiting on the research; that's one it checks.\""
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
+                 - The owner's decision on a helper's question goes in `answer`; nothing else settles it.\n\
                  - A coworker gets it in their own session and answers with their own tools and permissions; their answer comes to you as a notification. Several messages in one response go out together.\n\
                  - To a team: only teammates it addresses receive it (`mention`, @Name, @everyone); naming nobody sends it to the lead.\n\
                  - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message.\n\
@@ -478,6 +486,7 @@ impl DynTool for HelperTool {
                 "properties": {
                     "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
                     "message": { "type": "string", "description": "What to tell them." },
+                    "answer": { "type": "string", "description": "To a helper: the owner's answer to its open question." },
                     "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: who receives it, by name." },
                     "conversation": { "type": "string", "description": "A linked employee's conversation id (as list_employees shows it) or \"new\"; leave out to continue your thread with it." },
                     "changes": { "type": "string", "enum": ["land", "discard"], "description": "To a helper with its own copy: land its changes in the owner's files, or drop them." }
@@ -647,6 +656,7 @@ mod tests {
             &self,
             task_id: &str,
             message: &str,
+            _answer: Option<&str>,
             parent: SpawnRequest,
         ) -> Fut<'_, Result<FollowUp, String>> {
             self.sent.lock().unwrap().push((
@@ -1065,7 +1075,7 @@ mod tests {
             "Once work is delegated, don't also do it yourself.",
             "Never predict it; if the owner asks, say it's still running.",
             "whether it may change things, and the exact deliverable with its length",
-            "It can't ask the owner: its question comes back in its report. Ask the owner, then send_message the answer to its id.",
+            "It can't ask the owner: its question comes back in its report. Ask the owner, then send_message its id the decision in `answer`.",
             "Still waiting on the research",
         ] {
             assert!(delegate.contains(part), "{part:?} missing from:\n{delegate}");

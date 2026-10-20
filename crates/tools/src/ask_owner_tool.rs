@@ -59,7 +59,7 @@ impl AskOwnerTool {
                 "Nobody is at the keyboard, so this went to {name}, who you answer to. They decide \
                  in their own session, and their answer comes to you as a notification. Until \
                  then carry on with anything that doesn't depend on it, and don't treat it as \
-                 decided. If a helper asked it, send_message the answer to the helper once it comes.",
+                 decided. If a helper asked it, send_message it the answer in `answer` once it comes.",
                 name = delivery.to_name
             ))
             // The same hand-off line a message to a coworker shows.
@@ -104,7 +104,7 @@ impl AskOwnerTool {
                 "Nobody is at the keyboard in this run, and you answer to the owner directly \
                  rather than to another employee — make a reasonable decision and proceed, and \
                  tell the owner what you assumed. If a helper asked it, send_message the helper \
-                 your decision so it goes on.",
+                 your decision in `answer` so it goes on.",
             );
         }
         let options = input.get("options").cloned().unwrap_or_else(|| json!([]));
@@ -130,13 +130,13 @@ impl AskOwnerTool {
             Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
                  tell them what you assumed. If a helper asked it, send_message the helper your decision \
-                 so it goes on.",
+                 in `answer` so it goes on.",
             ),
             Some(response) => ToolResult::ok(answer(&labels, multi_select, &response).to_string()),
             None => ToolResult::error(
                 "No app is connected to show the question. Make a reasonable decision and \
                  proceed, or set out the options in your reply. If a helper asked it, send_message the \
-                 helper your decision so it goes on.",
+                 helper your decision in `answer` so it goes on.",
             ),
         }
     }
@@ -169,8 +169,9 @@ fn back_to_the_starter(input: &Value) -> ToolResult {
         .unwrap_or_default();
     ToolResult {
         content: "Your question goes back with your report to the conversation that started you. It asks \
-                  the owner and sends you the answer; you continue from here then. This turn ends now, and \
-                  the question stays open until the answer comes."
+                  the owner and sends you the answer, as a message that starts \"The owner's answer to your \
+                  question\"; you continue from here then. This turn ends now. The question stays open until \
+                  that answer comes: any other message leaves it open, and you don't ask it again."
             .to_string(),
         terminal: true,
         question: Some(types::OwnerQuestion {
@@ -343,7 +344,7 @@ mod tests {
             r.content
         );
         // A run that asked for its helper can't leave the helper waiting.
-        assert!(r.content.contains("If a helper asked it, send_message the helper your decision so it goes on."), "{}", r.content);
+        assert!(r.content.contains("If a helper asked it, send_message the helper your decision in `answer` so it goes on."), "{}", r.content);
     }
 
     /// A helper can't reach the owner, whether or not an app could show a
