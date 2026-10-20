@@ -151,6 +151,9 @@ impl Helpers {
     async fn send_message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let to = input["to"].as_str().unwrap_or("").trim();
         let message = input["message"].as_str().unwrap_or("").trim();
+        if let Some(changes) = input["changes"].as_str() {
+            return self.settle_changes(to, changes, ctx).await;
+        }
         let conversation = input["conversation"].as_str().and_then(crate::coworker::Conversation::parse);
         let recipient = self.recipient(to);
         if conversation.is_some() && !matches!(recipient, Recipient::Coworker(_)) {
@@ -193,6 +196,59 @@ impl Helpers {
 }
 
 impl Helpers {
+    /// Land or discard an isolated helper's changes. Until its work is
+    /// verified, landing in the owner's files is the owner's own decision:
+    /// they are asked, on a card, and a run nobody is watching holds the
+    /// changes for them.
+    async fn settle_changes(&self, to: &str, changes: &str, ctx: &ToolContext) -> ToolResult {
+        let land = match changes {
+            "land" => true,
+            "discard" => false,
+            other => {
+                return ToolResult::error(format!(
+                    "changes is \"land\" or \"discard\", not \"{other}\". Nothing was changed."
+                ));
+            }
+        };
+        if !matches!(self.recipient(to), Recipient::Helper) {
+            return ToolResult::error("Only a helper you started holds changes to land or discard. Nothing was changed.");
+        }
+        let orch = match self.orchestrator() {
+            Ok(o) => o,
+            Err(e) => return ToolResult::error(e),
+        };
+        if land {
+            let question = format!(
+                "Helper {to}'s changes are ready in its own copy and haven't been verified. Land them in your files?"
+            );
+            let widgets = json!([{ "type": "options", "multiSelect": false, "options": ["Land them", "Keep them in the copy", "Discard them"] }]);
+            match ctx.ask_user(&question, widgets).await.as_deref() {
+                Some("Land them") => {}
+                Some("Discard them") => {
+                    return match orch.settle(to, false, ctx).await {
+                        Ok(text) => ToolResult::ok(format!("The owner chose to discard them. {text}")),
+                        Err(e) => ToolResult::error(e),
+                    };
+                }
+                Some(_) => {
+                    return ToolResult::ok(format!(
+                        "The owner kept helper {to}'s changes in its copy: nothing landed. Land or discard them later."
+                    ));
+                }
+                None => {
+                    return ToolResult::error(format!(
+                        "Nobody is here to say yes, and unverified changes land in the owner's files only at their word: \
+                         helper {to}'s changes are held in its copy for them. Tell the owner they are ready."
+                    ));
+                }
+            }
+        }
+        match orch.settle(to, land, ctx).await {
+            Ok(text) => ToolResult::ok(text),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
     /// A message into a coworker's own session — their persona, memory,
     /// connected accounts and permissions — through the coworker rail. It
     /// never waits: the message is queued, the call returns, and the reply
@@ -391,7 +447,7 @@ impl DynTool for HelperTool {
                     "prompt": { "type": "string", "description": "The whole job: what to do, what you already know, and what to report back." },
                     "helper_type": { "type": "string", "enum": HELPER_TYPES, "description": "general (default); explore and plan only look and never change anything." },
                     "background": { "type": "boolean", "default": true, "description": "Run in the background and report by notification. false only when your very next step needs the result." },
-                    "isolation": { "type": "string", "enum": ["worktree"], "description": "Its own copy of a code project, merged back when done, for helpers editing the same code. Never for media." },
+                    "isolation": { "type": "string", "enum": ["worktree"], "description": "Its own copy of the folder it changes (code or documents): the owner's files change only when you land its changes." },
                     "speed": { "type": "string", "description": "The speed the helper works at, by model name. Leave it out and it works at yours." },
                     "pieces": {
                         "type": "array",
@@ -411,9 +467,10 @@ impl DynTool for HelperTool {
                     "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
                     "message": { "type": "string", "description": "What to tell them." },
                     "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: who receives it, by name." },
-                    "conversation": { "type": "string", "description": "A linked employee's conversation id (as list_employees shows it) or \"new\"; leave out to continue your thread with it." }
+                    "conversation": { "type": "string", "description": "A linked employee's conversation id (as list_employees shows it) or \"new\"; leave out to continue your thread with it." },
+                    "changes": { "type": "string", "enum": ["land", "discard"], "description": "To a helper with its own copy: land its changes in the owner's files, or drop them." }
                 },
-                "required": ["to", "message"]
+                "required": ["to"]
             }),
         }
     }
@@ -468,6 +525,8 @@ impl DynTool for HelperTool {
         let blank = |k: &str| input[k].as_str().is_none_or(|s| s.trim().is_empty());
         let empty: &[&str] = match self.op {
             HelperOp::Delegate => &["description", "prompt"],
+            // Settling a helper's changes needs no message.
+            HelperOp::SendMessage if input["changes"].is_string() => &["to"],
             HelperOp::SendMessage => &["to", "message"],
         };
         if let Some(k) = empty.iter().find(|k| blank(k)) {
@@ -588,6 +647,10 @@ mod tests {
         }
         fn list_active(&self, _caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
+        }
+        fn settle<'a>(&'a self, task_id: &'a str, land: bool, _ctx: &'a crate::ToolContext) -> Fut<'a, Result<String, String>> {
+            let task_id = task_id.to_string();
+            Box::pin(async move { Ok(format!("settled {task_id}: {}", if land { "landed" } else { "discarded" })) })
         }
         fn recover(&self) -> Fut<'_, ()> {
             Box::pin(async {})
