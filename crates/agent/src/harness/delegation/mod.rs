@@ -194,12 +194,38 @@ pub struct Completion {
     pub task_id: String,
     pub description: String,
     pub status: CompletionStatus,
+    /// Its words: the report after the question, if any; past the run's
+    /// limit, the one spill path's note.
     pub result: String,
+    /// A helper's question for the owner, rendered: it leads the report
+    /// and is never spilled ([`collect::assemble`]).
+    pub question: Option<String>,
     pub usage: ai::UsageInfo,
     /// The untrusted content the helper read: its result carries it to
     /// whoever reads it, as a tool result, a notification row or a wake.
     pub taint: Vec<ProvenanceClass>,
 }
+
+impl Completion {
+    /// The whole report as its reader gets it: the question first, then
+    /// the words.
+    pub fn report(&self) -> String {
+        match (&self.question, self.result.trim().is_empty()) {
+            (Some(q), true) => q.clone(),
+            (Some(q), false) => format!("{q}\n\n{}", self.result),
+            (None, _) => self.result.clone(),
+        }
+    }
+}
+
+/// The summary words a helper's row keeps beside its report, so a restart
+/// knows what the report is: `held` while its own helpers still ran, and
+/// `asks_owner` when it waits on the owner's decision.
+fn row_tag(held: bool, asks_owner: bool) -> String {
+    [(held, ROW_HELD), (asks_owner, ROW_ASKS_OWNER)].iter().filter(|(on, _)| *on).map(|(_, w)| *w).collect::<Vec<_>>().join(" ")
+}
+const ROW_HELD: &str = "held";
+const ROW_ASKS_OWNER: &str = "asks_owner";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionStatus {
@@ -399,29 +425,17 @@ impl Helper {
         self.earlier_reports.push(c);
     }
 
-    /// The run's final completion: earlier reports lead `c`, what they read
-    /// goes with it, and a question an earlier turn asked the owner stays
-    /// the run's status until the answer reaches it.
-    fn final_completion(&mut self, mut c: Completion) -> Completion {
-        if self.earlier_reports.is_empty() {
-            return c;
-        }
-        let earlier = std::mem::take(&mut self.earlier_reports);
-        if !c.status.awaits_owner()
-            && matches!(c.status, CompletionStatus::Done | CompletionStatus::Partial { .. })
-            && let Some(asked) = earlier.iter().rev().find(|e| e.status.awaits_owner())
-        {
-            c.status = asked.status.clone();
-        }
-        for class in earlier.iter().flat_map(|e| e.taint.iter()) {
-            if !c.taint.contains(class) {
-                c.taint.push(*class);
-            }
-        }
-        let mut reports: Vec<String> = earlier.into_iter().map(|e| e.result).collect();
-        reports.push(std::mem::take(&mut c.result));
-        c.result = reports.join("\n\n");
-        c
+    /// The run's final completion from its earlier reports and `c`, held to
+    /// its report limit and read back the way its parent reads files
+    /// ([`collect::assemble`]).
+    fn final_completion(&mut self, c: Completion, spill_dir: &std::path::Path) -> Completion {
+        let reader = tools::result_shape::Reader::of(&self.parent_seat.door);
+        collect::assemble(std::mem::take(&mut self.earlier_reports), c, spill_dir, self.report_limit, reader)
+    }
+
+    /// What the run has said so far, for its row while it goes on.
+    fn so_far(&self) -> String {
+        self.earlier_reports.iter().map(Completion::report).collect::<Vec<_>>().join("\n\n")
     }
 }
 
@@ -946,6 +960,7 @@ impl Helpers {
             description: description.to_string(),
             status,
             result,
+            question: None,
             usage: ai::UsageInfo::default(),
             taint: Vec::new(),
         }
@@ -1049,7 +1064,12 @@ impl Helpers {
             helper.parent_seat = turn.seat.clone();
             helper.parent_grant = grant.cloned();
             helper.parent_platform = turn.delivery.platform.clone();
-            helper.held = None;
+            // A report held while its own helpers ran is never dropped: it
+            // leads this run's next report (a question for the owner in it
+            // included).
+            if let Some(held) = helper.held.take() {
+                helper.keep_earlier(held);
+            }
             req
         };
         let _ = self.store.update_task_running(task_id);
@@ -1112,28 +1132,89 @@ impl Helpers {
                 continue;
             };
             if depth_of(parent_key) > 0 {
+                self.release_held_after_restart(parent_key, &run.id);
                 continue;
             }
-            let description = self
-                .store
-                .get_pending_task(&run.id)
-                .ok()
-                .flatten()
-                .and_then(|t| t.description)
-                .unwrap_or_default();
+            let description = self.description_of(&run.id);
             info!(task_id = %run.id, parent = %parent_key, "a helper was interrupted by a restart");
+            // What it had said is on its row: a question asked before the
+            // restart is not lost.
             self.deliver(
                 parent_key,
                 Completion {
                     task_id: run.id.clone(),
                     description,
                     status: CompletionStatus::Failed { error: error.to_string() },
-                    result: String::new(),
+                    result: run.result.clone().unwrap_or_default(),
+                    question: None,
                     usage: ai::UsageInfo::default(),
                     taint: Vec::new(),
                 },
                 0,
             );
+        }
+    }
+
+    fn description_of(&self, task_id: &str) -> String {
+        self.store.get_pending_task(task_id).ok().flatten().and_then(|t| t.description).unwrap_or_default()
+    }
+
+    /// Helper `child` of the helper at `parent_key` was interrupted by a
+    /// restart. A parent that had finished and was holding its report for
+    /// it (its row says `held`) reports now, from its row, to its own
+    /// parent: a held question survives the restart.
+    fn release_held_after_restart(self: &Arc<Self>, parent_key: &str, child: &str) {
+        let Some((grandparent, pid)) = split_helper_key(parent_key) else {
+            return;
+        };
+        if depth_of(grandparent) > 0 || self.state().helpers.contains_key(pid) {
+            return;
+        }
+        let Some(row) = self.store.engine_get_run(pid).ok().flatten() else {
+            return;
+        };
+        let tags: Vec<&str> = row.summary.split_whitespace().collect();
+        if row.state != "done" || !tags.contains(&ROW_HELD) {
+            return;
+        }
+        let asks_owner = tags.contains(&ROW_ASKS_OWNER);
+        let _ = self.store.engine_set_run_result_tag(pid, &row_tag(false, asks_owner));
+        let status = if asks_owner {
+            CompletionStatus::Partial { why: collect::NEEDS_OWNER_DECISION.to_string() }
+        } else {
+            CompletionStatus::Done
+        };
+        info!(task_id = %pid, parent = %grandparent, "a held helper report released after a restart");
+        self.deliver(
+            grandparent,
+            Completion {
+                task_id: pid.to_string(),
+                description: self.description_of(pid),
+                status,
+                result: format!("{}\n\n(Its helper {child} was interrupted by a restart.)", row.result.unwrap_or_default()),
+                question: None,
+                usage: ai::UsageInfo::default(),
+                taint: Vec::new(),
+            },
+            0,
+        );
+    }
+
+    /// Where a report to `parent_key` past its limit is saved: the parent's
+    /// own results.
+    fn spill_dir(&self, parent_key: &str) -> std::path::PathBuf {
+        self.sessions
+            .resolve_session_id_by_key(parent_key)
+            .map(|id| tools::result_shape::results_dir(&id))
+            .unwrap_or_else(|_| tools::result_shape::results_dir(&parent_key.replace(':', "_")))
+    }
+
+    /// Keep helper `task_id`'s report on its row: `report` and what it is
+    /// (held, waiting on the owner), so `read_output` shows it and a restart
+    /// doesn't lose it.
+    fn keep_on_row(&self, task_id: &str, report: &str, held: bool, asks_owner: bool) {
+        if let Err(e) = self.store.engine_set_run_result(task_id, report, Some(&row_tag(held, asks_owner))) {
+            warn!(task_id = %task_id, error = %e, "a helper's report could not be kept on its row");
         }
     }
 
@@ -1214,6 +1295,7 @@ impl Helpers {
             description,
             status: CompletionStatus::Failed { error },
             result: String::new(),
+            question: None,
             usage: ai::UsageInfo::default(),
             taint: Vec::new(),
         }
@@ -1226,15 +1308,12 @@ impl Helpers {
         isolation: Option<crate::worktree::Isolation>,
     ) -> Completion {
         let cancel = req.cancel.clone();
-        let (parent_key, description, report_limit, reader) = {
+        let (parent_key, description) = {
             let state = self.state();
             let h = state.helpers.get(task_id);
             (
                 h.map(|h| h.parent_key.clone()).unwrap_or_default(),
                 h.map(|h| h.description.clone()).unwrap_or_default(),
-                h.map_or(collect::REPORT_LIMIT, |h| h.report_limit),
-                // A spilled report is read back the way its parent reads files.
-                h.map_or(tools::result_shape::Reader::File, |h| tools::result_shape::Reader::of(&h.parent_seat.door)),
             )
         };
         self.emit(&parent_key, ai::StreamEvent::subagent_start(task_id, description.as_str()));
@@ -1254,12 +1333,7 @@ impl Helpers {
             }
             Err(e) => collect::Collected::failed(e.to_string()),
         };
-        let spill_dir = self
-            .sessions
-            .resolve_session_id_by_key(&parent_key)
-            .map(|id| tools::result_shape::results_dir(&id))
-            .unwrap_or_else(|_| tools::result_shape::results_dir(&parent_key.replace(':', "_")));
-        let mut completion = collected.into_completion(task_id, &description, &spill_dir, report_limit, reader);
+        let mut completion = collected.into_completion(task_id, &description);
         if let Some(iso) = isolation {
             let merged = crate::worktree::merge_all(std::slice::from_ref(&iso), &format!("nebo: helper {task_id}")).await;
             for (_, outcome) in &merged {
@@ -1268,9 +1342,9 @@ impl Helpers {
             }
         }
         match &completion.status {
-            CompletionStatus::Done | CompletionStatus::Partial { .. } => {
-                let _ = self.store.update_task_completed(task_id, Some(&completion.result));
-            }
+            // The run's report is assembled and kept on its row when it
+            // ends (`finish`).
+            CompletionStatus::Done | CompletionStatus::Partial { .. } => {}
             CompletionStatus::Failed { error } => {
                 let _ = self.store.update_task_failed(task_id, error);
             }
@@ -1347,7 +1421,9 @@ impl Helpers {
                     .is_ok_and(|messages| input_unheard(&messages));
             if continues {
                 info!(task_id = %task_id, "input reached the helper as its turn ended: running a turn to hear it");
+                let asks_owner = completion.status.awaits_owner();
                 h.keep_earlier(completion);
+                self.keep_on_row(task_id, &h.so_far(), false, asks_owner);
                 let spec = HelperSpec {
                     description: h.description.clone(),
                     prompt: String::new(),
@@ -1369,7 +1445,11 @@ impl Helpers {
                 return Some(child::child_request(&parent, task_id, &spec, None, TurnInput::None));
             }
             h.running = false;
-            let completion = h.final_completion(completion);
+            let completion = h.final_completion(completion, &self.spill_dir(&h.parent_key));
+            if matches!(completion.status, CompletionStatus::Done | CompletionStatus::Partial { .. }) {
+                let _ = self.store.update_task_completed(task_id, Some(&completion.report()));
+                let _ = self.store.engine_set_run_result_tag(task_id, &row_tag(false, completion.status.awaits_owner()));
+            }
             let waiter = h.waiter.take();
             let (session_key, parent_key, depth) = (h.session_key.clone(), h.parent_key.clone(), h.parent_seat.handoff_depth);
             let completion = match waiter {
@@ -1385,6 +1465,9 @@ impl Helpers {
                 None => completion,
             };
             if completion.status != CompletionStatus::Stopped && state.running_children(&session_key) {
+                // Held on its row too: a restart before its helpers report
+                // still delivers it (`release_held_after_restart`).
+                let _ = self.store.engine_set_run_result_tag(task_id, &row_tag(true, completion.status.awaits_owner()));
                 if let Some(h) = state.helpers.get_mut(task_id) {
                     h.held = Some(completion);
                 }
@@ -1424,6 +1507,7 @@ impl Helpers {
                             && let Some(p) = state.helpers.get_mut(&pid)
                             && let Some(held) = p.held.take()
                         {
+                            let _ = self.store.engine_set_run_result_tag(&pid, &row_tag(false, held.status.awaits_owner()));
                             release = Some((p.parent_key.clone(), held, p.parent_seat.handoff_depth));
                             state.forget(&pid);
                         }
@@ -1982,7 +2066,7 @@ mod tests {
         assert_eq!(rig.next_wake().await, "agent:bookkeeper:web");
         let pending = rig.pending_notifications("agent:bookkeeper:web");
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].contains("done\nWaiting on March.\n\nClose plan ready.\n"), "{}", pending[0]);
+        assert!(pending[0].contains("done\nEarlier:\nWaiting on March.\n\nClose plan ready.\n"), "{}", pending[0]);
     }
 
     #[tokio::test]
@@ -2234,7 +2318,7 @@ mod tests {
         assert!(matches!(crate::harness::conversation::arrived_mid_turn(&row), Some(crate::harness::conversation::MidTurnFrom::Parent { .. })));
 
         // The turn ended before a step read it: one more turn hears it, and
-        // the parent gets both reports.
+        // the parent gets both reports, the earlier one marked so.
         child.answer("Q1 is 12,000.").await;
         let again = rig.next_turn().await;
         assert_eq!(again.request.session_key, child.request.session_key);
@@ -2243,7 +2327,7 @@ mod tests {
         again.answer("With April, 16,100.").await;
         rig.next_wake().await;
         let pending = rig.pending_notifications("agent:bookkeeper:web");
-        assert!(pending[0].contains("done\nQ1 is 12,000.\n\nWith April, 16,100.\n"), "{}", pending[0]);
+        assert!(pending[0].contains("done\nEarlier:\nQ1 is 12,000.\n\nWith April, 16,100.\n"), "{}", pending[0]);
     }
 
     /// A coworker's reply to a helper that asked reaches that helper, not a
@@ -2537,12 +2621,74 @@ mod tests {
         b.answer("40 contacts found.").await;
         let resumed = rig.next_turn().await;
         assert_eq!(resumed.request.session_key, a.request.session_key, "the helper hears its child");
-        resumed.answer("Contacts are in.").await;
+        // Still without the answer, it asks again: the question is the run's.
+        ask(&resumed, "Contacts are in.", &q).await;
         assert_eq!(rig.next_wake().await, "agent:sdr:web");
         let pending = rig.pending_notifications("agent:sdr:web");
         assert!(pending[0].contains(&format!("helper {a_id} \"read the ledger\": partial ({}", collect::NEEDS_OWNER_DECISION)), "{}", pending[0]);
-        let question = pending[0].find("Question: Which vendor?").expect("the held question");
-        assert!(question < pending[0].find("Contacts are in.").expect("the latest turn"), "the question leads: {}", pending[0]);
+        let question = pending[0].find("Question: Which vendor?").expect("the question");
+        assert_eq!(pending[0].matches("Question: Which vendor?").count(), 1, "shown once: {}", pending[0]);
+        assert!(question < pending[0].find("Earlier:\nWhere it stands: Drafted the plan.").expect("the held report"), "the question leads: {}", pending[0]);
+        assert!(pending[0].contains("Contacts are in."), "{}", pending[0]);
+        // read_output shows the whole report, the question first.
+        let read = rig.helpers.read_output("agent:sdr:web", &a_id).unwrap();
+        assert!(read.contains("Question: Which vendor?") && read.contains("Earlier:"), "{read}");
+    }
+
+    /// The conversation that started a helper sends it a message while the
+    /// helper holds a report for its own helper: the held report, question
+    /// and all, is never dropped; it leads the helper's next report.
+    #[tokio::test]
+    async fn a_message_to_a_helper_holding_a_question_keeps_it() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan the outreach.", None)).await.unwrap());
+        let a = rig.next_turn().await;
+        rig.helpers.delegate(&a.request, None, &[], &call("Find the contacts.", None)).await.unwrap();
+        let _b = rig.next_turn().await;
+        let q = types::OwnerQuestion { question: "Which vendor?".into(), options: vec!["Acme".into()], ..Default::default() };
+        ask(&a, "Drafted the plan.", &q).await;
+        for _ in 0..200 {
+            if rig.helpers.state().helpers.get(&a_id).is_some_and(|h| h.held.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        rig.helpers.send(&owner, None, &[], &a_id, "Also cover Denver.").await.unwrap();
+        let state = rig.helpers.state();
+        let a_now = &state.helpers[&a_id];
+        assert!(a_now.held.is_none());
+        assert_eq!(a_now.earlier_reports.len(), 1, "the held report is kept");
+        assert!(a_now.earlier_reports[0].question.as_deref().is_some_and(|q| q.contains("Question: Which vendor?")));
+    }
+
+    /// A restart while a helper holds its question for its own helper: the
+    /// interrupted helper fails, and the held report, kept on its parent's
+    /// row, still reaches the owner's conversation as a question.
+    #[tokio::test]
+    async fn a_held_question_survives_a_restart() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan the outreach.", None)).await.unwrap());
+        let a = rig.next_turn().await;
+        rig.helpers.delegate(&a.request, None, &[], &call("Find the contacts.", None)).await.unwrap();
+        let _b = rig.next_turn().await;
+        let q = types::OwnerQuestion { question: "Which vendor?".into(), options: vec!["Acme".into()], ..Default::default() };
+        ask(&a, "Drafted the plan.", &q).await;
+        for _ in 0..200 {
+            if rig.helpers.state().helpers.get(&a_id).is_some_and(|h| h.held.is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let Rig { store, _dir, .. } = rig;
+        let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+        rig.helpers.recover();
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let pending = rig.pending_notifications("agent:sdr:web");
+        let held = pending.iter().find(|p| p.contains(&format!("helper {a_id} "))).expect("the held report is delivered");
+        assert!(held.contains(&format!("partial ({}", collect::NEEDS_OWNER_DECISION)) && held.contains("Question: Which vendor?"), "{held}");
+        assert!(held.contains("was interrupted by a restart"), "{held}");
     }
 
     /// A helper's question goes to the turn that started it, whatever its

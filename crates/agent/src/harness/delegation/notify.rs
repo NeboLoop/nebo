@@ -46,7 +46,7 @@ pub fn render_result(c: &Completion) -> String {
         CompletionStatus::Failed { error } => format!("failed ({error})"),
         CompletionStatus::Stopped => "stopped".to_string(),
     };
-    format!("helper {} \"{}\": {status}\n{}", c.task_id, c.description, c.result)
+    format!("helper {} \"{}\": {status}\n{}", c.task_id, c.description, c.report())
 }
 
 /// What a foreground `delegate` returns: the same body, with where it came
@@ -151,6 +151,7 @@ mod tests {
             description: "read the logs".into(),
             status,
             result: "Three errors, all from the nightly job.".into(),
+            question: None,
             usage: ai::UsageInfo::default(),
             taint: Vec::new(),
         }

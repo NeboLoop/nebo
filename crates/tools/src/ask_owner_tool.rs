@@ -97,7 +97,7 @@ impl AskOwnerTool {
             // question goes up the reporting line. A seat that answers to the
             // owner still decides for itself: this is not a new way to
             // interrupt the owner.
-            if let Some(answered) = self.ask_up_the_line(ctx, question).await {
+            if let Some(answered) = self.ask_up_the_line(ctx, &escalation(input)).await {
                 return answered;
             }
             return ToolResult::error(
@@ -129,15 +129,33 @@ impl AskOwnerTool {
         match ctx.ask_user(question, widgets).await {
             Some(response) if response == crate::origin::SKIP_SENTINEL => ToolResult::ok(
                 "The owner skipped this question. Make a reasonable assumption and carry on, but \
-                 tell them what you assumed.",
+                 tell them what you assumed. If a helper asked it, send_message the helper your decision \
+                 so it goes on.",
             ),
             Some(response) => ToolResult::ok(answer(&labels, multi_select, &response).to_string()),
             None => ToolResult::error(
                 "No app is connected to show the question. Make a reasonable decision and \
-                 proceed, or set out the options in your reply.",
+                 proceed, or set out the options in your reply. If a helper asked it, send_message the \
+                 helper your decision so it goes on.",
             ),
         }
     }
+}
+
+/// The question as it goes up the reporting line: the question, what is
+/// decided on, the options and the recommended one, so the employee
+/// answering has all the owner's card would have shown.
+fn escalation(input: &Value) -> String {
+    let mut out = input["question"].as_str().unwrap_or("").trim().to_string();
+    if let Some(context) = input["context"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
+        out.push_str(&format!("\n\nContext: {context}"));
+    }
+    let options: Vec<&str> = input["options"].as_array().map(|a| a.iter().filter_map(|o| o.as_str()).collect()).unwrap_or_default();
+    if let Some(first) = options.first() {
+        let pick = if input["multi_select"].as_bool().unwrap_or(false) { "any of" } else { "one of" };
+        out.push_str(&format!("\nOptions ({pick}): {}\nRecommended: {first}", options.join(" | ")));
+    }
+    out
 }
 
 /// A helper's question for the owner, as the result that ends its turn: the
@@ -151,7 +169,8 @@ fn back_to_the_starter(input: &Value) -> ToolResult {
         .unwrap_or_default();
     ToolResult {
         content: "Your question goes back with your report to the conversation that started you. It asks \
-                  the owner and sends you the answer; you continue from here then. This turn ends now."
+                  the owner and sends you the answer; you continue from here then. This turn ends now. If \
+                  you run again before the answer comes and still need it, ask again."
             .to_string(),
         terminal: true,
         question: Some(types::OwnerQuestion {
@@ -356,6 +375,19 @@ mod tests {
         assert!(q.multi_select && q.style == "select", "the card's shape travels with it");
         assert!(tool.description().contains("In a helper run your turn ends here"), "{}", tool.description());
         assert!(rx.try_recv().is_err(), "no card goes out");
+    }
+
+    /// A question that goes up the reporting line carries what the card
+    /// would have: the context, the options and the recommended one. A
+    /// skipped question still reminds the asker that a helper may be
+    /// waiting on it.
+    #[tokio::test]
+    async fn an_escalated_question_keeps_its_options_and_a_skip_frees_the_helper() {
+        let up = escalation(&json!({"question": "Which vendor?", "context": "Two quotes.", "options": ["Acme", "Globex"]}));
+        assert_eq!(up, "Which vendor?\n\nContext: Two quotes.\nOptions (one of): Acme | Globex\nRecommended: Acme");
+        assert_eq!(escalation(&json!({"question": "  Budget? "})), "Budget?");
+        let (_, r) = asked(json!({"question": "Which vendor?", "options": ["Acme", "Globex"]}), crate::origin::SKIP_SENTINEL).await;
+        assert!(r.content.contains("If a helper asked it, send_message the helper your decision"), "{}", r.content);
     }
 
     /// Ask with the owner at the keyboard: the card that goes out, and the
