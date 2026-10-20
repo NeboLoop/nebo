@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Ainda não integrado: suas edições ainda estão no caminho",
 			"kept_own_edits": "Não integrado: você manteve suas próprias edições, e a mudança espera na cópia dela",
 			"live_failed": "A verificação ao vivo falhou",
+			"live_unavailable": "Não verificado ao vivo: o bot não tem um navegador para abrir o app",
 			"live_ok": "A página recarregou e está funcionando",
 			"review_clean": "Nenhum problema bloqueante ou grave",
 			"review_blocking": "Problemas bloqueantes: {count, plural, other {#}}",

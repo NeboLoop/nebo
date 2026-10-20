@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Noch nicht übernommen: Ihre Änderungen stehen noch im Weg",
 			"kept_own_edits": "Nicht übernommen: Sie haben Ihre eigenen Änderungen behalten, die Änderung wartet in ihrer Kopie",
 			"live_failed": "Die Live-Prüfung ist fehlgeschlagen",
+			"live_unavailable": "Nicht live geprüft: Der Bot hat keinen Browser, um die App zu öffnen",
 			"live_ok": "Die Seite wurde neu geladen und ist in Ordnung",
 			"review_clean": "Keine blockierenden oder größeren Probleme",
 			"review_blocking": "Blockierende Probleme: {count, plural, other {#}}",

@@ -4420,6 +4420,7 @@
 			"edits_in_way": "아직 반영 안 됨: 편집 내용이 여전히 방해가 됩니다",
 			"kept_own_edits": "반영 안 됨: 직접 한 편집을 유지했고, 변경은 사본에서 기다립니다",
 			"live_failed": "실시간 확인에 실패했습니다",
+			"live_unavailable": "실시간으로 확인하지 못했습니다: 봇에 앱을 열 브라우저가 없습니다",
 			"live_ok": "페이지를 다시 불러왔고 정상 작동합니다",
 			"review_clean": "차단 또는 주요 문제가 없습니다",
 			"review_blocking": "차단 문제: {count, plural, other {#개}}",

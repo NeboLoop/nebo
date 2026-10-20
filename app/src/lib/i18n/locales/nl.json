@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Nog niet doorgevoerd: jouw wijzigingen staan nog in de weg",
 			"kept_own_edits": "Niet doorgevoerd: je hebt je eigen wijzigingen gehouden, en de wijziging wacht in haar kopie",
 			"live_failed": "De live-controle is mislukt",
+			"live_unavailable": "Niet live gecontroleerd: de bot heeft geen browser om de app in te openen",
 			"live_ok": "De pagina is herladen en werkt",
 			"review_clean": "Geen blokkerende of grote problemen",
 			"review_blocking": "Blokkerende problemen: {count, plural, other {#}}",

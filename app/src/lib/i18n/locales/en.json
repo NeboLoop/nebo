@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Not landed yet: your edits are still in the way",
 			"kept_own_edits": "Not landed: you kept your own edits, and the change waits in its copy",
 			"live_failed": "The live check failed",
+			"live_unavailable": "Not checked live: the bot has no browser to open the app in",
 			"live_ok": "The page reloaded and checked out",
 			"review_clean": "No blocking or major issues",
 			"review_blocking": "{count, plural, one {# blocking issue} other {# blocking issues}}",

@@ -4420,6 +4420,7 @@
 			"edits_in_way": "尚未并入：你的编辑仍有冲突",
 			"kept_own_edits": "未并入：你保留了自己的编辑，此更改在其副本中等待",
 			"live_failed": "实时检查失败",
+			"live_unavailable": "未能实时检查：机器人没有可打开该应用的浏览器",
 			"live_ok": "页面已重新加载并正常运行",
 			"review_clean": "没有阻断性或重大问题",
 			"review_blocking": "阻断性问题：{count, plural, other {# 个}}",

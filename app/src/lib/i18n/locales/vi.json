@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Chưa đưa vào: các chỉnh sửa của bạn vẫn đang cản trở",
 			"kept_own_edits": "Không đưa vào: bạn giữ chỉnh sửa của riêng mình, và thay đổi này chờ trong bản sao của nó",
 			"live_failed": "Kiểm tra trực tiếp thất bại",
+			"live_unavailable": "Chưa kiểm tra trực tiếp: bot không có trình duyệt để mở ứng dụng",
 			"live_ok": "Trang đã tải lại và hoạt động tốt",
 			"review_clean": "Không có vấn đề chặn hay nghiêm trọng",
 			"review_blocking": "Vấn đề chặn: {count, plural, other {#}}",

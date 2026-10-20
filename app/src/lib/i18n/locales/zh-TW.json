@@ -4420,6 +4420,7 @@
 			"edits_in_way": "尚未併入：你的編輯仍擋在前面",
 			"kept_own_edits": "未併入：你保留了自己的編輯，這項變更在它的副本中等待",
 			"live_failed": "即時檢查失敗",
+			"live_unavailable": "未能即時檢查：機器人沒有可開啟此應用程式的瀏覽器",
 			"live_ok": "頁面已重新載入並正常運作",
 			"review_clean": "沒有阻斷性或重大問題",
 			"review_blocking": "阻斷性問題：{count, plural, other {# 個}}",

@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Jeszcze nie wdrożone: Twoje zmiany wciąż stoją na drodze",
 			"kept_own_edits": "Nie wdrożone: zachowałeś własne zmiany, a ta zmiana czeka w swojej kopii",
 			"live_failed": "Sprawdzenie na żywo nie powiodło się",
+			"live_unavailable": "Nie sprawdzono na żywo: bot nie ma przeglądarki, w której mógłby otworzyć aplikację",
 			"live_ok": "Strona przeładowała się i działa",
 			"review_clean": "Brak blokujących lub poważnych problemów",
 			"review_blocking": "Problemy blokujące: {count, plural, other {#}}",

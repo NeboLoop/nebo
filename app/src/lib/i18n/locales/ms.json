@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Belum dimasukkan: suntingan anda masih menghalang",
 			"kept_own_edits": "Tidak dimasukkan: anda kekalkan suntingan anda sendiri, dan perubahan ini menunggu dalam salinannya",
 			"live_failed": "Semakan langsung gagal",
+			"live_unavailable": "Tidak disemak secara langsung: bot tiada pelayar untuk membuka aplikasi",
 			"live_ok": "Halaman dimuat semula dan berfungsi",
 			"review_clean": "Tiada isu yang menyekat atau besar",
 			"review_blocking": "Isu yang menyekat: {count, plural, other {#}}",

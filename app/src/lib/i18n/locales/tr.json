@@ -4420,6 +4420,7 @@
 			"edits_in_way": "Henüz aktarılmadı: düzenlemeleriniz hâlâ yolda",
 			"kept_own_edits": "Aktarılmadı: kendi düzenlemelerinizi tuttunuz, değişiklik kendi kopyasında bekliyor",
 			"live_failed": "Canlı kontrol başarısız oldu",
+			"live_unavailable": "Canlı kontrol edilmedi: botun uygulamayı açacak bir tarayıcısı yok",
 			"live_ok": "Sayfa yeniden yüklendi ve çalışıyor",
 			"review_clean": "Engelleyici veya büyük sorun yok",
 			"review_blocking": "Engelleyici sorunlar: {count, plural, other {#}}",
