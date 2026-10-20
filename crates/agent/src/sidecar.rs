@@ -52,11 +52,12 @@ You see only the frames: say \"between 0:03 and 0:04\" rather than inventing wha
 them. Report only what you can actually see and say plainly what is illegible. Never invent content. \
 No preamble.";
 
-/// Most tokens one reading takes.
+/// Most tokens one reading takes. Janus holds the balance for this many,
+/// so it is the readings' observed ceiling, not more.
 const READING_TOKENS: i32 = 1_500;
 
-/// Most tokens one video's reading takes.
-const WATCHING_TOKENS: i32 = 2_000;
+/// Most tokens one video's reading takes (the same observed ceiling).
+const WATCHING_TOKENS: i32 = 1_500;
 
 /// The longest one look may take, from asking to the last word. The owner's
 /// message waits on the readings of its pictures before it is stored and
@@ -281,6 +282,45 @@ mod tests {
 
     fn silent() -> Eyes {
         Eyes { provider: std::sync::Arc::new(Silent), model: String::new() }
+    }
+
+    /// A vision model that keeps each request and answers at once.
+    #[derive(Default)]
+    struct Kept(std::sync::Mutex<Vec<ChatRequest>>);
+
+    #[async_trait::async_trait]
+    impl Provider for Kept {
+        fn id(&self) -> &str {
+            "kept"
+        }
+        fn supports_vision(&self) -> bool {
+            true
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.0.lock().unwrap().push(req.clone());
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.send(ai::StreamEvent::text("seen")).await.unwrap();
+            tx.send(ai::StreamEvent::done()).await.unwrap();
+            Ok(rx)
+        }
+    }
+
+    /// Every look and watch names its most tokens, so the gateway holds
+    /// that much of the balance and not its large default.
+    #[tokio::test]
+    async fn a_look_and_a_watch_each_name_their_most_tokens() {
+        let picture = Picture {
+            image: ai::ImageContent { media_type: "image/png".into(), data: String::new() },
+            width: 10,
+            height: 10,
+        };
+        let kept = std::sync::Arc::new(Kept::default());
+        let eyes = Eyes { provider: kept.clone(), model: String::new() };
+        look(ai::RequestTrace::new("image_read"), &eyes, &picture, "attached", None).await;
+        watch(ai::RequestTrace::new("video_read"), &eyes, &[(0.0, picture.clone())], Some(1.0), "attached").await;
+        let sent: Vec<(String, i32)> =
+            kept.0.lock().unwrap().iter().map(|r| (r.trace.purpose.to_string(), r.max_tokens)).collect();
+        assert_eq!(sent, vec![("image_read".to_string(), 1_500), ("video_read".to_string(), 1_500)]);
     }
 
     /// A helper that never answers gives up within the limit, and the

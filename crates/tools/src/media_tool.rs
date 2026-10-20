@@ -146,27 +146,37 @@ impl Media {
         self
     }
 
-    /// A Janus request with the one Janus auth: the bearer and `X-Bot-ID`.
-    fn request(&self, method: reqwest::Method, path: &str) -> (reqwest::RequestBuilder, bool) {
+    /// Send a Janus request with the one Janus auth (the bearer and
+    /// `X-Bot-ID`); `finish` adds the rest. It is built fresh for each
+    /// attempt, since [`ai::http::send`] sends it again while the balance is
+    /// held by running work. The bool is whether the bearer is a sign-in.
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        finish: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    ) -> (reqwest::Result<reqwest::Response>, bool) {
         let (bearer, signed_in) = crate::janus::bearer(self.store.as_deref(), &self.bot_id);
-        let req = self
-            .client
-            .request(method, format!("{}{path}", self.base_url))
-            .bearer_auth(bearer)
-            .header("X-Bot-ID", &self.bot_id);
-        (req, signed_in)
+        let url = format!("{}{path}", self.base_url);
+        let resp = ai::http::send(|| {
+            finish(
+                self.client
+                    .request(method.clone(), &url)
+                    .bearer_auth(&bearer)
+                    .header("X-Bot-ID", &self.bot_id),
+            )
+        })
+        .await;
+        (resp, signed_in)
     }
 
     /// Images for `body` (a `/v1/images/generations` request) and the model
     /// that made them.
     pub async fn images(&self, body: &Value) -> Result<(Vec<Image>, String), String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/images/generations");
-        let resp = req
-            .json(body)
-            .timeout(Duration::from_secs(300))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to make the image: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, "/v1/images/generations", |req| req.json(body).timeout(Duration::from_secs(300)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to make the image: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -214,13 +224,10 @@ impl Media {
     /// `/v1/audio/generations` for music and sound): Janus answers the
     /// file's bytes and their content type. `what` names it in errors.
     pub async fn audio(&self, path: &str, what: &str, body: &Value) -> Result<(Vec<u8>, String), String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, path);
-        let resp = req
-            .json(body)
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to make the {what}: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, path, |req| req.json(body).timeout(Duration::from_secs(600)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to make the {what}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -245,12 +252,10 @@ impl Media {
     /// The voices speech can use (`/v1/audio/voices`): each by the id
     /// `voice` takes, with its name and description.
     pub async fn voices(&self) -> Result<Vec<Value>, String> {
-        let (req, signed_in) = self.request(reqwest::Method::GET, "/v1/audio/voices");
-        let resp = req
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI for the voices: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::GET, "/v1/audio/voices", |req| req.timeout(Duration::from_secs(30)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI for the voices: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -267,21 +272,23 @@ impl Media {
     /// transcription speed, `verbose_json` with word timings): Janus's
     /// answer, words and speakers included when the audio has them.
     pub async fn transcribe(&self, filename: &str, bytes: Vec<u8>, language: Option<&str>) -> Result<Value, String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/audio/transcriptions");
-        let mut form = reqwest::multipart::Form::new()
-            .text("model", TRANSCRIBE_MODEL)
-            .text("response_format", "verbose_json")
-            .text("timestamp_granularities[]", "word");
-        if let Some(lang) = language {
-            form = form.text("language", lang.to_string());
-        }
-        let form = form.part("file", reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string()));
-        let resp = req
-            .multipart(form)
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to transcribe {filename}: {e}"))?;
+        // A form is sent once; a request sent again gets a fresh one.
+        let form = || {
+            let mut form = reqwest::multipart::Form::new()
+                .text("model", TRANSCRIBE_MODEL)
+                .text("response_format", "verbose_json")
+                .text("timestamp_granularities[]", "word");
+            if let Some(lang) = language {
+                form = form.text("language", lang.to_string());
+            }
+            form.part("file", reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_string()))
+        };
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, "/v1/audio/transcriptions", |req| {
+                req.multipart(form()).timeout(Duration::from_secs(600))
+            })
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to transcribe {filename}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -294,13 +301,10 @@ impl Media {
 
     /// Submits a video job for `body` (a `/v1/videos` request).
     pub async fn submit_video(&self, body: &Value) -> Result<Video, String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/videos");
-        let resp = req
-            .json(body)
-            .timeout(Duration::from_secs(120))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to make the video: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, "/v1/videos", |req| req.json(body).timeout(Duration::from_secs(120)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to make the video: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -347,8 +351,10 @@ impl Media {
             }
             tokio::time::sleep(wait).await;
             wait = self.polling.next(wait);
-            let (req, signed_in) = self.request(reqwest::Method::GET, &format!("/v1/videos/{id}"));
-            let resp = match req.timeout(Duration::from_secs(30)).send().await {
+            let (resp, signed_in) = self
+                .send(reqwest::Method::GET, &format!("/v1/videos/{id}"), |req| req.timeout(Duration::from_secs(30)))
+                .await;
+            let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(id, error = %e, "video poll got no answer; polling again");
@@ -379,13 +385,10 @@ impl Media {
     /// The file appears only once complete.
     pub async fn download_video(&self, id: &str, path: &Path) -> Result<u64, String> {
         use tokio::io::AsyncWriteExt;
-        let (req, signed_in) =
-            self.request(reqwest::Method::GET, &format!("/v1/videos/{id}/content"));
-        let mut resp = req
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(|e| format!("Could not download the video from NeboAI: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::GET, &format!("/v1/videos/{id}/content"), |req| req.timeout(Duration::from_secs(600)))
+            .await;
+        let mut resp = resp.map_err(|e| format!("Could not download the video from NeboAI: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -440,6 +443,13 @@ fn part_path(path: &Path) -> PathBuf {
 /// never sees those (owner rule 2026-10-05). Its words stay in the log.
 fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
     let code = janus_code(body);
+    if ai::is_balance_reserved(status, body) {
+        return format!(
+            "{} Wait a minute and try the {kind} once more; if it is still busy, tell the owner that plainly. It is \
+             never about adding funds.",
+            ai::BALANCE_BUSY
+        );
+    }
     match status {
         429 if code == "provider_rate_limit" => format!(
             "NeboAI is busy making {kind}s right now. Wait a minute and try once more; if it is still busy, tell the \
@@ -2552,6 +2562,19 @@ mod tests {
             file_names(None, "media", "A red kart, at dusk!", "png", 1, 7),
             ["media/a-red-kart-at-dusk-7.png"]
         );
+    }
+
+    /// Running work holding the balance is busy, never the plan used up.
+    #[test]
+    fn a_reserved_balance_is_busy_not_the_plan() {
+        let said = failure(
+            "image",
+            429,
+            r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved","retryable":true}}"#,
+            true,
+        );
+        assert!(said.starts_with(ai::BALANCE_BUSY), "{said}");
+        assert!(!said.contains("used up") && !said.contains("upgrade"), "{said}");
     }
 
     #[test]

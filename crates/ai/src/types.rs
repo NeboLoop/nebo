@@ -953,6 +953,33 @@ pub trait ProfileTracker {
 /// route it could take. Final: the gateway already tried them all.
 pub const CONTENT_FILTERED: &str = "CONTENT_FILTERED";
 
+/// The gateway's code for a 429 that refused a request only because work
+/// already running holds the account's money; the balance itself covers it.
+/// The request was not served or charged. [`crate::http::send`] waits it out
+/// a few times; one that outlasts that is [`balance_reserved`], never the
+/// out-of-balance refusal.
+pub const BALANCE_RESERVED: &str = "BALANCE_RESERVED";
+
+/// What the owner reads when [`BALANCE_RESERVED`] outlasted the waits.
+pub const BALANCE_BUSY: &str = "Your balance is busy with work that's running. Try again in a moment.";
+
+/// Whether a refusal is the gateway's [`BALANCE_RESERVED`].
+pub fn is_balance_reserved(status: u16, body: &str) -> bool {
+    status == 429 && body.contains(BALANCE_RESERVED)
+}
+
+/// The error a [`BALANCE_RESERVED`] refusal becomes once the waits ran out:
+/// final (a retry here would only wait longer), and never another provider.
+/// The message carries the code so the app can show it in the owner's
+/// language, the way it does `USAGE_LIMIT_EXCEEDED`.
+pub fn balance_reserved() -> ProviderError {
+    ProviderError::Api {
+        code: BALANCE_RESERVED.to_string(),
+        message: format!("{BALANCE_RESERVED}: {BALANCE_BUSY}"),
+        retryable: false,
+    }
+}
+
 /// Error from an AI provider.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ProviderError {

@@ -410,6 +410,7 @@
 		"tokensInOut": "輸入 {input} · 輸出 {output}",
 		"tokenTooltip": "提示詞總計 {total} · 系統+工具 {overhead} · 快取讀取 {cacheRead}",
 		"outOfBalance": "你本月的方案已用完。請升級方案以繼續。",
+		"balanceBusy": "你的餘額正被執行中的工作佔用。請稍後再試。",
 		"viewPlans": "檢視方案",
 		"choosePlan": "選擇方案",
 		"documents": "文件",

@@ -99,7 +99,7 @@ impl EmbedGate {
                 return Err(Self::held_error(left));
             }
             let last = attempt + 1 == MAX_ATTEMPTS;
-            let resp = match build().send().await {
+            let resp = match crate::http::send(&build).await {
                 Ok(r) => r,
                 Err(e) => {
                     if last {
@@ -118,9 +118,12 @@ impl EmbedGate {
                 return Err(ProviderError::Auth(format!("embedding auth error: {status}")));
             }
             let retry_after = crate::http::retry_after_secs(resp.headers()).map(Duration::from_secs);
+            let body = resp.text().await.unwrap_or_default();
+            if crate::is_balance_reserved(status.as_u16(), &body) {
+                return Err(crate::balance_reserved());
+            }
             let retryable = status == 429 || status == 408 || status.is_server_error();
             if !retryable {
-                let body = resp.text().await.unwrap_or_default();
                 return Err(ProviderError::Api {
                     code: status.as_u16().to_string(),
                     message: format!("embedding error: {status}: {}", body.chars().take(300).collect::<String>()),

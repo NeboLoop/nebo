@@ -614,6 +614,14 @@ impl WebCore {
                 Ok(_) => {
                     tracing::warn!(query, "Janus search returned no results, trying fallback tiers");
                 }
+                // The balance is held by running work: the search waits for
+                // it, never another provider in its place.
+                Err(e) if e.starts_with(ai::BALANCE_RESERVED) => {
+                    return ToolResult::error(format!(
+                        "{} Search again in a minute. It is never about adding funds.",
+                        ai::BALANCE_BUSY
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!(query, error = %e, "Janus search failed, trying fallback tiers");
                     tier_failures.push(format!("platform search API: {e}"));
@@ -728,22 +736,25 @@ impl WebCore {
         let url = format!("{}/v1/search", cfg.base_url);
         let body = serde_json::json!({ "query": query, "max_results": 10 });
 
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&bearer)
-            .header("X-Bot-ID", &cfg.bot_id)
-            // The shared client speaks as a browser to web pages; to Janus, as Nebo.
-            .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT)
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(12))
-            .send()
-            .await
-            .map_err(|e| format!("janus request: {e}"))?;
+        let resp = ai::http::send(|| {
+            self.client
+                .post(&url)
+                .bearer_auth(&bearer)
+                .header("X-Bot-ID", &cfg.bot_id)
+                // The shared client speaks as a browser to web pages; to Janus, as Nebo.
+                .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT)
+                .json(&body)
+                .timeout(std::time::Duration::from_secs(12))
+        })
+        .await
+        .map_err(|e| format!("janus request: {e}"))?;
 
         let status = resp.status();
         if !status.is_success() {
             let snippet = resp.text().await.unwrap_or_default();
+            if ai::is_balance_reserved(status.as_u16(), &snippet) {
+                return Err(ai::balance_reserved().to_string());
+            }
             let mut msg = format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>());
             if !has_profile_key {
                 msg.push_str(

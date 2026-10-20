@@ -8,6 +8,11 @@ use tools::truncate_str;
 
 /// Total prompt cap to keep the summarizer call cheap.
 const PROMPT_CAP: usize = 2_000;
+
+/// Most tokens one tool summary takes. Janus holds the balance for this many;
+/// summaries run about 20 (p99), so this leaves room without holding more.
+const SUMMARY_TOKENS: i32 = 256;
+
 /// Max chars of each tool input/output included in the prompt.
 const IO_TRUNCATE: usize = 300;
 /// Max chars of assistant intent context.
@@ -81,7 +86,7 @@ pub async fn summarize_tool_batch(
             ..Default::default()
         }],
         tools: vec![],
-        max_tokens: 100,
+        max_tokens: SUMMARY_TOKENS,
         temperature: 0.0,
         system: SYSTEM_PROMPT.to_string(),
         model: route.model.clone(),
@@ -235,6 +240,38 @@ pub async fn one_line(
 #[cfg(test)]
 mod tests {
     use super::plain_title;
+
+    /// A model that keeps each request and answers at once.
+    #[derive(Default)]
+    struct Kept(std::sync::Mutex<Vec<ai::ChatRequest>>);
+
+    #[async_trait::async_trait]
+    impl ai::Provider for Kept {
+        fn id(&self) -> &str {
+            "kept"
+        }
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.0.lock().unwrap().push(req.clone());
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.send(ai::StreamEvent::text("Read the plan")).await.unwrap();
+            tx.send(ai::StreamEvent::done()).await.unwrap();
+            Ok(rx)
+        }
+    }
+
+    /// A tool summary names its most tokens, so the gateway holds that much
+    /// of the balance and not its large default.
+    #[tokio::test]
+    async fn a_tool_summary_names_its_most_tokens() {
+        let kept = std::sync::Arc::new(Kept::default());
+        let route = crate::harness::model_call::Route { provider: kept.clone(), model: String::new(), window_tokens: 0 };
+        let call = ai::ToolCall { id: "c1".into(), name: "read".into(), input: serde_json::json!({"path": "/plan.md"}) };
+        let result = tools::ToolResult::ok("the plan");
+        super::summarize_tool_batch(ai::RequestTrace::new("tool_summary"), &route, &[call], &[result], "").await;
+        let sent = kept.0.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].max_tokens, 256);
+    }
 
     #[test]
     fn a_title_comes_out_as_plain_words() {

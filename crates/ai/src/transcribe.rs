@@ -74,22 +74,21 @@ pub async fn transcribe(
         )));
     }
 
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string());
-    let form = reqwest::multipart::Form::new()
-        .text("model", model.to_string())
-        .text("response_format", "verbose_json")
-        .part("file", part);
+    // A form is sent once; a request sent again gets a fresh one.
+    let form = || {
+        let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_string());
+        reqwest::multipart::Form::new()
+            .text("model", model.to_string())
+            .text("response_format", "verbose_json")
+            .part("file", part)
+    };
 
     let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
-    let response = tls::http_client()
+    let client = tls::http_client()
         .user_agent(types::constants::USER_AGENT)
         .build()
-        .map_err(|e| ProviderError::Request(e.to_string()))?
-        .post(&url)
-        .bearer_auth(api_key)
-        .headers(trace.headers())
-        .multipart(form)
-        .send()
+        .map_err(|e| ProviderError::Request(e.to_string()))?;
+    let response = crate::http::send(|| client.post(&url).bearer_auth(api_key).headers(trace.headers()).multipart(form()))
         .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
 
@@ -99,6 +98,9 @@ pub async fn transcribe(
         .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
 
+    if crate::is_balance_reserved(status.as_u16(), &body) {
+        return Err(crate::balance_reserved());
+    }
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => ProviderError::Auth(body),

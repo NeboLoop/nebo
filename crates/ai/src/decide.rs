@@ -354,9 +354,7 @@ impl DecideClient {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let req = req();
-            let resp = req
-                .send()
+            let resp = crate::http::send(&req)
                 .await
                 .map_err(|e| ProviderError::Request(e.to_string()))?;
             let status = resp.status();
@@ -396,6 +394,9 @@ fn classify(status: u16, text: String) -> ProviderError {
             .map(str::to_owned)
     };
     let message = field("message").unwrap_or_else(|| text.clone());
+    if crate::is_balance_reserved(status, &text) {
+        return crate::balance_reserved();
+    }
     match status {
         401 | 403 => ProviderError::Auth(text),
         429 if field("code").as_deref() == Some(USAGE_LIMIT_EXCEEDED) || text.contains(USAGE_LIMIT_EXCEEDED) => {
@@ -487,6 +488,19 @@ mod tests {
                 assert_eq!((code.as_str(), message.as_str(), retryable), ("400", "criteria must be an object", false));
             }
             other => panic!("expected a 400, got {other:?}"),
+        }
+    }
+
+    /// Running work holding the balance is never the funding refusal.
+    #[test]
+    fn a_reserved_balance_is_busy_not_unfunded() {
+        let body = r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved","retryable":true}}"#;
+        match classify(429, body.into()) {
+            ProviderError::Api { code, retryable, .. } => {
+                assert_eq!(code, crate::BALANCE_RESERVED);
+                assert!(!retryable);
+            }
+            other => panic!("expected the busy refusal, got {other:?}"),
         }
     }
 

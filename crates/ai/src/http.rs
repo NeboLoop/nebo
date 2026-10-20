@@ -24,6 +24,60 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// How many times a request refused with [`crate::BALANCE_RESERVED`] is sent
+/// again, and the most all the waits between add up to.
+const RESERVED_RETRIES: usize = 3;
+const RESERVED_BUDGET: Duration = Duration::from_secs(30);
+/// The wait when such a refusal names none.
+const RESERVED_WAIT: Duration = Duration::from_secs(2);
+
+/// Send the request `build` makes (built fresh per attempt). A gateway
+/// refusal that says work already running holds the balance
+/// ([`crate::BALANCE_RESERVED`]) is waited out here, for every caller: the
+/// same request again after its `Retry-After` plus up to a quarter more, at
+/// most [`RESERVED_RETRIES`] times within [`RESERVED_BUDGET`]. The refused
+/// request was not served, so sending it again charges once. Any other
+/// answer, and a reserved one that outlasts the waits, is returned as it
+/// came for the caller to map ([`crate::balance_reserved`]).
+pub async fn send(build: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    let mut waited = Duration::ZERO;
+    let mut retries = 0;
+    loop {
+        let resp = build().send().await?;
+        if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || retries == RESERVED_RETRIES {
+            return Ok(resp);
+        }
+        // Reading the body is the only way to tell; the response is put back
+        // together for the caller when it is some other 429.
+        let (status, version, headers) = (resp.status(), resp.version(), resp.headers().clone());
+        let body = resp.bytes().await?;
+        let asked = retry_after_secs(&headers).map(Duration::from_secs).unwrap_or(RESERVED_WAIT);
+        let wait = asked + jitter(asked / 4);
+        if !crate::is_balance_reserved(status.as_u16(), &String::from_utf8_lossy(&body))
+            || waited + wait > RESERVED_BUDGET
+        {
+            let mut back = ::http::Response::new(body);
+            *back.status_mut() = status;
+            *back.version_mut() = version;
+            *back.headers_mut() = headers;
+            return Ok(reqwest::Response::from(back));
+        }
+        retries += 1;
+        tracing::info!(retry = retries, wait_ms = wait.as_millis() as u64, "balance held by running work; sending again after the wait");
+        tokio::time::sleep(wait).await;
+        waited += wait;
+    }
+}
+
+/// Up to `max`, so callers refused together do not all come back at once.
+fn jitter(max: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    max.mul_f64(f64::from(nanos % 1000) / 1000.0)
+}
+
 /// HTTP client for streaming chat completions (Anthropic, OpenAI, Janus,
 /// DeepSeek, Gemini). Long-running SSE — no total request timeout, but we
 /// detect dead connections via TCP keepalive and proactively recycle idle
@@ -95,6 +149,77 @@ mod tests {
         });
         let _ = client.get(&url).send().await;
         seen.await.unwrap()
+    }
+
+    const RESERVED: &str = r#"{"error":{"code":"BALANCE_RESERVED","message":"balance reserved by running work","retryable":true}}"#;
+
+    /// A local server that answers its requests in turn from `script`
+    /// (status, body), the last answer repeating, each with `Retry-After: 0`.
+    /// Returns its URL and how many requests it has answered.
+    async fn scripted(script: Vec<(u16, &'static str)>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let (status, body) = script[n.min(script.len() - 1)];
+                let mut buf = vec![0u8; 8192];
+                let mut got = Vec::new();
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        (url, count)
+    }
+
+    /// Running work held the balance twice; the third send is served.
+    #[tokio::test]
+    async fn a_reserved_balance_is_waited_out_and_the_request_served() {
+        let (url, count) = scripted(vec![(429, RESERVED), (429, RESERVED), (200, r#"{"ok":true}"#)]).await;
+        let client = reqwest::Client::new();
+        let resp = super::send(|| client.post(&url).body("{}")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), r#"{"ok":true}"#);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// Still held after every wait: the refusal comes back whole, after the
+    /// bounded number of sends, for the caller to map.
+    #[tokio::test]
+    async fn a_balance_held_past_the_waits_comes_back_as_it_was_sent() {
+        let (url, count) = scripted(vec![(429, RESERVED)]).await;
+        let client = reqwest::Client::new();
+        let resp = super::send(|| client.post(&url).body("{}")).await.unwrap();
+        assert_eq!(resp.status(), 429);
+        assert_eq!(super::retry_after_secs(resp.headers()), Some(0));
+        assert_eq!(resp.text().await.unwrap(), RESERVED);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1 + super::RESERVED_RETRIES);
+    }
+
+    /// Any other 429, the out-of-balance one included, is not sent again
+    /// here and reaches the caller unchanged.
+    #[tokio::test]
+    async fn other_refusals_are_sent_once() {
+        const UNFUNDED: &str = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#;
+        let (url, count) = scripted(vec![(429, UNFUNDED)]).await;
+        let client = reqwest::Client::new();
+        let resp = super::send(|| client.post(&url).body("{}")).await.unwrap();
+        assert_eq!(resp.status(), 429);
+        assert_eq!(resp.text().await.unwrap(), UNFUNDED);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// Every call to Janus through these clients names this Nebo and its

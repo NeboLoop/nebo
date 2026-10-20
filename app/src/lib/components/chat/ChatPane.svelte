@@ -2249,6 +2249,8 @@
             <div class="chat-run-error-text">
               {#if msg.content.includes('USAGE_LIMIT_EXCEEDED')}
                 {$t('chat.outOfBalance')}
+              {:else if msg.content.includes('BALANCE_RESERVED')}
+                {$t('chat.balanceBusy')}
               {:else if link}
                 {link.text} <a class="link" href={link.url} target="_blank" rel="noopener noreferrer">{link.label}</a>
               {:else}
@@ -2491,6 +2493,8 @@
         <span class="text-xs text-base-content">
           {#if isOutOfBalance}
             {$t('chat.outOfBalance')}
+          {:else if chatError.includes('BALANCE_RESERVED')}
+            {$t('chat.balanceBusy')}
           {:else}
             {@const link = trailingLink(chatError)}
             {#if link}

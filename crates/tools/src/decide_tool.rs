@@ -46,6 +46,9 @@ pub enum DecideError {
     Unfunded,
     /// Too many decisions at once (a throttling 429 that outlasted the retry).
     Busy,
+    /// The balance covers it but running work holds it (Janus's
+    /// `BALANCE_RESERVED` after the waits ran out). Never out of balance.
+    Reserved,
     /// The decision service failed.
     Failed(String),
 }
@@ -59,6 +62,7 @@ impl std::fmt::Display for DecideError {
                 "Your plan is used up this month. Upgrade your plan to continue.",
             ),
             Self::Busy => f.write_str("Too many decisions at once. Try again in a moment."),
+            Self::Reserved => f.write_str(ai::BALANCE_BUSY),
             Self::Failed(e) => write!(f, "The decision could not be made: {e}"),
         }
     }
@@ -74,6 +78,7 @@ impl From<ai::ProviderError> for DecideError {
             ai::ProviderError::Auth(_) => Self::Unavailable,
             ai::ProviderError::RateLimit { .. } => Self::Busy,
             ai::ProviderError::Api { code, .. } if code == ai::decide::USAGE_LIMIT_EXCEEDED => Self::Unfunded,
+            ai::ProviderError::Api { code, .. } if code == ai::BALANCE_RESERVED => Self::Reserved,
             ai::ProviderError::Api { code, message, .. } if code == "400" || code == "422" => Self::Invalid(message),
             other => Self::Failed(other.to_string()),
         }
@@ -215,6 +220,21 @@ async fn run(client: Option<&DecideClient>, ctx: &ToolContext, input: &Value) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Running work holding the balance reads as busy, never as the plan
+    /// used up; the funding refusal keeps its own words.
+    #[test]
+    fn a_reserved_balance_is_busy_not_unfunded() {
+        let reserved = DecideError::from(ai::balance_reserved());
+        assert_eq!(reserved, DecideError::Reserved);
+        assert_eq!(reserved.to_string(), ai::BALANCE_BUSY);
+        let unfunded = DecideError::from(ai::ProviderError::Api {
+            code: ai::decide::USAGE_LIMIT_EXCEEDED.into(),
+            message: "no balance".into(),
+            retryable: false,
+        });
+        assert_eq!(unfunded, DecideError::Unfunded);
+    }
 
     /// A decision service on a local port: records each request body and
     /// answers with `answer`.
