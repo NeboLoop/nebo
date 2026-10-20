@@ -11034,6 +11034,56 @@ mod tests {
         }
     }
 
+    /// Review round 5: unchanged work is reviewed again when the rules a
+    /// review reads changed since its clean review (the employee's own
+    /// rules here); never skipped on a verdict given under other rules.
+    #[test]
+    fn unchanged_work_is_reviewed_again_under_new_rules() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                let hooks = project.path().join(".git/hooks");
+                std::fs::create_dir_all(&hooks).unwrap();
+                std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\necho 'not on this branch' >&2; exit 1\n").unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                let clean = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(clean),
+                    Step::Say("Looked it over."),
+                    Step::Say(clean),
+                    Step::Say("It is reviewed, but it can't land."),
+                ]);
+                let h = verifying_harness(&model).await;
+                h.store.create_agent("dev", Some("agent"), "Dev", "", "", "{}", None, None).unwrap();
+                let store = h.store.clone();
+                let mut req = owner("Make total() add a and b");
+                req.seat.agent_id = "dev".into();
+                // The owner adds a rule while the builder looks it over.
+                let model_calls = model.clone();
+                tokio::spawn(async move {
+                    while model_calls.calls().len() < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    store.set_agent_rules_from_packages("dev", "Every total rounds to cents.", "s").unwrap();
+                });
+                run_turn(&h, req).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
+                assert_eq!(rounds.iter().filter(|r| r.kind == "review").count(), 2, "{kinds:?}");
+                let second = model.calls().iter().filter(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).nth(1).cloned().expect("a second review");
+                assert!(second.messages.iter().any(|m| m.content.contains("Every total rounds to cents.")), "the second review read the new rule");
+            })
+        })
+    }
+
     /// A tool that fails in a way only the owner can fix: the turn ends
     /// waiting on them.
     struct NeedsTheOwner;

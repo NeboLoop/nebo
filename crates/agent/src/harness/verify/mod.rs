@@ -78,6 +78,7 @@ pub fn english(why: &Why) -> String {
         "edits_in_way" => "not landed yet: the owner's edits are still in the way".into(),
         "kept_own_edits" => "not landed: the owner kept their own edits; the change waits in its copy".into(),
         "live_failed" => "the live check failed".into(),
+        "live_unavailable" => "it could not be checked live: the bot has no browser to open the app in".into(),
         "live_ok" => "the page reloaded and checked out".into(),
         "review_clean" => "no blocking or major issues".into(),
         "review_blocking" => format!("{} blocking issue(s)", a("count")),

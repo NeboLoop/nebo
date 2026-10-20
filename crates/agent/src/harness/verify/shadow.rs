@@ -383,23 +383,21 @@ impl Shadow {
         Ok(())
     }
 
-    /// What `snapshot` holds at each of `paths`, as a landing compares it
-    /// ([`crate::worktree::content_id`]; `None`: nothing there).
+    /// What the folder holds at each of `paths` while it is still exactly
+    /// `snapshot`, read the way a landing compares it
+    /// ([`crate::worktree::content_id`]: the one hasher on both sides, so a
+    /// shadow's own git settings never make a difference; `None`: nothing
+    /// there). `Err` when the folder has changed since `snapshot`.
     pub async fn contents(&self, snapshot: &Snapshot, paths: &[String]) -> Result<crate::worktree::Reviewed, String> {
-        let mut out: crate::worktree::Reviewed = paths.iter().map(|p| (p.clone(), None)).collect();
-        if paths.is_empty() {
-            return Ok(out);
+        if &self.snapshot().await? != snapshot {
+            return Err("the folder changed after it was snapshotted".into());
         }
-        let mut args = vec!["ls-tree", "-r", "-z", "--full-tree", snapshot.0.as_str(), "--"];
-        args.extend(paths.iter().map(String::as_str));
-        let listed = self.run_bytes(&args).await.map_err(|e| format!("ls-tree: {e}"))?;
-        for entry in nul_split(&listed) {
-            // `<mode> <type> <object>\t<path>`
-            if let Some((meta, path)) = entry.split_once('\t')
-                && let Some(slot) = out.get_mut(path)
-            {
-                *slot = meta.split(' ').nth(2).map(str::to_string);
-            }
+        let mut out = crate::worktree::Reviewed::new();
+        for p in paths {
+            let id = crate::worktree::content_id(&self.work_tree, p)
+                .await
+                .map_err(|_| format!("{p} could not be read"))?;
+            out.insert(p.clone(), id);
         }
         Ok(out)
     }
@@ -799,4 +797,50 @@ mod tests {
         })
     }
 
+    /// Review round 5: a folder that is no repository but carries a
+    /// `.gitattributes` (an unpacked download) with CRLF text: what the
+    /// review saw is what lands, never a false "needs review".
+    #[test]
+    fn r5v_a_copy_with_gitattributes_and_crlf_lands_what_was_reviewed() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let shadows = tempfile::tempdir().unwrap();
+                std::fs::write(folder.path().join(".gitattributes"), "* text=auto\n").unwrap();
+                std::fs::write(folder.path().join("a.txt"), "a\n").unwrap();
+                let c = crate::worktree::create_copy(folder.path(), "sa-r5v3").unwrap();
+                let shadow = Shadow::open(&shadows.path().join("s.git"), &c.path).await.unwrap();
+                std::fs::write(c.path.join("b.txt"), "x\r\ny\r\n").unwrap();
+                let snap = shadow.snapshot().await.unwrap();
+                let seen = shadow.contents(&snap, &["b.txt".to_string()]).await.unwrap();
+                let landing = crate::worktree::Landing { only: Some(seen), ..Default::default() };
+                let mut isos = [crate::worktree::Isolation::Copy(c)];
+                let out = crate::worktree::merge_all(&mut isos, "m", None, &landing).await;
+                assert!(matches!(&out[0].1, crate::worktree::MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+            })
+        })
+    }
+
+    /// Review round 5: a repository whose own config defines a clean filter
+    /// (git-crypt, a local git-lfs install): a snapshot records each path as
+    /// a landing reads it.
+    #[test]
+    fn r5v_a_repository_local_clean_filter_reads_alike() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let shadows = tempfile::tempdir().unwrap();
+                repo(folder.path()).await;
+                git(folder.path(), &["config", "filter.up.clean", "tr a-z A-Z"]).await.unwrap();
+                git(folder.path(), &["config", "filter.up.smudge", "cat"]).await.unwrap();
+                std::fs::write(folder.path().join(".gitattributes"), "*.txt filter=up\n").unwrap();
+                commit_all(folder.path()).await;
+                std::fs::write(folder.path().join("b.txt"), "secret\n").unwrap();
+                let shadow = Shadow::open(&shadows.path().join("s.git"), folder.path()).await.unwrap();
+                let snap = shadow.snapshot().await.unwrap();
+                let seen = shadow.contents(&snap, &["b.txt".to_string()]).await.unwrap();
+                assert_eq!(seen["b.txt"], crate::worktree::content_id(folder.path(), "b.txt").await.unwrap());
+            })
+        })
+    }
 }

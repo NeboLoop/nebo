@@ -656,21 +656,25 @@ impl VerifyCheck {
             }
         };
         // Nothing changed since a clean review (no blocking issue, no call
-        // of the owner's to carry out): its verdict stands and it goes on
-        // to land; no reviewer reads the same bytes again.
-        if v.rounds > 0
-            && work.last.as_ref() == Some(&head)
-            && store
+        // of the owner's to carry out), under the same rules: its verdict
+        // stands and it goes on to land; no reviewer reads the same bytes
+        // again.
+        if v.rounds > 0 && work.last.as_ref() == Some(&head) {
+            let rules = rules_hash(&self.review_rules(&work).await);
+            let clean = store
                 .verification_rounds(&v.id)
                 .unwrap_or_default()
                 .iter()
                 .rev()
                 .find(|r| r.kind == "review")
                 .is_some_and(|r| {
-                    r.detail["openBlocking"].as_u64() == Some(0) && r.decisions.as_array().is_none_or(|d| d.is_empty())
-                })
-        {
-            return self.land(work, notes).await;
+                    r.detail["openBlocking"].as_u64() == Some(0)
+                        && r.decisions.as_array().is_none_or(|d| d.is_empty())
+                        && r.detail["rulesHash"].as_str() == Some(rules.as_str())
+                });
+            if clean {
+                return self.land(work, notes).await;
+            }
         }
         let whole = work
             .shadow
@@ -865,21 +869,7 @@ impl VerifyCheck {
         }
         let review_build = checks::build_cache(&work.project_root).join("review");
         let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
-        let owner_rules = store
-            .get_agent(&self.agent_id)
-            .ok()
-            .flatten()
-            .and_then(|a| a.rules)
-            .unwrap_or_default();
-        // The project's rules as they were when the work began: the work
-        // can't rewrite the rules it is reviewed against.
-        let mut at_base = std::collections::HashMap::new();
-        for rel in super::rules::rules_paths() {
-            if let Some(text) = work.shadow.read(&work.base, &rel).await {
-                at_base.insert(rel, text);
-            }
-        }
-        let rules = super::rules::rules_section(&owner_rules, &super::rules::project_rules_from(|rel| at_base.get(rel).cloned()));
+        let rules = self.review_rules(work).await;
         let input = RoundInput {
             verification_id: &v.id,
             round,
@@ -989,7 +979,7 @@ impl VerifyCheck {
         row.checks = json!(runs);
         row.fixed = json!(fixed);
         row.detail =
-            json!({ "openBlocking": progress_count, "nested": nested, "failedReviewers": failed });
+            json!({ "openBlocking": progress_count, "nested": nested, "failedReviewers": failed, "rulesHash": rules_hash(&rules) });
         row.outcome = if !failed.is_empty() {
             Why::new("review_incomplete")
         } else if blocking_now == 0 {
@@ -1161,8 +1151,8 @@ impl VerifyCheck {
             // the page reloads and checks out.
             WorkKind::AppPages => {
                 match self.live_check_app(&work, &v).await {
-                    false => self.finish(&v, "not_verified", Some(Why::new("live_failed"))),
-                    true => self.finish(&v, "verified", None),
+                    Err(why) => self.finish(&v, "not_verified", Some(why)),
+                    Ok(()) => self.finish(&v, "verified", None),
                 }
                 return Step::Finished;
             }
@@ -1329,6 +1319,26 @@ impl VerifyCheck {
                 self.not_landed(work, v, other, notes).await
             }
         }
+    }
+
+    /// Every rule a review reads: the employee's own, as they are now, and
+    /// the project's as they were when the work began (the work can't
+    /// rewrite the rules it is reviewed against).
+    async fn review_rules(&self, work: &Work) -> String {
+        let owner_rules = self
+            .store()
+            .get_agent(&self.agent_id)
+            .ok()
+            .flatten()
+            .and_then(|a| a.rules)
+            .unwrap_or_default();
+        let mut at_base = std::collections::HashMap::new();
+        for rel in super::rules::rules_paths() {
+            if let Some(text) = work.shadow.read(&work.base, &rel).await {
+                at_base.insert(rel, text);
+            }
+        }
+        super::rules::rules_section(&owner_rules, &super::rules::project_rules_from(|rel| at_base.get(rel).cloned()))
     }
 
     fn record_landing(&self, v: &db::Verification, round: i64, landed: &MergeOutcome) {
@@ -1522,8 +1532,9 @@ impl VerifyCheck {
     /// checked live in a view of their own. It checks out only when the app
     /// exists, its page loads (its folder, its entry page, every file it
     /// loads) and that load had zero errors. No view that can be opened is
-    /// a failure, never a pass.
-    async fn live_check_app(&self, work: &Work, v: &db::Verification) -> bool {
+    /// a failure, never a pass; no browser to open one in is said as such
+    /// (`live_unavailable`). `Err` is why it did not check out.
+    async fn live_check_app(&self, work: &Work, v: &db::Verification) -> Result<(), Why> {
         let store = self.store();
         let app = store
             .list_agents(1_000, 0)
@@ -1535,8 +1546,8 @@ impl VerifyCheck {
             });
         let ctx = self.tool_ctx();
         let Some(app) = app else {
-            self.record_live(v, false, json!({ "problem": "no app is served from these pages" }));
-            return false;
+            self.record_live(v, Why::new("live_failed"), json!({ "problem": "no app is served from these pages" }));
+            return Err(Why::new("live_failed"));
         };
         // The owner's open views load the new build too.
         let reload = self
@@ -1544,33 +1555,40 @@ impl VerifyCheck {
             .tools
             .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.name }))
             .await;
+        use tools::app_publish::LiveLoadError;
         let loaded = tools::app_publish::live_load(self.harness.tools.browser().as_ref(), &app).await;
-        let problem = match &loaded {
-            Err(_) => tools::app_dev::live_problem(&work.work_dir, 0).or(Some("no view of the app could be opened")),
-            Ok(failed) => tools::app_dev::live_problem(&work.work_dir, failed.len()),
+        let (problem, why, seen) = match &loaded {
+            Err(LiveLoadError::NoBrowser(e)) => (Some("the bot has no browser to open the app in"), "live_unavailable", json!(e)),
+            Err(LiveLoadError::NotOpened(e)) => {
+                (tools::app_dev::live_problem(&work.work_dir, 0).or(Some("no view of the app could be opened")), "live_failed", json!(e))
+            }
+            Ok(failed) => (tools::app_dev::live_problem(&work.work_dir, failed.len()), "live_failed", json!(failed)),
         };
-        let seen = match &loaded {
-            Ok(failed) => json!(failed),
-            Err(e) => json!(e),
-        };
-        self.record_live(v, problem.is_none(), json!({ "problem": problem, "errors": seen, "reload": reload.content }));
-        problem.is_none()
+        let why = Why::new(if problem.is_none() { "live_ok" } else { why });
+        self.record_live(v, why.clone(), json!({ "problem": problem, "errors": seen, "reload": reload.content }));
+        if problem.is_none() { Ok(()) } else { Err(why) }
     }
 
-    fn record_live(&self, v: &db::Verification, ok: bool, detail: serde_json::Value) {
+    fn record_live(&self, v: &db::Verification, outcome: Why, detail: serde_json::Value) {
         let store = self.store();
         let round = next_step(store, &v.id);
         let _ = store.put_verification_round(&db::VerificationRound {
             verification_id: v.id.clone(),
             round,
             kind: "live".into(),
-            outcome: Why::new(if ok { "live_ok" } else { "live_failed" }).text(),
+            outcome: outcome.text(),
             detail,
             started_at: Self::now(),
             finished_at: Some(Self::now()),
             ..Default::default()
         });
     }
+}
+
+/// The rules a review read, as a hash kept on its step: a review is skipped
+/// on unchanged work only under the same rules.
+fn rules_hash(rules: &str) -> String {
+    format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }
 
 /// The next step of a verification's history: after every step so far.
