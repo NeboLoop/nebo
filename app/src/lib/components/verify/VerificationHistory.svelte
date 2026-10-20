@@ -8,7 +8,7 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import type { RoundView, VerificationView } from '$lib/api/neboComponents';
-  import { cost } from '$lib/stores/verifications';
+  import { cost, lensWord, severityWord, stepWord, whyWords, type Why } from '$lib/stores/verifications';
 
   let { verification }: { verification: VerificationView } = $props();
 
@@ -19,7 +19,8 @@
   const list = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
   const bySeverity = (r: RoundView, s: string) => list<Finding>(r.findings).filter((f) => f.severity === s).length;
   const seconds = (r: RoundView) => (r.finishedAt ? Math.max(0, r.finishedAt - r.startedAt) : null);
-  const lensNames = (r: RoundView) => list<string>(r.lenses).map((l) => $t(`verify.lens.${l}`)).join(', ');
+  const lensNames = (r: RoundView) => list<string>(r.lenses).map((l) => lensWord(l, $t)).join(', ');
+  const result = (r: RoundView) => whyWords(r.result as Why | null | undefined, $t);
 </script>
 
 <ol class="verify-history">
@@ -30,12 +31,12 @@
           {#if r.kind === 'review'}
             {$t('verify.round.title', { values: { n: r.round } })}
           {:else}
-            {$t(`verify.round.kind.${r.kind}`)}
+            {stepWord(r.kind, $t)}
           {/if}
         </span>
         <span class="verify-history-meta">
           {#if seconds(r) !== null}{$t('verify.round.time', { values: { seconds: seconds(r) ?? 0 } })}{/if}
-          {#if r.kind === 'review'} · {cost(r.costMicrocents)}{/if}
+          {#if r.kind === 'review'}{seconds(r) !== null ? ' · ' : ''}{cost(r.costMicrocents)}{/if}
         </span>
       </div>
       {#if r.kind === 'review'}
@@ -45,9 +46,9 @@
         </div>
         {#each list<Finding>(r.findings) as f (f.id)}
           <div class="verify-finding verify-finding-{f.severity}">
-            <span class="verify-finding-severity">{$t(`verify.severity.${f.severity}`)}</span>
+            <span class="verify-finding-severity">{severityWord(f.severity, $t)}</span>
             <span class="verify-finding-title">{f.title}</span>
-            <span class="verify-finding-where">{f.evidence}</span>
+            {#if f.evidence?.trim()}<span class="verify-finding-where">{f.evidence}</span>{/if}
           </div>
         {/each}
         {#if list<string>(r.fixed).length}
@@ -70,8 +71,8 @@
       {:else if r.kind === 'review'}
         <div class="verify-history-line">{$t('verify.round.noChecks')}</div>
       {/if}
-      {#if r.kind !== 'review' && r.outcome}
-        <div class="verify-history-line">{r.outcome}</div>
+      {#if result(r)}
+        <div class="verify-history-line">{result(r)}</div>
       {/if}
     </li>
   {/each}

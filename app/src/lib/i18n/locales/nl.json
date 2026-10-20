@@ -4355,7 +4355,8 @@
 			"verified": "Geverifieerd",
 			"notVerified": "Niet geverifieerd",
 			"checking": "Wordt gecontroleerd",
-			"waiting": "Wacht op jou"
+			"waiting": "Wacht op jou",
+			"openHint": "Laat zien wat er gecontroleerd is"
 		},
 		"tip": {
 			"verified": "Gecontroleerd door {reviewers, plural, one {# onafhankelijke reviewer} other {# onafhankelijke reviewers}} ({lenses}) in {rounds, plural, one {# ronde} other {# rondes}}.",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "Bijgewerkt met je project",
 				"land": "Overnemen",
-				"live": "Live controle"
+				"live": "Live controle",
+				"other": "Stap"
 			},
 			"time": "{seconds} s",
 			"lenses": "Reviewers: {lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "Blokkerend",
 			"major": "Groot",
-			"minor": "Klein"
+			"minor": "Klein",
+			"other": "Probleem"
 		},
 		"lens": {
 			"correctness": "juistheid",
@@ -4401,7 +4404,48 @@
 			"billing": "facturering",
 			"data": "gegevens",
 			"performance": "prestaties",
-			"experience": "wat mensen zien"
+			"experience": "wat mensen zien",
+			"other": "een ander gebied"
+		},
+		"why": {
+			"needs_answer": "Heeft je antwoord nodig op een vraag",
+			"unreadable": "Kon niet lezen wat er veranderd is",
+			"spend_limit": "De uitgavenlimiet per run van deze medewerker is bereikt",
+			"review_incomplete": "Een review kon niet worden afgerond",
+			"needs_decision": "Heeft je beslissing nodig: {items}",
+			"stopped_by_owner": "Door jou gestopt; open problemen: {open, plural, other {#}}",
+			"stalled": "Geen voortgang meer; open problemen: {open, plural, other {#}}",
+			"no_checks": "Er konden geen tests of build draaien",
+			"landed_unreviewed": "Doorgevoerd zonder geslaagde review, op jouw keuze",
+			"edits_in_way": "Nog niet doorgevoerd: jouw wijzigingen staan nog in de weg",
+			"kept_own_edits": "Niet doorgevoerd: je hebt je eigen wijzigingen gehouden, en de wijziging wacht in haar kopie",
+			"live_failed": "De live-controle is mislukt",
+			"live_ok": "De pagina is herladen en werkt",
+			"review_clean": "Geen blokkerende of grote problemen",
+			"review_blocking": "Blokkerende problemen: {count, plural, other {#}}",
+			"up_to_date": "Al bijgewerkt met je project",
+			"caught_up": "Bijgewerkt tot {commit}",
+			"conflicts": "Jouw wijzigingen en deze komen samen in {files}",
+			"landed": "Doorgevoerd als {commit}",
+			"nothing_to_land": "Niets door te voeren",
+			"owner_edits": "Je eigen wijzigingen in {files} staan in de weg",
+			"busy_no_branch": "Nog niet doorgevoerd: je project staat op geen enkele branch",
+			"busy_branch": "Nog niet doorgevoerd: je project staat op branch {now}, en de kopie is gemaakt vanaf {from}",
+			"busy_in_progress": "Nog niet doorgevoerd: er loopt een {op} in je project",
+			"hook_failed": "De commit-hooks van je project hebben het geweigerd",
+			"retest_failed": "De controles zijn mislukt na het bijwerken met je project",
+			"not_attempted": "Niet geprobeerd, omdat een eerder deel niet is doorgevoerd",
+			"land_failed": "Het kon niet worden doorgevoerd; er is niets van jou veranderd",
+			"other": "De geschiedenis laat zien wat er gebeurd is",
+			"step_limit": "De run bereikte zijn stappenlimiet voordat de controle klaar was",
+			"turn_ended": "De run eindigde voordat de controle klaar was",
+			"restarted": "Nebo is opnieuw gestart tijdens de controle"
+		},
+		"place": {
+			"app": "De wijziging staat in de pagina's van de app; de geschiedenis van de app kan haar ongedaan maken.",
+			"helper": "Ze staat in de kopie van haar helper tot het gesprek dat hem startte haar doorvoert.",
+			"folder": "Ze is ter plekke gemaakt, in de map waaraan gewerkt werd.",
+			"nothing": "Er was niets door te voeren."
 		}
 	}
 }

@@ -4355,7 +4355,8 @@
 			"verified": "검증됨",
 			"notVerified": "검증되지 않음",
 			"checking": "확인 중",
-			"waiting": "답변을 기다리는 중"
+			"waiting": "답변을 기다리는 중",
+			"openHint": "확인한 내용을 보여줍니다"
 		},
 		"tip": {
 			"verified": "독립 검토자 {reviewers, plural, other {#명}}({lenses})이 {rounds, plural, other {#회}}에 걸쳐 확인했습니다.",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "프로젝트 최신 상태로 맞춤",
 				"land": "반영",
-				"live": "실시간 확인"
+				"live": "실시간 확인",
+				"other": "단계"
 			},
 			"time": "{seconds}초",
 			"lenses": "검토자: {lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "차단",
 			"major": "주요",
-			"minor": "사소"
+			"minor": "사소",
+			"other": "문제"
 		},
 		"lens": {
 			"correctness": "정확성",
@@ -4401,7 +4404,48 @@
 			"billing": "결제",
 			"data": "데이터",
 			"performance": "성능",
-			"experience": "사람들이 보는 화면"
+			"experience": "사람들이 보는 화면",
+			"other": "기타 영역"
+		},
+		"why": {
+			"needs_answer": "질문에 대한 답변이 필요합니다",
+			"unreadable": "무엇이 바뀌었는지 읽을 수 없습니다",
+			"spend_limit": "이 직원의 실행당 지출 한도에 도달했습니다",
+			"review_incomplete": "검토를 끝내지 못했습니다",
+			"needs_decision": "결정이 필요합니다: {items}",
+			"stopped_by_owner": "직접 중단함, 열린 문제: {open, plural, other {#개}}",
+			"stalled": "진전이 멈춤, 열린 문제: {open, plural, other {#개}}",
+			"no_checks": "테스트나 빌드를 실행할 수 없었습니다",
+			"landed_unreviewed": "검토를 통과하지 않고 선택에 따라 반영했습니다",
+			"edits_in_way": "아직 반영 안 됨: 편집 내용이 여전히 방해가 됩니다",
+			"kept_own_edits": "반영 안 됨: 직접 한 편집을 유지했고, 변경은 사본에서 기다립니다",
+			"live_failed": "실시간 확인에 실패했습니다",
+			"live_ok": "페이지를 다시 불러왔고 정상 작동합니다",
+			"review_clean": "차단 또는 주요 문제가 없습니다",
+			"review_blocking": "차단 문제: {count, plural, other {#개}}",
+			"up_to_date": "이미 프로젝트와 최신 상태입니다",
+			"caught_up": "{commit}까지 최신화했습니다",
+			"conflicts": "변경 내용과 이 변경이 {files}에서 겹칩니다",
+			"landed": "{commit}(으)로 반영했습니다",
+			"nothing_to_land": "반영할 것이 없습니다",
+			"owner_edits": "{files}의 직접 편집이 방해가 됩니다",
+			"busy_no_branch": "아직 반영 안 됨: 프로젝트가 어떤 브랜치에도 있지 않습니다",
+			"busy_branch": "아직 반영 안 됨: 프로젝트는 {now} 브랜치에 있고, 사본은 {from}에서 만들어졌습니다",
+			"busy_in_progress": "아직 반영 안 됨: 프로젝트에서 {op} 진행 중입니다",
+			"hook_failed": "프로젝트의 커밋 훅이 거부했습니다",
+			"retest_failed": "프로젝트에 맞춰 최신화한 후 확인에 실패했습니다",
+			"not_attempted": "이전 부분이 반영되지 않아 시도하지 않았습니다",
+			"land_failed": "반영할 수 없었습니다. 아무것도 바뀌지 않았습니다",
+			"other": "무슨 일이 있었는지 기록에서 확인하세요",
+			"step_limit": "확인이 끝나기 전에 실행이 단계 한도에 도달했습니다",
+			"turn_ended": "확인이 끝나기 전에 실행이 끝났습니다",
+			"restarted": "확인 중에 Nebo가 다시 시작되었습니다"
+		},
+		"place": {
+			"app": "변경은 앱 페이지에 있습니다. 앱 기록으로 되돌릴 수 있습니다.",
+			"helper": "시작한 대화가 반영할 때까지 도우미의 사본에 있습니다.",
+			"folder": "작업한 폴더에서 바로 이루어졌습니다.",
+			"nothing": "반영할 것이 없었습니다."
 		}
 	}
 }

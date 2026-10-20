@@ -4355,7 +4355,8 @@
 			"verified": "検証済み",
 			"notVerified": "未検証",
 			"checking": "確認中",
-			"waiting": "あなたの回答待ち"
+			"waiting": "あなたの回答待ち",
+			"openHint": "確認した内容を表示します"
 		},
 		"tip": {
 			"verified": "{reviewers, plural, other {#人}}の独立したレビュアー（{lenses}）が{rounds, plural, other {#回}}のラウンドで確認しました。",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "プロジェクトの最新状態に追従",
 				"land": "反映",
-				"live": "ライブ確認"
+				"live": "ライブ確認",
+				"other": "ステップ"
 			},
 			"time": "{seconds}秒",
 			"lenses": "レビュアー: {lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "重大",
 			"major": "大",
-			"minor": "軽微"
+			"minor": "軽微",
+			"other": "問題"
 		},
 		"lens": {
 			"correctness": "正確さ",
@@ -4401,7 +4404,48 @@
 			"billing": "請求",
 			"data": "データ",
 			"performance": "パフォーマンス",
-			"experience": "見た目と使い勝手"
+			"experience": "見た目と使い勝手",
+			"other": "その他の領域"
+		},
+		"why": {
+			"needs_answer": "質問への回答が必要です",
+			"unreadable": "変更内容を読み取れませんでした",
+			"spend_limit": "この従業員の1回あたりの支出上限に達しました",
+			"review_incomplete": "レビューを完了できませんでした",
+			"needs_decision": "判断が必要です：{items}",
+			"stopped_by_owner": "あなたが停止しました。未解決の問題：{open, plural, other {#件}}",
+			"stalled": "進展がなくなりました。未解決の問題：{open, plural, other {#件}}",
+			"no_checks": "テストもビルドも実行できませんでした",
+			"landed_unreviewed": "レビューを通過しないまま、あなたの選択で反映しました",
+			"edits_in_way": "まだ反映していません：あなたの編集がまだ妨げになっています",
+			"kept_own_edits": "反映していません：あなたは自分の編集を残し、変更はコピーで待機しています",
+			"live_failed": "ライブ確認に失敗しました",
+			"live_ok": "ページを再読み込みし、問題なく動作しました",
+			"review_clean": "ブロッキングや重大な問題はありません",
+			"review_blocking": "ブロッキングの問題：{count, plural, other {#件}}",
+			"up_to_date": "すでにプロジェクトの最新状態です",
+			"caught_up": "{commit} まで追従しました",
+			"conflicts": "あなたの変更とこの変更が {files} で重なっています",
+			"landed": "{commit} として反映しました",
+			"nothing_to_land": "反映するものはありません",
+			"owner_edits": "{files} にあるあなた自身の編集が妨げになっています",
+			"busy_no_branch": "まだ反映していません：プロジェクトがどのブランチにもありません",
+			"busy_branch": "まだ反映していません：プロジェクトはブランチ {now} にあり、コピーは {from} から作られました",
+			"busy_in_progress": "まだ反映していません：プロジェクトで {op} が進行中です",
+			"hook_failed": "プロジェクトのコミットフックが拒否しました",
+			"retest_failed": "プロジェクトに追従した後、チェックに失敗しました",
+			"not_attempted": "前の部分が反映されなかったため、試していません",
+			"land_failed": "反映できませんでした。あなたのものは何も変わっていません",
+			"other": "何が起きたかは履歴で確認できます",
+			"step_limit": "確認が終わる前に実行がステップ上限に達しました",
+			"turn_ended": "確認が終わる前に実行が終了しました",
+			"restarted": "確認中に Nebo が再起動しました"
+		},
+		"place": {
+			"app": "変更はアプリのページにあります。アプリの履歴で元に戻せます。",
+			"helper": "開始した会話が反映するまで、ヘルパーのコピーにあります。",
+			"folder": "作業したフォルダーでそのまま行われました。",
+			"nothing": "反映するものはありませんでした。"
 		}
 	}
 }

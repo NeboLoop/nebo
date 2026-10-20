@@ -306,8 +306,9 @@ export interface Badge {
 	openMajors: number
 	openMinors: number
 	deferred: number
-	reason: string
+	reason?: Why
 	landed: string
+	place: string
 }
 
 export interface BillingPriceInfo {
@@ -1174,6 +1175,14 @@ export interface OutcomeCount {
 	costMicrocents: number
 }
 
+export interface OwnerQuestion {
+	question: string
+	context?: string
+	options?: string[]
+	multi_select?: boolean
+	style?: string
+}
+
 export interface Pack {
 	id: string
 	name: string
@@ -1488,6 +1497,7 @@ export interface RosterTeam extends Team {
 }
 
 export interface RoundView extends VerificationRound {
+	result?: Why
 	costMicrocents: number
 }
 
@@ -1877,6 +1887,11 @@ export interface WaitingAsk {
 export interface WaitingAsksResponse {
 	asks: WaitingAsk[]
 	total: number
+}
+
+export interface Why {
+	code: string
+	args?: Record<string, unknown>
 }
 
 export interface WorkDocument {

@@ -4355,7 +4355,8 @@
 			"verified": "Verifierad",
 			"notVerified": "Inte verifierad",
 			"checking": "Kontrolleras",
-			"waiting": "Väntar på dig"
+			"waiting": "Väntar på dig",
+			"openHint": "Visar vad som kontrollerades"
 		},
 		"tip": {
 			"verified": "Granskad av {reviewers, plural, one {# oberoende granskare} other {# oberoende granskare}} ({lenses}) under {rounds, plural, one {# omgång} other {# omgångar}}.",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "Uppdaterad mot ditt projekt",
 				"land": "Införande",
-				"live": "Livekontroll"
+				"live": "Livekontroll",
+				"other": "Steg"
 			},
 			"time": "{seconds} s",
 			"lenses": "Granskare: {lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "Blockerande",
 			"major": "Större",
-			"minor": "Mindre"
+			"minor": "Mindre",
+			"other": "Problem"
 		},
 		"lens": {
 			"correctness": "korrekthet",
@@ -4401,7 +4404,48 @@
 			"billing": "fakturering",
 			"data": "data",
 			"performance": "prestanda",
-			"experience": "det människor ser"
+			"experience": "det människor ser",
+			"other": "ett annat område"
+		},
+		"why": {
+			"needs_answer": "Behöver ditt svar på en fråga",
+			"unreadable": "Kunde inte läsa vad som ändrats",
+			"spend_limit": "Medarbetarens utgiftsgräns per körning är nådd",
+			"review_incomplete": "En granskning kunde inte slutföras",
+			"needs_decision": "Behöver ditt beslut: {items}",
+			"stopped_by_owner": "Stoppad av dig; öppna problem: {open, plural, other {#}}",
+			"stalled": "Slutade göra framsteg; öppna problem: {open, plural, other {#}}",
+			"no_checks": "Inga tester eller byggen kunde köras",
+			"landed_unreviewed": "Infört utan godkänd granskning, enligt ditt val",
+			"edits_in_way": "Inte infört än: dina ändringar är fortfarande i vägen",
+			"kept_own_edits": "Inte infört: du behöll dina egna ändringar, och ändringen väntar i sin kopia",
+			"live_failed": "Livekontrollen misslyckades",
+			"live_ok": "Sidan laddades om och fungerar",
+			"review_clean": "Inga blockerande eller större problem",
+			"review_blocking": "Blockerande problem: {count, plural, other {#}}",
+			"up_to_date": "Redan i fas med ditt projekt",
+			"caught_up": "Uppdaterad till {commit}",
+			"conflicts": "Dina ändringar och den här möts i {files}",
+			"landed": "Infört som {commit}",
+			"nothing_to_land": "Inget att föra in",
+			"owner_edits": "Dina egna ändringar i {files} är i vägen",
+			"busy_no_branch": "Inte infört än: ditt projekt är inte på någon gren",
+			"busy_branch": "Inte infört än: ditt projekt är på grenen {now}, och kopian gjordes från {from}",
+			"busy_in_progress": "Inte infört än: en {op} pågår i ditt projekt",
+			"hook_failed": "Ditt projekts commit-hooks avvisade det",
+			"retest_failed": "Kontrollerna misslyckades efter uppdateringen mot ditt projekt",
+			"not_attempted": "Inte försökt, eftersom en tidigare del inte fördes in",
+			"land_failed": "Det kunde inte föras in; inget av ditt ändrades",
+			"other": "Historiken visar vad som hände",
+			"step_limit": "Körningen nådde sin stegräns innan kontrollen var klar",
+			"turn_ended": "Körningen tog slut innan kontrollen var klar",
+			"restarted": "Nebo startade om medan det kontrollerades"
+		},
+		"place": {
+			"app": "Ändringen finns i appens sidor; appens historik kan ångra den.",
+			"helper": "Den finns i hjälparens kopia tills samtalet som startade den för in den.",
+			"folder": "Den gjordes på plats, i mappen som arbetet gällde.",
+			"nothing": "Det fanns inget att föra in."
 		}
 	}
 }

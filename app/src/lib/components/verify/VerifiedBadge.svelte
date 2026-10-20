@@ -13,6 +13,7 @@
 
   let open = $state(false);
   const words = $derived(badgeWords(verification, $t));
+  const detailId = $derived(`verify-detail-${verification.id}`);
 </script>
 
 <div class="verify-badge-wrap">
@@ -21,6 +22,7 @@
     class="verify-badge verify-badge-{verification.badge.state}"
     title={words.detail}
     aria-expanded={open}
+    aria-controls={detailId}
     onclick={() => (open = !open)}
   >
     {#if verification.badge.state === 'verified'}
@@ -33,7 +35,7 @@
     <span>{words.label}</span>
   </button>
   {#if open}
-    <div class="verify-badge-detail">
+    <div class="verify-badge-detail" id={detailId}>
       <p class="verify-badge-sentence">{words.detail}</p>
       <VerificationHistory {verification} />
     </div>

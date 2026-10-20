@@ -4355,7 +4355,8 @@
 			"verified": "Zweryfikowano",
 			"notVerified": "Niezweryfikowane",
 			"checking": "Trwa sprawdzanie",
-			"waiting": "Czeka na Ciebie"
+			"waiting": "Czeka na Ciebie",
+			"openHint": "Pokazuje, co sprawdzono"
 		},
 		"tip": {
 			"verified": "Sprawdzone przez niezależnych recenzentów ({lenses}): {reviewers, plural, other {#}}; rundy: {rounds, plural, other {#}}.",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "Zaktualizowano względem Twojego projektu",
 				"land": "Wdrożenie",
-				"live": "Sprawdzenie na żywo"
+				"live": "Sprawdzenie na żywo",
+				"other": "Krok"
 			},
 			"time": "{seconds} s",
 			"lenses": "Recenzenci: {lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "Blokujące",
 			"major": "Poważne",
-			"minor": "Drobne"
+			"minor": "Drobne",
+			"other": "Problem"
 		},
 		"lens": {
 			"correctness": "poprawność",
@@ -4401,7 +4404,48 @@
 			"billing": "rozliczenia",
 			"data": "dane",
 			"performance": "wydajność",
-			"experience": "to, co widzą ludzie"
+			"experience": "to, co widzą ludzie",
+			"other": "inny obszar"
+		},
+		"why": {
+			"needs_answer": "Potrzebuje Twojej odpowiedzi na pytanie",
+			"unreadable": "Nie udało się odczytać, co się zmieniło",
+			"spend_limit": "Osiągnięto limit wydatków tego pracownika na jedno uruchomienie",
+			"review_incomplete": "Przegląd nie mógł się zakończyć",
+			"needs_decision": "Potrzebuje Twojej decyzji: {items}",
+			"stopped_by_owner": "Zatrzymane przez Ciebie; otwarte problemy: {open, plural, other {#}}",
+			"stalled": "Przestało robić postępy; otwarte problemy: {open, plural, other {#}}",
+			"no_checks": "Nie udało się uruchomić testów ani kompilacji",
+			"landed_unreviewed": "Wdrożone bez zaliczonego przeglądu, na Twoje życzenie",
+			"edits_in_way": "Jeszcze nie wdrożone: Twoje zmiany wciąż stoją na drodze",
+			"kept_own_edits": "Nie wdrożone: zachowałeś własne zmiany, a ta zmiana czeka w swojej kopii",
+			"live_failed": "Sprawdzenie na żywo nie powiodło się",
+			"live_ok": "Strona przeładowała się i działa",
+			"review_clean": "Brak blokujących lub poważnych problemów",
+			"review_blocking": "Problemy blokujące: {count, plural, other {#}}",
+			"up_to_date": "Już aktualne względem Twojego projektu",
+			"caught_up": "Zaktualizowano do {commit}",
+			"conflicts": "Twoje zmiany i ta spotykają się w {files}",
+			"landed": "Wdrożone jako {commit}",
+			"nothing_to_land": "Nic do wdrożenia",
+			"owner_edits": "Twoje własne zmiany w {files} stoją na drodze",
+			"busy_no_branch": "Jeszcze nie wdrożone: Twój projekt nie jest na żadnej gałęzi",
+			"busy_branch": "Jeszcze nie wdrożone: Twój projekt jest na gałęzi {now}, a kopię zrobiono z {from}",
+			"busy_in_progress": "Jeszcze nie wdrożone: w Twoim projekcie trwa {op}",
+			"hook_failed": "Hooki commitów Twojego projektu to odrzuciły",
+			"retest_failed": "Sprawdzenia nie powiodły się po aktualizacji względem Twojego projektu",
+			"not_attempted": "Nie próbowano, bo wcześniejsza część nie została wdrożona",
+			"land_failed": "Nie udało się wdrożyć; nic Twojego się nie zmieniło",
+			"other": "Historia pokazuje, co się stało",
+			"step_limit": "Uruchomienie osiągnęło limit kroków przed końcem sprawdzania",
+			"turn_ended": "Uruchomienie zakończyło się przed końcem sprawdzania",
+			"restarted": "Nebo uruchomił się ponownie w trakcie sprawdzania"
+		},
+		"place": {
+			"app": "Zmiana jest na stronach aplikacji; historia aplikacji może ją cofnąć.",
+			"helper": "Jest w kopii swojego pomocnika, dopóki rozmowa, która go uruchomiła, jej nie wdroży.",
+			"folder": "Została zrobiona na miejscu, w folderze, nad którym pracowano.",
+			"nothing": "Nie było nic do wdrożenia."
 		}
 	}
 }

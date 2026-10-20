@@ -4355,7 +4355,8 @@
 			"verified": "Doğrulandı",
 			"notVerified": "Doğrulanmadı",
 			"checking": "Kontrol ediliyor",
-			"waiting": "Yanıtınızı bekliyor"
+			"waiting": "Yanıtınızı bekliyor",
+			"openHint": "Neyin kontrol edildiğini gösterir"
 		},
 		"tip": {
 			"verified": "{reviewers, plural, other {# bağımsız inceleyici}} ({lenses}) tarafından {rounds, plural, other {# turda}} kontrol edildi.",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "Projenizle güncellendi",
 				"land": "Ekleme",
-				"live": "Canlı kontrol"
+				"live": "Canlı kontrol",
+				"other": "Adım"
 			},
 			"time": "{seconds} sn",
 			"lenses": "İnceleyiciler: {lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "Engelleyici",
 			"major": "Büyük",
-			"minor": "Küçük"
+			"minor": "Küçük",
+			"other": "Sorun"
 		},
 		"lens": {
 			"correctness": "doğruluk",
@@ -4401,7 +4404,48 @@
 			"billing": "faturalama",
 			"data": "veri",
 			"performance": "performans",
-			"experience": "insanların gördüğü"
+			"experience": "insanların gördüğü",
+			"other": "başka bir alan"
+		},
+		"why": {
+			"needs_answer": "Sorduğu bir soruya cevabınız gerekiyor",
+			"unreadable": "Neyin değiştiği okunamadı",
+			"spend_limit": "Bu çalışanın çalıştırma başına harcama limitine ulaşıldı",
+			"review_incomplete": "Bir inceleme tamamlanamadı",
+			"needs_decision": "Kararınız gerekiyor: {items}",
+			"stopped_by_owner": "Sizin tarafınızdan durduruldu; açık sorunlar: {open, plural, other {#}}",
+			"stalled": "İlerleme durdu; açık sorunlar: {open, plural, other {#}}",
+			"no_checks": "Hiçbir test veya derleme çalıştırılamadı",
+			"landed_unreviewed": "İncelemeyi geçmeden, sizin tercihinizle aktarıldı",
+			"edits_in_way": "Henüz aktarılmadı: düzenlemeleriniz hâlâ yolda",
+			"kept_own_edits": "Aktarılmadı: kendi düzenlemelerinizi tuttunuz, değişiklik kendi kopyasında bekliyor",
+			"live_failed": "Canlı kontrol başarısız oldu",
+			"live_ok": "Sayfa yeniden yüklendi ve çalışıyor",
+			"review_clean": "Engelleyici veya büyük sorun yok",
+			"review_blocking": "Engelleyici sorunlar: {count, plural, other {#}}",
+			"up_to_date": "Projenizle zaten güncel",
+			"caught_up": "{commit} sürümüne güncellendi",
+			"conflicts": "Sizin değişiklikleriniz ve bu, {files} içinde buluşuyor",
+			"landed": "{commit} olarak aktarıldı",
+			"nothing_to_land": "Aktarılacak bir şey yok",
+			"owner_edits": "{files} içindeki kendi düzenlemeleriniz yolda",
+			"busy_no_branch": "Henüz aktarılmadı: projeniz hiçbir dalda değil",
+			"busy_branch": "Henüz aktarılmadı: projeniz {now} dalında, kopya ise {from} dalından yapıldı",
+			"busy_in_progress": "Henüz aktarılmadı: projenizde bir {op} sürüyor",
+			"hook_failed": "Projenizin commit kancaları bunu reddetti",
+			"retest_failed": "Projenizle güncellendikten sonra kontroller başarısız oldu",
+			"not_attempted": "Önceki bir parça aktarılmadığı için denenmedi",
+			"land_failed": "Aktarılamadı; sizinle ilgili hiçbir şey değişmedi",
+			"other": "Ne olduğunu geçmişinde görebilirsiniz",
+			"step_limit": "Çalıştırma, kontrol bitmeden adım sınırına ulaştı",
+			"turn_ended": "Çalıştırma, kontrol bitmeden sona erdi",
+			"restarted": "Nebo kontrol sırasında yeniden başladı"
+		},
+		"place": {
+			"app": "Değişiklik uygulamanın sayfalarında; uygulamanın geçmişi bunu geri alabilir.",
+			"helper": "Onu başlatan sohbet aktarana kadar yardımcısının kopyasında duruyor.",
+			"folder": "Üzerinde çalışılan klasörde, yerinde yapıldı.",
+			"nothing": "Aktarılacak bir şey yoktu."
 		}
 	}
 }

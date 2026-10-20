@@ -4355,7 +4355,8 @@
 			"verified": "已验证",
 			"notVerified": "未验证",
 			"checking": "检查中",
-			"waiting": "等待你的回复"
+			"waiting": "等待你的回复",
+			"openHint": "显示检查了什么"
 		},
 		"tip": {
 			"verified": "由 {reviewers, plural, other {# 位}}独立审查员（{lenses}）在 {rounds, plural, other {# 轮}}中检查。",
@@ -4376,7 +4377,8 @@
 			"kind": {
 				"catch_up": "已与你的项目同步",
 				"land": "合入",
-				"live": "实时检查"
+				"live": "实时检查",
+				"other": "步骤"
 			},
 			"time": "{seconds} 秒",
 			"lenses": "审查员：{lenses}",
@@ -4393,7 +4395,8 @@
 		"severity": {
 			"blocker": "阻断",
 			"major": "重大",
-			"minor": "轻微"
+			"minor": "轻微",
+			"other": "问题"
 		},
 		"lens": {
 			"correctness": "正确性",
@@ -4401,7 +4404,48 @@
 			"billing": "计费",
 			"data": "数据",
 			"performance": "性能",
-			"experience": "用户看到的内容"
+			"experience": "用户看到的内容",
+			"other": "其他方面"
+		},
+		"why": {
+			"needs_answer": "需要你回答它提出的问题",
+			"unreadable": "无法读取更改内容",
+			"spend_limit": "已达到该员工每次运行的支出上限",
+			"review_incomplete": "有一项审查未能完成",
+			"needs_decision": "需要你的决定：{items}",
+			"stopped_by_owner": "已由你停止，未解决的问题：{open, plural, other {# 个}}",
+			"stalled": "不再有进展，未解决的问题：{open, plural, other {# 个}}",
+			"no_checks": "没有可运行的测试或构建",
+			"landed_unreviewed": "未通过审查，按你的选择已并入",
+			"edits_in_way": "尚未并入：你的编辑仍有冲突",
+			"kept_own_edits": "未并入：你保留了自己的编辑，此更改在其副本中等待",
+			"live_failed": "实时检查失败",
+			"live_ok": "页面已重新加载并正常运行",
+			"review_clean": "没有阻断性或重大问题",
+			"review_blocking": "阻断性问题：{count, plural, other {# 个}}",
+			"up_to_date": "已与你的项目同步",
+			"caught_up": "已同步到 {commit}",
+			"conflicts": "你的更改与此更改在 {files} 中交汇",
+			"landed": "已作为 {commit} 并入",
+			"nothing_to_land": "没有需要并入的内容",
+			"owner_edits": "你在 {files} 中的编辑挡住了它",
+			"busy_no_branch": "尚未并入：你的项目不在任何分支上",
+			"busy_branch": "尚未并入：你的项目在分支 {now} 上，而副本是从 {from} 创建的",
+			"busy_in_progress": "尚未并入：你的项目中正在进行 {op}",
+			"hook_failed": "你项目的提交钩子拒绝了它",
+			"retest_failed": "与你的项目同步后检查失败",
+			"not_attempted": "未尝试，因为之前的部分没有并入",
+			"land_failed": "无法并入；你的内容没有任何变化",
+			"other": "查看其历史了解发生了什么",
+			"step_limit": "检查完成前运行已达到步数上限",
+			"turn_ended": "检查完成前运行已结束",
+			"restarted": "检查期间 Nebo 重新启动了"
+		},
+		"place": {
+			"app": "更改位于应用的页面中；应用的历史记录可以撤销它。",
+			"helper": "它在其助手的副本中，直到启动它的对话将其并入。",
+			"folder": "它是在所处理的文件夹中就地完成的。",
+			"nothing": "没有需要并入的内容。"
 		}
 	}
 }
