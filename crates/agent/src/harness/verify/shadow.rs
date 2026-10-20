@@ -258,6 +258,7 @@ fn renamed_to(path: &str) -> String {
 mod tests {
     use super::*;
 
+    // Under the one test-environment lock: another test swaps `git` on PATH.
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -267,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_folder_that_is_no_repository_has_its_rounds_diffed() {
-        rt().block_on(async {
+        crate::test_home::with_home(|_| rt().block_on(async {
             let folder = tempfile::tempdir().unwrap();
             let shadows = tempfile::tempdir().unwrap();
             std::fs::write(folder.path().join("a.py"), "x = 1\n").unwrap();
@@ -306,12 +307,12 @@ mod tests {
                 !folder.path().join(".git").exists(),
                 "the folder never becomes a repository"
             );
-        })
+        }))
     }
 
     #[test]
     fn a_repository_keeps_its_own_index_and_honours_its_ignores() {
-        rt().block_on(async {
+        crate::test_home::with_home(|_| rt().block_on(async {
             let repo = tempfile::tempdir().unwrap();
             let shadows = tempfile::tempdir().unwrap();
             for args in [
@@ -353,7 +354,7 @@ mod tests {
             );
             shadow.remove();
             assert!(!shadows.path().join("s.git").exists());
-        })
+        }))
     }
 
     #[test]
