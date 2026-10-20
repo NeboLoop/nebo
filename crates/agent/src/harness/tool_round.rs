@@ -799,7 +799,7 @@ fn apply_message_budget(results: &mut [Option<(ai::ToolCall, ToolResult)>], dir:
             .filter(|(_, r)| !r.is_error && r.image_url.is_none() && !persisted(r))
             .max_by_key(|(_, r)| r.content.len());
         let Some((_, r)) = largest else { return };
-        r.content = tools::result_shape::persist(dir, &r.content, reader);
+        r.content = tools::result_shape::persist(dir, &r.content, reader, tools::result_shape::PREVIEW_CHARS);
     }
 }
 

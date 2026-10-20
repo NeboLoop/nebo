@@ -8083,6 +8083,7 @@ mod tests {
             description: "price the Rivera order".into(),
             status: crate::harness::delegation::CompletionStatus::Done,
             result: "The Rivera order comes to 4,210.".into(),
+            question: None,
             usage: Default::default(),
             taint: Vec::new(),
         });

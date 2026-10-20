@@ -245,7 +245,7 @@ impl SubAgentOrchestrator for HelperDoor {
                     if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
                 })
             };
-            self.helpers.settle(&caller, task_id, decision, Some(&retest)).await
+            self.helpers.settle(&caller, task_id, decision, Some(&retest), Default::default()).await
         })
     }
 
