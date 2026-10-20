@@ -17,15 +17,19 @@
 //! - [`checks`]: the project's own build and tests;
 //! - [`rules`]: the rules every brief carries;
 //! - [`review`]: a round of independent reviewers, one per lens;
-//! - [`findings`]: what a reviewer reports, and when the loop has stalled.
+//! - [`findings`]: what a reviewer reports, and when the loop has stalled;
+//! - [`work`]: a turn's code work, moved into isolated copies;
+//! - [`engine`]: the loop itself, the end check of a turn with code work.
 
 pub mod checks;
+pub mod engine;
 pub mod findings;
 pub mod lenses;
 pub mod project;
 pub mod review;
 pub mod rules;
 pub mod shadow;
+pub mod work;
 
 use std::path::{Path, PathBuf};
 

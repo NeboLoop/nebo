@@ -18,3 +18,8 @@ pub use providers::{
     OllamaProvider, OpenAIProvider, Relay, connection_id,
 };
 pub use types::*;
+
+/// How the verify loop's word to a builder begins: the review of its code
+/// work. A linked coding agent is sent it (it is for the agent), when it is
+/// what came after the agent's last answer.
+pub const REVIEW_NOTE: &str = "Review of your code work:";

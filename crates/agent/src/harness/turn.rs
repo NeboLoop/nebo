@@ -238,6 +238,10 @@ pub struct TurnState {
     /// The turn reached its step limit and this step, tools off, writes its
     /// report; the turn ends `MaxSteps` on it.
     reporting: bool,
+    /// The turn's code work and its verify loop (`verify::engine`); `None`
+    /// for a turn that never verifies (a reviewer, an explore or plan
+    /// helper, a fork) or with no helper registry to review with.
+    pub(crate) verify: Option<super::verify::engine::Verify>,
 }
 
 /// What the tool round keeps from one round to the next within a turn.
@@ -1338,6 +1342,35 @@ pub(crate) async fn prepare(
         && req.seat.tool_allowlist.as_ref().is_none_or(|allowed| allowed.contains(super::owner_command::RUN_COMMAND))
         && h.tools.get(super::owner_command::RUN_COMMAND).await.is_some();
     let saves = super::memory_save::SaveWatch::start(can_save && owner_speaks(&req), &req.seat.agent_id);
+    // Code work this turn does is verified before it is reported done.
+    let verifies = matches!(
+        req.mode,
+        TurnMode::Chat | TurnMode::Workflow(_) | TurnMode::Helper { kind: super::delegation::HelperKind::General, answer: None, .. }
+    ) && h.helpers().is_some();
+    let verify = if verifies {
+        let chat_id = h.sessions.active_chat_id(session_id);
+        let spec = match asked(&req.input) {
+            spec if !spec.trim().is_empty() => spec,
+            _ => h.store.latest_owner_message(&chat_id).ok().flatten().unwrap_or_default(),
+        };
+        let (workflow_run_id, activity_id) = match &req.mode {
+            TurnMode::Workflow(m) => (Some(m.trace.run_id.clone()), Some(m.trace.action_id.clone())),
+            _ => (None, None),
+        };
+        let builder = super::verify::engine::Builder {
+            agent_id: req.seat.agent_id.clone(),
+            session_key: req.session_key.clone(),
+            chat_id,
+            spec,
+            owner_rules: h.store.get_agent(&req.seat.agent_id).ok().flatten().and_then(|a| a.rules).unwrap_or_default(),
+            workflow_run_id,
+            activity_id,
+            linked: employee.linked,
+        };
+        Some(super::verify::engine::Verify::begin(&h.store, builder, req.seat.cwd.as_deref()).await)
+    } else {
+        None
+    };
     let commands = super::owner_command::CommandWatch::start(can_run && owner_speaks(&req), &req.seat.agent_id);
     let opening = super::opening::Opening::start(
         h.decide.clone(),
@@ -1390,6 +1423,7 @@ pub(crate) async fn prepare(
         round: RoundCarry::default(),
         folds: text_fold::TurnFolds::default(),
         reporting: false,
+        verify,
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
@@ -1980,6 +2014,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 compact::checkpoint::Trigger::threshold(context_window, max_output).saturating_sub(request_tokens),
             ),
         };
+        if let Some(verify) = &st.verify {
+            verify.set_tool_ctx(tool_scope.tool_context());
+        }
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
             move |chat: Option<&str>| {
@@ -2013,6 +2050,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .map(|g| g.condition)
             .unwrap_or_default();
         let housekeeper = h.housekeeper();
+        // The turn's code work, shared by its calls (cheap: it is shared state).
+        let step_verify = st.verify.clone();
         let round_cx = RoundContext {
             scope: &tool_scope,
             tools: &h.tools,
@@ -2029,6 +2068,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             eyes: cx.eyes.as_ref(),
             housekeeper: &housekeeper,
             chosen: &cx.model,
+            verify: step_verify.as_ref(),
         };
         // The streaming executor: safe calls start as their input completes
         // in the stream, while the reply is still arriving, so a read costs
@@ -2238,8 +2278,16 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
 
         if !tool_calls.is_empty() {
-            // A CLI provider ran its tools itself over /agent/mcp.
+            // A CLI provider ran its tools itself over /agent/mcp; its
+            // answer still passes every end check (its code work is
+            // verified like any other).
             if provider.handles_tools() {
+                if let Some(next) = end_checks(cx, st).await {
+                    match next {
+                        Ok(()) => continue,
+                        Err(exit) => return exit,
+                    }
+                }
                 return TurnExit::Answered;
             }
             match tool_round(cx, st, &round_cx, executor, &text, &mut tool_calls).await {
@@ -3116,9 +3164,23 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
     } else {
         (None, None)
     };
+    let verify = match (&st.verify, h.helpers()) {
+        (Some(verify), Some(helpers)) => Some(super::verify::engine::VerifyCheck {
+            harness: h.clone(),
+            helpers,
+            verify: verify.clone(),
+            session_key: cx.request.session_key.clone(),
+            agent_id: cx.agent_id().to_string(),
+            seat: cx.request.seat.clone(),
+            grant: (*cx.grant).clone(),
+            platform: cx.request.delivery.platform.clone(),
+            cancel: cx.request.cancel.clone(),
+        }),
+        _ => None,
+    };
     let checks = turn_end::registry(
         &cx.request.mode,
-        turn_end::EndChecks { goal, workflow_contract, unsaved_memory, unrun_command },
+        turn_end::EndChecks { goal, workflow_contract, unsaved_memory, unrun_command, verify },
     );
     if checks.is_empty() {
         return None;
@@ -3191,6 +3253,17 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         "turn ended"
     );
     usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
+    // The badge of verified work sits on the reply that reported it.
+    if let Some(verify) = &st.verify {
+        let reported = verify.reported();
+        if !reported.is_empty()
+            && let Ok(Some(message_id)) = h.store.latest_assistant_message_id(&h.sessions.active_chat_id(&cx.session_id))
+        {
+            for id in reported {
+                let _ = h.store.set_verification_message(&id, &message_id);
+            }
+        }
+    }
     // The chat is named after its first exchange and again at its third,
     // however the turn ended: one the owner stopped is named too.
     if matches!(cx.request.mode, TurnMode::Chat) {
@@ -10106,5 +10179,263 @@ mod tests {
         let entries = h.store.list_file_history("model.xlsx", 10).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(kept(&files, &entries[0]), "nine sheets");
+    }
+
+    // ── Verified: code work is checked before it is reported done ─────────
+
+    /// Writes `content` to `path`: a builder's file write.
+    struct FileWriter;
+
+    impl tools::registry::DynTool for FileWriter {
+        fn name(&self) -> &str {
+            "save_code"
+        }
+        fn description(&self) -> String {
+            "writes a file".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let path = input["path"].as_str().unwrap_or("").to_string();
+                match std::fs::write(&path, input["content"].as_str().unwrap_or("")) {
+                    Ok(()) => tools::ToolResult::ok(format!("wrote {path}")),
+                    Err(e) => tools::ToolResult::error(e.to_string()),
+                }
+            })
+        }
+    }
+
+    /// The project's checks: `run_command`, recorded, passing.
+    struct Checks(Arc<Mutex<Vec<String>>>);
+
+    impl tools::registry::DynTool for Checks {
+        fn name(&self) -> &str {
+            "run_command"
+        }
+        fn description(&self) -> String {
+            "runs a command".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {
+                "command": {"type": "string"}, "cwd": {"type": "string"}, "description": {"type": "string"}, "timeout": {"type": "integer"}
+            }})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push(format!("{} in {}", input["command"].as_str().unwrap_or(""), input["cwd"].as_str().unwrap_or("")));
+                tools::ToolResult::ok("ok: 3 passed")
+            })
+        }
+    }
+
+    const ONE_BLOCKER: &str = r#"{"findings": [{"severity": "blocker", "title": "The total ignores b", "evidence": "total.py:1", "repro": "a=1, b=2 gives 1", "impact": "Every invoice total is wrong", "fix": "Add b"}], "verified_ok": [{"checked": "the module imports"}]}"#;
+    const CLEAN_WITH_THE_FIX: &str = r#"{"findings": [], "verified_ok": [{"checked": "a=1, b=2 gives 3"}], "prior": [{"id": "r1-correctness-1", "state": "fixed"}]}"#;
+
+    /// The whole loop on a real project: the builder's writes go to its own
+    /// copy, independent reviewers find a blocker, the same builder fixes it
+    /// in the same turn, the next round reviews the fix and finds it clean,
+    /// the project's checks pass, the copy lands as one commit, and the
+    /// builder reports from the record; the owner's files changed only by
+    /// that landing.
+    #[test]
+    fn code_work_is_reviewed_fixed_re_reviewed_and_landed_before_it_is_reported_done() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let project = tempfile::tempdir().unwrap();
+                let repo = project.path().to_path_buf();
+                for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                    crate::worktree::git(&repo, &args).await.unwrap();
+                }
+                std::fs::write(repo.join("Makefile"), "test:\n\tpython3 -m pytest\n").unwrap();
+                std::fs::write(repo.join("total.py"), "def total(a, b): return 0\n").unwrap();
+                crate::worktree::git(&repo, &["add", "-A"]).await.unwrap();
+                crate::worktree::git(&repo, &["commit", "-q", "-m", "base"]).await.unwrap();
+                let file = repo.join("total.py").to_string_lossy().into_owned();
+
+                let model = Scripted::new(vec![
+                    // The builder writes, then says it is done.
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
+                    Step::Say("Done: total() returns the total."),
+                    // Round 1: one reviewer (correctness), one blocker.
+                    Step::Say(ONE_BLOCKER),
+                    // The same builder fixes it, in its copy, and answers again.
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Fixed r1-correctness-1: b is added."),
+                    // Round 2 reviews the fix.
+                    Step::Say(CLEAN_WITH_THE_FIX),
+                    // The builder reports.
+                    Step::Say("Built total(); the review caught that b was ignored and I fixed it. Verified and landed."),
+                ]);
+                let ran = Arc::new(Mutex::new(Vec::new()));
+                let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(ran.clone()))]).await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+
+                let events = run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(exit_of(&events), "text_response");
+
+                let rows = h.store.list_verifications(&db::VerificationQuery { session_key: Some(KEY), ..Default::default() }).unwrap();
+                assert_eq!(rows.len(), 1);
+                let v = &rows[0];
+                assert_eq!(v.state, "verified", "{v:?}");
+                assert_eq!(v.rounds, 2);
+                assert!(!v.landed_ref.is_empty(), "it landed");
+                assert_eq!(v.spec, "Make total() add a and b");
+                assert!(v.message_id.is_some(), "the badge sits on the report");
+                assert_eq!(std::fs::read_to_string(repo.join("total.py")).unwrap(), "def total(a, b): return a + b\n");
+                let log = crate::worktree::git(&repo, &["log", "--format=%s", "-1"]).await.unwrap();
+                assert_eq!(log, "Make total() add a and b", "one commit, the request as its message");
+
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
+                assert_eq!(kinds, ["review", "review", "catch_up", "land"]);
+                assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
+                assert_eq!(rounds[0].findings[0]["id"], "r1-correctness-1");
+                assert_eq!(rounds[1].fixed, serde_json::json!(["r1-correctness-1"]));
+                assert_eq!(rounds[1].verified_ok[0]["checked"], "a=1, b=2 gives 3");
+                assert!(ran.lock().unwrap().iter().all(|c| c.starts_with("make test in ") && !c.ends_with(&repo.to_string_lossy().into_owned())), "checks ran in the copy");
+
+                // The reviewers heard only their brief: the request and the
+                // change, never the builder's conversation.
+                let calls = model.calls();
+                let reviewer = calls.iter().find(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))).expect("a reviewer");
+                let heard: String = reviewer.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
+                assert!(heard.contains("Make total() add a and b") && heard.contains("+def total(a, b): return a"));
+                assert!(!heard.contains("Done: total() returns the total."), "never the builder's words");
+                // The builder heard the finding in the same turn.
+                let fix_step = &calls[3];
+                assert!(fix_step.messages.iter().any(|m| m.content.contains("The total ignores b")));
+            })
+        })
+    }
+
+    /// Work that changes no code costs nothing more: no copy, no reviewer,
+    /// no row.
+    #[test]
+    fn work_that_changes_no_code_runs_no_check() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let letter = folder.path().join("offer.txt").to_string_lossy().into_owned();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": letter, "content": "Dear Ana"})),
+                    Step::Say("The letter is written."),
+                ]);
+                let h = harness_with(&model, vec![Box::new(FileWriter)]).await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let events = run_turn(&h, owner("Write Ana an offer letter")).await;
+                assert_eq!(exit_of(&events), "text_response");
+                assert_eq!(model.calls().len(), 2, "no reviewer ran");
+                assert!(h.store.list_verifications(&db::VerificationQuery::default()).unwrap().is_empty());
+                assert_eq!(std::fs::read_to_string(folder.path().join("offer.txt")).unwrap(), "Dear Ana", "written where asked");
+            })
+        })
+    }
+
+    /// A project in a git repository with one file, `total.py`.
+    async fn small_project(make_test: bool) -> (tempfile::TempDir, String) {
+        let project = tempfile::tempdir().unwrap();
+        let repo = project.path();
+        for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+            crate::worktree::git(repo, &args).await.unwrap();
+        }
+        if make_test {
+            std::fs::write(repo.join("Makefile"), "test:\n\tpython3 -m pytest\n").unwrap();
+        } else {
+            std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"t\"\n").unwrap();
+        }
+        std::fs::write(repo.join("total.py"), "def total(a, b): return 0\n").unwrap();
+        crate::worktree::git(repo, &["add", "-A"]).await.unwrap();
+        crate::worktree::git(repo, &["commit", "-q", "-m", "base"]).await.unwrap();
+        let file = repo.join("total.py").to_string_lossy().into_owned();
+        (project, file)
+    }
+
+    async fn verifying_harness(model: &Arc<Scripted>) -> Harness {
+        let h = harness_with(model, vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new()))))]).await;
+        let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+        h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+        h
+    }
+
+    /// No build or test could run: reviewed, but not verified, and (with
+    /// nobody to ask) it stays in its copy.
+    #[test]
+    fn work_whose_project_has_no_checks_is_not_verified_and_stays_in_its_copy() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(false).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say(r#"{"findings": [], "verified_ok": [{"checked": "1 + 2 = 3"}]}"#),
+                    Step::Say("Reviewed, but the project has no tests, so it isn't verified; it waits in its copy."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", "No tests or build could run"));
+                assert!(v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
+                assert!(std::path::Path::new(&v.work_dir).join("total.py").exists(), "the work waits in its copy");
+            })
+        })
+    }
+
+    /// The same blocker round after round: the loop has stopped making
+    /// progress and asks the owner; nobody can answer here, so the work is
+    /// reported not verified with what is open.
+    #[test]
+    fn a_loop_that_stops_making_progress_ends_not_verified_with_what_is_open() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let still: &'static str = r#"{"findings": [{"severity": "blocker", "title": "The total ignores b", "evidence": "total.py:1", "repro": "a=1, b=2 gives 1", "impact": "wrong totals", "fix": "Add b"}], "verified_ok": [], "prior": [{"id": "r1-correctness-1", "state": "open"}]}"#;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a\n"})),
+                    Step::Say("Done."),
+                    Step::Say(ONE_BLOCKER),
+                    Step::Say("I think it's fine."),
+                    Step::Say(still),
+                    Step::Say("Still fine, I think."),
+                    Step::Say(still),
+                    Step::Say("It isn't verified: the review still finds the total ignores b."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.state, "not_verified");
+                assert!(v.reason.starts_with("Stopped making progress"), "{}", v.reason);
+                assert_eq!((v.rounds, v.open_blockers), (3, 1));
+                assert_eq!(model.calls().len(), 8, "it stopped instead of going round again");
+            })
+        })
     }
 }

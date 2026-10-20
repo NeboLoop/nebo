@@ -171,6 +171,20 @@ fn finished(c: Completion) -> SpawnResult {
     }
 }
 
+impl HelperDoor {
+    /// Whether helper `task_id` of `caller`'s work in its copy was verified
+    /// (its own turn's verify loop) and hasn't changed since.
+    fn verified(&self, caller: &str, task_id: &str) -> bool {
+        let key = super::helper_key(caller, task_id);
+        self.harness
+            .store
+            .list_verifications(&db::VerificationQuery { session_key: Some(&key), ..Default::default() })
+            .unwrap_or_default()
+            .first()
+            .is_some_and(|v| v.state == "verified" && v.work_kind == "helper_copy")
+    }
+}
+
 impl SubAgentOrchestrator for HelperDoor {
     fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
         Box::pin(async move {
@@ -227,6 +241,31 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn settle<'a>(&'a self, task_id: &'a str, land: bool, ctx: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
         Box::pin(async move {
+            if land && !self.verified(&ctx.session_key, task_id) {
+                // Work that isn't verified lands in the owner's files only at
+                // their own word, on a card; a run nobody watches holds it.
+                let question = format!(
+                    "Helper {task_id}'s changes are ready in its own copy and haven't been verified. Land them in your files?"
+                );
+                let widgets = serde_json::json!([{ "type": "options", "multiSelect": false, "options": ["Land them", "Keep them in the copy", "Discard them"] }]);
+                match ctx.ask_user(&question, widgets).await.as_deref() {
+                    Some("Land them") => {}
+                    Some("Discard them") => {
+                        return self
+                            .helpers
+                            .settle(&ctx.session_key, task_id, super::Decision::Discard, None)
+                            .await
+                            .map(|text| format!("The owner chose to discard them. {text}"));
+                    }
+                    Some(_) => return Ok(format!("The owner kept helper {task_id}'s changes in its copy: nothing landed.")),
+                    None => {
+                        return Err(format!(
+                            "Nobody is here to say yes, and changes that aren't verified land in the owner's files only at \
+                             their word: helper {task_id}'s changes are held in its copy for them. Tell the owner they are ready."
+                        ));
+                    }
+                }
+            }
             let decision = if land { super::Decision::Land } else { super::Decision::Discard };
             // After catching up, the project's own checks run in the copy:
             // what lands is what was checked.
