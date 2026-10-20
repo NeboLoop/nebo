@@ -750,5 +750,5 @@ fn a_live_load_with_no_browser_to_open_a_view_fails() {
     let app = store.get_agent("app-live").unwrap().unwrap();
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let got = rt.block_on(live_load(None, &app));
-    assert!(got.is_err_and(|e| e.contains("no built-in browser")));
+    assert!(matches!(got, Err(LiveLoadError::NoBrowser(e)) if e.contains("no built-in browser")));
 }
