@@ -55,6 +55,8 @@ pub fn landing_why(outcome: &crate::worktree::MergeOutcome) -> Why {
         MergeOutcome::HookFailed { .. } => Why::new("hook_failed"),
         MergeOutcome::RetestFailed { .. } => Why::new("retest_failed"),
         MergeOutcome::NotAttempted { .. } => Why::new("not_attempted"),
+        MergeOutcome::Unreviewed { files, .. } => Why::new("unreviewed").with("files", files.join(", ")),
+        MergeOutcome::NeedsReview { files, .. } => Why::new("needs_review").with("files", files.join(", ")),
         MergeOutcome::Failed { .. } => Why::new("land_failed"),
     }
     }
@@ -95,6 +97,8 @@ pub fn english(why: &Why) -> String {
         "step_limit" => "the run reached its step limit before the checking finished".into(),
         "turn_ended" => "the run ended before the checking finished".into(),
         "restarted" => "Nebo restarted while it was being checked".into(),
+        "unreviewed" => format!("the copy holds changes nobody reviewed: {}", a("files")),
+        "needs_review" => format!("catching up changed files the change touches ({}); reviewed again first", a("files")),
         other => other.replace('_', " "),
     }
 }

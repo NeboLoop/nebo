@@ -656,6 +656,33 @@ pub fn status_text(name: &str, dir: &Path, errors: usize) -> String {
     out.join("\n")
 }
 
+/// Why the app served from `dir` would not pass a live check, if it would
+/// not: its folder missing, no entry page, a script or style it loads (or
+/// imports) missing, or `errors` console errors in its open views. `None`:
+/// the page loads with zero console errors.
+pub fn live_problem(dir: &Path, errors: usize) -> Option<&'static str> {
+    if !dir.is_dir() {
+        return Some("the app's folder does not exist");
+    }
+    let Some(entry) = ["index.html", "200.html"].into_iter().find(|f| dir.join(f).is_file()) else {
+        return Some("the app has no entry page");
+    };
+    let html = std::fs::read_to_string(dir.join(entry)).unwrap_or_default();
+    let mut loaded: HashSet<String> = HashSet::new();
+    for r in loaded_refs(&html) {
+        if let Some(rel) = local_ref(&r).or_else(|| root_ref(dir, &r)) {
+            if !dir.join(&rel).is_file() {
+                return Some("a file the page loads is missing");
+            }
+            loaded.insert(rel);
+        }
+    }
+    if !followed_imports(dir, &loaded).1.is_empty() {
+        return Some("a file the page imports is missing");
+    }
+    (errors > 0).then_some("the page has console errors")
+}
+
 fn errors_line(errors: usize) -> String {
     match errors {
         0 => "Console errors in open views: none.".into(),
@@ -812,6 +839,25 @@ fn local_ref(r: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The live check of a verified app passes only when its page loads
+    /// and its console has no errors.
+    #[test]
+    fn a_live_check_passes_only_a_page_that_loads_without_console_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path().join("ui");
+        assert_eq!(super::live_problem(&ui, 0), Some("the app's folder does not exist"));
+        std::fs::create_dir_all(&ui).unwrap();
+        assert_eq!(super::live_problem(&ui, 0), Some("the app has no entry page"));
+        std::fs::write(ui.join("index.html"), "<script src=\"app.js\"></script>").unwrap();
+        assert_eq!(super::live_problem(&ui, 0), Some("a file the page loads is missing"));
+        std::fs::write(ui.join("app.js"), "import './util.js';").unwrap();
+        assert_eq!(super::live_problem(&ui, 0), Some("a file the page imports is missing"));
+        std::fs::write(ui.join("util.js"), "").unwrap();
+        assert_eq!(super::live_problem(&ui, 2), Some("the page has console errors"));
+        assert_eq!(super::live_problem(&ui, 0), None);
+    }
+
     use super::*;
 
     fn store(dir: &Path) -> db::Store {

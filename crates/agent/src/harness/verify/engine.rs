@@ -43,13 +43,28 @@ use crate::harness::turn_end::{EndCheck, EndVerdict, TurnEnd};
 use crate::harness::{Harness, SeatRequest};
 use crate::worktree::{self, MergeOutcome};
 
-/// The line a builder ends its reply with when it has resolved what
-/// catching up handed it: the explicit word, never read from the files.
-pub const RESOLVED_LINE: &str = "Conflicts resolved.";
+/// How a turn that ended before its checking did leaves its verifications.
+pub enum Closed {
+    /// Waiting on the owner: paused, for the turn that goes on.
+    Waiting,
+    /// The owner's Stop.
+    Stopped,
+    /// Ended otherwise: not verified, with why.
+    Ended(Why),
+}
 
 /// What one turn's verify loop keeps between its rounds.
 #[derive(Default)]
 struct Shared {
+    /// Verifications whose owner chose to land them after committing their
+    /// own edits: edits still in the way then are said, not asked again.
+    after_owner: HashSet<String>,
+    /// The builder ran tools of its own this turn ([`Verify::mark_acted`]).
+    acted: bool,
+    /// Landings of each verification this turn that met a conflict the
+    /// builder had not resolved: a builder that never stages a resolution
+    /// stops the loop.
+    conflicts: std::collections::HashMap<String, usize>,
     /// The run's tool context as its last step had it: checks and the
     /// owner's cards go through the same door, under the same permissions.
     tool_ctx: Option<tools::ToolContext>,
@@ -100,6 +115,19 @@ pub struct Verify {
     shared: Arc<Mutex<Shared>>,
 }
 
+/// Landings in one turn that may meet the same unresolved conflict before
+/// the loop stops.
+const CONFLICT_TRIES: usize = 3;
+
+impl Shared {
+    /// Count a landing of `id` that met a conflict; whether it is stuck.
+    fn stuck(&mut self, id: &str) -> bool {
+        let n = self.conflicts.entry(id.to_string()).or_default();
+        *n += 1;
+        *n >= CONFLICT_TRIES
+    }
+}
+
 impl Verify {
     /// The turn's verify loop: the conversation's code work still in hand
     /// (`TurnWork::load`), and a helper's own copy when it works in one.
@@ -114,6 +142,16 @@ impl Verify {
 
     fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The builder ran tools of its own this turn (a linked agent's calls
+    /// reported in its stream, or the runner's own).
+    pub fn mark_acted(&self) {
+        self.shared().acted = true;
+    }
+
+    fn acted(&self) -> bool {
+        self.shared().acted
     }
 
     /// The run's tool context at this step.
@@ -145,7 +183,7 @@ impl Verify {
     /// still running or waiting on the owner ends honestly, as stopped (`why`
     /// `None`, the owner's Stop) or not verified with why. Returns the ids
     /// it ended.
-    pub async fn close(&self, store: &db::Store, why: Option<Why>) -> Vec<String> {
+    pub async fn close(&self, store: &db::Store, why: Closed) -> Vec<String> {
         let mut ended = Vec::new();
         for work in self.work.snapshot().await {
             let Some(v) = store.get_verification(&work.id).ok().flatten() else { continue };
@@ -153,8 +191,17 @@ impl Verify {
                 continue;
             }
             let (state, reason) = match &why {
-                None => ("stopped", String::new()),
-                Some(w) => ("not_verified", w.text()),
+                // Waiting on the owner (an approval, a question): paused,
+                // and the turn that goes on picks it up.
+                Closed::Waiting => {
+                    if v.state == "running" {
+                        let _ = store.set_verification_state(&v.id, &state_of(&v, "paused", &v.reason), chrono::Utc::now().timestamp());
+                        ended.push(v.id.clone());
+                    }
+                    continue;
+                }
+                Closed::Stopped => ("stopped", String::new()),
+                Closed::Ended(w) => ("not_verified", w.text()),
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
@@ -230,7 +277,14 @@ impl EndCheck for VerifyCheck {
     }
 
     async fn check(&self, end: &TurnEnd<'_>) -> EndVerdict {
-        self.verify.work.start_folder_if_changed(&self.verify.builder.starting(&self.harness.store)).await;
+        // A linked agent's project counts as its work only when the agent
+        // itself ran tools this turn: the owner's own edits meanwhile are
+        // not its change.
+        if self.verify.acted() {
+            self.verify.work.start_folder_if_changed(&self.verify.builder.starting(&self.harness.store)).await;
+        } else {
+            self.verify.work.drop_folder().await;
+        }
         let works = self.verify.work.snapshot().await;
         if works.is_empty() {
             return EndVerdict::Stop;
@@ -512,6 +566,15 @@ impl VerifyCheck {
         }
     }
 
+    /// The owner's Stop came while a round's checks or reviewers ran: the
+    /// round and the verification end as stopped.
+    fn stopped(&self, v: &db::Verification, row: &mut db::VerificationRound) -> RoundEnd {
+        row.finished_at = Some(Self::now());
+        let _ = self.store().put_verification_round(row);
+        self.finish(v, "stopped", None);
+        RoundEnd::Finished
+    }
+
     /// Finish a verification: its state and why written (a code the apps
     /// word), its copy kept or landed as the caller left it.
     fn finish(&self, v: &db::Verification, state: &str, why: Option<Why>) {
@@ -524,11 +587,28 @@ impl VerifyCheck {
     /// One work's next step.
     async fn step(&self, mut work: Work, notes: &str) -> Step {
         let store = self.store().clone();
-        let Some(v) = store.get_verification(&work.id).ok().flatten() else {
+        let Some(mut v) = store.get_verification(&work.id).ok().flatten() else {
             return Step::Gone;
         };
         if finished_state(&v.state) {
-            return Step::Finished;
+            // Finished, but its copy changed since (the builder kept working
+            // in it): checked again over the whole change, and the verdict
+            // it was reported on no longer holds.
+            let changed = v.landed_ref.is_empty()
+                && v.state != "stopped"
+                && work.work_dir.is_dir()
+                && match work.shadow.snapshot().await {
+                    Ok(now) => Some(&now) != work.last.as_ref(),
+                    Err(_) => false,
+                };
+            if !changed {
+                return Step::Finished;
+            }
+            let _ = store.reopen_verification(&v.id);
+            match store.get_verification(&v.id).ok().flatten() {
+                Some(reopened) => v = reopened,
+                None => return Step::Gone,
+            }
         }
         // A question a restart left unanswered is asked again.
         if v.state == "paused"
@@ -591,14 +671,6 @@ impl VerifyCheck {
             return Step::Gone;
         }
 
-        // A conflict handed back on catching up: resolved only on the
-        // builder's word.
-        if let Some(iso) = work.iso.as_mut()
-            && notes.lines().any(|l| l.trim() == RESOLVED_LINE)
-        {
-            iso.mark_resolved();
-        }
-
         // The employee's own spending limit for a run holds here too.
         let cap_cents = store.agent_run_spend_cap_cents(&self.agent_id);
         if cap_cents > 0
@@ -633,6 +705,10 @@ impl VerifyCheck {
                     .flatten()
                     .filter_map(|l| l.as_str().and_then(Lens::parse))
                     .collect();
+                // The fixes are read through correctness and the riskiest
+                // lens, of the first round's and of what the fixes touch.
+                let mut all = all;
+                all.extend(lenses::assess(&reviewed).lenses);
                 let mut later = vec![Lens::Correctness];
                 if riskiest(&all) != Lens::Correctness {
                     later.push(riskiest(&all));
@@ -733,7 +809,9 @@ impl VerifyCheck {
         };
         let _ = store.put_verification_round(&row);
 
-        // The plain-code step: the project's own build and tests.
+        // The plain-code step: the project's own build and tests, within
+        // the build folders' disk cap.
+        super::work::cap_builds();
         let checks = checks::detect(&work.work_dir, &whole.paths());
         let mut ctx = self.tool_ctx();
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
@@ -744,6 +822,9 @@ impl VerifyCheck {
             &checks::build_cache(&work.project_root),
         )
         .await;
+        if self.cancel.is_cancelled() {
+            return self.stopped(v, &mut row);
+        }
 
         // The reviewers: fresh, one per lens, all at once, each reading its
         // own copy of exactly what was snapshotted (a throwaway export of
@@ -770,7 +851,15 @@ impl VerifyCheck {
             .flatten()
             .and_then(|a| a.rules)
             .unwrap_or_default();
-        let rules = super::rules::brief_rules(&work.project_root, &owner_rules);
+        // The project's rules as they were when the work began: the work
+        // can't rewrite the rules it is reviewed against.
+        let mut at_base = std::collections::HashMap::new();
+        for rel in super::rules::rules_paths() {
+            if let Some(text) = work.shadow.read(&work.base, &rel).await {
+                at_base.insert(rel, text);
+            }
+        }
+        let rules = super::rules::rules_section(&owner_rules, &super::rules::project_rules_from(|rel| at_base.get(rel).cloned()));
         let input = RoundInput {
             verification_id: &v.id,
             round,
@@ -791,6 +880,9 @@ impl VerifyCheck {
         let reviews: Vec<LensReview> =
             review::run_round(&self.helpers, &self.parent(), &input).await;
         let _ = std::fs::remove_dir_all(&review_dir);
+        if self.cancel.is_cancelled() {
+            return self.stopped(v, &mut row);
+        }
         // What was reviewed and checked must be what is in the copy now: a
         // check that rewrote a file (a lockfile, generated code) changed it.
         let drifted = match work.shadow.snapshot().await {
@@ -854,7 +946,11 @@ impl VerifyCheck {
             .filter(|r| r.kind == "review" && r.round < round as i64)
             .filter_map(|r| r.detail["openBlocking"].as_u64().map(|n| n as usize))
             .collect();
-        counts.push(blocking_now + repeated);
+        // A round the checks rewrote can't pass: it counts against progress
+        // like an open issue, so checks that rewrite differently every run
+        // stop the loop.
+        let progress_count = blocking_now + repeated + usize::from(drifted.is_some());
+        counts.push(progress_count);
         let fixed_findings: Vec<Finding> = earlier
             .iter()
             .flat_map(|r| {
@@ -877,7 +973,7 @@ impl VerifyCheck {
         row.checks = json!(runs);
         row.fixed = json!(fixed);
         row.detail =
-            json!({ "openBlocking": blocking_now + repeated, "nested": nested, "failedReviewers": failed });
+            json!({ "openBlocking": progress_count, "nested": nested, "failedReviewers": failed });
         row.outcome = if !failed.is_empty() {
             Why::new("review_incomplete")
         } else if blocking_now == 0 {
@@ -1059,13 +1155,23 @@ impl VerifyCheck {
                 return Step::Finished;
             }
         }
+        self.land_reviewed(&mut work, &v, notes).await
+    }
+
+    /// Land a copy this loop made, through the one landing path
+    /// ([`worktree::land_one`]): only if the copy is byte for byte what was
+    /// reviewed; held to the reviewed paths; caught up with the owner's
+    /// project, stopped for another review when that changed files the
+    /// change touches; re-tested; landed as one commit.
+    async fn land_reviewed(&self, work: &mut Work, v: &db::Verification, notes: &str) -> Step {
+        let store = self.store().clone();
         let Some(mut iso) = work.iso.clone() else {
-            self.finish(&v, "verified", None);
+            self.finish(v, "verified", None);
             return Step::Finished;
         };
         // Only what was reviewed and tested lands, byte for byte.
-        match work.shadow.snapshot().await {
-            Ok(now) if Some(&now) == work.last.as_ref() => {}
+        let reviewed = match (work.shadow.snapshot().await, work.last.clone()) {
+            (Ok(now), Some(last)) if now == last => work.shadow.diff(&work.base, &last).await.map(|c| c.paths()).unwrap_or_default(),
             _ => {
                 return Step::Continue(
                     "Your working copy changed after it was reviewed, so it can't land as it is. End your reply; the \
@@ -1073,104 +1179,111 @@ impl VerifyCheck {
                         .into(),
                 );
             }
-        }
+        };
+        let landing = worktree::Landing { only: Some(reviewed), review_overlap: true };
         let message = landing_message(&v.spec);
-        let round = store
-            .verification_rounds(&v.id)
-            .map(|r| r.len() as i64 + 1)
-            .unwrap_or(1);
-        let caught = worktree::catch_up(&mut iso, &message).await;
+        let round = store.verification_rounds(&v.id).map(|r| r.len() as i64 + 1).unwrap_or(1);
+        let started = Self::now();
+        // Re-test in the copy as it is after catching up: what was verified
+        // is what lands.
+        let runs: Arc<Mutex<Vec<CheckRun>>> = Default::default();
+        let (tools, ctx, work_dir, build) = (
+            self.harness.tools.clone(),
+            {
+                let mut ctx = self.tool_ctx();
+                ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
+                ctx
+            },
+            work.work_dir.clone(),
+            checks::build_cache(&work.project_root),
+        );
+        let ran = runs.clone();
+        let retest = move |iso: &worktree::Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
+            let (tools, ctx, work_dir, build, ran, iso) = (tools.clone(), ctx.clone(), work_dir.clone(), build.clone(), ran.clone(), iso.clone());
+            Box::pin(async move {
+                let changed = worktree::changed_files(&iso).await;
+                let found = checks::detect(&work_dir, &changed);
+                let done = checks::run(&tools, &ctx, &found, &build).await;
+                let failed: Vec<String> = done.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
+                *ran.lock().unwrap_or_else(|p| p.into_inner()) = done;
+                if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
+            })
+        };
+        let (caught, landed) = worktree::land_one(&mut iso, &message, Some(&retest), &landing).await;
         work.iso = Some(iso.clone());
         self.verify.work.put(work.clone()).await;
-        let _ = store
-            .set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
-        let mut step = db::VerificationRound {
-            verification_id: v.id.clone(),
-            round,
-            kind: "catch_up".into(),
-            started_at: Self::now(),
-            ..Default::default()
-        };
-        let caught = match caught {
-            Ok(c) => c,
-            Err(outcome) => {
-                step.outcome = super::landing_why(&outcome).text();
-                step.detail =
-                    json!({ "outcome": worktree::render_outcome("the change", &outcome) });
-                step.finished_at = Some(Self::now());
-                let _ = store.put_verification_round(&step);
-                return self.not_landed(&mut work, &v, outcome, notes).await;
+        let _ = store.set_verification_isolation(&v.id, &serde_json::to_value(&iso).unwrap_or_default());
+        let runs = runs.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(caught) = &caught {
+            let outcome = if !caught.conflicts.is_empty() {
+                Why::new("conflicts").with("files", caught.conflicts.join(", "))
+            } else if caught.onto.is_empty() {
+                Why::new("up_to_date")
+            } else {
+                Why::new("caught_up").with("commit", super::short(&caught.onto))
+            };
+            let _ = store.put_verification_round(&db::VerificationRound {
+                verification_id: v.id.clone(),
+                round,
+                kind: "catch_up".into(),
+                started_at: started,
+                finished_at: Some(Self::now()),
+                checks: json!(runs),
+                outcome: outcome.text(),
+                detail: json!({ "onto": caught.onto, "overlap": caught.overlap, "conflicts": caught.conflicts }),
+                ..Default::default()
+            });
+        }
+        match landed {
+            MergeOutcome::Conflict { files, .. } => {
+                if self.verify.shared().stuck(&v.id) {
+                    self.finish(v, "not_verified", Some(Why::new("stalled").with("open", files.len())));
+                    return Step::Finished;
+                }
+                Step::Continue(format!(
+                    "Your change is verified, but catching it up with the owner's project met their own changes to the same \
+                     lines in {}. Resolve them in your working copy ({}), keeping what the owner meant and what your change \
+                     does, then stage each resolved file with `git add` (or `git rm` to keep a deletion): staging it is how \
+                     you say it is resolved. The resolution is reviewed and checked again.",
+                    files.join(", "),
+                    work.work_dir.display()
+                ))
             }
-        };
-        step.detail = json!({ "onto": caught.onto, "overlap": caught.overlap, "conflicts": caught.conflicts });
-        if !caught.conflicts.is_empty() {
-            step.outcome = Why::new("conflicts").with("files", caught.conflicts.join(", ")).text();
-            step.finished_at = Some(Self::now());
-            let _ = store.put_verification_round(&step);
-            return Step::Continue(format!(
-                "Your change is verified, but catching it up with the owner's project met their own changes to the same \
-                 lines in {}. Resolve them in your working copy ({}), keeping what the owner meant and what your change \
-                 does, then end your reply with the line \"{RESOLVED_LINE}\" on its own. The resolution is checked again.",
-                caught.conflicts.join(", "),
-                work.work_dir.display()
-            ));
-        }
-        // Re-test in the copy as it is now: what was verified is what lands.
-        let mut ctx = self.tool_ctx();
-        ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
-        let checks = checks::detect(&work.work_dir, &caught.changed);
-        let runs = checks::run(
-            &self.harness.tools,
-            &ctx,
-            &checks,
-            &checks::build_cache(&work.project_root),
-        )
-        .await;
-        step.checks = json!(runs);
-        step.outcome = if caught.onto.is_empty() {
-            Why::new("up_to_date")
-        } else {
-            Why::new("caught_up").with("commit", super::short(&caught.onto))
-        }
-        .text();
-        step.finished_at = Some(Self::now());
-        let _ = store.put_verification_round(&step);
-        if runs.iter().any(|r| !r.passed) {
-            return Step::Continue(findings_brief(
-                &work.project_root.display().to_string(),
-                round as u32,
-                &[],
-                &[],
-                &runs,
-                &[],
-            ));
-        }
-        // Catching up changed what the change touches: a delta review of it.
-        let head = work
-            .shadow
-            .snapshot()
-            .await
-            .unwrap_or_else(|_| work.last.clone().unwrap_or_else(|| work.base.clone()));
-        if !caught.overlap.is_empty() && Some(&head) != work.last.as_ref() {
-            return Step::Continue(format!(
+            MergeOutcome::NeedsReview { files, .. } => Step::Continue(format!(
                 "Catching up with the owner's project changed files your change touches ({}). The next round reviews the \
                  result: end your reply when you have looked it over in your copy.",
-                caught.overlap.join(", ")
-            ));
+                files.join(", ")
+            )),
+            MergeOutcome::RetestFailed { .. } => {
+                self.record_landing(v, round + 1, &landed);
+                Step::Continue(findings_brief(&work.project_root.display().to_string(), round as u32, &[], &[], &runs, &[]))
+            }
+            MergeOutcome::Unreviewed { ref files, .. } => {
+                self.record_landing(v, round + 1, &landed);
+                Step::Continue(format!(
+                    "Your working copy holds changes nobody reviewed ({}): too big to snapshot, a repository of its own, or \
+                     made after the review. Remove them from your copy, or move them into the change so they are reviewed, \
+                     and end your reply.",
+                    files.join(", ")
+                ))
+            }
+            MergeOutcome::Merged { ref commit, .. } => {
+                self.record_landing(v, round + 1, &landed);
+                let _ = store.set_verification_landed(&v.id, commit, Self::now());
+                self.finish(v, "verified", None);
+                work.clean_up();
+                Step::Finished
+            }
+            MergeOutcome::NoChanges => {
+                self.record_landing(v, round + 1, &landed);
+                self.finish(v, "verified", None);
+                Step::Finished
+            }
+            other => {
+                self.record_landing(v, round + 1, &other);
+                self.not_landed(work, v, other, notes).await
+            }
         }
-        let landed = worktree::land(&iso).await;
-        self.record_landing(&v, round + 1, &landed);
-        if let MergeOutcome::Merged { commit, .. } = &landed {
-            let _ = store.set_verification_landed(&v.id, commit, Self::now());
-            self.finish(&v, "verified", None);
-            work.clean_up();
-            return Step::Finished;
-        }
-        if matches!(landed, MergeOutcome::NoChanges) {
-            self.finish(&v, "verified", None);
-            return Step::Finished;
-        }
-        self.not_landed(&mut work, &v, landed, notes).await
     }
 
     fn record_landing(&self, v: &db::Verification, round: i64, landed: &MergeOutcome) {
@@ -1211,6 +1324,10 @@ impl VerifyCheck {
             MergeOutcome::RetestFailed { error, .. } => Step::Continue(format!(
                 "After catching up, the project's checks failed:\n{error}\nFix it in your working copy and end your reply."
             )),
+            MergeOutcome::OwnerEdits { .. } if self.verify.shared().after_owner.remove(&v.id) => {
+                self.finish(v, "verified", Some(Why::new("edits_in_way")));
+                Step::Finished
+            }
             MergeOutcome::OwnerEdits { files, .. } => {
                 let question = format!(
                     "This change is verified, and you have edits of your own in {} that it also touches. Nothing of yours was \
@@ -1267,20 +1384,11 @@ impl VerifyCheck {
                 }
             }),
             Purpose::OwnerEdits => Some(match answer {
+                // Landed through the one path: only if the copy is still what
+                // was reviewed, caught up and re-tested again.
                 Some(LAND_AFTER_MINE) => {
-                    let landed = match work.iso.as_ref() {
-                        Some(iso) => worktree::land(iso).await,
-                        None => MergeOutcome::NoChanges,
-                    };
-                    self.record_landing(v, self.store().verification_rounds(&v.id).map(|r| r.len() as i64 + 1).unwrap_or(1), &landed);
-                    if let MergeOutcome::Merged { commit, .. } = &landed {
-                        let _ = self.store().set_verification_landed(&v.id, commit, Self::now());
-                        work.clean_up();
-                        self.finish(v, "verified", None);
-                    } else {
-                        self.finish(v, "verified", Some(Why::new("edits_in_way")));
-                    }
-                    Step::Finished
+                    self.verify.shared().after_owner.insert(v.id.clone());
+                    Box::pin(self.land_reviewed(work, v, "")).await
                 }
                 _ => {
                     self.finish(v, "verified", Some(Why::new("kept_own_edits")));
@@ -1303,12 +1411,7 @@ impl VerifyCheck {
             self.finish(v, "not_verified", Some(reason));
             return None;
         };
-        let mut isos = [iso.clone()];
-        let outcome = worktree::merge_all(&mut isos, &landing_message(&v.spec), None)
-            .await
-            .remove(0)
-            .1;
-        [iso] = isos;
+        let (_, outcome) = worktree::land_one(&mut iso, &landing_message(&v.spec), None, &worktree::Landing::default()).await;
         work.iso = Some(iso);
         self.record_landing(
             v,
@@ -1328,9 +1431,9 @@ impl VerifyCheck {
     }
 
     /// An app's pages after a clean round: reloaded where they are open and
-    /// checked live (its page loads, its console has no errors). Whether it
-    /// checked out; an app with no live page to check (none matches the
-    /// folder) has nothing that failed.
+    /// checked live. It checks out only when the app exists, its page loads
+    /// (its folder, its entry page, every file it loads) and its console has
+    /// zero errors.
     async fn live_check_app(&self, work: &Work, v: &db::Verification) -> bool {
         let store = self.store();
         let app = store
@@ -1341,8 +1444,11 @@ impl VerifyCheck {
                 tools::app_dev::served_dir(a)
                     .is_some_and(|d| std::path::Path::new(d) == work.work_dir)
             });
-        let Some(app) = app else { return true };
         let ctx = self.tool_ctx();
+        let Some(app) = app else {
+            self.record_live(v, false, json!({ "problem": "no app is served from these pages" }));
+            return false;
+        };
         let reload = self
             .harness
             .tools
@@ -1353,22 +1459,28 @@ impl VerifyCheck {
             .tools
             .execute(&ctx, tools::app_dev::APP_STATUS, json!({ "app": app.name }))
             .await;
-        let ok = !reload.is_error && !status.is_error;
-        let round = store
-            .verification_rounds(&v.id)
-            .map(|r| r.len() as i64 + 1)
-            .unwrap_or(1);
+        let problem = if reload.is_error || status.is_error {
+            Some("the page could not be reloaded")
+        } else {
+            tools::app_dev::live_problem(&work.work_dir, tools::app_console::error_count(&app.id))
+        };
+        self.record_live(v, problem.is_none(), json!({ "problem": problem, "reload": reload.content, "status": status.content }));
+        problem.is_none()
+    }
+
+    fn record_live(&self, v: &db::Verification, ok: bool, detail: serde_json::Value) {
+        let store = self.store();
+        let round = store.verification_rounds(&v.id).map(|r| r.len() as i64 + 1).unwrap_or(1);
         let _ = store.put_verification_round(&db::VerificationRound {
             verification_id: v.id.clone(),
             round,
             kind: "live".into(),
             outcome: Why::new(if ok { "live_ok" } else { "live_failed" }).text(),
-            detail: json!({ "reload": reload.content, "status": status.content }),
+            detail,
             started_at: Self::now(),
             finished_at: Some(Self::now()),
             ..Default::default()
         });
-        ok
     }
 }
 

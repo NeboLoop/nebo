@@ -35,22 +35,32 @@ fn read_rules_file(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Where a project's rules files may be, in the order they are read: the
+/// rules files, then the first code-auditor document found.
+pub fn rules_paths() -> Vec<String> {
+    let mut out: Vec<String> = RULE_FILES.iter().map(|r| r.to_string()).collect();
+    out.extend(["", "docs", "docs/sme", "doc"].iter().map(|dir| if dir.is_empty() { AUDITOR_FILE.to_string() } else { format!("{dir}/{AUDITOR_FILE}") }));
+    out
+}
+
 /// The project's rules files under `root`, each headed by its path, cut to
 /// [`FILE_CHARS`]. Empty when the project has none.
 pub fn project_rules(root: &Path) -> String {
+    project_rules_from(|rel| read_rules_file(&root.join(rel)))
+}
+
+/// The project's rules as `read` finds them (a path to its text): the
+/// project as it was when the work began, so the work itself can't rewrite
+/// the rules it is held to.
+pub fn project_rules_from(read: impl Fn(&str) -> Option<String>) -> String {
     let mut found: Vec<(String, String)> = Vec::new();
     for rel in RULE_FILES {
-        if let Some(text) = read_rules_file(&root.join(rel)) {
+        if let Some(text) = read(rel) {
             found.push((rel.to_string(), text));
         }
     }
-    for dir in ["", "docs", "docs/sme", "doc"] {
-        let rel = if dir.is_empty() {
-            AUDITOR_FILE.to_string()
-        } else {
-            format!("{dir}/{AUDITOR_FILE}")
-        };
-        if let Some(text) = read_rules_file(&root.join(&rel)) {
+    for rel in rules_paths().into_iter().skip(RULE_FILES.len()) {
+        if let Some(text) = read(&rel) {
             found.push((rel, text));
             break;
         }
@@ -74,6 +84,11 @@ pub fn project_rules(root: &Path) -> String {
 /// The rules section of a brief: the house rules, the owner's standing
 /// rules for this employee (`owner`), and the project's own.
 pub fn brief_rules(root: &Path, owner: &str) -> String {
+    rules_section(owner, &project_rules(root))
+}
+
+/// The rules section with the project's rules as given ([`project_rules_from`]).
+pub fn rules_section(owner: &str, project: &str) -> String {
     let mut out = format!("## How this work is done\n{HOUSE_RULES}");
     if !owner.trim().is_empty() {
         out.push_str(&format!(
@@ -81,7 +96,6 @@ pub fn brief_rules(root: &Path, owner: &str) -> String {
             owner.trim()
         ));
     }
-    let project = project_rules(root);
     if !project.is_empty() {
         out.push_str(&format!("\n\n## The project's rules\n{project}"));
     }

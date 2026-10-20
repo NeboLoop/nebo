@@ -388,6 +388,19 @@ impl Store {
         Ok(())
     }
 
+    /// A finished verification whose work changed again is checked again:
+    /// running, with no reason and no reply it was reported on (its badge
+    /// there is no longer true), until it finishes and is reported anew.
+    pub fn reopen_verification(&self, id: &str) -> Result<(), NeboError> {
+        self.conn()?
+            .execute(
+                "UPDATE verifications SET state = 'running', reason = '', message_id = NULL, finished_at = NULL WHERE id = ?1",
+                params![id],
+            )
+            .db_err("reopen_verification")?;
+        Ok(())
+    }
+
     /// Write one step of a verification's history (a step is written as it
     /// starts and again when it ends).
     pub fn put_verification_round(&self, r: &VerificationRound) -> Result<(), NeboError> {

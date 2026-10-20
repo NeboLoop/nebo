@@ -59,7 +59,7 @@ pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, reader: Reader, r
     if let Some(limit) = threshold
         && result.content.chars().count() > limit
     {
-        result.content = persist(dir, &result.content, reader);
+        result.content = persist(dir, &result.content, reader, PREVIEW_CHARS);
     }
 }
 
@@ -127,15 +127,17 @@ const STEP_SUMMARY_CHARS: usize = 1_500;
 /// reads it — for a chat turn a preview cut at a newline and `read_file`;
 /// for a workflow step a summary (kind, size, fields, first items) and
 /// `read_step_data`. A failed write keeps the preview and says the rest is
-/// gone.
-pub fn persist(dir: &Path, content: &str, reader: Reader) -> String {
+/// gone. The preview is `preview_chars` long at most ([`PREVIEW_CHARS`]
+/// unless the reader asked for less, e.g. a report limit under 2 KB).
+pub fn persist(dir: &Path, content: &str, reader: Reader, preview_chars: usize) -> String {
     let saved = save(dir, content);
     let size = human_size(content.len());
-    let preview = preview(content);
+    let preview = preview(content, preview_chars);
+    let first = if preview_chars >= PREVIEW_CHARS { "First 2KB".to_string() } else { format!("First {preview_chars} characters") };
     match (saved, reader) {
         (Ok(path), Reader::File) => format!(
             "{SAVED_OUTPUT}\nThe output is {size}, too long to show here. Saved in full at: {}\n\n\
-             First 2KB:\n{preview}\n</saved-output>\n\
+             {first}:\n{preview}\n</saved-output>\n\
              Read the file a line range at a time with read_file (offset and limit), or search it with \
              run_command(command: \"grep -n '<text>' {0}\"); don't read it whole.",
             path.display()
@@ -152,18 +154,18 @@ pub fn persist(dir: &Path, content: &str, reader: Reader) -> String {
             tracing::warn!(error = %e, "failed to persist a large tool result");
             format!(
                 "{SAVED_OUTPUT}\nThe output is {size}, too long to show here, and saving it failed ({e}); \
-                 only the first 2KB is available.\n\nFirst 2KB:\n{preview}\n</saved-output>"
+                 only the start is available.\n\n{first}:\n{preview}\n</saved-output>"
             )
         }
     }
 }
 
-/// The first [`PREVIEW_CHARS`] of `content`, cut back to a newline when one
-/// falls in the second half.
-fn preview(content: &str) -> &str {
+/// The first `chars` (at most [`PREVIEW_CHARS`]) of `content`, cut back to
+/// a newline when one falls in the second half.
+fn preview(content: &str, chars: usize) -> &str {
     let end = content
         .char_indices()
-        .nth(PREVIEW_CHARS)
+        .nth(chars.min(PREVIEW_CHARS))
         .map_or(content.len(), |(i, _)| i);
     let head = &content[..end];
     match head.rfind('\n') {
