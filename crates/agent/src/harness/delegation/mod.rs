@@ -1206,7 +1206,7 @@ impl Helpers {
             ));
         }
         if self.state().settling.contains(task_id) {
-            return Err(format!("Helper {task_id}'s changes are being landed or discarded right now; send it the follow-up once that is done."));
+            return Err(settling_now(task_id));
         }
         // An isolated helper continues in the copy it holds, checked out
         // again when its work was put away on its branch. One holding none
@@ -1225,7 +1225,16 @@ impl Helpers {
                     Held { iso: isolate(&turn.seat, grant, task_id, project).await?, unfinished: None }
                 }
             };
-            self.hold(task_id, held);
+            // A landing or discard that began meanwhile owns the copy: it
+            // is checked and the copy held under the one lock it takes.
+            {
+                let mut state = self.state();
+                if state.settling.contains(task_id) {
+                    return Err(settling_now(task_id));
+                }
+                state.copies.insert(task_id.to_string(), held.clone());
+            }
+            self.keep(task_id, Some(&held));
         }
         let from = crate::harness::conversation::MidTurnFrom::Parent {
             session_key: caller.to_string(),
@@ -1247,6 +1256,12 @@ impl Helpers {
         // message either reaches a running turn or finds the helper finished.
         let resume = {
             let mut state = self.state();
+            // Checked again under the lock a landing takes to begin: a
+            // helper never runs in a copy that is landing or being
+            // discarded.
+            if state.settling.contains(task_id) {
+                return Err(settling_now(task_id));
+            }
             if let Some(h) = state.helpers.get_mut(task_id)
                 && h.running
             {
@@ -2298,6 +2313,11 @@ fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
     }
 }
 
+/// Why a follow-up can't reach a helper whose changes are settling.
+fn settling_now(task_id: &str) -> String {
+    format!("Helper {task_id}'s changes are being landed or discarded right now; send it the follow-up once that is done.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3066,6 +3086,36 @@ mod tests {
                 assert!(repo.join("c.txt").exists());
                 assert!(!copy.exists(), "the copy is gone once it landed");
                 assert!(rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.is_err(), "nothing left to land");
+            })
+        })
+    }
+
+    /// Review round 4: a follow-up never resumes a helper whose changes are
+    /// landing or being discarded; its copy stays the landing's.
+    #[test]
+    fn a_follow_up_never_resumes_a_helper_while_its_changes_settle() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("b.txt"), "from the helper\n").unwrap();
+                rig.heard(&child.request.session_key);
+                child.answer("Added b.").await;
+                rig.next_wake().await;
+
+                rig.helpers.state().settling.insert(id.clone());
+                let refused = rig.helpers.send(&owner, None, &[], &id, "Also add c.", None).await.unwrap_err();
+                assert!(refused.contains("being landed or discarded"), "{refused}");
+                assert!(!rig.helpers.state().helpers.get(&id).is_some_and(|h| h.running), "not resumed");
+                rig.helpers.state().settling.remove(&id);
+                rig.helpers.settle(key, &id, Decision::Discard, None, Default::default()).await.unwrap();
             })
         })
     }
