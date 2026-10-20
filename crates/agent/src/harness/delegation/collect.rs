@@ -25,6 +25,10 @@ pub const STOP_SPEND_CAP: &str = "spend_cap";
 /// cancel and this event the collector wakes to first.
 pub const STOP_CANCELLED: &str = "cancelled";
 
+/// Why a helper that asked for the owner's decision stopped
+/// ([`CompletionStatus::Partial`]).
+pub const NEEDS_OWNER_DECISION: &str = "needs owner decision";
+
 /// Marks a result that is not a final report.
 pub const NO_FINAL_REPORT: &str = "[no final report; last words before it stopped]";
 
