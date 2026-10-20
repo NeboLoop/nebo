@@ -768,7 +768,8 @@ mod tests {
         registry.register(Box::new(FileWriter)).await;
         let project = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git").args(args).current_dir(project.path()).status().unwrap().success());
+            let mut cmd = command::new::<std::process::Command>("git", command::Console::Hidden);
+            assert!(cmd.args(args).current_dir(project.path()).status().unwrap().success());
         };
         for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
             git(args);
