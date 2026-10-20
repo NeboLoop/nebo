@@ -160,6 +160,12 @@ impl Shadow {
                 format!("{}\n", objects.display()),
             )
             .map_err(|e| format!("write alternates: {e}"))?;
+        } else {
+            // A folder that is no repository is read with its names exactly
+            // as the disk holds them, as its copy and its landing read them.
+            git(git_dir, &["--git-dir", &dir, "config", "core.precomposeunicode", "false"])
+                .await
+                .map_err(|e| format!("git config: {e}"))?;
         }
         Ok(shadow)
     }
@@ -383,18 +389,41 @@ impl Shadow {
         Ok(())
     }
 
-    /// What the folder holds at each of `paths` while it is still exactly
-    /// `snapshot`, read the way a landing compares it
-    /// ([`crate::worktree::content_id`]: the one hasher on both sides, so a
-    /// shadow's own git settings never make a difference; `None`: nothing
-    /// there). `Err` when the folder has changed since `snapshot`.
+    /// What the folder holds at each of `paths`, as a landing compares it
+    /// ([`crate::worktree::content_id`]), when each still holds what
+    /// `snapshot` recorded. Each path is read off the disk once; those bytes
+    /// are hashed the snapshot's way (with the shadow's own settings) and
+    /// compared with the snapshot's blob, and hashed the landing's way for
+    /// what is kept, so nothing can change in between and no second
+    /// snapshot is taken. `Err` when a path no longer holds what was
+    /// snapshotted.
     pub async fn contents(&self, snapshot: &Snapshot, paths: &[String]) -> Result<crate::worktree::Reviewed, String> {
-        if &self.snapshot().await? != snapshot {
-            return Err("the folder changed after it was snapshotted".into());
+        let mut recorded: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if !paths.is_empty() {
+            let mut args = vec!["--literal-pathspecs", "ls-tree", "-r", "-z", "--full-tree", snapshot.0.as_str(), "--"];
+            args.extend(paths.iter().map(String::as_str));
+            let listed = self.run_bytes(&args).await.map_err(|e| format!("ls-tree: {e}"))?;
+            for entry in nul_split(&listed) {
+                // `<mode> <type> <object>\t<path>`
+                if let Some((meta, path)) = entry.split_once('\t')
+                    && let Some(object) = meta.split(' ').nth(2)
+                {
+                    recorded.insert(path.to_string(), object.to_string());
+                }
+            }
         }
+        let shadow_hash = self.with_dirs(&[]);
+        let shadow_hash: Vec<&str> = shadow_hash.iter().map(String::as_str).collect();
         let mut out = crate::worktree::Reviewed::new();
         for p in paths {
-            let id = crate::worktree::content_id(&self.work_tree, p)
+            let what = crate::worktree::read_disk(&self.work_tree, p).await;
+            let now = crate::worktree::object_id(&self.work_tree, &shadow_hash, p, &what)
+                .await
+                .map_err(|_| format!("{p} could not be read"))?;
+            if now.as_ref() != recorded.get(p) {
+                return Err(format!("{p} changed after it was snapshotted"));
+            }
+            let id = crate::worktree::object_id(&self.work_tree, crate::worktree::SNAPSHOT_HASH, p, &what)
                 .await
                 .map_err(|_| format!("{p} could not be read"))?;
             out.insert(p.clone(), id);
@@ -405,7 +434,7 @@ impl Shadow {
     /// The text of the regular file `rel` as `snapshot` holds it; `None`
     /// for a link, a folder or nothing there.
     pub async fn read(&self, snapshot: &Snapshot, rel: &str) -> Option<String> {
-        let entry = self.run(&["ls-tree", &snapshot.0, "--", rel]).await.ok()?;
+        let entry = self.run(&["--literal-pathspecs", "ls-tree", &snapshot.0, "--", rel]).await.ok()?;
         if !entry.starts_with("100") {
             return None;
         }
@@ -843,4 +872,44 @@ mod tests {
             })
         })
     }
+
+    /// Review round 6: names git would quote or rewrite (decomposed
+    /// accents as macOS writes them, a quote, a backslash, a tab, a newline,
+    /// a leading dash, glob characters) go from a review of a copy to its
+    /// landing whole: the snapshot names them as the copy does.
+    #[test]
+    fn names_git_would_quote_or_rewrite_go_from_review_to_landing() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let shadows = tempfile::tempdir().unwrap();
+                std::fs::write(folder.path().join("a.txt"), "a\n").unwrap();
+                let c = crate::worktree::create_copy(folder.path(), "sa-r6-shadow").unwrap();
+                let shadow = Shadow::open(&shadows.path().join("s.git"), &c.path).await.unwrap();
+                let base = shadow.snapshot().await.unwrap();
+                let names = ["cafe\u{301}.txt", "a\"b.txt", "back\\slash.txt", "tab\there.txt", "new\nline.txt", "-dash.txt", "routes/[id]/p.txt"];
+                for n in names {
+                    let p = c.path.join(n);
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(p, format!("{n}\n")).unwrap();
+                }
+                let snap = shadow.snapshot().await.unwrap();
+                let paths = shadow.diff(&base, &snap).await.unwrap().paths();
+                let mut sorted = paths.clone();
+                sorted.sort();
+                let mut want: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+                want.sort();
+                assert_eq!(sorted, want, "the snapshot names them as the copy does");
+                let seen = shadow.contents(&snap, &paths).await.unwrap();
+                let landing = crate::worktree::Landing { only: Some(seen), ..Default::default() };
+                let mut isos = [crate::worktree::Isolation::Copy(c)];
+                let out = crate::worktree::merge_all(&mut isos, "m", None, &landing).await;
+                assert!(matches!(&out[0].1, crate::worktree::MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+                for n in names {
+                    assert!(folder.path().join(n).exists(), "{n:?}");
+                }
+            })
+        })
+    }
+
 }
