@@ -50,6 +50,7 @@ mod workflow_audits;
 mod teams;
 mod temporary_work;
 mod upgrade;
+mod verifications;
 
 pub use addressings::{Addressing, AddressingState};
 pub use app_listings::AppListing;
@@ -77,3 +78,4 @@ pub use work::{WorkDocument, WorkDocumentListing, WorkDocumentVersion};
 pub use teams::{PROJECT_LIMIT_SPEND_CENTS, PROJECT_LIMIT_STEPS, project_thread_key, team_thread_key, team_thread_of, NewProject, Project, ProjectUsage, Team, TeamCard, TeamMember, TeamMessage, TeamThread, TEAM_THREAD_PREFIX};
 pub use temporary_work::{TemporaryClaim, TemporaryKind, TemporaryWork};
 pub use workflow_audits::WorkflowAuditRow;
+pub use verifications::{NewVerification, VERIFICATION_LIVE, Verification, VerificationQuery, VerificationRound, VerificationState};
