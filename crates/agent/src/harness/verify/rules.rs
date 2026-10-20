@@ -5,12 +5,7 @@
 use std::path::Path;
 
 /// The project files whose words are rules for anyone working in it.
-pub const RULE_FILES: &[&str] = &[
-    "CLAUDE.md",
-    "AGENTS.md",
-    ".cursorrules",
-    ".github/copilot-instructions.md",
-];
+pub const RULE_FILES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
 
 /// A code-auditor document, wherever the project keeps it (`docs/`, `docs/sme/`).
 pub const AUDITOR_FILE: &str = "CODE_AUDITOR.md";
