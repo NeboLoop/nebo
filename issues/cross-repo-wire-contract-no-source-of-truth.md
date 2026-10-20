@@ -18,7 +18,7 @@ The real wire contract lives in two hand-written, hand-mirrored places:
 | NeboLoop (Go) | `internal/comms/` (wire types) | Go structs, camelCase JSON payloads |
 
 The transport is a 47-byte binary header + **JSON** payload (`crates/comm/src/frame.rs`,
-`docs/sme/NEBOLOOP_CONNECTION.md` §2). Protobuf is not on the wire at all.
+`nebo-sme/NEBOLOOP_CONNECTION.md` §2). Protobuf is not on the wire at all.
 
 ## Evidence
 
@@ -53,7 +53,7 @@ whole reconnect path depends on) appear in **neither** proto.
    produce something that cannot connect.
 2. **No compile-time coupling.** Adding a field to `wire.rs` and forgetting the Go struct is a silent
    runtime `null`, not a build failure. Same in reverse.
-3. **It masks the real contract.** The authoritative definition is currently `docs/sme/NEBOLOOP_CONNECTION.md`
+3. **It masks the real contract.** The authoritative definition is currently `nebo-sme/NEBOLOOP_CONNECTION.md`
    plus two source files — discoverable only if you already know to look.
 
 ## Expected
@@ -84,6 +84,6 @@ If (a) is chosen instead, it is a scheduled protocol change, not a docs task —
 
 ## Related
 
-- `docs/sme/NEBOLOOP_CONNECTION.md` — current authoritative description of the wire
+- `nebo-sme/NEBOLOOP_CONNECTION.md` — current authoritative description of the wire
 - `issues/cross-repo-tunnel-denylist-drift.md` — same root cause (two repos agreeing by convention,
   not by construction), higher stakes

@@ -72,7 +72,7 @@ cookies now ride along — which is precisely what the hub needs.
 ### Do NOT fix it hub-side
 
 Allowlisting `manifest.webmanifest` past `tunnelProxy` auth would punch an unauthenticated hole in
-the boundary that `docs/sme/TUNNEL.md` §3 establishes, for a cosmetic asset. The client-side fix is
+the boundary that `nebo-sme/TUNNEL.md` §3 establishes, for a cosmetic asset. The client-side fix is
 smaller and keeps the boundary intact.
 
 ## Verification
@@ -89,6 +89,6 @@ part of the path being exercised.
 
 ## Related
 
-- `docs/sme/TUNNEL.md` §3 — tunnel auth boundary (Bearer or `neboloop_tunnel` cookie)
+- `nebo-sme/TUNNEL.md` §3 — tunnel auth boundary (Bearer or `neboloop_tunnel` cookie)
 - `neboloop internal/api/tunnel.go:276-296` — the `ModifyResponse` HTML re-rooting block whose stated
   goal this bug defeats

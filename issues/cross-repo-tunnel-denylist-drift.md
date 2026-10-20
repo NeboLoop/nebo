@@ -9,7 +9,7 @@ local-trust-only endpoint through the public tunnel.
 
 The reverse management tunnel (Plane B) is the auth boundary for Nebo's local HTTP surface — ~250
 endpoints and `/ws` are unauthenticated by design because they trust localhost
-(`docs/sme/TUNNEL.md` §1). Some of those endpoints must **never** be reachable through the tunnel,
+(`nebo-sme/TUNNEL.md` §1). Some of those endpoints must **never** be reachable through the tunnel,
 so both sides carry a denylist.
 
 The list exists twice, in two languages, in two repos, with nothing enforcing that they agree:
@@ -19,7 +19,7 @@ The list exists twice, in two languages, in two repos, with nothing enforcing th
 | Nebo (Rust) | `crates/comm/src/tunnel.rs:110` | `is_blocked_path` |
 | NeboLoop (Go) | `internal/api/tunnel.go:334` | `isBlockedTunnelPath` |
 
-`docs/sme/TUNNEL.md` §3 already flags this ("keep both sides in sync… add it to BOTH") — the
+`nebo-sme/TUNNEL.md` §3 already flags this ("keep both sides in sync… add it to BOTH") — the
 instruction exists, the enforcement does not.
 
 ## Current State (verified 2026-07-28)
@@ -94,6 +94,6 @@ not worth it.
 
 ## Related
 
-- `docs/sme/TUNNEL.md` §3 — the layered security model and the existing "keep both sides in sync" note
+- `nebo-sme/TUNNEL.md` §3 — the layered security model and the existing "keep both sides in sync" note
 - `issues/cross-repo-wire-contract-no-source-of-truth.md` — same root cause (two repos agreeing by
   convention rather than construction), lower stakes
