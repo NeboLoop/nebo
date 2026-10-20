@@ -158,6 +158,12 @@ impl Helpers {
             text: text.to_string(),
         });
         let recipient = self.recipient(to);
+        if answer.is_none() && input["question"].as_str().is_some_and(|q| !q.trim().is_empty()) {
+            return ToolResult::error(
+                "`question` names the helper's question an `answer` settles, and no `answer` was given. Nothing was \
+                 sent. Send it again with the owner's decision in `answer`, or without `question`.",
+            );
+        }
         if answer.is_some() && !matches!(recipient, Recipient::Helper) {
             return ToolResult::error(
                 "`answer` carries the owner's answer to a helper's question; a coworker or a team asked none. \
@@ -1046,6 +1052,16 @@ mod tests {
 
     /// A delegate call sets how long its helper's report may be, for the
     /// whole call or per piece; the schema says the lean default.
+    /// `question` names the question an `answer` settles: alone, it is
+    /// refused and nothing is sent.
+    #[tokio::test]
+    async fn a_question_without_an_answer_is_refused() {
+        let rig = Rig::new();
+        let r = rig.call("send_message", json!({"to": "h1", "message": "x", "question": "q-1"})).await;
+        assert!(r.is_error && r.content.contains("no `answer` was given"), "{}", r.content);
+        assert!(rig.rec.sent.lock().unwrap().is_empty(), "nothing sent");
+    }
+
     #[tokio::test]
     async fn report_limit_is_set_per_call_and_per_piece() {
         let rig = Rig::new();

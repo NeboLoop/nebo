@@ -442,6 +442,11 @@ struct Helper {
     /// It was stopped (`stop_task`, or its parent stopping): it never runs
     /// again on its own, and its report says stopped, never done.
     stopped: bool,
+    /// A message reached it after it was stopped, while its stopped turn
+    /// was still ending: a fresh turn runs once that turn has ended, and the
+    /// answer it carried (if any) settles its question when that turn
+    /// begins.
+    rerun: Option<Option<tools::orchestrator::Answer>>,
     /// The call it is making now, as the owner's screen was sent it.
     call: Option<tools::humanize::Call>,
     /// Background work's latest progress line, as the owner's screen was
@@ -459,6 +464,30 @@ impl Helper {
         if let Some(held) = &mut self.held {
             held.status = CompletionStatus::Stopped;
         }
+    }
+
+    /// The request of its next turn, under its parent's seat and its own
+    /// stop token; what it hears is already in its thread.
+    fn next_turn(&self, task_id: &str) -> TurnRequest {
+        let spec = HelperSpec {
+            description: self.description.clone(),
+            prompt: String::new(),
+            kind: self.kind,
+            background: true,
+            isolation: None,
+            skills: Vec::new(),
+            speed: self.speed.clone(),
+            report_limit: Some(self.report_limit),
+        };
+        let parent = Parent {
+            session_key: &self.parent_key,
+            seat: &self.parent_seat,
+            grant: self.parent_grant.as_ref(),
+            run_taint: &[],
+            cancel: self.cancel.clone(),
+            platform: self.parent_platform.as_deref(),
+        };
+        child::child_request(&parent, task_id, &spec, None, TurnInput::None)
     }
 
     /// Keep a turn of this run. A question it asked is pending, unless an
@@ -826,6 +855,7 @@ impl Helpers {
                     questions: Default::default(),
                     answer_in_turn: None,
                     stopped: false,
+                    rerun: None,
                     call: None,
                     activity: String::new(),
                     started_at: chrono::Utc::now().timestamp(),
@@ -888,6 +918,7 @@ impl Helpers {
                     questions: Default::default(),
                     answer_in_turn: None,
                     stopped: false,
+                    rerun: None,
                     call: None,
                     activity: String::new(),
                     started_at: chrono::Utc::now().timestamp(),
@@ -1139,6 +1170,22 @@ impl Helpers {
         // message either reaches a running turn or finds the helper finished.
         let resume = {
             let mut state = self.state();
+            // Stopped, with its stopped turn still ending: the message waits
+            // in its thread for a fresh turn once that turn ends; nothing is
+            // settled until that turn begins.
+            if let Some(h) = state.helpers.get_mut(task_id)
+                && h.running
+                && h.stopped
+            {
+                deliver(&self.sessions)?;
+                let earlier = h.rerun.take().flatten();
+                h.rerun = Some(answer.clone().or(earlier));
+                info!(task_id = %task_id, "message queued for a stopped helper's fresh turn");
+                return Ok(format!(
+                    "Helper {task_id} was stopped. Once its stopped turn has ended it runs again with your \
+                     message, and its report comes as a notification."
+                ));
+            }
             if let Some(h) = state.helpers.get_mut(task_id)
                 && h.running
             {
@@ -1194,6 +1241,7 @@ impl Helpers {
                 questions: questions_of_row(&self.store, task_id),
                 answer_in_turn: None,
                 stopped: false,
+                rerun: None,
                 call: None,
                 activity: String::new(),
                 started_at: chrono::Utc::now().timestamp(),
@@ -1271,10 +1319,12 @@ impl Helpers {
             }
             _ => false,
         };
-        drop(state);
+        // Its row says cancelled before anything else can reach it: a send
+        // waiting on the lock finds it stopped.
         for id in &stopped {
             let _ = self.store.cancel_task(id);
         }
+        drop(state);
         Ok(match (this, below) {
             (true, 0) => format!("Stopping helper {task_id}."),
             (true, n) => format!("Stopping helper {task_id} and {n} under it."),
@@ -1332,11 +1382,18 @@ impl Helpers {
     /// A helper's report as its row keeps it: assembled and held to its
     /// limit, its pending questions first, with `note` after it.
     /// Its row's questions are now with its parent.
+    /// A question its parent was already given is named, not given again.
     fn from_row(&self, run: &db::EngineRun, status: CompletionStatus, note: &str) -> Completion {
         let mut questions = questions_of_row(&self.store, &run.id);
+        let mut report = run.result.clone().unwrap_or_default();
+        for q in questions.pending.iter().filter(|q| questions.reported.contains(&q.id)) {
+            report = report.replace(
+                &q.block,
+                &format!("A question for the owner it reported before (question {}) still waits for an answer.", q.id),
+            );
+        }
         questions.reported();
         self.keep_questions(&run.id, &questions);
-        let report = run.result.clone().unwrap_or_default();
         Completion {
             task_id: run.id.clone(),
             description: self.description_of(&run.id),
@@ -1392,7 +1449,7 @@ impl Helpers {
                 self.deliver(&up, c, 0);
                 return;
             }
-            self.append_notification(&up, &render_notification(&c), &[]);
+            self.append_notification(&up, &render_notification(&c), &[], false);
             below = Some((c.report(), asks_owner));
             child = pid;
             key = up;
@@ -1469,7 +1526,7 @@ impl Helpers {
              question\"; any other message leaves the question open. Don't ask it again. Go on with what doesn't \
              depend on it, and don't decide it yourself.",
         );
-        self.append_notification(&key, &text, &[]);
+        self.append_notification(&key, &text, &[], false);
     }
 
     /// The caller's own helpers still in hand: running, or finished and
@@ -1687,25 +1744,26 @@ impl Helpers {
             if continues {
                 info!(task_id = %task_id, "input reached the helper as its turn ended: running a turn to hear it");
                 self.keep_on_row(task_id, &h.assembled(&spill_dir, false), false, false);
-                let spec = HelperSpec {
-                    description: h.description.clone(),
-                    prompt: String::new(),
-                    kind: h.kind,
-                    background: true,
-                    isolation: None,
-                    skills: Vec::new(),
-                    speed: h.speed.clone(),
-                    report_limit: Some(h.report_limit),
-                };
-                let parent = Parent {
-                    session_key: &h.parent_key,
-                    seat: &h.parent_seat,
-                    grant: h.parent_grant.as_ref(),
-                    run_taint: &[],
-                    cancel: h.cancel.clone(),
-                    platform: h.parent_platform.as_deref(),
-                };
-                return Some(child::child_request(&parent, task_id, &spec, None, TurnInput::None));
+                return Some(h.next_turn(task_id));
+            }
+            // A message reached it after it was stopped: its stopped turn has
+            // ended, so a fresh one runs now, under a fresh stop token, and
+            // the answer it carried settles its question as that turn begins.
+            if let Some(answer) = h.rerun.take() {
+                info!(task_id = %task_id, "a stopped helper runs again with the message that reached it");
+                if let Some(a) = &answer {
+                    h.answered(a, false);
+                }
+                h.stopped = false;
+                self.keep_questions(task_id, &h.questions);
+                self.keep_on_row(task_id, &h.assembled(&spill_dir, false), false, false);
+                let (parent_key, session_key) = (h.parent_key.clone(), h.session_key.clone());
+                let cancel = state.session_token(&parent_key).child_token();
+                state.stops.insert(session_key, cancel.clone());
+                let h = state.helpers.get_mut(task_id)?;
+                h.cancel = cancel;
+                let _ = self.store.update_task_running(task_id);
+                return Some(h.next_turn(task_id));
             }
             h.running = false;
             // The row keeps the whole report; the parent gets each pending
@@ -1789,7 +1847,9 @@ impl Helpers {
                     // reaches it is kept in its thread.
                     let stopped = state.helpers.get(&pid).is_some_and(|p| p.stopped);
                     if running || !wakes || stopped {
-                        self.append_notification(parent_key, &text, &c.taint);
+                        // A stopped helper's report is read with the
+                        // conversation; it never runs a turn just to be read.
+                        self.append_notification(parent_key, &text, &c.taint, !wakes);
                         if !running && !state.work_below(parent_key)
                             && let Some(p) = state.helpers.get_mut(&pid)
                             && let Some(held) = p.held.take()
@@ -1816,11 +1876,11 @@ impl Helpers {
                         }
                         Err(e) => {
                             warn!(error = %e, session = %parent_key, "helper notification could not be queued; writing it as a row");
-                            self.append_notification(parent_key, &text, &c.taint);
+                            self.append_notification(parent_key, &text, &c.taint, false);
                         }
                     }
                 }
-                None => self.append_notification(parent_key, &text, &c.taint),
+                None => self.append_notification(parent_key, &text, &c.taint, !wakes),
             }
         }
         if let Some((pid, req)) = resume {
@@ -1841,8 +1901,8 @@ impl Helpers {
         }
     }
 
-    fn append_notification(&self, session_key: &str, text: &str, taint: &[ProvenanceClass]) {
-        if let Err(e) = notify::append_row(&self.sessions, session_key, text, taint) {
+    fn append_notification(&self, session_key: &str, text: &str, taint: &[ProvenanceClass], quiet: bool) {
+        if let Err(e) = notify::append_row(&self.sessions, session_key, text, taint, quiet) {
             warn!(error = %e, session = %session_key, "helper notification row could not be written");
         }
     }
@@ -1865,7 +1925,7 @@ impl Helpers {
             };
             // Written under the lock the helper's finish takes, so a row
             // either reaches a running turn or finds the helper idle.
-            if let Err(e) = notify::append_row(&self.sessions, session_key, text, taint) {
+            if let Err(e) = notify::append_row(&self.sessions, session_key, text, taint, false) {
                 warn!(error = %e, session = %session_key, "update for a helper could not be written");
                 return true;
             }
@@ -1926,6 +1986,7 @@ impl State {
 fn input_unheard(messages: &[db::models::ChatMessage]) -> bool {
     let Some(at) = messages.iter().rposition(|m| {
         m.role == "user"
+            && !notify::is_quiet_row(m)
             && (notify::is_notification_row(m)
                 || matches!(crate::harness::conversation::arrived_mid_turn(m), Some(crate::harness::conversation::MidTurnFrom::Parent { .. })))
     }) else {
@@ -3304,7 +3365,10 @@ mod tests {
         assert_eq!(rig.next_wake().await, "agent:sdr:web");
         let p = rig.pending_notifications("agent:sdr:web");
         let failed = p.iter().find(|x| x.contains("failed (interrupted by a restart")).expect("the interrupted run reports");
-        assert!(failed.contains("waiting on the owner's decision") && failed.contains("Question: What budget?"), "{failed}");
+        assert!(failed.contains("waiting on the owner's decision"), "{failed}");
+        // Its parent already has both questions: named, not given again.
+        assert!(!failed.contains("Question: What budget?") && !failed.contains("Question: Which vendor?"), "{failed}");
+        assert_eq!(failed.matches("it reported before").count(), 2, "{failed}");
     }
 
     /// A nested helper that starts research doesn't finish while the
@@ -3446,17 +3510,19 @@ mod tests {
         a.answer("Waiting on the contacts.").await;
         until_held(&rig, &a_id).await;
         let said = rig.helpers.stop("agent:sdr:web", &a_id).unwrap();
-        eprintln!("STOP SAID: {said}");
+        assert!(said.contains("and 2 under it"), "{said}");
         let _ = tokio::time::timeout(Duration::from_secs(5), stopped).await;
         let resumed = tokio::time::timeout(Duration::from_millis(800), rig.started.recv()).await;
-        if let Ok(Some(t)) = &resumed {
-            eprintln!("RESURRECTED: {} input={:?}", t.request.session_key, matches!(t.request.input, TurnInput::Notification(_)));
-        }
-        let wake = tokio::time::timeout(Duration::from_millis(300), rig.wake.recv()).await;
-        if wake.is_ok() {
-            for p in rig.pending_notifications("agent:sdr:web") { eprintln!("OWNER GOT: {}", &p[..p.len().min(300)]); }
-        }
         assert!(resumed.is_err(), "a stopped helper started another turn");
+        assert!(tokio::time::timeout(Duration::from_millis(300), rig.wake.recv()).await.is_err(), "a stop wakes no one");
+        // A's held report reaches the owner's conversation as stopped, never
+        // done, and B's reached A's thread the same way.
+        let rows = rig.notification_rows("agent:sdr:web");
+        assert!(rows.iter().any(|r| r.contains(&format!("helper {a_id} \"read the ledger\": stopped"))), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains(&format!("helper {a_id} \"read the ledger\": done"))), "{rows:?}");
+        let a_rows = rig.notification_rows(&a.request.session_key);
+        assert!(a_rows.iter().any(|r| r.contains(&format!("helper {b_id} \"read the ledger\": stopped"))), "{a_rows:?}");
+        assert_eq!(rig.store.get_pending_task(&a_id).unwrap().unwrap().status, "cancelled");
     }
 
     /// An answer sent to a finished helper settles the question it asked,
@@ -3476,7 +3542,6 @@ mod tests {
         ask(&t, "Acme it is. Need the budget.", &budget).await;
         assert_eq!(rig.next_wake().await, "agent:sdr:web");
         let p = rig.pending_notifications("agent:sdr:web");
-        eprintln!("REPORT2: {}", p.join("\n---\n"));
         assert!(p.iter().any(|x| x.contains("Question: What budget?")), "the new question never reached the owner");
     }
 
@@ -3561,5 +3626,83 @@ mod tests {
         a2.answer("Plan ready with 40 contacts.").await;
         let out = tokio::time::timeout(Duration::from_secs(5), fg).await.expect("it reports").unwrap().unwrap();
         assert!(out.contains("Plan ready with 40 contacts."), "{out}");
+    }
+
+    /// An answer sent right after a stop, while the stopped turn is still
+    /// ending, is never lost: it waits in the helper's thread, a fresh turn
+    /// runs once the stopped one has ended, and the question is settled as
+    /// that turn begins, not before.
+    #[tokio::test]
+    async fn an_answer_sent_right_after_a_stop_runs_a_fresh_turn() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan.", None)).await.unwrap());
+        ask(&rig.next_turn().await, "Drafted.", &vendor()).await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        rig.helpers.send(&owner, None, &[], &id, "Keep going on the rest.", None).await.unwrap();
+        let running = rig.next_turn().await;
+        rig.helpers.stop("agent:sdr:web", &id).unwrap();
+        let said = rig.helpers.send(&owner, None, &[], &id, "", Some(ans("Acme"))).await.unwrap();
+        assert!(said.contains("was stopped") && said.contains("runs again"), "{said}");
+        assert_eq!(rig.helpers.state().helpers[&id].questions.pending.len(), 1, "nothing settled before the fresh turn");
+
+        // The stopped turn ends; a fresh turn starts and the answer is in.
+        let _ = running.events.send(StreamEvent::done_with_reason(collect::STOP_CANCELLED)).await;
+        let fresh = rig.next_turn().await;
+        assert_eq!(fresh.request.session_key, running.request.session_key);
+        assert!(!fresh.request.cancel.is_cancelled(), "a fresh stop token");
+        {
+            let state = rig.helpers.state();
+            let h = &state.helpers[&id];
+            assert!(h.questions.pending.is_empty() && h.questions.answered[0].1 == "Acme" && !h.stopped);
+        }
+        rig.heard(&fresh.request.session_key);
+        fresh.answer("Went with Acme.").await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let p = rig.pending_notifications("agent:sdr:web");
+        let report = p.iter().find(|x| x.contains("Went with Acme.")).expect("its report");
+        assert!(report.contains("\": done\n") && !report.contains(collect::NEEDS_OWNER_DECISION), "{report}");
+    }
+
+    /// A restart doesn't give a question again: the interrupted helper's
+    /// report names a question its parent already has.
+    #[tokio::test]
+    async fn a_restart_names_a_question_already_given() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan.", None)).await.unwrap());
+        ask(&rig.next_turn().await, "Drafted.", &vendor()).await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        rig.helpers.send(&owner, None, &[], &id, "Keep going on the rest.", None).await.unwrap();
+        let _running = rig.next_turn().await;
+        let Rig { store, _dir, .. } = rig;
+        let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+        rig.helpers.recover();
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let p = rig.pending_notifications("agent:sdr:web");
+        let failed = p.iter().find(|x| x.contains("failed (interrupted by a restart")).expect("the interrupted run reports");
+        assert!(!failed.contains("Question: Which vendor?"), "given again: {failed}");
+        assert!(failed.contains("it reported before") && failed.contains("waiting on the owner's decision"), "{failed}");
+    }
+
+    /// A stopped helper's late report reaches its re-run parent's thread
+    /// without running a turn of its own just to be read.
+    #[tokio::test]
+    async fn a_stopped_childs_late_report_runs_no_extra_turn() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let (a_id, a, b) = a_with_running_child(&mut rig, &owner).await;
+        let b_id = split_helper_key(&b.request.session_key).unwrap().1.to_string();
+        rig.helpers.stop(&a.request.session_key, &b_id).unwrap();
+        let _ = b.events.send(StreamEvent::done_with_reason(collect::STOP_CANCELLED)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The stopped report is the last row in A's thread when A's turn
+        // ends: it is read with the conversation, never a turn of its own.
+        a.answer("Plan ready without the contacts.").await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        assert!(tokio::time::timeout(Duration::from_millis(300), rig.started.recv()).await.is_err(), "no extra turn to read it");
+        let rows = rig.notification_rows(&a.request.session_key);
+        assert!(rows.iter().any(|r| r.contains(&format!("helper {b_id} \"read the ledger\": stopped"))), "{rows:?}");
+        let _ = a_id;
     }
 }

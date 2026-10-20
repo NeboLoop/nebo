@@ -13,13 +13,15 @@ fn query_i64(path: &Path, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap()
 }
 
-/// Whether a table has a column yet. The synthetic source starts at 0152,
-/// before the staffing columns exist, and a column that is not there holds
-/// nothing — which is the true count, not a swallowed error.
+/// Whether a database has a table yet. A source from before the company
+/// tables existed holds none of their rows, which is the true count.
 fn has_table(path: &Path, table: &str) -> bool {
     query_i64(path, &format!("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{table}'")) > 0
 }
 
+/// Whether a table has a column yet. The synthetic source starts at 0152,
+/// before the staffing columns exist, and a column that is not there holds
+/// nothing — which is the true count, not a swallowed error.
 fn has_column(path: &Path, table: &str, column: &str) -> bool {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
