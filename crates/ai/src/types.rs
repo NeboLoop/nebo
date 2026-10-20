@@ -614,6 +614,10 @@ pub struct ImageContent {
 pub enum ThinkingBlock {
     Thinking { thinking: String, signature: String },
     RedactedThinking { data: String },
+    /// The order the turn's blocks were produced in (Janus's
+    /// `reasoning.order`), kept as it came and sent back with the turn so
+    /// the provider replays the turn exactly as it wrote it.
+    BlockOrder { blocks: Vec<serde_json::Value> },
 }
 
 /// A message in a conversation.

@@ -2193,6 +2193,88 @@ mod anthropic_wire_tests {
         assert_eq!(assistant["reasoning_details"][0]["signature"], "sig-1");
     }
 
+    // Every breakpoint counts against Anthropic's four, tools included: with
+    // more stable chunks than fit, the newest three system chunks and the
+    // last message are marked and the tool is not; markers name no `ttl`
+    // (Janus writes five-minute entries only).
+    #[tokio::test]
+    async fn cache_markers_never_exceed_four_across_tools_system_and_messages() {
+        let (base, server) = janus(DONE).await;
+        let provider = own_anthropic(base);
+        let req = ChatRequest {
+            system: "AAAA BBBB CCCC DDDD EEEE tail".into(),
+            cache_breakpoints: vec![5, 10, 15, 20, 25],
+            tools: vec![tool("a"), tool("b")],
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let body = sent(&provider, server, &req).await;
+        let text = body.to_string();
+        assert_eq!(text.matches("cache_control").count(), 4, "{body}");
+        assert!(!text.contains("ttl"), "{body}");
+        let msgs = body["messages"].as_array().unwrap();
+        let last = msgs.last().unwrap();
+        assert_eq!(last["content"][0]["cache_control"]["type"], "ephemeral", "the last message keeps its marker");
+        assert!(body["tools"].as_array().unwrap().iter().all(|t| t.get("cache_control").is_none()), "{body}");
+    }
+
+    // An assistant turn's reasoning goes back exactly as it came: every item
+    // in its order, in Claude's format, the reply's block order included.
+    #[tokio::test]
+    async fn reasoning_details_go_back_in_order_in_claudes_format() {
+        let (base, server) = janus(DONE).await;
+        let provider = own_anthropic(base);
+        let order = vec![serde_json::json!({"type": "thinking"}), serde_json::json!({"type": "text", "length": 4}), serde_json::json!({"type": "tool_use", "id": "c1"})];
+        let req = ChatRequest {
+            tools: vec![tool("find_tools")],
+            messages: vec![
+                Message { role: "user".into(), content: "go".into(), ..Default::default() },
+                Message {
+                    role: "assistant".into(),
+                    content: "Look".into(),
+                    tool_calls: Some(serde_json::json!([{"id": "c1", "name": "find_tools", "input": {}}])),
+                    thinking: vec![
+                        ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() },
+                        ThinkingBlock::RedactedThinking { data: "opaque".into() },
+                        ThinkingBlock::BlockOrder { blocks: order.clone() },
+                    ],
+                    ..Default::default()
+                },
+                Message { role: "tool".into(), tool_results: Some(serde_json::json!([{"tool_call_id": "c1", "content": "r"}])), ..Default::default() },
+            ],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let body = sent(&provider, server, &req).await;
+        let assistant = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "assistant").unwrap().clone();
+        assert_eq!(
+            assistant["reasoning_details"],
+            serde_json::json!([
+                {"type": "reasoning.text", "text": "plan", "signature": "sig-1", "format": "anthropic-claude-v1"},
+                {"type": "reasoning.encrypted", "data": "opaque", "format": "anthropic-claude-v1"},
+                {"type": "reasoning.order", "format": "anthropic-claude-v1", "blocks": order},
+            ])
+        );
+    }
+
+    // Only Claude's reasoning is read from a reply: another format is
+    // dropped; the reply's block order is kept as it came, after its blocks.
+    #[test]
+    fn only_claudes_reasoning_details_are_read() {
+        let mut blocks = super::super::anthropic_wire::ReasoningBlocks::default();
+        let got = blocks.absorb(&[
+            serde_json::json!({"type": "reasoning.encrypted", "data": "gAAAA", "format": "openai-responses-v1"}),
+            serde_json::json!({"type": "reasoning.text", "text": "plan", "signature": "sig-1", "format": "anthropic-claude-v1"}),
+            serde_json::json!({"type": "reasoning.order", "format": "anthropic-claude-v1", "blocks": [{"type": "thinking"}, {"type": "text", "length": 2}]}),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() },
+                ThinkingBlock::BlockOrder { blocks: vec![serde_json::json!({"type": "thinking"}), serde_json::json!({"type": "text", "length": 2})] },
+            ]
+        );
+    }
+
     // Only an Anthropic model gets them: an own OpenAI key, and Nebo AI's
     // own speeds, are sent as before.
     #[tokio::test]

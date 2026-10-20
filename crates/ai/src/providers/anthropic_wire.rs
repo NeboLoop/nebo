@@ -16,7 +16,10 @@
 //! - A marker on a tool result's part goes on that `tool_result` block.
 //! - Thinking asks `reasoning: {max_tokens}` (the pack level's budget, 10,000
 //!   when none is set), and an assistant turn's signed thinking blocks go back
-//!   on it as `reasoning_details`, so thinking runs inside tool loops.
+//!   on it as `reasoning_details`, so thinking runs inside tool loops: every
+//!   item in the order and with the content it came in, in Claude's format,
+//!   the reply's block order (`reasoning.order`) included, so Janus replays
+//!   the turn exactly as Claude wrote it. Items in another format are dropped.
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,8 +27,13 @@ use serde_json::{Value, json};
 
 use crate::types::{ChatRequest, ThinkingBlock, definition_of, functions_block};
 
-/// The cache markers one request may carry.
+/// The cache markers one request may carry, counted across tools, system
+/// and messages (Anthropic's limit).
 const MAX_CACHE_MARKERS: usize = 4;
+
+/// The `format` of Claude's own reasoning items: the only reasoning Nebo
+/// reads back from Janus and sends to it.
+const CLAUDE_FORMAT: &str = "anthropic-claude-v1";
 
 /// Whether a request to `model` goes to an Anthropic model: the owner's own
 /// Anthropic key, or a Claude model of Nebo AI's.
@@ -47,11 +55,14 @@ pub(super) fn thinking_budget(effort: Option<types::packs::ProviderEffort>) -> i
     }
 }
 
+/// A five-minute cache breakpoint: Janus prices five-minute writes only and
+/// refuses a `ttl` of `1h`, so none is named.
 fn marker() -> Value {
     json!({"type": "ephemeral"})
 }
 
-/// The signed thinking blocks of an assistant turn, as `reasoning_details`.
+/// The signed thinking blocks of an assistant turn, as `reasoning_details`,
+/// in the order and with the content they came in, each in Claude's format.
 pub(super) fn reasoning_details(blocks: &[ThinkingBlock]) -> Value {
     Value::Array(
         blocks
@@ -61,10 +72,13 @@ pub(super) fn reasoning_details(blocks: &[ThinkingBlock]) -> Value {
                     thinking,
                     signature,
                 } => {
-                    json!({"type": "reasoning.text", "text": thinking, "signature": signature})
+                    json!({"type": "reasoning.text", "text": thinking, "signature": signature, "format": CLAUDE_FORMAT})
                 }
                 ThinkingBlock::RedactedThinking { data } => {
-                    json!({"type": "reasoning.encrypted", "data": data})
+                    json!({"type": "reasoning.encrypted", "data": data, "format": CLAUDE_FORMAT})
+                }
+                ThinkingBlock::BlockOrder { blocks } => {
+                    json!({"type": "reasoning.order", "format": CLAUDE_FORMAT, "blocks": blocks})
                 }
             })
             .collect(),
@@ -74,7 +88,8 @@ pub(super) fn reasoning_details(blocks: &[ThinkingBlock]) -> Value {
 /// Thinking blocks from a reply's `reasoning_details` items, as they come:
 /// a block is whole once an item carries its signature (text arriving in
 /// items before it is the same block's); an encrypted item is a block of
-/// its own.
+/// its own; the reply's block order (`reasoning.order`) is kept as it came.
+/// Items in another provider's format are not Claude's, and are dropped.
 #[derive(Default)]
 pub(super) struct ReasoningBlocks {
     pending: String,
@@ -84,6 +99,13 @@ impl ReasoningBlocks {
     pub(super) fn absorb(&mut self, items: &[Value]) -> Vec<ThinkingBlock> {
         let mut out = Vec::new();
         for item in items {
+            let format = item
+                .get("format")
+                .and_then(|f| f.as_str())
+                .unwrap_or_default();
+            if !format.is_empty() && format != CLAUDE_FORMAT {
+                continue;
+            }
             match item.get("type").and_then(|t| t.as_str()) {
                 Some("reasoning.text") => {
                     if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
@@ -104,6 +126,17 @@ impl ReasoningBlocks {
                     if let Some(data) = item.get("data").and_then(|d| d.as_str()) {
                         out.push(ThinkingBlock::RedactedThinking {
                             data: data.to_string(),
+                        });
+                    }
+                }
+                Some("reasoning.order") => {
+                    if let Some(blocks) = item
+                        .get("blocks")
+                        .and_then(|b| b.as_array())
+                        .filter(|b| !b.is_empty())
+                    {
+                        out.push(ThinkingBlock::BlockOrder {
+                            blocks: blocks.clone(),
                         });
                     }
                 }
