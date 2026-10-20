@@ -104,6 +104,18 @@ impl Reader {
     pub fn of(door: &types::permissions::Door) -> Self {
         if *door == types::permissions::Door::Workflow { Self::StepData } else { Self::File }
     }
+
+    /// Who reads a saved result back in session `key`, when only its key is
+    /// known (a coworker's answer reaching the session that asked): a
+    /// workflow run's own session reads step data; every other session,
+    /// a helper of a workflow step included, reads files.
+    pub fn of_session(key: &str) -> Self {
+        if crate::origin::workflow_run_id(key).is_some() || key.starts_with("workflow:") {
+            Self::StepData
+        } else {
+            Self::File
+        }
+    }
 }
 
 /// Characters of the summary a workflow step reads in place of a saved

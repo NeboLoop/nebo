@@ -297,7 +297,8 @@ impl TurnWork {
                     {
                         Ok(w) => w,
                         Err(e) => {
-                            worktree::put_away(&iso, "Not started").await;
+                            let mut iso = iso;
+                            worktree::put_away(&mut iso, "Not started").await;
                             return Err(e);
                         }
                     }

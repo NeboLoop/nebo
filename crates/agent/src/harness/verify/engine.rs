@@ -515,7 +515,7 @@ impl VerifyCheck {
             .unwrap_or_default();
         if whole.is_empty() && v.rounds == 0 {
             // Nothing changed after all: no verification to show.
-            if let Some(iso) = &work.iso {
+            if let Some(iso) = work.iso.as_mut() {
                 worktree::put_away(iso, "No changes").await;
             }
             let _ = store.delete_verification(&v.id);
@@ -1297,7 +1297,7 @@ fn outcome_word(o: &MergeOutcome) -> String {
         }
         MergeOutcome::Conflict { files, .. } => format!("conflicts in {}", files.join(", ")),
         MergeOutcome::OwnerEdits { files, .. } => format!("your edits in {}", files.join(", ")),
-        MergeOutcome::OwnerBusy { why, .. } => why.clone(),
+        MergeOutcome::OwnerBusy { why, .. } => why.to_string(),
         MergeOutcome::HookFailed { .. } => "refused by the project's commit hooks".into(),
         MergeOutcome::RetestFailed { .. } => "checks failed after catching up".into(),
         MergeOutcome::NotAttempted { .. } => "not tried".into(),

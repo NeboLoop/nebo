@@ -59,6 +59,7 @@ impl HelperDoor {
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
             speed: self.speed(&req.speed)?,
+            report_limit: (req.report_limit > 0).then_some(req.report_limit),
         })
     }
 
@@ -419,6 +420,7 @@ mod tests {
             isolation: None,
             skills: Vec::new(),
             speed: None,
+            report_limit: None,
         };
         child_request(&parent, "h1", &spec, None, TurnInput::None)
     }

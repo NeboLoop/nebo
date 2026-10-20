@@ -71,6 +71,9 @@ pub struct SpawnRequest {
     /// (empty = the parent's model, `model_override`). The harness resolves
     /// it and refuses a name it doesn't know.
     pub speed: String,
+    /// How long the helper's report may be, in characters, before its
+    /// parent gets a preview and the file it was saved to (0 = the default).
+    pub report_limit: usize,
     /// The parent run's limits. See [`ChildSeat`].
     pub seat: ChildSeat,
 }
@@ -118,6 +121,13 @@ impl SpawnRequest {
         }
     }
 }
+
+/// The safety ceiling on a helper's or coworker's report, in characters. A
+/// report comes back in full up to it; its length is the brief's to set (the
+/// deliverable and its length, and `report_limit` below this). Past it, the
+/// full text is saved to a file and the reader gets a short preview and the
+/// path. (100,000 until 2026-10-20.)
+pub const REPORT_LIMIT: usize = 30_000;
 
 /// Result from a helper.
 #[derive(Debug, Clone)]
