@@ -1471,7 +1471,11 @@
 			"selected": "Выбрано: {count}",
 			"addN": "{count, plural, one {Добавить # модель} few {Добавить # модели} many {Добавить # моделей} other {Добавить # модели}}",
 			"empty": "Нет подходящих моделей.",
-			"loadFailed": "Не удалось загрузить список."
+			"loadFailed": "Не удалось загрузить список.",
+			"retry": "Повторить",
+			"errorKey": "Не удалось связаться с {provider}: проверьте ключ",
+			"errorBusy": "{provider} просит подождать. Повторите через минуту.",
+			"errorUnreachable": "Не удалось связаться с {provider}. Повторите попытку."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Плата за запрос",
 		"perMillion": "{price} за 1 млн токенов",
 		"perRequest": "{price} за запрос",
-		"priceVersion": "Цены на {version}"
+		"priceVersion": "Цены на {version}",
+		"fits": "Подходит для уровня {level}",
+		"bandUpTo": "До {tokens} токенов",
+		"bandAbove": "Свыше {tokens} токенов"
 	}
 }

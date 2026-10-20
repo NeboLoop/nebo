@@ -236,8 +236,8 @@ pub async fn test_provider(
     // the key, is the check.
     if model.is_empty() && profile.provider == "openai_compatible" {
         let (success, message) = match super::connections::fetch_catalog(&profile).await {
-            Some(list) => (true, format!("Connection successful — the server lists {} models", list.len())),
-            None => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
+            Ok(Some(list)) => (true, format!("Connection successful — the server lists {} models", list.len())),
+            Ok(None) | Err(_) => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
         };
         return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
     }
@@ -1005,8 +1005,9 @@ pub(crate) fn store_choices(store: &db::Store) -> (Vec<serde_json::Value>, Vec<s
         }
         let via_janus = auth::credential::own_key(&p).is_some();
         for m in models {
+            let m = super::connections::carded(store, m, via_janus);
             let mut c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
-            c["card"] = serde_json::to_value(super::connections::connection_card(store, &m, via_janus)).unwrap_or_default();
+            c["card"] = serde_json::to_value(&m.card).unwrap_or_default();
             if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
         }
     }

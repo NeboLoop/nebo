@@ -1471,7 +1471,11 @@
 			"selected": "{count} sélectionnés",
 			"addN": "{count, plural, one {Ajouter # modèle} other {Ajouter # modèles}}",
 			"empty": "Aucun modèle ne correspond.",
-			"loadFailed": "Impossible de charger la liste."
+			"loadFailed": "Impossible de charger la liste.",
+			"retry": "Réessayer",
+			"errorKey": "Impossible de joindre {provider} : vérifiez la clé",
+			"errorBusy": "{provider} demande de patienter. Réessayez dans une minute.",
+			"errorUnreachable": "Impossible de joindre {provider}. Réessayez."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Frais par requête",
 		"perMillion": "{price} par million de jetons",
 		"perRequest": "{price} par requête",
-		"priceVersion": "Prix au {version}"
+		"priceVersion": "Prix au {version}",
+		"fits": "Adapté à {level}",
+		"bandUpTo": "Jusqu'à {tokens} jetons",
+		"bandAbove": "Au-delà de {tokens} jetons"
 	}
 }

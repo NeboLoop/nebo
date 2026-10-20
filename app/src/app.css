@@ -1933,6 +1933,10 @@ button.connector-row {
 .model-info-note {
 	@apply text-xs text-base-content/60;
 }
+/* Where a price band applies ("Up to 272K tokens"), over its rates. */
+.model-info-band {
+	@apply text-xs font-medium text-base-content/70;
+}
 /* The round "about this model" button beside a model picker or row. */
 .model-info-open {
 	@apply w-6 h-6 shrink-0 grid place-items-center rounded-full text-base-content/40 hover:text-primary cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-default;

@@ -1471,7 +1471,11 @@
 			"selected": "{count} चुने गए",
 			"addN": "{count, plural, one {# मॉडल जोड़ें} other {# मॉडल जोड़ें}}",
 			"empty": "कोई मॉडल मेल नहीं खाता।",
-			"loadFailed": "सूची लोड नहीं हो सकी।"
+			"loadFailed": "सूची लोड नहीं हो सकी।",
+			"retry": "फिर से कोशिश करें",
+			"errorKey": "{provider} तक नहीं पहुँच सके: कुंजी जाँचें",
+			"errorBusy": "{provider} ने रुकने को कहा। एक मिनट में फिर से कोशिश करें।",
+			"errorUnreachable": "{provider} तक नहीं पहुँच सके। फिर से कोशिश करें।"
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "अनुरोध शुल्क",
 		"perMillion": "प्रति 10 लाख टोकन {price}",
 		"perRequest": "प्रति अनुरोध {price}",
-		"priceVersion": "{version} तक की कीमतें"
+		"priceVersion": "{version} तक की कीमतें",
+		"fits": "{level} के लिए उपयुक्त",
+		"bandUpTo": "{tokens} टोकन तक",
+		"bandAbove": "{tokens} टोकन से अधिक"
 	}
 }

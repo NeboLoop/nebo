@@ -1471,7 +1471,11 @@
 			"selected": "Wybrano: {count}",
 			"addN": "{count, plural, one {Dodaj # model} few {Dodaj # modele} many {Dodaj # modeli} other {Dodaj # modeli}}",
 			"empty": "Brak modeli spełniających kryteria.",
-			"loadFailed": "Nie udało się wczytać listy."
+			"loadFailed": "Nie udało się wczytać listy.",
+			"retry": "Spróbuj ponownie",
+			"errorKey": "Nie można połączyć się z {provider}: sprawdź klucz",
+			"errorBusy": "{provider} prosi o chwilę cierpliwości. Spróbuj ponownie za minutę.",
+			"errorUnreachable": "Nie można połączyć się z {provider}. Spróbuj ponownie."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Opłata za żądanie",
 		"perMillion": "{price} za 1 mln tokenów",
 		"perRequest": "{price} za żądanie",
-		"priceVersion": "Ceny z {version}"
+		"priceVersion": "Ceny z {version}",
+		"fits": "Pasuje do: {level}",
+		"bandUpTo": "Do {tokens} tokenów",
+		"bandAbove": "Powyżej {tokens} tokenów"
 	}
 }

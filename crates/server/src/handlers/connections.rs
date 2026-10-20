@@ -17,6 +17,10 @@ use crate::state::AppState;
 
 /// The abilities a model row shows.
 const ABILITIES: &[&str] = &["vision", "tools", "thinking"];
+/// The platform fee on a request made on the owner's own key, in USD, when
+/// Janus's synced list states none (a bot not yet synced): the price book's
+/// `byok_fee_micro` (150 µ$). Janus's synced figure wins when present.
+pub const OWN_KEY_REQUEST_FEE: &str = "0.00015";
 /// How long a provider's fetched list is kept before it is fetched again.
 const CATALOG_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -84,10 +88,7 @@ pub async fn list_connection_models(
     let via_janus = auth::credential::own_key(&p).is_some();
     let models: Vec<ConnectionModel> = connection_models(&state.store, &p)
         .into_iter()
-        .map(|mut m| {
-            m.card = Some(connection_card(&state.store, &m, via_janus));
-            m
-        })
+        .map(|m| carded(&state.store, m, via_janus))
         .collect();
     Ok(Json(serde_json::json!({ "models": models })))
 }
@@ -250,6 +251,23 @@ pub struct CardPricing {
     pub cache_write_per1m: Option<String>,
     pub request_fee: Option<String>,
     pub provider_bills: bool,
+    /// The retail rates by the request's input size, ascending: a band
+    /// applies up to its `up_to_context` tokens, the last (open) one above
+    /// the others. One band for a model priced the same at every size; the
+    /// flat fields above are the first band. Empty on the owner's own key.
+    pub bands: Vec<CardBand>,
+}
+
+/// One price band of a model priced by the size of its input.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CardBand {
+    /// The band's top, in input tokens; None for the open top band.
+    pub up_to_context: Option<i64>,
+    pub input_per1m: Option<String>,
+    pub output_per1m: Option<String>,
+    pub cache_read_per1m: Option<String>,
+    pub cache_write_per1m: Option<String>,
 }
 
 impl CardAbilities {
@@ -308,11 +326,23 @@ pub fn connection_card(store: &db::Store, m: &ConnectionModel, via_janus: bool) 
     });
     card.pricing = Some(CardPricing {
         currency: "USD".into(),
-        request_fee: if via_janus { janus_request_fee(store) } else { None },
+        request_fee: via_janus.then(|| janus_request_fee(store).unwrap_or_else(|| OWN_KEY_REQUEST_FEE.to_string())),
         provider_bills: true,
         ..CardPricing::default()
     });
     card
+}
+
+/// A connection's model with its card, and with the card's abilities when
+/// the connection names none, so what the card says and what a pack slot
+/// may take (Vision) agree.
+pub fn carded(store: &db::Store, mut m: ConnectionModel, via_janus: bool) -> ConnectionModel {
+    let card = connection_card(store, &m, via_janus);
+    if m.capabilities.is_empty() {
+        m.capabilities = card.abilities.list();
+    }
+    m.card = Some(card);
+    m
 }
 
 // ── Browsing a provider's own list ─────────────────────────────────
@@ -422,10 +452,28 @@ pub fn parse_openai_list(body: &serde_json::Value) -> Vec<CatalogModel> {
         .collect()
 }
 
-/// A connection's fetched list, kept for [`CATALOG_TTL`].
-fn cached() -> &'static Mutex<HashMap<String, (Instant, Vec<CatalogModel>)>> {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, (Instant, Vec<CatalogModel>)>>> = std::sync::OnceLock::new();
+/// A connection's fetched list, kept for [`CATALOG_TTL`] with the
+/// fingerprint of the key and URL it was fetched with: a new key or URL
+/// fetches again at once.
+type CachedList = (Instant, [u8; 32], Vec<CatalogModel>);
+fn cached() -> &'static Mutex<HashMap<String, CachedList>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, CachedList>>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The fingerprint of what a listing call is made with (its URL and key):
+/// a list fetched with another key or URL is not this one's.
+fn list_fingerprint(r: &CatalogRequest) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(r.url.as_bytes());
+    if let Some((k, v)) = &r.auth {
+        h.update([0]);
+        h.update(k.as_bytes());
+        h.update([0]);
+        h.update(v.as_bytes());
+    }
+    h.finalize().into()
 }
 
 /// Anthropic's `/v1/models`: ids, names and when each came out.
@@ -483,7 +531,10 @@ pub fn parse_google_list(body: &serde_json::Value) -> Vec<CatalogModel> {
 
 /// How a connection's provider lists its models: the URL, the key's header
 /// and the shape of the answer. A direct, unbilled call on the owner's own
-/// key (the list is not usage). A URL the owner entered is asked directly.
+/// key (the list is not usage). A connection with a URL the owner entered
+/// (`auth::credential::owner_url`, the one test) is asked at THAT URL, as an
+/// OpenAI-compatible `/models`, whatever its kind: its key never goes to a
+/// provider's own host.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogRequest {
     pub url: String,
@@ -504,11 +555,17 @@ pub enum CatalogShape {
 /// The listing call for a connection, or None when its provider has none.
 pub fn catalog_request(p: &db::models::AuthProfile) -> Option<CatalogRequest> {
     let key = auth::credential::profile_key(p);
-    let base = p.base_url.as_deref().map(|u| u.trim().trim_end_matches('/')).filter(|u| !u.is_empty());
     let bearer = || Some(("Authorization".to_string(), format!("Bearer {key}")));
     let req = |url: String, auth, extra, shape| Some(CatalogRequest { url, auth, extra, shape });
+    if let Some(base) = auth::credential::owner_url(p) {
+        // His own URL: listed there, or not at all.
+        return match p.provider.as_str() {
+            "systemone_compatible" | "ollama" | "neboai" => None,
+            _ => req(format!("{}/models", base.trim_end_matches('/')), bearer(), vec![], CatalogShape::OpenAi),
+        };
+    }
     match p.provider.as_str() {
-        "openrouter" => req(format!("{}/models", base.unwrap_or("https://openrouter.ai/api/v1")), None, vec![], CatalogShape::OpenRouter),
+        "openrouter" => req("https://openrouter.ai/api/v1/models".into(), None, vec![], CatalogShape::OpenRouter),
         "anthropic" => req(
             "https://api.anthropic.com/v1/models?limit=1000".into(),
             Some(("x-api-key".into(), key.clone())),
@@ -521,10 +578,9 @@ pub fn catalog_request(p: &db::models::AuthProfile) -> Option<CatalogRequest> {
             vec![],
             CatalogShape::Google,
         ),
-        "openai" => req(format!("{}/models", base.unwrap_or("https://api.openai.com/v1")), bearer(), vec![], CatalogShape::OpenAi),
-        "deepseek" => req(format!("{}/models", base.unwrap_or("https://api.deepseek.com/v1")), bearer(), vec![], CatalogShape::OpenAi),
-        "xai" => req(format!("{}/models", base.unwrap_or("https://api.x.ai/v1")), bearer(), vec![], CatalogShape::OpenAi),
-        "openai_compatible" => req(format!("{}/models", base?), bearer(), vec![], CatalogShape::OpenAi),
+        "openai" => req("https://api.openai.com/v1/models".into(), bearer(), vec![], CatalogShape::OpenAi),
+        "deepseek" => req("https://api.deepseek.com/v1/models".into(), bearer(), vec![], CatalogShape::OpenAi),
+        "xai" => req("https://api.x.ai/v1/models".into(), bearer(), vec![], CatalogShape::OpenAi),
         _ => None,
     }
 }
@@ -539,34 +595,73 @@ pub fn parse_catalog(shape: CatalogShape, body: &serde_json::Value) -> Vec<Catal
     }
 }
 
-/// The provider's own list (`catalog_request`), or None when it has none or
-/// the call fails.
-pub(crate) async fn fetch_catalog(p: &db::models::AuthProfile) -> Option<Vec<CatalogModel>> {
-    if let Some((at, list)) = cached().lock().ok()?.get(&p.id).cloned()
+/// Why a provider's list could not be read: the owner's to fix (his key
+/// refused), the provider's to clear (too many requests), or the way there
+/// (unreachable, too slow, an answer that is not a list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogError {
+    /// 401 or 403: the key was refused.
+    Key,
+    /// 429: the provider asks to wait.
+    RateLimited,
+    /// No answer in time, no connection, or an answer that is not a list.
+    Unreachable,
+}
+
+impl CatalogError {
+    /// The code the app words in the owner's language.
+    pub fn code(self) -> &'static str {
+        match self {
+            CatalogError::Key => "key",
+            CatalogError::RateLimited => "rate_limited",
+            CatalogError::Unreachable => "unreachable",
+        }
+    }
+}
+
+/// The provider's own list (`catalog_request`): `Ok(None)` when it has no
+/// list, the reason when the call failed. A list is kept for a day for the
+/// key and URL it was fetched with (`list_fingerprint`); a failure is never
+/// kept.
+pub(crate) async fn fetch_catalog(p: &db::models::AuthProfile) -> Result<Option<Vec<CatalogModel>>, CatalogError> {
+    let Some(r) = catalog_request(p) else {
+        return Ok(None);
+    };
+    let fingerprint = list_fingerprint(&r);
+    if let Some((at, fp, list)) = cached().lock().ok().and_then(|c| c.get(&p.id).cloned())
+        && fp == fingerprint
         && at.elapsed() < CATALOG_TTL
     {
-        return Some(list);
+        return Ok(Some(list));
     }
-    let r = catalog_request(p)?;
     let list = fetch_list(&r).await?;
     if let Ok(mut c) = cached().lock() {
-        c.insert(p.id.clone(), (Instant::now(), list.clone()));
+        c.insert(p.id.clone(), (Instant::now(), fingerprint, list.clone()));
     }
-    Some(list)
+    Ok(Some(list))
+}
+
+/// What a listing answer's status means.
+pub(crate) fn catalog_status(status: u16) -> Result<(), CatalogError> {
+    match status {
+        200..=299 => Ok(()),
+        401 | 403 => Err(CatalogError::Key),
+        429 => Err(CatalogError::RateLimited),
+        _ => Err(CatalogError::Unreachable),
+    }
 }
 
 /// Make one listing call and parse its answer.
-pub(crate) async fn fetch_list(r: &CatalogRequest) -> Option<Vec<CatalogModel>> {
-    let client = tls::http_client().timeout(Duration::from_secs(15)).build().ok()?;
+pub(crate) async fn fetch_list(r: &CatalogRequest) -> Result<Vec<CatalogModel>, CatalogError> {
+    let client = tls::http_client().timeout(Duration::from_secs(15)).build().map_err(|_| CatalogError::Unreachable)?;
     let mut req = client.get(&r.url);
     for (h, v) in r.auth.iter().chain(r.extra.iter()) {
         req = req.header(h.as_str(), v.as_str());
     }
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    Some(parse_catalog(r.shape, &resp.json().await.ok()?))
+    let resp = req.send().await.map_err(|_| CatalogError::Unreachable)?;
+    catalog_status(resp.status().as_u16())?;
+    let body = resp.json().await.map_err(|_| CatalogError::Unreachable)?;
+    Ok(parse_catalog(r.shape, &body))
 }
 
 /// Each listed model with what Janus knows of it (its card, and its
@@ -632,8 +727,12 @@ pub async fn browse_connection_catalog(
     Query(q): Query<CatalogQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let p = profile(&state, &id).map_err(to_error_response)?;
-    let Some(list) = fetch_catalog(&p).await else {
-        return Ok(Json(serde_json::json!({ "browsable": false, "total": 0, "models": [] })));
+    let list = match fetch_catalog(&p).await {
+        Ok(Some(list)) => list,
+        Ok(None) => return Ok(Json(serde_json::json!({ "browsable": false, "total": 0, "models": [] }))),
+        // The list is there to browse; this call could not read it. The app
+        // says why and offers to try again.
+        Err(e) => return Ok(Json(serde_json::json!({ "browsable": true, "total": 0, "models": [], "error": e.code() }))),
     };
     let have: Vec<String> = connection_models(&state.store, &p)
         .into_iter()
@@ -644,8 +743,8 @@ pub async fn browse_connection_catalog(
     let refreshed_at = cached()
         .lock()
         .ok()
-        .and_then(|c| c.get(&p.id).map(|(at, _)| chrono::Utc::now().timestamp() - at.elapsed().as_secs() as i64));
-    Ok(Json(serde_json::json!({ "browsable": true, "total": list.len(), "refreshedAt": refreshed_at, "models": models })))
+        .and_then(|c| c.get(&p.id).map(|(at, _, _)| chrono::Utc::now().timestamp() - at.elapsed().as_secs() as i64));
+    Ok(Json(serde_json::json!({ "browsable": true, "total": list.len(), "refreshedAt": refreshed_at, "models": models, "error": null })))
 }
 
 #[cfg(test)]
@@ -684,6 +783,125 @@ mod tests {
         assert_eq!(r.url, "https://lab.example/v1/models");
         assert!(catalog_request(&profile_of("openai_compatible", None)).is_none());
         assert!(catalog_request(&profile_of("systemone_compatible", Some("https://x"))).is_none());
+    }
+
+    /// A connection with a URL the owner entered lists from THAT URL, as an
+    /// OpenAI-compatible `/models`, whatever its kind: its key never goes to
+    /// a provider's own host (the same test as `own_key`).
+    #[test]
+    fn an_owner_url_lists_from_that_url_only() {
+        for kind in ["anthropic", "google", "openai", "deepseek", "xai", "openrouter"] {
+            let r = catalog_request(&profile_of(kind, Some("https://gateway.example/v1"))).unwrap();
+            assert_eq!(r.url, "https://gateway.example/v1/models", "{kind}");
+            assert_eq!(r.shape, CatalogShape::OpenAi, "{kind}");
+            assert_eq!(r.auth, Some(("Authorization".into(), "Bearer sk-test".into())), "{kind}");
+            for host in ["api.anthropic.com", "googleapis.com", "api.openai.com", "api.deepseek.com", "api.x.ai", "openrouter.ai"] {
+                assert!(!r.url.contains(host), "{kind}: the key never goes to {host}");
+            }
+        }
+    }
+
+    /// A listing that cannot be read says why: the key refused, the provider
+    /// asking to wait, or no answer.
+    #[test]
+    fn a_failed_listing_says_why() {
+        assert_eq!(catalog_status(200), Ok(()));
+        assert_eq!(catalog_status(401), Err(CatalogError::Key));
+        assert_eq!(catalog_status(403), Err(CatalogError::Key));
+        assert_eq!(catalog_status(429), Err(CatalogError::RateLimited));
+        assert_eq!(catalog_status(500), Err(CatalogError::Unreachable));
+        assert_eq!(CatalogError::Key.code(), "key");
+    }
+
+    /// A fake provider answering its list with `status` and counting calls.
+    async fn fake_list(status: u16) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let n = calls.clone();
+        let app = axum::Router::new().route(
+            "/v1/models",
+            axum::routing::get(move || {
+                let n = n.clone();
+                async move {
+                    n.fetch_add(1, Ordering::SeqCst);
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        Json(serde_json::json!({ "data": [{ "id": "lab-1" }] })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/v1"), calls)
+    }
+
+    /// A list is kept for the key and URL it was fetched with: a new key
+    /// fetches again at once; a refused key is reported, never kept.
+    #[tokio::test]
+    async fn a_new_key_fetches_the_list_again_and_a_refusal_is_reported() {
+        use std::sync::atomic::Ordering;
+        let (base, calls) = fake_list(200).await;
+        let store = db::Store::new(":memory:").unwrap();
+        let p = store.create_auth_profile("cache-test", "Lab", "openai_compatible", "sk-one", None, Some(&base), 0, 1, None, None).unwrap();
+        assert_eq!(fetch_catalog(&p).await.unwrap().unwrap()[0].model_id, "lab-1");
+        fetch_catalog(&p).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "kept for the same key");
+        let mut changed = p.clone();
+        changed.api_key = "sk-two".into();
+        fetch_catalog(&changed).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "a new key fetches again");
+
+        let (refusing, _) = fake_list(401).await;
+        let r = store.create_auth_profile("refused-test", "Lab", "openai_compatible", "sk-bad", None, Some(&refusing), 0, 1, None, None).unwrap();
+        assert_eq!(fetch_catalog(&r).await, Err(CatalogError::Key));
+        let (busy, _) = fake_list(429).await;
+        let b = store.create_auth_profile("busy-test", "Lab", "openai_compatible", "sk-x", None, Some(&busy), 0, 1, None, None).unwrap();
+        assert_eq!(fetch_catalog(&b).await, Err(CatalogError::RateLimited));
+        let gone = store.create_auth_profile("gone-test", "Lab", "openai_compatible", "sk-x", None, Some("http://127.0.0.1:9/v1"), 0, 1, None, None).unwrap();
+        assert_eq!(fetch_catalog(&gone).await, Err(CatalogError::Unreachable));
+    }
+
+    /// The own-key fee is always shown: Janus's synced figure, else Nebo's
+    /// own (a bot not yet synced); a URL the owner entered costs Nebo nothing.
+    #[test]
+    fn the_own_key_fee_is_always_shown() {
+        let store = db::Store::new(":memory:").unwrap();
+        let m = ConnectionModel {
+            model_id: "claude-x".into(),
+            display_name: "claude-x".into(),
+            kind: "chat".into(),
+            context_window: None,
+            capabilities: vec![],
+            source: "added".into(),
+            is_active: true,
+            card: None,
+        };
+        let p = connection_card(&store, &m, true).pricing.unwrap();
+        assert_eq!((p.request_fee.as_deref(), p.provider_bills), (Some(OWN_KEY_REQUEST_FEE), true));
+        assert_eq!(connection_card(&store, &m, false).pricing.unwrap().request_fee, None);
+    }
+
+    /// A model the connection names no abilities for takes the card's, so
+    /// the card and the Vision slot agree.
+    #[test]
+    fn a_model_without_abilities_takes_the_cards() {
+        let store = db::Store::new(":memory:").unwrap();
+        store.upsert_provider_model("janus/claude-sonnet-5", "janus", "claude-sonnet-5", "Claude Sonnet 5", None, None, None, None, None, None, None, true).unwrap();
+        let card = ModelCard { abilities: CardAbilities { vision: true, tools: true, reasoning: false, audio: false }, ..ModelCard::default() };
+        store.set_provider_model_card("janus/claude-sonnet-5", Some(&serde_json::to_string(&card).unwrap())).unwrap();
+        let m = ConnectionModel {
+            model_id: "claude-sonnet-5".into(),
+            display_name: "claude-sonnet-5".into(),
+            kind: "chat".into(),
+            context_window: None,
+            capabilities: vec![],
+            source: "added".into(),
+            is_active: true,
+            card: None,
+        };
+        assert_eq!(carded(&store, m, true).capabilities, ["vision", "tools"]);
     }
 
     #[test]

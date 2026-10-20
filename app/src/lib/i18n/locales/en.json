@@ -1471,7 +1471,11 @@
 			"selected": "{count} selected",
 			"addN": "{count, plural, one {Add # model} other {Add # models}}",
 			"empty": "No models match.",
-			"loadFailed": "Could not load the list."
+			"loadFailed": "Could not load the list.",
+			"retry": "Try again",
+			"errorKey": "Couldn't reach {provider}: check the key",
+			"errorBusy": "{provider} asked us to wait. Try again in a minute.",
+			"errorUnreachable": "Couldn't reach {provider}. Try again."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Request fee",
 		"perMillion": "{price} per 1M tokens",
 		"perRequest": "{price} per request",
-		"priceVersion": "Prices as of {version}"
+		"priceVersion": "Prices as of {version}",
+		"fits": "Fits {level}",
+		"bandUpTo": "Up to {tokens} tokens",
+		"bandAbove": "Above {tokens} tokens"
 	}
 }

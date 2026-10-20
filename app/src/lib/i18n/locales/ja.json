@@ -1471,7 +1471,11 @@
 			"selected": "{count}件選択中",
 			"addN": "{count, plural, one {#個のモデルを追加} other {#個のモデルを追加}}",
 			"empty": "一致するモデルはありません。",
-			"loadFailed": "リストを読み込めませんでした。"
+			"loadFailed": "リストを読み込めませんでした。",
+			"retry": "再試行",
+			"errorKey": "{provider}に接続できません：キーを確認してください",
+			"errorBusy": "{provider}から待機を求められました。1分後に再試行してください。",
+			"errorUnreachable": "{provider}に接続できません。再試行してください。"
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "リクエスト料金",
 		"perMillion": "100 万トークンあたり {price}",
 		"perRequest": "1 リクエストあたり {price}",
-		"priceVersion": "{version} 時点の料金"
+		"priceVersion": "{version} 時点の料金",
+		"fits": "{level}向け",
+		"bandUpTo": "{tokens}トークンまで",
+		"bandAbove": "{tokens}トークン超"
 	}
 }

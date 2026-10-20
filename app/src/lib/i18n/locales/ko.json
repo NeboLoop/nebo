@@ -1471,7 +1471,11 @@
 			"selected": "{count}개 선택됨",
 			"addN": "{count, plural, one {#개 모델 추가} other {#개 모델 추가}}",
 			"empty": "일치하는 모델이 없습니다.",
-			"loadFailed": "목록을 불러올 수 없습니다."
+			"loadFailed": "목록을 불러올 수 없습니다.",
+			"retry": "다시 시도",
+			"errorKey": "{provider}에 연결할 수 없습니다: 키를 확인하세요",
+			"errorBusy": "{provider}에서 잠시 기다리라고 합니다. 1분 후 다시 시도하세요.",
+			"errorUnreachable": "{provider}에 연결할 수 없습니다. 다시 시도하세요."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "요청 수수료",
 		"perMillion": "100만 토큰당 {price}",
 		"perRequest": "요청당 {price}",
-		"priceVersion": "{version} 기준 가격"
+		"priceVersion": "{version} 기준 가격",
+		"fits": "{level}에 적합",
+		"bandUpTo": "{tokens} 토큰까지",
+		"bandAbove": "{tokens} 토큰 초과"
 	}
 }

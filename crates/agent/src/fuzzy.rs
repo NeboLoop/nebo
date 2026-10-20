@@ -18,9 +18,18 @@ const VARIANT_TOKENS: &[&str] = &[
     "thinking",
 ];
 
+/// The kind tag of a model only an explicit choice selects (a model Nebo
+/// AI serves from Janus's catalog, `janus/claude-sonnet-5`): it answers to
+/// its full id alone, never to a loose name ("sonnet"), a kind, or its
+/// provider's name.
+pub const EXPLICIT_ONLY: &str = "explicit_only";
+
 /// Fuzzy model matching engine with alias building.
 pub struct FuzzyMatcher {
     aliases: HashMap<String, String>, // lowercase alias -> full model_id
+    /// Lowercase full id -> full id of the models only an explicit choice
+    /// selects (`EXPLICIT_ONLY`): matched exactly, never scored.
+    explicit: HashMap<String, String>,
 }
 
 impl FuzzyMatcher {
@@ -32,6 +41,7 @@ impl FuzzyMatcher {
     ) -> Self {
         let mut f = Self {
             aliases: HashMap::new(),
+            explicit: HashMap::new(),
         };
         f.build_aliases(provider_models, user_aliases, provider_credentials);
         f
@@ -59,26 +69,29 @@ impl FuzzyMatcher {
                 continue;
             }
 
-            // Get first active model
-            let first_model = models.iter().find(|m| m.active).map(|m| m.id.clone());
-            let Some(first_model) = first_model else {
+            // Get first active model a loose name may select
+            let explicit_only = |m: &ModelInfo| m.kind.iter().any(|k| k == EXPLICIT_ONLY);
+            let first_model = models.iter().find(|m| m.active && !explicit_only(m)).map(|m| m.id.clone());
+            if !models.iter().any(|m| m.active) {
                 continue;
-            };
+            }
 
-            let full_id = format!("{}/{}", provider_name, first_model);
+            if let Some(first_model) = first_model {
+                let full_id = format!("{}/{}", provider_name, first_model);
 
-            // Provider name as alias
-            self.aliases
-                .insert(provider_name.to_lowercase(), full_id.clone());
+                // Provider name as alias
+                self.aliases
+                    .insert(provider_name.to_lowercase(), full_id.clone());
 
-            // Track first API provider
-            if first_api_provider.is_empty() {
-                if provider_credentials
-                    .get(provider_name)
-                    .copied()
-                    .unwrap_or(false)
-                {
-                    first_api_provider = full_id.clone();
+                // Track first API provider
+                if first_api_provider.is_empty() {
+                    if provider_credentials
+                        .get(provider_name)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        first_api_provider = full_id.clone();
+                    }
                 }
             }
 
@@ -88,6 +101,10 @@ impl FuzzyMatcher {
                     continue;
                 }
                 let m_full_id = format!("{}/{}", provider_name, m.id);
+                if explicit_only(m) {
+                    self.explicit.insert(m_full_id.to_lowercase(), m_full_id.clone());
+                    continue;
+                }
                 self.aliases.insert(m.id.to_lowercase(), m_full_id.clone());
                 self.aliases
                     .insert(m_full_id.to_lowercase(), m_full_id.clone());
@@ -155,6 +172,9 @@ impl FuzzyMatcher {
         let input = input.trim();
         if input.is_empty() {
             return None;
+        }
+        if let Some(id) = self.explicit.get(input) {
+            return Some(id.clone());
         }
 
         let normalized_input = normalize(input);
@@ -496,6 +516,39 @@ mod tests {
             }],
         );
         m
+    }
+
+    /// A model Nebo AI serves from Janus's catalog answers to its full id
+    /// alone: "sonnet" or "claude" in an employee's settings never picks it;
+    /// the owner's explicit choice does.
+    #[test]
+    fn a_catalog_model_is_chosen_only_explicitly() {
+        let mut models = HashMap::new();
+        models.insert(
+            "janus".to_string(),
+            vec![ModelInfo {
+                id: "claude-sonnet-5".to_string(),
+                display_name: "Claude Sonnet 5".to_string(),
+                context_window: 1_000_000,
+                input_price: 3.0,
+                output_price: 15.0,
+                cached_input_price: 0.0,
+                capabilities: vec![],
+                kind: vec![EXPLICIT_ONLY.to_string()],
+                preferred: false,
+                active: true,
+            }],
+        );
+        let matcher = FuzzyMatcher::new(&models, &HashMap::new(), &HashMap::new());
+        for loose in ["sonnet", "claude sonnet", "Claude Sonnet 5", "claude-sonnet-5", "janus", EXPLICIT_ONLY] {
+            assert_eq!(matcher.resolve(loose), None, "{loose}");
+        }
+        assert_eq!(matcher.resolve("janus/claude-sonnet-5").as_deref(), Some("janus/claude-sonnet-5"));
+        // Beside a key-only Anthropic model, "sonnet" still means that one.
+        let mut both = test_models();
+        both.extend(models);
+        let matcher = FuzzyMatcher::new(&both, &HashMap::new(), &test_credentials());
+        assert_eq!(matcher.resolve("sonnet").as_deref(), Some("anthropic/claude-sonnet-4"));
     }
 
     fn test_credentials() -> HashMap<String, bool> {

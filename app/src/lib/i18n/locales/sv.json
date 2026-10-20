@@ -1471,7 +1471,11 @@
 			"selected": "{count} valda",
 			"addN": "{count, plural, one {Lägg till # modell} other {Lägg till # modeller}}",
 			"empty": "Inga modeller matchar.",
-			"loadFailed": "Kunde inte läsa in listan."
+			"loadFailed": "Kunde inte läsa in listan.",
+			"retry": "Försök igen",
+			"errorKey": "Kunde inte nå {provider}: kontrollera nyckeln",
+			"errorBusy": "{provider} ber dig vänta. Försök igen om en minut.",
+			"errorUnreachable": "Kunde inte nå {provider}. Försök igen."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Avgift per förfrågan",
 		"perMillion": "{price} per 1 milj. tokens",
 		"perRequest": "{price} per förfrågan",
-		"priceVersion": "Priser per {version}"
+		"priceVersion": "Priser per {version}",
+		"fits": "Passar för {level}",
+		"bandUpTo": "Upp till {tokens} token",
+		"bandAbove": "Över {tokens} token"
 	}
 }

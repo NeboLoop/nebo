@@ -1471,7 +1471,11 @@
 			"selected": "{count} seçildi",
 			"addN": "{count, plural, one {# model ekle} other {# model ekle}}",
 			"empty": "Eşleşen model yok.",
-			"loadFailed": "Liste yüklenemedi."
+			"loadFailed": "Liste yüklenemedi.",
+			"retry": "Tekrar dene",
+			"errorKey": "{provider} hizmetine ulaşılamadı: anahtarı kontrol edin",
+			"errorBusy": "{provider} beklemenizi istedi. Bir dakika sonra tekrar deneyin.",
+			"errorUnreachable": "{provider} hizmetine ulaşılamadı. Tekrar deneyin."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "İstek ücreti",
 		"perMillion": "1M token başına {price}",
 		"perRequest": "İstek başına {price}",
-		"priceVersion": "{version} itibarıyla fiyatlar"
+		"priceVersion": "{version} itibarıyla fiyatlar",
+		"fits": "{level} için uygun",
+		"bandUpTo": "{tokens} tokene kadar",
+		"bandAbove": "{tokens} tokenin üzeri"
 	}
 }

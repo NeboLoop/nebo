@@ -1471,7 +1471,11 @@
 			"selected": "{count}টি নির্বাচিত",
 			"addN": "{count, plural, one {#টি মডেল যুক্ত করুন} other {#টি মডেল যুক্ত করুন}}",
 			"empty": "কোনো মডেল মেলে না।",
-			"loadFailed": "তালিকা লোড করা যায়নি।"
+			"loadFailed": "তালিকা লোড করা যায়নি।",
+			"retry": "আবার চেষ্টা করুন",
+			"errorKey": "{provider}-এ পৌঁছানো যায়নি: কীটি যাচাই করুন",
+			"errorBusy": "{provider} অপেক্ষা করতে বলেছে। এক মিনিট পরে আবার চেষ্টা করুন।",
+			"errorUnreachable": "{provider}-এ পৌঁছানো যায়নি। আবার চেষ্টা করুন।"
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "অনুরোধ ফি",
 		"perMillion": "প্রতি ১০ লক্ষ টোকেনে {price}",
 		"perRequest": "প্রতি অনুরোধে {price}",
-		"priceVersion": "{version} অনুযায়ী দাম"
+		"priceVersion": "{version} অনুযায়ী দাম",
+		"fits": "{level}-এর জন্য উপযুক্ত",
+		"bandUpTo": "{tokens} টোকেন পর্যন্ত",
+		"bandAbove": "{tokens} টোকেনের বেশি"
 	}
 }

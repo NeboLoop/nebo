@@ -480,6 +480,20 @@ struct JanusPricing {
     cache_read_per_1m: Option<String>,
     cache_write_per_1m: Option<String>,
     request_fee: Option<String>,
+    /// Every price band, ascending (the flat fields are the first); absent
+    /// from a Janus that lists one flat price.
+    bands: Vec<JanusBand>,
+}
+
+/// One price band as Janus lists it.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JanusBand {
+    up_to_context: Option<i64>,
+    input_per_1m: Option<String>,
+    output_per_1m: Option<String>,
+    cache_read_per_1m: Option<String>,
+    cache_write_per_1m: Option<String>,
 }
 
 impl JanusEntry {
@@ -515,6 +529,26 @@ impl JanusEntry {
                 cache_write_per1m: p.cache_write_per_1m.clone(),
                 request_fee: p.request_fee.clone(),
                 provider_bills: false,
+                bands: if p.bands.is_empty() {
+                    vec![handlers::connections::CardBand {
+                        up_to_context: None,
+                        input_per1m: p.input_per_1m.clone(),
+                        output_per1m: p.output_per_1m.clone(),
+                        cache_read_per1m: p.cache_read_per_1m.clone(),
+                        cache_write_per1m: p.cache_write_per_1m.clone(),
+                    }]
+                } else {
+                    p.bands
+                        .iter()
+                        .map(|b| handlers::connections::CardBand {
+                            up_to_context: b.up_to_context.filter(|&n| n > 0),
+                            input_per1m: b.input_per_1m.clone(),
+                            output_per1m: b.output_per_1m.clone(),
+                            cache_read_per1m: b.cache_read_per_1m.clone(),
+                            cache_write_per1m: b.cache_write_per_1m.clone(),
+                        })
+                        .collect()
+                },
             }),
         })
     }
@@ -635,7 +669,15 @@ fn db_model_infos(store: &db::Store, provider: &str) -> Vec<agent::selector::Mod
                 }
                 caps
             },
-            kind: m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default(),
+            kind: {
+                let mut kind: Vec<String> = m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default();
+                // A model from Janus's catalog (it has a card) is chosen by
+                // its full id only, never by a loose name.
+                if m.card.is_some() {
+                    kind.push(agent::fuzzy::EXPLICIT_ONLY.to_string());
+                }
+                kind
+            },
             preferred: false,
             active: true,
         })
@@ -4515,6 +4557,37 @@ mod janus_sync_tests {
     fn the_sync_asks_for_the_catalog() {
         assert_eq!(super::janus_models_url("https://janus.example/"), "https://janus.example/v1/models?catalog=1");
         assert_eq!(super::janus_models_url("https://janus.example"), "https://janus.example/v1/models?catalog=1");
+    }
+
+    /// A model priced by its input size keeps every band, ascending, with
+    /// its top; a listing with one flat price reads as one open band.
+    #[test]
+    fn a_tiered_price_keeps_every_band() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let listing: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "gpt-6.1-sol", "owned_by": "neboai", "display_name": "GPT-6.1 Sol",
+             "pricing": {"version": "v", "input_per_1m": "2.5", "output_per_1m": "15", "request_fee": "0.00015",
+                         "bands": [
+                            {"up_to_context": 272000, "input_per_1m": "2.5", "output_per_1m": "15", "cache_read_per_1m": "0.25"},
+                            {"input_per_1m": "5", "output_per_1m": "22.5", "cache_read_per_1m": "0.5"}]}},
+            {"id": "claude-sonnet-5", "owned_by": "neboai",
+             "pricing": {"version": "v", "input_per_1m": "3", "output_per_1m": "15", "request_fee": "0.00015"}}
+        ]}))
+        .unwrap();
+        store_janus_listing(&store, listing).unwrap();
+        let card = |id: &str| {
+            let row = store.list_provider_models("janus").unwrap().into_iter().find(|m| m.model_id == id).unwrap();
+            crate::handlers::connections::card_of_row(&row).unwrap().pricing.unwrap()
+        };
+        let sol = card("gpt-6.1-sol");
+        assert_eq!(sol.bands.len(), 2);
+        assert_eq!(sol.bands[0].up_to_context, Some(272_000));
+        assert_eq!(sol.bands[1].up_to_context, None, "the open top band");
+        assert_eq!(sol.bands[1].input_per1m.as_deref(), Some("5"));
+        let flat = card("claude-sonnet-5");
+        assert_eq!(flat.bands.len(), 1);
+        assert_eq!((flat.bands[0].up_to_context, flat.bands[0].output_per1m.as_deref()), (None, Some("15")));
     }
 
     /// The pack choices offer each model Nebo AI serves for every level

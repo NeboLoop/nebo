@@ -1471,7 +1471,11 @@
 			"selected": "{count} geselecteerd",
 			"addN": "{count, plural, one {# model toevoegen} other {# modellen toevoegen}}",
 			"empty": "Geen overeenkomende modellen.",
-			"loadFailed": "Kon de lijst niet laden."
+			"loadFailed": "Kon de lijst niet laden.",
+			"retry": "Opnieuw proberen",
+			"errorKey": "Kan {provider} niet bereiken: controleer de sleutel",
+			"errorBusy": "{provider} vraagt om even te wachten. Probeer het over een minuut opnieuw.",
+			"errorUnreachable": "Kan {provider} niet bereiken. Probeer het opnieuw."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Kosten per verzoek",
 		"perMillion": "{price} per 1 mln. tokens",
 		"perRequest": "{price} per verzoek",
-		"priceVersion": "Prijzen per {version}"
+		"priceVersion": "Prijzen per {version}",
+		"fits": "Past bij {level}",
+		"bandUpTo": "Tot {tokens} tokens",
+		"bandAbove": "Boven {tokens} tokens"
 	}
 }

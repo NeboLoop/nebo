@@ -1471,7 +1471,11 @@
 			"selected": "已选 {count} 个",
 			"addN": "{count, plural, other {添加 # 个模型}}",
 			"empty": "没有匹配的模型。",
-			"loadFailed": "无法加载列表。"
+			"loadFailed": "无法加载列表。",
+			"retry": "重试",
+			"errorKey": "无法连接 {provider}：请检查密钥",
+			"errorBusy": "{provider} 要求稍候。请一分钟后重试。",
+			"errorUnreachable": "无法连接 {provider}。请重试。"
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "请求费",
 		"perMillion": "每 100 万令牌 {price}",
 		"perRequest": "每次请求 {price}",
-		"priceVersion": "截至 {version} 的价格"
+		"priceVersion": "截至 {version} 的价格",
+		"fits": "适合{level}",
+		"bandUpTo": "最多 {tokens} 个 token",
+		"bandAbove": "超过 {tokens} 个 token"
 	}
 }

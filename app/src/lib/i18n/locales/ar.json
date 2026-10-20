@@ -1471,7 +1471,11 @@
 			"selected": "تم اختيار {count}",
 			"addN": "{count, plural, one {أضف نموذجًا واحدًا} two {أضف نموذجين} few {أضف # نماذج} many {أضف # نموذجًا} other {أضف # نموذج}}",
 			"empty": "لا توجد نماذج مطابقة.",
-			"loadFailed": "تعذّر تحميل القائمة."
+			"loadFailed": "تعذّر تحميل القائمة.",
+			"retry": "حاول مرة أخرى",
+			"errorKey": "تعذّر الوصول إلى {provider}: تحقّق من المفتاح",
+			"errorBusy": "طلب {provider} الانتظار. حاول مرة أخرى بعد دقيقة.",
+			"errorUnreachable": "تعذّر الوصول إلى {provider}. حاول مرة أخرى."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "رسوم الطلب",
 		"perMillion": "{price} لكل مليون رمز",
 		"perRequest": "{price} لكل طلب",
-		"priceVersion": "الأسعار بتاريخ {version}"
+		"priceVersion": "الأسعار بتاريخ {version}",
+		"fits": "يناسب {level}",
+		"bandUpTo": "حتى {tokens} رمز",
+		"bandAbove": "أكثر من {tokens} رمز"
 	}
 }

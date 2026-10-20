@@ -75,8 +75,8 @@
     return $t(`settingsPacks.level.${level}`);
   }
 
-  function choiceLabel(c: PackChoice): string {
-    return choiceRowLabel(c, $t);
+  function choiceLabel(c: PackChoice, grouped = false): string {
+    return choiceRowLabel(c, $t, grouped);
   }
 
   // The model whose card is open (what it is, what it is good for, its price).
@@ -371,7 +371,7 @@
                 {#each choiceGroups(chatChoices) as g (g.label)}
                   <optgroup label={g.label}>
                     {#each g.choices as c (c.value)}
-                      <option value={c.value}>{choiceLabel(c)}</option>
+                      <option value={c.value}>{choiceLabel(c, true)}</option>
                     {/each}
                   </optgroup>
                 {/each}
@@ -404,7 +404,7 @@
               {#each choiceGroups(visionChoices) as g (g.label)}
                 <optgroup label={g.label}>
                   {#each g.choices as c (c.value)}
-                    <option value={c.value}>{choiceLabel(c)}</option>
+                    <option value={c.value}>{choiceLabel(c, true)}</option>
                   {/each}
                 </optgroup>
               {/each}

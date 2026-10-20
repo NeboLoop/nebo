@@ -1471,7 +1471,11 @@
 			"selected": "{count} selezionati",
 			"addN": "{count, plural, one {Aggiungi # modello} other {Aggiungi # modelli}}",
 			"empty": "Nessun modello corrisponde.",
-			"loadFailed": "Impossibile caricare l'elenco."
+			"loadFailed": "Impossibile caricare l'elenco.",
+			"retry": "Riprova",
+			"errorKey": "Impossibile raggiungere {provider}: controlla la chiave",
+			"errorBusy": "{provider} chiede di attendere. Riprova tra un minuto.",
+			"errorUnreachable": "Impossibile raggiungere {provider}. Riprova."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Costo per richiesta",
 		"perMillion": "{price} per 1 milione di token",
 		"perRequest": "{price} per richiesta",
-		"priceVersion": "Prezzi al {version}"
+		"priceVersion": "Prezzi al {version}",
+		"fits": "Adatto a {level}",
+		"bandUpTo": "Fino a {tokens} token",
+		"bandAbove": "Oltre {tokens} token"
 	}
 }

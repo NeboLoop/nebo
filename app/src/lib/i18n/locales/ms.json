@@ -1471,7 +1471,11 @@
 			"selected": "{count} dipilih",
 			"addN": "{count, plural, one {Tambah # model} other {Tambah # model}}",
 			"empty": "Tiada model sepadan.",
-			"loadFailed": "Tidak dapat memuatkan senarai."
+			"loadFailed": "Tidak dapat memuatkan senarai.",
+			"retry": "Cuba lagi",
+			"errorKey": "Tidak dapat menghubungi {provider}: semak kunci",
+			"errorBusy": "{provider} meminta anda menunggu. Cuba lagi dalam seminit.",
+			"errorUnreachable": "Tidak dapat menghubungi {provider}. Cuba lagi."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Yuran permintaan",
 		"perMillion": "{price} setiap 1 juta token",
 		"perRequest": "{price} setiap permintaan",
-		"priceVersion": "Harga setakat {version}"
+		"priceVersion": "Harga setakat {version}",
+		"fits": "Sesuai untuk {level}",
+		"bandUpTo": "Sehingga {tokens} token",
+		"bandAbove": "Melebihi {tokens} token"
 	}
 }

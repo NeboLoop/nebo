@@ -1471,7 +1471,11 @@
 			"selected": "Обрано: {count}",
 			"addN": "{count, plural, one {Додати # модель} few {Додати # моделі} many {Додати # моделей} other {Додати # моделі}}",
 			"empty": "Немає відповідних моделей.",
-			"loadFailed": "Не вдалося завантажити список."
+			"loadFailed": "Не вдалося завантажити список.",
+			"retry": "Спробувати ще",
+			"errorKey": "Не вдалося зв'язатися з {provider}: перевірте ключ",
+			"errorBusy": "{provider} просить зачекати. Спробуйте ще через хвилину.",
+			"errorUnreachable": "Не вдалося зв'язатися з {provider}. Спробуйте ще."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Плата за запит",
 		"perMillion": "{price} за 1 млн токенів",
 		"perRequest": "{price} за запит",
-		"priceVersion": "Ціни на {version}"
+		"priceVersion": "Ціни на {version}",
+		"fits": "Підходить для рівня {level}",
+		"bandUpTo": "До {tokens} токенів",
+		"bandAbove": "Понад {tokens} токенів"
 	}
 }

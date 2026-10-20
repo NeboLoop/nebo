@@ -360,6 +360,14 @@ export interface CardAbilities {
 	audio: boolean
 }
 
+export interface CardBand {
+	upToContext?: number
+	inputPer1m?: string
+	outputPer1m?: string
+	cacheReadPer1m?: string
+	cacheWritePer1m?: string
+}
+
 export interface CardPricing {
 	version: string
 	currency: string
@@ -369,6 +377,7 @@ export interface CardPricing {
 	cacheWritePer1m?: string
 	requestFee?: string
 	providerBills: boolean
+	bands: CardBand[]
 }
 
 export interface CaseDetail {
@@ -1992,6 +2001,7 @@ export interface BrowseConnectionCatalogResponse {
 	total: number
 	refreshedAt: number | null
 	models: CatalogModel[]
+	error: 'key' | 'rate_limited' | 'unreachable' | null
 }
 
 export interface BrowseResponse {

@@ -25,6 +25,7 @@
   import {
     CONNECTION_KINDS,
     blankHand,
+    catalogErrorKey,
     filterCatalog,
     groupByFamily,
     handBody,
@@ -34,7 +35,7 @@
     shortUrl,
     type HandModel,
   } from '$lib/models/connections';
-  import { cardPriceLine, cardTier } from '$lib/models/modelCard';
+  import { cardFit, cardPriceLine } from '$lib/models/modelCard';
 
   // --- state ---
   let loading = $state(true);
@@ -422,6 +423,8 @@
       b.models = resp.models ?? [];
       b.total = resp.total ?? b.models.length;
       b.refreshedAt = resp.refreshedAt;
+      // The provider's list could not be read: why, in the owner's words, with Try again.
+      if (resp.error) b.error = $t(catalogErrorKey(resp.error), { values: { provider: b.profile.name } });
     } catch (err: any) {
       b.error = err?.message || $t('settingsProviders.browse.loadFailed');
     } finally { b.loading = false; }
@@ -466,7 +469,7 @@
 
   /** A model row's level and price ("Medium · $0.00015 per request; your provider bills the model"). */
   function cardLine(card: ModelCard | undefined): string {
-    return [cardTier(card, $t), cardPriceLine(card, $t)].filter(Boolean).join(' · ');
+    return [cardFit(card, $t), cardPriceLine(card, $t)].filter(Boolean).join(' · ');
   }
 
   // The model whose card is open, and the connection it is on.
@@ -937,7 +940,12 @@
 
       <div class="px-5 py-3 overflow-y-auto flex-1 min-h-0 flex flex-col gap-4">
         {#if browse.error}
-          <Alert type="error">{browse.error}</Alert>
+          <Alert type="error">
+            <div class="flex items-center justify-between gap-3">
+              <span>{browse.error}</span>
+              <button type="button" class="btn btn-ghost btn-xs" onclick={fetchCatalog} disabled={browse.loading}>{$t('settingsProviders.browse.retry')}</button>
+            </div>
+          </Alert>
         {/if}
         {#if browse.loading}
           <div class="flex justify-center py-8"><Spinner size={18} /></div>

@@ -70,6 +70,14 @@ pub fn profile_key(profile: &db::models::AuthProfile) -> String {
     })
 }
 
+/// The URL the owner entered for a connection, trimmed, when he entered one:
+/// the ONE test of "his own URL" (`own_key` and the model listing ask it).
+/// Such a connection is reached at that URL, direct, and its key goes nowhere
+/// else: never through Janus, never to a provider's own host.
+pub fn owner_url(profile: &db::models::AuthProfile) -> Option<String> {
+    profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_string)
+}
+
 /// The owner's own key on a paid hosted provider, as Janus takes it
 /// (`types::own_key`): the ONE place a connection kind is named the way
 /// Janus names its provider, and the ONE place it is decided which keys go
@@ -79,7 +87,7 @@ pub fn profile_key(profile: &db::models::AuthProfile) -> String {
 /// provider URL, Ollama), which is reached direct and never sent to Janus,
 /// for a NeboAI profile, and for a connection with no key.
 pub fn own_key(profile: &db::models::AuthProfile) -> Option<types::own_key::OwnKey> {
-    if profile.base_url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+    if owner_url(profile).is_some() {
         return None;
     }
     let provider = match profile.provider.as_str() {

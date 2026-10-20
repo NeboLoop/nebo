@@ -1471,7 +1471,11 @@
 			"selected": "已選 {count} 個",
 			"addN": "{count, plural, other {新增 # 個模型}}",
 			"empty": "沒有相符的模型。",
-			"loadFailed": "無法載入清單。"
+			"loadFailed": "無法載入清單。",
+			"retry": "重試",
+			"errorKey": "無法連線至 {provider}：請檢查金鑰",
+			"errorBusy": "{provider} 要求稍候。請一分鐘後重試。",
+			"errorUnreachable": "無法連線至 {provider}。請重試。"
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "請求費",
 		"perMillion": "每 100 萬權杖 {price}",
 		"perRequest": "每次請求 {price}",
-		"priceVersion": "截至 {version} 的價格"
+		"priceVersion": "截至 {version} 的價格",
+		"fits": "適合{level}",
+		"bandUpTo": "最多 {tokens} 個 token",
+		"bandAbove": "超過 {tokens} 個 token"
 	}
 }

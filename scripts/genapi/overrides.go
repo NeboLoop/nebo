@@ -126,6 +126,7 @@ var typeOverrides = map[string]string{
 	"update_connection_model.model":         "ConnectionModel",
 	"browse_connection_catalog.models":      "CatalogModel[]",
 	"browse_connection_catalog.refreshedAt": "number | null",
+	"browse_connection_catalog.error":       "'key' | 'rate_limited' | 'unreachable' | null",
 
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",

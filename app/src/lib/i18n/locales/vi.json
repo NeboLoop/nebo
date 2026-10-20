@@ -1471,7 +1471,11 @@
 			"selected": "Đã chọn {count}",
 			"addN": "{count, plural, one {Thêm # mô hình} other {Thêm # mô hình}}",
 			"empty": "Không có mô hình phù hợp.",
-			"loadFailed": "Không thể tải danh sách."
+			"loadFailed": "Không thể tải danh sách.",
+			"retry": "Thử lại",
+			"errorKey": "Không thể kết nối {provider}: hãy kiểm tra khóa",
+			"errorBusy": "{provider} yêu cầu chờ. Hãy thử lại sau một phút.",
+			"errorUnreachable": "Không thể kết nối {provider}. Hãy thử lại."
 		}
 	},
 	"onboardingImport": {
@@ -4389,6 +4393,9 @@
 		"requestFee": "Phí mỗi yêu cầu",
 		"perMillion": "{price} cho mỗi 1 triệu token",
 		"perRequest": "{price} mỗi yêu cầu",
-		"priceVersion": "Giá tính đến {version}"
+		"priceVersion": "Giá tính đến {version}",
+		"fits": "Phù hợp với {level}",
+		"bandUpTo": "Tối đa {tokens} token",
+		"bandAbove": "Trên {tokens} token"
 	}
 }

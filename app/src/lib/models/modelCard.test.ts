@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelCard, PackChoice } from '$lib/api/neboComponents';
-import { cardPriceLine, cardTier, usd } from './modelCard';
-import { choiceGroups, choiceRowLabel } from './connections';
+import { bandLabel, cardBands, cardFit, cardPriceLine, cardSpeed, cardTier, usd } from './modelCard';
+import { catalogErrorKey, choiceGroups, choiceRowLabel } from './connections';
 
 /** A translator that shows the key and its values, so a test reads what was asked for. */
 const t = (key: string, opts?: { values?: Record<string, string> }) =>
@@ -16,7 +16,7 @@ const sonnet: ModelCard = {
 	reasons: true,
 	abilities: { vision: true, tools: true, reasoning: true, audio: false },
 	speed: 'fast',
-	pricing: { version: '2026-10-19.9', currency: 'USD', inputPer1m: '3', outputPer1m: '15', requestFee: '0.00015', providerBills: false }
+	pricing: { version: '2026-10-19.9', currency: 'USD', inputPer1m: '3', outputPer1m: '15', requestFee: '0.00015', providerBills: false, bands: [] }
 };
 
 const choice = (value: string, provider: string, card?: ModelCard, name?: string): PackChoice => ({
@@ -38,11 +38,60 @@ describe('model card prices', () => {
 		expect(usd(undefined)).toBe('');
 	});
 
+	it('shows the exact decimal the price book holds, never rounded', () => {
+		expect(usd('0.125')).toBe('$0.125');
+		expect(usd('3.125')).toBe('$3.125');
+		expect(usd('0.075')).toBe('$0.075');
+		expect(usd('1.1')).toBe('$1.10');
+		expect(usd('12.5')).toBe('$12.50');
+		expect(usd('3.7500')).toBe('$3.75');
+		expect(usd('15.000000')).toBe('$15');
+		expect(usd('0.0000375')).toBe('$0.0000375');
+		expect(usd('n/a')).toBe('n/a');
+	});
+
+	it('shows every price band of a model priced by input size, with where it applies', () => {
+		const tiered: ModelCard = {
+			...sonnet,
+			pricing: {
+				...sonnet.pricing!,
+				inputPer1m: '2.5',
+				outputPer1m: '15',
+				bands: [
+					{ upToContext: 272_000, inputPer1m: '2.5', outputPer1m: '15' },
+					{ inputPer1m: '5', outputPer1m: '22.5' }
+				]
+			}
+		};
+		expect(cardBands(tiered)).toHaveLength(2);
+		expect(bandLabel(cardBands(tiered), 0, t)).toBe('modelCard.bandUpTo(272K)');
+		expect(bandLabel(cardBands(tiered), 1, t)).toBe('modelCard.bandAbove(272K)');
+		expect(cardPriceLine(tiered, t)).toBe(
+			'modelCard.bandUpTo(272K): modelCard.per1m($2.50,$15); modelCard.bandAbove(272K): modelCard.per1m($5,$22.50)'
+		);
+		// A flat price (no bands sent by an older Janus) reads as one line, unlabeled.
+		expect(cardBands(sonnet)).toHaveLength(1);
+		expect(bandLabel(cardBands(sonnet), 0, t)).toBe('');
+	});
+
+	it('names only speeds it knows, and the fit as "Fits"', () => {
+		expect(cardSpeed(sonnet)).toBe('fast');
+		expect(cardSpeed({ ...sonnet, speed: 'ludicrous' })).toBe('');
+		expect(cardFit(sonnet, t)).toBe('modelCard.fits(settingsPacks.level.medium)');
+		expect(cardFit({ ...sonnet, tier: '' }, t)).toBe('');
+	});
+
+	it("words a provider list that could not be read", () => {
+		expect(catalogErrorKey('key')).toBe('settingsProviders.browse.errorKey');
+		expect(catalogErrorKey('rate_limited')).toBe('settingsProviders.browse.errorBusy');
+		expect(catalogErrorKey('unreachable')).toBe('settingsProviders.browse.errorUnreachable');
+	});
+
 	it("shows Nebo AI's retail per 1M tokens, and the request fee alone on the owner's own key", () => {
 		expect(cardPriceLine(sonnet, t)).toBe('modelCard.per1m($3,$15)');
-		const own: ModelCard = { ...sonnet, pricing: { version: '', currency: 'USD', requestFee: '0.00015', providerBills: true } };
+		const own: ModelCard = { ...sonnet, pricing: { version: '', currency: 'USD', requestFee: '0.00015', providerBills: true, bands: [] } };
 		expect(cardPriceLine(own, t)).toBe('modelCard.ownKeyPrice($0.00015)');
-		const direct: ModelCard = { ...sonnet, pricing: { version: '', currency: 'USD', providerBills: true } };
+		const direct: ModelCard = { ...sonnet, pricing: { version: '', currency: 'USD', providerBills: true, bands: [] } };
 		expect(cardPriceLine(direct, t)).toBe('modelCard.providerBills');
 		expect(cardPriceLine(undefined, t)).toBe('');
 	});
@@ -54,9 +103,13 @@ describe('model card prices', () => {
 });
 
 describe('pack choices with cards', () => {
-	it('reads as provider, model, level and price', () => {
+	it('reads as provider, model, the level it fits and price', () => {
 		expect(choiceRowLabel(choice('janus/claude-sonnet-5', 'Nebo AI', sonnet, 'Claude Sonnet 5'), t)).toBe(
-			'Nebo AI · Claude Sonnet 5 · settingsPacks.level.medium · modelCard.per1m($3,$15)'
+			'Nebo AI · Claude Sonnet 5 · modelCard.fits(settingsPacks.level.medium) · modelCard.per1m($3,$15)'
+		);
+		// Inside a group that names the provider and family, the row does not repeat them.
+		expect(choiceRowLabel(choice('janus/claude-sonnet-5', 'Nebo AI', sonnet, 'Claude Sonnet 5'), t, true)).toBe(
+			'Claude Sonnet 5 · modelCard.fits(settingsPacks.level.medium) · modelCard.per1m($3,$15)'
 		);
 		expect(choiceRowLabel(choice('janus/nebo-1-pro', 'Nebo AI', undefined, 'High and Max'), t)).toBe('Nebo AI · High and Max');
 	});
