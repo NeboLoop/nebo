@@ -37,6 +37,7 @@ pub fn helper_role(name: &str, parent: &str, kind: HelperKind) -> String {
         HelperKind::General => "a general",
         HelperKind::Explore => "an explore",
         HelperKind::Plan => "a plan",
+        HelperKind::Review => "a review",
     };
     format!(
         "You are {name}, working as {kind} helper on one task for {parent}. {parent} started this run \

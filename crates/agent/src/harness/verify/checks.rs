@@ -83,6 +83,38 @@ pub fn detect(root: &Path, changed: &[String]) -> Vec<Check> {
     checks
 }
 
+/// What one check did in a round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRun {
+    pub label: String,
+    pub command: String,
+    pub passed: bool,
+    /// The last lines of its output.
+    pub tail: String,
+    pub duration_ms: u64,
+}
+
+/// The most of a check's output a round keeps.
+pub const TAIL_CHARS: usize = 4_000;
+
+/// The end of `output`, at most [`TAIL_CHARS`], on a line boundary.
+pub fn tail(output: &str) -> String {
+    let output = output.trim_end();
+    if output.chars().count() <= TAIL_CHARS {
+        return output.to_string();
+    }
+    let start = output
+        .char_indices()
+        .rev()
+        .nth(TAIL_CHARS - 1)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let cut = &output[start..];
+    let cut = cut.find('\n').map(|i| &cut[i + 1..]).unwrap_or(cut);
+    format!("[… earlier output left out]\n{cut}")
+}
+
 impl Check {
     /// The environment prefix that gives the check its own build folder,
     /// `build_dir`, where the tool has one.
@@ -350,6 +382,16 @@ mod tests {
             ]
         );
         assert_eq!(checks[1].dir, root.join("app"));
+    }
+
+    #[test]
+    fn a_long_output_keeps_its_end() {
+        let long: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let t = tail(&long);
+        assert!(t.starts_with("[… earlier output left out]\n"));
+        assert!(t.ends_with("line 1999"));
+        assert!(t.chars().count() <= TAIL_CHARS + 40);
+        assert_eq!(tail("ok\n"), "ok");
     }
 
     #[test]

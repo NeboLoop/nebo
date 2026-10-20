@@ -107,12 +107,16 @@ impl HelperSpec {
 }
 
 /// A helper's type. Explore and Plan are enforced tool sets: no writes, no
-/// mutating shell, no helper tool.
+/// mutating shell, no helper tool. Review is the verify loop's independent
+/// reviewer: it only looks too, except that it may run commands (the
+/// project's build and tests), fenced to the copy it reviews and its build
+/// folder. The verify loop starts it; a model never names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelperKind {
     General,
     Explore,
     Plan,
+    Review,
 }
 
 impl HelperKind {
@@ -121,6 +125,7 @@ impl HelperKind {
             "general" => Some(Self::General),
             "explore" => Some(Self::Explore),
             "plan" => Some(Self::Plan),
+            "review" => Some(Self::Review),
             _ => None,
         }
     }
@@ -130,12 +135,13 @@ impl HelperKind {
             Self::General => "general",
             Self::Explore => "explore",
             Self::Plan => "plan",
+            Self::Review => "review",
         }
     }
 
-    /// Explore and Plan only look.
+    /// Explore, Plan and Review only look.
     fn read_only(self) -> bool {
-        matches!(self, Self::Explore | Self::Plan)
+        matches!(self, Self::Explore | Self::Plan | Self::Review)
     }
 
     pub const ALL: [HelperKind; 3] = [Self::General, Self::Explore, Self::Plan];
@@ -153,6 +159,8 @@ them. Say how wide to search: \"medium\", or \"very thorough\" for several place
 (Tools: yours that only look; it changes nothing and starts no helpers.)",
             Self::Plan => "Designing how to carry out a piece of work: it returns the steps, the files that matter \
 and the trade-offs. (Tools: yours that only look; it changes nothing and starts no helpers.)",
+            Self::Review => "Reviewing a code change independently, through one lens, trying to break it. (Tools: \
+yours that only look, and commands in the copy it reviews; it changes nothing and starts no helpers.)",
         }
     }
 }
@@ -192,6 +200,36 @@ pub struct Completion {
     /// The untrusted content the helper read: its result carries it to
     /// whoever reads it, as a tool result, a notification row or a wake.
     pub taint: Vec<ProvenanceClass>,
+}
+
+/// A helper whose answer is read as data ([`Helpers::answer`]).
+#[derive(Debug, Clone)]
+pub struct Ask {
+    /// Names its session under the parent's (`sa-<node>`).
+    pub node: String,
+    /// What the owner's screen shows while it runs.
+    pub description: String,
+    pub kind: HelperKind,
+    /// Its whole brief: it sees nothing else.
+    pub prompt: String,
+    /// The shape its final answer must have.
+    pub schema: serde_json::Value,
+    /// The only tools it may call; `None`: what its kind allows.
+    pub tools: Option<Vec<String>>,
+    /// The folders it works in: the first is its working directory; all of
+    /// them are its fence. Empty: the parent's.
+    pub fence: Vec<String>,
+    /// Shown on the owner's screen as one of the parent's helpers.
+    pub shown: bool,
+}
+
+/// What a helper asked for data came back with.
+#[derive(Debug, Clone)]
+pub struct Answered {
+    pub value: Result<serde_json::Value, String>,
+    pub usage: ai::UsageInfo,
+    /// Its session, where its steps (and their cost) are kept.
+    pub session_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,7 +325,10 @@ pub fn permits(mode: &TurnMode, target: &types::permissions::Target) -> Result<(
         );
     }
     let delegating = target.key == HELPER_TOOL;
-    if kind.read_only() && (delegating || !target.read_only) {
+    // A reviewer runs the project's build and tests; its fence keeps every
+    // command inside the copy it reviews and its build folder.
+    let reviewer_command = *kind == HelperKind::Review && target.key == super::owner_command::RUN_COMMAND;
+    if kind.read_only() && (delegating || !target.read_only) && !reviewer_command {
         return Err(format!(
             "A {} helper only looks: {} changes something or starts a helper. Report what you \
              found and what should change instead.",
@@ -792,33 +833,67 @@ impl Helpers {
                 .ok_or_else(|| format!("{work_key} is not running work"))?;
             (work.parent_seat.clone(), work.parent_grant.clone(), work.parent_platform.clone(), work.cancel.child_token())
         };
-        let spec = HelperSpec {
-            description: node.to_string(),
-            prompt: prompt.clone(),
-            kind: HelperKind::General,
-            background: false,
-            isolation: None,
-            skills: Vec::new(),
-            speed: None,
-        };
         let parent = Parent {
             session_key: work_key,
             seat: &seat,
             grant: grant.as_ref(),
             run_taint: &[],
-            cancel: cancel.clone(),
+            cancel,
             platform: platform.as_deref(),
         };
-        let mut req = child::child_request(&parent, &format!("sa-{node}"), &spec, None, TurnInput::Platform { text: prompt });
-        let allowed: std::collections::HashSet<String> = tools.into_iter().collect();
-        req.seat.tool_allowlist = Some(match req.seat.tool_allowlist.take() {
-            Some(inherited) => inherited.intersection(&allowed).cloned().collect(),
-            None => allowed,
-        });
+        let ask = Ask {
+            node: node.to_string(),
+            description: node.to_string(),
+            kind: HelperKind::General,
+            prompt,
+            schema,
+            tools: Some(tools),
+            fence: Vec::new(),
+            shown: false,
+        };
+        self.answer(&parent, ask, activity).await.value
+    }
+
+    /// A helper whose final answer is read as data, for the turn or work
+    /// `parent`: a turn on the one loop under the parent's seat, stopped
+    /// with it, its answer held to `ask.schema` by the turn's end check
+    /// (`turn_end::AnswerShapeCheck`). Its session is the parent's
+    /// `sa-<node>`. The research pipeline's sub-agents and the verify loop's
+    /// reviewers both come through here.
+    pub async fn answer(self: &Arc<Self>, parent: &Parent<'_>, ask: Ask, activity: Option<Arc<std::sync::atomic::AtomicU64>>) -> Answered {
+        let spec = HelperSpec {
+            description: ask.description.clone(),
+            prompt: ask.prompt.clone(),
+            kind: ask.kind,
+            background: false,
+            isolation: None,
+            skills: Vec::new(),
+            speed: None,
+        };
+        let copy = ask.fence.first().cloned();
+        let mut req = child::child_request(parent, &format!("sa-{}", ask.node), &spec, copy.as_deref(), TurnInput::Platform { text: ask.prompt });
+        let session_key = req.session_key.clone();
+        if ask.fence.len() > 1
+            && let Some(types::permissions::Ceiling::Parent { grant }) = req.seat.ceiling.as_mut()
+        {
+            grant.fence = Some(ask.fence.iter().map(std::path::PathBuf::from).collect());
+        }
+        if let Some(tools) = ask.tools {
+            let allowed: std::collections::HashSet<String> = tools.into_iter().collect();
+            req.seat.tool_allowlist = Some(match req.seat.tool_allowlist.take() {
+                Some(inherited) => inherited.intersection(&allowed).cloned().collect(),
+                None => allowed,
+            });
+        }
         if let TurnMode::Helper { answer, .. } = &mut req.mode {
-            *answer = Some(Arc::new(schema.clone()));
+            *answer = Some(Arc::new(ask.schema.clone()));
+        }
+        let task_id = format!("sa-{}", ask.node);
+        if ask.shown {
+            self.emit(parent.session_key, ai::StreamEvent::subagent_start(&task_id, ask.description.as_str()));
         }
         let waiting = waits_of(&req);
+        let cancel = parent.cancel.clone();
         let collected = match self.starter.start_turn(req).await {
             Ok(handle) => {
                 collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, &waiting, |_| {
@@ -828,19 +903,24 @@ impl Helpers {
                 })
                 .await
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => collect::Collected::failed(e.to_string()),
         };
-        if let Some(error) = collected.error {
-            return Err(error);
+        let value = if let Some(error) = collected.error.clone() {
+            Err(error)
+        } else if collected.cancelled {
+            Err("stopped".into())
+        } else {
+            let issues = super::turn_end::answer_issues(&ask.schema, &collected.final_message);
+            if issues.is_empty() {
+                super::turn_end::answer_object(&collected.final_message).ok_or_else(|| "it gave no answer".to_string())
+            } else {
+                Err(format!("its answer didn't match the schema: {}", issues.join("; ")))
+            }
+        };
+        if ask.shown {
+            self.emit(parent.session_key, ai::StreamEvent::subagent_complete(&task_id, ask.description.as_str(), value.is_ok()));
         }
-        if collected.cancelled {
-            return Err("stopped".into());
-        }
-        let issues = super::turn_end::answer_issues(&schema, &collected.final_message);
-        if !issues.is_empty() {
-            return Err(format!("its answer didn't match the schema: {}", issues.join("; ")));
-        }
-        super::turn_end::answer_object(&collected.final_message).ok_or_else(|| "it gave no answer".to_string())
+        Answered { value, usage: collected.usage, session_key }
     }
 
     /// Run background work to its end: its progress goes to the owner's
@@ -2259,6 +2339,64 @@ mod tests {
 
     fn helper_mode(kind: HelperKind, depth: u8) -> TurnMode {
         TurnMode::Helper { parent_session_key: "agent:x:web".into(), kind, depth, answer: None }
+    }
+
+    /// A reviewer only looks, except that it runs the project's build and
+    /// tests; it never writes a file or starts a helper.
+    #[test]
+    fn a_reviewer_runs_commands_but_changes_nothing() {
+        let mode = helper_mode(HelperKind::Review, 1);
+        assert!(permits(&mode, &target("run_command", false)).is_ok(), "the build and tests");
+        assert!(permits(&mode, &target("read_file", true)).is_ok());
+        assert!(permits(&mode, &target("write_file", false)).is_err());
+        assert!(permits(&mode, &target("edit_file", false)).is_err());
+        assert!(permits(&mode, &target("delegate", false)).is_err());
+        assert!(!on_surface(&mode, "delegate"));
+        assert!(!HelperKind::ALL.contains(&HelperKind::Review), "never offered to a model");
+    }
+
+    /// The verify loop's reviewer: a helper of the turn on the one loop,
+    /// fenced to the copy it reviews and its build folder, its answer held
+    /// to the schema, shown on the owner's screen while it runs.
+    #[tokio::test]
+    async fn a_reviewer_answers_as_data_fenced_to_its_copy_and_shown_while_it_runs() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:dev:web";
+        let owner = rig.owner_turn(key);
+        let grant = child::tests::parent_grant(types::permissions::Mode::Automatic);
+        let helpers = rig.helpers.clone();
+        let seat = owner.seat.clone();
+        let cancel = owner.cancel.clone();
+        let task = tokio::spawn(async move {
+            let parent = Parent { session_key: key, seat: &seat, grant: Some(&grant), run_taint: &[], cancel, platform: None };
+            let ask = Ask {
+                node: "verify-v1-r1-security".into(),
+                description: "Reviewing: security".into(),
+                kind: HelperKind::Review,
+                prompt: "Refute it.".into(),
+                schema: serde_json::json!({"type": "object", "required": ["findings"], "properties": {"findings": {"type": "array"}}}),
+                tools: None,
+                fence: vec!["/copy".into(), "/build".into()],
+                shown: true,
+            };
+            helpers.answer(&parent, ask, None).await
+        });
+        let started = rig.next_turn().await;
+        assert_eq!(started.request.session_key, "subagent:agent:dev:web:sa-verify-v1-r1-security");
+        assert_eq!(started.request.seat.cwd.as_deref(), Some("/copy"));
+        match started.request.seat.ceiling.as_ref() {
+            Some(types::permissions::Ceiling::Parent { grant }) => {
+                assert_eq!(grant.fence, Some(vec!["/copy".into(), "/build".into()]), "fenced to its copy and build folder")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(started.request.mode, TurnMode::Helper { kind: HelperKind::Review, answer: Some(_), .. }));
+        started.answer(r#"{"findings": []}"#).await;
+        let answered = tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        assert_eq!(answered.value.unwrap(), serde_json::json!({"findings": []}));
+        let shown = rig.ui.recv().await.unwrap();
+        assert_eq!(shown.parent_session_key, key);
+        assert_eq!(shown.event.event_type, ai::StreamEventType::SubagentStart);
     }
 
     #[test]
