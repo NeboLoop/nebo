@@ -140,6 +140,29 @@ impl Verify {
         self.work.after_call(&self.builder.starting(store)).await
     }
 
+    /// The turn ended before its checking did (the owner's Stop, the step
+    /// limit, a provider failure, a run left idle): every verification of it
+    /// still running or waiting on the owner ends honestly, as stopped (`why`
+    /// `None`, the owner's Stop) or not verified with why. Returns the ids
+    /// it ended.
+    pub async fn close(&self, store: &db::Store, why: Option<Why>) -> Vec<String> {
+        let mut ended = Vec::new();
+        for work in self.work.snapshot().await {
+            let Some(v) = store.get_verification(&work.id).ok().flatten() else { continue };
+            if !matches!(v.state.as_str(), "running" | "paused") {
+                continue;
+            }
+            let (state, reason) = match &why {
+                None => ("stopped", String::new()),
+                Some(w) => ("not_verified", w.text()),
+            };
+            let _ = store.set_verification_pending_ask(&v.id, None);
+            let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
+            ended.push(v.id.clone());
+        }
+        ended
+    }
+
     /// The verifications whose builder was told to report this turn: the
     /// turn's last reply is their badge's.
     pub fn reported(&self) -> Vec<String> {
@@ -158,7 +181,32 @@ pub struct VerifyCheck {
     pub grant: types::permissions::Grant,
     pub platform: Option<String>,
     pub cancel: CancellationToken,
+    /// The untrusted content the turn read: its reviewers carry it.
+    pub taint: Vec<types::provenance::ProvenanceClass>,
 }
+
+/// What a question of the loop's is about, kept with it on the row: the
+/// answer does the same thing however late it comes (a restart asks the
+/// question again).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Purpose {
+    /// A product or business call a reviewer found.
+    Decision { title: String },
+    /// The loop stopped making progress with `open` blocking issues.
+    Stalled { open: usize },
+    /// Reviewed, but no build or test could run.
+    NoChecks,
+    /// The owner's own edits are in the way of landing verified work.
+    OwnerEdits,
+}
+
+const KEEP_GOING: &str = "Keep going";
+const LAND_ANYWAY: &str = "Land it anyway";
+const STOP_HERE: &str = "Stop here";
+const KEEP_IN_COPY: &str = "Keep it in its copy";
+const LAND_AFTER_MINE: &str = "Land it after I commit mine";
+const KEEP_MINE: &str = "Keep mine, don't land it";
 
 /// Where one work's round left it.
 enum Step {
@@ -182,10 +230,15 @@ impl EndCheck for VerifyCheck {
     }
 
     async fn check(&self, end: &TurnEnd<'_>) -> EndVerdict {
+        self.verify.work.start_folder_if_changed(&self.verify.builder.starting(&self.harness.store)).await;
         let works = self.verify.work.snapshot().await;
         if works.is_empty() {
             return EndVerdict::Stop;
         }
+        // The project's checks and the reviewers take minutes with no model
+        // step: the run is waiting, never idle.
+        let ctx = self.tool_ctx();
+        let _waiting = ctx.waiting.enter();
         let notes = end
             .transcript
             .iter()
@@ -214,7 +267,9 @@ impl EndCheck for VerifyCheck {
             .await
             .iter()
             .filter_map(|w| store.get_verification(&w.id).ok().flatten())
-            .filter(|v| !self.verify.shared().reported.contains(&v.id))
+            // Reported once: the row keeps the reply that reported it (its
+            // badge), so a later turn never reports it again.
+            .filter(|v| v.message_id.is_none() && !self.verify.shared().reported.contains(&v.id))
             .collect();
         if unreported.is_empty() {
             return EndVerdict::Stop;
@@ -239,8 +294,8 @@ impl EndCheck for VerifyCheck {
     }
 }
 
-/// The riskiest of `lenses`: the one a later round's single reviewer reads
-/// the fixes through, beside correctness.
+/// The riskiest of `lenses`: the one a later round reads the fixes through,
+/// beside correctness.
 fn riskiest(lenses: &[Lens]) -> Lens {
     [
         Lens::Security,
@@ -348,9 +403,10 @@ fn findings_brief(
 ) -> String {
     let mut out = format!(
         "Independent reviewers checked your change to {project} (round {round}: {}). It isn't done yet. Fix every blocker \
-         and major below in your working copy, then end your reply; the next round reviews your fixes. Where you believe a \
-         finding is wrong, say why in your reply instead of changing the code. For each minor, fix it or say you defer it \
-         and why.",
+         and major below in your working copy; a blocker or major can't be deferred. For each minor, fix it or defer it \
+         with a reason. End your reply with one line per finding: `<id>: fixed: what you changed`, `<id>: deferred: why` \
+         (minors only), or `<id>: disputed: why it is not a defect` (and leave that code as it is). The next round's \
+         reviewers check each line against the code.",
         lenses
             .iter()
             .map(|l| l.as_str())
@@ -408,8 +464,9 @@ impl VerifyCheck {
         question: &str,
         context: &str,
         options: &[&str],
+        purpose: &Purpose,
     ) -> Option<String> {
-        let ask = json!({ "question": question, "context": context, "options": options });
+        let ask = json!({ "question": question, "context": context, "options": options, "purpose": purpose });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
         let before = store.get_verification(id).ok().flatten();
@@ -418,10 +475,14 @@ impl VerifyCheck {
                 store.set_verification_state(id, &state_of(v, "paused", &v.reason), Self::now());
             self.harness.verification_changed(id);
         }
+        let mut call = ask.clone();
+        if let Some(o) = call.as_object_mut() {
+            o.remove("purpose");
+        }
         let result = self
             .harness
             .tools
-            .execute(&self.tool_ctx(), "ask_owner", ask)
+            .execute(&self.tool_ctx(), "ask_owner", call)
             .await;
         let _ = store.set_verification_pending_ask(id, None);
         if let Some(v) = store.get_verification(id).ok().flatten() {
@@ -445,7 +506,7 @@ impl VerifyCheck {
             session_key: &self.session_key,
             seat: &self.seat,
             grant: Some(&self.grant),
-            run_taint: &[],
+            run_taint: &self.taint,
             cancel: self.cancel.child_token(),
             platform: self.platform.as_deref(),
         }
@@ -482,17 +543,28 @@ impl VerifyCheck {
                 })
                 .unwrap_or_default();
             let opts: Vec<&str> = options.iter().map(String::as_str).collect();
+            let purpose = serde_json::from_value::<Purpose>(ask["purpose"].clone()).ok();
             let answer = self
                 .ask_owner(
                     &v.id,
                     ask["question"].as_str().unwrap_or(""),
                     ask["context"].as_str().unwrap_or(""),
                     &opts,
+                    purpose.as_ref().unwrap_or(&Purpose::NoChecks),
                 )
                 .await;
-            if answer.is_none() {
-                self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
-                return Step::Finished;
+            // The answer does what it did when it was first asked.
+            match &purpose {
+                Some(p) => {
+                    if let Some(step) = self.answered(&mut work, &v, p, answer.as_deref()).await {
+                        return step;
+                    }
+                }
+                None if answer.is_none() => {
+                    self.finish(&v, "not_verified", Some(Why::new("needs_answer")));
+                    return Step::Finished;
+                }
+                None => {}
             }
         }
         let head = match work.shadow.snapshot().await {
@@ -561,7 +633,11 @@ impl VerifyCheck {
                     .flatten()
                     .filter_map(|l| l.as_str().and_then(Lens::parse))
                     .collect();
-                vec![riskiest(&all)]
+                let mut later = vec![Lens::Correctness];
+                if riskiest(&all) != Lens::Correctness {
+                    later.push(riskiest(&all));
+                }
+                later
             }
         };
         let nested = work.shadow.nested_repositories().await;
@@ -584,6 +660,15 @@ enum RoundEnd {
     Finished,
     /// No blockers or majors, the checks passed, the minors settled.
     Clean,
+}
+
+impl From<Step> for RoundEnd {
+    fn from(step: Step) -> Self {
+        match step {
+            Step::Continue(text) => RoundEnd::Continue(text),
+            Step::Finished | Step::Gone => RoundEnd::Finished,
+        }
+    }
 }
 
 /// `v`'s state as it is, with `state` and `reason`.
@@ -660,10 +745,24 @@ impl VerifyCheck {
         )
         .await;
 
-        // The reviewers: fresh, one per lens, all at once.
+        // The reviewers: fresh, one per lens, all at once, each reading its
+        // own copy of exactly what was snapshotted (a throwaway export of
+        // `head`) with a build folder of their own: nothing a reviewer runs
+        // can change the builder's copy, the one that lands.
         let patch_file = Work::home(&v.id).join(format!("round-{round}.patch"));
         let _ = std::fs::create_dir_all(Work::home(&v.id));
         let _ = std::fs::write(&patch_file, &reviewed.patch);
+        let review_dir = Work::home(&v.id).join(format!("review-r{round}"));
+        let _ = std::fs::remove_dir_all(&review_dir);
+        if let Err(e) = work.shadow.export(head, &review_dir).await {
+            tracing::warn!(verification = %v.id, error = %e, "the reviewers' copy could not be made");
+            row.outcome = Why::new("review_incomplete").text();
+            row.finished_at = Some(Self::now());
+            let _ = store.put_verification_round(&row);
+            self.finish(v, "not_verified", Some(Why::new("review_incomplete")));
+            return RoundEnd::Finished;
+        }
+        let review_build = checks::build_cache(&work.project_root).join("review");
         let prior_open: Vec<Finding> = serde_json::from_value(v.open.clone()).unwrap_or_default();
         let owner_rules = store
             .get_agent(&self.agent_id)
@@ -681,15 +780,24 @@ impl VerifyCheck {
             change: reviewed,
             whole_stat: &whole.stat(),
             patch_file: &patch_file,
-            work_dir: &work.work_dir,
-            build_dir: &checks::build_cache(&work.project_root),
+            work_dir: &review_dir,
+            build_dir: &review_build,
             checks: &runs,
             prior_open: &prior_open,
-            builder_notes: if round > 1 { notes } else { "" },
+            claims: &if round > 1 { findings::claims(notes, &prior_open) } else { Vec::new() },
+            check_files: &review::check_files(&reviewed.paths()),
             rules: &rules,
         };
         let reviews: Vec<LensReview> =
             review::run_round(&self.helpers, &self.parent(), &input).await;
+        let _ = std::fs::remove_dir_all(&review_dir);
+        // What was reviewed and checked must be what is in the copy now: a
+        // check that rewrote a file (a lockfile, generated code) changed it.
+        let drifted = match work.shadow.snapshot().await {
+            Ok(now) if &now != head => Some(work.shadow.diff(head, &now).await.map(|c| c.stat()).unwrap_or_default()),
+            Ok(_) => None,
+            Err(e) => Some(format!("the copy could not be read again: {e}")),
+        };
 
         // A reviewer that couldn't finish (stopped, failed, no balance)
         // leaves the round unreviewed: nothing passes on a review that
@@ -719,22 +827,34 @@ impl VerifyCheck {
             .filter(|p| p.state == findings::PriorState::Fixed)
             .map(|p| p.id.clone())
             .collect();
-        let deferred: Vec<findings::Prior> = priors
-            .iter()
-            .filter(|p| p.state == findings::PriorState::Deferred)
-            .cloned()
-            .collect();
+        let deferred = findings::accepted_deferrals(&prior_open, &priors);
         let checks_failed = runs.iter().filter(|r| !r.passed).count();
         let blocking_now = findings::blocking(&open) + checks_failed;
 
         // Progress, against the best so far.
         let earlier = store.verification_rounds(&v.id).unwrap_or_default();
+        // The owner's calls already made, by the finding that asked each: the
+        // same call is never asked twice, and one that keeps coming back
+        // counts against progress.
+        let asked_before: Vec<(Finding, String)> = earlier
+            .iter()
+            .filter(|r| r.round < round as i64)
+            .flat_map(|r| r.decisions.as_array().cloned().unwrap_or_default())
+            .filter_map(|d| Some((serde_json::from_value::<Finding>(d["finding"].clone()).ok()?, d["answer"].as_str()?.to_string())))
+            .collect();
+        let mut calls: Vec<Finding> = Vec::new();
+        for d in decisions {
+            if !calls.iter().any(|c| c.same_call(&d)) {
+                calls.push(d);
+            }
+        }
+        let repeated = calls.iter().filter(|d| asked_before.iter().any(|(f, _)| f.same_call(d))).count();
         let mut counts: Vec<usize> = earlier
             .iter()
             .filter(|r| r.kind == "review" && r.round < round as i64)
             .filter_map(|r| r.detail["openBlocking"].as_u64().map(|n| n as usize))
             .collect();
-        counts.push(blocking_now);
+        counts.push(blocking_now + repeated);
         let fixed_findings: Vec<Finding> = earlier
             .iter()
             .flat_map(|r| {
@@ -757,7 +877,7 @@ impl VerifyCheck {
         row.checks = json!(runs);
         row.fixed = json!(fixed);
         row.detail =
-            json!({ "openBlocking": blocking_now, "nested": nested, "failedReviewers": failed });
+            json!({ "openBlocking": blocking_now + repeated, "nested": nested, "failedReviewers": failed });
         row.outcome = if !failed.is_empty() {
             Why::new("review_incomplete")
         } else if blocking_now == 0 {
@@ -771,7 +891,16 @@ impl VerifyCheck {
         // The owner's calls, asked now, with the recommended one first.
         let mut decided: Vec<String> = Vec::new();
         let mut unanswered: Vec<Finding> = Vec::new();
-        for d in &decisions {
+        let mut asked: Vec<serde_json::Value> = Vec::new();
+        for d in &calls {
+            if let Some((_, answer)) = asked_before.iter().find(|(f, _)| f.same_call(d)) {
+                decided.push(format!(
+                    "The owner already decided \"{}\": {answer}. Carry it out, and don't raise it again.",
+                    d.title
+                ));
+                asked.push(json!({ "finding": d, "answer": answer }));
+                continue;
+            }
             let mut options: Vec<&str> = Vec::new();
             if let Some(r) = d.recommended.as_deref() {
                 options.push(r);
@@ -785,15 +914,15 @@ impl VerifyCheck {
                 "{}\n\nWhy it matters: {}\n\nWhere: {}",
                 d.repro, d.impact, d.evidence
             );
-            match self.ask_owner(&v.id, &d.title, &context, &options).await {
-                Some(answer) => decided.push(format!(
-                    "The owner decided \"{}\": {answer}. Carry it out.",
-                    d.title
-                )),
+            match self.ask_owner(&v.id, &d.title, &context, &options, &Purpose::Decision { title: d.title.clone() }).await {
+                Some(answer) => {
+                    decided.push(format!("The owner decided \"{}\": {answer}. Carry it out.", d.title));
+                    asked.push(json!({ "finding": d, "answer": answer }));
+                }
                 None => unanswered.push(d.clone()),
             }
         }
-        row.decisions = json!(decided);
+        row.decisions = json!(asked);
         let _ = store.put_verification_round(&row);
 
         let mut v_open = open.clone();
@@ -835,34 +964,10 @@ impl VerifyCheck {
                     .map(|f| format!("- {} ({})", f.title, f.evidence))
                     .collect::<Vec<_>>()
                     .join("\n");
-                match self
-                    .ask_owner(
-                        &v.id,
-                        &question,
-                        &context,
-                        &["Keep going", "Land it anyway", "Stop here"],
-                    )
-                    .await
-                    .as_deref()
-                {
-                    Some("Keep going") => {}
-                    Some("Land it anyway") => {
-                        return match self
-                            .land_unverified(work, &after, Why::new("landed_unreviewed"))
-                            .await
-                        {
-                            Some(text) => RoundEnd::Continue(text),
-                            None => RoundEnd::Finished,
-                        };
-                    }
-                    Some(_) => {
-                        self.finish(&after, "not_verified", Some(Why::new("stopped_by_owner").with("open", blocking_now)));
-                        return RoundEnd::Finished;
-                    }
-                    None => {
-                        self.finish(&after, "not_verified", Some(Why::new("stalled").with("open", blocking_now)));
-                        return RoundEnd::Finished;
-                    }
+                let purpose = Purpose::Stalled { open: blocking_now };
+                let answer = self.ask_owner(&v.id, &question, &context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
+                if let Some(step) = self.answered(work, &after, &purpose, answer.as_deref()).await {
+                    return step.into();
                 }
             }
             return RoundEnd::Continue(findings_brief(
@@ -900,6 +1005,16 @@ impl VerifyCheck {
                 &[],
             ));
         }
+        if let Some(stat) = &drifted {
+            // Never landed unless byte-identical to what was reviewed: the
+            // changes the checks made go back to the builder, and the next
+            // round reviews them.
+            return RoundEnd::Continue(format!(
+                "The project's own checks changed files in your working copy while this round ran, so what was \
+                 reviewed is not what is there now:\n{stat}\nLook at those changes in your copy, keep or undo them, and \
+                 end your reply; the next round reviews them."
+            ));
+        }
         if runs.is_empty() {
             // Reviewed, but no build or test could run: not verified.
             let reason = Why::new("no_checks");
@@ -909,27 +1024,8 @@ impl VerifyCheck {
                      Land it anyway?",
                     work.project_root.display()
                 );
-                return match self
-                    .ask_owner(
-                        &v.id,
-                        &question,
-                        &whole.stat(),
-                        &["Keep it in its copy", "Land it anyway"],
-                    )
-                    .await
-                    .as_deref()
-                {
-                    Some("Land it anyway") => {
-                        match self.land_unverified(work, &after, reason).await {
-                            Some(text) => RoundEnd::Continue(text),
-                            None => RoundEnd::Finished,
-                        }
-                    }
-                    _ => {
-                        self.finish(&after, "not_verified", Some(reason));
-                        RoundEnd::Finished
-                    }
-                };
+                let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
+                return self.answered(work, &after, &Purpose::NoChecks, answer.as_deref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
             }
             self.finish(&after, "not_verified", Some(reason));
             return RoundEnd::Finished;
@@ -967,6 +1063,17 @@ impl VerifyCheck {
             self.finish(&v, "verified", None);
             return Step::Finished;
         };
+        // Only what was reviewed and tested lands, byte for byte.
+        match work.shadow.snapshot().await {
+            Ok(now) if Some(&now) == work.last.as_ref() => {}
+            _ => {
+                return Step::Continue(
+                    "Your working copy changed after it was reviewed, so it can't land as it is. End your reply; the \
+                     next round reviews what changed."
+                        .into(),
+                );
+            }
+        }
         let message = landing_message(&v.spec);
         let round = store
             .verification_rounds(&v.id)
@@ -992,7 +1099,7 @@ impl VerifyCheck {
                     json!({ "outcome": worktree::render_outcome("the change", &outcome) });
                 step.finished_at = Some(Self::now());
                 let _ = store.put_verification_round(&step);
-                return self.not_landed(&work, &v, outcome, notes).await;
+                return self.not_landed(&mut work, &v, outcome, notes).await;
             }
         };
         step.detail = json!({ "onto": caught.onto, "overlap": caught.overlap, "conflicts": caught.conflicts });
@@ -1063,7 +1170,7 @@ impl VerifyCheck {
             self.finish(&v, "verified", None);
             return Step::Finished;
         }
-        self.not_landed(&work, &v, landed, notes).await
+        self.not_landed(&mut work, &v, landed, notes).await
     }
 
     fn record_landing(&self, v: &db::Verification, round: i64, landed: &MergeOutcome) {
@@ -1090,7 +1197,7 @@ impl VerifyCheck {
     /// to fix; the owner decides what is theirs.
     async fn not_landed(
         &self,
-        work: &Work,
+        work: &mut Work,
         v: &db::Verification,
         outcome: MergeOutcome,
         _notes: &str,
@@ -1114,44 +1221,8 @@ impl VerifyCheck {
                     "The change waits in its copy at {}.",
                     work.work_dir.display()
                 );
-                match self
-                    .ask_owner(
-                        &v.id,
-                        &question,
-                        &context,
-                        &["Land it after I commit mine", "Keep mine, don't land it"],
-                    )
-                    .await
-                    .as_deref()
-                {
-                    Some("Land it after I commit mine") => {
-                        let landed = match work.iso.as_ref() {
-                            Some(iso) => worktree::land(iso).await,
-                            None => MergeOutcome::NoChanges,
-                        };
-                        self.record_landing(
-                            v,
-                            self.store()
-                                .verification_rounds(&v.id)
-                                .map(|r| r.len() as i64 + 1)
-                                .unwrap_or(1),
-                            &landed,
-                        );
-                        if let MergeOutcome::Merged { commit, .. } = &landed {
-                            let _ =
-                                self.store()
-                                    .set_verification_landed(&v.id, commit, Self::now());
-                            self.finish(v, "verified", None);
-                        } else {
-                            self.finish(v, "verified", Some(Why::new("edits_in_way")));
-                        }
-                        Step::Finished
-                    }
-                    _ => {
-                        self.finish(v, "verified", Some(Why::new("kept_own_edits")));
-                        Step::Finished
-                    }
-                }
+                let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
+                self.answered(work, v, &Purpose::OwnerEdits, answer.as_deref()).await.unwrap_or(Step::Finished)
             }
             other => {
                 // Why it did not land, as a code; the raw words (a git
@@ -1160,6 +1231,62 @@ impl VerifyCheck {
                 self.finish(v, "verified", Some(Why::of(&other)));
                 Step::Finished
             }
+        }
+    }
+
+    /// What the owner's answer to one of the loop's questions does, the same
+    /// whenever it comes. `None`: the round goes on.
+    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&str>) -> Option<Step> {
+        match purpose {
+            Purpose::Decision { title } => Some(match answer {
+                Some(a) => Step::Continue(format!("The owner decided \"{title}\": {a}. Carry it out.")),
+                None => {
+                    self.finish(v, "not_verified", Some(Why::new("needs_decision").with("items", title.as_str())));
+                    Step::Finished
+                }
+            }),
+            Purpose::Stalled { open } => match answer {
+                Some(KEEP_GOING) => None,
+                Some(LAND_ANYWAY) => {
+                    Some(self.land_unverified(work, v, Why::new("landed_unreviewed")).await.map_or(Step::Finished, Step::Continue))
+                }
+                Some(_) => {
+                    self.finish(v, "not_verified", Some(Why::new("stopped_by_owner").with("open", *open)));
+                    Some(Step::Finished)
+                }
+                None => {
+                    self.finish(v, "not_verified", Some(Why::new("stalled").with("open", *open)));
+                    Some(Step::Finished)
+                }
+            },
+            Purpose::NoChecks => Some(match answer {
+                Some(LAND_ANYWAY) => self.land_unverified(work, v, Why::new("no_checks")).await.map_or(Step::Finished, Step::Continue),
+                _ => {
+                    self.finish(v, "not_verified", Some(Why::new("no_checks")));
+                    Step::Finished
+                }
+            }),
+            Purpose::OwnerEdits => Some(match answer {
+                Some(LAND_AFTER_MINE) => {
+                    let landed = match work.iso.as_ref() {
+                        Some(iso) => worktree::land(iso).await,
+                        None => MergeOutcome::NoChanges,
+                    };
+                    self.record_landing(v, self.store().verification_rounds(&v.id).map(|r| r.len() as i64 + 1).unwrap_or(1), &landed);
+                    if let MergeOutcome::Merged { commit, .. } = &landed {
+                        let _ = self.store().set_verification_landed(&v.id, commit, Self::now());
+                        work.clean_up();
+                        self.finish(v, "verified", None);
+                    } else {
+                        self.finish(v, "verified", Some(Why::new("edits_in_way")));
+                    }
+                    Step::Finished
+                }
+                _ => {
+                    self.finish(v, "verified", Some(Why::new("kept_own_edits")));
+                    Step::Finished
+                }
+            }),
         }
     }
 

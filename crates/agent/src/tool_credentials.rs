@@ -37,6 +37,11 @@ pub struct RunGrant {
     /// scope, the run's grant.
     pub ctx: ToolContext,
     pub agent_id: String,
+    /// The run's code work: a call that changes a project is pointed at its
+    /// own copy here exactly as the runner's own call is
+    /// (`verify::engine::Verify::route`), so a CLI model's writes are
+    /// verified like any other. `None` for a run with no verify loop.
+    pub verify: Option<crate::harness::verify::engine::Verify>,
 }
 
 /// One live credential: the runs granted it, earliest first (the one its
@@ -166,6 +171,7 @@ mod tests {
         RunGrant {
             ctx: ToolContext::default(),
             agent_id: "a1".into(),
+            verify: None,
         }
     }
 
@@ -209,7 +215,7 @@ mod tests {
     #[test]
     fn a_linked_chat_keeps_one_token_granted_turn_by_turn() {
         let creds = ToolCredentials::default();
-        let run = |agent: &str| RunGrant { ctx: ToolContext::default(), agent_id: agent.into() };
+        let run = |agent: &str| RunGrant { ctx: ToolContext::default(), agent_id: agent.into(), verify: None };
         let first = creds.issue(run("turn-1"), Some("chat-1"));
         let token = first.token().to_string();
         let waiting = creds.issue(run("turn-2"), Some("chat-1"));

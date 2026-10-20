@@ -175,14 +175,20 @@ fn finished(c: Completion) -> SpawnResult {
 impl HelperDoor {
     /// Whether helper `task_id` of `caller`'s work in its copy was verified
     /// (its own turn's verify loop) and hasn't changed since.
-    fn verified(&self, caller: &str, task_id: &str) -> bool {
+    async fn verified(&self, caller: &str, task_id: &str) -> bool {
         let key = super::helper_key(caller, task_id);
-        self.harness
+        let Some(v) = self
+            .harness
             .store
             .list_verifications(&db::VerificationQuery { session_key: Some(&key), ..Default::default() })
             .unwrap_or_default()
-            .first()
-            .is_some_and(|v| v.state == "verified" && v.work_kind == "helper_copy")
+            .into_iter()
+            .next()
+            .filter(|v| v.state == "verified" && v.work_kind == "helper_copy")
+        else {
+            return false;
+        };
+        crate::harness::verify::work::unchanged_since_review(&self.harness.store, &v).await
     }
 }
 
@@ -242,7 +248,7 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn settle<'a>(&'a self, task_id: &'a str, land: bool, ctx: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
         Box::pin(async move {
-            if land && !self.verified(&ctx.session_key, task_id) {
+            if land && !self.verified(&ctx.session_key, task_id).await {
                 // Work that isn't verified lands in the owner's files only at
                 // their own word, on a card; a run nobody watches holds it.
                 let question = format!(
@@ -304,6 +310,18 @@ impl SubAgentOrchestrator for HelperDoor {
             if !swept.is_empty() {
                 info!(count = swept.len(), "swept stale helper copies");
             }
+            // The verify loop's disk, now and daily: finished verifications'
+            // files, unused build folders, and builds over their cap.
+            let store = self.harness.store.clone();
+            tokio::spawn(async move {
+                loop {
+                    let removed = crate::harness::verify::work::sweep(&store, chrono::Utc::now().timestamp()).await;
+                    if removed > 0 {
+                        info!(removed, "reclaimed the verify loop's disk");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+                }
+            });
             self.helpers.recover().await;
         })
     }

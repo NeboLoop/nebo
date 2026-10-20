@@ -1732,10 +1732,12 @@ fn owners_message(messages: &[Message]) -> Option<&str> {
         .filter(|c| !c.is_empty())
 }
 
-/// A reminder row carrying the review of the agent's code work: its text,
-/// from the mark on (`crate::REVIEW_NOTE`), without the reminder's closing.
+/// A reminder row carrying a word for the agent itself (the review of its
+/// code work, `crate::REVIEW_NOTE`, or the goal it hasn't met yet,
+/// `crate::GOAL_NOTE`): its text, from the mark on, without the reminder's
+/// closing.
 fn review_note(row: &str) -> Option<&str> {
-    let at = row.find(crate::REVIEW_NOTE)?;
+    let at = [crate::REVIEW_NOTE, crate::GOAL_NOTE].iter().filter_map(|mark| row.find(mark)).min()?;
     let text = &row[at..];
     let end = text.find("\n\nThis is an automated system reminder").or_else(|| text.find("</system-reminder>")).unwrap_or(text.len());
     Some(text[..end].trim())
@@ -2458,7 +2460,17 @@ mod tests {
             owners_message(&[asked.clone(), done.clone(), say("user", &review)]),
             Some(format!("{} Independent reviewers found 1 blocker.", crate::REVIEW_NOTE).as_str())
         );
-        assert_eq!(owners_message(&[asked, say("user", &review), done]), Some("make total add b"), "only what came after its last answer");
+        assert_eq!(owners_message(&[asked.clone(), say("user", &review), done.clone()]), Some("make total add b"), "only what came after its last answer");
+        // The goal check's word goes on with the agent's work: the owner's
+        // message it already answered is never sent again.
+        let goal = format!(
+            "<system-reminder>\n{} the tests still fail. Keep working toward: all tests pass.\n\nThis is an automated system reminder — do not mention it to the user.\n</system-reminder>",
+            crate::GOAL_NOTE
+        );
+        assert_eq!(
+            owners_message(&[asked, done, say("user", &goal)]),
+            Some(format!("{} the tests still fail. Keep working toward: all tests pass.", crate::GOAL_NOTE).as_str())
+        );
     }
 
     /// A reconnect catches a turn up from its session's record: the updates
