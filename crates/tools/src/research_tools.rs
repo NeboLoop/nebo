@@ -397,7 +397,7 @@ mod tests {
         fn status(&self, _: &str, _: &str) -> Fut<'_, Result<String, String>> {
             Box::pin(async { Ok(String::new()) })
         }
-        fn send(&self, _: &str, _: &str, _: SpawnRequest) -> Fut<'_, Result<crate::orchestrator::FollowUp, String>> {
+        fn send(&self, _: &str, _: &str, _: Option<&str>, _: SpawnRequest) -> Fut<'_, Result<crate::orchestrator::FollowUp, String>> {
             Box::pin(async { Err("no".into()) })
         }
         fn list_active(&self, _: &str) -> Fut<'_, Vec<(String, String, String)>> {
