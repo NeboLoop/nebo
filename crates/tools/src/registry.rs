@@ -2898,8 +2898,13 @@ pub(crate) mod tests {
     /// "Want this every morning?" sat far from the brief it meant and was
     /// asked twice; ask_owner's `context` puts what he decides on above the
     /// question, and the card is the one place the question appears
-    /// (ask_owner 1,353, +373): 18,167.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_167;
+    /// (ask_owner 1,353, +373): 18,167. The owner, 2026-10-19: a helper
+    /// that changes his files works in its own copy, and its changes reach
+    /// them only when the conversation that started it lands them;
+    /// send_message takes `changes` (land or discard), and isolation is for
+    /// any helper that changes his files, not only code (send_message
+    /// 1,485, delegate 2,769, +153): 18,320.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_320;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

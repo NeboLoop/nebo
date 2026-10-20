@@ -226,10 +226,12 @@ mod tests {
             files: vec![FileChange {
                 status: "modified".into(),
                 path: "src/total.rs".into(),
+                from: None,
                 added_lines: 1,
                 removed_lines: 1,
             }],
             patch: "-let t = a;\n+let t = a + b;".into(),
+            patch_cut: false,
         }
     }
 

@@ -186,7 +186,7 @@ const DATA_WORDS: &[&str] = &[
 const PERFORMANCE_WORDS: &[&str] = &[
     "mutex",
     "rwlock",
-    "lock()",
+    ".lock(",
     "spawn_blocking",
     "tokio::spawn",
     "thread::spawn",
@@ -198,7 +198,7 @@ const PERFORMANCE_WORDS: &[&str] = &[
     "rayon",
     "for_each",
     "collect::<vec",
-    "clone()",
+    ".clone(",
     "loop {",
     "while ",
 ];
@@ -291,11 +291,13 @@ mod tests {
                 .map(|p| FileChange {
                     status: "modified".into(),
                     path: p.to_string(),
+                    from: None,
                     added_lines: 2,
                     removed_lines: 1,
                 })
                 .collect(),
             patch: patch.to_string(),
+            patch_cut: false,
         }
     }
 

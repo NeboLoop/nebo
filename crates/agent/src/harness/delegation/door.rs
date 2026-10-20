@@ -225,6 +225,29 @@ impl SubAgentOrchestrator for HelperDoor {
         })
     }
 
+    fn settle<'a>(&'a self, task_id: &'a str, land: bool, ctx: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
+        Box::pin(async move {
+            let decision = if land { super::Decision::Land } else { super::Decision::Discard };
+            // After catching up, the project's own checks run in the copy:
+            // what lands is what was checked.
+            let caller = ctx.session_key.clone();
+            let tools = self.harness.tools.clone();
+            let ctx = ctx.clone();
+            let retest = move |iso: &crate::worktree::Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
+                let (tools, ctx, iso) = (tools.clone(), ctx.clone(), iso.clone());
+                Box::pin(async move {
+                    let changed = crate::worktree::changed_files(&iso).await;
+                    let checks = crate::harness::verify::checks::detect(iso.path(), &changed);
+                    let build = crate::harness::verify::checks::build_cache(iso.root());
+                    let runs = crate::harness::verify::checks::run(&tools, &ctx, &checks, &build).await;
+                    let failed: Vec<String> = runs.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
+                    if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
+                })
+            };
+            self.helpers.settle(&caller, task_id, decision, Some(&retest)).await
+        })
+    }
+
     fn list_active(&self, caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
         let listed = self
             .helpers
@@ -241,7 +264,7 @@ impl SubAgentOrchestrator for HelperDoor {
             if !swept.is_empty() {
                 info!(count = swept.len(), "swept stale helper copies");
             }
-            self.helpers.recover();
+            self.helpers.recover().await;
         })
     }
 }
@@ -293,6 +316,9 @@ mod tests {
         }
         fn list_active(&self, _: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
+        }
+        fn settle<'a>(&'a self, _: &'a str, _: bool, _: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
+            Box::pin(async { Err("no".into()) })
         }
         fn recover(&self) -> Fut<'_, ()> {
             Box::pin(async {})

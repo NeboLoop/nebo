@@ -437,6 +437,10 @@ struct State {
     /// Launches in progress per helper tree (its top session), counted
     /// with the running helpers against [`MAX_RUNNING`].
     starting: HashMap<String, usize>,
+    /// The copies isolated helpers work in, by helper id: held from the
+    /// helper's start until its changes are landed or discarded, across its
+    /// turns (a follow-up works in the same copy), never merged on their own.
+    copies: HashMap<String, crate::worktree::Isolation>,
 }
 
 /// A launch's place in its tree, given back when the launch ends: by then
@@ -675,6 +679,8 @@ impl Helpers {
             "user_id": parent_seat.user_id,
             "helper_kind": spec.kind.as_str(),
             "speed": spec.speed,
+            "isolation": isolation.as_ref().map(|_| "worktree"),
+            "copy": isolation.as_ref().map(|iso| iso.path().to_string_lossy().into_owned()),
         })
         .to_string();
         let created = self
@@ -690,8 +696,9 @@ impl Helpers {
             })
             .map_err(|e| format!("Could not start the helper: {e}"));
         if let Err(e) = created {
-            if let Some(mut iso) = isolation {
-                crate::worktree::merge_all(std::slice::from_mut(&mut iso), &spec.description, None).await;
+            if let Some(iso) = &isolation {
+                // Never used: nothing in it.
+                crate::worktree::put_away(iso, &spec.description).await;
             }
             return Err(e);
         }
@@ -711,6 +718,9 @@ impl Helpers {
                 platform: turn.delivery.platform.as_deref(),
             };
             let req = child::child_request(&parent, &task_id, &spec, copy.as_deref(), TurnInput::Platform { text: brief });
+            if let Some(iso) = isolation {
+                state.copies.insert(task_id.clone(), iso);
+            }
             state.helpers.insert(
                 task_id.clone(),
                 Helper {
@@ -738,7 +748,7 @@ impl Helpers {
             self.preload_skills(&helper_key(parent_key, &task_id), &parent_seat.user_id, spec.skills);
         }
         info!(task_id = %task_id, parent = %parent_key, background = spec.background, "helper launched");
-        self.spawn_turn(task_id.clone(), req, isolation);
+        self.spawn_turn(task_id.clone(), req);
         Ok((task_id, rx))
     }
 
@@ -1016,6 +1026,21 @@ impl Helpers {
                  Its report comes as a notification; for a follow-up, start a new one."
             ));
         }
+        let spec = spec_of_row(&self.store, &row);
+        if spec.kind == HelperKind::Review {
+            return Err(format!(
+                "{task_id} was an independent reviewer: a reviewer is always fresh and never continued. Its findings \
+                 came back with its review."
+            ));
+        }
+        // An isolated helper continues in its own copy. One whose copy is
+        // gone (Nebo restarted, and its work was put away) gets a fresh one:
+        // a follow-up never writes into the owner's own files.
+        let needs_copy = spec.isolation.is_some() && !self.state().copies.contains_key(task_id);
+        if needs_copy {
+            let iso = isolate(&turn.seat, grant, task_id).await?;
+            self.state().copies.insert(task_id.to_string(), iso);
+        }
         let from = crate::harness::conversation::MidTurnFrom::Parent {
             session_key: caller.to_string(),
             task_id: task_id.to_string(),
@@ -1045,7 +1070,6 @@ impl Helpers {
                 ));
             }
             deliver(&self.sessions)?;
-            let spec = spec_of_row(&self.store, &row);
             let cancel = state.session_token(caller).child_token();
             state.stops.insert(row.session_key.clone(), cancel.clone());
             let parent = Parent {
@@ -1056,7 +1080,8 @@ impl Helpers {
                 cancel: cancel.clone(),
                 platform: turn.delivery.platform.as_deref(),
             };
-            let req = child::child_request(&parent, task_id, &spec, None, TurnInput::None);
+            let copy = state.copies.get(task_id).map(|iso| iso.path().to_string_lossy().into_owned());
+            let req = child::child_request(&parent, task_id, &spec, copy.as_deref(), TurnInput::None);
             let helper = state.helpers.entry(task_id.to_string()).or_insert_with(|| Helper {
                 parent_key: caller.to_string(),
                 session_key: row.session_key.clone(),
@@ -1085,7 +1110,7 @@ impl Helpers {
             req
         };
         let _ = self.store.update_task_running(task_id);
-        self.spawn_turn(task_id.to_string(), resume, None);
+        self.spawn_turn(task_id.to_string(), resume);
         Ok(launch_result(task_id))
     }
 
@@ -1123,7 +1148,7 @@ impl Helpers {
     /// Helpers a restart interrupted: each one fails, and an owner session
     /// that started one is told as it is of any failed helper. A nested
     /// helper's parent was interrupted too and reports for its own work.
-    pub fn recover(self: &Arc<Self>) {
+    pub async fn recover(self: &Arc<Self>) {
         let runs = match self.store.engine_live_runs_of_kind(ROW_KIND) {
             Ok(runs) => runs,
             Err(e) => {
@@ -1135,8 +1160,11 @@ impl Helpers {
             if self.state().helpers.contains_key(&run.id) {
                 continue;
             }
-            let error = "interrupted by a restart; send_message continues it from where it stopped";
-            if let Err(e) = self.store.engine_set_run_state(&run.id, "failed", chrono::Utc::now().timestamp(), Some(error)) {
+            let mut error = "interrupted by a restart; send_message continues it from where it stopped".to_string();
+            if let Some(kept) = put_away_after_restart(&run.id).await {
+                error.push_str(&format!("; {kept}, and a follow-up works in a fresh copy"));
+            }
+            if let Err(e) = self.store.engine_set_run_state(&run.id, "failed", chrono::Utc::now().timestamp(), Some(&error)) {
                 warn!(task_id = %run.id, error = %e, "an interrupted helper could not be marked failed");
                 continue;
             }
@@ -1159,7 +1187,7 @@ impl Helpers {
                 Completion {
                     task_id: run.id.clone(),
                     description,
-                    status: CompletionStatus::Failed { error: error.to_string() },
+                    status: CompletionStatus::Failed { error: error.clone() },
                     result: String::new(),
                     usage: ai::UsageInfo::default(),
                     taint: Vec::new(),
@@ -1211,13 +1239,12 @@ impl Helpers {
     /// Run one turn of helper `task_id` in the background and finish it.
     /// A turn that crashes still ends the helper as failed and tells its
     /// parent: no helper ends without a word.
-    fn spawn_turn(self: &Arc<Self>, task_id: String, req: TurnRequest, isolation: Option<crate::worktree::Isolation>) {
+    fn spawn_turn(self: &Arc<Self>, task_id: String, req: TurnRequest) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let mut next = Some(req);
-            let mut isolation = isolation;
             while let Some(req) = next.take() {
-                let turn = std::panic::AssertUnwindSafe(this.run_turn(&task_id, req, isolation.take()));
+                let turn = std::panic::AssertUnwindSafe(this.run_turn(&task_id, req));
                 let completion = match futures::FutureExt::catch_unwind(turn).await {
                     Ok(completion) => completion,
                     Err(panic) => this.crashed(&task_id, &panic_text(&*panic)),
@@ -1251,12 +1278,7 @@ impl Helpers {
         }
     }
 
-    async fn run_turn(
-        self: &Arc<Self>,
-        task_id: &str,
-        req: TurnRequest,
-        isolation: Option<crate::worktree::Isolation>,
-    ) -> Completion {
+    async fn run_turn(self: &Arc<Self>, task_id: &str, req: TurnRequest) -> Completion {
         let cancel = req.cancel.clone();
         let (parent_key, description) = {
             let state = self.state();
@@ -1289,13 +1311,7 @@ impl Helpers {
             .map(|id| tools::result_shape::results_dir(&id))
             .unwrap_or_else(|_| tools::result_shape::results_dir(&parent_key.replace(':', "_")));
         let mut completion = collected.into_completion(task_id, &description, &spill_dir);
-        if let Some(mut iso) = isolation {
-            let merged = crate::worktree::merge_all(std::slice::from_mut(&mut iso), &description, None).await;
-            for (_, outcome) in &merged {
-                completion.result.push_str("\n\n");
-                completion.result.push_str(&crate::worktree::render_outcome(&description, outcome));
-            }
-        }
+        self.report_copy(task_id, &description, &mut completion).await;
         match &completion.status {
             CompletionStatus::Done | CompletionStatus::Partial { .. } => {
                 let _ = self.store.update_task_completed(task_id, Some(&completion.result));
@@ -1310,6 +1326,71 @@ impl Helpers {
         let success = matches!(completion.status, CompletionStatus::Done);
         self.emit(&parent_key, ai::StreamEvent::subagent_complete(task_id, description.as_str(), success));
         completion
+    }
+
+    /// After an isolated helper's turn: its changes are held in its copy
+    /// for the primary (or the owner) to land or discard, never merged on
+    /// their own. A stopped helper's work is put away (on its branch, or in
+    /// its copy) and the copy freed; a copy with nothing in it is removed.
+    async fn report_copy(&self, task_id: &str, description: &str, completion: &mut Completion) {
+        let Some(iso) = self.state().copies.get(task_id).cloned() else { return };
+        if completion.status == CompletionStatus::Stopped {
+            self.state().copies.remove(task_id);
+            if let Some(where_) = crate::worktree::put_away(&iso, &format!("Unfinished: {description}")).await {
+                completion.result.push_str(&format!("\n\nIt was stopped before its changes landed: {where_}. Nothing of the owner's changed."));
+            }
+            return;
+        }
+        let files = crate::worktree::changed_files(&iso).await;
+        if files.is_empty() {
+            self.state().copies.remove(task_id);
+            crate::worktree::put_away(&iso, description).await;
+            return;
+        }
+        completion.result.push_str(&format!("\n\n{}", changes_ready(task_id, &iso, &files)));
+    }
+
+    /// Land or discard the changes an isolated helper of `caller`'s holds
+    /// in its copy: the primary's (or the owner's) decision, the one way an
+    /// isolated helper's work reaches the owner's files. Landing catches the
+    /// copy up with the project, re-tests it with `retest`, and lands it as
+    /// one commit ([`crate::worktree::merge_all`]); anything short of that
+    /// keeps the copy and says what is needed. A land asked for after a
+    /// conflict was handed back counts as the word that it is resolved.
+    pub async fn settle(&self, caller: &str, task_id: &str, decision: Decision, retest: Option<crate::worktree::Retest<'_>>) -> Result<String, String> {
+        let row = self.own_row(caller, task_id)?;
+        if self.state().helpers.get(task_id).is_some_and(|h| h.running) {
+            return Err(format!("Helper {task_id} is still working; its changes are settled once it reports."));
+        }
+        let Some(mut iso) = self.state().copies.remove(task_id) else {
+            return Err(format!("Helper {task_id} holds no changes to land or discard."));
+        };
+        let description = row.description.clone().unwrap_or_default();
+        match decision {
+            Decision::Discard => match crate::worktree::discard(&iso).await {
+                Ok(()) => Ok(format!("Helper {task_id}'s changes were discarded. Nothing of the owner's changed.")),
+                Err(e) => {
+                    self.state().copies.insert(task_id.to_string(), iso);
+                    Err(format!("Could not discard helper {task_id}'s changes: {e}"))
+                }
+            },
+            Decision::Land => {
+                iso.mark_resolved();
+                let message = landing_message(&description);
+                let mut isos = [iso];
+                let outcome = crate::worktree::merge_all(&mut isos, &message, retest).await.remove(0).1;
+                let [iso] = isos;
+                let text = crate::worktree::render_outcome(&description, &outcome);
+                if outcome.landed() {
+                    return Ok(text);
+                }
+                self.state().copies.insert(task_id.to_string(), iso);
+                Ok(format!(
+                    "{text}\nThe changes stay in helper {task_id}'s copy. Send them back to the helper to fix \
+                     (send_message to {task_id}), ask the owner, or discard them."
+                ))
+            }
+        }
     }
 
     /// Progress for the owner's screen: each tool call the helper makes is
@@ -1365,7 +1446,9 @@ impl Helpers {
     /// they are done and it has heard them.
     fn finish(self: &Arc<Self>, task_id: &str, mut completion: Completion) -> Option<TurnRequest> {
         let (parent_key, completion, depth) = {
-            let mut state = self.state();
+            let mut guard = self.state();
+            let state = &mut *guard;
+            let copy = state.copies.get(task_id).map(|iso| iso.path().to_string_lossy().into_owned());
             let h = state.helpers.get_mut(task_id)?;
             let continues = matches!(completion.status, CompletionStatus::Done | CompletionStatus::Partial { .. })
                 && !h.cancel.is_cancelled()
@@ -1394,7 +1477,7 @@ impl Helpers {
                     cancel: h.cancel.clone(),
                     platform: h.parent_platform.as_deref(),
                 };
-                return Some(child::child_request(&parent, task_id, &spec, None, TurnInput::None));
+                return Some(child::child_request(&parent, task_id, &spec, copy.as_deref(), TurnInput::None));
             }
             h.running = false;
             if !h.earlier_reports.is_empty() {
@@ -1482,7 +1565,7 @@ impl Helpers {
         }
         if let Some((pid, req)) = resume {
             let _ = self.store.update_task_running(&pid);
-            self.spawn_turn(pid, req, None);
+            self.spawn_turn(pid, req);
         }
         if let Some((grandparent, held, depth)) = release {
             self.deliver(&grandparent, held, depth);
@@ -1524,7 +1607,7 @@ impl Helpers {
         };
         if let Some((pid, req)) = resume {
             let _ = self.store.update_task_running(&pid);
-            self.spawn_turn(pid, req, None);
+            self.spawn_turn(pid, req);
         }
         true
     }
@@ -1556,7 +1639,9 @@ impl State {
             cancel: cancel.clone(),
             platform: p.parent_platform.as_deref(),
         };
-        let req = child::child_request(&parent, pid, &spec, None, input);
+        let copy = self.copies.get(pid).map(|iso| iso.path().to_string_lossy().into_owned());
+        let req = child::child_request(&parent, pid, &spec, copy.as_deref(), input);
+        let p = self.helpers.get_mut(pid)?;
         p.running = true;
         p.cancel = cancel;
         p.held = None;
@@ -1576,6 +1661,77 @@ fn input_unheard(messages: &[db::models::ChatMessage]) -> bool {
         return false;
     };
     !messages[at + 1..].iter().any(|m| m.role == "assistant")
+}
+
+/// What the primary (or the owner) decided about an isolated helper's
+/// changes ([`Helpers::settle`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Land,
+    Discard,
+}
+
+/// What a helper's report says about the changes it holds in its copy.
+fn changes_ready(task_id: &str, iso: &crate::worktree::Isolation, files: &[String]) -> String {
+    let shown: Vec<&str> = files.iter().take(12).map(String::as_str).collect();
+    let more = files.len().saturating_sub(shown.len());
+    format!(
+        "Its changes are ready in its own copy at {} ({} file{}: {}{}), not in the owner's files yet. Land them with \
+         send_message(to: \"{task_id}\", changes: \"land\"), or drop them with changes: \"discard\". A follow-up to the \
+         helper works in the same copy.",
+        iso.path().display(),
+        files.len(),
+        if files.len() == 1 { "" } else { "s" },
+        shown.join(", "),
+        if more > 0 { format!(" and {more} more") } else { String::new() }
+    )
+}
+
+/// The one commit a helper's work lands as: its description, as a sentence.
+fn landing_message(description: &str) -> String {
+    let d = description.trim();
+    if d.is_empty() {
+        return "Changes made by a helper".to_string();
+    }
+    let mut chars = d.chars();
+    let first = chars.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
+    format!("{first}{}", chars.as_str())
+}
+
+/// An interrupted helper's copy after a restart: a worktree's work is
+/// committed on its task branch and the worktree removed (nothing lost,
+/// the disk freed); a scratch copy is kept where it is. Returns where its
+/// work is, if it had a copy.
+async fn put_away_after_restart(task_id: &str) -> Option<String> {
+    let copies = config::data_dir().ok()?.join("worktrees");
+    let path = std::fs::read_dir(&copies).ok()?.flatten().map(|project| project.path().join(task_id)).find(|p| p.is_dir())?;
+    if !path.join(".git").exists() {
+        return Some(format!("its work is kept in its copy at {}", path.display()));
+    }
+    let common = crate::worktree::git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok()?;
+    let root = std::path::PathBuf::from(common.trim()).parent()?.to_path_buf();
+    let branch = format!("nebo/{task_id}");
+    let wt = crate::worktree::Worktree {
+        task_id: task_id_of(&path),
+        root: root.clone(),
+        path: path.clone(),
+        branch: branch.clone(),
+        start_branch: String::new(),
+        base: String::new(),
+        onto: None,
+        resolved: false,
+    };
+    Some(match crate::worktree::shelve(&wt, "Unfinished work, put away when Nebo restarted").await {
+        Ok(()) => format!("its work is kept on branch {branch} in {}", root.display()),
+        Err(e) => {
+            warn!(task_id, error = %e, "an interrupted helper's copy could not be put away; it is kept");
+            format!("its work is kept in its copy at {}", path.display())
+        }
+    })
+}
+
+fn task_id_of(path: &std::path::Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// Fence an isolated helper to its own copy of the parent's project. A
@@ -1628,7 +1784,7 @@ fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
         prompt: row.prompt.clone(),
         kind: field("helper_kind").as_deref().and_then(HelperKind::parse).unwrap_or(HelperKind::General),
         background: true,
-        isolation: None,
+        isolation: (field("isolation").as_deref() == Some("worktree")).then_some(Isolation::Worktree),
         skills: Vec::new(),
         speed: field("speed"),
     }
@@ -2322,6 +2478,169 @@ mod tests {
         // Only the helper's own parent can resume it.
         let other = rig.owner_turn("agent:ceo:web");
         assert!(rig.helpers.send(&other, None, &[], &id, "hi").await.is_err());
+    }
+
+    fn isolated_rig_test(test: impl FnOnce(std::path::PathBuf) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            let repo = tempfile::tempdir().unwrap();
+            rt.block_on(async {
+                for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                    crate::worktree::git(repo.path(), &args).await.unwrap();
+                }
+                std::fs::write(repo.path().join("a.txt"), "base\n").unwrap();
+                crate::worktree::git(repo.path(), &["add", "-A"]).await.unwrap();
+                crate::worktree::git(repo.path(), &["commit", "-q", "-m", "base"]).await.unwrap();
+                test(repo.path().to_path_buf()).await;
+            });
+        })
+    }
+
+    fn isolated_spec(description: &str) -> HelperSpec {
+        HelperSpec {
+            description: description.into(),
+            prompt: "Add b.".into(),
+            kind: HelperKind::General,
+            background: true,
+            isolation: Some(Isolation::Worktree),
+            skills: Vec::new(),
+            speed: None,
+        }
+    }
+
+    /// An isolated helper's changes are held in its copy, never merged on
+    /// their own; a follow-up continues in the same copy; the primary lands
+    /// them (caught up and re-tested in the copy) or discards them.
+    #[test]
+    fn an_isolated_helper_holds_its_changes_and_a_follow_up_works_in_the_same_copy() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                assert_ne!(copy, repo, "it works in its own copy");
+                std::fs::write(copy.join("b.txt"), "from the helper\n").unwrap();
+                rig.heard(&child.request.session_key);
+                child.answer("Added b.").await;
+                rig.next_wake().await;
+                let report = rig.helpers.read_output(key, &id).unwrap();
+                assert!(report.contains("changes are ready in its own copy") && report.contains("b.txt"), "{report}");
+                assert!(!repo.join("b.txt").exists(), "nothing reached the owner's files on its own");
+
+                // A follow-up works in the same copy, with what it already did.
+                rig.helpers.send(&owner, None, &[], &id, "Also add c.").await.unwrap();
+                let resumed = rig.next_turn().await;
+                assert_eq!(resumed.request.seat.cwd.as_deref(), Some(copy.to_string_lossy().as_ref()), "the same copy");
+                assert!(copy.join("b.txt").exists());
+                std::fs::write(copy.join("c.txt"), "c\n").unwrap();
+                rig.heard(&resumed.request.session_key);
+                resumed.answer("Added c.").await;
+                rig.next_wake().await;
+
+                let retested = std::sync::atomic::AtomicBool::new(false);
+                let retest = |_: &crate::worktree::Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
+                    retested.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async { Ok(()) })
+                };
+                let landed = rig.helpers.settle(key, &id, Decision::Land, Some(&retest)).await.unwrap();
+                assert!(landed.contains("landed as one commit"), "{landed}");
+                assert!(retested.load(std::sync::atomic::Ordering::SeqCst), "re-tested before it landed");
+                assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "from the helper\n");
+                assert!(repo.join("c.txt").exists());
+                assert!(!copy.exists(), "the copy is gone once it landed");
+                assert!(rig.helpers.settle(key, &id, Decision::Land, None).await.is_err(), "nothing left to land");
+            })
+        })
+    }
+
+    #[test]
+    fn a_discarded_helpers_changes_never_reach_the_owner_and_its_copy_is_freed() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("b.txt"), "x\n").unwrap();
+                rig.heard(&child.request.session_key);
+                child.answer("Added b.").await;
+                rig.next_wake().await;
+                assert!(rig.helpers.settle("agent:ceo:web", &id, Decision::Discard, None).await.is_err(), "only its own parent decides");
+                rig.helpers.settle(key, &id, Decision::Discard, None).await.unwrap();
+                assert!(!copy.exists());
+                assert!(!repo.join("b.txt").exists());
+            })
+        })
+    }
+
+    #[test]
+    fn a_stopped_isolated_helpers_work_is_put_away_never_landed() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("b.txt"), "half\n").unwrap();
+                rig.helpers.stop(key, &id).unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while copy.exists() {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("the copy is freed");
+                assert!(!repo.join("b.txt").exists(), "a stopped helper's work never lands");
+                let kept = crate::worktree::git(&repo, &["show", &format!("nebo/{id}:b.txt")]).await.unwrap();
+                assert_eq!(kept, "half", "its work is kept on its branch");
+            })
+        })
+    }
+
+    #[test]
+    fn a_follow_up_after_a_restart_never_writes_into_the_owners_files() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                rig.heard(&child.request.session_key);
+                child.answer("Looked around.").await;
+                rig.next_wake().await;
+
+                // A restart: the registry knows the helper only by its row.
+                let Rig { store, _dir, .. } = rig;
+                let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                rig.helpers.send(&owner, None, &[], &id, "Now add b.").await.unwrap();
+                let resumed = rig.next_turn().await;
+                let cwd = std::path::PathBuf::from(resumed.request.seat.cwd.clone().unwrap());
+                assert_ne!(cwd, repo, "a fresh copy, never the owner's folder");
+                assert!(cwd.join("a.txt").exists());
+            })
+        })
     }
 
     fn target(key: &str, read_only: bool) -> Target {

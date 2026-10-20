@@ -1,10 +1,13 @@
 //! The project's own build and tests: the plain-code step of every round.
 //!
 //! Read from the project's manifests, never guessed by a model: the same
-//! project always runs the same checks. Each check runs in the copy the work
-//! happens in, with its own build folder ([`Check::build_dir_env`]) under the
-//! verification's folder, deleted when the verification ends, so parallel
-//! work never shares (or fills the disk with) one build output.
+//! project always runs the same checks. Every project is compiled whole
+//! (every package and target, so a dependent the change breaks fails the
+//! round) and then tested where the change is. Each check runs in the copy
+//! the work happens in, with the project's one build folder
+//! ([`Check::with_build_dir`], [`build_cache`]): every verification of a
+//! project shares it, so a round never starts cold and the disk holds one
+//! build output per project, not one per round.
 
 use std::path::{Path, PathBuf};
 
@@ -83,6 +86,18 @@ pub fn detect(root: &Path, changed: &[String]) -> Vec<Check> {
     checks
 }
 
+/// The build folder every verification of the project at `root` shares:
+/// `<data_dir>/verify/build/<hash of the project's path>`.
+pub fn build_cache(root: &Path) -> PathBuf {
+    use sha2::Digest;
+    let hash = hex::encode(&sha2::Sha256::digest(root.to_string_lossy().as_bytes())[..8]);
+    config::data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("verify")
+        .join("build")
+        .join(hash)
+}
+
 /// What one check did in a round.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +128,54 @@ pub fn tail(output: &str) -> String {
     let cut = &output[start..];
     let cut = cut.find('\n').map(|i| &cut[i + 1..]).unwrap_or(cut);
     format!("[… earlier output left out]\n{cut}")
+}
+
+/// The longest one check runs before it is stopped and counted failed.
+pub const CHECK_TIMEOUT_MS: u64 = 600_000;
+
+/// Run `checks` one after another through the one door every command
+/// takes (`run_command` in the registry, under the run's permissions in
+/// `ctx`), each in its folder with the project's build folder. A check the
+/// permission check refuses, or that outlasts [`CHECK_TIMEOUT_MS`], failed.
+pub async fn run(tools: &tools::Registry, ctx: &tools::ToolContext, checks: &[Check], build_dir: &Path) -> Vec<CheckRun> {
+    let mut out = Vec::with_capacity(checks.len());
+    for check in checks {
+        let started = std::time::Instant::now();
+        let mut ctx = ctx.clone();
+        ctx.cwd = Some(check.dir.to_string_lossy().into_owned());
+        // Nobody answers a question in the middle of a check.
+        ctx.cannot_wait = true;
+        let input = serde_json::json!({
+            "command": check.with_build_dir(build_dir),
+            "description": format!("Checking: {}", check.label),
+            "cwd": check.dir.to_string_lossy(),
+            "timeout": CHECK_TIMEOUT_MS,
+        });
+        let result = tools.execute(&ctx, "run_command", input).await;
+        let mut passed = !result.is_error;
+        let mut text = result.content.clone();
+        if let Some(id) = backgrounded(&text) {
+            let _ = tools.execute(&ctx, "stop_task", serde_json::json!({ "task_id": id })).await;
+            passed = false;
+            text = format!("It ran past {} minutes and was stopped.", CHECK_TIMEOUT_MS / 60_000);
+        }
+        out.push(CheckRun {
+            label: check.label.clone(),
+            command: check.command.clone(),
+            passed,
+            tail: tail(&text),
+            duration_ms: started.elapsed().as_millis() as u64,
+        });
+    }
+    out
+}
+
+/// The id of a command that outlasted its timeout and moved to the
+/// background (`run_command` says "…moved to the background with ID: bg-…").
+fn backgrounded(text: &str) -> Option<String> {
+    let at = text.find("moved to the background with ID: ")? + "moved to the background with ID: ".len();
+    let id: String = text[at..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    (!id.is_empty()).then_some(id)
 }
 
 impl Check {
@@ -153,13 +216,15 @@ fn cargo(root: &Path, changed: &[String]) -> Vec<Check> {
             None => whole = true,
         }
     }
+    // The whole workspace compiles, every target: a crate that depends on
+    // the change and no longer builds fails the round.
+    let compile = Check {
+        label: "Rust build".into(),
+        command: "cargo check --workspace --all-targets".into(),
+        dir: root.to_path_buf(),
+    };
     if packages.is_empty() && !whole {
-        // The change touches no Rust: the build still has to hold.
-        return vec![Check {
-            label: "Rust build".into(),
-            command: "cargo check --all-targets".into(),
-            dir: root.to_path_buf(),
-        }];
+        return vec![compile];
     }
     let scope = if whole || packages.is_empty() {
         "--workspace".to_string()
@@ -170,11 +235,14 @@ fn cargo(root: &Path, changed: &[String]) -> Vec<Check> {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    vec![Check {
-        label: "Rust tests".into(),
-        command: format!("cargo test {scope}"),
-        dir: root.to_path_buf(),
-    }]
+    vec![
+        compile,
+        Check {
+            label: "Rust tests".into(),
+            command: format!("cargo test {scope}"),
+            dir: root.to_path_buf(),
+        },
+    ]
 }
 
 /// The package that owns `path`: the nearest `Cargo.toml` with a
@@ -240,34 +308,30 @@ fn node(root: &Path, dir: &Path) -> Vec<Check> {
     } else {
         "npm"
     };
-    let mut out = Vec::new();
-    for script in ["check", "test"] {
-        if scripts
-            .get(script)
+    let has = |name: &str| {
+        scripts
+            .get(name)
             .and_then(|s| s.as_str())
             .is_some_and(|s| !s.contains("no test specified"))
-        {
-            let command = match (manager, script) {
-                ("npm", "test") => "npm test".to_string(),
-                ("npm", s) => format!("npm run {s}"),
-                (m, s) => format!("{m} run {s}"),
-            };
-            out.push(Check {
-                label: format!("{manager} {script}"),
-                command,
-                dir: dir.to_path_buf(),
-            });
-        }
-    }
-    if out.is_empty() && scripts.contains_key("build") {
-        let command = if manager == "npm" {
-            "npm run build".to_string()
-        } else {
-            format!("{manager} run build")
-        };
+    };
+    let run = |script: &str| match (manager, script) {
+        ("npm", "test") => "npm test".to_string(),
+        ("npm", s) => format!("npm run {s}"),
+        (m, s) => format!("{m} run {s}"),
+    };
+    let mut out = Vec::new();
+    // The whole package compiles: its type check, else its build.
+    if let Some(compile) = ["check", "build"].into_iter().find(|s| has(s)) {
         out.push(Check {
-            label: format!("{manager} build"),
-            command,
+            label: format!("{manager} {compile}"),
+            command: run(compile),
+            dir: dir.to_path_buf(),
+        });
+    }
+    if has("test") {
+        out.push(Check {
+            label: format!("{manager} test"),
+            command: run("test"),
             dir: dir.to_path_buf(),
         });
     }
@@ -349,11 +413,18 @@ mod tests {
                 "crates/db/migrations/1.sql".into(),
             ],
         );
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].command, "cargo test -p nebo-db -p nebo-agent");
+        let commands: Vec<&str> = checks.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(
+            commands,
+            [
+                "cargo check --workspace --all-targets",
+                "cargo test -p nebo-db -p nebo-agent"
+            ],
+            "the whole workspace compiles"
+        );
         let build = tempfile::tempdir().unwrap();
         assert!(
-            checks[0]
+            checks[1]
                 .with_build_dir(build.path())
                 .starts_with("CARGO_TARGET_DIR='"),
             "its own build folder"
@@ -376,12 +447,21 @@ mod tests {
         assert_eq!(
             commands,
             [
-                "cargo check --all-targets",
+                "cargo check --workspace --all-targets",
                 "pnpm run check",
                 "pnpm run test"
             ]
         );
         assert_eq!(checks[1].dir, root.join("app"));
+    }
+
+    #[test]
+    fn a_check_that_outlasts_its_time_is_found_by_its_background_id() {
+        assert_eq!(
+            backgrounded("Command exceeded its timeout (600s) and was moved to the background with ID: bg-12ab. It is still running"),
+            Some("bg-12ab".into())
+        );
+        assert_eq!(backgrounded("test result: ok"), None);
     }
 
     #[test]
@@ -392,6 +472,31 @@ mod tests {
         assert!(t.ends_with("line 1999"));
         assert!(t.chars().count() <= TAIL_CHARS + 40);
         assert_eq!(tail("ok\n"), "ok");
+    }
+
+    #[test]
+    fn a_web_package_without_a_type_check_compiles_with_its_build() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"build":"vite build","test":"vitest --run"}}"#,
+        );
+        let commands: Vec<String> = detect(dir.path(), &["src/a.ts".into()])
+            .into_iter()
+            .map(|c| c.command)
+            .collect();
+        assert_eq!(commands, ["npm run build", "npm test"]);
+    }
+
+    #[test]
+    fn every_verification_of_a_project_shares_one_build_folder() {
+        crate::test_home::with_home(|home| {
+            let a = build_cache(Path::new("/work/site"));
+            assert_eq!(a, build_cache(Path::new("/work/site")));
+            assert_ne!(a, build_cache(Path::new("/work/other")));
+            assert!(a.starts_with(home.join("verify/build")));
+        })
     }
 
     #[test]
