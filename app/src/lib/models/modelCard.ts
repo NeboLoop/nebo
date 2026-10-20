@@ -43,11 +43,16 @@ export function bandLabel(bands: CardBand[], i: number, t: Translate): string {
 	return below ? t('modelCard.bandAbove', { values: { tokens: shortTokens(below) } }) : '';
 }
 
-/** A token count as a band names it: "272K", "1M". */
-function shortTokens(n: number): string {
-	if (n >= 1_000_000) return `${+(n / 1_000_000).toFixed(2)}M`;
-	if (n >= 1_000) return `${+(n / 1_000).toFixed(1)}K`;
-	return String(n);
+/**
+ * A token count as a card shows it, the same rule the mobile app uses:
+ * "200K", "272K", "1M", "1.05M"; under ten thousand in full ("8,192").
+ */
+export function shortTokens(n: number): string {
+	const trim = (v: number) => v.toFixed(2).replace(/\.?0+$/, '');
+	if (n >= 1_000_000) return `${trim(n / 1_000_000)}M`;
+	if (n >= 10_000) return `${trim(n / 1_000)}K`;
+	const s = String(n);
+	return s.length > 3 ? `${s.slice(0, -3)},${s.slice(-3)}` : s;
 }
 
 /**

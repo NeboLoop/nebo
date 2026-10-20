@@ -4353,7 +4353,8 @@
 		"signedOut": "Melde dich bei NeboAI an, um deinen eigenen {provider}-Schlüssel zu nutzen.",
 		"keyRejected": "Dein {provider}-API-Schlüssel wurde abgelehnt. Prüfe ihn unter Einstellungen > Anbieter.",
 		"keyUnusable": "Dein {provider}-API-Schlüssel kann dieses Modell nicht ausführen. Prüfe das Modell darauf unter Einstellungen > Anbieter.",
-		"connectionSignIn": "Melde dich bei NeboAI an, um diesen Schlüssel zu nutzen: Deine eigenen Schlüssel laufen über dein NeboAI-Konto."
+		"connectionSignIn": "Melde dich bei NeboAI an, um diesen Schlüssel zu nutzen: Deine eigenen Schlüssel laufen über dein NeboAI-Konto.",
+		"ownerUrlUnsupported": "Eigene URLs für diesen Anbieter werden noch nicht unterstützt. Entferne die URL, um den Schlüssel über NeboAI zu nutzen."
 	},
 	"modelCard": {
 		"about": "Über {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "Kein Preis angegeben.",
 		"ownKeyPrice": "{fee} pro Anfrage; Ihr Anbieter rechnet das Modell ab",
 		"providerBills": "Ihr Anbieter rechnet das Modell ab",
-		"per1m": "{input} Eingabe / {output} Ausgabe pro 1 Mio. Token",
+		"per1m": "{input} Eingabe · {output} Ausgabe pro 1 Mio. Token",
 		"input": "Eingabe",
 		"output": "Ausgabe",
 		"cacheRead": "Cache lesen",

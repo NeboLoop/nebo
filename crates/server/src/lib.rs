@@ -673,7 +673,7 @@ fn db_model_infos(store: &db::Store, provider: &str) -> Vec<agent::selector::Mod
                 let mut kind: Vec<String> = m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default();
                 // A model from Janus's catalog (it has a card) is chosen by
                 // its full id only, never by a loose name.
-                if m.card.is_some() {
+                if handlers::connections::is_catalog_row(m) {
                     kind.push(agent::fuzzy::EXPLICIT_ONLY.to_string());
                 }
                 kind
@@ -949,20 +949,19 @@ pub fn build_providers(
                         profile.model.clone().unwrap_or_default(),
                         Some(own),
                     ))),
-                    None => match profile
-                        .base_url
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|u| !u.is_empty() && matches!(kind, "openai_compatible" | "deepseek" | "openai" | "openrouter" | "xai"))
-                    {
-                        Some(url) => {
+                    None => match auth::credential::direct_url(profile) {
+                        Some(Ok(url)) => {
                             let mut p = ai::OpenAIProvider::with_base_url(
                                 auth::credential::profile_key(profile),
                                 profile.model.clone().unwrap_or_default(),
-                                url.to_string(),
+                                url,
                             );
                             p.set_provider_id(kind);
                             Some(Arc::new(p))
+                        }
+                        Some(Err(_)) => {
+                            warn!(profile_id = %profile.id, provider = %kind, "a URL of the owner's for a provider with no direct client, skipping");
+                            None
                         }
                         None if kind == "openai_compatible" => {
                             warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");

@@ -122,7 +122,9 @@
 
   /** Why chat would refuse this connection right now, in his language; '' when it would not. */
   function refusal(conn: AuthProfile): string {
-    return routes[conn.id]?.signInRequired ? $t('ownKey.connectionSignIn') : '';
+    const route = routes[conn.id];
+    if (route?.via === 'unsupported') return $t('ownKey.ownerUrlUnsupported');
+    return route?.signInRequired ? $t('ownKey.connectionSignIn') : '';
   }
 
   /** The line under a connection's name: its kind (when the name doesn't say it) and its URL. */

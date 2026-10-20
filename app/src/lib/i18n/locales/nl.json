@@ -4353,7 +4353,8 @@
 		"signedOut": "Meld je aan bij NeboAI om je eigen {provider}-sleutel te gebruiken.",
 		"keyRejected": "Je {provider}-API-sleutel is geweigerd. Controleer hem bij Instellingen > Providers.",
 		"keyUnusable": "Je {provider}-API-sleutel kan dit model niet uitvoeren. Controleer het model erop bij Instellingen > Providers.",
-		"connectionSignIn": "Meld je aan bij NeboAI om deze sleutel te gebruiken: je eigen sleutels draaien op je NeboAI-account."
+		"connectionSignIn": "Meld je aan bij NeboAI om deze sleutel te gebruiken: je eigen sleutels draaien op je NeboAI-account.",
+		"ownerUrlUnsupported": "Eigen URL's voor deze provider worden nog niet ondersteund. Verwijder de URL om de sleutel via NeboAI te gebruiken."
 	},
 	"modelCard": {
 		"about": "Over {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "Geen prijs vermeld.",
 		"ownKeyPrice": "{fee} per verzoek; je provider rekent het model af",
 		"providerBills": "Je provider rekent het model af",
-		"per1m": "{input} invoer / {output} uitvoer per 1 mln. tokens",
+		"per1m": "{input} invoer · {output} uitvoer per 1 mln. tokens",
 		"input": "Invoer",
 		"output": "Uitvoer",
 		"cacheRead": "Cache lezen",

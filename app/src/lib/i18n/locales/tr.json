@@ -4353,7 +4353,8 @@
 		"signedOut": "Kendi {provider} anahtarınızı kullanmak için NeboAI'da oturum açın.",
 		"keyRejected": "{provider} API anahtarınız reddedildi. Ayarlar > Sağlayıcılar bölümünden kontrol edin.",
 		"keyUnusable": "{provider} API anahtarınız bu modeli çalıştıramıyor. Modeli Ayarlar > Sağlayıcılar bölümünden kontrol edin.",
-		"connectionSignIn": "Bu anahtarı kullanmak için NeboAI'da oturum açın: kendi anahtarlarınız NeboAI hesabınızda çalışır."
+		"connectionSignIn": "Bu anahtarı kullanmak için NeboAI'da oturum açın: kendi anahtarlarınız NeboAI hesabınızda çalışır.",
+		"ownerUrlUnsupported": "Bu sağlayıcı için kendi URL'leriniz henüz desteklenmiyor. Anahtarı NeboAI üzerinden kullanmak için URL'yi kaldırın."
 	},
 	"modelCard": {
 		"about": "{model} hakkında",
@@ -4385,7 +4386,7 @@
 		"noPrice": "Fiyat belirtilmemiş.",
 		"ownKeyPrice": "İstek başına {fee}; model ücretini sağlayıcınız alır",
 		"providerBills": "Model ücretini sağlayıcınız alır",
-		"per1m": "1M token başına {input} giriş / {output} çıkış",
+		"per1m": "1M token başına {input} giriş · {output} çıkış",
 		"input": "Giriş",
 		"output": "Çıkış",
 		"cacheRead": "Önbellek okuma",

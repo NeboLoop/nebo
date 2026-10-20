@@ -78,6 +78,25 @@ pub fn owner_url(profile: &db::models::AuthProfile) -> Option<String> {
     profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_string)
 }
 
+/// A URL the owner entered for a provider that speaks its own format
+/// (Anthropic, Google): Nebo's one direct chat client speaks the OpenAI
+/// format, so such a connection is neither listed nor used (`direct_url`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerUrlUnsupported;
+
+/// How a connection with a URL the owner entered (`owner_url`) is reached:
+/// direct at that URL (`Ok`), or not at all when its kind speaks a format
+/// Nebo has no direct client for (`Err`). `None` when he entered no URL.
+/// The ONE answer chat, the provider test, the model listing, the pack
+/// choices and the providers page all take.
+pub fn direct_url(profile: &db::models::AuthProfile) -> Option<Result<String, OwnerUrlUnsupported>> {
+    let url = owner_url(profile)?;
+    Some(match profile.provider.as_str() {
+        "anthropic" | "google" => Err(OwnerUrlUnsupported),
+        _ => Ok(url),
+    })
+}
+
 /// The owner's own key on a paid hosted provider, as Janus takes it
 /// (`types::own_key`): the ONE place a connection kind is named the way
 /// Janus names its provider, and the ONE place it is decided which keys go
@@ -191,6 +210,22 @@ mod tests {
             updated_at: 0,
             auth_type: None,
         }
+    }
+
+    /// A URL the owner entered is reached direct for every kind whose API is
+    /// the OpenAI format; for Anthropic and Google, which speak their own,
+    /// it is not supported. No URL: not a direct connection.
+    #[test]
+    fn an_owner_url_is_direct_unless_its_kind_has_no_direct_client() {
+        let reach = |kind: &str, base: Option<&str>| direct_url(&profile(kind, "sk-1", base));
+        for kind in ["openai_compatible", "openai", "deepseek", "openrouter", "xai", "ollama", "systemone_compatible"] {
+            assert_eq!(reach(kind, Some(" https://h.example/v1 ")), Some(Ok("https://h.example/v1".to_string())), "{kind}");
+        }
+        for kind in ["anthropic", "google"] {
+            assert_eq!(reach(kind, Some("https://h.example/v1")), Some(Err(OwnerUrlUnsupported)), "{kind}");
+            assert_eq!(reach(kind, None), None, "{kind} with no URL goes through Janus");
+        }
+        assert_eq!(reach("openai_compatible", Some("  ")), None);
     }
 
     /// A key for a provider Nebo knows by name, with no URL of the owner's,

@@ -4353,7 +4353,8 @@
 		"signedOut": "登入 NeboAI 才能使用你自己的 {provider} 金鑰。",
 		"keyRejected": "你的 {provider} API 金鑰遭到拒絕。請在 設定 > 供應商 中檢查。",
 		"keyUnusable": "你的 {provider} API 金鑰無法執行此模型。請在 設定 > 供應商 中檢查該金鑰的模型。",
-		"connectionSignIn": "登入 NeboAI 才能使用此金鑰：你自己的金鑰在你的 NeboAI 帳戶上執行。"
+		"connectionSignIn": "登入 NeboAI 才能使用此金鑰：你自己的金鑰在你的 NeboAI 帳戶上執行。",
+		"ownerUrlUnsupported": "尚不支援此供應商的自訂 URL。刪除該 URL 即可透過 NeboAI 使用此金鑰。"
 	},
 	"modelCard": {
 		"about": "關於 {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "未列出價格。",
 		"ownKeyPrice": "每次請求 {fee}；模型費用由你的服務商收取",
 		"providerBills": "模型費用由你的服務商收取",
-		"per1m": "每 100 萬權杖 輸入 {input} / 輸出 {output}",
+		"per1m": "每 100 萬權杖 輸入 {input} · 輸出 {output}",
 		"input": "輸入",
 		"output": "輸出",
 		"cacheRead": "快取讀取",

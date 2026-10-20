@@ -3384,7 +3384,7 @@ export interface CommanderNode {
 }
 
 export interface ConnectionRoute {
-	via: 'janus' | 'direct'
+	via: 'janus' | 'direct' | 'unsupported'
 	signInRequired: boolean
 }
 
@@ -3524,6 +3524,8 @@ export interface PackChoice {
 	local: boolean
 	/** What the owner reads before picking it: what it is, what it is good for, its price. */
 	card?: ModelCard
+	/** One of the models Janus's catalog lists (not nebo-1 or a speed): chosen only by its full id. */
+	catalog?: boolean
 }
 
 export interface RunDisplayFact {

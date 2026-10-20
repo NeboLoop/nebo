@@ -33,8 +33,10 @@ pub(crate) async fn reload_providers(
 /// Beside the profiles, how each is reached (`routes`, by profile id), the
 /// way a turn reaches it: `janus` (a key for a provider Nebo knows by name,
 /// through Janus, which needs a NeboAI sign-in: `signInRequired` when there
-/// is none) or `direct` (a URL the owner entered, Ollama, a key-less
-/// connection). The page shows a connection chat would refuse as one, never
+/// is none), `direct` (a URL the owner entered, Ollama, a key-less
+/// connection) or `unsupported` (a URL the owner entered for a provider Nebo
+/// has no direct client for: neither listed nor used,
+/// `auth::credential::direct_url`). The page shows a connection chat would refuse as one, never
 /// as healthy.
 pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profiles = state
@@ -45,9 +47,10 @@ pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serd
     let routes: serde_json::Map<String, serde_json::Value> = profiles
         .iter()
         .map(|p| {
-            let route = match auth::credential::own_key(p) {
-                Some(_) => serde_json::json!({ "via": "janus", "signInRequired": !signed_in }),
-                None => serde_json::json!({ "via": "direct", "signInRequired": false }),
+            let route = match (auth::credential::own_key(p), auth::credential::direct_url(p)) {
+                (Some(_), _) => serde_json::json!({ "via": "janus", "signInRequired": !signed_in }),
+                (None, Some(Err(_))) => serde_json::json!({ "via": "unsupported", "signInRequired": false }),
+                (None, _) => serde_json::json!({ "via": "direct", "signInRequired": false }),
             };
             (p.id.clone(), route)
         })
@@ -209,6 +212,11 @@ pub async fn delete_provider(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// What the provider test says of a connection at a URL of the owner's that
+/// Nebo has no direct client for (`auth::credential::direct_url`); the app
+/// shows its own words for it (`routes`' `unsupported`).
+const OWNER_URL_UNSUPPORTED: &str = "Your own URLs for this provider aren't supported yet. Remove the URL to use the key through NeboAI.";
+
 /// POST /api/v1/providers/:id/test
 pub async fn test_provider(
     State(state): State<AppState>,
@@ -250,14 +258,15 @@ pub async fn test_provider(
                     let provider = crate::janus_chat_provider(&state.store, &state.config, kind, model, Some(own));
                     test_provider_connection(&provider).await
                 }
-                None => match profile.base_url.clone().filter(|u| matches!(kind, "openai_compatible" | "deepseek" | "openai" | "openrouter" | "xai") && !u.trim().is_empty()) {
-                    Some(url) => {
+                None => match auth::credential::direct_url(&profile) {
+                    Some(Ok(url)) => {
                         let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
                         provider.set_provider_id(kind);
                         test_provider_connection(&provider).await
                     }
+                    Some(Err(_)) => Err(OWNER_URL_UNSUPPORTED.to_string()),
                     None if kind == "openai_compatible" => Err("This provider needs its base URL.".to_string()),
-                    None => Err("Missing API key".to_string()),
+                    None => Err("This connection has no key. Add the provider's API key.".to_string()),
                 },
             }
         }
@@ -386,6 +395,9 @@ fn picker_models(
             "preferred": m.preferred.unwrap_or(0) == 1,
             "isActive": m.is_active.unwrap_or(0) == 1,
             "rank": m.rank,
+            // A model Janus's catalog lists (not nebo-1 or a speed): pickers
+            // of speeds and routes leave it out.
+            "catalog": super::connections::is_catalog_row(m),
         });
 
         // Add pricing if available
@@ -983,11 +995,19 @@ pub(crate) fn store_choices(store: &db::Store) -> (Vec<serde_json::Value>, Vec<s
             if let Some(card) = card {
                 c["card"] = serde_json::to_value(card).unwrap_or_default();
             }
+            if super::connections::is_catalog_row(&m) {
+                c["catalog"] = serde_json::Value::Bool(true);
+            }
             chat.push(c);
         }
     }
     for p in store.list_auth_profiles().unwrap_or_default() {
-        if p.is_active.unwrap_or(0) == 0 || matches!(p.provider.as_str(), "neboai" | "ollama") {
+        // A URL of the owner's Nebo has no direct client for is never a
+        // choice: chat could not run it (`auth::credential::direct_url`).
+        if p.is_active.unwrap_or(0) == 0
+            || matches!(p.provider.as_str(), "neboai" | "ollama")
+            || matches!(auth::credential::direct_url(&p), Some(Err(_)))
+        {
             continue;
         }
         let key = super::connections::connection_key(&p);
@@ -1240,4 +1260,34 @@ mod key_at_rest_tests {
             assert!(header(request, "x-provider").is_none() && header(request, "x-provider-api-key").is_none());
         }
     }
+
+    /// A URL the owner entered for Anthropic or Google has no direct client:
+    /// chat never builds it, the packs never offer it, and the listing never
+    /// asks it, so nothing shows a connection chat cannot run.
+    #[test]
+    fn an_owner_url_with_no_direct_client_is_neither_used_nor_offered() {
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let sealed = auth::credential::encrypt(SENTINEL).unwrap();
+        for kind in ["anthropic", "google"] {
+            store.create_auth_profile(kind, "Gateway", kind, &sealed, Some("m-1"), Some("https://gateway.example/v1"), 0, 1, None, None).unwrap();
+            let p = store.get_auth_profile(kind).unwrap().unwrap();
+            let key = super::super::connections::connection_key(&p);
+            store
+                .create_provider_model(&format!("{key}-m1"), &key, "m-1", "m-1", 1, 0, None, None, None, Some(r#"["tools"]"#), Some(r#"["chat"]"#), 0, None)
+                .unwrap();
+            assert!(super::super::connections::catalog_request(&p).is_none(), "{kind}: not listed");
+        }
+        let providers = crate::build_providers(&store, &config::Config::default(), None, None);
+        for id in ["anthropic@anthropic", "google@google"] {
+            assert!(!providers.iter().any(|p| p.id() == id), "{id}: chat has no client for it");
+        }
+        let (chat, _, _) = super::store_choices(&store);
+        assert!(
+            !chat.iter().any(|c| c["connection"] == "Gateway"),
+            "never offered to a pack: {chat:?}"
+        );
+    }
+
 }

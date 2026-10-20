@@ -139,7 +139,7 @@ var typeOverrides = map[string]string{
 var extraInterfaces = map[string]string{
 	// How a turn reaches a connection (handlers/provider.rs connection_route).
 	"ConnectionRoute": `export interface ConnectionRoute {
-	via: 'janus' | 'direct'
+	via: 'janus' | 'direct' | 'unsupported'
 	signInRequired: boolean
 }`,
 	// A file as it travels (comm::wire::Attachment), in an upload's status
@@ -321,6 +321,8 @@ export interface RunDisplay {
 	local: boolean
 	/** What the owner reads before picking it: what it is, what it is good for, its price. */
 	card?: ModelCard
+	/** One of the models Janus's catalog lists (not nebo-1 or a speed): chosen only by its full id. */
+	catalog?: boolean
 }`,
 
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {

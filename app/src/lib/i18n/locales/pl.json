@@ -4353,7 +4353,8 @@
 		"signedOut": "Zaloguj się do NeboAI, aby używać własnego klucza {provider}.",
 		"keyRejected": "Twój klucz API {provider} został odrzucony. Sprawdź go w Ustawienia > Dostawcy.",
 		"keyUnusable": "Twój klucz API {provider} nie może uruchomić tego modelu. Sprawdź model w Ustawienia > Dostawcy.",
-		"connectionSignIn": "Zaloguj się do NeboAI, aby używać tego klucza: własne klucze działają na Twoim koncie NeboAI."
+		"connectionSignIn": "Zaloguj się do NeboAI, aby używać tego klucza: własne klucze działają na Twoim koncie NeboAI.",
+		"ownerUrlUnsupported": "Własne adresy URL dla tego dostawcy nie są jeszcze obsługiwane. Usuń adres URL, aby używać klucza przez NeboAI."
 	},
 	"modelCard": {
 		"about": "Informacje o {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "Brak podanej ceny.",
 		"ownKeyPrice": "{fee} za żądanie; za model płacisz swojemu dostawcy",
 		"providerBills": "Za model płacisz swojemu dostawcy",
-		"per1m": "{input} wejście / {output} wyjście za 1 mln tokenów",
+		"per1m": "{input} wejście · {output} wyjście za 1 mln tokenów",
 		"input": "Wejście",
 		"output": "Wyjście",
 		"cacheRead": "Odczyt z pamięci podręcznej",

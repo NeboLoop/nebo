@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelCard, PackChoice } from '$lib/api/neboComponents';
-import { bandLabel, cardBands, cardFit, cardPriceLine, cardSpeed, cardTier, usd } from './modelCard';
+import { bandLabel, cardBands, cardFit, cardPriceLine, cardSpeed, cardTier, shortTokens, usd } from './modelCard';
 import { catalogErrorKey, choiceGroups, choiceRowLabel } from './connections';
 
 /** A translator that shows the key and its values, so a test reads what was asked for. */
@@ -126,5 +126,20 @@ describe('pack choices with cards', () => {
 			['Nebo AI · Claude Sonnet', 2],
 			['Anthropic', 1]
 		]);
+	});
+});
+
+describe('the same words as the mobile app', () => {
+	it('names token counts the way the phone does', () => {
+		expect(shortTokens(8_192)).toBe('8,192');
+		expect(shortTokens(128_000)).toBe('128K');
+		expect(shortTokens(272_000)).toBe('272K');
+		expect(shortTokens(1_000_000)).toBe('1M');
+		expect(shortTokens(1_050_000)).toBe('1.05M');
+		expect(shortTokens(999)).toBe('999');
+	});
+
+	it('names the level a model fits as "Fits"', () => {
+		expect(cardFit(sonnet, t)).toBe('modelCard.fits(settingsPacks.level.medium)');
 	});
 });

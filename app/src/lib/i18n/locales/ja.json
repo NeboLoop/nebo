@@ -4353,7 +4353,8 @@
 		"signedOut": "自分の {provider} キーを使うには NeboAI にサインインしてください。",
 		"keyRejected": "{provider} の API キーが拒否されました。設定 > プロバイダー で確認してください。",
 		"keyUnusable": "{provider} の API キーではこのモデルを実行できません。設定 > プロバイダー でモデルを確認してください。",
-		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。"
+		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。",
+		"ownerUrlUnsupported": "このプロバイダーの独自 URL にはまだ対応していません。NeboAI 経由でキーを使うには URL を削除してください。"
 	},
 	"modelCard": {
 		"about": "{model} について",
@@ -4385,7 +4386,7 @@
 		"noPrice": "料金の記載はありません。",
 		"ownKeyPrice": "1 リクエストあたり {fee}。モデル料金はプロバイダーから請求されます",
 		"providerBills": "モデル料金はプロバイダーから請求されます",
-		"per1m": "100 万トークンあたり 入力 {input} / 出力 {output}",
+		"per1m": "100 万トークンあたり 入力 {input} · 出力 {output}",
 		"input": "入力",
 		"output": "出力",
 		"cacheRead": "キャッシュ読み取り",

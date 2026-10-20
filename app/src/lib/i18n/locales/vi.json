@@ -4353,7 +4353,8 @@
 		"signedOut": "Đăng nhập NeboAI để dùng khóa {provider} của riêng bạn.",
 		"keyRejected": "Khóa API {provider} của bạn bị từ chối. Hãy kiểm tra trong Cài đặt > Nhà cung cấp.",
 		"keyUnusable": "Khóa API {provider} của bạn không chạy được mô hình này. Hãy kiểm tra mô hình trong Cài đặt > Nhà cung cấp.",
-		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn."
+		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn.",
+		"ownerUrlUnsupported": "Chưa hỗ trợ URL riêng cho nhà cung cấp này. Hãy xóa URL để dùng khóa qua NeboAI."
 	},
 	"modelCard": {
 		"about": "Về {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "Chưa có giá.",
 		"ownKeyPrice": "{fee} mỗi yêu cầu; nhà cung cấp của bạn tính phí mô hình",
 		"providerBills": "Nhà cung cấp của bạn tính phí mô hình",
-		"per1m": "{input} đầu vào / {output} đầu ra cho mỗi 1 triệu token",
+		"per1m": "{input} đầu vào · {output} đầu ra cho mỗi 1 triệu token",
 		"input": "Đầu vào",
 		"output": "Đầu ra",
 		"cacheRead": "Đọc bộ nhớ đệm",

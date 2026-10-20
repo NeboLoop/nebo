@@ -4353,7 +4353,8 @@
 		"signedOut": "Inicia sesión en NeboAI para usar tu propia clave de {provider}.",
 		"keyRejected": "Tu clave API de {provider} fue rechazada. Revísala en Configuración > Proveedores.",
 		"keyUnusable": "Tu clave API de {provider} no puede usar este modelo. Revisa el modelo en Configuración > Proveedores.",
-		"connectionSignIn": "Inicia sesión en NeboAI para usar esta clave: tus propias claves funcionan con tu cuenta de NeboAI."
+		"connectionSignIn": "Inicia sesión en NeboAI para usar esta clave: tus propias claves funcionan con tu cuenta de NeboAI.",
+		"ownerUrlUnsupported": "Todavía no se admiten URL propias para este proveedor. Quita la URL para usar la clave a través de NeboAI."
 	},
 	"modelCard": {
 		"about": "Acerca de {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "No hay precio publicado.",
 		"ownKeyPrice": "{fee} por solicitud; tu proveedor te cobra el modelo",
 		"providerBills": "Tu proveedor te cobra el modelo",
-		"per1m": "{input} entrada / {output} salida por 1 M de tokens",
+		"per1m": "{input} entrada · {output} salida por 1 M de tokens",
 		"input": "Entrada",
 		"output": "Salida",
 		"cacheRead": "Lectura de caché",

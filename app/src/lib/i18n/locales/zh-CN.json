@@ -4353,7 +4353,8 @@
 		"signedOut": "登录 NeboAI 才能使用你自己的 {provider} 密钥。",
 		"keyRejected": "你的 {provider} API 密钥被拒绝。请在 设置 > 提供商 中检查。",
 		"keyUnusable": "你的 {provider} API 密钥无法运行此模型。请在 设置 > 提供商 中检查该密钥的模型。",
-		"connectionSignIn": "登录 NeboAI 才能使用此密钥：你自己的密钥在你的 NeboAI 账户上运行。"
+		"connectionSignIn": "登录 NeboAI 才能使用此密钥：你自己的密钥在你的 NeboAI 账户上运行。",
+		"ownerUrlUnsupported": "暂不支持此提供商的自定义 URL。删除该 URL 即可通过 NeboAI 使用此密钥。"
 	},
 	"modelCard": {
 		"about": "关于 {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "未列出价格。",
 		"ownKeyPrice": "每次请求 {fee}；模型费用由你的服务商收取",
 		"providerBills": "模型费用由你的服务商收取",
-		"per1m": "每 100 万令牌 输入 {input} / 输出 {output}",
+		"per1m": "每 100 万令牌 输入 {input} · 输出 {output}",
 		"input": "输入",
 		"output": "输出",
 		"cacheRead": "缓存读取",

@@ -4353,7 +4353,8 @@
 		"signedOut": "내 {provider} 키를 사용하려면 NeboAI에 로그인하세요.",
 		"keyRejected": "{provider} API 키가 거부되었습니다. 설정 > 제공업체에서 확인하세요.",
 		"keyUnusable": "{provider} API 키로 이 모델을 실행할 수 없습니다. 설정 > 제공업체에서 모델을 확인하세요.",
-		"connectionSignIn": "이 키를 사용하려면 NeboAI에 로그인하세요. 내 키는 NeboAI 계정으로 실행됩니다."
+		"connectionSignIn": "이 키를 사용하려면 NeboAI에 로그인하세요. 내 키는 NeboAI 계정으로 실행됩니다.",
+		"ownerUrlUnsupported": "이 공급자의 자체 URL은 아직 지원되지 않습니다. NeboAI를 통해 키를 사용하려면 URL을 삭제하세요."
 	},
 	"modelCard": {
 		"about": "{model} 정보",
@@ -4385,7 +4386,7 @@
 		"noPrice": "가격 정보가 없습니다.",
 		"ownKeyPrice": "요청당 {fee}, 모델 요금은 사용 중인 제공업체가 청구합니다",
 		"providerBills": "모델 요금은 사용 중인 제공업체가 청구합니다",
-		"per1m": "100만 토큰당 입력 {input} / 출력 {output}",
+		"per1m": "100만 토큰당 입력 {input} · 출력 {output}",
 		"input": "입력",
 		"output": "출력",
 		"cacheRead": "캐시 읽기",

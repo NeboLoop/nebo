@@ -4353,7 +4353,8 @@
 		"signedOut": "Sign in to NeboAI to use your own {provider} key.",
 		"keyRejected": "Your {provider} API key was refused. Check it in Settings > Providers.",
 		"keyUnusable": "Your {provider} API key can't run this model. Check the model on it in Settings > Providers.",
-		"connectionSignIn": "Sign in to NeboAI to use this key: your own keys run on your NeboAI account."
+		"connectionSignIn": "Sign in to NeboAI to use this key: your own keys run on your NeboAI account.",
+		"ownerUrlUnsupported": "Your own URLs for this provider aren't supported yet. Remove the URL to use the key through NeboAI."
 	},
 	"modelCard": {
 		"about": "About {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "No price listed.",
 		"ownKeyPrice": "{fee} per request; your provider bills the model",
 		"providerBills": "Your provider bills the model",
-		"per1m": "{input} in / {output} out per 1M tokens",
+		"per1m": "{input} in · {output} out per 1M tokens",
 		"input": "Input",
 		"output": "Output",
 		"cacheRead": "Cache read",

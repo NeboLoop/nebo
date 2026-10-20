@@ -4353,7 +4353,8 @@
 		"signedOut": "Masuk ke NeboAI untuk memakai kunci {provider} milik Anda.",
 		"keyRejected": "Kunci API {provider} Anda ditolak. Periksa di Pengaturan > Penyedia.",
 		"keyUnusable": "Kunci API {provider} Anda tidak dapat menjalankan model ini. Periksa modelnya di Pengaturan > Penyedia.",
-		"connectionSignIn": "Masuk ke NeboAI untuk memakai kunci ini: kunci milik Anda berjalan di akun NeboAI Anda."
+		"connectionSignIn": "Masuk ke NeboAI untuk memakai kunci ini: kunci milik Anda berjalan di akun NeboAI Anda.",
+		"ownerUrlUnsupported": "URL Anda sendiri untuk penyedia ini belum didukung. Hapus URL untuk memakai kunci melalui NeboAI."
 	},
 	"modelCard": {
 		"about": "Tentang {model}",
@@ -4385,7 +4386,7 @@
 		"noPrice": "Tidak ada harga tercantum.",
 		"ownKeyPrice": "{fee} per permintaan; penyedia Anda menagih modelnya",
 		"providerBills": "Penyedia Anda menagih modelnya",
-		"per1m": "{input} masuk / {output} keluar per 1 jt token",
+		"per1m": "{input} masuk · {output} keluar per 1 jt token",
 		"input": "Masukan",
 		"output": "Keluaran",
 		"cacheRead": "Baca cache",

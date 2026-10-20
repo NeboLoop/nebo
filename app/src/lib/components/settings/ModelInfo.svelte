@@ -10,8 +10,7 @@
   import { t } from 'svelte-i18n';
   import X from 'lucide-svelte/icons/x';
   import type { ModelCard } from '$lib/api/neboComponents';
-  import { shortContext } from '$lib/models/connections';
-  import { bandLabel, cardBands, cardSpeed, cardTier, usd } from '$lib/models/modelCard';
+  import { bandLabel, cardBands, cardSpeed, cardTier, shortTokens, usd } from '$lib/models/modelCard';
 
   let { card, modelId, provider, onclose }: {
     card: ModelCard | undefined;
@@ -67,10 +66,10 @@
       <dt>{$t('modelCard.abilities')}</dt>
       <dd>{abilities.length ? abilities.map((a) => $t(`modelCard.ability.${a}`)).join(', ') : $t('modelCard.unknown')}</dd>
       {#if card?.contextWindow}
-        <dt>{$t('modelCard.context')}</dt><dd>{$t('modelCard.tokens', { values: { count: shortContext(card.contextWindow) } })}</dd>
+        <dt>{$t('modelCard.context')}</dt><dd>{$t('modelCard.tokens', { values: { count: shortTokens(card.contextWindow) } })}</dd>
       {/if}
       {#if card?.maxOutput}
-        <dt>{$t('modelCard.maxOutput')}</dt><dd>{$t('modelCard.tokens', { values: { count: shortContext(card.maxOutput) } })}</dd>
+        <dt>{$t('modelCard.maxOutput')}</dt><dd>{$t('modelCard.tokens', { values: { count: shortTokens(card.maxOutput) } })}</dd>
       {/if}
       {#if speed}
         <dt>{$t('modelCard.speed')}</dt><dd>{$t(`modelCard.speedValue.${speed}`)}</dd>
