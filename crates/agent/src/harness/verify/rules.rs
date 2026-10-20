@@ -25,12 +25,22 @@ only when the work is verified, or when the owner chooses to merge it anyway.
 - If another employee or session is working in the same project, message them before touching shared files, and \
 stay off their files.";
 
+/// A rules file's text: a regular file only. A symlink is never followed,
+/// so a project can't point a brief at a file outside it.
+fn read_rules_file(path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
 /// The project's rules files under `root`, each headed by its path, cut to
 /// [`FILE_CHARS`]. Empty when the project has none.
 pub fn project_rules(root: &Path) -> String {
     let mut found: Vec<(String, String)> = Vec::new();
     for rel in RULE_FILES {
-        if let Ok(text) = std::fs::read_to_string(root.join(rel)) {
+        if let Some(text) = read_rules_file(&root.join(rel)) {
             found.push((rel.to_string(), text));
         }
     }
@@ -40,7 +50,7 @@ pub fn project_rules(root: &Path) -> String {
         } else {
             format!("{dir}/{AUDITOR_FILE}")
         };
-        if let Ok(text) = std::fs::read_to_string(root.join(&rel)) {
+        if let Some(text) = read_rules_file(&root.join(&rel)) {
             found.push((rel, text));
             break;
         }
@@ -97,6 +107,20 @@ mod tests {
         assert!(rules.contains("Never deploy on Fridays."));
         assert!(rules.contains("### CLAUDE.md\nUse pnpm only."));
         assert!(rules.contains("### docs/sme/CODE_AUDITOR.md\nNo competing pathways."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_rules_file_is_never_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "SECRET").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("CLAUDE.md"),
+        )
+        .unwrap();
+        assert_eq!(project_rules(dir.path()), "");
     }
 
     #[test]

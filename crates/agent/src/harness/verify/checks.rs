@@ -1,10 +1,13 @@
 //! The project's own build and tests: the plain-code step of every round.
 //!
 //! Read from the project's manifests, never guessed by a model: the same
-//! project always runs the same checks. Each check runs in the copy the work
-//! happens in, with its own build folder ([`Check::build_dir_env`]) under the
-//! verification's folder, deleted when the verification ends, so parallel
-//! work never shares (or fills the disk with) one build output.
+//! project always runs the same checks. Every project is compiled whole
+//! (every package and target, so a dependent the change breaks fails the
+//! round) and then tested where the change is. Each check runs in the copy
+//! the work happens in, with the project's one build folder
+//! ([`Check::with_build_dir`], [`build_cache`]): every verification of a
+//! project shares it, so a round never starts cold and the disk holds one
+//! build output per project, not one per round.
 
 use std::path::{Path, PathBuf};
 
@@ -83,6 +86,18 @@ pub fn detect(root: &Path, changed: &[String]) -> Vec<Check> {
     checks
 }
 
+/// The build folder every verification of the project at `root` shares:
+/// `<data_dir>/verify/build/<hash of the project's path>`.
+pub fn build_cache(root: &Path) -> PathBuf {
+    use sha2::Digest;
+    let hash = hex::encode(&sha2::Sha256::digest(root.to_string_lossy().as_bytes())[..8]);
+    config::data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("verify")
+        .join("build")
+        .join(hash)
+}
+
 impl Check {
     /// The environment prefix that gives the check its own build folder,
     /// `build_dir`, where the tool has one.
@@ -121,13 +136,15 @@ fn cargo(root: &Path, changed: &[String]) -> Vec<Check> {
             None => whole = true,
         }
     }
+    // The whole workspace compiles, every target: a crate that depends on
+    // the change and no longer builds fails the round.
+    let compile = Check {
+        label: "Rust build".into(),
+        command: "cargo check --workspace --all-targets".into(),
+        dir: root.to_path_buf(),
+    };
     if packages.is_empty() && !whole {
-        // The change touches no Rust: the build still has to hold.
-        return vec![Check {
-            label: "Rust build".into(),
-            command: "cargo check --all-targets".into(),
-            dir: root.to_path_buf(),
-        }];
+        return vec![compile];
     }
     let scope = if whole || packages.is_empty() {
         "--workspace".to_string()
@@ -138,11 +155,14 @@ fn cargo(root: &Path, changed: &[String]) -> Vec<Check> {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    vec![Check {
-        label: "Rust tests".into(),
-        command: format!("cargo test {scope}"),
-        dir: root.to_path_buf(),
-    }]
+    vec![
+        compile,
+        Check {
+            label: "Rust tests".into(),
+            command: format!("cargo test {scope}"),
+            dir: root.to_path_buf(),
+        },
+    ]
 }
 
 /// The package that owns `path`: the nearest `Cargo.toml` with a
@@ -208,34 +228,30 @@ fn node(root: &Path, dir: &Path) -> Vec<Check> {
     } else {
         "npm"
     };
-    let mut out = Vec::new();
-    for script in ["check", "test"] {
-        if scripts
-            .get(script)
+    let has = |name: &str| {
+        scripts
+            .get(name)
             .and_then(|s| s.as_str())
             .is_some_and(|s| !s.contains("no test specified"))
-        {
-            let command = match (manager, script) {
-                ("npm", "test") => "npm test".to_string(),
-                ("npm", s) => format!("npm run {s}"),
-                (m, s) => format!("{m} run {s}"),
-            };
-            out.push(Check {
-                label: format!("{manager} {script}"),
-                command,
-                dir: dir.to_path_buf(),
-            });
-        }
-    }
-    if out.is_empty() && scripts.contains_key("build") {
-        let command = if manager == "npm" {
-            "npm run build".to_string()
-        } else {
-            format!("{manager} run build")
-        };
+    };
+    let run = |script: &str| match (manager, script) {
+        ("npm", "test") => "npm test".to_string(),
+        ("npm", s) => format!("npm run {s}"),
+        (m, s) => format!("{m} run {s}"),
+    };
+    let mut out = Vec::new();
+    // The whole package compiles: its type check, else its build.
+    if let Some(compile) = ["check", "build"].into_iter().find(|s| has(s)) {
         out.push(Check {
-            label: format!("{manager} build"),
-            command,
+            label: format!("{manager} {compile}"),
+            command: run(compile),
+            dir: dir.to_path_buf(),
+        });
+    }
+    if has("test") {
+        out.push(Check {
+            label: format!("{manager} test"),
+            command: run("test"),
             dir: dir.to_path_buf(),
         });
     }
@@ -317,11 +333,18 @@ mod tests {
                 "crates/db/migrations/1.sql".into(),
             ],
         );
-        assert_eq!(checks.len(), 1);
-        assert_eq!(checks[0].command, "cargo test -p nebo-db -p nebo-agent");
+        let commands: Vec<&str> = checks.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(
+            commands,
+            [
+                "cargo check --workspace --all-targets",
+                "cargo test -p nebo-db -p nebo-agent"
+            ],
+            "the whole workspace compiles"
+        );
         let build = tempfile::tempdir().unwrap();
         assert!(
-            checks[0]
+            checks[1]
                 .with_build_dir(build.path())
                 .starts_with("CARGO_TARGET_DIR='"),
             "its own build folder"
@@ -344,12 +367,37 @@ mod tests {
         assert_eq!(
             commands,
             [
-                "cargo check --all-targets",
+                "cargo check --workspace --all-targets",
                 "pnpm run check",
                 "pnpm run test"
             ]
         );
         assert_eq!(checks[1].dir, root.join("app"));
+    }
+
+    #[test]
+    fn a_web_package_without_a_type_check_compiles_with_its_build() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"build":"vite build","test":"vitest --run"}}"#,
+        );
+        let commands: Vec<String> = detect(dir.path(), &["src/a.ts".into()])
+            .into_iter()
+            .map(|c| c.command)
+            .collect();
+        assert_eq!(commands, ["npm run build", "npm test"]);
+    }
+
+    #[test]
+    fn every_verification_of_a_project_shares_one_build_folder() {
+        crate::test_home::with_home(|home| {
+            let a = build_cache(Path::new("/work/site"));
+            assert_eq!(a, build_cache(Path::new("/work/site")));
+            assert_ne!(a, build_cache(Path::new("/work/other")));
+            assert!(a.starts_with(home.join("verify/build")));
+        })
     }
 
     #[test]
