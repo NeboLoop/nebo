@@ -260,6 +260,21 @@ pub fn depth_of(key: &str) -> u8 {
 
 pub use types::keyparser::split_helper_key;
 
+/// Whether the session `key` is `ancestor` or a helper's under it, at any
+/// depth.
+fn under(key: &str, ancestor: &str) -> bool {
+    let mut key = key;
+    loop {
+        if key == ancestor {
+            return true;
+        }
+        match split_helper_key(key) {
+            Some((parent, _)) => key = parent,
+            None => return false,
+        }
+    }
+}
+
 /// The session at the top of the helper tree `key` belongs to: `key`
 /// itself for any session that is not a helper's.
 fn root_of(key: &str) -> &str {
@@ -383,6 +398,8 @@ pub struct HelperStatus {
     pub agent_id: String,
     /// When its current run started (unix seconds).
     pub started_at: i64,
+    /// It finished its turn and holds its report for work it started.
+    pub waiting: bool,
 }
 
 /// A helper this process started.
@@ -502,8 +519,24 @@ impl State {
         self.stops.entry(key.to_string()).or_default().clone()
     }
 
-    fn running_children(&self, key: &str) -> bool {
-        self.helpers.values().any(|h| h.parent_key == key && h.running)
+    /// Whether work the session `key` started is still going, at any
+    /// depth: a helper or research run that runs, or one that finished its
+    /// turn and holds its report for work of its own.
+    fn work_below(&self, key: &str) -> bool {
+        self.helpers.values().any(|h| h.parent_key == key && (h.running || h.held.is_some() || self.work_below(&h.session_key)))
+    }
+
+    /// Stop everything under the session `key` (not `key` itself): every
+    /// helper and research run below it, whatever turn started it.
+    fn stop_below(&self, key: &str) -> usize {
+        let mut stopped = 0;
+        for h in self.helpers.values().filter(|h| h.session_key != key && under(&h.session_key, key)) {
+            if h.running || h.held.is_some() {
+                h.cancel.cancel();
+                stopped += 1;
+            }
+        }
+        stopped
     }
 
     /// Take a place for a helper launching in the tree `key` belongs to, and
@@ -1026,7 +1059,7 @@ impl Helpers {
         answer: Option<&str>,
     ) -> Result<String, String> {
         let caller = turn.session_key.as_str();
-        let row = self.own_row(caller, task_id)?;
+        let row = self.own_row(caller, task_id, false)?;
         let answer = answer.map(str::trim).filter(|a| !a.is_empty());
         // An answer reads as the owner's answer in the helper's thread; it
         // and only it settles the helper's pending questions.
@@ -1149,10 +1182,17 @@ impl Helpers {
 
     /// `read_output` for one of the caller's helpers.
     pub fn read_output(&self, caller: &str, task_id: &str) -> Result<String, String> {
-        let row = self.own_row(caller, task_id)?;
+        let row = self.own_row(caller, task_id, true)?;
         let description = row.description.clone().unwrap_or_default();
-        if self.state().helpers.get(task_id).is_some_and(|h| h.running) {
-            return Ok(format!("Helper {task_id} \"{description}\" is still running."));
+        match self.state().helpers.get(task_id) {
+            Some(h) if h.running => return Ok(format!("Helper {task_id} \"{description}\" is still running.")),
+            Some(h) if h.held.is_some() => {
+                return Ok(format!(
+                    "Helper {task_id} \"{description}\" finished its turn and waits on work it started; its report \
+                     comes when that work is done."
+                ));
+            }
+            _ => {}
         }
         let mut out = format!("Helper {task_id} \"{description}\": {}", row.status);
         if let Some(output) = row.output.as_deref() {
@@ -1166,14 +1206,21 @@ impl Helpers {
     }
 
     /// `stop_task` for one of the caller's helpers.
+    /// `stop_task` for a helper or research run the caller started, at any
+    /// depth: it stops, and so does everything under it.
     pub fn stop(&self, caller: &str, task_id: &str) -> Result<String, String> {
-        self.own_row(caller, task_id)?;
+        let row = self.own_row(caller, task_id, true)?;
         let state = self.state();
+        let below = state.stop_below(&row.session_key);
         match state.helpers.get(task_id) {
-            Some(h) if h.running => {
+            Some(h) if h.running || h.held.is_some() => {
                 h.cancel.cancel();
-                Ok(format!("Stopping helper {task_id}."))
+                Ok(match below {
+                    0 => format!("Stopping helper {task_id}."),
+                    n => format!("Stopping helper {task_id} and {n} under it."),
+                })
             }
+            _ if below > 0 => Ok(format!("Helper {task_id} had finished; stopping the {below} still running under it.")),
             _ => Ok(format!("Helper {task_id} is not running.")),
         }
     }
@@ -1366,16 +1413,19 @@ impl Helpers {
     /// The caller's own helpers still in hand: running, or finished and
     /// waiting on helpers of their own; every session's with `None`.
     /// Running first.
-    pub fn list(&self, caller: Option<&str>) -> Vec<HelperStatus> {
+    pub fn list(&self, caller: Option<&str>, tree: bool) -> Vec<HelperStatus> {
         let mut out: Vec<HelperStatus> = self
             .state()
             .helpers
             .iter()
-            .filter(|(_, h)| caller.is_none_or(|c| h.parent_key == c))
+            .filter(|(_, h)| {
+                caller.is_none_or(|c| if tree { h.session_key != c && under(&h.session_key, c) } else { h.parent_key == c })
+            })
             .map(|(id, h)| HelperStatus {
                 task_id: id.clone(),
                 description: h.description.clone(),
                 running: h.running,
+                waiting: h.held.is_some(),
                 session_key: h.session_key.clone(),
                 call: h.call.clone(),
                 activity: h.activity.clone(),
@@ -1389,14 +1439,17 @@ impl Helpers {
     }
 
     /// The row of helper `task_id`, when `caller` started it.
-    fn own_row(&self, caller: &str, task_id: &str) -> Result<db::models::PendingTask, String> {
+    /// With `tree`, any helper or research run under `caller`, at any depth.
+    fn own_row(&self, caller: &str, task_id: &str, tree: bool) -> Result<db::models::PendingTask, String> {
         let not_yours = || format!("No helper {task_id} was started from this conversation.");
         let row = self
             .store
             .get_pending_task(task_id)
             .map_err(|e| format!("Could not read helper {task_id}: {e}"))?
             .ok_or_else(not_yours)?;
-        if row.task_type != ROW_KIND || row.session_key != helper_key(caller, task_id) {
+        let mine = row.session_key == helper_key(caller, task_id)
+            || (tree && split_helper_key(&row.session_key).is_some_and(|(parent, id)| id == task_id && under(parent, caller)));
+        if row.task_type != ROW_KIND || !mine {
             return Err(not_yours());
         }
         Ok(row)
@@ -1608,7 +1661,7 @@ impl Helpers {
                                 h.questions.reported();
                                 h.earlier_reports.clear();
                             }
-                            if !state.running_children(&session_key) {
+                            if !state.work_below(&session_key) {
                                 state.forget(task_id);
                             }
                             return None;
@@ -1618,7 +1671,17 @@ impl Helpers {
                 }
                 None => completion,
             };
-            if completion.status != CompletionStatus::Stopped && state.running_children(&session_key) {
+            // A run that failed or was stopped takes what it started with
+            // it: nothing is left running with nowhere to report.
+            if matches!(completion.status, CompletionStatus::Failed { .. } | CompletionStatus::Stopped) {
+                let stopped = state.stop_below(&session_key);
+                if stopped > 0 {
+                    info!(task_id = %task_id, stopped, "a helper that ended stopped the work it started");
+                }
+            }
+            // It doesn't finish while work it started still goes (helpers,
+            // research runs, at any depth): its report waits for theirs.
+            if matches!(completion.status, CompletionStatus::Done | CompletionStatus::Partial { .. }) && state.work_below(&session_key) {
                 // Held on its row too: a restart before its helpers report
                 // still delivers it (`release_held_after_restart`).
                 self.keep_on_row(task_id, &row, true, true);
@@ -1658,7 +1721,7 @@ impl Helpers {
                     let running = state.helpers.get(&pid).is_some_and(|p| p.running);
                     if running || !wakes {
                         self.append_notification(parent_key, &text, &c.taint);
-                        if !running && !state.running_children(parent_key)
+                        if !running && !state.work_below(parent_key)
                             && let Some(p) = state.helpers.get_mut(&pid)
                             && let Some(held) = p.held.take()
                         {
@@ -2082,7 +2145,7 @@ mod tests {
         assert!(pending[0].contains("the model client fell over"), "{}", pending[0]);
         let row = rig.store.get_pending_task(&id).unwrap().unwrap();
         assert_eq!(row.status, "failed");
-        assert!(!rig.helpers.list(None).iter().any(|h| h.task_id == id && h.running), "it is not left running");
+        assert!(!rig.helpers.list(None, false).iter().any(|h| h.task_id == id && h.running), "it is not left running");
     }
 
     #[tokio::test]
@@ -2350,7 +2413,7 @@ mod tests {
         let (work, go, _stopped) = gated_work("# Research: rents\nRents rose 4%.");
         let (id, receipt) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
         assert_eq!(receipt, launch_result(&id), "the receipt, while the work still runs");
-        assert!(rig.helpers.list(Some(key)).iter().any(|h| h.task_id == id && h.running));
+        assert!(rig.helpers.list(Some(key), false).iter().any(|h| h.task_id == id && h.running));
 
         let mut activity = None;
         for _ in 0..3 {
@@ -2402,7 +2465,7 @@ mod tests {
         let id = task_id_of(&text);
         let _child = rig.next_turn().await;
 
-        let list = rig.helpers.list(Some("agent:bookkeeper:web"));
+        let list = rig.helpers.list(Some("agent:bookkeeper:web"), false);
         let started_at = list.first().map(|h| h.started_at).unwrap_or_default();
         assert!(started_at > 0, "the start is kept");
         assert_eq!(
@@ -2417,11 +2480,12 @@ mod tests {
                 parent_key: "agent:bookkeeper:web".into(),
                 agent_id: list[0].agent_id.clone(),
                 started_at,
+                waiting: false,
             }]
         );
         // Every session's helpers, for the owner's list of background work.
-        assert!(rig.helpers.list(None).iter().any(|h| h.task_id == id));
-        assert!(rig.helpers.list(Some("agent:ceo:web")).is_empty());
+        assert!(rig.helpers.list(None, false).iter().any(|h| h.task_id == id));
+        assert!(rig.helpers.list(Some("agent:ceo:web"), false).is_empty());
         assert!(rig.helpers.read_output("agent:ceo:web", &id).is_err());
         assert!(rig.helpers.stop("agent:ceo:web", &id).is_err());
         assert!(!_child.request.cancel.is_cancelled());
@@ -2463,7 +2527,7 @@ mod tests {
         }
         let rows = rig.notification_rows(key);
         assert!(rows.len() == 1 && rows[0].contains(&format!("helper {id} \"read the ledger\": stopped")), "{rows:?}");
-        assert!(!rig.helpers.list(Some(key)).iter().any(|h| h.running));
+        assert!(!rig.helpers.list(Some(key), false).iter().any(|h| h.running));
         assert!(rig.wake.try_recv().is_err(), "a stopped helper starts no turn");
     }
 
@@ -3152,5 +3216,98 @@ mod tests {
         let p = rig.pending_notifications("agent:sdr:web");
         let failed = p.iter().find(|x| x.contains("failed (interrupted by a restart")).expect("the interrupted run reports");
         assert!(failed.contains("waiting on the owner's decision") && failed.contains("Question: What budget?"), "{failed}");
+    }
+
+    /// A nested helper that starts research doesn't finish while the
+    /// research runs, and neither does the helper above it: B's report
+    /// waits for the research, A's for B's, and the research's results reach
+    /// B, whose report reaches A, whose report reaches the owner's
+    /// conversation. Nothing reports with work still going below it.
+    #[tokio::test]
+    async fn a_helper_holds_until_the_research_it_started_reports() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let (a_id, a, b) = a_with_running_child(&mut rig, &owner).await;
+        let b_id = split_helper_key(&b.request.session_key).unwrap().1.to_string();
+        let (work, go, _stopped) = gated_work("Rents rose 4%.");
+        let (r_id, _) = rig.helpers.start_work(&b.request, "research: rents", work).unwrap();
+        b.answer("Research is running.").await;
+        until_held(&rig, &b_id).await;
+        a.answer("Waiting on the contacts.").await;
+        until_held(&rig, &a_id).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rig.wake.try_recv().is_err(), "nothing reaches the owner while the research runs");
+        assert!(rig.helpers.read_output("agent:sdr:web", &a_id).unwrap().contains("waits on work it started"));
+
+        let _ = go.send(());
+        let b2 = rig.next_turn().await;
+        assert_eq!(b2.request.session_key, b.request.session_key, "B hears the research");
+        assert!(matches!(&b2.request.input, TurnInput::Notification(c) if c.task_id == r_id && c.result.contains("Rents rose 4%.")));
+        rig.heard(&b2.request.session_key);
+        b2.answer("Rents rose 4%; contacts found.").await;
+        let a2 = rig.next_turn().await;
+        assert_eq!(a2.request.session_key, a.request.session_key, "A hears B");
+        rig.heard(&a2.request.session_key);
+        a2.answer("Plan ready: rents up 4%.").await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let p = rig.pending_notifications("agent:sdr:web");
+        assert!(p[0].contains("Plan ready: rents up 4%."), "{}", p[0]);
+    }
+
+    /// Stopping a helper stops the research it started, and a helper that
+    /// fails takes its research with it: nothing is left running with
+    /// nowhere to report.
+    #[tokio::test]
+    async fn stopping_or_failing_a_helper_stops_its_research() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan.", None)).await.unwrap());
+        let a = rig.next_turn().await;
+        let (work, _go, stopped) = gated_work("never");
+        rig.helpers.start_work(&a.request, "research: rents", work).unwrap();
+        a.answer("Research is running.").await;
+        until_held(&rig, &a_id).await;
+        let said = rig.helpers.stop("agent:sdr:web", &a_id).unwrap();
+        assert!(said.contains("and 1 under it"), "{said}");
+        let ended = tokio::time::timeout(Duration::from_secs(5), stopped).await.expect("the research stopped");
+        assert_ne!(ended, Ok(false), "ended by the stop, not by finishing");
+
+        // A helper whose turn fails: its research stops too.
+        let b_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Price it.", None)).await.unwrap());
+        let b = rig.next_turn().await;
+        let (work, _go, stopped) = gated_work("never");
+        rig.helpers.start_work(&b.request, "research: prices", work).unwrap();
+        let _ = b.events.send(StreamEvent::error("provider down")).await;
+        let _ = b.events.send(StreamEvent::done()).await;
+        let ended = tokio::time::timeout(Duration::from_secs(5), stopped).await.expect("the research stopped with it");
+        assert_ne!(ended, Ok(false), "ended by the stop, not by finishing");
+        assert!(rig.helpers.read_output("agent:sdr:web", &b_id).is_ok());
+    }
+
+    /// The conversation sees everything it started at any depth (helpers,
+    /// theirs, research runs) and stops any of it, here a research run three
+    /// levels down.
+    #[tokio::test]
+    async fn the_conversation_lists_and_stops_work_at_any_depth() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let (_a_id, _a, b) = a_with_running_child(&mut rig, &owner).await;
+        let b_id = split_helper_key(&b.request.session_key).unwrap().1.to_string();
+        let (work, _go, stopped) = gated_work("never");
+        let (r_id, _) = rig.helpers.start_work(&b.request, "research: rents", work).unwrap();
+        let tree = rig.helpers.list(Some("agent:sdr:web"), true);
+        let research = tree.iter().find(|h| h.task_id == r_id).expect("listed from the top");
+        assert!(research.running && research.parent_key == b.request.session_key);
+        assert_eq!(tree.len(), 3, "A, B and the research");
+        assert!(rig.helpers.list(Some("agent:sdr:web"), false).iter().all(|h| h.task_id != r_id), "not a direct child");
+        assert!(rig.helpers.read_output("agent:sdr:web", &r_id).unwrap().contains("still running"));
+
+        rig.helpers.stop("agent:sdr:web", &r_id).unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), stopped).await.expect("the research stopped");
+        assert_ne!(ended, Ok(false), "ended by the stop, not by finishing");
+        // Another conversation can't reach it.
+        assert!(rig.helpers.stop("agent:ceo:web", &r_id).is_err());
+        // Messages still go only to the helpers it started itself.
+        let _ = b_id;
     }
 }

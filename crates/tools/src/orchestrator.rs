@@ -219,8 +219,10 @@ pub trait SubAgentOrchestrator: Send + Sync {
         parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 
-    /// The helpers `caller` started that are still in hand:
-    /// (task_id, description, status).
+    /// Everything `caller` started that is still in hand, at any depth:
+    /// its helpers, theirs and their research runs, as (task_id,
+    /// description, status); a nested one's description names the helper
+    /// it works under.
     fn list_active(
         &self,
         caller: &str,

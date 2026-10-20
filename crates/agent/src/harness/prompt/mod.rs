@@ -441,13 +441,16 @@ mod tests {
     /// owner and small direct steps, a brief names its deliverable and
     /// length, a helper's question comes back to be asked and is never left
     /// waiting, +329; 9,015 until 2026-10-20, when the decision goes back in
-    /// send_message's `answer`, the one thing that settles a question, +22.)
+    /// send_message's `answer`, the one thing that settles a question, +22;
+    /// 9,037 until 2026-10-20, when an employee couldn't see or stop research
+    /// its helper's helper started: list_runs and stop_task reach all it
+    /// started, at any depth, +127.)
     #[test]
     fn size_snapshot() {
         let chars = system_prompt().chars().count();
         assert_eq!(chars, SYSTEM_PROMPT_CHARS);
-        assert!(chars < 9_100);
+        assert!(chars < 9_200);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 9_037;
+    const SYSTEM_PROMPT_CHARS: usize = 9_164;
 }

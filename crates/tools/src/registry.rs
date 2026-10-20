@@ -1472,7 +1472,7 @@ impl Registry {
         let families = [
             crate::memory_tools::Memory::new(store.clone(), hybrid_searcher, memory_embedder).tools(),
             crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone(), teams.clone(), self.coworker_rail.clone()).tools(),
-            crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
+            crate::task_tools::Tasks::new(store.clone(), run_querier, orchestrator.clone()).tools(),
             crate::history_tools::History::new(store.clone()).tools(),
             vec![Box::new(crate::step_data::ReadStepDataTool::new(store.clone())) as Box<dyn DynTool>],
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
