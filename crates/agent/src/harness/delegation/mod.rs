@@ -464,6 +464,9 @@ struct State {
     /// on their own. Each is kept on its helper's run too
     /// ([`Helpers::hold`]).
     copies: HashMap<String, Held>,
+    /// Helpers whose copy is being landed or discarded right now: one
+    /// decision at a time per copy, and no follow-up into it meanwhile.
+    settling: std::collections::HashSet<String>,
 }
 
 /// A copy an isolated helper holds, as it is kept on the helper's run.
@@ -475,6 +478,18 @@ struct Held {
     /// finished.
     #[serde(default)]
     unfinished: Option<String>,
+}
+
+/// A helper's copy being landed or discarded: given back when that ends.
+struct Settling<'a> {
+    helpers: &'a Helpers,
+    task_id: &'a str,
+}
+
+impl Drop for Settling<'_> {
+    fn drop(&mut self) {
+        self.helpers.state().settling.remove(self.task_id);
+    }
 }
 
 /// A launch's place in its tree, given back when the launch ends: by then
@@ -1033,6 +1048,9 @@ impl Helpers {
             ));
         }
         let spec = spec_of_row(&self.store, &row);
+        if self.state().settling.contains(task_id) {
+            return Err(format!("Helper {task_id}'s changes are being landed or discarded right now; send it the follow-up once that is done."));
+        }
         // An isolated helper continues in the copy it holds, checked out
         // again when its work was put away on its branch. One holding none
         // (its changes were landed or discarded) gets a fresh copy of the
@@ -1177,6 +1195,9 @@ impl Helpers {
             Ok(held) => {
                 for (id, copy) in held {
                     match serde_json::from_str::<Held>(&copy) {
+                        // A scratch copy whose landing finished at boot (its
+                        // journal done) is landed: nothing is held any more.
+                        Ok(held) if matches!(&held.iso, crate::worktree::Isolation::Copy(c) if !c.path.exists()) => self.release(&id),
                         Ok(held) => {
                             self.state().copies.insert(id, held);
                         }
@@ -1401,7 +1422,14 @@ impl Helpers {
                 let turn = std::panic::AssertUnwindSafe(this.run_turn(&task_id, req));
                 let completion = match futures::FutureExt::catch_unwind(turn).await {
                     Ok(completion) => completion,
-                    Err(panic) => this.crashed(&task_id, &panic_text(&*panic)),
+                    Err(panic) => {
+                        // A crash keeps the copy's guard: what it changed is
+                        // held as unfinished, never offered as ready.
+                        let mut crashed = this.crashed(&task_id, &panic_text(&*panic));
+                        let description = crashed.description.clone();
+                        this.report_copy(&task_id, &description, &mut crashed).await;
+                        crashed
+                    }
                 };
                 next = this.finish(&task_id, completion);
             }
@@ -1508,7 +1536,6 @@ impl Helpers {
             }
             CompletionStatus::Done => {
                 held.unfinished = None;
-                held.iso.mark_resolved();
                 changes_ready(task_id, &held.iso, &files)
             }
             CompletionStatus::Stopped => {
@@ -1558,15 +1585,30 @@ impl Helpers {
     /// in its copy: the primary's (or the owner's) decision, the one way an
     /// isolated helper's work reaches the owner's files. Landing catches the
     /// copy up with the project, re-tests it with `retest`, and lands it as
-    /// one commit ([`crate::worktree::merge_all`]); anything short of that
+    /// one commit ([`crate::worktree::land_one`]); anything short of that
     /// keeps the copy and says what is needed. Changes of a helper that did
     /// not finish never land.
-    pub async fn settle(&self, caller: &str, task_id: &str, decision: Decision, retest: Option<crate::worktree::Retest<'_>>) -> Result<String, String> {
+    pub async fn settle(
+        &self,
+        caller: &str,
+        task_id: &str,
+        decision: Decision,
+        retest: Option<crate::worktree::Retest<'_>>,
+        landing: crate::worktree::Landing,
+    ) -> Result<String, String> {
         let row = self.own_row(caller, task_id)?;
-        if self.state().helpers.get(task_id).is_some_and(|h| h.running) {
-            return Err(format!("Helper {task_id} is still working; its changes are settled once it reports."));
-        }
-        let Some(held) = self.state().copies.get(task_id).cloned() else {
+        let held = {
+            let mut state = self.state();
+            if state.helpers.get(task_id).is_some_and(|h| h.running) {
+                return Err(format!("Helper {task_id} is still working; its changes are settled once it reports."));
+            }
+            if !state.settling.insert(task_id.to_string()) {
+                return Err(format!("Helper {task_id}'s changes are being landed or discarded already; wait for that to finish."));
+            }
+            state.copies.get(task_id).cloned()
+        };
+        let _settling = Settling { helpers: self, task_id };
+        let Some(held) = held else {
             return Err(format!("Helper {task_id} holds no changes to land or discard."));
         };
         let description = row.description.clone().unwrap_or_default();
@@ -1586,17 +1628,26 @@ impl Helpers {
                          if it asked one) and land them once it has finished, or discard them."
                     ));
                 }
-                let iso = crate::worktree::reattach(held.iso).await.map_err(|e| format!("Helper {task_id}'s changes can't be landed: {e}"))?;
+                let mut iso = crate::worktree::reattach(held.iso).await.map_err(|e| format!("Helper {task_id}'s changes can't be landed: {e}"))?;
                 let message = landing_message(&description);
-                let mut isos = [iso];
-                let outcome = crate::worktree::merge_all(&mut isos, &message, retest).await.remove(0).1;
-                let [iso] = isos;
+                let (_, outcome) = crate::worktree::land_one(&mut iso, &message, retest, &landing).await;
                 let text = crate::worktree::render_outcome(&description, &outcome);
                 if outcome.landed() {
                     self.release(task_id);
                     return Ok(text);
                 }
-                self.hold(task_id, Held { iso, unfinished: None });
+                // What the checks rewrote, what nobody reviewed and what
+                // catching up changed can't land as it is: the helper
+                // finishes it first.
+                let unfinished = match &outcome {
+                    crate::worktree::MergeOutcome::RetestFailed { .. } => Some("its checks failed after catching up with the project".to_string()),
+                    crate::worktree::MergeOutcome::Unreviewed { .. } => Some("its copy holds changes nobody reviewed".to_string()),
+                    crate::worktree::MergeOutcome::NeedsReview { .. } => {
+                        Some("catching up changed files it touches, so it is reviewed again first".to_string())
+                    }
+                    _ => None,
+                };
+                self.hold(task_id, Held { iso, unfinished });
                 Ok(format!(
                     "{text}\nThe changes stay in helper {task_id}'s copy. Send them back to the helper to fix \
                      (send_message to {task_id}), ask the owner, or discard them."
@@ -2743,13 +2794,13 @@ mod tests {
                     retested.store(true, std::sync::atomic::Ordering::SeqCst);
                     Box::pin(async { Ok(()) })
                 };
-                let landed = rig.helpers.settle(key, &id, Decision::Land, Some(&retest)).await.unwrap();
+                let landed = rig.helpers.settle(key, &id, Decision::Land, Some(&retest), Default::default()).await.unwrap();
                 assert!(landed.contains("landed as one commit"), "{landed}");
                 assert!(retested.load(std::sync::atomic::Ordering::SeqCst), "re-tested before it landed");
                 assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "from the helper\n");
                 assert!(repo.join("c.txt").exists());
                 assert!(!copy.exists(), "the copy is gone once it landed");
-                assert!(rig.helpers.settle(key, &id, Decision::Land, None).await.is_err(), "nothing left to land");
+                assert!(rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.is_err(), "nothing left to land");
             })
         })
     }
@@ -2782,7 +2833,7 @@ mod tests {
                 let report = rig.helpers.read_output(key, &id).unwrap();
                 assert!(report.contains("Question: Which tax rate?") && report.contains("waits in its own copy"), "{report}");
                 assert!(!report.contains("changes are ready"), "{report}");
-                let refused = rig.helpers.settle(key, &id, Decision::Land, None).await.unwrap_err();
+                let refused = rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.unwrap_err();
                 assert!(refused.contains("no answer has reached yet"), "nothing lands while it waits: {refused}");
                 assert!(!repo.join("b.txt").exists());
                 assert!(copy.join("b.txt").exists(), "its copy is kept");
@@ -2798,7 +2849,7 @@ mod tests {
                 assert!(rig.helpers.read_output(key, &id).unwrap().contains("changes are ready"));
 
                 // Approved: it lands.
-                rig.helpers.settle(key, &id, Decision::Land, None).await.unwrap();
+                rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.unwrap();
                 assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "8%\n");
             })
         })
@@ -2821,8 +2872,8 @@ mod tests {
                 rig.heard(&child.request.session_key);
                 child.answer("Added b.").await;
                 rig.next_wake().await;
-                assert!(rig.helpers.settle("agent:ceo:web", &id, Decision::Discard, None).await.is_err(), "only its own parent decides");
-                rig.helpers.settle(key, &id, Decision::Discard, None).await.unwrap();
+                assert!(rig.helpers.settle("agent:ceo:web", &id, Decision::Discard, None, Default::default()).await.is_err(), "only its own parent decides");
+                rig.helpers.settle(key, &id, Decision::Discard, None, Default::default()).await.unwrap();
                 assert!(!copy.exists());
                 assert!(!repo.join("b.txt").exists());
             })
@@ -2913,10 +2964,10 @@ mod tests {
                 rig.next_wake().await;
                 let report = rig.pending_notifications(key).join("\n");
                 assert!(report.contains("It failed before it finished (the model went away)") && !report.contains("changes are ready"), "{report}");
-                let refused = rig.helpers.settle(key, &id, Decision::Land, None).await.unwrap_err();
+                let refused = rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.unwrap_err();
                 assert!(refused.contains("it failed before it finished"), "{refused}");
                 assert!(!repo.join("b.txt").exists());
-                rig.helpers.settle(key, &id, Decision::Discard, None).await.unwrap();
+                rig.helpers.settle(key, &id, Decision::Discard, None, Default::default()).await.unwrap();
             })
         })
     }
@@ -2958,10 +3009,10 @@ mod tests {
                 assert_eq!(crate::worktree::git(&repo, &["show", &format!("nebo/{cut}:c.txt")]).await.unwrap(), "half");
 
                 let owner = rig.owner_turn(key);
-                rig.helpers.settle(key, &done, Decision::Land, None).await.unwrap();
+                rig.helpers.settle(key, &done, Decision::Land, None, Default::default()).await.unwrap();
                 assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "b\n", "a finished helper's changes land after a restart");
 
-                assert!(rig.helpers.settle(key, &cut, Decision::Land, None).await.unwrap_err().contains("interrupted by a restart"));
+                assert!(rig.helpers.settle(key, &cut, Decision::Land, None, Default::default()).await.unwrap_err().contains("interrupted by a restart"));
                 rig.helpers.send(&owner, None, &[], &cut, "Finish c.").await.unwrap();
                 let resumed = rig.next_turn().await;
                 assert_eq!(resumed.request.seat.cwd.as_deref(), Some(copy.to_string_lossy().as_ref()), "the same copy, on its branch");
@@ -2970,7 +3021,7 @@ mod tests {
                 rig.heard(&resumed.request.session_key);
                 resumed.answer("Added c.").await;
                 rig.next_wake().await;
-                rig.helpers.settle(key, &cut, Decision::Land, None).await.unwrap();
+                rig.helpers.settle(key, &cut, Decision::Land, None, Default::default()).await.unwrap();
                 assert_eq!(std::fs::read_to_string(repo.join("c.txt")).unwrap(), "c\n");
             })
         })
@@ -3003,7 +3054,7 @@ mod tests {
                 rig.heard(&resumed.request.session_key);
                 resumed.answer("Progress: rates are in.").await;
                 rig.next_wake().await;
-                let refused = rig.helpers.settle(key, &a_id, Decision::Land, None).await.unwrap_err();
+                let refused = rig.helpers.settle(key, &a_id, Decision::Land, None, Default::default()).await.unwrap_err();
                 assert!(refused.contains("no answer has reached yet"), "{refused}");
                 assert!(!repo.join("b.txt").exists());
 
@@ -3014,8 +3065,94 @@ mod tests {
                 rig.heard(&answered.request.session_key);
                 answered.answer("Done with Acme.").await;
                 rig.next_wake().await;
-                rig.helpers.settle(key, &a_id, Decision::Land, None).await.unwrap();
+                rig.helpers.settle(key, &a_id, Decision::Land, None, Default::default()).await.unwrap();
                 assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "acme\n");
+            })
+        })
+    }
+
+    /// Writes into its copy, then crashes.
+    struct WritesThenCrashes;
+
+    #[async_trait::async_trait]
+    impl TurnStarter for WritesThenCrashes {
+        async fn start_turn(&self, request: TurnRequest) -> Result<TurnHandle, HarnessError> {
+            let copy = std::path::PathBuf::from(request.seat.cwd.clone().unwrap_or_default());
+            let _ = std::fs::write(copy.join("b.txt"), "half\n");
+            panic!("the model client fell over")
+        }
+    }
+
+    /// Review round 3: a landing and a discard of one copy never run at
+    /// once; a failed re-test leaves the change unfinished, so landing it
+    /// again can't land what the checks rewrote; discarding a copy that is
+    /// already gone succeeds and frees it; a helper that crashed after
+    /// writing holds its changes as unfinished.
+    #[test]
+    fn a_copy_is_settled_one_decision_at_a_time_and_never_lands_unchecked_work() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let mut rig = Rig::new(FOREGROUND_BUDGET);
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                let child = rig.next_turn().await;
+                let copy = std::path::PathBuf::from(child.request.seat.cwd.clone().unwrap());
+                std::fs::write(copy.join("b.txt"), "b\n").unwrap();
+                rig.heard(&child.request.session_key);
+                child.answer("Added b.").await;
+                rig.next_wake().await;
+
+                // One decision at a time.
+                let slow = |_: &crate::worktree::Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
+                    Box::pin(async {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        Err("1 test failed".to_string())
+                    })
+                };
+                let (first, second) = tokio::join!(
+                    rig.helpers.settle(key, &id, Decision::Land, Some(&slow), Default::default()),
+                    async {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        rig.helpers.settle(key, &id, Decision::Discard, None, Default::default()).await
+                    }
+                );
+                assert!(second.unwrap_err().contains("being landed or discarded already"));
+                assert!(first.unwrap().contains("checks failed"));
+                assert!(copy.exists(), "the discard never ran");
+
+                // The failed re-test leaves it unfinished.
+                let refused = rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.unwrap_err();
+                assert!(refused.contains("its checks failed after catching up"), "{refused}");
+
+                // Discarding twice: the second finds nothing and succeeds.
+                rig.helpers.settle(key, &id, Decision::Discard, None, Default::default()).await.unwrap();
+                assert!(rig.helpers.settle(key, &id, Decision::Discard, None, Default::default()).await.is_err(), "nothing is held any more");
+                assert!(rig.store.engine_runs_holding_copies(ROW_KIND).unwrap().is_empty());
+            })
+        })
+    }
+
+    #[test]
+    fn a_helper_that_crashed_after_writing_holds_its_changes_as_unfinished() {
+        isolated_rig_test(|repo| {
+            Box::pin(async move {
+                let dir = tempfile::tempdir().unwrap();
+                let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+                let mut rig = Rig::starting_with(store, dir, FOREGROUND_BUDGET, Some(Arc::new(WritesThenCrashes)));
+                let key = "agent:bookkeeper:web";
+                let mut owner = rig.owner_turn(key);
+                owner.seat.cwd = Some(repo.to_string_lossy().into_owned());
+                let Launch::Background { task_id: id } = rig.helpers.launch(&owner, None, &[], isolated_spec("add b")).await.unwrap() else {
+                    panic!("background")
+                };
+                rig.next_wake().await;
+                let refused = rig.helpers.settle(key, &id, Decision::Land, None, Default::default()).await.unwrap_err();
+                assert!(refused.contains("failed before it finished"), "{refused}");
+                assert!(!repo.join("b.txt").exists());
             })
         })
     }
