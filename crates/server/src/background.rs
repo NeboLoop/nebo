@@ -247,7 +247,7 @@ pub async fn collect(state: &AppState, agent_id: Option<&str>) -> Vec<Background
         sessions.resolve_session_id_by_key(key).ok().map(|sid| sessions.active_chat_id(&sid)).filter(|c| !c.is_empty())
     };
     let mut tasks = Vec::new();
-    tasks.extend(helpers(state.helpers.list(None), &chat_of));
+    tasks.extend(helpers(state.helpers.list(None, false), &chat_of));
     tasks.extend(shells(state.tools.process_registry().running_for(None).await));
     let asks: HashSet<String> = state.run_registry.pending_asks().await.into_iter().map(|(s, _)| s).collect();
     // A turn in a conversation a hand-off is worked in IS that hand-off:

@@ -184,7 +184,7 @@ pub(crate) fn turn_ended(
     heard_through: Option<&str>,
 ) {
     let out = state.store.open_asks(seat_session).unwrap_or(0);
-    let helping = state.helpers.list(Some(seat_session)).iter().any(|h| h.running);
+    let helping = state.helpers.list(Some(seat_session), false).iter().any(|h| h.running);
     if out > 0 || helping {
         return;
     }

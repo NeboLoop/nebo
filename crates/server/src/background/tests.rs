@@ -191,6 +191,7 @@ fn helper(task_id: &str, running: bool, parent: &str, agent: &str) -> agent::har
         parent_key: parent.into(),
         agent_id: agent.into(),
         started_at: 500,
+        waiting: false,
     }
 }
 

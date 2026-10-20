@@ -209,10 +209,13 @@ pub trait SubAgentOrchestrator: Send + Sync {
     /// the message as its next input, reporting the way it was started
     /// (`FollowUp::Continued`). `parent` is [`SpawnRequest::child_of`] the
     /// sender's run: a continued helper runs under the sender's limits.
+    /// `answer` is the owner's answer to the helper's pending question: it,
+    /// and only it, settles that question.
     fn send(
         &self,
         task_id: &str,
         message: &str,
+        answer: Option<&str>,
         parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 
@@ -229,8 +232,10 @@ pub trait SubAgentOrchestrator: Send + Sync {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
-    /// The helpers `caller` started that are still in hand:
-    /// (task_id, description, status).
+    /// Everything `caller` started that is still in hand, at any depth:
+    /// its helpers, theirs and their research runs, as (task_id,
+    /// description, status); a nested one's description names the helper
+    /// it works under.
     fn list_active(
         &self,
         caller: &str,

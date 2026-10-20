@@ -8081,6 +8081,7 @@ mod tests {
             status: crate::harness::delegation::CompletionStatus::Done,
             result: "The Rivera order comes to 4,210.".into(),
             question: None,
+            lead: String::new(),
             usage: Default::default(),
             taint: Vec::new(),
         });
