@@ -649,8 +649,8 @@ impl Helpers {
             })
             .map_err(|e| format!("Could not start the helper: {e}"));
         if let Err(e) = created {
-            if let Some(iso) = &isolation {
-                crate::worktree::merge_all(std::slice::from_ref(iso), "nebo: helper not started").await;
+            if let Some(mut iso) = isolation {
+                crate::worktree::merge_all(std::slice::from_mut(&mut iso), &spec.description, None).await;
             }
             return Err(e);
         }
@@ -1209,8 +1209,8 @@ impl Helpers {
             .map(|id| tools::result_shape::results_dir(&id))
             .unwrap_or_else(|_| tools::result_shape::results_dir(&parent_key.replace(':', "_")));
         let mut completion = collected.into_completion(task_id, &description, &spill_dir);
-        if let Some(iso) = isolation {
-            let merged = crate::worktree::merge_all(std::slice::from_ref(&iso), &format!("nebo: helper {task_id}")).await;
+        if let Some(mut iso) = isolation {
+            let merged = crate::worktree::merge_all(std::slice::from_mut(&mut iso), &description, None).await;
             for (_, outcome) in &merged {
                 completion.result.push_str("\n\n");
                 completion.result.push_str(&crate::worktree::render_outcome(&description, outcome));
