@@ -4439,7 +4439,9 @@
 			"other": "Consulta su historial para ver qué pasó",
 			"step_limit": "La ejecución llegó a su límite de pasos antes de terminar la comprobación",
 			"turn_ended": "La ejecución terminó antes de acabar la comprobación",
-			"restarted": "Nebo se reinició mientras se comprobaba"
+			"restarted": "Nebo se reinició mientras se comprobaba",
+			"unreviewed": "No integrado: la copia tiene cambios que nadie revisó ({files})",
+			"needs_review": "Ponerse al día cambió archivos que toca este cambio ({files}); primero se revisa de nuevo"
 		},
 		"place": {
 			"app": "El cambio está en las páginas de la app; el historial de la app puede deshacerlo.",

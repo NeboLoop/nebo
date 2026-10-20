@@ -4439,7 +4439,9 @@
 			"other": "查看它的歷程了解發生了什麼",
 			"step_limit": "檢查完成前執行已達到步數上限",
 			"turn_ended": "檢查完成前執行已結束",
-			"restarted": "檢查期間 Nebo 重新啟動了"
+			"restarted": "檢查期間 Nebo 重新啟動了",
+			"unreviewed": "未併入：副本中有沒人審查過的變更（{files}）",
+			"needs_review": "同步變更了這項變更涉及的檔案（{files}）；先重新審查"
 		},
 		"place": {
 			"app": "變更位於應用程式的頁面中；應用程式的歷程可以復原它。",

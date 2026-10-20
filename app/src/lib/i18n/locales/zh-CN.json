@@ -4439,7 +4439,9 @@
 			"other": "查看其历史了解发生了什么",
 			"step_limit": "检查完成前运行已达到步数上限",
 			"turn_ended": "检查完成前运行已结束",
-			"restarted": "检查期间 Nebo 重新启动了"
+			"restarted": "检查期间 Nebo 重新启动了",
+			"unreviewed": "未并入：副本中有没人审查过的更改（{files}）",
+			"needs_review": "同步更改了此更改涉及的文件（{files}）；先重新审查"
 		},
 		"place": {
 			"app": "更改位于应用的页面中；应用的历史记录可以撤销它。",

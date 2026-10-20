@@ -64,6 +64,28 @@
     });
   });
 
+  // The socket came back after a drop: a verification that changed while it
+  // was down is only in the list, so the run's are read again.
+  $effect(() => {
+    const rid = runId;
+    if (!rid || typeof window === 'undefined') return;
+    let wasDown = false;
+    return getWebSocketClient().onStatus((status) => {
+      if (status !== 'connected') {
+        wasDown = true;
+        return;
+      }
+      if (!wasDown) return;
+      wasDown = false;
+      import('$lib/api/nebo')
+        .then((api) => api.listVerifications(undefined, undefined, rid))
+        .then((res) => {
+          if (runId === rid && res?.verifications) runVerifications = res.verifications;
+        })
+        .catch(() => {});
+    });
+  });
+
   // Real-time task_updated events — update step status live during execution
   $effect(() => {
     const rid = runId;

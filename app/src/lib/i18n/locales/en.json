@@ -4439,7 +4439,9 @@
 			"other": "See its history for what happened",
 			"step_limit": "The run reached its step limit before the checking finished",
 			"turn_ended": "The run ended before the checking finished",
-			"restarted": "Nebo restarted while it was being checked"
+			"restarted": "Nebo restarted while it was being checked",
+			"unreviewed": "Not landed: the copy holds changes nobody reviewed ({files})",
+			"needs_review": "Catching up changed files this change touches ({files}); it is reviewed again first"
 		},
 		"place": {
 			"app": "The change is in the app's pages; the app's history can undo it.",

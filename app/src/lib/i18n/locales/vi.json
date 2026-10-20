@@ -4439,7 +4439,9 @@
 			"other": "Xem lịch sử để biết chuyện gì đã xảy ra",
 			"step_limit": "Lần chạy đã đạt giới hạn bước trước khi kiểm tra xong",
 			"turn_ended": "Lần chạy đã kết thúc trước khi kiểm tra xong",
-			"restarted": "Nebo đã khởi động lại trong lúc kiểm tra"
+			"restarted": "Nebo đã khởi động lại trong lúc kiểm tra",
+			"unreviewed": "Chưa đưa vào: bản sao có thay đổi chưa ai xem xét ({files})",
+			"needs_review": "Việc cập nhật đã thay đổi các tệp mà thay đổi này đụng tới ({files}); nó được xem xét lại trước"
 		},
 		"place": {
 			"app": "Thay đổi nằm trong các trang của ứng dụng; lịch sử ứng dụng có thể hoàn tác nó.",

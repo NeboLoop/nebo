@@ -4439,7 +4439,9 @@
 			"other": "La sua cronologia mostra cosa è successo",
 			"step_limit": "L'esecuzione ha raggiunto il limite di passaggi prima della fine del controllo",
 			"turn_ended": "L'esecuzione è terminata prima della fine del controllo",
-			"restarted": "Nebo si è riavviato durante il controllo"
+			"restarted": "Nebo si è riavviato durante il controllo",
+			"unreviewed": "Non integrato: la copia contiene modifiche che nessuno ha revisionato ({files})",
+			"needs_review": "L'aggiornamento ha cambiato file toccati da questa modifica ({files}); prima viene revisionata di nuovo"
 		},
 		"place": {
 			"app": "La modifica è nelle pagine dell'app; la cronologia dell'app può annullarla.",

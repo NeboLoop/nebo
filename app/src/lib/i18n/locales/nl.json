@@ -4439,7 +4439,9 @@
 			"other": "De geschiedenis laat zien wat er gebeurd is",
 			"step_limit": "De run bereikte zijn stappenlimiet voordat de controle klaar was",
 			"turn_ended": "De run eindigde voordat de controle klaar was",
-			"restarted": "Nebo is opnieuw gestart tijdens de controle"
+			"restarted": "Nebo is opnieuw gestart tijdens de controle",
+			"unreviewed": "Niet doorgevoerd: de kopie bevat wijzigingen die niemand heeft gereviewd ({files})",
+			"needs_review": "Het bijwerken veranderde bestanden die deze wijziging raakt ({files}); eerst wordt die opnieuw gereviewd"
 		},
 		"place": {
 			"app": "De wijziging staat in de pagina's van de app; de geschiedenis van de app kan haar ongedaan maken.",

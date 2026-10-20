@@ -100,7 +100,8 @@ const WHYS = new Set([
   "kept_own_edits", "live_failed", "live_ok", "review_clean", "review_blocking",
   "up_to_date", "caught_up", "conflicts", "landed", "nothing_to_land", "owner_edits",
   "busy_no_branch", "busy_branch", "busy_in_progress", "hook_failed", "retest_failed",
-  "not_attempted", "land_failed", "step_limit", "turn_ended",
+  "not_attempted", "land_failed", "step_limit", "turn_ended", "restarted",
+  "unreviewed", "needs_review",
 ]);
 const LENSES = new Set(["correctness", "security", "billing", "data", "performance", "experience"]);
 const SEVERITIES = new Set(["blocker", "major", "minor"]);

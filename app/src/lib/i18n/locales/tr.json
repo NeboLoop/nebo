@@ -4439,7 +4439,9 @@
 			"other": "Ne olduğunu geçmişinde görebilirsiniz",
 			"step_limit": "Çalıştırma, kontrol bitmeden adım sınırına ulaştı",
 			"turn_ended": "Çalıştırma, kontrol bitmeden sona erdi",
-			"restarted": "Nebo kontrol sırasında yeniden başladı"
+			"restarted": "Nebo kontrol sırasında yeniden başladı",
+			"unreviewed": "Aktarılmadı: kopyada kimsenin incelemediği değişiklikler var ({files})",
+			"needs_review": "Güncelleme bu değişikliğin dokunduğu dosyaları değiştirdi ({files}); önce yeniden incelenir"
 		},
 		"place": {
 			"app": "Değişiklik uygulamanın sayfalarında; uygulamanın geçmişi bunu geri alabilir.",

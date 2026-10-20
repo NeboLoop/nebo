@@ -4439,7 +4439,9 @@
 			"other": "Historia pokazuje, co się stało",
 			"step_limit": "Uruchomienie osiągnęło limit kroków przed końcem sprawdzania",
 			"turn_ended": "Uruchomienie zakończyło się przed końcem sprawdzania",
-			"restarted": "Nebo uruchomił się ponownie w trakcie sprawdzania"
+			"restarted": "Nebo uruchomił się ponownie w trakcie sprawdzania",
+			"unreviewed": "Nie wdrożone: kopia zawiera zmiany, których nikt nie przejrzał ({files})",
+			"needs_review": "Aktualizacja zmieniła pliki, których dotyczy ta zmiana ({files}); najpierw zostanie ponownie przejrzana"
 		},
 		"place": {
 			"app": "Zmiana jest na stronach aplikacji; historia aplikacji może ją cofnąć.",

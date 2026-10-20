@@ -4439,7 +4439,9 @@
 			"other": "O histórico mostra o que aconteceu",
 			"step_limit": "A execução chegou ao limite de passos antes de terminar a verificação",
 			"turn_ended": "A execução terminou antes de concluir a verificação",
-			"restarted": "O Nebo reiniciou durante a verificação"
+			"restarted": "O Nebo reiniciou durante a verificação",
+			"unreviewed": "Não integrado: a cópia tem alterações que ninguém reviu ({files})",
+			"needs_review": "A atualização mudou ficheiros que esta alteração toca ({files}); primeiro é revista de novo"
 		},
 		"place": {
 			"app": "A alteração está nas páginas da app; o histórico da app pode desfazê-la.",

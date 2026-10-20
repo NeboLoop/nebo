@@ -4439,7 +4439,9 @@
 			"other": "Lihat riwayatnya untuk tahu apa yang terjadi",
 			"step_limit": "Jalankan mencapai batas langkahnya sebelum pemeriksaan selesai",
 			"turn_ended": "Jalankan berakhir sebelum pemeriksaan selesai",
-			"restarted": "Nebo dimulai ulang saat sedang diperiksa"
+			"restarted": "Nebo dimulai ulang saat sedang diperiksa",
+			"unreviewed": "Tidak dimasukkan: salinan berisi perubahan yang belum ditinjau siapa pun ({files})",
+			"needs_review": "Pembaruan mengubah file yang disentuh perubahan ini ({files}); perubahan ini ditinjau ulang dulu"
 		},
 		"place": {
 			"app": "Perubahan ada di halaman aplikasi; riwayat aplikasi bisa membatalkannya.",

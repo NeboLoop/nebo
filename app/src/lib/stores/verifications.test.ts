@@ -114,6 +114,9 @@ describe("the badge", () => {
       whyWords({ code: "busy_branch", args: { now: "experiment", from: "main" } }, tr),
     ).toBe("verify.why.busy_branch(now=experiment,from=main)");
     expect(whyWords({ code: "from_a_newer_bot" }, tr)).toBe("verify.why.other");
+    for (const code of ["restarted", "unreviewed", "needs_review"]) {
+      expect(whyWords({ code }, tr)).toBe(`verify.why.${code}`);
+    }
     expect(whyWords(null, tr)).toBe("");
   });
 

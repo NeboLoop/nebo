@@ -4439,7 +4439,9 @@
 			"other": "Lihat sejarahnya untuk apa yang berlaku",
 			"step_limit": "Larian mencapai had langkahnya sebelum semakan selesai",
 			"turn_ended": "Larian tamat sebelum semakan selesai",
-			"restarted": "Nebo dimulakan semula semasa sedang disemak"
+			"restarted": "Nebo dimulakan semula semasa sedang disemak",
+			"unreviewed": "Tidak dimasukkan: salinan mengandungi perubahan yang belum disemak sesiapa ({files})",
+			"needs_review": "Kemas kini mengubah fail yang disentuh perubahan ini ({files}); ia disemak semula dahulu"
 		},
 		"place": {
 			"app": "Perubahan ada dalam halaman aplikasi; sejarah aplikasi boleh membatalkannya.",
