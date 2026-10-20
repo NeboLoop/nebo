@@ -813,8 +813,13 @@ async fn handle_input(
                     &picked_input
                 }
                 Err(Unpicked::Held(held)) => {
+                    // Run again on the capture this attempt picked from,
+                    // never whatever capture is latest by then.
+                    let mut pinned = input.clone();
+                    pinned["snapshot_id"] = serde_json::json!(snap.id);
                     return ToolResult::error(format!("Not delivered (safe to retry): {} Nothing was touched.", ai::BALANCE_BUSY))
-                        .with_held_balance(held);
+                        .with_held_balance(held)
+                        .with_rerun_input(pinned);
                 }
                 Err(Unpicked::Why(why)) => return ToolResult::error(format!("Not delivered (safe to retry): {why}. Nothing was touched.")),
             }
@@ -2705,7 +2710,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, need: None, held_balance: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -3251,7 +3256,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
     };
     let saved = persist_path.clone();
     ToolResult {
-        held_balance: None,
+        held_balance: None, rerun_input: None,
         payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h, "path": saved })),
         content,
         is_error: false,

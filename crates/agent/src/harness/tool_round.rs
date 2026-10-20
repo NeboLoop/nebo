@@ -693,7 +693,7 @@ pub(crate) async fn run_tool_round(
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
-        summary_tool_results.push(ToolResult { payload: None, need: None, held_balance: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+        summary_tool_results.push(ToolResult { payload: None, need: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None, more_files: Vec::new(),

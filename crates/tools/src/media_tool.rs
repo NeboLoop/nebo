@@ -435,14 +435,19 @@ fn part_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// What every part of one transcript shares: the call, the transcript's one
-/// budget for waiting out a held balance, and what it is of.
+/// What every part of one transcript shares: what it is of.
 struct PartJob<'a> {
-    ctx: &'a ToolContext,
-    waits: std::sync::Mutex<ai::ReservedWaits>,
     total: usize,
     filename: &'a str,
     language: Option<&'a str>,
+}
+
+/// One part's answer: its transcript, or a balance held by running work
+/// (nothing served for it), with its wait and the words a part that stays
+/// held fails the transcript with.
+enum PartDone {
+    Made(audio::Transcript),
+    Held { held: types::balance::Held, words: String },
 }
 
 /// Why a paid media call came back with nothing made: running work holds the
@@ -1759,13 +1764,44 @@ impl GenerateMediaTool {
         }
         let (duration, parts) = parts::parse(&stdout)?;
         let total = parts.len();
-        // One budget for waiting out a held balance, shared by every part.
-        let job = PartJob { ctx, waits: std::sync::Mutex::new(ai::ReservedWaits::default()), total, filename, language };
-        let each: Vec<audio::Transcript> = futures::stream::iter(parts.clone().into_iter().enumerate())
-            .map(|(k, part)| self.transcript_part(&job, k, part))
-            .buffered(TRANSCRIPT_PARALLEL)
-            .try_collect()
-            .await?;
+        // The parts go in rounds. A part refused because running work holds
+        // the balance is sent again in the next round; every part made is
+        // kept and never sent again. Between rounds, with no part running,
+        // the call waits once (giving its slot back), from the transcript's
+        // one budget.
+        let job = &PartJob { total, filename, language };
+        let mut made: Vec<Option<audio::Transcript>> = (0..total).map(|_| None).collect();
+        let mut pending: Vec<usize> = (0..total).collect();
+        let mut waits = ai::ReservedWaits::default();
+        while !pending.is_empty() {
+            let sending: Vec<(usize, parts::Part)> = pending.iter().map(|&k| (k, parts[k].clone())).collect();
+            let round: Vec<(usize, PartDone)> = futures::stream::iter(sending)
+                .map(|(k, part)| self.transcript_part(job, k, part))
+                .buffered(TRANSCRIPT_PARALLEL)
+                .try_collect()
+                .await?;
+            let mut held: Option<(types::balance::Held, String)> = None;
+            pending.clear();
+            for (k, done) in round {
+                match done {
+                    PartDone::Made(t) => made[k] = Some(t),
+                    PartDone::Held { held: h, words } => {
+                        pending.push(k);
+                        // The longest wait any held part asked for.
+                        if held.as_ref().is_none_or(|(o, _)| h.retry_after > o.retry_after) {
+                            held = Some((h, words));
+                        }
+                    }
+                }
+            }
+            let Some((h, words)) = held else { break };
+            let Some(wait) = waits.next(h.retry_after) else { return Err(words.into()) };
+            tracing::debug!(parts = pending.len(), total, wait_ms = wait.as_millis() as u64, "balance held by running work; these parts again after the wait");
+            if !ctx.wait_out(wait).await {
+                return Err(words.into());
+            }
+        }
+        let each: Vec<audio::Transcript> = made.into_iter().flatten().collect();
         let s = parts::stitch(&parts, each, duration);
         let mut how = if total == 1 {
             format!("{why}, so Nebo Media pulled its sound out as mono speech first.")
@@ -1796,14 +1832,13 @@ impl GenerateMediaTool {
         Ok((s.transcript, how))
     }
 
-    /// Part `k` (from 0) of `total`, transcribed with its voices' own
-    /// labels. A balance held by running work is waited out by this part
-    /// alone (the parts already made are kept, never sent again), with the
-    /// call's slot given back, from `waits`, the transcript's one budget.
-    /// Any other failure is sent once more, and a second failure fails the
+    /// Part `k` (from 0) of `total`, with `k`, transcribed with its voices'
+    /// own labels. A balance held by running work comes back as
+    /// [`PartDone::Held`] for the transcript to send again after its wait;
+    /// any other failure is sent once more, and a second failure fails the
     /// part.
-    async fn transcript_part(&self, job: &PartJob<'_>, k: usize, part: parts::Part) -> Result<audio::Transcript, String> {
-        let PartJob { ctx, waits, total, filename, language } = job;
+    async fn transcript_part(&self, job: &PartJob<'_>, k: usize, part: parts::Part) -> Result<(usize, PartDone), String> {
+        let PartJob { total, filename, language } = job;
         let (total, filename, language) = (*total, *filename, *language);
         let clock = |s: f64| format!("{}:{:02}", (s / 60.0).floor() as u64, (s % 60.0).floor() as u64);
         let failed = |e: &dyn std::fmt::Display, how: &str| {
@@ -1820,15 +1855,8 @@ impl GenerateMediaTool {
         let mut tried_again = false;
         loop {
             match self.media.transcribe(&name, bytes.clone(), language).await {
-                Ok(raw) => return Ok(audio::labelled(&raw)),
-                Err(Unmade::Held { held, words }) => {
-                    let wait = waits.lock().unwrap_or_else(|e| e.into_inner()).next(held.retry_after);
-                    let Some(wait) = wait else { return Err(failed(&words, "")) };
-                    tracing::debug!(part = k + 1, total, wait_ms = wait.as_millis() as u64, "balance held by running work; this part again after the wait");
-                    if !ctx.wait_out(wait).await {
-                        return Err(failed(&words, ""));
-                    }
-                }
+                Ok(raw) => return Ok((k, PartDone::Made(audio::labelled(&raw)))),
+                Err(Unmade::Held { held, words }) => return Ok((k, PartDone::Held { held, words: failed(&words, "") })),
                 Err(Unmade::Said(e)) if tried_again => return Err(failed(&e, ", twice")),
                 Err(Unmade::Said(first)) => {
                     tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
@@ -3539,12 +3567,76 @@ echo "Parts: {{\"duration\": 3000.0, \"cut_in_pauses\": 2, \"cut_without_pause\"
         let video = tmp.path().join("in/podcast.mov");
         std::fs::create_dir_all(video.parent().unwrap()).unwrap();
         std::fs::write(&video, b"a small video").unwrap();
-        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        // The call holds the pool's only slot.
+        let pool = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut ctx = ToolContext::default();
+        ctx.slot = Some(crate::ToolSlot::take(pool.clone()).await);
+        let result = tool.execute_dyn(&ctx, json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
         assert!(!result.is_error, "{}", result.content);
         assert!(result.held_balance.is_none(), "the transcript came back; nothing for the registry to wait out");
         assert!(tmp.path().join("in/podcast.transcript.json").exists());
-        let sent = |part: &str| janus.seen.lock().unwrap().iter().filter(|(_, b, _)| b.contains(part)).count();
+        let seen = janus.seen.lock().unwrap().iter().map(|(_, b, _)| b.clone()).collect::<Vec<_>>();
+        let sent = |part: &str| seen.iter().filter(|b| b.contains(part)).count();
         assert_eq!((sent("part one"), sent("part two"), sent("part three")), (1, 2, 1), "only the held part is sent again");
+        // The wait came between rounds, with no part running: part two went
+        // again only after every other part had been answered.
+        let again = seen.iter().rposition(|b| b.contains("part two")).unwrap();
+        assert!(seen[..again].iter().any(|b| b.contains("part one")) && seen[..again].iter().any(|b| b.contains("part three")));
+        assert!(ctx.slot.as_ref().unwrap().is_held(), "the call holds its slot again");
+        assert_eq!(pool.available_permits(), 0, "taken again once: never a second slot");
+    }
+
+    /// Eight transcript calls hold every slot of the pool, and every part of
+    /// every call is refused at once because running work holds the
+    /// balance. Each call waits once between its rounds and takes its own
+    /// slot back: nothing deadlocks, and every transcript comes back.
+    #[tokio::test]
+    async fn eight_calls_held_at_once_all_come_back() {
+        let refused = Arc::new(Mutex::new(std::collections::HashMap::<&'static str, usize>::new()));
+        let counts = refused.clone();
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(a)) => {
+                let label = ["part one", "part two", "part three"].into_iter().find(|l| body.contains(l)).unwrap();
+                let mut c = counts.lock().unwrap();
+                let n = c.entry(label).or_default();
+                *n += 1;
+                // Every call's first send of each part.
+                if *n <= 8 {
+                    (429, "application/json", br#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#.to_vec())
+                } else {
+                    (200, "application/json", a.as_bytes().to_vec())
+                }
+            }
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let pool = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut calls = Vec::new();
+        for n in 0..8 {
+            let tmp = tempfile::tempdir().unwrap();
+            let (tool, _) = tool_with_app(&janus, tmp.path());
+            let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&tmp.path().join("args.txt"))));
+            let video = tmp.path().join(format!("in/podcast-{n}.mov"));
+            std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+            std::fs::write(&video, b"a small video").unwrap();
+            let pool = pool.clone();
+            calls.push(tokio::spawn(async move {
+                let mut ctx = ToolContext::default();
+                ctx.slot = Some(crate::ToolSlot::take(pool).await);
+                let result = tool.execute_dyn(&ctx, json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+                drop(tmp);
+                result
+            }));
+        }
+        let all = tokio::time::timeout(std::time::Duration::from_secs(60), futures::future::join_all(calls))
+            .await
+            .expect("no call is stuck taking its slot back");
+        for result in all {
+            let result = result.unwrap();
+            assert!(!result.is_error, "{}", result.content);
+        }
+        assert_eq!(pool.available_permits(), 8, "every slot is back");
+        assert!(refused.lock().unwrap().values().all(|&n| n == 16), "each part refused once per call, then served");
     }
 
     /// A part that fails twice fails the whole transcript: nothing is saved.

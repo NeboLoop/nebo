@@ -96,6 +96,12 @@ pub struct ToolResult {
     /// that met the refusal (`with_held_balance`), never by text.
     #[serde(skip)]
     pub held_balance: Option<types::balance::Held>,
+    /// The input a held call runs again with after its wait, when the first
+    /// attempt settled something the input left open (the capture a desktop
+    /// action picked its target from): so the second attempt acts on what
+    /// the first one saw. `None`: the input it ran with.
+    #[serde(skip)]
+    pub rerun_input: Option<serde_json::Value>,
     /// The call did not run: the permission check parked it on the owner.
     /// The ask's id, so a workflow activity can suspend on the same ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,6 +152,13 @@ impl ToolResult {
     /// waits it out and runs the call again.
     pub fn with_held_balance(mut self, held: types::balance::Held) -> Self {
         self.held_balance = Some(held);
+        self
+    }
+
+    /// The input to run a held call again with (builder; chains off
+    /// `with_held_balance`).
+    pub fn with_rerun_input(mut self, input: serde_json::Value) -> Self {
+        self.rerun_input = Some(input);
         self
     }
 
@@ -1167,14 +1180,18 @@ impl Registry {
         // call's one budget, stopping when the run stops. Past the budget
         // the call's own words stand (the busy sentence).
         let mut waits = types::balance::ReservedWaits::default();
+        let mut run_input = input.clone();
         let mut result = loop {
             if resource.is_none()
                 && let Some(kind) = permit_kind
             {
                 resource = Some(self.resource_permits.acquire(kind).await);
             }
-            let result = tool.execute_dyn(ctx, input.clone()).await;
+            let mut result = tool.execute_dyn(ctx, run_input.clone()).await;
             let Some(held) = result.held_balance else { break result };
+            if let Some(pinned) = result.rerun_input.take() {
+                run_input = pinned;
+            }
             let Some(wait) = waits.next(held.retry_after) else { break result };
             debug!(tool = %name, wait_ms = wait.as_millis() as u64, "balance held by running work; calling again after the wait");
             drop(resource.take());
@@ -1976,6 +1993,51 @@ pub(crate) mod tests {
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(result.content, "answered");
         assert_eq!(pool.available_permits(), 0, "the call holds its slot again");
+    }
+
+    /// A held call that settled something its input left open (the capture
+    /// a desktop action picked from) runs again with that pinned, never with
+    /// whatever is latest by then.
+    struct PinsOnHold;
+
+    impl DynTool for PinsOnHold {
+        fn name(&self) -> &str {
+            "pinsonhold"
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": { "snapshot_id": { "type": "string" } } })
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                match input.get("snapshot_id").and_then(|v| v.as_str()) {
+                    Some(id) => ToolResult::ok(format!("acted on {id}")),
+                    None => {
+                        let held = types::balance::Held { retry_after: Some(std::time::Duration::from_secs(1)) };
+                        ToolResult::error(ai::BALANCE_BUSY)
+                            .with_held_balance(held)
+                            .with_rerun_input(serde_json::json!({ "snapshot_id": "snap-first" }))
+                    }
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_call_runs_again_on_what_its_first_attempt_settled() {
+        let registry = Registry::new(crate::gate::test_gate());
+        registry.register(Box::new(PinsOnHold)).await;
+        let result = registry.execute(&ToolContext::default(), "pinsonhold", serde_json::json!({})).await;
+        assert_eq!(result.content, "acted on snap-first");
     }
 
     /// A stopped run stops waiting at once; the call's own words stand.
