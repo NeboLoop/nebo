@@ -1359,12 +1359,12 @@ impl Helpers {
         }
     }
 
-    /// Keep helper `task_id`'s questions on its row (its run definition,
-    /// which a helper's row has no other use for), so they outlive the run
-    /// that asked them and a restart.
+    /// Keep helper `task_id`'s questions on its row
+    /// (`engine_runs.pending_questions`), so they outlive the run that
+    /// asked them and a restart.
     fn keep_questions(&self, task_id: &str, questions: &collect::Questions) {
         if let Ok(json) = serde_json::to_string(questions)
-            && let Err(e) = self.store.engine_set_run_definition(task_id, &json)
+            && let Err(e) = self.store.engine_set_run_pending_questions(task_id, Some(&json))
         {
             warn!(task_id = %task_id, error = %e, "a helper's questions could not be kept on its row");
         }
@@ -1894,8 +1894,8 @@ fn questions_of_row(store: &db::Store, task_id: &str) -> collect::Questions {
         .engine_get_run(task_id)
         .ok()
         .flatten()
-        .and_then(|run| run.definition)
-        .and_then(|d| serde_json::from_str(&d).ok())
+        .and_then(|run| run.pending_questions)
+        .and_then(|q| serde_json::from_str(&q).ok())
         .unwrap_or_default()
 }
 
@@ -3309,5 +3309,35 @@ mod tests {
         assert!(rig.helpers.stop("agent:ceo:web", &r_id).is_err());
         // Messages still go only to the helpers it started itself.
         let _ = b_id;
+    }
+
+    /// A helper's open questions are kept in their own column of its row
+    /// and come back after a restart: a plain message to it then leaves its
+    /// question open (reminded, still leading its report), as before.
+    #[tokio::test]
+    async fn a_restart_restores_a_helpers_open_questions_from_its_row() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:sdr:web");
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan.", None)).await.unwrap());
+        ask(&rig.next_turn().await, "Drafted.", &vendor()).await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let run = rig.store.engine_get_run(&id).unwrap().unwrap();
+        assert!(run.pending_questions.as_deref().is_some_and(|q| q.contains("Which vendor?")), "{:?}", run.pending_questions);
+        assert_eq!(run.definition, None, "never the workflow definition");
+
+        let Rig { store, _dir, .. } = rig;
+        let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+        rig.helpers.recover();
+        let owner = rig.owner_turn("agent:sdr:web");
+        rig.helpers.send(&owner, None, &[], &id, "Also cover Denver.", None).await.unwrap();
+        assert_eq!(rig.helpers.state().helpers[&id].questions.pending.len(), 1, "restored from its row");
+        let again = rig.next_turn().await;
+        assert!(rig.notification_rows(&again.request.session_key).iter().any(|r| r.contains(STILL_OPEN)), "reminded");
+        rig.heard(&again.request.session_key);
+        again.answer("Denver added.").await;
+        assert_eq!(rig.next_wake().await, "agent:sdr:web");
+        let p = rig.pending_notifications("agent:sdr:web");
+        let report = p.iter().find(|x| x.contains("Denver added.")).expect("its report");
+        assert!(report.contains(collect::NEEDS_OWNER_DECISION), "{report}");
     }
 }

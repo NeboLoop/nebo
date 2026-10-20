@@ -96,6 +96,9 @@ pub struct EngineRun {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+    /// A helper's questions for the owner (JSON): open, answered and
+    /// already given to its parent. `None` for a run that never asked.
+    pub pending_questions: Option<String>,
 }
 
 /// Local changes for one employee over a window (heartbeat triage's flags).
@@ -185,7 +188,7 @@ pub struct EngineEffect {
     pub completed_at: Option<i64>,
 }
 
-const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at";
+const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at, pending_questions";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
     Ok(EngineRun {
@@ -208,6 +211,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
         created_at: r.get(16)?,
         started_at: r.get(17)?,
         ended_at: r.get(18)?,
+        pending_questions: r.get(19)?,
     })
 }
 
@@ -737,6 +741,15 @@ impl Store {
         let conn = self.conn()?;
         conn.execute("UPDATE engine_runs SET definition = ?2 WHERE id = ?1", params![id, definition])
             .db_err("engine_set_run_definition")?;
+        Ok(())
+    }
+
+    /// A helper run's questions for the owner (JSON, see
+    /// [`EngineRun::pending_questions`]); `None` clears them.
+    pub fn engine_set_run_pending_questions(&self, id: &str, questions: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_runs SET pending_questions = ?2 WHERE id = ?1", params![id, questions])
+            .db_err("engine_set_run_pending_questions")?;
         Ok(())
     }
 
@@ -1746,6 +1759,21 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A helper's questions live in their own column: none until it asks,
+    /// kept as written, cleared with `None`, and no other field moves.
+    #[test]
+    fn a_runs_pending_questions_round_trip() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "h-1", kind: "helper", session_key: "subagent:agent:a:web:h-1", agent_id: "a", lane: "subagent", ..Default::default() }).unwrap();
+        assert_eq!(s.engine_get_run("h-1").unwrap().unwrap().pending_questions, None);
+        s.engine_set_run_pending_questions("h-1", Some(r#"{"pending":[]}"#)).unwrap();
+        let run = s.engine_get_run("h-1").unwrap().unwrap();
+        assert_eq!(run.pending_questions.as_deref(), Some(r#"{"pending":[]}"#));
+        assert_eq!(run.definition, None, "the definition is the workflow's, untouched");
+        s.engine_set_run_pending_questions("h-1", None).unwrap();
+        assert_eq!(s.engine_get_run("h-1").unwrap().unwrap().pending_questions, None);
+    }
     use crate::Store;
 
     fn store() -> Store {
