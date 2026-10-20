@@ -169,8 +169,8 @@ fn back_to_the_starter(input: &Value) -> ToolResult {
         .unwrap_or_default();
     ToolResult {
         content: "Your question goes back with your report to the conversation that started you. It asks \
-                  the owner and sends you the answer; you continue from here then. This turn ends now. If \
-                  you run again before the answer comes and still need it, ask again."
+                  the owner and sends you the answer; you continue from here then. This turn ends now, and \
+                  the question stays open until the answer comes."
             .to_string(),
         terminal: true,
         question: Some(types::OwnerQuestion {

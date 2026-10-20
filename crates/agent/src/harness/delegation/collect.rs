@@ -109,51 +109,64 @@ impl Collected {
     }
 }
 
-/// A run's report from its turns: `earlier` (turns it went on from, a report
-/// held while its own helpers ran) and the `latest`. The latest turn's state
-/// is the run's: a question it asked leads, inline and never spilled; a
-/// question only an earlier turn asked is moot unless the latest asks it
-/// again, and stays in that turn's words, marked "Earlier:" so its state
-/// doesn't read as current. A question block already shown is not
-/// repeated. What the turns read goes with the report. Past `limit`
+/// A run's report from its `turns` (as each turn reported them, never
+/// assembled) and its `pending` question. While a question is pending (no
+/// answer has been sent to the helper since it asked), the run needs the
+/// owner's decision, whatever its later turns said, and that question leads
+/// the report, inline and never spilled. Earlier turns are marked
+/// "Earlier:" so their state doesn't read as current; a question block that
+/// leads is not repeated among them, and an answered one stays in its
+/// turn's words. What the turns read goes with the report. Past `limit`
 /// characters the words go through the one spill path, read back the way
 /// `reader` (the parent's door) reads files.
 pub fn assemble(
-    earlier: Vec<Completion>,
-    mut latest: Completion,
+    turns: &[Completion],
+    pending: Option<&str>,
     spill_dir: &Path,
     limit: usize,
     reader: tools::result_shape::Reader,
 ) -> Completion {
-    let pending = latest.question.take().filter(|_| latest.status.awaits_owner());
-    let mut shown: Vec<String> = pending.iter().cloned().collect();
+    let latest = turns.last().expect("a run has a turn");
+    let mut taint: Vec<types::provenance::ProvenanceClass> = Vec::new();
+    let mut shown: Vec<&str> = pending.into_iter().collect();
     let mut words = Vec::new();
-    for e in earlier {
-        for class in &e.taint {
-            if !latest.taint.contains(class) {
-                latest.taint.push(*class);
+    for (i, t) in turns.iter().enumerate() {
+        for class in &t.taint {
+            if !taint.contains(class) {
+                taint.push(*class);
             }
         }
         let mut part = Vec::new();
-        if let Some(q) = e.question
+        if let Some(q) = t.question.as_deref()
             && !shown.contains(&q)
         {
-            part.push(q.clone());
+            part.push(q.to_string());
             shown.push(q);
         }
-        if !e.result.trim().is_empty() {
-            part.push(e.result.trim().to_string());
+        if !t.result.trim().is_empty() {
+            part.push(t.result.trim().to_string());
         }
-        if !part.is_empty() {
-            words.push(format!("Earlier:\n{}", part.join("\n\n")));
+        if part.is_empty() {
+            continue;
         }
+        let part = part.join("\n\n");
+        words.push(if i + 1 < turns.len() { format!("Earlier:\n{part}") } else { part });
     }
-    if !latest.result.trim().is_empty() {
-        words.push(std::mem::take(&mut latest.result));
+    let status = match (&latest.status, pending) {
+        (CompletionStatus::Done | CompletionStatus::Partial { .. }, Some(_)) => {
+            CompletionStatus::Partial { why: NEEDS_OWNER_DECISION.to_string() }
+        }
+        (status, _) => status.clone(),
+    };
+    Completion {
+        task_id: latest.task_id.clone(),
+        description: latest.description.clone(),
+        status,
+        result: spill_if_long(&words.join("\n\n"), spill_dir, limit, reader),
+        question: pending.map(str::to_string),
+        usage: latest.usage.clone(),
+        taint,
     }
-    latest.result = spill_if_long(&words.join("\n\n"), spill_dir, limit, reader);
-    latest.question = pending;
-    latest
 }
 
 impl CompletionStatus {
@@ -346,7 +359,9 @@ mod tests {
 
     /// A one-turn run's report, as its parent gets it.
     fn finished(got: Collected, id: &str, description: &str, dir: &Path, limit: usize) -> Completion {
-        assemble(Vec::new(), got.into_completion(id, description), dir, limit, Reader::File)
+        let turn = got.into_completion(id, description);
+        let pending = turn.question.clone();
+        assemble(&[turn], pending.as_deref(), dir, limit, Reader::File)
     }
 
     async fn run(events: Vec<StreamEvent>) -> Collected {
@@ -516,37 +531,41 @@ mod tests {
         }
     }
 
-    /// A run of several turns: the latest turn's state is the run's. A
-    /// question it asks leads, shown once however often earlier turns asked
-    /// it; earlier turns' words are marked "Earlier:"; and the whole is held
-    /// to the limit, the question inline. A question only an earlier turn
-    /// asked is moot: the run reports done, the question among its earlier
-    /// words.
+    /// A run of several turns with a question still pending (no answer
+    /// sent since it was asked): the run needs the owner's decision even
+    /// when its latest turn only reported progress; the question leads,
+    /// shown once however often a turn asked it; earlier turns are marked
+    /// "Earlier:"; and the whole is held to the limit with the question
+    /// inline and the preview inside the limit.
     #[test]
-    fn a_run_reports_its_latest_state_with_the_question_first() {
+    fn a_pending_question_leads_until_it_is_answered() {
         let dir = tempfile::tempdir().unwrap();
         let q = "It needs the owner's decision before it can go on.\nQuestion: Which vendor?";
-        let latest = turn("Still need the vendor.", Some(q));
-        let c = assemble(vec![turn("Drafted the plan.", Some(q)), turn("40 contacts found.", None)], latest, dir.path(), REPORT_LIMIT, Reader::File);
-        assert!(c.status.awaits_owner());
+        let turns = [turn("Drafted the plan.", Some(q)), turn("40 contacts found.", None), turn("Contacts are in.", None)];
+        let c = assemble(&turns, Some(q), dir.path(), REPORT_LIMIT, Reader::File);
+        assert!(c.status.awaits_owner(), "progress doesn't settle a question: {:?}", c.status);
         let report = c.report();
         assert!(report.starts_with(q), "the question leads: {report}");
-        assert_eq!(report.matches("Question: Which vendor?").count(), 1, "shown once: {report}");
         assert!(report.contains("Earlier:\nDrafted the plan.") && report.contains("Earlier:\n40 contacts found."), "{report}");
-        assert!(report.ends_with("Still need the vendor."), "{report}");
+        assert!(report.ends_with("Contacts are in."), "{report}");
+
+        // Asked again: still shown once.
+        let turns = [turn("Drafted the plan.", Some(q)), turn("Still need the vendor.", Some(q))];
+        let report = assemble(&turns, Some(q), dir.path(), REPORT_LIMIT, Reader::File).report();
+        assert_eq!(report.matches("Question: Which vendor?").count(), 1, "shown once: {report}");
 
         // Past the limit, the joined words spill; the question stays inline
         // and leads, and the preview never runs past the limit.
         let long = "x".repeat(3_000);
-        let c = assemble(vec![turn(&long, None)], turn(&long, Some(q)), dir.path(), 1_000, Reader::File);
-        let report = c.report();
+        let report = assemble(&[turn(&long, Some(q)), turn(&long, None)], Some(q), dir.path(), 1_000, Reader::File).report();
         assert!(report.starts_with(q), "{}", &report[..200]);
         assert!(report.contains(tools::result_shape::SAVED_OUTPUT) && report.contains("First 1000 characters:"), "{}", &report[..400]);
         assert!(report.chars().count() < 1_000 + q.len() + 800, "the preview keeps to the limit: {}", report.chars().count());
 
-        // A later turn that finished without asking again: the question is moot.
-        let c = assemble(vec![turn("Drafted the plan.", Some(q))], turn("Went with the vendor on file, as the brief said.", None), dir.path(), REPORT_LIMIT, Reader::File);
-        assert_eq!(c.status, CompletionStatus::Done, "the latest state");
+        // Answered (nothing pending): the run is its latest state, and the
+        // question it asked stays in that turn's words.
+        let c = assemble(&[turn("Drafted the plan.", Some(q)), turn("Went with Acme, as you said.", None)], None, dir.path(), REPORT_LIMIT, Reader::File);
+        assert_eq!(c.status, CompletionStatus::Done);
         assert!(c.question.is_none());
         assert!(c.report().starts_with(&format!("Earlier:\n{q}")), "{}", c.report());
     }
