@@ -277,13 +277,13 @@ impl ConcurrencyController {
         self.background.acquire(round, Priority::Work).await
     }
 
-    /// Acquire a permit for parallel tool execution within a turn.
     /// A slot in the tool pool for one call in a tool round, which the call
     /// gives back while it waits out a held balance (`tools::Registry`).
     pub async fn acquire_tool_slot(&self) -> Arc<tools::ToolSlot> {
         tools::ToolSlot::take(self.tool_semaphore.clone()).await
     }
 
+    /// Acquire a permit for parallel tool execution within a turn.
     pub async fn acquire_tool_permit(&self) -> OwnedSemaphorePermit {
         self.tool_semaphore
             .clone()

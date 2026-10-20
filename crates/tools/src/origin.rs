@@ -191,11 +191,6 @@ pub struct ChannelContext {
     pub thread_ts: Option<String>,
 }
 
-/// How many of a run's calls are waiting on someone other than the run
-/// itself: the owner answering a question, or NeboAI rendering a video. A
-/// run that is waiting is not stalled, however long the answer takes; the
-/// dispatcher's idle bound, and a helper's collector, count only time when
-/// nothing is waited on (`agent::guardrails`).
 /// The slot a call holds from the bounded pool tool calls run in (the tool
 /// round's). A call that has to wait (a held balance) gives it back for the
 /// wait, so the wait never keeps another call from running.
@@ -222,6 +217,11 @@ impl ToolSlot {
     }
 }
 
+/// How many of a run's calls are waiting on someone other than the run
+/// itself: the owner answering a question, or NeboAI rendering a video. A
+/// run that is waiting is not stalled, however long the answer takes; the
+/// dispatcher's idle bound, and a helper's collector, count only time when
+/// nothing is waited on (`agent::guardrails`).
 #[derive(Debug, Default)]
 pub struct Waiting {
     count: std::sync::atomic::AtomicUsize,
@@ -511,6 +511,22 @@ pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
 }
 
 impl ToolContext {
+    /// Wait `wait` with this call's slot in the tool pool given back, unless
+    /// the run stops first: true when it waited the whole time. How a tool
+    /// call waits out a balance held by running work.
+    pub async fn wait_out(&self, wait: std::time::Duration) -> bool {
+        let waited = async {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => false,
+                _ = tokio::time::sleep(wait) => true,
+            }
+        };
+        match &self.slot {
+            Some(slot) => slot.given_back(waited).await,
+            None => waited.await,
+        }
+    }
+
     /// Whether this turn came from the phone app as an app store ships it
     /// (`crate::store_app`): it is never handed a checkout link or a price.
     pub fn in_store_app(&self) -> bool {

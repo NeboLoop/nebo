@@ -115,8 +115,6 @@ mod tests {
         assert!(!is_balance_reserved(429, "BALANCE_RESERVED"));
     }
 
-    /// `Retry-After: 0` still waits the floor, so the request is never sent
-    /// again at once.
     /// A huge `Retry-After` is a wait the budget has no room for: never a
     /// panic, never taken.
     #[test]
@@ -136,6 +134,8 @@ mod tests {
         assert_eq!(retry_after(None), None);
     }
 
+    /// `Retry-After: 0` still waits the floor, so the request is never sent
+    /// again at once.
     #[test]
     fn a_zero_wait_still_waits_the_floor() {
         let mut waits = ReservedWaits::default();

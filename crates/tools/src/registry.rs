@@ -1139,7 +1139,7 @@ impl Registry {
         }
 
         let permit_kind = tool.resource_permit(&input);
-        let _permit_guard = match permit_kind {
+        let mut resource = match permit_kind {
             Some(kind) => {
                 debug!(tool = %name, resource = ?kind, "acquiring resource permit");
                 Some(self.resource_permits.acquire(kind).await)
@@ -1161,26 +1161,24 @@ impl Registry {
 
         let threshold = if ctx.whole_result { None } else { crate::result_shape::threshold(tool.max_result_chars(&input)) };
         // The one place a tool call waits out a balance held by running work
-        // (a Janus tool sends once and says so): with the call's slot given
-        // back, from the call's one budget, stopping when the run stops.
-        // Past the budget the call's own words stand (the busy sentence).
+        // (a Janus tool sends once and says so): with every slot the call
+        // holds given back (its resource permit here, its tool-pool slot in
+        // `wait_out`) and taken again before the call runs again, from the
+        // call's one budget, stopping when the run stops. Past the budget
+        // the call's own words stand (the busy sentence).
         let mut waits = types::balance::ReservedWaits::default();
         let mut result = loop {
+            if resource.is_none()
+                && let Some(kind) = permit_kind
+            {
+                resource = Some(self.resource_permits.acquire(kind).await);
+            }
             let result = tool.execute_dyn(ctx, input.clone()).await;
             let Some(held) = result.held_balance else { break result };
             let Some(wait) = waits.next(held.retry_after) else { break result };
             debug!(tool = %name, wait_ms = wait.as_millis() as u64, "balance held by running work; calling again after the wait");
-            let waited = async {
-                tokio::select! {
-                    _ = ctx.cancel_token.cancelled() => false,
-                    _ = tokio::time::sleep(wait) => true,
-                }
-            };
-            let waited = match &ctx.slot {
-                Some(slot) => slot.given_back(waited).await,
-                None => waited.await,
-            };
-            if !waited {
+            drop(resource.take());
+            if !ctx.wait_out(wait).await {
                 break result;
             }
         };
@@ -1928,6 +1926,10 @@ pub(crate) mod tests {
         fn read_only(&self, _input: &serde_json::Value) -> bool {
             true
         }
+        // Like a desktop tool: it holds the screen while it runs.
+        fn resource_permit(&self, _input: &serde_json::Value) -> Option<ResourceKind> {
+            Some(ResourceKind::Screen)
+        }
         fn execute_dyn<'a>(
             &'a self,
             _ctx: &'a ToolContext,
@@ -1944,8 +1946,9 @@ pub(crate) mod tests {
     }
 
     /// The registry is the one place a tool call waits out a held balance:
-    /// with the call's slot given back for the wait (another call can run),
-    /// then the same call again, served.
+    /// with every slot the call holds given back for the wait (its tool-pool
+    /// slot and its resource permit: another call can run), then the same
+    /// call again, served.
     #[tokio::test]
     async fn a_held_balance_is_waited_out_with_the_calls_slot_given_back() {
         let registry = Registry::new(crate::gate::test_gate());
@@ -1961,6 +1964,13 @@ pub(crate) mod tests {
                 .await
                 .expect("the slot is free while the call waits");
             drop(other);
+            let screen = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                registry.resource_permits.acquire(ResourceKind::Screen),
+            )
+            .await
+            .expect("the resource permit is free while the call waits");
+            drop(screen);
         };
         let (result, ()) = tokio::join!(registry.execute(&ctx, "heldonce", serde_json::json!({})), probe);
         assert!(!result.is_error, "{}", result.content);

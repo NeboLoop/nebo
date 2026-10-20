@@ -435,6 +435,16 @@ fn part_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// What every part of one transcript shares: the call, the transcript's one
+/// budget for waiting out a held balance, and what it is of.
+struct PartJob<'a> {
+    ctx: &'a ToolContext,
+    waits: std::sync::Mutex<ai::ReservedWaits>,
+    total: usize,
+    filename: &'a str,
+    language: Option<&'a str>,
+}
+
 /// Why a paid media call came back with nothing made: running work holds the
 /// owner's balance (nothing was served or charged; the registry waits it
 /// out with the call's slot given back and calls again), or anything else,
@@ -1749,8 +1759,10 @@ impl GenerateMediaTool {
         }
         let (duration, parts) = parts::parse(&stdout)?;
         let total = parts.len();
+        // One budget for waiting out a held balance, shared by every part.
+        let job = PartJob { ctx, waits: std::sync::Mutex::new(ai::ReservedWaits::default()), total, filename, language };
         let each: Vec<audio::Transcript> = futures::stream::iter(parts.clone().into_iter().enumerate())
-            .map(|(k, part)| self.transcript_part(k, total, part, filename, language))
+            .map(|(k, part)| self.transcript_part(&job, k, part))
             .buffered(TRANSCRIPT_PARALLEL)
             .try_collect()
             .await?;
@@ -1785,35 +1797,45 @@ impl GenerateMediaTool {
     }
 
     /// Part `k` (from 0) of `total`, transcribed with its voices' own
-    /// labels; a failed request is sent once more, and a second failure
-    /// fails the part.
-    async fn transcript_part(
-        &self,
-        k: usize,
-        total: usize,
-        part: parts::Part,
-        filename: &str,
-        language: Option<&str>,
-    ) -> Result<audio::Transcript, String> {
+    /// labels. A balance held by running work is waited out by this part
+    /// alone (the parts already made are kept, never sent again), with the
+    /// call's slot given back, from `waits`, the transcript's one budget.
+    /// Any other failure is sent once more, and a second failure fails the
+    /// part.
+    async fn transcript_part(&self, job: &PartJob<'_>, k: usize, part: parts::Part) -> Result<audio::Transcript, String> {
+        let PartJob { ctx, waits, total, filename, language } = job;
+        let (total, filename, language) = (*total, *filename, *language);
         let clock = |s: f64| format!("{}:{:02}", (s / 60.0).floor() as u64, (s % 60.0).floor() as u64);
+        let failed = |e: &dyn std::fmt::Display, how: &str| {
+            format!(
+                "Part {} of {total} of {filename} ({}–{}) could not be transcribed{how}: {e}. Nothing was saved; transcribe \
+                 {filename} again.",
+                k + 1,
+                clock(part.keep),
+                clock(part.end)
+            )
+        };
         let bytes = std::fs::read(&part.file).map_err(|e| format!("Could not read part {} of {total}: {e}", k + 1))?;
         let name = part.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("part-{}.m4a", k + 1));
-        let raw = match self.media.transcribe(&name, bytes.clone(), language).await {
-            Ok(raw) => raw,
-            Err(first) => {
-                tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
-                self.media.transcribe(&name, bytes, language).await.map_err(|e| {
-                    format!(
-                        "Part {} of {total} of {filename} ({}–{}) could not be transcribed, twice: {e}. Nothing was saved; \
-                         transcribe {filename} again.",
-                        k + 1,
-                        clock(part.keep),
-                        clock(part.end)
-                    )
-                })?
+        let mut tried_again = false;
+        loop {
+            match self.media.transcribe(&name, bytes.clone(), language).await {
+                Ok(raw) => return Ok(audio::labelled(&raw)),
+                Err(Unmade::Held { held, words }) => {
+                    let wait = waits.lock().unwrap_or_else(|e| e.into_inner()).next(held.retry_after);
+                    let Some(wait) = wait else { return Err(failed(&words, "")) };
+                    tracing::debug!(part = k + 1, total, wait_ms = wait.as_millis() as u64, "balance held by running work; this part again after the wait");
+                    if !ctx.wait_out(wait).await {
+                        return Err(failed(&words, ""));
+                    }
+                }
+                Err(Unmade::Said(e)) if tried_again => return Err(failed(&e, ", twice")),
+                Err(Unmade::Said(first)) => {
+                    tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
+                    tried_again = true;
+                }
             }
-        };
-        Ok(audio::labelled(&raw))
+        }
     }
 
     /// Makes the video and answers the result text and its file, which the
@@ -3493,6 +3515,36 @@ echo "Parts: {{\"duration\": 3000.0, \"cut_in_pauses\": 2, \"cut_without_pause\"
         for seg in t["segments"].as_array().unwrap() {
             assert!(seg.as_object().unwrap().keys().all(|k| ["text", "start", "end", "speaker"].contains(&k.as_str())), "{seg}");
         }
+    }
+
+    /// Part two of three is refused because running work holds the balance,
+    /// then served: that part alone waits it out and is sent again, the parts
+    /// already made are kept (each sent once), and the whole transcript
+    /// comes back.
+    #[tokio::test]
+    async fn a_held_part_waits_alone_and_the_transcript_comes_back_whole() {
+        let held_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = held_once.clone();
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(_)) if body.contains("part two") && !held.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                (429, "application/json", br#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#.to_vec())
+            }
+            ("/v1/audio/transcriptions", Some(a)) => (200, "application/json", a.as_bytes().to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&tmp.path().join("args.txt"))));
+        let video = tmp.path().join("in/podcast.mov");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"a small video").unwrap();
+        let result = tool.execute_dyn(&ToolContext::default(), json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.held_balance.is_none(), "the transcript came back; nothing for the registry to wait out");
+        assert!(tmp.path().join("in/podcast.transcript.json").exists());
+        let sent = |part: &str| janus.seen.lock().unwrap().iter().filter(|(_, b, _)| b.contains(part)).count();
+        assert_eq!((sent("part one"), sent("part two"), sent("part three")), (1, 2, 1), "only the held part is sent again");
     }
 
     /// A part that fails twice fails the whole transcript: nothing is saved.
