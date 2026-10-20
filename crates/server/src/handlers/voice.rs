@@ -272,6 +272,24 @@ fn realtime_leg(state: &AppState, agent_id: &str) -> Result<RealtimeLeg, LegRefu
     }
 }
 
+/// What a call whose line could not be opened tells its client. Running work
+/// holding the balance carries a `code` the desktop words in the owner's
+/// language (`chat.balanceBusy`), with the same sentence in English for every
+/// other client; it is never "the call ended" or out of balance.
+fn connect_failure_words(e: &voice::VoiceError) -> serde_json::Value {
+    match e {
+        voice::VoiceError::BalanceReserved => serde_json::json!({
+            "type": "Error",
+            "code": "balance_reserved",
+            "message": types::balance::BALANCE_BUSY,
+        }),
+        voice::VoiceError::Realtime(_) => serde_json::json!({
+            "type": "Error",
+            "message": "The call could not be started. Try again.",
+        }),
+    }
+}
+
 /// Janus's realtime relay under its gateway root.
 fn janus_realtime_url(janus_url: &str) -> String {
     let url = janus_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
@@ -2446,10 +2464,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         Ok(pair) => pair,
         Err(e) => {
             warn!(error = %e, "realtime connect failed");
-            let msg = serde_json::json!({
-                "type": "Error",
-                "message": "The call could not be started. Try again.",
-            });
+            let msg = connect_failure_words(&e);
             let _ = socket.send(Message::Text(msg.to_string().into())).await;
             return;
         }
@@ -3495,7 +3510,7 @@ fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
 
 #[cfg(test)]
 mod realtime_leg_tests {
-    use super::{LegRefusal, janus_realtime_url, leg_refusal_words};
+    use super::{LegRefusal, connect_failure_words, janus_realtime_url, leg_refusal_words};
     use agent::harness::turn::VoiceRefusal;
 
     /// Nebo AI's Voice dials Janus's relay under the gateway root.
@@ -3518,6 +3533,19 @@ mod realtime_leg_tests {
             let words = leg_refusal_words(&r).1.to_ascii_lowercase();
             assert!(!["xai", "grok", "openai", "x.ai"].iter().any(|v| words.contains(v)), "{words}");
         }
+    }
+
+    /// A line refused because running work holds the balance reads as busy,
+    /// with the code the desktop words in the owner's language: never "the
+    /// call ended" and never out of balance.
+    #[test]
+    fn a_held_balance_reads_as_busy_with_a_code() {
+        let busy = connect_failure_words(&voice::VoiceError::BalanceReserved);
+        assert_eq!(busy["code"], "balance_reserved");
+        assert_eq!(busy["message"], types::balance::BALANCE_BUSY);
+        let other = connect_failure_words(&voice::VoiceError::Realtime("dial failed".into()));
+        assert!(other.get("code").is_none());
+        assert_eq!(other["message"], "The call could not be started. Try again.");
     }
 }
 

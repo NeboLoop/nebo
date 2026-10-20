@@ -24,58 +24,39 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-/// How many times a request refused with [`crate::BALANCE_RESERVED`] is sent
-/// again, and the most all the waits between add up to.
-const RESERVED_RETRIES: usize = 3;
-const RESERVED_BUDGET: Duration = Duration::from_secs(30);
-/// The wait when such a refusal names none.
-const RESERVED_WAIT: Duration = Duration::from_secs(2);
-
 /// Send the request `build` makes (built fresh per attempt). A gateway
 /// refusal that says work already running holds the balance
-/// ([`crate::BALANCE_RESERVED`]) is waited out here, for every caller: the
-/// same request again after its `Retry-After` plus up to a quarter more, at
-/// most [`RESERVED_RETRIES`] times within [`RESERVED_BUDGET`]. The refused
+/// ([`crate::BALANCE_RESERVED`]) is waited out here, for every HTTP caller,
+/// with the waits [`types::balance::ReservedWaits`] gives. The refused
 /// request was not served, so sending it again charges once. Any other
 /// answer, and a reserved one that outlasts the waits, is returned as it
 /// came for the caller to map ([`crate::balance_reserved`]).
 pub async fn send(build: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
-    let mut waited = Duration::ZERO;
-    let mut retries = 0;
+    let mut waits = types::balance::ReservedWaits::default();
     loop {
         let resp = build().send().await?;
-        if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || retries == RESERVED_RETRIES {
+        if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Ok(resp);
         }
         // Reading the body is the only way to tell; the response is put back
         // together for the caller when it is some other 429.
         let (status, version, headers) = (resp.status(), resp.version(), resp.headers().clone());
         let body = resp.bytes().await?;
-        let asked = retry_after_secs(&headers).map(Duration::from_secs).unwrap_or(RESERVED_WAIT);
-        let wait = asked + jitter(asked / 4);
-        if !crate::is_balance_reserved(status.as_u16(), &String::from_utf8_lossy(&body))
-            || waited + wait > RESERVED_BUDGET
-        {
+        let wait = if crate::is_balance_reserved(status.as_u16(), &String::from_utf8_lossy(&body)) {
+            waits.next(retry_after_secs(&headers).map(Duration::from_secs))
+        } else {
+            None
+        };
+        let Some(wait) = wait else {
             let mut back = ::http::Response::new(body);
             *back.status_mut() = status;
             *back.version_mut() = version;
             *back.headers_mut() = headers;
             return Ok(reqwest::Response::from(back));
-        }
-        retries += 1;
-        tracing::info!(retry = retries, wait_ms = wait.as_millis() as u64, "balance held by running work; sending again after the wait");
+        };
+        tracing::info!(wait_ms = wait.as_millis() as u64, "balance held by running work; sending again after the wait");
         tokio::time::sleep(wait).await;
-        waited += wait;
     }
-}
-
-/// Up to `max`, so callers refused together do not all come back at once.
-fn jitter(max: Duration) -> Duration {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    max.mul_f64(f64::from(nanos % 1000) / 1000.0)
 }
 
 /// HTTP client for streaming chat completions (Anthropic, OpenAI, Janus,
@@ -206,7 +187,7 @@ mod tests {
         assert_eq!(resp.status(), 429);
         assert_eq!(super::retry_after_secs(resp.headers()), Some(0));
         assert_eq!(resp.text().await.unwrap(), RESERVED);
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1 + super::RESERVED_RETRIES);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1 + types::balance::RESERVED_RETRIES);
     }
 
     /// Any other 429, the out-of-balance one included, is not sent again

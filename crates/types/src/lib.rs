@@ -1,4 +1,5 @@
 pub mod api;
+pub mod balance;
 pub mod character;
 pub mod constants;
 pub mod error;

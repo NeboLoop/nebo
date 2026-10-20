@@ -220,21 +220,54 @@ async fn dial(cfg: &RealtimeConfig) -> Result<Socket, VoiceError> {
 
 /// Open a socket to a Janus (or direct) audio endpoint: the bearer, the bot
 /// it is for, and the purpose Janus groups the usage under. The voice call
-/// and dictation both dial through here.
+/// and dictation both dial through here. Janus admits a line at connect; a
+/// refusal because running work holds the balance is dialed again after the
+/// waits `types::balance::ReservedWaits` gives, and one that outlasts them is
+/// [`VoiceError::BalanceReserved`].
 pub(crate) async fn open(
     url: &str,
     bearer: &str,
     bot_id: Option<&str>,
     purpose: &'static str,
 ) -> Result<Socket, VoiceError> {
+    let mut waits = ::types::balance::ReservedWaits::default();
+    loop {
+        match dial_once(url, bearer, bot_id, purpose).await {
+            Err(Dialed::Reserved(retry_after)) => match waits.next(retry_after) {
+                Some(wait) => {
+                    info!(wait_ms = wait.as_millis() as u64, purpose, "balance held by running work; dialing again after the wait");
+                    tokio::time::sleep(wait).await;
+                }
+                None => return Err(VoiceError::BalanceReserved),
+            },
+            Err(Dialed::Failed(e)) => return Err(e),
+            Ok(ws) => return Ok(ws),
+        }
+    }
+}
+
+/// Why one dial did not open: the balance held (with the wait the refusal
+/// asked for), or anything else.
+enum Dialed {
+    Reserved(Option<std::time::Duration>),
+    Failed(VoiceError),
+}
+
+async fn dial_once(
+    url: &str,
+    bearer: &str,
+    bot_id: Option<&str>,
+    purpose: &'static str,
+) -> Result<Socket, Dialed> {
+    let failed = |e: String| Dialed::Failed(VoiceError::Realtime(e));
     let mut request = url
         .into_client_request()
-        .map_err(|e| VoiceError::Realtime(format!("bad realtime url: {e}")))?;
+        .map_err(|e| failed(format!("bad realtime url: {e}")))?;
     request.headers_mut().insert(
         "Authorization",
         format!("Bearer {}", bearer)
             .parse()
-            .map_err(|_| VoiceError::Realtime("invalid bearer token".into()))?,
+            .map_err(|_| failed("invalid bearer token".into()))?,
     );
     if let Some(bot_id) = bot_id {
         if let Ok(v) = bot_id.parse() {
@@ -248,10 +281,24 @@ pub(crate) async fn open(
         .headers_mut()
         .insert("User-Agent", HeaderValue::from_static(types::constants::USER_AGENT));
 
-    let (ws, _resp) = tls::connect_ws(request)
-        .await
-        .map_err(|e| VoiceError::Realtime(format!("realtime dial failed: {e}")))?;
-    Ok(ws)
+    match tls::connect_ws(request).await {
+        Ok((ws, _resp)) => Ok(ws),
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp))
+            if ::types::balance::is_balance_reserved(
+                resp.status().as_u16(),
+                &String::from_utf8_lossy(resp.body().as_deref().unwrap_or_default()),
+            ) =>
+        {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse().ok())
+                .map(std::time::Duration::from_secs);
+            Err(Dialed::Reserved(retry_after))
+        }
+        Err(e) => Err(failed(format!("realtime dial failed: {e}"))),
+    }
 }
 
 /// Build the `session.update` frame from the config.
@@ -2128,5 +2175,52 @@ mod tests {
         assert!(recap.contains("reply 39"));
         assert!(!recap.contains("reply 0 "));
         assert!(!recap.contains("still running"));
+    }
+
+    const RESERVED: &str = r#"{"error":{"code":"BALANCE_RESERVED","message":"balance reserved by running work"}}"#;
+
+    /// Refuses the next upgrade the way Janus does while running work holds
+    /// the balance.
+    async fn refuse_reserved(l: &TcpListener) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut sock, _) = l.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let _ = sock.read(&mut buf).await;
+        let reply = format!(
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{RESERVED}",
+            RESERVED.len()
+        );
+        let _ = sock.write_all(reply.as_bytes()).await;
+    }
+
+    /// Janus refused the line twice while running work held the balance; the
+    /// third dial opens it.
+    #[tokio::test]
+    async fn a_held_balance_is_waited_out_and_the_line_opens() {
+        let (l, cfg) = listener().await;
+        let far = tokio::spawn(async move {
+            refuse_reserved(&l).await;
+            refuse_reserved(&l).await;
+            let _ws = accept(&l).await;
+        });
+        let opened = open(&cfg.endpoint, "tok", None, "voice").await;
+        assert!(opened.is_ok(), "{:?}", opened.err());
+        far.await.unwrap();
+    }
+
+    /// Still held after every wait: the busy words, never the call ending
+    /// and never out of balance.
+    #[tokio::test]
+    async fn a_balance_held_past_the_waits_is_busy() {
+        let (l, cfg) = listener().await;
+        let far = tokio::spawn(async move {
+            for _ in 0..=::types::balance::RESERVED_RETRIES {
+                refuse_reserved(&l).await;
+            }
+        });
+        let err = open(&cfg.endpoint, "tok", None, "voice").await.err().expect("refused");
+        assert!(matches!(err, VoiceError::BalanceReserved), "{err:?}");
+        assert_eq!(err.to_string(), ::types::balance::BALANCE_BUSY);
+        far.await.unwrap();
     }
 }
