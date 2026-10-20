@@ -276,6 +276,9 @@ impl SubAgentOrchestrator for HelperDoor {
 
     fn recover(&self) -> Fut<'_, ()> {
         Box::pin(async move {
+            if let Err(e) = crate::worktree::check_git().await {
+                warn!(error = %e, "git is missing or too old");
+            }
             let swept = crate::worktree::cleanup_stale(crate::worktree::STALE_AFTER_SECS).await;
             if !swept.is_empty() {
                 info!(count = swept.len(), "swept stale helper copies");
