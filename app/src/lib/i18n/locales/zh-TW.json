@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "適用於下一則訊息。不需要重新啟動。",
 		"defaultSaveFailed": "無法變更預設設定。",
 		"badgeDefault": "預設",
-		"badgeJanus": "透過 Nebo AI 路由",
 		"readOnly": "僅供檢視",
 		"colLevel": "等級",
 		"colRunsOn": "運作在",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Nebo 內建的安全預設設定（無決策模型）",
 		"decisionsDefaultOption": "Nebo AI · Jev（預設）",
 		"withEffort": "{effort} 投入",
-		"localNoJanus": "無法透過 Nebo AI 路由：它的模型運作在這台電腦上。",
 		"removeConfirm": "移除 {name}？仍在使用它的員工會運作在 Nebo AI 上，並會被告知這一點。",
 		"loadFailed": "無法載入智慧包。",
 		"saveFailed": "無法儲存智慧包。",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "助手",
 		"laneBuild": "建構",
 		"laneWorkflow": "工作流程",
-		"laneByWork": "依工作選擇",
-		"routeJanus": "透過 Nebo AI 路由",
-		"routeJanusHint": "Nebo AI 會在此智慧包的模型之間為每一步選擇等級，以降低你的帳單。你的金鑰會隨每個請求一起傳送，且絕不會被儲存。路由費：{fee}。",
-		"routeJanusLocal": "這台電腦上的模型（Ollama、Claude Code、Codex）永遠直接運作。語音永不路由。"
+		"laneByWork": "依工作選擇"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo 只會在 App 開啟時執行。若要在結束後繼續工作，請在「登入項目」中開啟 Nebo。",

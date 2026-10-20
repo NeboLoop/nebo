@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "Berkuat kuasa untuk mesej seterusnya. Tidak perlu mulakan semula.",
 		"defaultSaveFailed": "Tidak dapat menukar lalai.",
 		"badgeDefault": "Lalai",
-		"badgeJanus": "Melalui Nebo AI",
 		"readOnly": "Baca sahaja",
 		"colLevel": "Tahap",
 		"colRunsOn": "Berjalan pada",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Lalai selamat terbina dalam Nebo (tiada model keputusan)",
 		"decisionsDefaultOption": "Nebo AI · Jev (lalai)",
 		"withEffort": "Usaha {effort}",
-		"localNoJanus": "Tidak boleh melalui Nebo AI: modelnya berjalan pada komputer ini.",
 		"removeConfirm": "Alih keluar {name}? Pekerja yang masih menggunakannya akan berjalan pada Nebo AI, dan dimaklumkan.",
 		"loadFailed": "Tidak dapat memuatkan pek.",
 		"saveFailed": "Tidak dapat menyimpan pek.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Pembantu",
 		"laneBuild": "Pembinaan",
 		"laneWorkflow": "Aliran kerja",
-		"laneByWork": "Dipilih mengikut kerja",
-		"routeJanus": "Lalu melalui Nebo AI",
-		"routeJanusHint": "Nebo AI memilih tahap untuk setiap langkah merentasi model pek ini untuk mengurangkan bil anda. Kunci anda disertakan dengan setiap permintaan dan tidak pernah disimpan. Yuran penghalaan: {fee}.",
-		"routeJanusLocal": "Model pada komputer ini (Ollama, Claude Code, Codex) sentiasa berjalan secara terus. Suara tidak sekali-kali dihalakan."
+		"laneByWork": "Dipilih mengikut kerja"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo hanya berjalan semasa apl dibuka. Untuk terus berfungsi selepas ditutup, hidupkan Nebo dalam Item Log Masuk.",

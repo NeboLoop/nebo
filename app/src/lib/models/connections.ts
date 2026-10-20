@@ -99,11 +99,6 @@ export function isDefaultPack(defaultValue: string | undefined, packId: string):
 	return defaultValue === `pack/${packId}` || defaultValue.startsWith(`pack/${packId}/`);
 }
 
-/** Whether any model a pack names runs on this computer (it can't route through Janus). */
-export function packUsesLocal(pack: Pack, choices: PackChoice[]): boolean {
-	return Object.values(pack.levels).some((v) => !!v && !!choices.find((c) => c.value === v)?.local);
-}
-
 // ── Browse models ───────────────────────────────────────────────────
 
 export type CatalogFilters = {

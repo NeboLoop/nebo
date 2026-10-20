@@ -163,10 +163,6 @@ pub struct OpenAIEmbeddingProvider {
 }
 
 impl OpenAIEmbeddingProvider {
-    pub fn new(api_key: impl Into<ApiKey>) -> Self {
-        Self::with_base_url(api_key, "https://api.openai.com/v1".to_string())
-    }
-
     pub fn with_base_url(api_key: impl Into<ApiKey>, base_url: String) -> Self {
         Self {
             api_key: api_key.into(),

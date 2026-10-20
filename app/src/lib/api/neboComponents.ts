@@ -1165,7 +1165,6 @@ export interface Pack {
 	levels: PackLevels
 	fallback: boolean
 	builtIn: boolean
-	routeThroughJanus?: boolean
 	lanes?: PackLanes
 	levelEffort?: LevelEffort
 }

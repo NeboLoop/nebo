@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "חל על ההודעה הבאה. בלי הפעלה מחדש.",
 		"defaultSaveFailed": "לא ניתן לשנות את ברירת המחדל.",
 		"badgeDefault": "ברירת מחדל",
-		"badgeJanus": "עובר דרך Nebo AI",
 		"readOnly": "לקריאה בלבד",
 		"colLevel": "רמה",
 		"colRunsOn": "רץ על",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "ברירות המחדל הבטוחות המובנות של Nebo (בלי מודל החלטה)",
 		"decisionsDefaultOption": "Nebo AI · Jev (ברירת מחדל)",
 		"withEffort": "מאמץ {effort}",
-		"localNoJanus": "לא ניתן לנתב דרך Nebo AI: המודל שלו רץ על המחשב הזה.",
 		"removeConfirm": "להסיר את {name}? עובד שעדיין עליה ירוץ על Nebo AI, ויקבל על כך הודעה.",
 		"loadFailed": "לא ניתן לטעון את החבילות.",
 		"saveFailed": "לא ניתן לשמור את החבילה.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "עוזרים",
 		"laneBuild": "בנייה",
 		"laneWorkflow": "תהליכי עבודה",
-		"laneByWork": "נבחר לפי העבודה",
-		"routeJanus": "נתב דרך Nebo AI",
-		"routeJanusHint": "Nebo AI בוחר את הרמה בכל שלב בין המודלים של חבילה זו כדי להוריד את החשבון שלך. המפתחות שלך נשלחים עם כל בקשה ולעולם לא נשמרים. עמלת ניתוב: {fee}.",
-		"routeJanusLocal": "מודלים על המחשב הזה (Ollama, Claude Code, Codex) תמיד רצים ישירות. קול לעולם לא עובר ניתוב."
+		"laneByWork": "נבחר לפי העבודה"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo פועל רק כשהאפליקציה פתוחה. כדי שימשיך לעבוד אחרי הסגירה, הפעילו את Nebo בפריטי התחברות.",

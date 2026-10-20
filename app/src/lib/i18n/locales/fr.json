@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "S'applique au prochain message. Pas de redémarrage.",
 		"defaultSaveFailed": "Impossible de changer la valeur par défaut.",
 		"badgeDefault": "Par défaut",
-		"badgeJanus": "Passe par Nebo AI",
 		"readOnly": "Lecture seule",
 		"colLevel": "Niveau",
 		"colRunsOn": "Tourne sur",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Les valeurs par défaut sûres intégrées de Nebo (aucun modèle de décision)",
 		"decisionsDefaultOption": "Nebo AI · Jev (par défaut)",
 		"withEffort": "Effort {effort}",
-		"localNoJanus": "Ne peut pas passer par Nebo AI : son modèle tourne sur cet ordinateur.",
 		"removeConfirm": "Retirer {name} ? Un employé encore sur ce pack tournera sur Nebo AI, et en sera informé.",
 		"loadFailed": "Impossible de charger les packs.",
 		"saveFailed": "Impossible d'enregistrer le pack.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Assistants",
 		"laneBuild": "Création",
 		"laneWorkflow": "Workflows",
-		"laneByWork": "Choisi selon la tâche",
-		"routeJanus": "Passer par Nebo AI",
-		"routeJanusHint": "Nebo AI choisit le niveau à chaque étape parmi les modèles de ce pack pour réduire votre facture. Vos clés accompagnent chaque requête et ne sont jamais stockées. Frais de routage : {fee}.",
-		"routeJanusLocal": "Les modèles sur cet ordinateur (Ollama, Claude Code, Codex) tournent toujours en direct. La voix ne passe jamais par ce routage."
+		"laneByWork": "Choisi selon la tâche"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo ne fonctionne que lorsque l'app est ouverte. Pour qu'il continue après la fermeture, activez Nebo dans Ouverture.",

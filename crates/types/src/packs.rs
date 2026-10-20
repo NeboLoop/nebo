@@ -219,10 +219,6 @@ pub struct Pack {
     pub fallback: bool,
     /// The built-in Nebo AI pack: never edited or deleted.
     pub built_in: bool,
-    /// Janus Auto picks the level per step across this pack's models, with
-    /// the owner's keys passed per request (stored now; Janus routes later).
-    #[serde(default)]
-    pub route_through_janus: bool,
     #[serde(default)]
     pub lanes: PackLanes,
     #[serde(default)]
@@ -265,7 +261,6 @@ pub fn nebo_ai() -> Pack {
         },
         fallback: false,
         built_in: true,
-        route_through_janus: false,
         lanes: PackLanes { workflow: Some(Effort::Instant), ..PackLanes::default() },
         // Low is Instant with a little thinking; Max is High at its highest
         // effort until Janus has a speed above `nebo-1-pro`.
@@ -369,7 +364,7 @@ mod tests {
     use super::*;
 
     fn byo(levels: PackLevels) -> Pack {
-        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), lanes: PackLanes::default(), ..nebo_ai() }
+        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), lanes: PackLanes::default() }
     }
 
     #[test]
@@ -468,19 +463,21 @@ mod tests {
     }
 
     #[test]
-    fn lanes_effort_and_routing_carry_as_the_contract_names_them() {
+    fn lanes_and_effort_carry_as_the_contract_names_them() {
         let mut p = byo(PackLevels { decisions: Some("systemone_compatible@k1/jev-latest".into()), ..Default::default() });
-        p.route_through_janus = true;
         p.lanes.heartbeat = Some(Effort::Instant);
         p.level_effort.max = Some(ProviderEffort::High);
         let v = serde_json::to_value(&p).unwrap();
-        assert_eq!(v["routeThroughJanus"], true);
+        assert!(v.get("routeThroughJanus").is_none(), "no pack routes through Janus by choice: {v}");
         assert_eq!(v["lanes"], serde_json::json!({"heartbeat": "instant"}));
         assert_eq!(v["levelEffort"], serde_json::json!({"max": "high"}));
         assert_eq!(v["levels"]["decisions"], "systemone_compatible@k1/jev-latest");
         // A pack saved before these fields reads with their defaults.
         let old: Pack = serde_json::from_value(serde_json::json!({"id": "o", "name": "Old", "levels": {}, "fallback": true, "builtIn": false})).unwrap();
-        assert!(!old.route_through_janus && old.lanes == PackLanes::default());
+        assert!(old.lanes == PackLanes::default());
+        // One saved with the old toggle reads the same: the toggle is gone.
+        let toggled: Pack = serde_json::from_value(serde_json::json!({"id": "t", "name": "T", "levels": {}, "fallback": true, "builtIn": false, "routeThroughJanus": true})).unwrap();
+        assert_eq!(toggled.lanes, PackLanes::default());
         let lanes: PackLanes = serde_json::from_value(serde_json::json!({"build": "max", "workflow": "instant"})).unwrap();
         assert_eq!((lanes.level(Lane::Build, None), lanes.level(Lane::Workflow, None)), (Some(Effort::Max), Some(Effort::Instant)));
     }

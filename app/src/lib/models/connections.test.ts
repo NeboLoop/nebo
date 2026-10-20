@@ -19,7 +19,7 @@ const choices: PackChoice[] = [
 ];
 
 function pack(levels: Pack['levels']): Pack {
-	return { id: 'a', name: 'A', levels, fallback: true, builtIn: false, routeThroughJanus: false, lanes: {}, levelEffort: {} };
+	return { id: 'a', name: 'A', levels, fallback: true, builtIn: false, lanes: {}, levelEffort: {} };
 }
 
 function model(p: Partial<CatalogModel> & { modelId: string }): CatalogModel {

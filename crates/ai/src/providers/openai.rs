@@ -35,6 +35,10 @@ pub struct OpenAIProvider {
     bot_id: Option<String>,
     /// Optional lane identifier sent as X-Lane header (used by Janus for routing).
     lane: Option<String>,
+    /// The owner's own key, when this provider is his paid connection
+    /// reached through Janus (`types::own_key`): sent on every request, so
+    /// Janus calls his provider on it and charges the platform fee alone.
+    own_key: Option<::types::own_key::OwnKey>,
     /// HTTP client wrapped in RwLock for connection reset recovery.
     http_client: RwLock<reqwest::Client>,
 }
@@ -48,6 +52,7 @@ impl OpenAIProvider {
             provider_id: "openai".to_string(),
             bot_id: None,
             lane: None,
+            own_key: None,
             http_client: RwLock::new(crate::http::streaming_client()),
         }
     }
@@ -61,6 +66,7 @@ impl OpenAIProvider {
             provider_id: "openai".to_string(),
             bot_id: None,
             lane: None,
+            own_key: None,
             http_client: RwLock::new(crate::http::streaming_client()),
         }
     }
@@ -78,6 +84,12 @@ impl OpenAIProvider {
     /// Set the lane for X-Lane header (used by Janus for routing).
     pub fn set_lane(&mut self, lane: impl Into<String>) {
         self.lane = Some(lane.into());
+    }
+
+    /// Carry the owner's own key to Janus on every request (the provider's
+    /// base URL is then Janus's, its bearer the NeboAI token).
+    pub fn set_own_key(&mut self, own_key: ::types::own_key::OwnKey) {
+        self.own_key = Some(own_key);
     }
 
     /// Build async-openai messages from our generic format.
@@ -691,17 +703,13 @@ impl Provider for OpenAIProvider {
             }
         }
         // The pack level's provider effort, only for a model that thinks —
-        // or for Janus, which applies it per model of its pool and drops it
-        // where a model can't take it: OpenRouter normalizes it as
-        // `reasoning.effort`; the OpenAI format names it `reasoning_effort`.
+        // or for Janus's own models, where Janus applies it per model of its
+        // pool and drops it where a model can't take it. The OpenAI format
+        // names it `reasoning_effort`; Janus puts it in each provider's own
+        // shape for an owner's key.
         let thinks = req.enable_thinking || self.provider_id == "janus";
         if let (Some(effort), true, serde_json::Value::Object(map)) = (req.effort, thinks, &mut body_val) {
-            let e = serde_json::json!(effort);
-            if self.provider_id == "openrouter" {
-                map.insert("reasoning".to_string(), serde_json::json!({ "effort": e }));
-            } else {
-                map.insert("reasoning_effort".to_string(), e);
-            }
+            map.insert("reasoning_effort".to_string(), serde_json::json!(effort));
         }
 
         // LLM payload breakdown — logged on every request so we can MEASURE where the
@@ -782,6 +790,22 @@ impl Provider for OpenAIProvider {
         let url = format!("{}/chat/completions", self.base_url);
         let mut headers = reqwest::header::HeaderMap::new();
         let api_key = self.api_key.current();
+        if let Some(own) = &self.own_key {
+            // His key reaches his provider through Janus, which needs his
+            // NeboAI account to charge the platform fee to.
+            if api_key.is_empty() {
+                return Err(ProviderError::Api {
+                    code: SIGNED_OUT.to_string(),
+                    message: format!("Sign in to NeboAI to use your own {} key.", crate::provider_name(&self.provider_id)),
+                    retryable: false,
+                });
+            }
+            for (name, value) in own.headers() {
+                if let Ok(v) = value.parse() {
+                    headers.insert(reqwest::header::HeaderName::from_static(own_key_header(name)), v);
+                }
+            }
+        }
         if !api_key.is_empty() {
             headers.insert(
                 reqwest::header::AUTHORIZATION,
@@ -837,6 +861,11 @@ impl Provider for OpenAIProvider {
                 model = model,
                 "provider HTTP error"
             );
+            if self.own_key.is_some()
+                && let Some(refused) = own_key_refused(&body, &self.provider_id)
+            {
+                return Err(refused);
+            }
             return Err(map_http_error(status.as_u16(), &body, &model, &url, retry_after));
         }
 
@@ -1008,6 +1037,35 @@ fn go_duration_secs(s: &str) -> Option<u64> {
 /// gateway already tried every route before answering).
 fn is_final_error(err: &serde_json::Value, code: &str) -> bool {
     code == CONTENT_FILTERED || err.get("retryable").and_then(|r| r.as_bool()) == Some(false)
+}
+
+/// The code a chat on the owner's own key fails with when Nebo is not
+/// signed in to NeboAI: Janus carries his key, on his account.
+pub const SIGNED_OUT: &str = "neboai_signed_out";
+
+/// The lowercase name `reqwest` takes for a `types::own_key` header.
+fn own_key_header(name: &str) -> &'static str {
+    match name {
+        ::types::own_key::KEY_HEADER => "x-provider-api-key",
+        ::types::own_key::PROVIDER_HEADER => "x-provider",
+        _ => "x-provider-base-url",
+    }
+}
+
+/// Janus's answer when the owner's own key cannot serve: his provider
+/// refused it (`PROVIDER_KEY_REJECTED`), or it cannot pay the route
+/// (`PROVIDER_KEY_UNUSABLE`). Either is his to fix, so it is final and says
+/// so plainly; any other answer is `None` (the usual mapping).
+fn own_key_refused(body: &str, provider_id: &str) -> Option<ProviderError> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let code = v["error"]["code"].as_str()?;
+    let name = crate::provider_name(provider_id);
+    let message = match code {
+        "PROVIDER_KEY_REJECTED" => format!("Your {name} API key was refused. Check it in Settings > Providers."),
+        "PROVIDER_KEY_UNUSABLE" => format!("Your {name} API key can't run this model. Check the model on it in Settings > Providers."),
+        _ => return None,
+    };
+    Some(ProviderError::Api { code: code.to_string(), message, retryable: false })
 }
 
 /// Map HTTP error status + body to our ProviderError type.
@@ -1721,6 +1779,82 @@ mod tests {
         assert!(janus.contains(r#""reasoning_effort":"high""#), "{janus}");
         let other = body_for("openai").await;
         assert!(!other.contains("reasoning"), "{other}");
+    }
+
+    /// A provider on Janus with the owner's own key, answering once with
+    /// `status` and `body`; the request head it sent comes back.
+    async fn own_key_call(bearer: &str, status: &'static str, body: &'static str) -> (Result<EventReceiver, ProviderError>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else { return String::new() };
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap();
+            let resp = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let mut provider = OpenAIProvider::with_base_url(bearer.to_string(), "claude-x".into(), format!("http://{addr}/v1"));
+        provider.set_provider_id("anthropic");
+        provider.set_own_key(::types::own_key::OwnKey { provider: "anthropic".into(), key: "sk-own".into(), base_url: None });
+        let req = ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("chat"))
+        };
+        let result = provider.stream(&req).await;
+        if bearer.is_empty() {
+            server.abort();
+            return (result, String::new());
+        }
+        (result, server.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_own_key_rides_to_janus_beside_the_neboai_token() {
+        let (_, head) = own_key_call("nebo-token", "200 OK", "").await;
+        let head = head.to_ascii_lowercase();
+        assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+        assert!(head.contains("authorization: bearer nebo-token"), "{head}");
+        assert!(head.contains("x-provider-api-key: sk-own"), "{head}");
+        assert!(head.contains("x-provider: anthropic"), "{head}");
+        assert!(head.contains(r#""model":"claude-x""#), "the owner's model, verbatim: {head}");
+    }
+
+    #[tokio::test]
+    async fn an_own_key_without_a_neboai_account_asks_to_sign_in() {
+        match own_key_call("", "200 OK", "").await.0 {
+            Err(ProviderError::Api { code, message, retryable: false }) => {
+                assert_eq!(code, SIGNED_OUT);
+                assert_eq!(message, "Sign in to NeboAI to use your own Anthropic key.");
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_own_key_is_the_owners_to_fix_and_final() {
+        let body = r#"{"error":{"code":"PROVIDER_KEY_REJECTED","message":"upstream said no"}}"#;
+        match own_key_call("nebo-token", "400 Bad Request", body).await.0 {
+            Err(ProviderError::Api { code, message, retryable: false }) => {
+                assert_eq!(code, "PROVIDER_KEY_REJECTED");
+                assert_eq!(message, "Your Anthropic API key was refused. Check it in Settings > Providers.");
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+
+    /// An empty balance on an own-key request reads as Nebo AI's does, so
+    /// the app shows its add-funds message (`USAGE_LIMIT_EXCEEDED`).
+    #[tokio::test]
+    async fn an_empty_balance_on_an_own_key_is_the_add_funds_refusal() {
+        let body = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"Usage limit exceeded: balance_exhausted"}}"#;
+        match own_key_call("nebo-token", "429 Too Many Requests", body).await.0 {
+            Err(ProviderError::Api { code, message, retryable: false }) => {
+                assert_eq!(code, "USAGE_LIMIT_EXCEEDED");
+                assert!(message.starts_with("USAGE_LIMIT_EXCEEDED"), "{message}");
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
     }
 
     // The hub rotates the NeboAI token on every comms connect, so a Janus

@@ -134,6 +134,13 @@ pub struct WebCore {
     chrome_groups: Mutex<std::collections::HashSet<String>>,
 }
 
+/// One of the owner's own search API keys on its way through Janus, with
+/// Google Programmable Search's engine id when it is that one.
+struct OwnSearch {
+    key: types::own_key::OwnKey,
+    cx: Option<String>,
+}
+
 /// Connection details for the Janus `/v1/search` endpoint. Auth mirrors the
 /// Janus LLM provider: `X-Bot-ID` identifies the bot for per-user billing, and
 /// the Bearer token is the bot's Janus credential (the `janus` auth profile's
@@ -605,7 +612,7 @@ impl WebCore {
         //    browser-scrape bot-flagging entirely. Falls through to the legacy
         //    tiers only when Janus is unreachable/unconfigured (offline/dev).
         if self.janus_search.is_some() {
-            match self.search_via_janus(query).await {
+            match self.search_via_janus(query, None).await {
                 Ok(results) if !results.is_empty() => {
                     let result = format_search_results(query, &results, "janus");
                     self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
@@ -621,40 +628,40 @@ impl WebCore {
             }
         }
 
-        // 1. Try BYOK API providers (check auth_profiles for search-* providers)
-        if let Some(store) = &self.store {
+        // 1. The owner's own search API keys (search-* connections), through
+        //    Janus: it calls that provider on his key and charges the
+        //    platform fee (`auth::credential::own_key`).
+        if let (Some(store), Some(_)) = (&self.store, &self.janus_search) {
             for provider in [
                 "search-brave",
                 "search-tavily",
                 "search-google",
                 "search-serpapi",
             ] {
-                if let Ok(profiles) = store.list_active_auth_profiles_by_provider(provider) {
-                    if let Some(profile) = profiles.first() {
-                        match self
-                            .search_via_api(
-                                provider,
-                                &auth::credential::profile_key(profile),
-                                query,
-                                profile.metadata.as_deref().unwrap_or(""),
-                            )
-                            .await
-                        {
-                            Ok(results) if !results.is_empty() => {
-                                let result = format_search_results(query, &results, provider);
-                                self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
-                                return result;
-                            }
-                            Err(e) => {
-                                tracing::warn!(provider, error = %e, "BYOK search failed, trying next");
-                                tier_failures.push(format!(
-                                    "your search API key ({}): {e}",
-                                    provider.trim_start_matches("search-")
-                                ));
-                            }
-                            _ => {} // empty results, try next
-                        }
+                let Some(profile) = store.list_active_auth_profiles_by_provider(provider).ok().and_then(|p| p.into_iter().next()) else {
+                    continue;
+                };
+                let Some(key) = auth::credential::own_key(&profile) else { continue };
+                // Google's Programmable Search names its engine (`cx`).
+                let cx = profile
+                    .metadata
+                    .as_deref()
+                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                    .and_then(|m| m["cx"].as_str().map(String::from));
+                match self.search_via_janus(query, Some(&OwnSearch { key, cx })).await {
+                    Ok(results) if !results.is_empty() => {
+                        let result = format_search_results(query, &results, provider);
+                        self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
+                        return result;
                     }
+                    Err(e) => {
+                        tracing::warn!(provider, error = %e, "own-key search failed, trying next");
+                        tier_failures.push(format!(
+                            "your search API key ({}): {e}",
+                            provider.trim_start_matches("search-")
+                        ));
+                    }
+                    _ => {} // empty results, try next
                 }
             }
         }
@@ -714,10 +721,11 @@ impl WebCore {
 
     /// Search via the Janus gateway's `/v1/search` endpoint. Janus owns the
     /// provider keys and fails over across Serper/Brave/Tavily server-side, so
-    /// the client just asks for results and gets normalized hits back. Auth
+    /// the client just asks for results and gets normalized hits back; with
+    /// `own`, Janus searches that one provider on the owner's own key. Auth
     /// mirrors the Janus LLM provider: `X-Bot-ID` for per-user billing and a
     /// Bearer token (the `neboai` profile's OAuth token, else the bot_id).
-    async fn search_via_janus(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+    async fn search_via_janus(&self, query: &str, own: Option<&OwnSearch>) -> Result<Vec<SearchResult>, String> {
         let cfg = self
             .janus_search
             .as_ref()
@@ -726,15 +734,22 @@ impl WebCore {
         let (bearer, has_profile_key) = self.janus_bearer(cfg);
 
         let url = format!("{}/v1/search", cfg.base_url);
-        let body = serde_json::json!({ "query": query, "max_results": 10 });
+        let mut body = serde_json::json!({ "query": query, "max_results": 10 });
+        if let Some(cx) = own.and_then(|o| o.cx.as_deref()) {
+            body["cx"] = serde_json::Value::String(cx.to_string());
+        }
 
-        let resp = self
+        let mut req = self
             .client
             .post(&url)
             .bearer_auth(&bearer)
             .header("X-Bot-ID", &cfg.bot_id)
             // The shared client speaks as a browser to web pages; to Janus, as Nebo.
-            .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT)
+            .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT);
+        for (name, value) in own.iter().flat_map(|o| o.key.headers()) {
+            req = req.header(name, value);
+        }
+        let resp = req
             .json(&body)
             .timeout(std::time::Duration::from_secs(12))
             .send()
@@ -1028,114 +1043,6 @@ impl WebCore {
             .ok()?;
         let links = extract_search_links(&evaluate_result_text(&v), "search.brave.com");
         (links.len() >= 2).then(|| format_search_results(query, &links, "browser-human"))
-    }
-
-    /// Dispatch to the correct BYOK search API provider.
-    async fn search_via_api(
-        &self,
-        provider: &str,
-        api_key: &str,
-        query: &str,
-        metadata: &str,
-    ) -> Result<Vec<SearchResult>, String> {
-        match provider {
-            "search-brave" => self.search_brave_api(api_key, query).await,
-            "search-tavily" => self.search_tavily(api_key, query).await,
-            "search-google" => self.search_google_cse(api_key, query, metadata).await,
-            "search-serpapi" => self.search_serpapi(api_key, query).await,
-            _ => Err(format!("unknown search provider: {}", provider)),
-        }
-    }
-
-    /// Brave Search API (requires X-Subscription-Token header).
-    async fn search_brave_api(
-        &self,
-        api_key: &str,
-        query: &str,
-    ) -> Result<Vec<SearchResult>, String> {
-        let url = format!(
-            "https://api.search.brave.com/res/v1/web/search?q={}&count=10",
-            urlencoding::encode(query)
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .header("X-Subscription-Token", api_key)
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("Brave API returned status {}", resp.status()));
-        }
-        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(parse_brave_api_results(&body))
-    }
-
-    /// Tavily Search API (api_key in JSON body).
-    async fn search_tavily(&self, api_key: &str, query: &str) -> Result<Vec<SearchResult>, String> {
-        let body = serde_json::json!({ "api_key": api_key, "query": query, "max_results": 10 });
-        let resp = self
-            .client
-            .post("https://api.tavily.com/search")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("Tavily API returned status {}", resp.status()));
-        }
-        let result: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(parse_tavily_results(&result))
-    }
-
-    /// Google Custom Search Engine API (`cx` param; the key rides the
-    /// `x-goog-api-key` header, never the URL — a transport error prints its
-    /// URL, and that error becomes tool output the model reads).
-    async fn search_google_cse(
-        &self,
-        api_key: &str,
-        query: &str,
-        metadata: &str,
-    ) -> Result<Vec<SearchResult>, String> {
-        let cx = serde_json::from_str::<serde_json::Value>(metadata)
-            .ok()
-            .and_then(|m| m["cx"].as_str().map(String::from))
-            .ok_or("Google CSE requires 'cx' in metadata")?;
-        let resp = google_cse_request(&self.client, api_key, &cx, query)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("Google CSE API returned status {}", resp.status()));
-        }
-        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(parse_google_cse_results(&body))
-    }
-
-    /// SerpAPI (api_key as query param — SerpAPI takes it nowhere else — so
-    /// a transport error drops its URL before it becomes tool output).
-    async fn search_serpapi(
-        &self,
-        api_key: &str,
-        query: &str,
-    ) -> Result<Vec<SearchResult>, String> {
-        let url = format!(
-            "https://serpapi.com/search.json?api_key={}&q={}&num=10",
-            api_key,
-            urlencoding::encode(query)
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(keyed_url_error)?;
-        if !resp.status().is_success() {
-            return Err(format!("SerpAPI returned status {}", resp.status()));
-        }
-        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(parse_serpapi_results(&body))
     }
 
     /// Fetch a search-results page with the per-request scrape budget applied.
@@ -3308,25 +3215,6 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
     }
 }
 
-/// The Google CSE call: the key in the `x-goog-api-key` header, never the
-/// URL (see `WebCore::search_google_cse`).
-fn google_cse_request(client: &reqwest::Client, api_key: &str, cx: &str, query: &str) -> reqwest::RequestBuilder {
-    client
-        .get(format!(
-            "https://www.googleapis.com/customsearch/v1?cx={}&q={}",
-            cx,
-            urlencoding::encode(query)
-        ))
-        .header("x-goog-api-key", api_key)
-}
-
-/// A transport error from a call whose URL holds the user's key: reqwest
-/// prints the URL in its message, and the message becomes tool output the
-/// model (Janus, when it is the model) reads — so the URL is dropped.
-fn keyed_url_error(e: reqwest::Error) -> String {
-    e.without_url().to_string()
-}
-
 /// Format search results into a ToolResult (the payload the model sees).
 /// Contract: numbered `title / url / snippet`
 /// with title ≤200 chars and snippet ≤600, an untrusted-content guard in the header,
@@ -3421,99 +3309,6 @@ fn clamp_text(text: &str, max: usize) -> String {
     }
     let cut = types::strutil::floor_char_boundary(text, max);
     format!("{}…", &text[..cut])
-}
-
-/// Parse Brave Search API JSON response.
-fn parse_brave_api_results(body: &serde_json::Value) -> Vec<SearchResult> {
-    let empty = vec![];
-    let results = body
-        .get("web")
-        .and_then(|w| w.get("results"))
-        .and_then(|r| r.as_array())
-        .unwrap_or(&empty);
-    results
-        .iter()
-        .filter_map(|r| {
-            let title = r.get("title").and_then(|v| v.as_str())?;
-            let url = r.get("url").and_then(|v| v.as_str())?;
-            let snippet = r.get("description").and_then(|v| v.as_str()).unwrap_or("");
-            Some(SearchResult {
-                title: title.to_string(),
-                url: url.to_string(),
-                snippet: snippet.to_string(),
-            })
-        })
-        .take(10)
-        .collect()
-}
-
-/// Parse Tavily Search API JSON response.
-fn parse_tavily_results(body: &serde_json::Value) -> Vec<SearchResult> {
-    let empty = vec![];
-    let results = body
-        .get("results")
-        .and_then(|r| r.as_array())
-        .unwrap_or(&empty);
-    results
-        .iter()
-        .filter_map(|r| {
-            let title = r.get("title").and_then(|v| v.as_str())?;
-            let url = r.get("url").and_then(|v| v.as_str())?;
-            let snippet = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            Some(SearchResult {
-                title: title.to_string(),
-                url: url.to_string(),
-                snippet: snippet.to_string(),
-            })
-        })
-        .take(10)
-        .collect()
-}
-
-/// Parse Google Custom Search Engine API JSON response.
-fn parse_google_cse_results(body: &serde_json::Value) -> Vec<SearchResult> {
-    let empty = vec![];
-    let items = body
-        .get("items")
-        .and_then(|r| r.as_array())
-        .unwrap_or(&empty);
-    items
-        .iter()
-        .filter_map(|r| {
-            let title = r.get("title").and_then(|v| v.as_str())?;
-            let url = r.get("link").and_then(|v| v.as_str())?;
-            let snippet = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
-            Some(SearchResult {
-                title: title.to_string(),
-                url: url.to_string(),
-                snippet: snippet.to_string(),
-            })
-        })
-        .take(10)
-        .collect()
-}
-
-/// Parse SerpAPI JSON response.
-fn parse_serpapi_results(body: &serde_json::Value) -> Vec<SearchResult> {
-    let empty = vec![];
-    let results = body
-        .get("organic_results")
-        .and_then(|r| r.as_array())
-        .unwrap_or(&empty);
-    results
-        .iter()
-        .filter_map(|r| {
-            let title = r.get("title").and_then(|v| v.as_str())?;
-            let url = r.get("link").and_then(|v| v.as_str())?;
-            let snippet = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
-            Some(SearchResult {
-                title: title.to_string(),
-                url: url.to_string(),
-                snippet: snippet.to_string(),
-            })
-        })
-        .take(10)
-        .collect()
 }
 
 /// Parse Brave Search HTML results.
@@ -3782,28 +3577,74 @@ mod tests {
         assert_eq!(args["elements"][0]["name"], "Go");
     }
 
-    /// A user's own search key never reaches tool output — what the model
-    /// (Janus, when it is the model) reads — through a printed URL.
-    const SENTINEL: &str = "SENTINEL-byo-search-key-0000000000";
-
-    #[test]
-    fn the_google_cse_key_rides_a_header_not_the_url() {
-        let req = google_cse_request(&reqwest::Client::new(), SENTINEL, "cx-1", "q").build().unwrap();
-        assert!(!req.url().as_str().contains(SENTINEL), "key in URL: {}", req.url());
-        assert_eq!(req.headers()["x-goog-api-key"], SENTINEL);
+    /// A fake Janus on loopback: answers each request with the next body in
+    /// `replies` and hands back every request it read (head and body).
+    async fn fake_janus(replies: Vec<&'static str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for reply in replies {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut got = Vec::new();
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    got.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&got).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                        if got.len() >= end + 4 + len || n == 0 {
+                            break;
+                        }
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                seen.push(String::from_utf8_lossy(&got).to_string());
+                let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}", reply.len());
+                sock.write_all(resp.as_bytes()).await.unwrap();
+            }
+            seen
+        });
+        (base, task)
     }
 
+    /// The owner's own search key goes to Janus with the provider it belongs
+    /// to, and Google's engine id in the body — never to the search API
+    /// direct, and never in a URL (which would reach tool output).
     #[tokio::test]
-    async fn a_keyed_url_transport_error_drops_the_key() {
-        // Port 1 on loopback refuses at once: a real transport error, no network.
-        let err = reqwest::Client::new()
-            .get(format!("http://127.0.0.1:1/search.json?api_key={SENTINEL}&q=x"))
-            .send()
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains(SENTINEL), "reqwest prints the URL — the guard is needed");
-        let out = keyed_url_error(err);
-        assert!(!out.contains(SENTINEL), "key survived: {out}");
+    async fn an_own_search_key_goes_through_janus_with_its_provider() {
+        const SENTINEL: &str = "SENTINEL-byo-search-key-0000000000";
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store
+            .create_auth_profile("g", "Google", "search-google", SENTINEL, None, None, 0, 1, Some("api_key"), Some(r#"{"cx":"cx-1"}"#))
+            .unwrap();
+        let (base, janus) = fake_janus(vec![
+            r#"{"results":[]}"#,
+            r#"{"results":[{"title":"Hit","url":"https://example.com","snippet":"s"}]}"#,
+        ])
+        .await;
+        let core = WebCore::new().with_store(store).with_janus_search(base, "bot-1".into());
+        let result = core.run_search("nebo", "s1", "g1", "q:nebo").await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("https://example.com"), "{}", result.content);
+        let seen = janus.await.unwrap();
+        let (platform, own) = (seen[0].to_ascii_lowercase(), &seen[1]);
+        assert!(!platform.contains("x-provider"), "the platform search carries no own key: {platform}");
+        let own_lower = own.to_ascii_lowercase();
+        assert!(own_lower.starts_with("post /v1/search "), "{own}");
+        assert!(own_lower.contains("x-provider: google_cse"), "{own}");
+        assert!(own.contains(&format!("{SENTINEL}\r\n")) && own_lower.contains("x-provider-api-key:"), "{own}");
+        assert!(own_lower.contains("x-bot-id: bot-1"), "{own}");
+        assert!(own.contains(r#""cx":"cx-1""#), "{own}");
+        assert!(!own.lines().next().unwrap().contains(SENTINEL), "key in the URL: {own}");
     }
 
     // Site tools ride the same extension pathway as every other browser action:

@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "يُطبَّق على الرسالة التالية. بلا إعادة تشغيل.",
 		"defaultSaveFailed": "تعذّر تغيير الإعداد الافتراضي.",
 		"badgeDefault": "افتراضي",
-		"badgeJanus": "يمر عبر Nebo AI",
 		"readOnly": "قراءة فقط",
 		"colLevel": "المستوى",
 		"colRunsOn": "يعمل على",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "إعدادات Nebo الآمنة المدمجة (بلا نموذج قرار)",
 		"decisionsDefaultOption": "Nebo AI · Jev (افتراضي)",
 		"withEffort": "جهد {effort}",
-		"localNoJanus": "لا يمكن توجيهه عبر Nebo AI: نموذجه يعمل على هذا الكمبيوتر.",
 		"removeConfirm": "إزالة {name}؟ أي موظف لا يزال عليها يعمل على Nebo AI، ويُخبَر بذلك.",
 		"loadFailed": "تعذّر تحميل الحزم.",
 		"saveFailed": "تعذّر حفظ الحزمة.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "المساعدون",
 		"laneBuild": "الإنشاء",
 		"laneWorkflow": "سير العمل",
-		"laneByWork": "يُختار حسب العمل",
-		"routeJanus": "التوجيه عبر Nebo AI",
-		"routeJanusHint": "يختار Nebo AI المستوى في كل خطوة بين نماذج هذه الحزمة لتقليل فاتورتك. تُرسَل مفاتيحك مع كل طلب ولا تُخزَّن أبدًا. رسوم التوجيه: {fee}.",
-		"routeJanusLocal": "النماذج على هذا الكمبيوتر (Ollama، Claude Code، Codex) تعمل دائمًا مباشرة. الصوت لا يُوجَّه أبدًا."
+		"laneByWork": "يُختار حسب العمل"
 	},
 	"loginItemsBanner": {
 		"text": "يعمل Nebo فقط أثناء فتح التطبيق. لإبقائه يعمل بعد الإغلاق، شغّل Nebo في عناصر تسجيل الدخول.",

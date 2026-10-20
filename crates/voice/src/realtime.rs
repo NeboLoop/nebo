@@ -103,10 +103,13 @@ pub struct RealtimeConfig {
     /// Janus's relay or an xAI realtime model such as `grok-voice-latest`
     /// direct. Always set by the caller: nothing here picks one.
     pub model: String,
-    /// Bearer token: Janus JWT for the relay leg, xAI API key for direct.
+    /// Bearer token: the owner's NeboAI token (Janus's relay).
     pub bearer: String,
-    /// Janus attribution header (X-Bot-ID); ignored by xAI direct.
+    /// Janus attribution header (X-Bot-ID).
     pub bot_id: Option<String>,
+    /// The owner's own xAI key, when his pack's voice runs on it: Janus
+    /// dials xAI on it and charges the platform fee (`types::own_key`).
+    pub own_key: Option<types::own_key::OwnKey>,
     /// Resume a previous conversation (xAI resumption; 30 min expiry).
     pub conversation_id: Option<String>,
     /// System prompt for the voice agent.
@@ -136,6 +139,7 @@ impl Default for RealtimeConfig {
             model: String::new(),
             bearer: String::new(),
             bot_id: None,
+            own_key: None,
             conversation_id: None,
             instructions: String::new(),
             voice: "eve".into(),
@@ -215,16 +219,18 @@ fn realtime_url(cfg: &RealtimeConfig) -> String {
 /// Open the socket to the realtime endpoint.
 async fn dial(cfg: &RealtimeConfig) -> Result<Socket, VoiceError> {
     // Janus groups usage by purpose; a realtime session is always voice.
-    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), "voice").await
+    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), cfg.own_key.as_ref(), "voice").await
 }
 
-/// Open a socket to a Janus (or direct) audio endpoint: the bearer, the bot
-/// it is for, and the purpose Janus groups the usage under. The voice call
-/// and dictation both dial through here.
+/// Open a socket to a Janus audio endpoint: the bearer, the bot it is for,
+/// the owner's own key when it is his that pays, and the purpose Janus
+/// groups the usage under. The voice call and dictation both dial through
+/// here.
 pub(crate) async fn open(
     url: &str,
     bearer: &str,
     bot_id: Option<&str>,
+    own_key: Option<&types::own_key::OwnKey>,
     purpose: &'static str,
 ) -> Result<Socket, VoiceError> {
     let mut request = url
@@ -239,6 +245,11 @@ pub(crate) async fn open(
     if let Some(bot_id) = bot_id {
         if let Ok(v) = bot_id.parse() {
             request.headers_mut().insert("X-Bot-ID", v);
+        }
+    }
+    for (name, value) in own_key.iter().flat_map(|k| k.headers()) {
+        if let Ok(v) = value.parse() {
+            request.headers_mut().insert(name, v);
         }
     }
     request

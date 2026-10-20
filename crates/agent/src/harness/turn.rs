@@ -3889,7 +3889,6 @@ mod tests {
                 },
                 fallback: true,
                 built_in: false,
-                route_through_janus: false,
                 lanes: PackLanes { heartbeat: Some(types::packs::Effort::Instant), ..Default::default() },
                 level_effort: LevelEffort { medium: Some(ProviderEffort::High), ..Default::default() },
             })
@@ -4059,7 +4058,6 @@ mod tests {
                 levels: PackLevels { low: Some("scripted/fast".into()), max: Some("scripted/strong".into()), ..Default::default() },
                 fallback: false,
                 built_in: false,
-                route_through_janus: false,
                 lanes: PackLanes { build: Some(Effort::Max), ..Default::default() },
                 level_effort: LevelEffort::default(),
             })
@@ -4087,7 +4085,6 @@ mod tests {
             levels: PackLevels { low: Some("scripted/fast".into()), high: Some("scripted/strong".into()), ..Default::default() },
             fallback: false,
             built_in: false,
-            route_through_janus: false,
             lanes: PackLanes { build, ..Default::default() },
             level_effort: LevelEffort { high: Some(ProviderEffort::High), ..Default::default() },
         };
@@ -4141,7 +4138,6 @@ mod tests {
                 levels: PackLevels { low: Some("scripted/fast".into()), high: Some("scripted/strong".into()), ..Default::default() },
                 fallback: false,
                 built_in: false,
-                route_through_janus: false,
                 lanes: PackLanes { build: Some(Effort::High), ..Default::default() },
                 level_effort: LevelEffort::default(),
             })

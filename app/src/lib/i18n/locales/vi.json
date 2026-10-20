@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "Áp dụng cho tin nhắn tiếp theo. Không cần khởi động lại.",
 		"defaultSaveFailed": "Không thể thay đổi mặc định.",
 		"badgeDefault": "Mặc định",
-		"badgeJanus": "Định tuyến qua Nebo AI",
 		"readOnly": "Chỉ đọc",
 		"colLevel": "Mức",
 		"colRunsOn": "Chạy trên",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Mặc định an toàn tích hợp sẵn của Nebo (không có mô hình quyết định)",
 		"decisionsDefaultOption": "Nebo AI · Jev (mặc định)",
 		"withEffort": "Nỗ lực {effort}",
-		"localNoJanus": "Không thể định tuyến qua Nebo AI: mô hình của nó chạy trên máy tính này.",
 		"removeConfirm": "Xóa {name}? Nhân viên vẫn dùng gói này sẽ chạy trên Nebo AI, và sẽ được thông báo về điều đó.",
 		"loadFailed": "Không thể tải các gói.",
 		"saveFailed": "Không thể lưu gói.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Trợ lý",
 		"laneBuild": "Xây dựng",
 		"laneWorkflow": "Quy trình",
-		"laneByWork": "Chọn theo công việc",
-		"routeJanus": "Định tuyến qua Nebo AI",
-		"routeJanusHint": "Nebo AI chọn mức cho mỗi bước trong số các mô hình của gói này để giảm hóa đơn của bạn. Khóa của bạn đi cùng mỗi yêu cầu và không bao giờ được lưu trữ. Phí định tuyến: {fee}.",
-		"routeJanusLocal": "Các mô hình trên máy tính này (Ollama, Claude Code, Codex) luôn chạy trực tiếp. Giọng nói không bao giờ được định tuyến."
+		"laneByWork": "Chọn theo công việc"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo chỉ chạy khi ứng dụng đang mở. Để Nebo tiếp tục làm việc sau khi thoát, hãy bật Nebo trong Mục đăng nhập.",

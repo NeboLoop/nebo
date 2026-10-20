@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "Si applica al messaggio successivo. Nessun riavvio.",
 		"defaultSaveFailed": "Impossibile cambiare il predefinito.",
 		"badgeDefault": "Predefinito",
-		"badgeJanus": "Passa attraverso Nebo AI",
 		"readOnly": "Solo lettura",
 		"colLevel": "Livello",
 		"colRunsOn": "Funziona su",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "I valori predefiniti sicuri integrati di Nebo (nessun modello di decisione)",
 		"decisionsDefaultOption": "Nebo AI · Jev (predefinito)",
 		"withEffort": "Impegno {effort}",
-		"localNoJanus": "Non può passare attraverso Nebo AI: il suo modello funziona su questo computer.",
 		"removeConfirm": "Rimuovere {name}? Un dipendente ancora su questo pacchetto funzionerà su Nebo AI, e ne sarà informato.",
 		"loadFailed": "Impossibile caricare i pacchetti.",
 		"saveFailed": "Impossibile salvare il pacchetto.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Assistenti",
 		"laneBuild": "Creazione",
 		"laneWorkflow": "Flussi di lavoro",
-		"laneByWork": "Scelto in base al lavoro",
-		"routeJanus": "Passa attraverso Nebo AI",
-		"routeJanusHint": "Nebo AI sceglie il livello per ogni passaggio tra i modelli di questo pacchetto per ridurre la tua fattura. Le tue chiavi viaggiano con ogni richiesta e non vengono mai salvate. Commissione di instradamento: {fee}.",
-		"routeJanusLocal": "I modelli su questo computer (Ollama, Claude Code, Codex) funzionano sempre in modo diretto. La voce non viene mai instradata."
+		"laneByWork": "Scelto in base al lavoro"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo funziona solo mentre l'app è aperta. Per farlo continuare dopo la chiusura, attiva Nebo in Elementi login.",

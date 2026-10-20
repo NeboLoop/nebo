@@ -565,10 +565,20 @@ fn build_embedding_provider(
             continue;
         }
         match profile.provider.as_str() {
+            // The owner's own OpenAI key embeds through Janus, which calls
+            // OpenAI on it and charges the platform fee.
             "openai" => {
-                let ep = ai::OpenAIEmbeddingProvider::new(auth::credential::profile_key(profile));
+                let Some(own) = auth::credential::own_key(profile) else { continue };
+                let token = store.clone();
+                let mut headers: Vec<(String, String)> = own.headers().into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+                headers.push(("X-Bot-ID".into(), config::read_bot_id().unwrap_or_default()));
+                let ep = ai::OpenAIEmbeddingProvider::with_base_url(
+                    ai::ApiKey::live(move || auth::neboai_token(&token).unwrap_or_default()),
+                    format!("{}/v1", cfg.neboai.janus_url),
+                )
+                .with_headers(headers);
                 let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
-                info!("embedding provider: OpenAI text-embedding-3-small (cached)");
+                info!("embedding provider: OpenAI text-embedding-3-small on the owner's key, through Janus (cached)");
                 return Some(Arc::new(cached));
             }
             "ollama" => {
@@ -697,9 +707,11 @@ const SYSTEMONE_COMPATIBLE: &str = "systemone_compatible";
 
 /// Where decisions go when the active pack (`model`) is a pack whose Decisions slot
 /// names one of the owner's SystemOne-compatible connections that exists
-/// and is active: its base URL, its key, the slot's model. `None` (the
-/// default is not a pack, the slot is empty or Nebo AI's `janus/…`, the
-/// connection is gone or off) keeps decisions on Janus. Local reads only.
+/// and is active: the slot's model, through Janus on his key for a hosted
+/// service (`auth::credential::own_key`), or direct to a server on his own
+/// machine or network. `None` (the default is not a pack, the slot is empty
+/// or Nebo AI's `janus/…`, the connection is gone or off) keeps decisions
+/// on Nebo AI's Jev. Local reads only.
 pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEndpoint> {
     let (pack_id, _) = types::packs::parse_ref(model)?;
     let pack = store.get_intelligence_pack(pack_id).ok()??;
@@ -714,12 +726,45 @@ pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEnd
         return None;
     }
     let base_url = profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty())?.to_string();
-    Some(ai::DecideEndpoint {
-        base_url,
-        key: auth::credential::profile_key(&profile),
-        model: model.to_string(),
-        profile_id: profile.id,
-    })
+    let route = match auth::credential::own_key(&profile) {
+        Some(key) => ai::DecideRoute::Janus(key),
+        None => ai::DecideRoute::Direct { base_url, key: auth::credential::profile_key(&profile) },
+    };
+    Some(ai::DecideEndpoint { model: model.to_string(), profile_id: profile.id, route })
+}
+
+/// A chat client on Janus: Nebo AI (`own_key` None, id `janus`, its models
+/// on Nebo's keys) or one of the owner's own paid connections (`own_key`
+/// Some, id the connection's kind, so routing and the selector see the same
+/// provider as before): his key rides every request, Janus calls his
+/// provider on it and charges the platform fee. The ONE construction of a
+/// Janus chat client; `build_providers` and the provider test both use it.
+pub(crate) fn janus_chat_provider(
+    store: &Arc<db::Store>,
+    cfg: &Config,
+    id: &str,
+    model: String,
+    own_key: Option<types::own_key::OwnKey>,
+) -> ai::OpenAIProvider {
+    // His key goes through Janus on his NeboAI account and no other: with
+    // no NeboAI token there is no bearer, and the provider says to sign in.
+    let bearer = match own_key {
+        None => janus_api_key(store.clone()),
+        Some(_) => {
+            let store = store.clone();
+            ai::ApiKey::live(move || auth::neboai_token(&store).unwrap_or_default())
+        }
+    };
+    let mut p = ai::OpenAIProvider::with_base_url(bearer, model, format!("{}/v1", cfg.neboai.janus_url));
+    p.set_provider_id(id);
+    let bot_id = config::read_bot_id().unwrap_or_default();
+    if !bot_id.is_empty() {
+        p.set_bot_id(bot_id);
+    }
+    if let Some(own) = own_key {
+        p.set_own_key(own);
+    }
+    p
 }
 
 pub fn build_providers(
@@ -743,63 +788,46 @@ pub fn build_providers(
             continue;
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
-            "anthropic" => {
-                Some(Arc::new(ai::AnthropicProvider::new(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                )))
-            }
-            "openai" => {
-                Some(Arc::new(ai::OpenAIProvider::new(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                )))
-            }
-            "deepseek" => {
-                let mut p = ai::OpenAIProvider::with_base_url(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                    profile
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
-                );
-                p.set_provider_id("deepseek");
-                Some(Arc::new(p))
-            }
-            "google" => {
-                Some(Arc::new(ai::GeminiProvider::new(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                )))
-            }
-            // OpenRouter speaks the OpenAI format at its own fixed URL.
-            "openrouter" => {
-                let mut p = ai::OpenAIProvider::with_base_url(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                    "https://openrouter.ai/api/v1".into(),
-                );
-                p.set_provider_id("openrouter");
-                Some(Arc::new(p))
-            }
-            // Any OpenAI-compatible URL (Groq, Together, DeepSeek, xAI,
-            // Mistral, Azure, LM Studio, vLLM…): the owner's base URL.
-            "openai_compatible" => match profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
-                Some(url) => {
-                    let mut p = ai::OpenAIProvider::with_base_url(
-                        auth::credential::profile_key(profile),
+            // A paid hosted provider on the owner's own key reaches it
+            // through Janus (`auth::credential::own_key`), which charges the
+            // platform fee; a compatible server (or a DeepSeek-kind base URL)
+            // on his own machine or network is no paid service and is
+            // reached direct.
+            kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "openai_compatible") => {
+                match auth::credential::own_key(profile) {
+                    Some(own) => Some(Arc::new(janus_chat_provider(
+                        store,
+                        cfg,
+                        kind,
                         profile.model.clone().unwrap_or_default(),
-                        url.to_string(),
-                    );
-                    p.set_provider_id("openai_compatible");
-                    Some(Arc::new(p))
+                        Some(own),
+                    ))),
+                    None => match profile
+                        .base_url
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|u| !u.is_empty() && matches!(kind, "openai_compatible" | "deepseek"))
+                    {
+                        Some(url) => {
+                            let mut p = ai::OpenAIProvider::with_base_url(
+                                auth::credential::profile_key(profile),
+                                profile.model.clone().unwrap_or_default(),
+                                url.to_string(),
+                            );
+                            p.set_provider_id(kind);
+                            Some(Arc::new(p))
+                        }
+                        None if kind == "openai_compatible" => {
+                            warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");
+                            None
+                        }
+                        None => {
+                            warn!(profile_id = %profile.id, provider = %kind, "provider has no key, skipping");
+                            None
+                        }
+                    },
                 }
-                None => {
-                    warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");
-                    None
-                }
-            },
+            }
             // Decision models (Jev and other SystemOne-compatible ones) are
             // not chat providers: the decide client reaches them.
             "systemone_compatible" => None,
@@ -845,25 +873,9 @@ pub fn build_providers(
                         None
                     } else {
                         // Janus URL comes from config (NeboAI.JanusURL), NOT auth_profile base_url
-                        let janus_url = &cfg.neboai.janus_url;
                         let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
-                        let bot_id = config::read_bot_id().unwrap_or_default();
-                        info!(
-                            model = %model,
-                            janus_url = %janus_url,
-                            bot_id = %bot_id,
-                            "loaded Janus provider via NeboAI"
-                        );
-                        let mut p = ai::OpenAIProvider::with_base_url(
-                            janus_api_key(store.clone()),
-                            model,
-                            format!("{}/v1", janus_url),
-                        );
-                        p.set_provider_id("janus");
-                        if !bot_id.is_empty() {
-                            p.set_bot_id(bot_id);
-                        }
-                        Some(Arc::new(p))
+                        info!(model = %model, janus_url = %cfg.neboai.janus_url, "loaded Janus provider via NeboAI");
+                        Some(Arc::new(janus_chat_provider(store, cfg, "janus", model, None)))
                     }
                 } else {
                     info!(
@@ -7261,38 +7273,29 @@ fn extract_message_text(content: &str) -> String {
 }
 
 
-/// Where to send audio for transcription: `(api_key, base_url, model)`.
-///
-/// An explicit OpenAI-compatible key wins; otherwise the Janus gateway the user
-/// already bills through, which speaks the same `/audio/transcriptions` shape.
-pub(crate) fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
+/// Where to send audio for transcription: always Janus, on the owner's own
+/// OpenAI key when he has one (Janus calls OpenAI on it and charges the
+/// platform fee), else on his NeboAI account. `None`: no NeboAI account,
+/// so nothing can carry the audio.
+pub(crate) fn transcription_endpoint(state: &state::AppState) -> Option<ai::transcribe::Endpoint> {
     const DEFAULT_STT_MODEL: &str = "whisper-1";
 
     let profiles = state.store.list_auth_profiles().ok()?;
     let active = || profiles.iter().filter(|p| p.is_active.unwrap_or(0) == 1);
 
-    if let Some((p, key)) = active()
-        .filter(|p| p.provider == "openai")
-        .map(|p| (p, auth::credential::profile_key(p)))
-        .find(|(_, key)| !key.is_empty())
-    {
-        return Some((
-            key,
-            p.base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
-            DEFAULT_STT_MODEL.to_string(),
-        ));
-    }
-
-    if !active().any(|p| p.provider == "neboai") {
-        return None;
-    }
-    Some((
-        janus_api_key(state.store.clone()).current(),
-        format!("{}/v1", state.config.neboai.janus_url),
-        DEFAULT_STT_MODEL.to_string(),
-    ))
+    let own_key = active().filter(|p| p.provider == "openai").find_map(auth::credential::own_key);
+    let bearer = match own_key {
+        Some(_) => auth::neboai_token(&state.store)?,
+        None if active().any(|p| p.provider == "neboai") => janus_api_key(state.store.clone()).current(),
+        None => return None,
+    };
+    Some(ai::transcribe::Endpoint {
+        bearer,
+        base_url: format!("{}/v1", state.config.neboai.janus_url),
+        model: DEFAULT_STT_MODEL.to_string(),
+        bot_id: config::read_bot_id().filter(|b| !b.is_empty()),
+        own_key,
+    })
 }
 
 /// The note for a sound an attachment carries: its transcript, or why there
@@ -7302,8 +7305,8 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
     use crate::attachments::{note, Kind};
     let audio = |body: &str| note(Kind::Audio, filename, size, body);
     match transcription_endpoint(state) {
-        Some((key, base_url, model)) => {
-            match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &key, &base_url, &model, named, bytes).await {
+        Some(endpoint) => {
+            match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &endpoint, named, bytes).await {
                 Ok(heard) if heard.text.is_empty() => audio(
                     "transcribed, but no speech was found in it. Say so rather than \
                      guessing at its contents.",
@@ -7320,7 +7323,7 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
         }
         None => audio(
             "no transcription provider is configured, so its contents are unknown. Tell \
-             the user to add an OpenAI key or sign in to NeboAI.",
+             the user to sign in to NeboAI.",
         ),
     }
 }
@@ -7668,11 +7671,32 @@ mod decision_endpoint_tests {
             .unwrap();
         save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
         let ep = decision_endpoint(&store, "pack/mine").expect("the owner's endpoint");
-        assert_eq!(ep.base_url, "https://api.typesafe.ai");
-        assert_eq!(ep.key, "owner-key");
+        match &ep.route {
+            ai::DecideRoute::Janus(k) => {
+                assert_eq!((k.provider.as_str(), k.key.as_str()), ("systemone_compatible", "owner-key"));
+                assert_eq!(k.base_url.as_deref(), Some("https://api.typesafe.ai"));
+            }
+            ai::DecideRoute::Direct { .. } => panic!("a hosted service goes through Janus"),
+        }
         assert_eq!(ep.model, "jev-latest");
         assert_eq!(ep.profile_id, "p1");
         assert!(decision_endpoint(&store, "pack/mine/low").is_some(), "any level of the pack");
+    }
+
+    /// A SystemOne-compatible server on the owner's own network is no paid
+    /// service: it is reached direct.
+    #[test]
+    fn a_server_on_the_owners_network_takes_the_decisions_direct() {
+        let (_d, store) = store();
+        store
+            .create_auth_profile("p1", "Lab", "systemone_compatible", "lab-key", None, Some("http://192.168.1.9:8080"), 0, 1, None, None)
+            .unwrap();
+        save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
+        let ep = decision_endpoint(&store, "pack/mine").expect("the owner's endpoint");
+        match ep.route {
+            ai::DecideRoute::Direct { base_url, key } => assert_eq!((base_url.as_str(), key.as_str()), ("http://192.168.1.9:8080", "lab-key")),
+            ai::DecideRoute::Janus(_) => panic!("a local server never goes through Janus"),
+        }
     }
 
     /// An employee's decisions follow its own pack, else the bot's default.
@@ -7703,5 +7727,43 @@ mod decision_endpoint_tests {
         for id in ["off", "missing", "kind", "nomodel"] {
             assert!(decision_endpoint(&store, &format!("pack/{id}")).is_none(), "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod own_key_embedding_tests {
+    use std::sync::Arc;
+
+    /// The owner's own OpenAI key embeds through Janus: his key and its
+    /// provider ride beside the NeboAI token, never to OpenAI direct.
+    #[tokio::test]
+    async fn an_own_openai_key_embeds_through_janus() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let janus = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let body = r#"{"data":[{"index":0,"embedding":[0.5]}]}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store.create_auth_profile("nebo", "NeboAI", "neboai", "nebo-token", None, None, 0, 1, Some("token"), None).unwrap();
+        store.create_auth_profile("o", "Mine", "openai", "sk-own-embed", None, None, 0, 1, None, None).unwrap();
+        let mut cfg = config::Config::default();
+        cfg.neboai.janus_url = janus;
+        let ep = super::build_embedding_provider(&store, &cfg).expect("an embedding provider");
+        let _ = ep.embed(&["hello".to_string()]).await;
+        let request = server.await.unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.starts_with("post /v1/embeddings "), "not Janus's embeddings door");
+        assert!(lower.contains("x-provider-api-key: sk-own-embed"), "the owner's key rides along");
+        assert!(lower.contains("x-provider: openai"));
+        assert!(!lower.contains("authorization: bearer sk-own-embed"), "his key is never the Janus bearer");
+        assert!(request.contains(r#""model":"text-embedding-3-small""#));
     }
 }

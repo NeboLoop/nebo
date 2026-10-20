@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "Aplica-se à próxima mensagem. Sem reiniciar.",
 		"defaultSaveFailed": "Não foi possível alterar o padrão.",
 		"badgeDefault": "Padrão",
-		"badgeJanus": "Passa pelo Nebo AI",
 		"readOnly": "Somente leitura",
 		"colLevel": "Nível",
 		"colRunsOn": "Roda em",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Padrões seguros integrados da Nebo (sem modelo de decisão)",
 		"decisionsDefaultOption": "Nebo AI · Jev (padrão)",
 		"withEffort": "Esforço: {effort}",
-		"localNoJanus": "Não é possível passar pelo Nebo AI: o modelo dele roda neste computador.",
 		"removeConfirm": "Remover {name}? Um funcionário que ainda estiver nele passa a rodar na Nebo AI, e é avisado disso.",
 		"loadFailed": "Não foi possível carregar os pacotes.",
 		"saveFailed": "Não foi possível salvar o pacote.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Auxiliares",
 		"laneBuild": "Criação",
 		"laneWorkflow": "Fluxos de trabalho",
-		"laneByWork": "Escolhido pelo trabalho",
-		"routeJanus": "Rotear pelo Nebo AI",
-		"routeJanusHint": "O Nebo AI escolhe o nível em cada etapa entre os modelos deste pacote para reduzir sua conta. Suas chaves vão com cada requisição e nunca são armazenadas. Taxa de roteamento: {fee}.",
-		"routeJanusLocal": "Modelos neste computador (Ollama, Claude Code, Codex) sempre rodam diretamente. A voz nunca é roteada."
+		"laneByWork": "Escolhido pelo trabalho"
 	},
 	"loginItemsBanner": {
 		"text": "O Nebo só funciona enquanto o app está aberto. Para que continue trabalhando depois de fechar, ative o Nebo em Itens de Início.",

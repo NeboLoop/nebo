@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "Applies to the next message. No restart.",
 		"defaultSaveFailed": "Could not change the default.",
 		"badgeDefault": "Default",
-		"badgeJanus": "Routes through Nebo AI",
 		"readOnly": "Read only",
 		"colLevel": "Level",
 		"colRunsOn": "Runs on",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Nebo's built-in safe defaults (no decision model)",
 		"decisionsDefaultOption": "Nebo AI · Jev (default)",
 		"withEffort": "{effort} effort",
-		"localNoJanus": "Can't route through Nebo AI: its model runs on this computer.",
 		"removeConfirm": "Remove {name}? An employee still on it runs on Nebo AI, and is told so.",
 		"loadFailed": "Could not load the packs.",
 		"saveFailed": "Could not save the pack.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Helpers",
 		"laneBuild": "Building",
 		"laneWorkflow": "Workflows",
-		"laneByWork": "Chosen by the work",
-		"routeJanus": "Route through Nebo AI",
-		"routeJanusHint": "Nebo AI picks the level for each step across this pack's models to lower your bill. Your keys go with each request and are never stored. Routing fee: {fee}.",
-		"routeJanusLocal": "Models on this computer (Ollama, Claude Code, Codex) always run direct. Voice never routes."
+		"laneByWork": "Chosen by the work"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo runs only while the app is open. To keep it working after you quit, turn on Nebo in Login Items.",

@@ -224,41 +224,23 @@ pub async fn test_provider(
         return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
     }
     let test_result: Result<String, String> = match profile.provider.as_str() {
-        "anthropic" => {
-            let provider = ai::AnthropicProvider::new(api_key.clone(), model);
-            test_provider_connection(&provider).await
-        }
-        "openai" => {
-            let provider = ai::OpenAIProvider::new(api_key.clone(), model);
-            test_provider_connection(&provider).await
-        }
-        "deepseek" => {
-            let base_url = profile
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.deepseek.com/v1".into());
-            let provider =
-                ai::OpenAIProvider::with_base_url(api_key.clone(), model, base_url);
-            test_provider_connection(&provider).await
-        }
-        "google" => {
-            let provider = ai::GeminiProvider::new(api_key.clone(), model);
-            test_provider_connection(&provider).await
-        }
-        // The OpenAI format at OpenRouter's fixed URL, or at the owner's.
-        "openrouter" | "openai_compatible" => {
-            let base_url = if profile.provider == "openrouter" {
-                Some("https://openrouter.ai/api/v1".to_string())
-            } else {
-                profile.base_url.clone().filter(|u| !u.trim().is_empty())
-            };
-            match base_url {
-                Some(url) => {
-                    let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
-                    provider.set_provider_id(&profile.provider);
+        // The same client a turn uses: a paid hosted key through Janus, a
+        // compatible server on the owner's own machine or network direct.
+        kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "openai_compatible") => {
+            match auth::credential::own_key(&profile) {
+                Some(own) => {
+                    let provider = crate::janus_chat_provider(&state.store, &state.config, kind, model, Some(own));
                     test_provider_connection(&provider).await
                 }
-                None => Err("This provider needs its base URL.".to_string()),
+                None => match profile.base_url.clone().filter(|u| matches!(kind, "openai_compatible" | "deepseek") && !u.trim().is_empty()) {
+                    Some(url) => {
+                        let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
+                        provider.set_provider_id(kind);
+                        test_provider_connection(&provider).await
+                    }
+                    None if kind == "openai_compatible" => Err("This provider needs its base URL.".to_string()),
+                    None => Err("Missing API key".to_string()),
+                },
             }
         }
         "ollama" => {
@@ -270,17 +252,7 @@ pub async fn test_provider(
             test_provider_connection(&provider).await
         }
         "neboai" => {
-            let janus_url = &state.config.neboai.janus_url;
-            let bot_id = config::read_bot_id().unwrap_or_default();
-            let mut provider = ai::OpenAIProvider::with_base_url(
-                crate::janus_api_key(state.store.clone()),
-                model,
-                format!("{}/v1", janus_url),
-            );
-            provider.set_provider_id("janus");
-            if !bot_id.is_empty() {
-                provider.set_bot_id(bot_id);
-            }
+            let provider = crate::janus_chat_provider(&state.store, &state.config, "janus", model, None);
             test_provider_connection(&provider).await
         }
         _ => Err(format!("Unknown provider type: {}", profile.provider)),
@@ -850,8 +822,6 @@ pub struct PackBody {
     #[serde(default = "fallback_on")]
     pub fallback: bool,
     #[serde(default)]
-    pub route_through_janus: bool,
-    #[serde(default)]
     pub lanes: types::packs::PackLanes,
     #[serde(default)]
     pub level_effort: types::packs::LevelEffort,
@@ -884,7 +854,6 @@ fn pack_of(id: String, body: PackBody) -> Result<types::packs::Pack, types::Nebo
         levels,
         fallback: body.fallback,
         built_in: false,
-        route_through_janus: body.route_through_janus,
         lanes: body.lanes,
         level_effort: body.level_effort,
     })
@@ -1077,7 +1046,6 @@ mod pack_tests {
             name: name.into(),
             levels: PackLevels { medium: Some(medium.into()), auto: Some("janus/nebo-1".into()), ..Default::default() },
             fallback: true,
-            route_through_janus: false,
             lanes: Default::default(),
             level_effort: Default::default(),
         }
@@ -1141,49 +1109,100 @@ mod key_egress_tests {
 }
 
 /// Provider keys are stored encrypted and opened only where a client that
-/// presents them is built: the provider still sends the key the owner typed.
+/// presents them is built: the provider still sends the key the owner typed —
+/// through Janus for a paid hosted provider, direct to a server on his own
+/// machine or network.
 #[cfg(test)]
 mod key_at_rest_tests {
     use std::sync::Arc;
 
     const SENTINEL: &str = "sk-SENTINEL-at-rest-provider-0000";
 
-    #[tokio::test]
-    async fn a_provider_built_from_an_encrypted_key_sends_the_key() {
+    /// A loopback stub that answers every request 401 and keeps each one.
+    async fn stub() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        auth::credential::init(mcp::crypto::Encryptor::generate());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let seen = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 16384];
-            let mut got = Vec::new();
-            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = sock.read(&mut buf).await.unwrap();
-                if n == 0 {
-                    break;
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 16384];
+                let mut got = Vec::new();
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
                 }
-                got.extend_from_slice(&buf[..n]);
+                log.lock().unwrap().push(String::from_utf8_lossy(&got).to_string());
+                let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
             }
-            let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
-            String::from_utf8_lossy(&got).to_string()
         });
+        (base, seen)
+    }
 
+    /// One header's value in a request head, by its lowercase name.
+    fn header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            (k.trim().eq_ignore_ascii_case(name)).then(|| v.trim().to_string())
+        })
+    }
+
+    #[tokio::test]
+    async fn an_own_key_rides_to_janus_and_a_local_server_gets_it_direct() {
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let (janus, janus_seen) = stub().await;
+        let (local, local_seen) = stub().await;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
         let sealed = auth::credential::encrypt(SENTINEL).unwrap();
+        store.create_auth_profile("nebo", "NeboAI", "neboai", "nebo-token", None, None, 0, 1, Some("token"), None).unwrap();
+        for kind in ["anthropic", "openai", "google", "deepseek", "openrouter"] {
+            store.create_auth_profile(kind, "Mine", kind, &sealed, Some("m-1"), None, 0, 1, None, None).unwrap();
+        }
         store
-            .create_auth_profile("d", "Mine", "deepseek", &sealed, Some("deepseek-chat"), Some(&base_url), 0, 1, None, None)
+            .create_auth_profile("groq", "Groq", "openai_compatible", &sealed, Some("llama-x"), Some("https://api.groq.com/openai/v1"), 0, 1, None, None)
             .unwrap();
-        assert!(!store.get_auth_profile("d").unwrap().unwrap().api_key.contains(SENTINEL));
+        store
+            .create_auth_profile("lab", "Lab", "openai_compatible", "lab-key", Some("qwen-local"), Some(&format!("{local}/v1")), 0, 1, None, None)
+            .unwrap();
+        assert!(!store.get_auth_profile("anthropic").unwrap().unwrap().api_key.contains(SENTINEL));
 
-        let providers = crate::build_providers(&store, &config::Config::default(), None, None);
-        let deepseek = providers.iter().find(|p| p.id() == "deepseek").expect("the deepseek provider is built");
-        let _ = super::test_provider_connection(deepseek.as_ref()).await;
-        let request = seen.await.unwrap();
-        assert!(
-            request.to_ascii_lowercase().contains(&format!("authorization: bearer {}", SENTINEL.to_ascii_lowercase())),
-            "the provider did not send the key the owner typed: {request}"
-        );
+        let mut cfg = config::Config::default();
+        cfg.neboai.janus_url = janus.clone();
+        let providers = crate::build_providers(&store, &cfg, None, None);
+        for id in ["anthropic@anthropic", "openai@openai", "google@google", "deepseek@deepseek", "openrouter@openrouter", "openai_compatible@groq"] {
+            let p = providers.iter().find(|p| p.id() == id).unwrap_or_else(|| panic!("{id} is built"));
+            let _ = super::test_provider_connection(p.as_ref()).await;
+        }
+        let lab = providers.iter().find(|p| p.id() == "openai_compatible@lab").expect("the local server is built");
+        let _ = super::test_provider_connection(lab.as_ref()).await;
+
+        let to_janus = janus_seen.lock().unwrap().clone();
+        assert_eq!(to_janus.len(), 6, "every paid hosted key went to Janus");
+        let mut kinds = Vec::new();
+        for request in &to_janus {
+            assert!(request.starts_with("POST /v1/chat/completions "), "not Janus's chat door");
+            assert_eq!(header(request, "x-provider-api-key").as_deref(), Some(SENTINEL), "the key the owner typed rides along");
+            assert!(header(request, "authorization").is_some_and(|a| !a.contains(SENTINEL)), "his key is never the Janus bearer");
+            let kind = header(request, "x-provider").unwrap();
+            if kind == "openai_compatible" {
+                assert_eq!(header(request, "x-provider-base-url").as_deref(), Some("https://api.groq.com/openai/v1"));
+            } else {
+                assert!(header(request, "x-provider-base-url").is_none());
+            }
+            kinds.push(kind);
+        }
+        kinds.sort();
+        assert_eq!(kinds, ["anthropic", "deepseek", "google", "openai", "openai_compatible", "openrouter"]);
+
+        let direct = local_seen.lock().unwrap().clone();
+        assert_eq!(direct.len(), 1, "the local server is reached direct");
+        assert_eq!(header(&direct[0], "authorization").as_deref(), Some("Bearer lab-key"));
+        assert!(header(&direct[0], "x-provider").is_none() && header(&direct[0], "x-provider-api-key").is_none());
     }
 }

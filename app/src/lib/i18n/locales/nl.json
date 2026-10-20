@@ -4018,7 +4018,6 @@
 		"botDefaultHint": "Geldt voor het volgende bericht. Geen herstart nodig.",
 		"defaultSaveFailed": "Kon de standaard niet wijzigen.",
 		"badgeDefault": "Standaard",
-		"badgeJanus": "Loopt via Nebo AI",
 		"readOnly": "Alleen lezen",
 		"colLevel": "Niveau",
 		"colRunsOn": "Draait op",
@@ -4046,7 +4045,6 @@
 		"decisionsNone": "Nebo's ingebouwde veilige standaarden (geen beslismodel)",
 		"decisionsDefaultOption": "Nebo AI · Jev (standaard)",
 		"withEffort": "Inspanning: {effort}",
-		"localNoJanus": "Kan niet via Nebo AI lopen: het model draait op deze computer.",
 		"removeConfirm": "{name} verwijderen? Een medewerker die er nog op staat, draait op Nebo AI en wordt daarover geïnformeerd.",
 		"loadFailed": "Kon de pakketten niet laden.",
 		"saveFailed": "Kon het pakket niet opslaan.",
@@ -4064,10 +4062,7 @@
 		"laneHelpers": "Hulpmedewerkers",
 		"laneBuild": "Bouwen",
 		"laneWorkflow": "Workflows",
-		"laneByWork": "Gekozen op basis van het werk",
-		"routeJanus": "Via Nebo AI laten lopen",
-		"routeJanusHint": "Nebo AI kiest bij elke stap het niveau over de modellen van dit pakket om je rekening te verlagen. Je sleutels gaan mee met elk verzoek en worden nooit opgeslagen. Routeringskosten: {fee}.",
-		"routeJanusLocal": "Modellen op deze computer (Ollama, Claude Code, Codex) draaien altijd direct. Stem routeert nooit."
+		"laneByWork": "Gekozen op basis van het werk"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo werkt alleen zolang de app open is. Zet Nebo aan bij Inloggen om het te laten doorwerken na het afsluiten.",
