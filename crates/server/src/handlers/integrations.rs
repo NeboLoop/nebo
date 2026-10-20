@@ -24,7 +24,7 @@ const MCP_OAUTH_SCOPE: &str = "mcp:full offline_access";
 /// - Loopback Host (desktop UI, Tauri, dev proxy) → `http://localhost:{port}`.
 /// - Any other Host is a request through the reverse management tunnel: the hub
 ///   strips the `/t/{bot_id}` prefix but preserves the browser's Host header
-///   (docs/sme/TUNNEL.md), so the browser-reachable base is
+///   (nebo-sme/TUNNEL.md in NeboLoop/docs), so the browser-reachable base is
 ///   `https://{host}/t/{bot_id}`. Without a bot id we can't rebuild the tunnel
 ///   prefix, so fall back to localhost (the pre-tunnel behavior).
 fn derive_public_base(host: Option<&str>, port: u16, bot_id: Option<&str>) -> String {

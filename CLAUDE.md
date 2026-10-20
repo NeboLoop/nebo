@@ -72,7 +72,7 @@ The rules:
 - **NEVER ship a workaround as the final answer.** Workarounds during diagnosis are fine ("let me try X to confirm the hypothesis"), but the patch that lands MUST be the proper fix.
 - **NEVER leave a bandaid behind.** No `// TODO: do this properly later`, no `// FIXME`, no commented-out alternate paths.
 - **NEVER bypass a constraint to "make it work."** If a check, lint, type, or test is blocking you, fix what it's complaining about — don't `--no-verify`, don't `#[allow]`, don't widen a type to silence the compiler.
-- **NEVER add a competing pathway** for something that already has one canonical implementation (see Rule 8 in `docs/sme/CODE_AUDITOR.md`). Two ways to do the same thing IS tech debt.
+- **NEVER add a competing pathway** for something that already has one canonical implementation (see Rule 8 in `nebo-sme/CODE_AUDITOR.md` in NeboLoop/docs). Two ways to do the same thing IS tech debt.
 
 If you genuinely don't know the right fix yet, say so. Investigate. Ask. Don't fill the gap with a shortcut and a comment.
 
@@ -215,13 +215,15 @@ Format: `agent:<id>:<channel>`, `subagent:<parent>:<child>`, `acp:<id>`, `<ch>:g
 
 ## SME Documentation
 
-Deep-dive reference docs live in `docs/sme/`. Key files:
+Deep-dive reference docs live in `nebo-sme/` of the private NeboLoop/docs repo
+(cloned at `~/workspaces/neboai/docs`), not in this repo. Start at `INDEX.md`. Key files:
+- `CODE_AUDITOR.md` — the audit rules: no quick fixes, no competing pathways
 - `CHAT_SYSTEM.md` — chat dispatch, runner, sessions, steering, lanes
-- `TOOLS.md` — STRAP pattern, domain tools, tool corrections
+- `TOOLS_SME.md` — tool registry, deferred loading, policy and safeguards
 - `MEMORY_AND_PROMPT.md` — memory extraction, prompt assembly, steering generators
-- `SECURITY.md` — 23 tracked findings, security architecture
 - `PLUGIN_SYSTEM.md` — plugin registry, verification, sandbox
 - `APPS.md` — app platform, capabilities, lifecycle
+- `RELEASE.md` — release pipeline and runners
 
 ## Release
 

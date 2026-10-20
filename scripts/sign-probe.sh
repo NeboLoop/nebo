@@ -11,7 +11,7 @@
 # Exit:   0 = signing works (Succeeded)   |   1 = still blocked / error
 # Requires: az (logged in as a subscription Owner), openssl, python3, curl.
 #
-# See docs/sme/RELEASE.md → "Azure Trusted Signing Billing Hold".
+# See nebo-sme/RELEASE.md in NeboLoop/docs → "Azure Trusted Signing Billing Hold".
 set -uo pipefail
 
 RG="${NEBO_SIGN_RG:-nebo}"

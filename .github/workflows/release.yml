@@ -495,7 +495,7 @@ jobs:
   # amd64 container on the arm64 VM meant Rosetta, which killed a process
   # at random (v0.14.1, v0.14.2). A DigitalOcean droplet is ours, x86, and
   # costs cents per release: this job boots one from the golden snapshot
-  # (build deps, rustup, tauri-cli preinstalled — see docs/sme/RELEASE.md),
+  # (build deps, rustup, tauri-cli preinstalled — see nebo-sme/RELEASE.md in NeboLoop/docs),
   # hands it a just-in-time runner registration good for ONE job, and the
   # teardown job below deletes it whether the build passed or not.
   linux-amd64-runner:
