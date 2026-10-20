@@ -4349,5 +4349,59 @@
 		"taskReorder": "Lumen에 40개 재주문함",
 		"taskVideo": "화요일 영상 게시함",
 		"taskInvoices": "청구서 알림 3건 보냄"
+	},
+	"verify": {
+		"badge": {
+			"verified": "검증됨",
+			"notVerified": "검증되지 않음",
+			"checking": "확인 중",
+			"waiting": "답변을 기다리는 중"
+		},
+		"tip": {
+			"verified": "독립 검토자 {reviewers, plural, other {#명}}({lenses})이 {rounds, plural, other {#회}}에 걸쳐 확인했습니다.",
+			"checksPassed": "프로젝트 자체 검사를 통과했습니다: {checks}.",
+			"noneOpen": "열려 있는 차단 문제나 주요 문제가 없습니다.",
+			"deferred": "이유와 함께 미룬 사소한 지적: {count}.",
+			"landed": "프로젝트에 반영되었습니다.",
+			"landedAnyway": "선택하신 대로 프로젝트에 반영되었습니다.",
+			"notLanded": "별도 사본에서 대기 중이며 아직 프로젝트에 반영되지 않았습니다.",
+			"limit": "검토는 문제를 찾아낼 뿐, 문제가 없음을 증명하지는 못합니다.",
+			"checking": "독립 검토자와 프로젝트 자체 검사가 이 코드를 살펴보고 있습니다.",
+			"waiting": "확인이 답변을 기다리고 있습니다.",
+			"notVerified": "검증할 수 없었습니다.",
+			"open": "{rounds, plural, other {#회}} 후에도 남은 문제: 차단 {blockers}, 주요 {majors}."
+		},
+		"round": {
+			"title": "{n}회차",
+			"kind": {
+				"catch_up": "프로젝트 최신 상태로 맞춤",
+				"land": "반영",
+				"live": "실시간 확인"
+			},
+			"time": "{seconds}초",
+			"lenses": "검토자: {lenses}",
+			"findings": "발견: 차단 {blockers}, 주요 {majors}, 사소 {minors}",
+			"fixed": "이전 회차 이후 수정: {count}",
+			"held": "확인 완료, 문제 없음",
+			"checks": "검사:",
+			"noChecks": "빌드나 테스트를 실행할 수 없었습니다."
+		},
+		"rounds": {
+			"heading": "코드 확인"
+		},
+		"total": "검토자 비용: {cost}",
+		"severity": {
+			"blocker": "차단",
+			"major": "주요",
+			"minor": "사소"
+		},
+		"lens": {
+			"correctness": "정확성",
+			"security": "보안",
+			"billing": "결제",
+			"data": "데이터",
+			"performance": "성능",
+			"experience": "사람들이 보는 화면"
+		}
 	}
 }

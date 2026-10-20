@@ -4349,5 +4349,59 @@
 		"taskReorder": "Memesan ulang 40 unit dari Lumen",
 		"taskVideo": "Memposting video hari Selasa",
 		"taskInvoices": "Mengirim 3 pengingat faktur"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Terverifikasi",
+			"notVerified": "Belum terverifikasi",
+			"checking": "Sedang diperiksa",
+			"waiting": "Menunggu jawaban Anda"
+		},
+		"tip": {
+			"verified": "Diperiksa oleh {reviewers, plural, other {# peninjau independen}} ({lenses}) dalam {rounds, plural, other {# putaran}}.",
+			"checksPassed": "Pemeriksaan proyek sendiri lulus: {checks}.",
+			"noneOpen": "Tidak ada masalah penghambat atau besar yang terbuka.",
+			"deferred": "Catatan kecil yang ditunda dengan alasan: {count}.",
+			"landed": "Sudah masuk ke proyek Anda.",
+			"landedAnyway": "Sudah masuk ke proyek Anda atas pilihan Anda.",
+			"notLanded": "Masih menunggu di salinannya sendiri, belum di proyek Anda.",
+			"limit": "Tinjauan menemukan masalah; tidak dapat membuktikan bahwa tidak ada masalah.",
+			"checking": "Peninjau independen dan pemeriksaan proyek sedang memeriksa kode ini.",
+			"waiting": "Pemeriksaan menunggu jawaban Anda.",
+			"notVerified": "Tidak dapat diverifikasi.",
+			"open": "Masih terbuka setelah {rounds, plural, other {# putaran}}: {blockers} penghambat, {majors} besar."
+		},
+		"round": {
+			"title": "Putaran {n}",
+			"kind": {
+				"catch_up": "Diperbarui dengan proyek Anda",
+				"land": "Penggabungan",
+				"live": "Pemeriksaan langsung"
+			},
+			"time": "{seconds} dtk",
+			"lenses": "Peninjau: {lenses}",
+			"findings": "Ditemukan: {blockers} penghambat, {majors} besar, {minors} kecil",
+			"fixed": "Diperbaiki sejak putaran sebelumnya: {count}",
+			"held": "Diperiksa dan aman",
+			"checks": "Pemeriksaan:",
+			"noChecks": "Tidak ada build atau pengujian yang bisa dijalankan."
+		},
+		"rounds": {
+			"heading": "Pemeriksaan kode"
+		},
+		"total": "Biaya peninjau: {cost}",
+		"severity": {
+			"blocker": "Penghambat",
+			"major": "Besar",
+			"minor": "Kecil"
+		},
+		"lens": {
+			"correctness": "ketepatan",
+			"security": "keamanan",
+			"billing": "penagihan",
+			"data": "data",
+			"performance": "kinerja",
+			"experience": "yang dilihat orang"
+		}
 	}
 }

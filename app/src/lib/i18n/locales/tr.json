@@ -4349,5 +4349,59 @@
 		"taskReorder": "Lumen'den 40 adet yeniden sipariş edildi",
 		"taskVideo": "Salı videosu yayınlandı",
 		"taskInvoices": "3 fatura hatırlatması gönderildi"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Doğrulandı",
+			"notVerified": "Doğrulanmadı",
+			"checking": "Kontrol ediliyor",
+			"waiting": "Yanıtınızı bekliyor"
+		},
+		"tip": {
+			"verified": "{reviewers, plural, other {# bağımsız inceleyici}} ({lenses}) tarafından {rounds, plural, other {# turda}} kontrol edildi.",
+			"checksPassed": "Projenin kendi kontrolleri geçti: {checks}.",
+			"noneOpen": "Açık engelleyici ya da büyük sorun yok.",
+			"deferred": "Gerekçesiyle ertelenen küçük notlar: {count}.",
+			"landed": "Projenize eklendi.",
+			"landedAnyway": "Sizin tercihinizle projenize eklendi.",
+			"notLanded": "Kendi kopyasında bekliyor, henüz projenizde değil.",
+			"limit": "İnceleme sorun bulur; hiç sorun olmadığını kanıtlayamaz.",
+			"checking": "Bağımsız inceleyiciler ve projenin kendi kontrolleri bu kodu gözden geçiriyor.",
+			"waiting": "Kontrol yanıtınızı bekliyor.",
+			"notVerified": "Doğrulanamadı.",
+			"open": "{rounds, plural, other {# tur}} sonra hâlâ açık: {blockers} engelleyici, {majors} büyük."
+		},
+		"round": {
+			"title": "Tur {n}",
+			"kind": {
+				"catch_up": "Projenizle güncellendi",
+				"land": "Ekleme",
+				"live": "Canlı kontrol"
+			},
+			"time": "{seconds} sn",
+			"lenses": "İnceleyiciler: {lenses}",
+			"findings": "Bulunan: {blockers} engelleyici, {majors} büyük, {minors} küçük",
+			"fixed": "Önceki turdan beri düzeltilen: {count}",
+			"held": "Kontrol edildi ve sağlam",
+			"checks": "Kontroller:",
+			"noChecks": "Hiçbir derleme ya da test çalıştırılamadı."
+		},
+		"rounds": {
+			"heading": "Kod kontrolleri"
+		},
+		"total": "İnceleyicilerin maliyeti: {cost}",
+		"severity": {
+			"blocker": "Engelleyici",
+			"major": "Büyük",
+			"minor": "Küçük"
+		},
+		"lens": {
+			"correctness": "doğruluk",
+			"security": "güvenlik",
+			"billing": "faturalama",
+			"data": "veri",
+			"performance": "performans",
+			"experience": "insanların gördüğü"
+		}
 	}
 }

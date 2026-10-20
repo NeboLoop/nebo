@@ -4349,5 +4349,59 @@
 		"taskReorder": "已向 Lumen 補訂 40 件",
 		"taskVideo": "已發布週二的影片",
 		"taskInvoices": "已寄出 3 則發票提醒"
+	},
+	"verify": {
+		"badge": {
+			"verified": "已驗證",
+			"notVerified": "未驗證",
+			"checking": "檢查中",
+			"waiting": "等待你的回覆"
+		},
+		"tip": {
+			"verified": "由 {reviewers, plural, other {# 位}}獨立審查者（{lenses}）在 {rounds, plural, other {# 輪}}中檢查。",
+			"checksPassed": "專案本身的檢查已通過：{checks}。",
+			"noneOpen": "沒有尚未解決的阻斷或重大問題。",
+			"deferred": "附理由延後的小問題：{count}。",
+			"landed": "已進入你的專案。",
+			"landedAnyway": "依你的選擇已進入你的專案。",
+			"notLanded": "仍在它自己的副本中等待，尚未進入你的專案。",
+			"limit": "審查能找出問題，但無法證明沒有問題。",
+			"checking": "獨立審查者和專案本身的檢查正在審查這段程式碼。",
+			"waiting": "檢查正在等待你的回覆。",
+			"notVerified": "無法驗證。",
+			"open": "{rounds, plural, other {# 輪}}後仍未解決：阻斷 {blockers}，重大 {majors}。"
+		},
+		"round": {
+			"title": "第 {n} 輪",
+			"kind": {
+				"catch_up": "已與你的專案同步",
+				"land": "合入",
+				"live": "即時檢查"
+			},
+			"time": "{seconds} 秒",
+			"lenses": "審查者：{lenses}",
+			"findings": "發現：阻斷 {blockers}，重大 {majors}，輕微 {minors}",
+			"fixed": "自上一輪以來已修正：{count}",
+			"held": "已檢查，沒有問題",
+			"checks": "檢查：",
+			"noChecks": "無法執行任何建置或測試。"
+		},
+		"rounds": {
+			"heading": "程式碼檢查"
+		},
+		"total": "審查者費用：{cost}",
+		"severity": {
+			"blocker": "阻斷",
+			"major": "重大",
+			"minor": "輕微"
+		},
+		"lens": {
+			"correctness": "正確性",
+			"security": "安全",
+			"billing": "計費",
+			"data": "資料",
+			"performance": "效能",
+			"experience": "使用者看到的內容"
+		}
 	}
 }

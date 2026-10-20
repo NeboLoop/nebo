@@ -4349,5 +4349,59 @@
 		"taskReorder": "Lumenに40個を再注文しました",
 		"taskVideo": "火曜日の動画を投稿しました",
 		"taskInvoices": "請求書のリマインダーを3件送りました"
+	},
+	"verify": {
+		"badge": {
+			"verified": "検証済み",
+			"notVerified": "未検証",
+			"checking": "確認中",
+			"waiting": "あなたの回答待ち"
+		},
+		"tip": {
+			"verified": "{reviewers, plural, other {#人}}の独立したレビュアー（{lenses}）が{rounds, plural, other {#回}}のラウンドで確認しました。",
+			"checksPassed": "プロジェクト自身のチェックに合格しました: {checks}。",
+			"noneOpen": "未解決の重大な問題や大きな問題はありません。",
+			"deferred": "理由付きで見送った軽微な指摘: {count}。",
+			"landed": "あなたのプロジェクトに反映されました。",
+			"landedAnyway": "あなたの判断でプロジェクトに反映されました。",
+			"notLanded": "専用のコピーで待機中で、まだプロジェクトには入っていません。",
+			"limit": "レビューは問題を見つけますが、問題がないことは証明できません。",
+			"checking": "独立したレビュアーとプロジェクト自身のチェックがこのコードを確認しています。",
+			"waiting": "確認はあなたの回答を待っています。",
+			"notVerified": "検証できませんでした。",
+			"open": "{rounds, plural, other {#回}}のラウンド後も未解決: 重大 {blockers}、大 {majors}。"
+		},
+		"round": {
+			"title": "ラウンド {n}",
+			"kind": {
+				"catch_up": "プロジェクトの最新状態に追従",
+				"land": "反映",
+				"live": "ライブ確認"
+			},
+			"time": "{seconds}秒",
+			"lenses": "レビュアー: {lenses}",
+			"findings": "検出: 重大 {blockers}、大 {majors}、軽微 {minors}",
+			"fixed": "前のラウンドから修正: {count}",
+			"held": "確認済みで問題なし",
+			"checks": "チェック:",
+			"noChecks": "ビルドもテストも実行できませんでした。"
+		},
+		"rounds": {
+			"heading": "コードの確認"
+		},
+		"total": "レビュアーの費用: {cost}",
+		"severity": {
+			"blocker": "重大",
+			"major": "大",
+			"minor": "軽微"
+		},
+		"lens": {
+			"correctness": "正確さ",
+			"security": "セキュリティ",
+			"billing": "請求",
+			"data": "データ",
+			"performance": "パフォーマンス",
+			"experience": "見た目と使い勝手"
+		}
 	}
 }

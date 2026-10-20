@@ -4349,5 +4349,59 @@
 		"taskReorder": "40 stuks bijbesteld bij Lumen",
 		"taskVideo": "De video van dinsdag geplaatst",
 		"taskInvoices": "3 betalingsherinneringen verstuurd"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Geverifieerd",
+			"notVerified": "Niet geverifieerd",
+			"checking": "Wordt gecontroleerd",
+			"waiting": "Wacht op jou"
+		},
+		"tip": {
+			"verified": "Gecontroleerd door {reviewers, plural, one {# onafhankelijke reviewer} other {# onafhankelijke reviewers}} ({lenses}) in {rounds, plural, one {# ronde} other {# rondes}}.",
+			"checksPassed": "De eigen controles van het project zijn geslaagd: {checks}.",
+			"noneOpen": "Er staan geen blokkerende of grote problemen open.",
+			"deferred": "Kleine opmerkingen met een reden uitgesteld: {count}.",
+			"landed": "Het staat in je project.",
+			"landedAnyway": "Het staat in je project, op jouw keuze.",
+			"notLanded": "Het wacht in een eigen kopie, nog niet in je project.",
+			"limit": "Een review vindt problemen; ze kan niet bewijzen dat er geen zijn.",
+			"checking": "Onafhankelijke reviewers en de eigen controles van het project bekijken deze code.",
+			"waiting": "De controle wacht op je antwoord.",
+			"notVerified": "Het kon niet worden geverifieerd.",
+			"open": "Nog open na {rounds, plural, one {# ronde} other {# rondes}}: {blockers} blokkerend, {majors} groot."
+		},
+		"round": {
+			"title": "Ronde {n}",
+			"kind": {
+				"catch_up": "Bijgewerkt met je project",
+				"land": "Overnemen",
+				"live": "Live controle"
+			},
+			"time": "{seconds} s",
+			"lenses": "Reviewers: {lenses}",
+			"findings": "Gevonden: {blockers} blokkerend, {majors} groot, {minors} klein",
+			"fixed": "Opgelost sinds de vorige ronde: {count}",
+			"held": "Gecontroleerd en in orde",
+			"checks": "Controles:",
+			"noChecks": "Er kon geen build of test draaien."
+		},
+		"rounds": {
+			"heading": "Codecontroles"
+		},
+		"total": "Kosten van de reviewers: {cost}",
+		"severity": {
+			"blocker": "Blokkerend",
+			"major": "Groot",
+			"minor": "Klein"
+		},
+		"lens": {
+			"correctness": "juistheid",
+			"security": "beveiliging",
+			"billing": "facturering",
+			"data": "gegevens",
+			"performance": "prestaties",
+			"experience": "wat mensen zien"
+		}
 	}
 }

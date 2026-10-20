@@ -1455,6 +1455,89 @@
 .handoff-line-status {
   @apply mt-0.5 flex min-w-0 items-baseline gap-1.5 ps-1;
 }
+/* Verified: the badge on code work, and the history of its rounds. */
+.verify-badge-wrap {
+  @apply flex flex-col min-w-0 my-1.5;
+}
+.verify-badge {
+  @apply inline-flex items-center gap-1.5 self-start rounded-full border-none px-2.5 py-1 text-xs font-medium cursor-pointer bg-base-200 text-base-content/70;
+}
+.verify-badge-verified {
+  @apply bg-success/15 text-success;
+}
+.verify-badge-not_verified {
+  @apply bg-warning/15 text-warning;
+}
+.verify-badge-checking,
+.verify-badge-waiting {
+  @apply bg-info/15 text-info;
+}
+.verify-badge-detail {
+  @apply mt-2 flex flex-col gap-2 rounded-box border border-base-300 bg-base-100 px-3.5 py-3 text-xs max-w-[85%];
+}
+.verify-badge-sentence {
+  @apply m-0 text-base-content/80 leading-relaxed;
+}
+.verify-history {
+  @apply m-0 flex list-none flex-col gap-2.5 p-0;
+}
+.verify-history-step {
+  @apply flex flex-col gap-1 border-s-2 border-base-300 ps-2.5;
+}
+.verify-history-head {
+  @apply flex items-baseline justify-between gap-2;
+}
+.verify-history-title {
+  @apply font-medium text-base-content/85;
+}
+.verify-history-meta {
+  @apply font-mono text-base-content/50;
+}
+.verify-history-line {
+  @apply flex flex-wrap items-center gap-1.5 text-base-content/70;
+}
+.verify-history-held {
+  @apply mt-0.5 font-medium text-base-content/70;
+}
+.verify-held {
+  @apply ps-2 text-success/90;
+}
+.verify-finding {
+  @apply flex flex-wrap items-baseline gap-1.5 ps-2;
+}
+.verify-finding-severity {
+  @apply badge badge-xs border-none bg-base-200 text-base-content/70;
+}
+.verify-finding-blocker .verify-finding-severity {
+  @apply bg-error/15 text-error;
+}
+.verify-finding-major .verify-finding-severity {
+  @apply bg-warning/15 text-warning;
+}
+.verify-finding-title {
+  @apply text-base-content/85;
+}
+.verify-finding-where {
+  @apply font-mono text-base-content/50 break-all;
+}
+.verify-check {
+  @apply badge badge-xs border-none;
+}
+.verify-check-passed {
+  @apply bg-success/15 text-success;
+}
+.verify-check-failed {
+  @apply bg-error/15 text-error;
+}
+.verify-history-total {
+  @apply text-base-content/55;
+}
+.run-verifications {
+  @apply mt-4 flex flex-col gap-1;
+}
+.run-verifications-heading {
+  @apply text-xs font-medium text-base-content/60;
+}
 /* A project's card in its thread: the task, where it stands, and when it
    counts as done. */
 .handoff-card {

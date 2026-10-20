@@ -4349,5 +4349,59 @@
 		"taskReorder": "הוזמנו מחדש 40 יחידות מ-Lumen",
 		"taskVideo": "הסרטון של יום שלישי פורסם",
 		"taskInvoices": "נשלחו 3 תזכורות לחשבוניות"
+	},
+	"verify": {
+		"badge": {
+			"verified": "אומת",
+			"notVerified": "לא אומת",
+			"checking": "בבדיקה",
+			"waiting": "ממתין לתשובתך"
+		},
+		"tip": {
+			"verified": "נבדק על ידי סוקרים בלתי תלויים ({lenses}): {reviewers, plural, other {#}}, במספר סבבים: {rounds, plural, other {#}}.",
+			"checksPassed": "הבדיקות של הפרויקט עצמו עברו: {checks}.",
+			"noneOpen": "אין בעיות חוסמות או משמעותיות פתוחות.",
+			"deferred": "הערות קלות שנדחו עם סיבה: {count}.",
+			"landed": "זה נכנס לפרויקט שלך.",
+			"landedAnyway": "זה נכנס לפרויקט שלך לפי בחירתך.",
+			"notLanded": "זה ממתין בעותק משלו, עדיין לא בפרויקט שלך.",
+			"limit": "סקירה מוצאת בעיות; היא לא יכולה להוכיח שאין אף אחת.",
+			"checking": "סוקרים בלתי תלויים והבדיקות של הפרויקט עוברים על הקוד הזה.",
+			"waiting": "הבדיקה ממתינה לתשובתך.",
+			"notVerified": "לא ניתן היה לאמת את זה.",
+			"open": "עדיין פתוחות אחרי סבבים ({rounds, plural, other {#}}): חוסמות {blockers}, משמעותיות {majors}."
+		},
+		"round": {
+			"title": "סבב {n}",
+			"kind": {
+				"catch_up": "עודכן מול הפרויקט שלך",
+				"land": "הכנסה",
+				"live": "בדיקה חיה"
+			},
+			"time": "{seconds} שנ׳",
+			"lenses": "סוקרים: {lenses}",
+			"findings": "נמצאו: חוסמות {blockers}, משמעותיות {majors}, קלות {minors}",
+			"fixed": "תוקנו מאז הסבב הקודם: {count}",
+			"held": "נבדק ותקין",
+			"checks": "בדיקות:",
+			"noChecks": "לא ניתן היה להריץ שום בנייה או בדיקה."
+		},
+		"rounds": {
+			"heading": "בדיקות קוד"
+		},
+		"total": "עלות הסוקרים: {cost}",
+		"severity": {
+			"blocker": "חוסמת",
+			"major": "משמעותית",
+			"minor": "קלה"
+		},
+		"lens": {
+			"correctness": "נכונות",
+			"security": "אבטחה",
+			"billing": "חיוב",
+			"data": "נתונים",
+			"performance": "ביצועים",
+			"experience": "מה שאנשים רואים"
+		}
 	}
 }

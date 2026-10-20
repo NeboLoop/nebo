@@ -4349,5 +4349,59 @@
 		"taskReorder": "Reordered 40 units from Lumen",
 		"taskVideo": "Posted Tuesday's video",
 		"taskInvoices": "Sent 3 invoice reminders"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verified",
+			"notVerified": "Not verified",
+			"checking": "Checking",
+			"waiting": "Waiting on you"
+		},
+		"tip": {
+			"verified": "Checked by {reviewers, plural, one {# independent reviewer} other {# independent reviewers}} ({lenses}) over {rounds, plural, one {# round} other {# rounds}}.",
+			"checksPassed": "The project's own checks passed: {checks}.",
+			"noneOpen": "No blocking or major issues are open.",
+			"deferred": "Minor notes deferred with a reason: {count}.",
+			"landed": "It landed in your project.",
+			"landedAnyway": "It landed in your project at your choice.",
+			"notLanded": "It is waiting in its own copy, not in your project yet.",
+			"limit": "Review finds problems; it can't prove there are none.",
+			"checking": "Independent reviewers and the project's own checks are going over this code.",
+			"waiting": "The check is waiting for your answer.",
+			"notVerified": "It could not be verified.",
+			"open": "Still open after {rounds, plural, one {# round} other {# rounds}}: {blockers} blocking, {majors} major."
+		},
+		"round": {
+			"title": "Round {n}",
+			"kind": {
+				"catch_up": "Caught up with your project",
+				"land": "Landing",
+				"live": "Live check"
+			},
+			"time": "{seconds}s",
+			"lenses": "Reviewers: {lenses}",
+			"findings": "Found: {blockers} blocking, {majors} major, {minors} minor",
+			"fixed": "Fixed since the round before: {count}",
+			"held": "Checked and held",
+			"checks": "Checks:",
+			"noChecks": "No build or tests could run."
+		},
+		"rounds": {
+			"heading": "Code checks"
+		},
+		"total": "Reviewers' cost: {cost}",
+		"severity": {
+			"blocker": "Blocking",
+			"major": "Major",
+			"minor": "Minor"
+		},
+		"lens": {
+			"correctness": "correctness",
+			"security": "security",
+			"billing": "billing",
+			"data": "data",
+			"performance": "performance",
+			"experience": "what people see"
+		}
 	}
 }

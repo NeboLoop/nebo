@@ -4349,5 +4349,59 @@
 		"taskReorder": "已向 Lumen 补订 40 件",
 		"taskVideo": "已发布周二的视频",
 		"taskInvoices": "已发送 3 条发票提醒"
+	},
+	"verify": {
+		"badge": {
+			"verified": "已验证",
+			"notVerified": "未验证",
+			"checking": "检查中",
+			"waiting": "等待你的回复"
+		},
+		"tip": {
+			"verified": "由 {reviewers, plural, other {# 位}}独立审查员（{lenses}）在 {rounds, plural, other {# 轮}}中检查。",
+			"checksPassed": "项目自身的检查已通过：{checks}。",
+			"noneOpen": "没有未解决的阻断或重大问题。",
+			"deferred": "附理由推迟的小问题：{count}。",
+			"landed": "已进入你的项目。",
+			"landedAnyway": "按你的选择已进入你的项目。",
+			"notLanded": "仍在它自己的副本中等待，尚未进入你的项目。",
+			"limit": "审查能发现问题，但无法证明没有问题。",
+			"checking": "独立审查员和项目自身的检查正在审查这段代码。",
+			"waiting": "检查正在等待你的回复。",
+			"notVerified": "无法验证。",
+			"open": "{rounds, plural, other {# 轮}}后仍未解决：阻断 {blockers}，重大 {majors}。"
+		},
+		"round": {
+			"title": "第 {n} 轮",
+			"kind": {
+				"catch_up": "已与你的项目同步",
+				"land": "合入",
+				"live": "实时检查"
+			},
+			"time": "{seconds} 秒",
+			"lenses": "审查员：{lenses}",
+			"findings": "发现：阻断 {blockers}，重大 {majors}，轻微 {minors}",
+			"fixed": "自上一轮以来已修复：{count}",
+			"held": "已检查，没有问题",
+			"checks": "检查：",
+			"noChecks": "无法运行任何构建或测试。"
+		},
+		"rounds": {
+			"heading": "代码检查"
+		},
+		"total": "审查员费用：{cost}",
+		"severity": {
+			"blocker": "阻断",
+			"major": "重大",
+			"minor": "轻微"
+		},
+		"lens": {
+			"correctness": "正确性",
+			"security": "安全",
+			"billing": "计费",
+			"data": "数据",
+			"performance": "性能",
+			"experience": "用户看到的内容"
+		}
 	}
 }

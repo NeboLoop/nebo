@@ -4349,5 +4349,59 @@
 		"taskReorder": "Đã đặt lại 40 sản phẩm từ Lumen",
 		"taskVideo": "Đã đăng video thứ Ba",
 		"taskInvoices": "Đã gửi 3 lời nhắc hóa đơn"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Đã xác minh",
+			"notVerified": "Chưa xác minh",
+			"checking": "Đang kiểm tra",
+			"waiting": "Đang chờ bạn trả lời"
+		},
+		"tip": {
+			"verified": "Được {reviewers, plural, other {# người đánh giá độc lập}} ({lenses}) kiểm tra qua {rounds, plural, other {# vòng}}.",
+			"checksPassed": "Các bài kiểm tra của chính dự án đã đạt: {checks}.",
+			"noneOpen": "Không còn vấn đề chặn hoặc nghiêm trọng nào mở.",
+			"deferred": "Ghi chú nhỏ được hoãn kèm lý do: {count}.",
+			"landed": "Đã vào dự án của bạn.",
+			"landedAnyway": "Đã vào dự án của bạn theo lựa chọn của bạn.",
+			"notLanded": "Đang chờ trong bản sao riêng, chưa vào dự án của bạn.",
+			"limit": "Đánh giá tìm ra vấn đề; không thể chứng minh là không có vấn đề nào.",
+			"checking": "Người đánh giá độc lập và các bài kiểm tra của dự án đang xem đoạn mã này.",
+			"waiting": "Việc kiểm tra đang chờ bạn trả lời.",
+			"notVerified": "Không thể xác minh.",
+			"open": "Vẫn còn mở sau {rounds, plural, other {# vòng}}: {blockers} chặn, {majors} nghiêm trọng."
+		},
+		"round": {
+			"title": "Vòng {n}",
+			"kind": {
+				"catch_up": "Đã cập nhật theo dự án của bạn",
+				"land": "Hợp nhất",
+				"live": "Kiểm tra trực tiếp"
+			},
+			"time": "{seconds} giây",
+			"lenses": "Người đánh giá: {lenses}",
+			"findings": "Tìm thấy: {blockers} chặn, {majors} nghiêm trọng, {minors} nhỏ",
+			"fixed": "Đã sửa kể từ vòng trước: {count}",
+			"held": "Đã kiểm tra và ổn",
+			"checks": "Kiểm tra:",
+			"noChecks": "Không chạy được bản dựng hay bài kiểm tra nào."
+		},
+		"rounds": {
+			"heading": "Kiểm tra mã"
+		},
+		"total": "Chi phí người đánh giá: {cost}",
+		"severity": {
+			"blocker": "Chặn",
+			"major": "Nghiêm trọng",
+			"minor": "Nhỏ"
+		},
+		"lens": {
+			"correctness": "tính đúng",
+			"security": "bảo mật",
+			"billing": "thanh toán",
+			"data": "dữ liệu",
+			"performance": "hiệu năng",
+			"experience": "những gì mọi người thấy"
+		}
 	}
 }

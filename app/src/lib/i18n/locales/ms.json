@@ -4349,5 +4349,59 @@
 		"taskReorder": "Memesan semula 40 unit daripada Lumen",
 		"taskVideo": "Menyiarkan video hari Selasa",
 		"taskInvoices": "Menghantar 3 peringatan invois"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Disahkan",
+			"notVerified": "Belum disahkan",
+			"checking": "Sedang disemak",
+			"waiting": "Menunggu jawapan anda"
+		},
+		"tip": {
+			"verified": "Disemak oleh {reviewers, plural, other {# penyemak bebas}} ({lenses}) dalam {rounds, plural, other {# pusingan}}.",
+			"checksPassed": "Semakan projek sendiri lulus: {checks}.",
+			"noneOpen": "Tiada isu penghalang atau besar yang terbuka.",
+			"deferred": "Nota kecil yang ditangguhkan dengan sebab: {count}.",
+			"landed": "Sudah masuk ke projek anda.",
+			"landedAnyway": "Sudah masuk ke projek anda atas pilihan anda.",
+			"notLanded": "Masih menunggu dalam salinannya sendiri, belum dalam projek anda.",
+			"limit": "Semakan menemui masalah; ia tidak dapat membuktikan tiada masalah.",
+			"checking": "Penyemak bebas dan semakan projek sedang meneliti kod ini.",
+			"waiting": "Semakan menunggu jawapan anda.",
+			"notVerified": "Tidak dapat disahkan.",
+			"open": "Masih terbuka selepas {rounds, plural, other {# pusingan}}: {blockers} penghalang, {majors} besar."
+		},
+		"round": {
+			"title": "Pusingan {n}",
+			"kind": {
+				"catch_up": "Dikemas kini dengan projek anda",
+				"land": "Penggabungan",
+				"live": "Semakan langsung"
+			},
+			"time": "{seconds} saat",
+			"lenses": "Penyemak: {lenses}",
+			"findings": "Ditemui: {blockers} penghalang, {majors} besar, {minors} kecil",
+			"fixed": "Dibaiki sejak pusingan sebelumnya: {count}",
+			"held": "Disemak dan baik",
+			"checks": "Semakan:",
+			"noChecks": "Tiada binaan atau ujian yang dapat dijalankan."
+		},
+		"rounds": {
+			"heading": "Semakan kod"
+		},
+		"total": "Kos penyemak: {cost}",
+		"severity": {
+			"blocker": "Penghalang",
+			"major": "Besar",
+			"minor": "Kecil"
+		},
+		"lens": {
+			"correctness": "ketepatan",
+			"security": "keselamatan",
+			"billing": "pengebilan",
+			"data": "data",
+			"performance": "prestasi",
+			"experience": "apa yang dilihat orang"
+		}
 	}
 }

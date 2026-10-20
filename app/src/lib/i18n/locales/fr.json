@@ -4349,5 +4349,59 @@
 		"taskReorder": "40 unités recommandées chez Lumen",
 		"taskVideo": "Vidéo de mardi publiée",
 		"taskInvoices": "3 relances de facture envoyées"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Vérifié",
+			"notVerified": "Non vérifié",
+			"checking": "Vérification en cours",
+			"waiting": "En attente de votre réponse"
+		},
+		"tip": {
+			"verified": "Vérifié par {reviewers, plural, one {# relecteur indépendant} other {# relecteurs indépendants}} ({lenses}) en {rounds, plural, one {# tour} other {# tours}}.",
+			"checksPassed": "Les tests du projet ont réussi : {checks}.",
+			"noneOpen": "Aucun problème bloquant ou majeur n'est ouvert.",
+			"deferred": "Remarques mineures reportées avec une raison : {count}.",
+			"landed": "C'est intégré à votre projet.",
+			"landedAnyway": "C'est intégré à votre projet, à votre demande.",
+			"notLanded": "Cela attend dans sa propre copie, pas encore dans votre projet.",
+			"limit": "Une relecture trouve des problèmes ; elle ne peut pas prouver qu'il n'y en a aucun.",
+			"checking": "Des relecteurs indépendants et les tests du projet examinent ce code.",
+			"waiting": "La vérification attend votre réponse.",
+			"notVerified": "Cela n'a pas pu être vérifié.",
+			"open": "Encore ouverts après {rounds, plural, one {# tour} other {# tours}} : {blockers} bloquants, {majors} majeurs."
+		},
+		"round": {
+			"title": "Tour {n}",
+			"kind": {
+				"catch_up": "Mis à jour avec votre projet",
+				"land": "Intégration",
+				"live": "Vérification en direct"
+			},
+			"time": "{seconds} s",
+			"lenses": "Relecteurs : {lenses}",
+			"findings": "Trouvé : {blockers} bloquants, {majors} majeurs, {minors} mineurs",
+			"fixed": "Corrigé depuis le tour précédent : {count}",
+			"held": "Vérifié et valide",
+			"checks": "Tests :",
+			"noChecks": "Aucune compilation ni aucun test n'a pu s'exécuter."
+		},
+		"rounds": {
+			"heading": "Vérifications du code"
+		},
+		"total": "Coût des relecteurs : {cost}",
+		"severity": {
+			"blocker": "Bloquant",
+			"major": "Majeur",
+			"minor": "Mineur"
+		},
+		"lens": {
+			"correctness": "exactitude",
+			"security": "sécurité",
+			"billing": "facturation",
+			"data": "données",
+			"performance": "performances",
+			"experience": "ce que les gens voient"
+		}
 	}
 }

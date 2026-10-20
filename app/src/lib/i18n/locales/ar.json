@@ -4349,5 +4349,59 @@
 		"taskReorder": "أُعيد طلب 40 وحدة من Lumen",
 		"taskVideo": "نُشر فيديو يوم الثلاثاء",
 		"taskInvoices": "أُرسلت 3 تذكيرات بالفواتير"
+	},
+	"verify": {
+		"badge": {
+			"verified": "تم التحقق",
+			"notVerified": "لم يتم التحقق",
+			"checking": "جارٍ الفحص",
+			"waiting": "بانتظار ردك"
+		},
+		"tip": {
+			"verified": "فحصه مراجعون مستقلون ({lenses}): {reviewers, plural, other {#}}، في جولات عددها {rounds, plural, other {#}}.",
+			"checksPassed": "نجحت فحوص المشروع نفسه: {checks}.",
+			"noneOpen": "لا توجد مشكلات معطِّلة أو كبيرة مفتوحة.",
+			"deferred": "ملاحظات بسيطة أُجِّلت مع سبب: {count}.",
+			"landed": "وصل إلى مشروعك.",
+			"landedAnyway": "وصل إلى مشروعك باختيارك.",
+			"notLanded": "ينتظر في نسخته الخاصة، ولم يصل إلى مشروعك بعد.",
+			"limit": "المراجعة تجد المشكلات؛ ولا تستطيع إثبات عدم وجود أي منها.",
+			"checking": "يراجع مراجعون مستقلون وفحوص المشروع هذا الكود.",
+			"waiting": "الفحص بانتظار ردك.",
+			"notVerified": "تعذّر التحقق منه.",
+			"open": "ما زالت مفتوحة بعد جولات عددها {rounds, plural, other {#}}: معطِّلة {blockers}، كبيرة {majors}."
+		},
+		"round": {
+			"title": "الجولة {n}",
+			"kind": {
+				"catch_up": "تمت مواكبة مشروعك",
+				"land": "الدمج",
+				"live": "فحص مباشر"
+			},
+			"time": "{seconds} ث",
+			"lenses": "المراجعون: {lenses}",
+			"findings": "وُجد: معطِّلة {blockers}، كبيرة {majors}، بسيطة {minors}",
+			"fixed": "أُصلح منذ الجولة السابقة: {count}",
+			"held": "فُحص وثبت",
+			"checks": "الفحوص:",
+			"noChecks": "تعذّر تشغيل أي بناء أو اختبار."
+		},
+		"rounds": {
+			"heading": "فحوص الكود"
+		},
+		"total": "تكلفة المراجعين: {cost}",
+		"severity": {
+			"blocker": "معطِّلة",
+			"major": "كبيرة",
+			"minor": "بسيطة"
+		},
+		"lens": {
+			"correctness": "الصحة",
+			"security": "الأمان",
+			"billing": "الفوترة",
+			"data": "البيانات",
+			"performance": "الأداء",
+			"experience": "ما يراه الناس"
+		}
 	}
 }

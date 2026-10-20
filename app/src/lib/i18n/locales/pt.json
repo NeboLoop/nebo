@@ -4349,5 +4349,59 @@
 		"taskReorder": "Encomendou 40 unidades à Lumen",
 		"taskVideo": "Publicou o vídeo de terça-feira",
 		"taskInvoices": "Enviou 3 lembretes de fatura"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verificado",
+			"notVerified": "Não verificado",
+			"checking": "A verificar",
+			"waiting": "À espera da sua resposta"
+		},
+		"tip": {
+			"verified": "Verificado por {reviewers, plural, one {# revisor independente} other {# revisores independentes}} ({lenses}) em {rounds, plural, one {# ronda} other {# rondas}}.",
+			"checksPassed": "Os testes do próprio projeto passaram: {checks}.",
+			"noneOpen": "Não há problemas bloqueantes nem graves em aberto.",
+			"deferred": "Notas menores adiadas com motivo: {count}.",
+			"landed": "Já está no seu projeto.",
+			"landedAnyway": "Já está no seu projeto, por sua escolha.",
+			"notLanded": "Aguarda na sua própria cópia; ainda não está no seu projeto.",
+			"limit": "Uma revisão encontra problemas; não consegue provar que não existe nenhum.",
+			"checking": "Revisores independentes e os testes do projeto estão a analisar este código.",
+			"waiting": "A verificação aguarda a sua resposta.",
+			"notVerified": "Não foi possível verificar.",
+			"open": "Ainda em aberto após {rounds, plural, one {# ronda} other {# rondas}}: {blockers} bloqueantes, {majors} graves."
+		},
+		"round": {
+			"title": "Ronda {n}",
+			"kind": {
+				"catch_up": "Atualizado com o seu projeto",
+				"land": "Integração",
+				"live": "Verificação em direto"
+			},
+			"time": "{seconds} s",
+			"lenses": "Revisores: {lenses}",
+			"findings": "Encontrado: {blockers} bloqueantes, {majors} graves, {minors} menores",
+			"fixed": "Corrigido desde a ronda anterior: {count}",
+			"held": "Verificado e correto",
+			"checks": "Testes:",
+			"noChecks": "Não foi possível executar compilação nem testes."
+		},
+		"rounds": {
+			"heading": "Verificações de código"
+		},
+		"total": "Custo dos revisores: {cost}",
+		"severity": {
+			"blocker": "Bloqueante",
+			"major": "Grave",
+			"minor": "Menor"
+		},
+		"lens": {
+			"correctness": "correção",
+			"security": "segurança",
+			"billing": "faturação",
+			"data": "dados",
+			"performance": "desempenho",
+			"experience": "o que as pessoas veem"
+		}
 	}
 }

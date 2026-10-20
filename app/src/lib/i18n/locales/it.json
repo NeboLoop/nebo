@@ -4349,5 +4349,59 @@
 		"taskReorder": "Riordinate 40 unità da Lumen",
 		"taskVideo": "Pubblicato il video di martedì",
 		"taskInvoices": "Inviati 3 promemoria di pagamento"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verificato",
+			"notVerified": "Non verificato",
+			"checking": "Verifica in corso",
+			"waiting": "In attesa della tua risposta"
+		},
+		"tip": {
+			"verified": "Controllato da {reviewers, plural, one {# revisore indipendente} other {# revisori indipendenti}} ({lenses}) in {rounds, plural, one {# turno} other {# turni}}.",
+			"checksPassed": "I controlli del progetto sono passati: {checks}.",
+			"noneOpen": "Nessun problema bloccante o importante aperto.",
+			"deferred": "Note minori rinviate con un motivo: {count}.",
+			"landed": "È arrivato nel tuo progetto.",
+			"landedAnyway": "È arrivato nel tuo progetto per tua scelta.",
+			"notLanded": "Aspetta nella sua copia, non ancora nel tuo progetto.",
+			"limit": "Una revisione trova problemi; non può dimostrare che non ce ne siano.",
+			"checking": "Revisori indipendenti e i controlli del progetto stanno esaminando questo codice.",
+			"waiting": "La verifica aspetta la tua risposta.",
+			"notVerified": "Non è stato possibile verificarlo.",
+			"open": "Ancora aperti dopo {rounds, plural, one {# turno} other {# turni}}: {blockers} bloccanti, {majors} importanti."
+		},
+		"round": {
+			"title": "Turno {n}",
+			"kind": {
+				"catch_up": "Allineato al tuo progetto",
+				"land": "Integrazione",
+				"live": "Controllo dal vivo"
+			},
+			"time": "{seconds} s",
+			"lenses": "Revisori: {lenses}",
+			"findings": "Trovati: {blockers} bloccanti, {majors} importanti, {minors} minori",
+			"fixed": "Corretti dal turno precedente: {count}",
+			"held": "Controllato e valido",
+			"checks": "Controlli:",
+			"noChecks": "Non è stato possibile eseguire build o test."
+		},
+		"rounds": {
+			"heading": "Controlli del codice"
+		},
+		"total": "Costo dei revisori: {cost}",
+		"severity": {
+			"blocker": "Bloccante",
+			"major": "Importante",
+			"minor": "Minore"
+		},
+		"lens": {
+			"correctness": "correttezza",
+			"security": "sicurezza",
+			"billing": "fatturazione",
+			"data": "dati",
+			"performance": "prestazioni",
+			"experience": "ciò che vedono le persone"
+		}
 	}
 }

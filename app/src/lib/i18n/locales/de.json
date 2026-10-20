@@ -4349,5 +4349,59 @@
 		"taskReorder": "40 Stück bei Lumen nachbestellt",
 		"taskVideo": "Das Video vom Dienstag veröffentlicht",
 		"taskInvoices": "3 Zahlungserinnerungen verschickt"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Geprüft",
+			"notVerified": "Nicht geprüft",
+			"checking": "Wird geprüft",
+			"waiting": "Wartet auf Sie"
+		},
+		"tip": {
+			"verified": "Geprüft von {reviewers, plural, one {# unabhängigen Prüfer} other {# unabhängigen Prüfern}} ({lenses}) in {rounds, plural, one {# Runde} other {# Runden}}.",
+			"checksPassed": "Die eigenen Prüfungen des Projekts sind bestanden: {checks}.",
+			"noneOpen": "Keine blockierenden oder größeren Probleme offen.",
+			"deferred": "Kleinere Hinweise mit Begründung zurückgestellt: {count}.",
+			"landed": "Es ist in Ihrem Projekt angekommen.",
+			"landedAnyway": "Es ist auf Ihren Wunsch in Ihrem Projekt angekommen.",
+			"notLanded": "Es wartet in seiner eigenen Kopie, noch nicht in Ihrem Projekt.",
+			"limit": "Eine Prüfung findet Probleme; sie kann nicht beweisen, dass es keine gibt.",
+			"checking": "Unabhängige Prüfer und die eigenen Prüfungen des Projekts sehen sich diesen Code an.",
+			"waiting": "Die Prüfung wartet auf Ihre Antwort.",
+			"notVerified": "Es konnte nicht geprüft werden.",
+			"open": "Nach {rounds, plural, one {# Runde} other {# Runden}} noch offen: {blockers} blockierend, {majors} größer."
+		},
+		"round": {
+			"title": "Runde {n}",
+			"kind": {
+				"catch_up": "Mit Ihrem Projekt abgeglichen",
+				"land": "Übernahme",
+				"live": "Live-Prüfung"
+			},
+			"time": "{seconds} s",
+			"lenses": "Prüfer: {lenses}",
+			"findings": "Gefunden: {blockers} blockierend, {majors} größer, {minors} klein",
+			"fixed": "Seit der letzten Runde behoben: {count}",
+			"held": "Geprüft und in Ordnung",
+			"checks": "Prüfungen:",
+			"noChecks": "Kein Build und keine Tests konnten laufen."
+		},
+		"rounds": {
+			"heading": "Code-Prüfungen"
+		},
+		"total": "Kosten der Prüfer: {cost}",
+		"severity": {
+			"blocker": "Blockierend",
+			"major": "Größer",
+			"minor": "Klein"
+		},
+		"lens": {
+			"correctness": "Korrektheit",
+			"security": "Sicherheit",
+			"billing": "Abrechnung",
+			"data": "Daten",
+			"performance": "Leistung",
+			"experience": "Darstellung"
+		}
 	}
 }

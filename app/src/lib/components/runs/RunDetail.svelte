@@ -5,8 +5,10 @@
   import { devMode } from '$lib/stores/devmode';
   import { getWebSocketClient } from '$lib/websocket/client';
   import PrettyJson from '$lib/components/PrettyJson.svelte';
+  import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
+  import { verifications as liveVerifications, followVerifications } from '$lib/stores/verifications';
   import type { AgentPageContext, AgentRun, WorkflowActivity } from '$lib/types/agentPage';
-  import type { WorkflowRun, WorkflowActivityResult, PendingTask, RunDisplay, RunDisplayEntry } from '$lib/api/neboComponents';
+  import type { WorkflowRun, WorkflowActivityResult, PendingTask, RunDisplay, RunDisplayEntry, VerificationView } from '$lib/api/neboComponents';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.runsAgentId);
@@ -24,6 +26,10 @@
   // Human-readable projection, derived server-side (the engine narrates —
   // the client never parses per-type output shapes). Absent on old servers.
   let display = $state<RunDisplay | null>(null);
+  // Code work the run's steps did, verified, each with its rounds; kept
+  // current by `verification_updated`.
+  let runVerifications = $state<VerificationView[]>([]);
+  const shownVerifications = $derived(runVerifications.map((v) => $liveVerifications[v.id] ?? v));
   let loading = $state(false);
 
   // Track which activities and steps are expanded — multiple can be open
@@ -38,6 +44,7 @@
     runDetail = null;
     activities = [];
     display = null;
+    runVerifications = [];
     expandedActivities = {};
     expandedSteps = {};
 
@@ -48,6 +55,8 @@
       if (res?.activities) activities = res.activities;
       if (res?.taskItems && typeof res.taskItems === 'object') taskItems = res.taskItems as Record<string, PendingTask[]>;
       if (res?.display) display = res.display;
+      runVerifications = res?.verifications ?? [];
+      if (runVerifications.length) followVerifications();
     }).catch(err => {
       console.warn('[nebo] Failed to load run detail:', err);
     }).finally(() => {
@@ -545,6 +554,15 @@
         </div>
       {:else}
         <div class="text-xs text-base-content/50">{$t('agentActivity.noActivityRecords')}</div>
+      {/if}
+
+      {#if shownVerifications.length > 0}
+        <div class="run-verifications">
+          <div class="run-verifications-heading">{$t('verify.rounds.heading')}</div>
+          {#each shownVerifications as v (v.id)}
+            <VerifiedBadge verification={v} />
+          {/each}
+        </div>
       {/if}
 
       <!-- Footer -->

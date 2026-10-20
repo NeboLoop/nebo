@@ -4349,5 +4349,59 @@
 		"taskReorder": "Repuso 40 unidades de Lumen",
 		"taskVideo": "Publicó el vídeo del martes",
 		"taskInvoices": "Envió 3 recordatorios de factura"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verificado",
+			"notVerified": "Sin verificar",
+			"checking": "Revisando",
+			"waiting": "Esperando tu respuesta"
+		},
+		"tip": {
+			"verified": "Revisado por {reviewers, plural, one {# revisor independiente} other {# revisores independientes}} ({lenses}) en {rounds, plural, one {# ronda} other {# rondas}}.",
+			"checksPassed": "Las pruebas propias del proyecto pasaron: {checks}.",
+			"noneOpen": "No hay problemas bloqueantes ni importantes abiertos.",
+			"deferred": "Notas menores aplazadas con motivo: {count}.",
+			"landed": "Ya está en tu proyecto.",
+			"landedAnyway": "Ya está en tu proyecto, por decisión tuya.",
+			"notLanded": "Espera en su propia copia; aún no está en tu proyecto.",
+			"limit": "Una revisión encuentra problemas; no puede demostrar que no haya ninguno.",
+			"checking": "Revisores independientes y las pruebas del proyecto están revisando este código.",
+			"waiting": "La revisión espera tu respuesta.",
+			"notVerified": "No se pudo verificar.",
+			"open": "Abiertos tras {rounds, plural, one {# ronda} other {# rondas}}: {blockers} bloqueantes, {majors} importantes."
+		},
+		"round": {
+			"title": "Ronda {n}",
+			"kind": {
+				"catch_up": "Actualizado con tu proyecto",
+				"land": "Integración",
+				"live": "Comprobación en vivo"
+			},
+			"time": "{seconds} s",
+			"lenses": "Revisores: {lenses}",
+			"findings": "Encontrado: {blockers} bloqueantes, {majors} importantes, {minors} menores",
+			"fixed": "Corregido desde la ronda anterior: {count}",
+			"held": "Comprobado y correcto",
+			"checks": "Pruebas:",
+			"noChecks": "No se pudo ejecutar ninguna compilación ni prueba."
+		},
+		"rounds": {
+			"heading": "Revisiones de código"
+		},
+		"total": "Costo de los revisores: {cost}",
+		"severity": {
+			"blocker": "Bloqueante",
+			"major": "Importante",
+			"minor": "Menor"
+		},
+		"lens": {
+			"correctness": "corrección",
+			"security": "seguridad",
+			"billing": "facturación",
+			"data": "datos",
+			"performance": "rendimiento",
+			"experience": "lo que ven las personas"
+		}
 	}
 }

@@ -4349,5 +4349,59 @@
 		"taskReorder": "Repôs 40 unidades da Lumen",
 		"taskVideo": "Publicou o vídeo de terça",
 		"taskInvoices": "Enviou 3 lembretes de fatura"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verificado",
+			"notVerified": "Não verificado",
+			"checking": "Verificando",
+			"waiting": "Aguardando sua resposta"
+		},
+		"tip": {
+			"verified": "Verificado por {reviewers, plural, one {# revisor independente} other {# revisores independentes}} ({lenses}) em {rounds, plural, one {# rodada} other {# rodadas}}.",
+			"checksPassed": "Os testes do próprio projeto passaram: {checks}.",
+			"noneOpen": "Não há problemas bloqueantes nem graves em aberto.",
+			"deferred": "Observações menores adiadas com motivo: {count}.",
+			"landed": "Já está no seu projeto.",
+			"landedAnyway": "Já está no seu projeto, por sua escolha.",
+			"notLanded": "Está aguardando na própria cópia; ainda não está no seu projeto.",
+			"limit": "Uma revisão encontra problemas; não consegue provar que não há nenhum.",
+			"checking": "Revisores independentes e os testes do projeto estão analisando este código.",
+			"waiting": "A verificação está aguardando sua resposta.",
+			"notVerified": "Não foi possível verificar.",
+			"open": "Ainda em aberto após {rounds, plural, one {# rodada} other {# rodadas}}: {blockers} bloqueantes, {majors} graves."
+		},
+		"round": {
+			"title": "Rodada {n}",
+			"kind": {
+				"catch_up": "Atualizado com seu projeto",
+				"land": "Integração",
+				"live": "Verificação ao vivo"
+			},
+			"time": "{seconds} s",
+			"lenses": "Revisores: {lenses}",
+			"findings": "Encontrado: {blockers} bloqueantes, {majors} graves, {minors} menores",
+			"fixed": "Corrigido desde a rodada anterior: {count}",
+			"held": "Verificado e correto",
+			"checks": "Testes:",
+			"noChecks": "Não foi possível rodar build nem testes."
+		},
+		"rounds": {
+			"heading": "Verificações de código"
+		},
+		"total": "Custo dos revisores: {cost}",
+		"severity": {
+			"blocker": "Bloqueante",
+			"major": "Grave",
+			"minor": "Menor"
+		},
+		"lens": {
+			"correctness": "correção",
+			"security": "segurança",
+			"billing": "cobrança",
+			"data": "dados",
+			"performance": "desempenho",
+			"experience": "o que as pessoas veem"
+		}
 	}
 }
