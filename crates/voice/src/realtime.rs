@@ -694,7 +694,9 @@ where
                 return Ok(true);
             }
             state.says += 1;
-            let id = format!("say-{}", state.says);
+            // An identifier Janus passes back on an error about it
+            // (`^[a-z0-9_.]{1,64}$`).
+            let id = format!("say_{}", state.says);
             state.say_pending = Some(id.clone());
             state.pending_creates += 1;
             sink.send(Message::Text(say_frame(&text, &id).to_string().into())).await?;
@@ -754,7 +756,9 @@ async fn settle_lost_socket(
             .await
             .map_err(|_| ())?;
     }
-    memory.lost(state.response_active);
+    // A reply under way, or asked for and not begun, is asked for again on
+    // the next line: a question put just before the drop is still answered.
+    memory.lost(state.response_active || state.pending_creates > 0);
     *state = SessionState {
         initialized: state.initialized,
         asked: state.asked,
@@ -963,9 +967,11 @@ struct SessionState {
     /// Responses asked for on this line (the handler's, and a re-answer
     /// after a redial) that the provider has not begun yet.
     pending_creates: u32,
-    /// The owner cut the reply short before the provider began the one
-    /// asked for: it is cancelled as it begins, its audio never played.
-    cancel_on_create: bool,
+    /// The owner cut the reply short before the provider began those asked
+    /// for: how many of the replies then waiting are cancelled as they
+    /// begin, oldest first, their audio never played. Never more than are
+    /// still waiting: one refused or lost takes its cancel with it.
+    cancel_on_create: u32,
     /// Set when a begun response must be cancelled now; the socket loop
     /// sends the cancel (the event handler has no way upstream).
     cancel_now: bool,
@@ -1116,8 +1122,9 @@ fn interrupt_frames(
         state.discard_audio = true;
         frames.push(json!({ "type": "response.cancel" }));
     } else if state.pending_creates > 0 {
-        // Cut short before the provider began it: cancelled as it begins.
-        state.cancel_on_create = true;
+        // Cut short before the provider began them: each reply waiting now
+        // is cancelled as it begins.
+        state.cancel_on_create = state.pending_creates;
     }
     if let Some(item) = state.heard_item.take() {
         let forwarded_ms = (item.bytes / format.bytes_per_ms()) as u64;
@@ -1136,19 +1143,36 @@ fn interrupt_frames(
     frames
 }
 
+/// Error codes that are the call's whatever was sent last: the account,
+/// the key, the limits, the provider. Never a refusal of one `Say`.
+const CALL_ERROR_CODES: &[&str] = &[
+    "insufficient_quota",
+    "usage_limit_exceeded",
+    "rate_limit_exceeded",
+    "token_limit_exceeded",
+    "invalid_api_key",
+    "authentication_failed",
+    "insufficient_permissions",
+    "balance_reserved",
+    "provider_error",
+    "provider_unavailable",
+    "upstream_error",
+    "server_error",
+];
+
 /// Whether `error` refuses the `Say` waiting on its response (its frame's
-/// `event_id` is `pending`): the error names that event, or names none and
-/// is about the item it asked for. Any other error is the call's, even
-/// while a `Say` waits.
+/// `event_id` is `pending`). Through Janus an error frame keeps its type,
+/// its code and the client event it is about (`error.event_id`); its
+/// message is Janus's own words. An error naming that event is the
+/// refusal and one naming another event is not. One naming none (a
+/// provider that does not say, or a Janus that does not pass it on) is the
+/// refusal unless its code or type is the call's ([`CALL_ERROR_CODES`]).
 fn say_refusal(error: &Value, pending: Option<&str>) -> bool {
     let Some(pending) = pending else { return false };
+    let field = |k: &str| error.pointer(k).and_then(|v| v.as_str()).unwrap_or_default();
     match error.pointer("/error/event_id").and_then(|v| v.as_str()) {
         Some(id) => id == pending,
-        None => {
-            let about = |k: &str| error.pointer(k).and_then(|v| v.as_str()).unwrap_or_default().to_lowercase();
-            let (message, param) = (about("/error/message"), about("/error/param"));
-            message.contains("force_message") || message.contains("item type") || param.starts_with("item")
-        }
+        None => !CALL_ERROR_CODES.contains(&field("/error/code")) && field("/error/type") != "server_error",
     }
 }
 
@@ -1264,13 +1288,17 @@ async fn handle_server_event(
             state.pending_creates = state.pending_creates.saturating_sub(1);
             state.response_active = true;
             state.discard_audio = false;
-            if std::mem::take(&mut state.cancel_on_create) {
+            // A reply begun while the owner is speaking is the provider's
+            // answer to him, never one the tap was about.
+            if state.cancel_on_create > 0 && state.utterance == Utterance::Closed {
                 // The owner cut it short before it began: none of it plays,
                 // and its `response.done` still ends it.
+                state.cancel_on_create -= 1;
                 state.response_active = false;
                 state.discard_audio = true;
                 state.cancel_now = true;
             }
+            state.cancel_on_create = state.cancel_on_create.min(state.pending_creates);
             state.pending_item = None;
             if state.utterance != Utterance::Closed {
                 state.answering = Some(
@@ -1357,6 +1385,7 @@ async fn handle_server_event(
                 state.say_pending = None;
                 state.say_refused = true;
                 state.pending_creates = state.pending_creates.saturating_sub(1);
+                state.cancel_on_create = state.cancel_on_create.min(state.pending_creates);
                 warn!(frame = %::types::redact::redact(text), "realtime refused a spoken update; no more this call");
                 send(ConversationEvent::SayRefused).await?;
                 send(response_done(state)).await?;
@@ -2393,26 +2422,88 @@ mod tests {
         drop(tx);
     }
 
-    /// Only an error about the `Say` waiting is its refusal: one naming its
-    /// event, or naming none and about the item it asked for. Anything else
-    /// (a held balance) is the call's error, even while a `Say` waits.
+    /// An error frame as Janus relays it: its own message, the upstream's
+    /// type and code, and the client event it is about when there is one.
+    fn janus_error(code: &str, about: Option<&str>) -> String {
+        let mut e = json!({"type": "invalid_request_error", "code": code, "message": "This request couldn't be completed. Try again."});
+        if let Some(id) = about {
+            e["event_id"] = json!(id);
+        }
+        json!({"type": "error", "event_id": "event_9", "error": e}).to_string()
+    }
+
+    /// Only an error about the `Say` waiting is its refusal, as Janus
+    /// relays it: one naming that event; one naming none unless its code is
+    /// the call's. A held balance or an error about another event is the
+    /// call's error, even while a `Say` waits. `Say` ids pass Janus's
+    /// identifier check.
     #[tokio::test]
     async fn only_an_error_about_the_say_is_its_refusal() {
-        let error = |v: Value| json!({"type": "error", "error": v});
-        let pending = Some("say-3");
-        assert!(say_refusal(&error(json!({"message": "bad", "event_id": "say-3"})), pending));
-        assert!(!say_refusal(&error(json!({"message": "bad", "event_id": "evt-9"})), pending));
-        assert!(say_refusal(&error(json!({"message": "unknown item type"})), pending));
-        assert!(!say_refusal(&error(json!({"message": "insufficient balance"})), pending));
-        assert!(!say_refusal(&error(json!({"message": "unknown item type", "event_id": "say-3"})), None));
+        let parsed = |f: String| serde_json::from_str::<Value>(&f).unwrap();
+        let pending = Some("say_3");
+        assert!(say_refusal(&parsed(janus_error("invalid_value", Some("say_3"))), pending));
+        assert!(!say_refusal(&parsed(janus_error("invalid_value", Some("evt_9"))), pending));
+        assert!(say_refusal(&parsed(janus_error("invalid_value", None)), pending));
+        assert!(!say_refusal(&parsed(janus_error("insufficient_quota", None)), pending));
+        assert!(!say_refusal(&parsed(janus_error("invalid_value", Some("say_3"))), None));
+        // Janus's identifier check, `^[a-z0-9_.]{1,64}$`.
+        let id = say_frame("Now editing.", "say_12")["event_id"].as_str().unwrap().to_string();
+        assert!(id.len() <= 64 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.'), "{id}");
 
+        for (frame, refused) in [(janus_error("invalid_value", Some("say_1")), true), (janus_error("insufficient_quota", None), false)] {
+            let (tx, mut rx) = mpsc::channel(8);
+            let mut state = SessionState { initialized: true, say_pending: Some("say_1".into()), pending_creates: 1, ..Default::default() };
+            handle_server_event(&frame, &tx, &mut state).await.unwrap();
+            match rx.recv().await {
+                Some(ConversationEvent::SayRefused) => assert!(refused, "a balance error was taken for the refusal"),
+                Some(ConversationEvent::Error(m)) => assert!(!refused && m == CALL_ENDED, "the refusal ended the call"),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    /// A tap cancels the replies waiting at that moment as they begin, and
+    /// no other: one refused takes its cancel with it, a reply asked for
+    /// after the tap plays, and a reply begun while the owner speaks (the
+    /// provider's answer to him) is never cancelled.
+    #[tokio::test]
+    async fn a_tap_cancels_only_the_replies_it_came_before() {
+        let (tx, _rx) = mpsc::channel(64);
+        let created = r#"{"type":"response.created","response":{"id":"r"}}"#;
+        let fresh = || SessionState { initialized: true, pending_creates: 1, say_pending: Some("say_1".into()), ..Default::default() };
+
+        // The Say tapped before it began is refused: nothing is left to cancel.
+        let mut state = fresh();
+        interrupt_frames(&mut state, None, std::time::Instant::now(), AudioFormat::Pcm24k);
+        assert_eq!(state.cancel_on_create, 1);
+        handle_server_event(&janus_error("invalid_value", Some("say_1")), &tx, &mut state).await.unwrap();
+        state.pending_creates += 1; // a reply asked for after the tap
+        handle_server_event(created, &tx, &mut state).await.unwrap();
+        assert!(!state.cancel_now && state.response_active, "a reply asked for after the tap was cancelled");
+
+        // A reply begun while he speaks is his answer, not the tapped one.
+        let mut state = fresh();
+        state.pending_creates = 2;
+        interrupt_frames(&mut state, None, std::time::Instant::now(), AudioFormat::Pcm24k);
+        state.utterance = Utterance::Open { transcribed: false };
+        handle_server_event(created, &tx, &mut state).await.unwrap();
+        assert!(!state.cancel_now, "the provider's answer to him was cancelled");
+        state.utterance = Utterance::Closed;
+        state.response_active = false;
+        handle_server_event(created, &tx, &mut state).await.unwrap();
+        assert!(state.cancel_now, "the tapped reply was not cancelled as it began");
+    }
+
+    /// A question put just before the line drops, its reply not begun, is
+    /// still answered on the new line.
+    #[tokio::test]
+    async fn a_reply_asked_for_but_not_begun_is_asked_again_after_a_drop() {
         let (tx, mut rx) = mpsc::channel(8);
-        let mut state = SessionState { initialized: true, say_pending: Some("say-1".into()), ..Default::default() };
-        handle_server_event(r#"{"type":"error","error":{"message":"insufficient balance"}}"#, &tx, &mut state)
-            .await
-            .unwrap();
-        assert!(matches!(rx.recv().await, Some(ConversationEvent::Error(m)) if m == CALL_ENDED));
-        assert!(!state.say_refused && state.say_pending.is_some(), "a balance error was taken for the refusal");
+        let mut state = SessionState { initialized: true, asked: 1, pending_creates: 1, ..Default::default() };
+        let mut memory = CallMemory::default();
+        settle_lost_socket(&tx, &mut state, &mut memory).await.unwrap();
+        assert!(memory.reanswer, "a reply asked for just before the drop was dropped with it");
+        assert!(matches!(rx.recv().await, Some(ConversationEvent::ResponseDone { asked: 1, open: true })));
     }
 
     /// Typed words held for later go up whole as one item with no
@@ -2492,6 +2583,7 @@ mod tests {
         assert_eq!(said["item"]["type"], "force_message");
         assert_eq!(said["item"]["role"], "assistant");
         assert_eq!(said["item"]["content"][0]["text"], "Now editing.");
+        assert_eq!(said["event_id"], "say_1", "a Say carries an id Janus passes back");
         assert_eq!(next["item"]["type"], "message", "a refused update was sent again: {next}");
         while let Ok(Some(e)) = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
             events.push(e);

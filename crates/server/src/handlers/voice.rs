@@ -3505,6 +3505,17 @@ async fn handle_conversation_session(
                         if done == asked && !open {
                             responding = false;
                             reading.played();
+                            // A step cut short before it was heard ends here,
+                            // with no playback to end it; the answer it held
+                            // back goes with it.
+                            if narrating.take().is_some() && std::mem::take(&mut owe_continuation) {
+                                answer_after_reading = false;
+                                if rt_tx.send(RealtimeCommand::ToolOutputsDone).await.is_err() {
+                                    break;
+                                }
+                                asked += 1;
+                                responding = true;
+                            }
                         }
                         None
                     }
@@ -3512,6 +3523,12 @@ async fn handle_conversation_session(
                     // way stops, and the call says plainly that it cannot.
                     ConversationEvent::SayRefused => {
                         say_refused = true;
+                        // A step refused is never said: it ends here. The
+                        // answer it held back goes once the line is free
+                        // (the hold timer), never over the refusal's report.
+                        if narrating.is_some() && !owe_continuation {
+                            narrating = None;
+                        }
                         if reading.active() {
                             reading.stop();
                             // This reply carries any held answer.
@@ -5022,6 +5039,33 @@ mod voice_prompt_tests {
         assert!(
             matches!(call.next(5).await, Cmd::Text { text, respond: true } if text == "Also fix the title."),
             "typed words were not answered once the line was free"
+        );
+        gate.add_permits(10);
+    }
+
+    /// A step tapped before it was heard ends with its response, though no
+    /// playback ends it: what the owner types next goes at once, not after
+    /// the rest of the hand-off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_step_tapped_before_it_is_heard_frees_the_line_when_it_ends() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        state.harness.reload_providers(vec![std::sync::Arc::new(HeldHandOff { gate: gate.clone() })]).await;
+        let _models = Models(&state);
+        let (mut call, key, _) = call_on_the_post(&state).await;
+
+        call.calls("h1", "nebo", r#"{"task":"Tighten the launch deck."}"#).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        progress_on_call(&state.live_calls, &key, "Now tightening the deck.");
+        assert_eq!(call.said(15).await, "Now tightening the deck.");
+        call.interrupt().await;
+        assert!(matches!(call.next(5).await, Cmd::Interrupt { .. }));
+        call.done().await; // cancelled as it began: no playback, only its end
+        call.typed("Also fix the title.").await;
+        assert!(
+            matches!(call.next(3).await, Cmd::Text { text, respond: true } if text == "Also fix the title."),
+            "typed words waited on a step that had ended"
         );
         gate.add_permits(10);
     }
