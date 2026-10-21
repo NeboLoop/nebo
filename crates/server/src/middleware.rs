@@ -266,7 +266,18 @@ pub(crate) fn carries_session(headers: &axum::http::HeaderMap, session: &str) ->
 /// secret that exists only in this process (`comm::tunnel`).
 pub(crate) fn came_through_tunnel(headers: &axum::http::HeaderMap) -> bool {
     headers
-        .get("x-nebo-tunnel-auth")
+        .get(comm::tunnel::TUNNEL_AUTH_HEADER)
+        .and_then(|v| v.to_str().ok())
+        == Some(comm::tunnel::tunnel_auth_secret())
+}
+
+/// A request the bot's own tunnel forwarded WITHOUT the hub checking the
+/// owner (`comm::tunnel::UNVERIFIED_PREFIX`): an app page served through
+/// the tunnel runs in an origin of its own and carries no hub sign-in, so
+/// its calls prove themselves with the app's pass alone (`local_boundary`).
+pub(crate) fn came_through_tunnel_unverified(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(comm::tunnel::TUNNEL_UNVERIFIED_HEADER)
         .and_then(|v| v.to_str().ok())
         == Some(comm::tunnel::tunnel_auth_secret())
 }
@@ -303,6 +314,8 @@ pub struct PathCredential(pub String);
 /// see the path without it. It wraps the whole router: a layer on the
 /// router runs after routing, too late to change the path.
 pub fn path_credential(mut request: Request) -> Request {
+    // The header below is this function's to set: never a caller's.
+    request.headers_mut().remove(APP_VIEW_PASS);
     let Some(rest) = request.uri().path().strip_prefix("/k/") else {
         return request;
     };
@@ -338,6 +351,12 @@ pub fn path_credential(mut request: Request) -> Request {
 /// The header an app's route reads a path credential from
 /// ([`app_view_admits`]).
 pub(crate) const APP_VIEW_PASS: &str = "x-nebo-app-view";
+
+/// Whether an app route's address carried a credential (`/k/<…>/`), live or
+/// not: `path_credential` shows every one on the app's routes.
+pub(crate) fn carried_path_credential(headers: &axum::http::HeaderMap) -> bool {
+    headers.contains_key(APP_VIEW_PASS)
+}
 
 /// Whether the request carries a live app-view pass for `app_id`
 /// (`napp::app_view`): the page and routes of the one app Nebo's headless
@@ -418,6 +437,23 @@ fn app_of(path: &str) -> Option<&str> {
     path.strip_prefix("/api/v1/apps/")?.split('/').next().filter(|id| !id.is_empty())
 }
 
+/// An app's pass (`napp::app_view`) carried as the path's credential, on
+/// that app's page, routes or socket: the credential every app page holds
+/// (in a browser, through the tunnel, in the desktop window, in Nebo's own
+/// headless browser). It reaches that one app and nothing else.
+fn app_pass_reaches(path_credential: Option<&str>, path: &str) -> bool {
+    matches!(
+        (path_credential, napp::app_view::app_of_path(path)),
+        (Some(pass), Some(app)) if napp::app_view::admits(pass, app)
+    )
+}
+
+/// Whether the path credential a request carried is a live pass that
+/// opens `path` (CORS for an app's sandboxed page, `cors_layer`).
+pub(crate) fn pass_opens(credential: Option<&PathCredential>, path: &str) -> bool {
+    app_pass_reaches(credential.map(|c| c.0.as_str()), path)
+}
+
 impl Boundary {
     /// The caller holds the install key, as its bearer token or its path's
     /// credential.
@@ -434,9 +470,16 @@ impl Boundary {
     /// site as this one, and a SameSite cookie rides its requests too, so
     /// the request itself must be same-origin. Browsers say so in
     /// `Sec-Fetch-Site`; one that doesn't send it is judged by its Origin.
+    ///
+    /// A request whose Origin is `null` comes from a document with an opaque
+    /// origin, an app page above all (served sandboxed, `handlers::apps`):
+    /// it is never the owner's browser, whatever it carries.
     fn signed_in_browser(&self, headers: &axum::http::HeaderMap) -> bool {
         let Some(session) = self.session.as_deref() else { return false };
         if !carries_session(headers, session) {
+            return false;
+        }
+        if headers.get(axum::http::header::ORIGIN).is_some_and(|o| o.as_bytes() == b"null") {
             return false;
         }
         match headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
@@ -472,11 +515,7 @@ impl Boundary {
         if plugin_route(path) && [bearer, path_credential].into_iter().flatten().any(|t| crate::handlers::ws::constant_time_eq(t, plugins)) {
             return true;
         }
-        // Nebo's own headless browser opening one app (`napp::app_view`):
-        // its pass reaches that app's page and routes, nothing else.
-        if let (Some(pass), Some(app)) = (path_credential, napp::app_view::app_of_path(path))
-            && napp::app_view::admits(pass, app)
-        {
+        if app_pass_reaches(path_credential, path) {
             return true;
         }
         if let (Some(token), Some(app)) = (bearer, app_of(path)) {
@@ -523,6 +562,16 @@ pub async fn local_boundary(
     }
     let presented = bearer(headers).filter(|t| !t.is_empty());
     let path_credential = request.extensions().get::<PathCredential>().map(|c| c.0.as_str());
+    // Through the tunnel, unchecked by the hub: an app page's own calls.
+    // Its Host is the browser's (`neboai.com`); only the app's pass, on
+    // that app's routes, or the public SDK script opens anything.
+    if came_through_tunnel_unverified(headers) {
+        let path = request.uri().path();
+        if path == "/sdk/nebo.global.js" || app_pass_reaches(path_credential, path) {
+            return next.run(request).await;
+        }
+        return unproven(&request);
+    }
     let holds_key = boundary.holds_key(presented, path_credential);
     // No peer address means the server was not served with connect info:
     // treat the caller as the network, never as this machine.

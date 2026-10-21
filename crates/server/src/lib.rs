@@ -7924,12 +7924,18 @@ fn cors_layer() -> CorsLayer {
     .collect();
 
     CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, parts: &axum::http::request::Parts| {
             // Allow neboapp:// origins (Tauri custom protocol for app windows)
             if let Ok(s) = origin.to_str() {
                 if s.starts_with("neboapp://") {
                     return true;
                 }
+            }
+            // An app's sandboxed page (`Origin: null`) calling its own app
+            // with its pass: the one opaque origin let through, and only on
+            // what the pass opens. Its session cookie is never sent there.
+            if origin.as_bytes() == b"null" {
+                return middleware::pass_opens(parts.extensions.get::<middleware::PathCredential>(), parts.uri.path());
             }
             static_origins.contains(origin)
         }))

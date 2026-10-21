@@ -608,14 +608,22 @@ fn allow_element_fullscreen<R: tauri::Runtime>(_webview: &tauri::Webview<R>) {}
 /// XHR, rewriting HTTP URLs that target the Nebo server back to `neboapp://`
 /// so they route through `register_uri_scheme_protocol` (which proxies
 /// server-side via ureq — no CORS needed).
+///
+/// The page is told its own base address with its pass
+/// (`nebo-base-url`, `http://127.0.0.1:<port>/k/<pass>`): its socket and the
+/// files it streams (`files.url`) go to the server directly with it; its
+/// fetch and XHR still come back through this scheme (`neboapp_response`),
+/// which sends them on with the same pass.
 fn neboapp_bridge(agent_id: &str) -> String {
+    let app = engine::desktop_app(agent_id);
     format!(
         concat!(
             r#"<meta name="nebo-app-id" content="{id}">"#,
+            r#"<meta name="nebo-base-url" content="http://127.0.0.1:{port}/k/{pass}">"#,
             r#"<meta name="htmx-config" content='{{"selfRequestsOnly":false}}'>"#,
             r#"<script>(function(){{var O="neboapp://{id}";"#,
             r#"function rw(u){{if(typeof u!=="string")return u;"#,
-            r#"var h=u.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):{port}(\/.*)/);if(h)return O+h[1];"#,
+            r#"var h=u.match(/^https?:\/\/(?:localhost|127\.0\.0\.1):{port}(?:\/k\/[^/]+)?(\/.*)/);if(h)return O+h[1];"#,
             r#"return u}}"#,
             r#"var F=window.fetch;window.fetch=function(i,o){{"#,
             r#"if(typeof i==="string")i=rw(i);"#,
@@ -628,7 +636,8 @@ fn neboapp_bridge(agent_id: &str) -> String {
         ),
         id = agent_id,
         port = engine::port(),
-        dev = engine::desktop_app(agent_id).developer_script,
+        pass = app.pass,
+        dev = app.developer_script,
     )
 }
 
@@ -647,17 +656,10 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
 
     tracing::debug!(agent_id, path, method, "neboapp:// protocol handler");
 
-    // CORS preflight — WebKit treats custom-scheme pages as opaque
-    // origins, so every fetch() is cross-origin.
+    // A preflight is only ever another page's: the window's own fetches
+    // are same-origin. It is answered with no CORS grant, so it fails.
     if method == "OPTIONS" {
-        return http::Response::builder()
-            .status(204)
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Nebo-Connection-Id")
-            .header("Access-Control-Max-Age", "86400")
-            .body(Vec::new())
-            .unwrap();
+        return http::Response::builder().status(204).body(Vec::new()).unwrap();
     }
 
     // Resolve the agent's UI directory
@@ -667,7 +669,6 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
             return http::Response::builder()
                 .status(404)
                 .header("Content-Type", "text/plain")
-                .header("Access-Control-Allow-Origin", "*")
                 .body(format!("App not found: {agent_id}").into_bytes())
                 .unwrap();
         }
@@ -679,7 +680,6 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
         return http::Response::builder()
             .status(400)
             .header("Content-Type", "text/plain")
-            .header("Access-Control-Allow-Origin", "*")
             .body(b"Bad Request".to_vec())
             .unwrap();
     }
@@ -744,116 +744,41 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
             } else {
                 data
             };
-            return http::Response::builder()
+            let builder = http::Response::builder()
                 .status(200)
                 .header("Content-Type", mime)
-                .header("Accept-Ranges", if is_html { "none" } else { "bytes" })
-                .header("Access-Control-Allow-Origin", "*")
-                .body(body)
+                .header("Accept-Ranges", if is_html { "none" } else { "bytes" });
+            // The app's own files (its scripts, styles, pictures) may be read
+            // by its page however WebKit judges a custom scheme's origin. A
+            // page never: it carries the window's pass, which no other app's
+            // window may read.
+            let builder = if is_html { builder } else { builder.header("Access-Control-Allow-Origin", "*") };
+            return builder.body(body).unwrap();
+        }
+    }
+
+    // Not a file in `ui/`: one of the app's own routes, sent on to the
+    // server with the app's pass, from the app's own page only.
+    if let Some(route) = app_route(agent_id, path) {
+        if !from_own_page(request.headers(), agent_id) {
+            return http::Response::builder()
+                .status(403)
+                .header("Content-Type", "text/plain")
+                .body(b"Forbidden".to_vec())
                 .unwrap();
         }
+        return proxy_app_route(&request, agent_id, &route);
     }
-
-    // Not a static file — proxy to the Nebo server.
-    let query = uri.query().unwrap_or("");
-    let req_body = request.body().clone();
-    let content_type_in = request
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    let port = engine::port();
-    let urls = if query.is_empty() {
-        vec![
-            format!("http://127.0.0.1:{port}{}", path),
-            format!("http://127.0.0.1:{port}/apps/{}/api{}", agent_id, path),
-        ]
-    } else {
-        vec![
-            format!("http://127.0.0.1:{port}{}?{}", path, query),
-            format!("http://127.0.0.1:{port}/apps/{}/api{}?{}", agent_id, path, query),
-        ]
-    };
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(120))
-        .build();
-
-    for url in &urls {
-        tracing::debug!(url, method, "neboapp proxy attempt");
-        let req = match method {
-            "POST" => agent.post(url),
-            "PUT" => agent.put(url),
-            "DELETE" => agent.delete(url),
-            "PATCH" => agent.patch(url),
-            _ => agent.get(url),
-        };
-        let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
-            req.set("X-Nebo-Connection-Id", connection)
-        } else { req };
-        // The desktop shell is the owner's own client: its proxy
-        // proves itself to the local API with the install key.
-        let req = match config::read_install_key() {
-            Some(key) => req.set("Authorization", &format!("Bearer {key}")),
-            None => req,
-        };
-        // And names the page it carries (`neboapp://<id>`): an app
-        // window reaches only its own app's routes.
-        let page_origin = request
-            .headers()
-            .get("origin")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("neboapp://{agent_id}"));
-        let req = req.set("Origin", &page_origin);
-        let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
-            req.set("Content-Type", &content_type_in)
-                .send_bytes(&req_body)
-        } else {
-            req.call()
-        };
-        match &result {
-            Ok(resp) => tracing::debug!(status = resp.status(), url, "neboapp proxy response"),
-            Err(e) => tracing::debug!(error = %e, url, "neboapp proxy error"),
-        }
-        // An API error is an API response. Preserve its status/body so
-        // embedded apps can recover a connection or show validation errors;
-        // falling through to index.html falsely reports a successful request.
-        let response = match result {
-            Ok(resp) => Some(resp),
-            Err(ureq::Error::Status(_, resp)) if path.starts_with("/api/") => Some(resp),
-            _ => None,
-        };
-        if let Some(resp) = response {
-            let status = resp.status();
-            if status != 404 || path.starts_with("/api/") {
-                let ct = resp
-                    .header("Content-Type")
-                    .unwrap_or("application/octet-stream")
-                    .to_string();
-                let mut body = Vec::new();
-                let _ = resp.into_reader().read_to_end(&mut body);
-                return http::Response::builder()
-                    .status(status)
-                    .header("Content-Type", ct)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(body)
-                    .unwrap();
-            }
-        }
-    }
-
-    if path.starts_with("/api/") {
-        return http::Response::builder().status(502)
+    if path.starts_with("/api/") || path.starts_with("/k/") || path.starts_with("/ws/") {
+        return http::Response::builder()
+            .status(404)
             .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(br#"{"error":"Nebo could not reach the app. Try again."}"#.to_vec()).unwrap();
+            .body(br#"{"error":"not found"}"#.to_vec())
+            .unwrap();
     }
 
-    // SPA fallback: if proxy returned 404 or failed, and path has
-    // no file extension, serve index.html for client-side routing.
+    // SPA fallback: a path with no file extension is a page of the app's
+    // own client-side routing: its index.html.
     let ext = std::path::Path::new(path).extension();
     if ext.is_none() || ext.and_then(|e| e.to_str()) == Some("html") {
         let index = ui_dir.join("index.html");
@@ -864,7 +789,6 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
             return http::Response::builder()
                 .status(200)
                 .header("Content-Type", "text/html; charset=utf-8")
-                .header("Access-Control-Allow-Origin", "*")
                 .body(body.into_bytes())
                 .unwrap();
         }
@@ -873,9 +797,150 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
     http::Response::builder()
         .status(404)
         .header("Content-Type", "text/plain")
-        .header("Access-Control-Allow-Origin", "*")
         .body(b"Not Found".to_vec())
         .unwrap()
+}
+
+/// The route of the app's own that a `neboapp://<id>` request names, as
+/// the server takes it: one of `/api/v1/apps/<id>/…` (a `/k/<…>` before it
+/// is dropped: the proxy sends its own pass), or the SDK's script. Every
+/// other path is refused here: an app's window reaches nothing of the
+/// owner's, and no other app's routes.
+fn app_route(agent_id: &str, path: &str) -> Option<String> {
+    let path = match path.strip_prefix("/k/") {
+        Some(rest) => &rest[rest.find('/')?..],
+        None => path,
+    };
+    if path == "/sdk/nebo.global.js" {
+        return Some(path.to_string());
+    }
+    let rest = path.strip_prefix("/api/v1/apps/")?;
+    let (id, tail) = rest.split_once('/')?;
+    let id = percent_decode(id)?;
+    (!agent_id.is_empty() && id == agent_id && !tail.is_empty()).then(|| path.to_string())
+}
+
+/// A path segment with its `%XX` escapes decoded; `None` when malformed.
+fn percent_decode(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Whether a request came from the app's own page (`neboapp://<id>`), by
+/// what WebKit says of it: its `Origin` (sent on every cross-origin fetch),
+/// its `Referer`, its `Sec-Fetch-Site`. Another app's window asking for
+/// this app's route is named by them and refused. A request naming no page
+/// at all is the page's own (a same-origin GET carries no Origin).
+fn from_own_page(headers: &http::HeaderMap, agent_id: &str) -> bool {
+    let own = format!("neboapp://{agent_id}");
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let origin_ok = header("origin").is_none_or(|o| o.trim_end_matches('/').eq_ignore_ascii_case(&own));
+    let referer_ok = header("referer").is_none_or(|r| {
+        r.get(..own.len()).is_some_and(|p| p.eq_ignore_ascii_case(&own))
+            && matches!(r.as_bytes().get(own.len()), None | Some(b'/' | b'?' | b'#'))
+    });
+    let site_ok = header("sec-fetch-site").is_none_or(|s| matches!(s, "same-origin" | "none"));
+    origin_ok && referer_ok && site_ok
+}
+
+/// The response headers that go back to the page from the server as they
+/// came: what the content is, the byte range it is, how long to keep it,
+/// and the server's own security headers for it (its sandbox CSP, `nosniff`,
+/// how a download is named). No CORS grant ever goes back.
+const PASSED_HEADERS: &[&str] = &[
+    "content-type",
+    "content-range",
+    "accept-ranges",
+    "content-disposition",
+    "content-security-policy",
+    "x-content-type-options",
+    "cache-control",
+    "etag",
+    "last-modified",
+    "retry-after",
+];
+
+/// Send one of the app's own routes on to the server, with the app's pass
+/// as its credential (never the install key). Tauri takes a protocol
+/// response whole, so the answer is read here before it goes back: an open
+/// byte range is cut to one [`NEBOAPP_RANGE_SLICE`] ([`proxied_range`]),
+/// and a film the page streams goes to the server directly (`files.url`
+/// with the page's base, `neboapp_bridge`), never through here.
+fn proxy_app_route(request: &http::Request<Vec<u8>>, agent_id: &str, route: &str) -> http::Response<Vec<u8>> {
+    let method = request.method().as_str();
+    let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(120)).build();
+    let send = |pass: &str| {
+        let url = format!("http://127.0.0.1:{}/k/{pass}{route}{query}", engine::port());
+        let mut req = agent.request(method, &url);
+        for name in ["content-type", "accept", "x-nebo-connection-id", "if-none-match", "if-range"] {
+            if let Some(v) = request.headers().get(name).and_then(|v| v.to_str().ok()) {
+                req = req.set(name, v);
+            }
+        }
+        if let Some(range) = request.headers().get("range").and_then(|v| v.to_str().ok()) {
+            req = req.set("Range", &proxied_range(range));
+        }
+        let body = request.body();
+        match if body.is_empty() { req.call() } else { req.send_bytes(body) } {
+            Ok(resp) | Err(ureq::Error::Status(_, resp)) => Some(resp),
+            Err(e) => {
+                tracing::debug!(error = %e, route, "neboapp proxy error");
+                None
+            }
+        }
+    };
+    // A pass lasts days, but not past a restart of the engine: one refused
+    // is asked for again, once.
+    let mut resp = send(&engine::desktop_app(agent_id).pass);
+    if resp.as_ref().is_some_and(|r| r.status() == 401) {
+        engine::forget_desktop_app(agent_id);
+        resp = send(&engine::desktop_app(agent_id).pass);
+    }
+    let Some(resp) = resp else {
+        return http::Response::builder()
+            .status(502)
+            .header("Content-Type", "application/json")
+            .body(br#"{"error":"Nebo could not reach the app. Try again."}"#.to_vec())
+            .unwrap();
+    };
+    let mut builder = http::Response::builder().status(resp.status());
+    for name in PASSED_HEADERS {
+        if let Some(v) = resp.header(name) {
+            builder = builder.header(*name, v);
+        }
+    }
+    let mut body = Vec::new();
+    let _ = resp.into_reader().read_to_end(&mut body);
+    builder.body(body).unwrap_or_else(|_| http::Response::builder().status(502).body(Vec::new()).unwrap())
+}
+
+/// The `Range` a `neboapp://` request sends on to the server: an open one
+/// (`bytes=N-`, what a media element asks first) cut to one
+/// [`NEBOAPP_RANGE_SLICE`]; the player asks again from where it ends.
+/// Anything else goes as it came.
+fn proxied_range(range: &str) -> String {
+    let open = range
+        .trim()
+        .strip_prefix("bytes=")
+        .and_then(|spec| spec.strip_suffix('-'))
+        .and_then(|start| start.trim().parse::<u64>().ok());
+    match open {
+        Some(start) => format!("bytes={start}-{}", start.saturating_add(NEBOAPP_RANGE_SLICE - 1)),
+        None => range.to_string(),
+    }
 }
 
 fn main() {
@@ -1438,5 +1503,90 @@ fn toggle_prompt_window(app: &tauri::AppHandle) {
                 tracing::warn!("Failed to create prompt window: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod neboapp_proxy_tests {
+    use super::*;
+
+    /// A window reaches its own app's routes and the SDK's script, nothing
+    /// else: no owner route, no other app's route, whatever is put before it.
+    #[test]
+    fn a_window_reaches_its_own_apps_routes_alone() {
+        assert_eq!(app_route("crm", "/api/v1/apps/crm/storage/k").as_deref(), Some("/api/v1/apps/crm/storage/k"));
+        assert_eq!(app_route("crm", "/k/old-pass/api/v1/apps/crm/storage").as_deref(), Some("/api/v1/apps/crm/storage"));
+        assert_eq!(app_route("crm", "/api/v1/apps/c%72m/files/a.png").as_deref(), Some("/api/v1/apps/c%72m/files/a.png"));
+        assert_eq!(app_route("crm", "/sdk/nebo.global.js").as_deref(), Some("/sdk/nebo.global.js"));
+        for refused in [
+            "/api/v1/files/finance/taxes.pdf",
+            "/api/v1/agents",
+            "/agent/mcp",
+            "/ws",
+            "/api/v1/apps/notes/storage",
+            "/api/v1/apps/crm",
+            "/api/v1/apps/crm/",
+            "/k/x/api/v1/files/a",
+            "/k/",
+            "/api/v1/apps/%zz/storage",
+            "/apps/crm/api/x",
+        ] {
+            assert_eq!(app_route("crm", refused), None, "{refused}");
+        }
+        assert_eq!(app_route("", "/api/v1/apps//storage"), None);
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(http::HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap());
+        }
+        h
+    }
+
+    /// Another app's window naming itself is refused; the page's own
+    /// requests pass, with or without naming it.
+    #[test]
+    fn only_the_apps_own_page_is_proxied() {
+        for own in [
+            headers(&[]),
+            headers(&[("origin", "neboapp://crm")]),
+            headers(&[("referer", "neboapp://crm/index.html"), ("sec-fetch-site", "same-origin")]),
+            headers(&[("referer", "neboapp://CRM/")]),
+        ] {
+            assert!(from_own_page(&own, "crm"), "{own:?}");
+        }
+        for other in [
+            headers(&[("origin", "neboapp://notes")]),
+            headers(&[("origin", "null")]),
+            headers(&[("referer", "neboapp://notes/index.html")]),
+            headers(&[("referer", "neboapp://crm-evil/index.html")]),
+            headers(&[("sec-fetch-site", "cross-site")]),
+            headers(&[("origin", "neboapp://crm"), ("sec-fetch-site", "same-site")]),
+        ] {
+            assert!(!from_own_page(&other, "crm"), "{other:?}");
+        }
+    }
+
+    /// An open range goes on as one slice, never past the largest offset;
+    /// a closed one, a suffix and anything odd go as they came.
+    #[test]
+    fn an_open_range_goes_on_as_one_slice() {
+        assert_eq!(proxied_range("bytes=0-"), format!("bytes=0-{}", NEBOAPP_RANGE_SLICE - 1));
+        assert_eq!(proxied_range("bytes=100-"), format!("bytes=100-{}", 100 + NEBOAPP_RANGE_SLICE - 1));
+        assert_eq!(proxied_range(&format!("bytes={}-", u64::MAX)), format!("bytes={}-{}", u64::MAX, u64::MAX));
+        for same in ["bytes=0-1", "bytes=10-99", "bytes=-500", "bytes=0-1,5-9", "items=0-"] {
+            assert_eq!(proxied_range(same), same);
+        }
+    }
+
+    /// The server's security headers for a file go back to the page; a
+    /// CORS grant never does.
+    #[test]
+    fn security_headers_pass_and_cors_never_does() {
+        for name in ["content-security-policy", "x-content-type-options", "content-disposition"] {
+            assert!(PASSED_HEADERS.contains(&name), "{name}");
+        }
+        assert!(!PASSED_HEADERS.iter().any(|h| h.starts_with("access-control-")));
     }
 }

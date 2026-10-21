@@ -213,7 +213,12 @@ pub async fn app_ws_handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !origin_is_trusted(&headers) && !from_its_desktop_window(&headers, &agent_id) {
+    // An app page holding its own pass (`napp::app_view`) opens its own
+    // socket from wherever it runs: a sandboxed page's Origin is `null`.
+    if !crate::middleware::app_view_admits(&headers, &agent_id)
+        && !origin_is_trusted(&headers)
+        && !from_its_desktop_window(&headers, &agent_id)
+    {
         warn!(agent = %agent_id, "ws/app: rejected upgrade from untrusted origin");
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
