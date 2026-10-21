@@ -5836,6 +5836,7 @@ dependencies = [
  "blas-src",
  "chrono",
  "chrono-tz",
+ "dirs",
  "futures",
  "hex",
  "image",
