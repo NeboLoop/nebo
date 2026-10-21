@@ -31,6 +31,22 @@ fn run_select() -> String {
     RUN_SELECT.replace("STATUS_EXPR", STATUS_EXPR)
 }
 
+/// [`Store::list_workflow_runs_since`]'s read: a range on
+/// idx_workflow_runs_started, never a scan of every run ever (the
+/// dashboard polls it).
+fn runs_since_sql() -> String {
+    format!("{} WHERE w.started_at >= ?1 ORDER BY w.started_at DESC LIMIT ?2", run_select())
+}
+
+/// [`Store::count_workflow_runs_by_day`]'s read, on the same range.
+fn runs_by_day_sql() -> String {
+    format!(
+        "SELECT date(w.started_at, 'unixepoch', 'localtime') AS day, w.workflow_id, {STATUS_EXPR} AS status, COUNT(*)
+         FROM workflow_runs w JOIN engine_runs r ON r.id = w.id WHERE w.started_at >= ?1
+         GROUP BY day, w.workflow_id, status"
+    )
+}
+
 /// A workflow status → the engine state it is, plus the summary tag that
 /// keeps the finer word (`exited`, `denied`) readable.
 fn engine_state_of(status: &str) -> (&str, Option<&str>) {
@@ -712,9 +728,7 @@ impl Store {
     ) -> Result<Vec<WorkflowRun>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!(
-                "{} WHERE w.started_at >= ?1 ORDER BY w.started_at DESC LIMIT ?2", run_select()
-            ))
+            .prepare(&runs_since_sql())
             .db_err("list_workflow_runs_since prepare")?;
         let rows = stmt
             .query_map(params![since, limit], row_to_workflow_run)
@@ -732,11 +746,7 @@ impl Store {
     ) -> Result<Vec<(String, String, String, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!(
-                "SELECT date(w.started_at, 'unixepoch', 'localtime') AS day, w.workflow_id, {STATUS_EXPR} AS status, COUNT(*)
-                 FROM workflow_runs w JOIN engine_runs r ON r.id = w.id WHERE w.started_at >= ?1
-                 GROUP BY day, w.workflow_id, status"
-            ))
+            .prepare(&runs_by_day_sql())
             .db_err("count_workflow_runs_by_day prepare")?;
         let rows = stmt
             .query_map(params![since], |row| {
@@ -1265,6 +1275,25 @@ impl Store {
 #[cfg(test)]
 mod durability_tests {
     use crate::Store;
+
+    /// The dashboard's recent runs and per-day counts read the runs in its
+    /// window by a range on started_at, never a scan of every run.
+    #[test]
+    fn runs_since_read_a_started_at_range() {
+        let store = store();
+        let conn = store.conn().unwrap();
+        for sql in [super::runs_since_sql(), super::runs_by_day_sql()] {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let values = std::iter::repeat_n(0i64, stmt.parameter_count());
+            let plan: Vec<String> = stmt
+                .query_map(rusqlite::params_from_iter(values), |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan.iter().any(|step| step.starts_with("SEARCH w USING INDEX idx_workflow_runs_started (started_at>?)")), "{sql}: {plan:#?}");
+            assert!(plan.iter().all(|step| !step.starts_with("SCAN w")), "{sql}: {plan:#?}");
+        }
+    }
 
     fn store() -> Store {
         let path = std::env::temp_dir()

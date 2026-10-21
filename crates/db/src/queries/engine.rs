@@ -194,6 +194,15 @@ pub struct EngineEffect {
 const RUNS_UNDER: &str = "SELECT id, session_key, inputs FROM engine_runs
      WHERE session_key >= ?2 AND session_key < ?2 || char(1114111) AND kind = ?1";
 
+/// [`Store::engine_prompt_schedule_fires_since`]'s read after its columns:
+/// a seek on `idx_engine_runs_ref_kind_state` to the schedules' ended runs, never
+/// every ended run of every kind (the dashboard polls it).
+const PROMPT_SCHEDULE_FIRES: &str = "FROM engine_runs
+     WHERE kind = 'task' AND state IN ('done', 'failed', 'cancelled', 'stopped')
+       AND COALESCE(started_at, created_at) >= ?1
+       AND external_ref IN (SELECT 'cron:' || id FROM cron_jobs WHERE task_type = 'agent')
+     ORDER BY COALESCE(started_at, created_at) DESC, rowid DESC LIMIT ?2";
+
 const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at, pending_questions";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
@@ -981,13 +990,7 @@ impl Store {
     pub fn engine_prompt_schedule_fires_since(&self, since: i64, limit: i64) -> Result<Vec<EngineRun>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM engine_runs
-                 WHERE kind = 'task' AND state IN ('done', 'failed', 'cancelled', 'stopped')
-                   AND COALESCE(started_at, created_at) >= ?1
-                   AND external_ref IN (SELECT 'cron:' || id FROM cron_jobs WHERE task_type = 'agent')
-                 ORDER BY COALESCE(started_at, created_at) DESC, rowid DESC LIMIT ?2"
-            ))
+            .prepare(&format!("SELECT {RUN_COLUMNS} {PROMPT_SCHEDULE_FIRES}"))
             .db_err("engine_prompt_schedule_fires_since")?;
         let rows = stmt
             .query_map(params![since, limit], row_to_run)
@@ -1929,6 +1932,16 @@ mod tests {
         let listed: Vec<String> = s.engine_prompt_schedule_fires_since(0, 50).unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(listed, [failed, skipped, done], "ended prompt fires, newest first");
         assert!(s.engine_prompt_schedule_fires_since(2_500, 50).unwrap().len() == 1, "since bounds it");
+        let conn = s.conn().unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN SELECT id {}", super::PROMPT_SCHEDULE_FIRES))
+            .unwrap()
+            .query_map(params![0, 50], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH engine_runs USING INDEX idx_engine_runs_ref_kind_state (external_ref=? AND kind=? AND state=?)")), "{plan:#?}");
+        drop(conn);
 
         for (key, chat) in [("agent:ava:cron:hourly-calendar-check", "C"), ("agent:ava:thread:X", "X")] {
             s.create_session(key, Some(key), None, None, None).unwrap();
