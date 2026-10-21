@@ -139,7 +139,7 @@ var typeOverrides = map[string]string{
 var extraInterfaces = map[string]string{
 	// How a turn reaches a connection (handlers/provider.rs connection_route).
 	"ConnectionRoute": `export interface ConnectionRoute {
-	via: 'janus' | 'direct' | 'unsupported'
+	via: 'janus' | 'direct'
 	signInRequired: boolean
 }`,
 	// A file as it travels (comm::wire::Attachment), in an upload's status

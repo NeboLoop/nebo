@@ -992,8 +992,8 @@ pub fn build_providers(
                         profile.model.clone().unwrap_or_default(),
                         Some(own),
                     ))),
-                    None => match auth::credential::direct_url(profile) {
-                        Some(Ok(url)) => {
+                    None => match auth::credential::owner_url(profile) {
+                        Some(url) => {
                             let mut p = ai::OpenAIProvider::with_base_url(
                                 auth::credential::profile_key(profile),
                                 profile.model.clone().unwrap_or_default(),
@@ -1001,10 +1001,6 @@ pub fn build_providers(
                             );
                             p.set_provider_id(kind);
                             Some(Arc::new(p))
-                        }
-                        Some(Err(_)) => {
-                            warn!(profile_id = %profile.id, provider = %kind, "a URL of the owner's for a provider with no direct client, skipping");
-                            None
                         }
                         None if kind == "openai_compatible" => {
                             warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");

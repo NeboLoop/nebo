@@ -4354,8 +4354,7 @@
 		"signedOut": "Log masuk ke NeboAI untuk menggunakan kunci {provider} anda sendiri.",
 		"keyRejected": "Kunci API {provider} anda ditolak. Semak di Tetapan > Pembekal.",
 		"keyUnusable": "Kunci API {provider} anda tidak boleh menjalankan model ini. Semak modelnya di Tetapan > Pembekal.",
-		"connectionSignIn": "Log masuk ke NeboAI untuk menggunakan kunci ini: kunci anda sendiri berjalan pada akaun NeboAI anda.",
-		"ownerUrlUnsupported": "URL anda sendiri untuk penyedia ini belum disokong. Alih keluar URL untuk menggunakan kunci melalui NeboAI."
+		"connectionSignIn": "Log masuk ke NeboAI untuk menggunakan kunci ini: kunci anda sendiri berjalan pada akaun NeboAI anda."
 	},
 	"modelCard": {
 		"about": "Tentang {model}",

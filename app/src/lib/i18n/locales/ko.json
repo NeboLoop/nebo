@@ -4354,8 +4354,7 @@
 		"signedOut": "내 {provider} 키를 사용하려면 NeboAI에 로그인하세요.",
 		"keyRejected": "{provider} API 키가 거부되었습니다. 설정 > 제공업체에서 확인하세요.",
 		"keyUnusable": "{provider} API 키로 이 모델을 실행할 수 없습니다. 설정 > 제공업체에서 모델을 확인하세요.",
-		"connectionSignIn": "이 키를 사용하려면 NeboAI에 로그인하세요. 내 키는 NeboAI 계정으로 실행됩니다.",
-		"ownerUrlUnsupported": "이 공급자의 자체 URL은 아직 지원되지 않습니다. NeboAI를 통해 키를 사용하려면 URL을 삭제하세요."
+		"connectionSignIn": "이 키를 사용하려면 NeboAI에 로그인하세요. 내 키는 NeboAI 계정으로 실행됩니다."
 	},
 	"modelCard": {
 		"about": "{model} 정보",

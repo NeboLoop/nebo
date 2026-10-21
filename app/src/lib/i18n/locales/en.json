@@ -4354,8 +4354,7 @@
 		"signedOut": "Sign in to NeboAI to use your own {provider} key.",
 		"keyRejected": "Your {provider} API key was refused. Check it in Settings > Providers.",
 		"keyUnusable": "Your {provider} API key can't run this model. Check the model on it in Settings > Providers.",
-		"connectionSignIn": "Sign in to NeboAI to use this key: your own keys run on your NeboAI account.",
-		"ownerUrlUnsupported": "Your own URLs for this provider aren't supported yet. Remove the URL to use the key through NeboAI."
+		"connectionSignIn": "Sign in to NeboAI to use this key: your own keys run on your NeboAI account."
 	},
 	"modelCard": {
 		"about": "About {model}",

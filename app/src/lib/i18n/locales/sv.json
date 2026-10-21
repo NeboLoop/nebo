@@ -4354,8 +4354,7 @@
 		"signedOut": "Logga in på NeboAI för att använda din egen {provider}-nyckel.",
 		"keyRejected": "Din {provider}-API-nyckel nekades. Kontrollera den under Inställningar > Leverantörer.",
 		"keyUnusable": "Din {provider}-API-nyckel kan inte köra den här modellen. Kontrollera modellen under Inställningar > Leverantörer.",
-		"connectionSignIn": "Logga in på NeboAI för att använda den här nyckeln: dina egna nycklar körs på ditt NeboAI-konto.",
-		"ownerUrlUnsupported": "Egna URL:er för den här leverantören stöds inte än. Ta bort URL:en för att använda nyckeln via NeboAI."
+		"connectionSignIn": "Logga in på NeboAI för att använda den här nyckeln: dina egna nycklar körs på ditt NeboAI-konto."
 	},
 	"modelCard": {
 		"about": "Om {model}",

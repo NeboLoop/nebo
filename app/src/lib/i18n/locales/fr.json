@@ -4354,8 +4354,7 @@
 		"signedOut": "Connectez-vous à NeboAI pour utiliser votre propre clé {provider}.",
 		"keyRejected": "Votre clé API {provider} a été refusée. Vérifiez-la dans Paramètres > Fournisseurs.",
 		"keyUnusable": "Votre clé API {provider} ne peut pas exécuter ce modèle. Vérifiez le modèle associé dans Paramètres > Fournisseurs.",
-		"connectionSignIn": "Connectez-vous à NeboAI pour utiliser cette clé : vos propres clés passent par votre compte NeboAI.",
-		"ownerUrlUnsupported": "Les URL personnelles pour ce fournisseur ne sont pas encore prises en charge. Supprimez l'URL pour utiliser la clé via NeboAI."
+		"connectionSignIn": "Connectez-vous à NeboAI pour utiliser cette clé : vos propres clés passent par votre compte NeboAI."
 	},
 	"modelCard": {
 		"about": "À propos de {model}",

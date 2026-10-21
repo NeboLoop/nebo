@@ -4354,8 +4354,7 @@
 		"signedOut": "Meld je aan bij NeboAI om je eigen {provider}-sleutel te gebruiken.",
 		"keyRejected": "Je {provider}-API-sleutel is geweigerd. Controleer hem bij Instellingen > Providers.",
 		"keyUnusable": "Je {provider}-API-sleutel kan dit model niet uitvoeren. Controleer het model erop bij Instellingen > Providers.",
-		"connectionSignIn": "Meld je aan bij NeboAI om deze sleutel te gebruiken: je eigen sleutels draaien op je NeboAI-account.",
-		"ownerUrlUnsupported": "Eigen URL's voor deze provider worden nog niet ondersteund. Verwijder de URL om de sleutel via NeboAI te gebruiken."
+		"connectionSignIn": "Meld je aan bij NeboAI om deze sleutel te gebruiken: je eigen sleutels draaien op je NeboAI-account."
 	},
 	"modelCard": {
 		"about": "Over {model}",

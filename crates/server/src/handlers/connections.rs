@@ -539,7 +539,7 @@ pub fn parse_google_list(body: &serde_json::Value) -> Vec<CatalogModel> {
 /// How a connection's provider lists its models: the URL, the key's header
 /// and the shape of the answer. A direct, unbilled call on the owner's own
 /// key (the list is not usage). A connection with a URL the owner entered
-/// (`auth::credential::direct_url`, the one test) is asked at THAT URL, as an
+/// (`auth::credential::owner_url`, the one test) is asked at THAT URL, as an
 /// OpenAI-compatible `/models`, whatever its kind: its key never goes to a
 /// provider's own host.
 #[derive(Debug, Clone, PartialEq)]
@@ -564,17 +564,12 @@ pub fn catalog_request(p: &db::models::AuthProfile) -> Option<CatalogRequest> {
     let key = auth::credential::profile_key(p);
     let bearer = || Some(("Authorization".to_string(), format!("Bearer {key}")));
     let req = |url: String, auth, extra, shape| Some(CatalogRequest { url, auth, extra, shape });
-    match auth::credential::direct_url(p) {
-        // His own URL: listed there, or not at all (a provider whose format
-        // Nebo has no direct client for is neither listed nor used).
-        Some(Ok(base)) => {
-            return match p.provider.as_str() {
-                "systemone_compatible" | "ollama" | "neboai" => None,
-                _ => req(format!("{}/models", base.trim_end_matches('/')), bearer(), vec![], CatalogShape::OpenAi),
-            };
-        }
-        Some(Err(_)) => return None,
-        None => {}
+    if let Some(base) = auth::credential::owner_url(p) {
+        // His own URL: listed there, or not at all.
+        return match p.provider.as_str() {
+            "systemone_compatible" | "ollama" | "neboai" => None,
+            _ => req(format!("{}/models", base.trim_end_matches('/')), bearer(), vec![], CatalogShape::OpenAi),
+        };
     }
     match p.provider.as_str() {
         "openrouter" => req("https://openrouter.ai/api/v1/models".into(), None, vec![], CatalogShape::OpenRouter),
@@ -798,15 +793,11 @@ mod tests {
     }
 
     /// A connection with a URL the owner entered lists from THAT URL, as an
-    /// OpenAI-compatible `/models`: its key never goes to a provider's own
-    /// host. Anthropic and Google at a URL of his are neither listed nor
-    /// used (`auth::credential::direct_url`): chat has no client for them.
+    /// OpenAI-compatible `/models`, whatever its kind: its key never goes to
+    /// a provider's own host (the same test as `own_key`).
     #[test]
     fn an_owner_url_lists_from_that_url_only() {
-        for kind in ["anthropic", "google"] {
-            assert!(catalog_request(&profile_of(kind, Some("https://gateway.example/v1"))).is_none(), "{kind}: not listed");
-        }
-        for kind in ["openai", "deepseek", "xai", "openrouter", "openai_compatible"] {
+        for kind in ["anthropic", "google", "openai", "deepseek", "xai", "openrouter", "openai_compatible"] {
             let r = catalog_request(&profile_of(kind, Some("https://gateway.example/v1"))).unwrap();
             assert_eq!(r.url, "https://gateway.example/v1/models", "{kind}");
             assert_eq!(r.shape, CatalogShape::OpenAi, "{kind}");

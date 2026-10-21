@@ -4354,8 +4354,7 @@
 		"signedOut": "Kendi {provider} anahtarınızı kullanmak için NeboAI'da oturum açın.",
 		"keyRejected": "{provider} API anahtarınız reddedildi. Ayarlar > Sağlayıcılar bölümünden kontrol edin.",
 		"keyUnusable": "{provider} API anahtarınız bu modeli çalıştıramıyor. Modeli Ayarlar > Sağlayıcılar bölümünden kontrol edin.",
-		"connectionSignIn": "Bu anahtarı kullanmak için NeboAI'da oturum açın: kendi anahtarlarınız NeboAI hesabınızda çalışır.",
-		"ownerUrlUnsupported": "Bu sağlayıcı için kendi URL'leriniz henüz desteklenmiyor. Anahtarı NeboAI üzerinden kullanmak için URL'yi kaldırın."
+		"connectionSignIn": "Bu anahtarı kullanmak için NeboAI'da oturum açın: kendi anahtarlarınız NeboAI hesabınızda çalışır."
 	},
 	"modelCard": {
 		"about": "{model} hakkında",

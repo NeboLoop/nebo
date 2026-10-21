@@ -4354,8 +4354,7 @@
 		"signedOut": "Melde dich bei NeboAI an, um deinen eigenen {provider}-Schlüssel zu nutzen.",
 		"keyRejected": "Dein {provider}-API-Schlüssel wurde abgelehnt. Prüfe ihn unter Einstellungen > Anbieter.",
 		"keyUnusable": "Dein {provider}-API-Schlüssel kann dieses Modell nicht ausführen. Prüfe das Modell darauf unter Einstellungen > Anbieter.",
-		"connectionSignIn": "Melde dich bei NeboAI an, um diesen Schlüssel zu nutzen: Deine eigenen Schlüssel laufen über dein NeboAI-Konto.",
-		"ownerUrlUnsupported": "Eigene URLs für diesen Anbieter werden noch nicht unterstützt. Entferne die URL, um den Schlüssel über NeboAI zu nutzen."
+		"connectionSignIn": "Melde dich bei NeboAI an, um diesen Schlüssel zu nutzen: Deine eigenen Schlüssel laufen über dein NeboAI-Konto."
 	},
 	"modelCard": {
 		"about": "Über {model}",

@@ -3449,7 +3449,7 @@ export interface CommanderNode {
 }
 
 export interface ConnectionRoute {
-	via: 'janus' | 'direct' | 'unsupported'
+	via: 'janus' | 'direct'
 	signInRequired: boolean
 }
 

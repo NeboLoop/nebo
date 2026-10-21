@@ -4354,8 +4354,7 @@
 		"signedOut": "התחבר ל-NeboAI כדי להשתמש במפתח {provider} שלך.",
 		"keyRejected": "מפתח ה-API שלך של {provider} נדחה. בדוק אותו בהגדרות > ספקים.",
 		"keyUnusable": "מפתח ה-API שלך של {provider} לא יכול להריץ את המודל הזה. בדוק את המודל שלו בהגדרות > ספקים.",
-		"connectionSignIn": "התחבר ל-NeboAI כדי להשתמש במפתח הזה: המפתחות שלך פועלים דרך חשבון ה-NeboAI שלך.",
-		"ownerUrlUnsupported": "כתובות URL משלך לספק הזה עדיין לא נתמכות. הסר את כתובת ה-URL כדי להשתמש במפתח דרך NeboAI."
+		"connectionSignIn": "התחבר ל-NeboAI כדי להשתמש במפתח הזה: המפתחות שלך פועלים דרך חשבון ה-NeboAI שלך."
 	},
 	"modelCard": {
 		"about": "אודות {model}",

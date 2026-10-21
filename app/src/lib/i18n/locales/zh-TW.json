@@ -4354,8 +4354,7 @@
 		"signedOut": "登入 NeboAI 才能使用你自己的 {provider} 金鑰。",
 		"keyRejected": "你的 {provider} API 金鑰遭到拒絕。請在 設定 > 供應商 中檢查。",
 		"keyUnusable": "你的 {provider} API 金鑰無法執行此模型。請在 設定 > 供應商 中檢查該金鑰的模型。",
-		"connectionSignIn": "登入 NeboAI 才能使用此金鑰：你自己的金鑰在你的 NeboAI 帳戶上執行。",
-		"ownerUrlUnsupported": "尚不支援此供應商的自訂 URL。刪除該 URL 即可透過 NeboAI 使用此金鑰。"
+		"connectionSignIn": "登入 NeboAI 才能使用此金鑰：你自己的金鑰在你的 NeboAI 帳戶上執行。"
 	},
 	"modelCard": {
 		"about": "關於 {model}",

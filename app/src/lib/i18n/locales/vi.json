@@ -4354,8 +4354,7 @@
 		"signedOut": "Đăng nhập NeboAI để dùng khóa {provider} của riêng bạn.",
 		"keyRejected": "Khóa API {provider} của bạn bị từ chối. Hãy kiểm tra trong Cài đặt > Nhà cung cấp.",
 		"keyUnusable": "Khóa API {provider} của bạn không chạy được mô hình này. Hãy kiểm tra mô hình trong Cài đặt > Nhà cung cấp.",
-		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn.",
-		"ownerUrlUnsupported": "Chưa hỗ trợ URL riêng cho nhà cung cấp này. Hãy xóa URL để dùng khóa qua NeboAI."
+		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn."
 	},
 	"modelCard": {
 		"about": "Về {model}",

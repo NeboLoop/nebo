@@ -4354,8 +4354,7 @@
 		"signedOut": "自分の {provider} キーを使うには NeboAI にサインインしてください。",
 		"keyRejected": "{provider} の API キーが拒否されました。設定 > プロバイダー で確認してください。",
 		"keyUnusable": "{provider} の API キーではこのモデルを実行できません。設定 > プロバイダー でモデルを確認してください。",
-		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。",
-		"ownerUrlUnsupported": "このプロバイダーの独自 URL にはまだ対応していません。NeboAI 経由でキーを使うには URL を削除してください。"
+		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。"
 	},
 	"modelCard": {
 		"about": "{model} について",
