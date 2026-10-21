@@ -4430,17 +4430,17 @@
 				"other": "Step"
 			},
 			"time": "{seconds}s",
-			"lenses": "Reviewers: {lenses}",
 			"findings": "Found: {blockers} blocking, {majors} major, {minors} minor",
 			"fixed": "Fixed since the round before: {count}",
 			"held": "Checked and held",
-			"checks": "Checks:",
-			"noChecks": "No build or tests could run."
+			"noChecks": "No build or tests could run.",
+			"since": "Changed since the last round",
+			"reviewers": "Reviewers",
+			"projectChecks": "The project's own checks"
 		},
 		"rounds": {
 			"heading": "Code checks"
 		},
-		"total": "Reviewers' cost: {cost}",
 		"severity": {
 			"blocker": "Blocking",
 			"major": "Major",
@@ -4501,6 +4501,41 @@
 			"helper": "It is in its helper's copy until the conversation that started it lands it.",
 			"folder": "It was made in place, in the folder it was worked on.",
 			"nothing": "There was nothing to land."
+		},
+		"line": {
+			"round": "round {n}",
+			"issuesLeft": "{count, plural, one {# issue left} other {# issues left}}"
+		},
+		"phase": {
+			"working": "Writing the change. Checking starts when it's done.",
+			"checks": "Running the project's own checks.",
+			"reviewers": "Reviewers are reading the change.",
+			"fixing": "Fixing what the reviewers found. The next round checks the fixes.",
+			"landing": "Putting the change into the project.",
+			"live": "Checking it live."
+		},
+		"sheet": {
+			"elapsed": "{project} · {time} so far",
+			"took": "{project} · took {time}",
+			"changed": "What's being checked",
+			"files": "{count, plural, one {# file} other {# files}} in {project}",
+			"open": "Still open"
+		},
+		"reviewer": {
+			"waiting": "waits for the checks",
+			"running": "reading now",
+			"clean": "no issues",
+			"found": "{count, plural, one {found # issue} other {found # issues}}",
+			"failed": "could not finish"
+		},
+		"check": {
+			"waiting": "waiting",
+			"running": "running now",
+			"passed": "passed",
+			"failed": "failed"
+		},
+		"time": {
+			"minutes": "{m}m {s}s"
 		}
 	}
 }

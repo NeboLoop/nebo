@@ -4430,17 +4430,17 @@
 				"other": "步骤"
 			},
 			"time": "{seconds} 秒",
-			"lenses": "审查员：{lenses}",
 			"findings": "发现：阻断 {blockers}，重大 {majors}，轻微 {minors}",
 			"fixed": "自上一轮以来已修复：{count}",
 			"held": "已检查，没有问题",
-			"checks": "检查：",
-			"noChecks": "无法运行任何构建或测试。"
+			"noChecks": "无法运行任何构建或测试。",
+			"since": "自上一轮以来的改动",
+			"reviewers": "审查员",
+			"projectChecks": "项目自身的检查"
 		},
 		"rounds": {
 			"heading": "代码检查"
 		},
-		"total": "审查员费用：{cost}",
 		"severity": {
 			"blocker": "阻断",
 			"major": "重大",
@@ -4501,6 +4501,41 @@
 			"helper": "它在其助手的副本中，直到启动它的对话将其并入。",
 			"folder": "它是在所处理的文件夹中就地完成的。",
 			"nothing": "没有需要并入的内容。"
+		},
+		"line": {
+			"round": "第 {n} 轮",
+			"issuesLeft": "{count, plural, other {还剩 # 个问题}}"
+		},
+		"phase": {
+			"working": "正在编写改动。写完后开始检查。",
+			"checks": "正在运行项目自身的检查。",
+			"reviewers": "审查员正在阅读改动。",
+			"fixing": "正在修复审查员发现的问题。下一轮会检查这些修复。",
+			"landing": "正在把改动放进项目。",
+			"live": "正在实时检查。"
+		},
+		"sheet": {
+			"elapsed": "{project} · 已用 {time}",
+			"took": "{project} · 用时 {time}",
+			"changed": "正在检查的内容",
+			"files": "{project} 中的 {count, plural, other {# 个文件}}",
+			"open": "仍未解决"
+		},
+		"reviewer": {
+			"waiting": "等待检查",
+			"running": "正在阅读",
+			"clean": "没有问题",
+			"found": "{count, plural, other {发现 # 个问题}}",
+			"failed": "未能完成"
+		},
+		"check": {
+			"waiting": "等待中",
+			"running": "运行中",
+			"passed": "通过",
+			"failed": "失败"
+		},
+		"time": {
+			"minutes": "{m}分{s}秒"
 		}
 	}
 }

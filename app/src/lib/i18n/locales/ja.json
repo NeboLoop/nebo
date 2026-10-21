@@ -4430,17 +4430,17 @@
 				"other": "ステップ"
 			},
 			"time": "{seconds}秒",
-			"lenses": "レビュアー: {lenses}",
 			"findings": "検出: 重大 {blockers}、大 {majors}、軽微 {minors}",
 			"fixed": "前のラウンドから修正: {count}",
 			"held": "確認済みで問題なし",
-			"checks": "チェック:",
-			"noChecks": "ビルドもテストも実行できませんでした。"
+			"noChecks": "ビルドもテストも実行できませんでした。",
+			"since": "前のラウンドからの変更",
+			"reviewers": "レビュアー",
+			"projectChecks": "プロジェクト自身のチェック"
 		},
 		"rounds": {
 			"heading": "コードの確認"
 		},
-		"total": "レビュアーの費用: {cost}",
 		"severity": {
 			"blocker": "重大",
 			"major": "大",
@@ -4501,6 +4501,41 @@
 			"helper": "開始した会話が反映するまで、ヘルパーのコピーにあります。",
 			"folder": "作業したフォルダーでそのまま行われました。",
 			"nothing": "反映するものはありませんでした。"
+		},
+		"line": {
+			"round": "ラウンド {n}",
+			"issuesLeft": "{count, plural, other {残りの問題 #件}}"
+		},
+		"phase": {
+			"working": "変更を書いています。終わると確認が始まります。",
+			"checks": "プロジェクト自身のチェックを実行しています。",
+			"reviewers": "レビュアーが変更を読んでいます。",
+			"fixing": "レビュアーが見つけた問題を直しています。次のラウンドで修正を確認します。",
+			"landing": "変更をプロジェクトに反映しています。",
+			"live": "実際に動かして確認しています。"
+		},
+		"sheet": {
+			"elapsed": "{project} · ここまで {time}",
+			"took": "{project} · {time}かかりました",
+			"changed": "確認している内容",
+			"files": "{project} 内の{count, plural, other {#個のファイル}}",
+			"open": "未解決"
+		},
+		"reviewer": {
+			"waiting": "チェック待ち",
+			"running": "読んでいます",
+			"clean": "問題なし",
+			"found": "{count, plural, other {問題を#件発見}}",
+			"failed": "完了できませんでした"
+		},
+		"check": {
+			"waiting": "待機中",
+			"running": "実行中",
+			"passed": "合格",
+			"failed": "不合格"
+		},
+		"time": {
+			"minutes": "{m}分{s}秒"
 		}
 	}
 }

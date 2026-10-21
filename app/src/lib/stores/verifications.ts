@@ -203,10 +203,46 @@ export function badgeWords(
   }
 }
 
-/** A cost in microcents as the owner reads it. */
-export function cost(microcents: number): string {
-  const dollars = microcents / 100_000_000;
-  if (dollars === 0) return "$0";
-  if (dollars < 0.01) return "<$0.01";
-  return "$" + dollars.toFixed(2);
+/** The one line a verification is in the conversation, the size of a tool
+ *  row: "Checking · round 2", then "Verified", "2 issues left", "Not
+ *  verified" or "Waiting on you". Its detail is in the sheet it opens. */
+export function lineWords(v: VerificationView, tr: Tr): string {
+  const b = v.badge;
+  switch (b.state) {
+    case "checking":
+      return b.round > 0
+        ? `${tr("verify.badge.checking")} · ${tr("verify.line.round", { values: { n: b.round } })}`
+        : tr("verify.badge.checking");
+    case "waiting":
+      return tr("verify.badge.waiting");
+    case "verified":
+      return tr("verify.badge.verified");
+    default: {
+      const open = b.openBlockers + b.openMajors + b.openMinors;
+      return open > 0
+        ? tr("verify.line.issuesLeft", { values: { count: open } })
+        : tr("verify.badge.notVerified");
+    }
+  }
+}
+
+const PHASES = new Set(["working", "checks", "reviewers", "fixing", "landing", "live"]);
+
+/** What the loop is doing now, while it runs; "" once it waits or is done. */
+export function phaseWords(v: VerificationView, tr: Tr): string {
+  return PHASES.has(v.badge.phase) ? tr(`verify.phase.${v.badge.phase}`) : "";
+}
+
+/** A span of time as the owner reads it: "8s", "2m 5s". */
+export function duration(seconds: number, tr: Tr): string {
+  const s = Math.max(0, Math.round(seconds));
+  return s < 60
+    ? tr("verify.round.time", { values: { seconds: s } })
+    : tr("verify.time.minutes", { values: { m: Math.floor(s / 60), s: s % 60 } });
+}
+
+/** How long the work has taken: from its start to its end, or to `now`
+ *  (seconds) while it runs. */
+export function elapsed(v: VerificationView, now: number): number {
+  return Math.max(0, (v.finishedAt ?? now) - v.createdAt);
 }

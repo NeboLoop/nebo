@@ -1,8 +1,9 @@
 <!--
   The one line above the composer: shown while the turn works or any of the
   work this conversation launched runs, after the turn ends too. A mark, the
-  turn's time, the conversation's running tasks (a button that opens them), and
-  what the turn is doing. When the last task ends it says how many finished,
+  turn's time, the conversation's running tasks (a button that opens them), its
+  code work being checked (each a button that opens its sheet), and what the
+  turn is doing. When the last task ends it says how many finished,
   briefly, then goes. A task's "View transcript" opens the chat that holds
   its steps (BackgroundTranscript).
 -->
@@ -14,12 +15,15 @@
   import BackgroundTranscript from '$lib/components/background/BackgroundTranscript.svelte';
   import type { BackgroundTask } from '$lib/api/neboComponents';
   import { widthFade } from '$lib/components/background/widthFade';
+  import type { VerificationView } from '$lib/api/neboComponents';
+  import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
 
   let {
     sessionKey,
     isLoading = false,
     activityStatus = '',
     turnStartedAt = 0,
+    checking = [],
   }: {
     /** The conversation's session: its list is what its turns launched. */
     sessionKey: string;
@@ -27,6 +31,9 @@
     activityStatus?: string;
     /** When the running turn started (ms); 0 while none runs. */
     turnStartedAt?: number;
+    /** The conversation's code work still being checked or waiting on the
+     *  owner: one piece each, "Checking · round 2 ›". */
+    checking?: VerificationView[];
   } = $props();
 
   /** The turn's time shows once it has run this long. */
@@ -78,7 +85,7 @@
     if (elapsed >= 15) return $t('background.status.stillThinking');
     return $t('background.status.thinking');
   });
-  const shown = $derived(isLoading || count > 0 || flash > 0);
+  const shown = $derived(isLoading || count > 0 || flash > 0 || checking.length > 0);
 
   function onKey(e: KeyboardEvent) {
     if (e.key === 'Escape' && !transcript) open = false;
@@ -108,7 +115,7 @@
       </div>
     {/if}
     <div class="bg-status-row">
-      {#if isLoading || count > 0}
+      {#if isLoading || count > 0 || checking.length > 0}
         <span class="bg-status-piece" transition:widthFade><span class="loading loading-spinner loading-xs text-primary"></span></span>
       {/if}
       {#if elapsed >= ELAPSED_AFTER_S}
@@ -126,6 +133,9 @@
       {:else if flash > 0}
         <span class="bg-status-piece" transition:widthFade>{$t('background.tasksFinished', { values: { n: flash } })}</span>
       {/if}
+      {#each checking as v (v.id)}
+        <span class="bg-status-piece" transition:widthFade><VerifiedBadge verification={v} statusLine /></span>
+      {/each}
       {#if phrase}
         <span class="bg-status-piece bg-status-phrase {thinking ? 'bg-status-thinking' : ''}" transition:widthFade>{phrase}</span>
       {/if}

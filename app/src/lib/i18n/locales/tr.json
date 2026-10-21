@@ -4430,17 +4430,17 @@
 				"other": "Adım"
 			},
 			"time": "{seconds} sn",
-			"lenses": "İnceleyiciler: {lenses}",
 			"findings": "Bulunan: {blockers} engelleyici, {majors} büyük, {minors} küçük",
 			"fixed": "Önceki turdan beri düzeltilen: {count}",
 			"held": "Kontrol edildi ve sağlam",
-			"checks": "Kontroller:",
-			"noChecks": "Hiçbir derleme ya da test çalıştırılamadı."
+			"noChecks": "Hiçbir derleme ya da test çalıştırılamadı.",
+			"since": "Son turdan beri değişenler",
+			"reviewers": "İnceleyiciler",
+			"projectChecks": "Projenin kendi kontrolleri"
 		},
 		"rounds": {
 			"heading": "Kod kontrolleri"
 		},
-		"total": "İnceleyicilerin maliyeti: {cost}",
 		"severity": {
 			"blocker": "Engelleyici",
 			"major": "Büyük",
@@ -4501,6 +4501,41 @@
 			"helper": "Onu başlatan sohbet aktarana kadar yardımcısının kopyasında duruyor.",
 			"folder": "Üzerinde çalışılan klasörde, yerinde yapıldı.",
 			"nothing": "Aktarılacak bir şey yoktu."
+		},
+		"line": {
+			"round": "tur {n}",
+			"issuesLeft": "{count, plural, one {# sorun kaldı} other {# sorun kaldı}}"
+		},
+		"phase": {
+			"working": "Değişiklik yazılıyor. Bitince kontrol başlar.",
+			"checks": "Projenin kendi kontrolleri çalışıyor.",
+			"reviewers": "İnceleyiciler değişikliği okuyor.",
+			"fixing": "İnceleyicilerin bulduğu sorunlar düzeltiliyor. Sonraki tur düzeltmeleri kontrol eder.",
+			"landing": "Değişiklik projeye ekleniyor.",
+			"live": "Canlı kontrol ediliyor."
+		},
+		"sheet": {
+			"elapsed": "{project} · şu ana kadar {time}",
+			"took": "{project} · {time} sürdü",
+			"changed": "Kontrol edilenler",
+			"files": "{project} içinde {count, plural, one {# dosya} other {# dosya}}",
+			"open": "Hâlâ açık"
+		},
+		"reviewer": {
+			"waiting": "kontrolleri bekliyor",
+			"running": "şimdi okuyor",
+			"clean": "sorun yok",
+			"found": "{count, plural, one {# sorun buldu} other {# sorun buldu}}",
+			"failed": "bitiremedi"
+		},
+		"check": {
+			"waiting": "bekliyor",
+			"running": "şimdi çalışıyor",
+			"passed": "geçti",
+			"failed": "başarısız"
+		},
+		"time": {
+			"minutes": "{m} dk {s} sn"
 		}
 	}
 }

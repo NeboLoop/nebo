@@ -4430,17 +4430,17 @@
 				"other": "단계"
 			},
 			"time": "{seconds}초",
-			"lenses": "검토자: {lenses}",
 			"findings": "발견: 차단 {blockers}, 주요 {majors}, 사소 {minors}",
 			"fixed": "이전 회차 이후 수정: {count}",
 			"held": "확인 완료, 문제 없음",
-			"checks": "검사:",
-			"noChecks": "빌드나 테스트를 실행할 수 없었습니다."
+			"noChecks": "빌드나 테스트를 실행할 수 없었습니다.",
+			"since": "지난 회차 이후 바뀐 내용",
+			"reviewers": "검토자",
+			"projectChecks": "프로젝트 자체 검사"
 		},
 		"rounds": {
 			"heading": "코드 확인"
 		},
-		"total": "검토자 비용: {cost}",
 		"severity": {
 			"blocker": "차단",
 			"major": "주요",
@@ -4501,6 +4501,41 @@
 			"helper": "시작한 대화가 반영할 때까지 도우미의 사본에 있습니다.",
 			"folder": "작업한 폴더에서 바로 이루어졌습니다.",
 			"nothing": "반영할 것이 없었습니다."
+		},
+		"line": {
+			"round": "{n}회차",
+			"issuesLeft": "{count, plural, other {문제 #개 남음}}"
+		},
+		"phase": {
+			"working": "변경 사항을 작성하고 있습니다. 끝나면 확인이 시작됩니다.",
+			"checks": "프로젝트 자체 검사를 실행하고 있습니다.",
+			"reviewers": "검토자가 변경 사항을 읽고 있습니다.",
+			"fixing": "검토자가 찾은 문제를 고치고 있습니다. 다음 회차에서 수정 사항을 확인합니다.",
+			"landing": "변경 사항을 프로젝트에 넣고 있습니다.",
+			"live": "실시간으로 확인하고 있습니다."
+		},
+		"sheet": {
+			"elapsed": "{project} · 지금까지 {time}",
+			"took": "{project} · {time} 걸림",
+			"changed": "확인 중인 내용",
+			"files": "{project}의 파일 {count, plural, other {#개}}",
+			"open": "아직 남은 문제"
+		},
+		"reviewer": {
+			"waiting": "검사 대기 중",
+			"running": "읽는 중",
+			"clean": "문제 없음",
+			"found": "{count, plural, other {문제 #개 발견}}",
+			"failed": "끝내지 못함"
+		},
+		"check": {
+			"waiting": "대기 중",
+			"running": "실행 중",
+			"passed": "통과",
+			"failed": "실패"
+		},
+		"time": {
+			"minutes": "{m}분 {s}초"
 		}
 	}
 }

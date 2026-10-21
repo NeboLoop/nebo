@@ -4430,17 +4430,17 @@
 				"other": "Etapa"
 			},
 			"time": "{seconds} s",
-			"lenses": "Revisores: {lenses}",
 			"findings": "Encontrado: {blockers} bloqueantes, {majors} graves, {minors} menores",
 			"fixed": "Corrigido desde a rodada anterior: {count}",
 			"held": "Verificado e correto",
-			"checks": "Testes:",
-			"noChecks": "Não foi possível rodar build nem testes."
+			"noChecks": "Não foi possível rodar build nem testes.",
+			"since": "Alterado desde a última rodada",
+			"reviewers": "Revisores",
+			"projectChecks": "Os testes do próprio projeto"
 		},
 		"rounds": {
 			"heading": "Verificações de código"
 		},
-		"total": "Custo dos revisores: {cost}",
 		"severity": {
 			"blocker": "Bloqueante",
 			"major": "Grave",
@@ -4501,6 +4501,41 @@
 			"helper": "Está na cópia do seu ajudante até que a conversa que o iniciou a integre.",
 			"folder": "Foi feita no próprio lugar, na pasta em que se trabalhou.",
 			"nothing": "Não havia nada a integrar."
+		},
+		"line": {
+			"round": "rodada {n}",
+			"issuesLeft": "{count, plural, one {falta # problema} other {faltam # problemas}}"
+		},
+		"phase": {
+			"working": "Escrevendo a alteração. A verificação começa quando ela estiver pronta.",
+			"checks": "Rodando os testes do próprio projeto.",
+			"reviewers": "Os revisores estão lendo a alteração.",
+			"fixing": "Corrigindo o que os revisores encontraram. A próxima rodada verifica as correções.",
+			"landing": "Colocando a alteração no projeto.",
+			"live": "Verificando ao vivo."
+		},
+		"sheet": {
+			"elapsed": "{project} · {time} até agora",
+			"took": "{project} · levou {time}",
+			"changed": "O que está sendo verificado",
+			"files": "{count, plural, one {# arquivo} other {# arquivos}} em {project}",
+			"open": "Ainda em aberto"
+		},
+		"reviewer": {
+			"waiting": "aguarda os testes",
+			"running": "lendo agora",
+			"clean": "sem problemas",
+			"found": "{count, plural, one {encontrou # problema} other {encontrou # problemas}}",
+			"failed": "não conseguiu terminar"
+		},
+		"check": {
+			"waiting": "aguardando",
+			"running": "rodando agora",
+			"passed": "passou",
+			"failed": "falhou"
+		},
+		"time": {
+			"minutes": "{m} min {s} s"
 		}
 	}
 }
