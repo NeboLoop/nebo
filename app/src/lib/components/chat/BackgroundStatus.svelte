@@ -109,19 +109,6 @@
   <!-- Comes and goes smoothly: at the end of the conversation, the list
        anchored to the bottom moves with it, never in a jump. -->
   <div class="bg-status" transition:slide={{ duration: 200 }}>
-    {#if open && count > 0}
-      <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
-      <div class="bg-status-popover">
-        <BackgroundPanel
-          tasks={mine}
-          {finished}
-          now={Math.floor(nowMs / 1000)}
-          collapsible={false}
-          ontranscript={showTranscript}
-          onclose={() => (open = false)}
-        />
-      </div>
-    {/if}
     <div class="bg-status-row">
       {#if isLoading || count > 0 || checking.length > 0}
         <span class="bg-status-piece" transition:widthFade><span class="loading loading-spinner loading-xs text-primary"></span></span>
@@ -148,6 +135,21 @@
         <span class="bg-status-piece bg-status-phrase {thinking ? 'bg-status-thinking' : ''}" transition:widthFade>{phrase}</span>
       {/if}
     </div>
+    <!-- Opens in the conversation, under the line: never clipped by a short
+         chat's edge. -->
+    {#if open && count > 0}
+      <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
+      <div class="bg-status-popover">
+        <BackgroundPanel
+          tasks={mine}
+          {finished}
+          now={Math.floor(nowMs / 1000)}
+          collapsible={false}
+          ontranscript={showTranscript}
+          onclose={() => (open = false)}
+        />
+      </div>
+    {/if}
   </div>
 {/if}
 

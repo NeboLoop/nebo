@@ -32,9 +32,11 @@ beforeAll(() => {
 });
 
 const messages = [
-	{ id: 'u1', type: 'user', content: 'Fix the total', time: '' },
-	{ id: 'a1', type: 'assistant', content: 'Fixed it.', time: '' }
+	{ id: 'u1', type: 'user' as const, content: 'Fix the total', time: '' },
+	{ id: 'a1', type: 'assistant' as const, content: 'Fixed it.', time: '' }
 ];
+
+const rule = (name: string) => css.slice(css.indexOf(`${name} {`), css.indexOf('}', css.indexOf(`${name} {`)));
 
 describe('ChatPane', () => {
 	it('floats the composer over the conversation, its running line the last row of the scroller', () => {
@@ -50,18 +52,26 @@ describe('ChatPane', () => {
 		expect(out).toContain('--chat-float: 0px');
 	});
 
-	it('leaves the floating height at the end of the scroller, with a fade that never takes a click', () => {
-		const rule = (name: string) => css.slice(css.indexOf(`${name} {`), css.indexOf('}', css.indexOf(`${name} {`)));
+	it('leaves the floating height and its fade at the end of the scroller; the fade never takes a click', () => {
 		expect(rule('.chat-scroller')).toContain('var(--chat-float');
+		expect(rule('.chat-scroller'), 'the fade is room too: the last row is never under it').toContain('1rem');
 		expect(rule('.chat-scroll-button')).toContain('var(--chat-float');
 		expect(rule('.chat-floating::before')).toContain('pointer-events-none');
-		expect(rule('.chat-floating::before')).toContain('--color-base-100');
-		// Glass where the browser blurs, solid where it can't.
-		expect(rule('.chat-floating')).toContain('bg-base-100');
+		expect(rule('.chat-floating::before'), 'a small, subtle fade').toContain('h-4');
+	});
+
+	it('glasses the input card alone, nearly opaque, and never the band around it', () => {
+		const floating = rule('.chat-floating').replace(/\/\*[\s\S]*?\*\//g, '');
+		expect(floating).not.toMatch(/bg-|background|backdrop-filter|z-/);
 		const start = css.indexOf('@supports ((backdrop-filter');
 		const glass = css.slice(start, css.indexOf('}\n}', start));
-		expect(start).toBeGreaterThan(-1);
-		expect(glass).toContain('backdrop-filter: blur(18px)');
-		expect(glass).toContain('var(--color-base-100) 72%, transparent');
+		expect(glass).toContain('.composer-card');
+		expect(glass).toContain('94%, transparent');
+		expect(glass).toContain('backdrop-filter: blur(8px)');
+	});
+
+	it("opens the composer's full-window sheets over the header's menus and the Work pane", () => {
+		const voice = readFileSync(new URL('./VoiceModeOverlay.svelte', import.meta.url), 'utf8');
+		expect(voice).toContain('fixed inset-0 z-[70]');
 	});
 });

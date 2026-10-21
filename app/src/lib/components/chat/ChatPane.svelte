@@ -1064,6 +1064,8 @@
   /** The floating area's height (its fade, the goal and notices, the
    *  composer): the room the scroller leaves at its end. */
   let floatHeight = $state(0);
+  /** The fade above the floating composer (app.css `.chat-floating::before`). */
+  const FLOAT_FADE_PX = 16;
   let messagesContent = $state<HTMLDivElement | null>(null);
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
@@ -1101,7 +1103,10 @@
       return 0;
     }
     const usedByTurn = content.getBoundingClientRect().bottom - target.getBoundingClientRect().top;
-    const room = Math.max(0, Math.round(scroller.clientHeight - usedByTurn - TURN_TOP_PAD * 2));
+    // What can be seen is the scroller less what floats over its end (the
+    // composer and its fade): the reply never streams behind the composer.
+    const seen = scroller.clientHeight - floatHeight - FLOAT_FADE_PX;
+    const room = Math.max(0, Math.round(seen - usedByTurn - TURN_TOP_PAD * 2));
     turnSpacerHeight = room;
     return room;
   }
@@ -2477,8 +2482,8 @@
         {$t(`background.notice.${n.kind}`, { values: { what: n.task.title || $t('background.heartbeat') } })}
       </div>
     {/each}
-    <!-- A conversation with a composer shows its working line above the
-         composer (BackgroundStatus); one watched from outside shows it here. -->
+    <!-- A conversation with a composer shows its working line as its last
+         row (BackgroundStatus, below); one watched from outside shows it here. -->
     {#if readOnly && isLoading && groupedMessages.length > 0}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2 min-w-0">
         <span class="loading loading-spinner loading-xs text-primary shrink-0"></span>
