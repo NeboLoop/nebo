@@ -4640,7 +4640,7 @@ mod tests {
         assert_eq!(answered.value.unwrap(), serde_json::json!({"findings": []}));
         let shown = rig.ui.recv().await.unwrap();
         assert_eq!(shown.parent_session_key, key);
-        assert_eq!(shown.event.event_type, ai::StreamEventType::SubagentStart);
+        assert!(matches!(&shown.update, HelperUpdate::Step(e) if e.event_type == ai::StreamEventType::SubagentStart), "{:?}", shown.update);
     }
 
     #[test]
