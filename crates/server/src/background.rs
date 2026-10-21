@@ -247,7 +247,7 @@ pub async fn collect(state: &AppState, agent_id: Option<&str>) -> Vec<Background
         sessions.resolve_session_id_by_key(key).ok().map(|sid| sessions.active_chat_id(&sid)).filter(|c| !c.is_empty())
     };
     let mut tasks = Vec::new();
-    tasks.extend(helpers(state.helpers.list(None), &chat_of));
+    tasks.extend(helpers(state.helpers.list(None, false), &chat_of));
     tasks.extend(shells(state.tools.process_registry().running_for(None).await));
     let asks: HashSet<String> = state.run_registry.pending_asks().await.into_iter().map(|(s, _)| s).collect();
     // A turn in a conversation a hand-off is worked in IS that hand-off:
@@ -330,14 +330,15 @@ async fn name_employees(state: &AppState, tasks: &mut [BackgroundTask]) {
     }
 }
 
-/// Helpers at work.
+/// Helpers at work, by their titles among their siblings
+/// ([`agent::harness::delegation::HelperStatus::title`]).
 pub(crate) fn helpers(list: Vec<agent::harness::delegation::HelperStatus>, chat_of: &dyn Fn(&str) -> Option<String>) -> Vec<BackgroundTask> {
     list.into_iter()
         .filter(|h| h.running)
         .map(|h| {
             let mut t = BackgroundTask::new(Source::Helper, &h.task_id, Kind::Agent, Status::Running);
             t.agent_id = employee_id(&h.agent_id).to_string();
-            t.title = h.description;
+            t.title = h.title;
             t.detail = h.activity;
             t.call = h.call;
             t.started_at = Some(h.started_at);
@@ -730,6 +731,10 @@ pub struct OutputTail {
     pub output: String,
     /// It had more before what is shown.
     pub truncated: bool,
+    /// What a helper was asked, whole (a research run's question, a
+    /// helper's brief), behind the title its card shows; empty for other
+    /// work.
+    pub brief: String,
 }
 
 fn tail(text: &str) -> OutputTail {
@@ -737,6 +742,7 @@ fn tail(text: &str) -> OutputTail {
     OutputTail {
         output: text.chars().skip(chars.saturating_sub(OUTPUT_TAIL_CHARS)).collect(),
         truncated: chars > OUTPUT_TAIL_CHARS,
+        brief: String::new(),
     }
 }
 
@@ -760,10 +766,12 @@ fn last_words(store: &db::Store, session_key: &str) -> String {
 /// The end of the output of background work `id`, running or finished.
 pub async fn output(state: &AppState, id: &str) -> Result<OutputTail, ActError> {
     let (source, native) = id.split_once(':').ok_or(ActError::NotFound)?;
+    let mut brief = String::new();
     let text = match source {
         "shell" => state.tools.process_registry().get_any_session(native).await.ok_or(ActError::NotFound)?.get_output().await,
         "helper" => {
             let row = state.store.get_pending_task(native).map_err(|e| ActError::Failed(e.to_string()))?.ok_or(ActError::NotFound)?;
+            brief = row.prompt.clone();
             row.output.filter(|o| !o.trim().is_empty()).unwrap_or_else(|| last_words(&state.store, &row.session_key))
         }
         "workflow" => {
@@ -785,7 +793,7 @@ pub async fn output(state: &AppState, id: &str) -> Result<OutputTail, ActError> 
         "watch" | "heartbeat" => String::new(),
         _ => return Err(ActError::NotFound),
     };
-    Ok(tail(&text))
+    Ok(OutputTail { brief, ..tail(&text) })
 }
 
 /// Work `id` as the list or the finished list last showed it.
@@ -896,6 +904,7 @@ pub fn spawn(state: AppState) {
         loop {
             tokio::select! {
                 _ = CHANGED.notified() => {}
+                _ = state.helpers.changes().notified() => {}
                 _ = tokio::time::sleep(LOOK_EVERY) => {}
             }
             let after = collect(&state, None).await;

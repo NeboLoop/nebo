@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} in · {output} uit",
 		"tokenTooltip": "{total} totale prompt · {overhead} systeem+tools · {cacheRead} cache gelezen",
 		"outOfBalance": "Je abonnement is deze maand op. Upgrade je abonnement om door te gaan.",
+		"balanceBusy": "Je saldo is bezet door werk dat nu loopt. Probeer het zo opnieuw.",
 		"viewPlans": "Abonnementen bekijken",
 		"choosePlan": "Kies een abonnement",
 		"documents": "Documenten",

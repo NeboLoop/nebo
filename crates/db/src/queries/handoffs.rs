@@ -13,7 +13,9 @@ use types::NeboError;
 /// receiving conversation.
 pub const HANDOFF_ASK_CAP: usize = 1000;
 /// Longest result or error a row keeps (characters); the whole answer is in
-/// the receiving conversation and reached the sender whole.
+/// the receiving conversation, and it reached the sender in full up to the
+/// report ceiling (`tools::orchestrator::REPORT_LIMIT`), past it saved to a
+/// file the sender reads back.
 pub const HANDOFF_RESULT_CAP: usize = 2000;
 
 /// Statuses a hand-off still going is in.

@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} in · {output} out",
 		"tokenTooltip": "{total} total prompt · {overhead} system+tools · {cacheRead} cache read",
 		"outOfBalance": "Your plan is used up this month. Upgrade your plan to continue.",
+		"balanceBusy": "Your balance is busy with work that's running. Try again in a moment.",
 		"viewPlans": "View plans",
 		"choosePlan": "Choose a plan",
 		"documents": "Documents",

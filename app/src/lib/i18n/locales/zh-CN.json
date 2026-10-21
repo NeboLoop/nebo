@@ -410,6 +410,7 @@
 		"tokensInOut": "输入 {input} · 输出 {output}",
 		"tokenTooltip": "提示词共 {total} · 系统+工具 {overhead} · 缓存读取 {cacheRead}",
 		"outOfBalance": "你本月的套餐已用完。请升级套餐以继续。",
+		"balanceBusy": "你的余额正被运行中的工作占用。请稍后再试。",
 		"viewPlans": "查看套餐",
 		"choosePlan": "选择套餐",
 		"documents": "文档",

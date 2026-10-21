@@ -70,6 +70,38 @@ fn chrome_choice(kind: Kind, input: &serde_json::Value) -> Option<bool> {
     }
 }
 
+/// What a web call tells the model when running work holds the owner's
+/// balance past the waits: the busy sentence and what to do, never another
+/// source in its place and never about adding funds.
+fn balance_busy(again: &str, held: types::balance::Held) -> ToolResult {
+    ToolResult::error(format!("{} {again} in a minute. It is never about adding funds.", ai::BALANCE_BUSY))
+        .with_held_balance(held)
+}
+
+/// Why a Janus call came back with no answer: running work holds the
+/// balance (with the wait asked for; the registry waits it out and calls
+/// again), or anything else, in words for the log and the model.
+#[derive(Debug)]
+enum JanusError {
+    Held(types::balance::Held),
+    Failed(String),
+}
+
+impl From<String> for JanusError {
+    fn from(e: String) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl std::fmt::Display for JanusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held(_) => f.write_str(ai::BALANCE_BUSY),
+            Self::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
 fn epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -411,6 +443,9 @@ impl WebCore {
                             if self.janus_search.is_some() && method_str == "GET" {
                                 match self.extract_via_janus(url).await {
                                     Ok(content) if !content.trim().is_empty() => content,
+                                    // The balance is held by running work: said
+                                    // plainly, never a silent local page.
+                                    Err(JanusError::Held(held)) => return balance_busy("Fetch the page again", held),
                                     Ok(_) => {
                                         tracing::debug!(url, "janus extract returned empty content, using local extraction");
                                         sanitize_html(&body)
@@ -621,6 +656,9 @@ impl WebCore {
                 Ok(_) => {
                     tracing::warn!(query, "Janus search returned no results, trying fallback tiers");
                 }
+                // The balance is held by running work: the search waits for
+                // it, never another provider in its place.
+                Err(JanusError::Held(held)) => return balance_busy("Search again", held),
                 Err(e) => {
                     tracing::warn!(query, error = %e, "Janus search failed, trying fallback tiers");
                     tier_failures.push(format!("platform search API: {e}"));
@@ -654,6 +692,9 @@ impl WebCore {
                         self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
                         return result;
                     }
+                    // The balance is held by running work: the search waits
+                    // for it, never another provider in its place.
+                    Err(JanusError::Held(held)) => return balance_busy("Search again", held),
                     Err(e) => {
                         tracing::warn!(provider, error = %e, "own-key search failed, trying next");
                         tier_failures.push(format!(
@@ -725,7 +766,7 @@ impl WebCore {
     /// `own`, Janus searches that one provider on the owner's own key. Auth
     /// mirrors the Janus LLM provider: `X-Bot-ID` for per-user billing and a
     /// Bearer token (the `neboai` profile's OAuth token, else the bot_id).
-    async fn search_via_janus(&self, query: &str, own: Option<&OwnSearch>) -> Result<Vec<SearchResult>, String> {
+    async fn search_via_janus(&self, query: &str, own: Option<&OwnSearch>) -> Result<Vec<SearchResult>, JanusError> {
         let cfg = self
             .janus_search
             .as_ref()
@@ -739,33 +780,39 @@ impl WebCore {
             body["cx"] = serde_json::Value::String(cx.to_string());
         }
 
-        let mut req = self
-            .client
-            .post(&url)
-            .bearer_auth(&bearer)
-            .header("X-Bot-ID", &cfg.bot_id)
-            // The shared client speaks as a browser to web pages; to Janus, as Nebo.
-            .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT);
-        for (name, value) in own.iter().flat_map(|o| o.key.headers()) {
-            req = req.header(name, value);
-        }
-        let resp = req
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(12))
-            .send()
-            .await
-            .map_err(|e| format!("janus request: {e}"))?;
+        let resp = ai::http::send(
+            || {
+                let mut req = self
+                    .client
+                    .post(&url)
+                    .bearer_auth(&bearer)
+                    .header("X-Bot-ID", &cfg.bot_id)
+                    // The shared client speaks as a browser to web pages; to Janus, as Nebo.
+                    .header(reqwest::header::USER_AGENT, types::constants::USER_AGENT);
+                for (name, value) in own.iter().flat_map(|o| o.key.headers()) {
+                    req = req.header(name, value);
+                }
+                req.json(&body).timeout(std::time::Duration::from_secs(12))
+            },
+            None,
+        )
+        .await
+        .map_err(|e| format!("janus request: {e}"))?;
 
         let status = resp.status();
         if !status.is_success() {
+            let retry_after = types::balance::retry_after(resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()));
             let snippet = resp.text().await.unwrap_or_default();
+            if ai::is_balance_reserved(status.as_u16(), &snippet) {
+                return Err(JanusError::Held(types::balance::Held { retry_after }));
+            }
             let mut msg = format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>());
             if !has_profile_key {
                 msg.push_str(
                     " (Nebo is not signed in to NeboAI; ask the user to sign in under Settings > Account, then retry)",
                 );
             }
-            return Err(msg);
+            return Err(msg.into());
         }
 
         let parsed: serde_json::Value = resp
@@ -801,11 +848,14 @@ impl WebCore {
     /// `{url, title, content}` where content is clean markdown (no LLM
     /// summarization). Auth mirrors `search_via_janus`: `X-Bot-ID` for
     /// per-user billing plus the shared `janus_bearer` token. Callers treat
-    /// ANY error as a silent fallthrough to the local extraction chain — the
-    /// endpoint may not be deployed yet. A failure trips the instance-wide
-    /// cooldown (see `extract_cooldown_until`) so a degraded Janus doesn't
-    /// tax every subsequent fetch with the 20s timeout.
-    async fn extract_via_janus(&self, page_url: &str) -> Result<String, String> {
+    /// any other error as a silent fallthrough to the local extraction chain
+    /// — the endpoint may not be deployed yet. Such a failure trips the
+    /// instance-wide cooldown (see `extract_cooldown_until`) so a degraded
+    /// Janus doesn't tax every subsequent fetch with the 20s timeout. A
+    /// balance held by running work is waited out like every Janus call
+    /// (`ai::http::send`); past the waits it is neither: no cooldown (Janus
+    /// is fine) and no silent fallthrough (the caller says it plainly).
+    async fn extract_via_janus(&self, page_url: &str) -> Result<String, JanusError> {
         let cfg = self
             .janus_search
             .as_ref()
@@ -813,7 +863,7 @@ impl WebCore {
 
         if epoch_secs() < self.extract_cooldown_until.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::debug!(url = page_url, "janus extract in failure cooldown — skipping");
-            return Err("janus extract in failure cooldown".to_string());
+            return Err("janus extract in failure cooldown".to_string().into());
         }
 
         let (bearer, _) = self.janus_bearer(cfg);
@@ -821,26 +871,32 @@ impl WebCore {
         let url = format!("{}/v1/extract", cfg.base_url);
         let body = serde_json::json!({ "url": page_url });
 
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&bearer)
-            .header("X-Bot-ID", &cfg.bot_id)
-            .json(&body)
-            // Longer than search: Janus has to fetch and render an arbitrary
-            // page before extracting, not just query a search API.
-            .timeout(std::time::Duration::from_secs(20))
-            .send()
-            .await
-            .map_err(|e| self.trip_extract_cooldown(format!("janus request: {e}")))?;
+        let resp = ai::http::send(
+            || {
+                self.client
+                    .post(&url)
+                    .bearer_auth(&bearer)
+                    .header("X-Bot-ID", &cfg.bot_id)
+                    .json(&body)
+                    // Longer than search: Janus has to fetch and render an arbitrary
+                    // page before extracting, not just query a search API.
+                    .timeout(std::time::Duration::from_secs(20))
+            },
+            None,
+        )
+        .await
+        .map_err(|e| self.trip_extract_cooldown(format!("janus request: {e}")))?;
 
         let status = resp.status();
         if !status.is_success() {
+            let retry_after = types::balance::retry_after(resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()));
             let snippet = resp.text().await.unwrap_or_default();
-            return Err(self.trip_extract_cooldown(format!(
-                "janus status {status}: {}",
-                snippet.chars().take(200).collect::<String>()
-            )));
+            if ai::is_balance_reserved(status.as_u16(), &snippet) {
+                return Err(JanusError::Held(types::balance::Held { retry_after }));
+            }
+            return Err(self
+                .trip_extract_cooldown(format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>()))
+                .into());
         }
 
         let parsed: serde_json::Value = resp
@@ -1242,7 +1298,7 @@ impl WebCore {
                     // the word "cached", which hands the model a theory.
                     let age = cached.timestamp.elapsed().as_secs();
                     let who = if cached.visited_by == session_id { "this run" } else { "a sibling run" };
-                    return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+                    return ToolResult { payload: None, need: None, question: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                         content: format!(
                             "[This URL was loaded {age}s ago by {who} and has not been reloaded; the content below is that load. Pass fresh: true to load it again.]\n\n{}",
                             cached.content
@@ -1593,7 +1649,7 @@ impl WebCore {
                                 .unwrap_or("");
                             if !page_content.is_empty() {
                                 let content = page_content.to_string();
-                                return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+                                return ToolResult { payload: None, need: None, question: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                                     content,
                                     is_error: false,
                                     image_url: None, more_files: Vec::new(),
@@ -1715,7 +1771,7 @@ impl WebCore {
                     }
                 }
 
-                ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+                ToolResult { payload: None, need: None, question: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                     content: text_result,
                     is_error: false,
                     image_url: screenshot_b64, more_files: Vec::new(),
@@ -3202,6 +3258,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
     // search hash as new — a search loop then ran to the 16-call backstop
     // instead of being flagged on its second repeat (Nanna, 2026-09-19).
     ToolResult {
+        held_balance: None, rerun_input: None,
         content: format!(
             "[This same query already ran this session; the results below are from that run, not a new search. Change the wording to search again.]\n\n{}",
             cached.content
@@ -3211,7 +3268,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
         http_status: None,
         terminal: false,
         payload: cached.payload.clone(),
-        need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+        need: None, question: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
     }
 }
 
@@ -3517,6 +3574,50 @@ fn sanitize_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gateway that answers every request with Janus's `BALANCE_RESERVED`
+    /// (`Retry-After: 0`). Counts the requests.
+    async fn reserved_gateway() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const RESERVED: &str = r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = vec![0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 429 X\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{RESERVED}",
+                    RESERVED.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), count)
+    }
+
+    /// Extract sends once and hands a held balance back typed, with its
+    /// wait, for the registry to wait out (the call's slot given back); it
+    /// trips no cooldown (Janus is fine), and the fetch says it plainly,
+    /// marked so the registry calls again, instead of a local page.
+    #[tokio::test]
+    async fn a_held_balance_on_extract_is_handed_back_typed_and_trips_no_cooldown() {
+        let (url, count) = reserved_gateway().await;
+        let tool = WebCore::new().with_janus_search(url, "bot-1".into());
+        match tool.extract_via_janus("https://example.com/").await {
+            Err(JanusError::Held(held)) => assert_eq!(held.retry_after, Some(std::time::Duration::ZERO)),
+            other => panic!("expected the held balance, got {other:?}"),
+        }
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "sent once: the registry waits");
+        assert_eq!(tool.extract_cooldown_until.load(std::sync::atomic::Ordering::Relaxed), 0, "no cooldown");
+        let held = types::balance::Held { retry_after: None };
+        let said = balance_busy("Fetch the page again", held);
+        assert!(said.is_error && said.content.starts_with(ai::BALANCE_BUSY), "{}", said.content);
+        assert_eq!(said.held_balance, Some(held));
+    }
 
     fn page_facts() -> serde_json::Value {
         serde_json::json!({

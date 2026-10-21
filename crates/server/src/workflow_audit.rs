@@ -147,6 +147,7 @@ impl Picker for ModelPicker {
         let listing: String = scored.iter().map(|(_, n, d)| format!("- {n}: {d}\n")).collect();
         let req = ai::ChatRequest {
             tool_credential: None,
+            caller_waits_for_balance: false,
             chat_id: String::new(),
             ask_channels: None,
             permission_mode: None,

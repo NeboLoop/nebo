@@ -1245,8 +1245,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             hub.broadcast("chat_error", payload);
                             run_error = Some(error);
                         }
-                        // Kept on the stored reply by the harness; nothing to show.
-                        StreamEventType::ThinkingBlock => {}
+                        // Kept on the stored reply by the harness; nothing to
+                        // show. Helpers reach the owner's screen on their own
+                        // rail (`helper_event_to_hub`), never a turn's stream.
+                        StreamEventType::ThinkingBlock
+                        | StreamEventType::SubagentStart
+                        | StreamEventType::SubagentProgress
+                        | StreamEventType::SubagentComplete => {}
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
                                 // The same `usage` event also carries the current Janus
@@ -1468,33 +1473,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::Notice => {
                             hub.broadcast("chat_notice", ws_payload!("text": &event.text,));
-                        }
-                        StreamEventType::SubagentStart => {
-                            let mut payload = ws_payload!();
-                            if let Some(ref w) = event.widgets {
-                                for (k, v) in w.as_object().into_iter().flatten() {
-                                    payload[k] = v.clone();
-                                }
-                            }
-                            hub.broadcast("subagent_start", payload);
-                        }
-                        StreamEventType::SubagentProgress => {
-                            let mut payload = ws_payload!();
-                            if let Some(ref w) = event.widgets {
-                                for (k, v) in w.as_object().into_iter().flatten() {
-                                    payload[k] = v.clone();
-                                }
-                            }
-                            hub.broadcast("subagent_progress", payload);
-                        }
-                        StreamEventType::SubagentComplete => {
-                            let mut payload = ws_payload!();
-                            if let Some(ref w) = event.widgets {
-                                for (k, v) in w.as_object().into_iter().flatten() {
-                                    payload[k] = v.clone();
-                                }
-                            }
-                            hub.broadcast("subagent_complete", payload);
                         }
                         StreamEventType::TextVerdict => {
                             // The segment's text reaches the clients before
@@ -3033,6 +3011,17 @@ mod tests {
         let thread = harness.sessions().get_messages(&session.id).unwrap();
         let meta: serde_json::Value = serde_json::from_str(thread.last().unwrap().metadata.as_deref().unwrap()).unwrap();
         assert_eq!(meta[super::STOP_REASON_KEY], not_signed_in);
+
+        // Running work held the balance: the typed stop, which the apps word
+        // as busy in the owner's language, never the raw code.
+        let held = agent::harness::model_call::BALANCE_RESERVED;
+        super::record_run_error(&harness, key, ai::BALANCE_BUSY, Some(held));
+        let thread = harness.sessions().get_messages(&session.id).unwrap();
+        let last = thread.last().unwrap();
+        assert_eq!(last.content, ai::BALANCE_BUSY);
+        assert!(!last.content.contains("BALANCE_RESERVED"));
+        let meta: serde_json::Value = serde_json::from_str(last.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta[super::STOP_REASON_KEY], held);
 
         let model = harness.sessions().get_messages_since_checkpoint(&session.id).unwrap();
         assert_eq!(model.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["Hello"], "the model never reads it");

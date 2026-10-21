@@ -52,4 +52,9 @@ pub enum ConversationEvent {
     /// The call ended on a failure. The text is what the client shows, as
     /// is: a plain sentence such as [`CALL_ENDED`], never error detail.
     Error(String),
+    /// The call's line could not be brought back because running work holds
+    /// the balance (it covers the call), past the reconnection's waits. The
+    /// client words it as busy, never as the call ending on a failure and
+    /// never as out of balance.
+    BalanceReserved,
 }

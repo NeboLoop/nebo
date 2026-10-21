@@ -274,6 +274,7 @@ export interface BackgroundListResponse {
 export interface BackgroundOutputResponse {
 	output: string
 	truncated: boolean
+	brief: string
 }
 
 export interface Backup {
@@ -1159,6 +1160,14 @@ export interface OutcomeCount {
 	costMicrocents: number
 }
 
+export interface OwnerQuestion {
+	question: string
+	context?: string
+	options?: string[]
+	multi_select?: boolean
+	style?: string
+}
+
 export interface Pack {
 	id: string
 	name: string
@@ -1761,6 +1770,62 @@ export interface UserProfile {
 	approvedCommands?: string
 	onboardingFocus?: string
 	onboardingHire?: string
+}
+
+export interface Verification {
+	id: string
+	agentId: string
+	sessionKey: string
+	chatId: string
+	messageId?: string
+	workflowRunId?: string
+	activityId?: string
+	handoffId?: string
+	projectId?: string
+	spec: string
+	projectRoot: string
+	workDir: string
+	isolation: string
+	workKind: string
+	isolationState?: unknown
+	branch: string
+	baseRef: string
+	state: string
+	reason: string
+	rounds: number
+	openBlockers: number
+	openMajors: number
+	openMinors: number
+	open: unknown
+	deferred: unknown
+	summary: string
+	reviewerPrefix: string
+	pendingAsk?: unknown
+	landedRef: string
+	landedAt?: number
+	createdAt: number
+	finishedAt?: number
+}
+
+export interface VerificationRound {
+	verificationId: string
+	round: number
+	kind: string
+	lenses: unknown
+	baseRef: string
+	headRef: string
+	diffStat: string
+	findings: unknown
+	verifiedOk: unknown
+	prior: unknown
+	checks: unknown
+	fixed: unknown
+	decisions: unknown
+	detail: unknown
+	outcome: string
+	reviewerPrefix: string
+	startedAt: number
+	finishedAt?: number
 }
 
 export interface View {

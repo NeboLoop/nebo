@@ -365,6 +365,15 @@ describe('voiceSession reconnect', () => {
 		);
 	});
 
+	it('says the balance is busy, in the owner\'s words, when running work holds it', async () => {
+		const { voiceSession, first } = await liveCall();
+		first.emit({ type: 'Error', code: 'balance_reserved', message: 'English line for other clients' });
+
+		const state = get(voiceSession);
+		expect(state.status).toBe('error');
+		expect(state.errorMessage).toBe("Your balance is busy with work that's running. Try again in a moment.");
+	});
+
 	it('gives up at the end of the resume window, saying what happened', async () => {
 		const { voiceSession } = await liveCall();
 		// The error state clears itself after a few seconds, so the sentence is

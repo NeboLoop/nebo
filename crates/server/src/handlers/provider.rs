@@ -306,6 +306,7 @@ fn test_model(store: &db::Store, profile: &db::models::AuthProfile) -> String {
 async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String, String> {
     let req = ai::ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
