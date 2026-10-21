@@ -225,6 +225,14 @@ Deep-dive reference docs live in `nebo-sme/` of the private NeboLoop/docs repo
 - `APPS.md` — app platform, capabilities, lifecycle
 - `RELEASE.md` — release pipeline and runners
 
+## Active PRDs
+
+Product plans in flight live in `nebo-prd/` of the private NeboLoop/docs repo
+(cloned at `~/workspaces/neboai/docs`). Read the PRD before working on its area:
+- `nebo-media-finishing-prd-2026-10-20.md` — Nebo Media: audio matching and voice finishing, speed and storage, effects, color, and the ranked "what else" list (Creator team appendix, later)
+- `meetings-plugin-prd-2026-10-20.md` — Meetings plugin: an employee joins Google Meet, Zoom and Teams (dial-in first), plus conference calls
+- `verified-loops-and-gates.md` — the Verified code loop
+
 ## Release
 
 Tag-triggered CI (`.github/workflows/release.yml`): push `v*` tag → builds all platforms → signs (macOS Developer ID + Windows Azure) → notarizes macOS → GitHub Release + CDN upload → updates Homebrew cask + APT repo.
