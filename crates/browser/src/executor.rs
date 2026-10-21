@@ -242,12 +242,7 @@ impl ActionExecutor {
     /// one served the calls; each is a no-op if it never opened anything for the
     /// session, so this is safe to call unconditionally.
     pub async fn close_session(&self, session_id: &str) {
-        self.bridge
-            .send_command("hide_indicators", Some(session_id))
-            .await;
-        self.bridge
-            .send_command("close_session_tabs", Some(session_id))
-            .await;
+        self.bridge.end_session(session_id, false).await;
         if let Some(ref cdp) = self.cdp {
             cdp.close_session(session_id).await;
         }
@@ -256,6 +251,15 @@ impl ActionExecutor {
         if let Some(ref own) = self.own_pages {
             own.close_session(session_id).await;
         }
+    }
+
+    /// Leave the session's tab in the owner's Chrome open for him when the
+    /// work ends (a form waiting for his approval): it is no longer the
+    /// run's, so the run's end never closes it and its next browser call
+    /// opens a tab of its own. False when the session has no tab open in
+    /// his Chrome (the built-in browser's pages are never his to take over).
+    pub async fn leave_open_for_owner(&self, session_id: &str) -> bool {
+        self.bridge.end_session(session_id, true).await
     }
 
     /// Navigate to a URL then read the page — stops on nav error.

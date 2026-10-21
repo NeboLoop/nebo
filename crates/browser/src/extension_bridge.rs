@@ -9,7 +9,7 @@
 //! Multiple browsers can connect simultaneously. Tool requests are routed
 //! only to the system default browser's connection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
@@ -105,6 +105,15 @@ pub struct ExtensionBridge {
     teach: Arc<Mutex<Option<crate::teach::TeachCapture>>>,
     /// Signalled when an extension has flushed its last teach events.
     teach_flushed: Arc<tokio::sync::Notify>,
+    /// The tabs Nebo opened, by the run that opened them: every request
+    /// goes out under its run's key ([`crate::tab_ledger`]).
+    tabs: Arc<crate::tab_ledger::TabLedger>,
+    /// The ids of the tabs each run opened (`new_tab`'s results), by the
+    /// run's tab key: the only tabs that run's close may name by id. Every
+    /// other tab is the owner's, or another run's. Dropped when the run ends
+    /// or hands its tab to the owner, and when a browser connection closes
+    /// (a restarted Chrome numbers its tabs anew).
+    opened_tab_ids: Arc<Mutex<HashMap<String, HashSet<i64>>>>,
 }
 
 /// How long stop waits for the extension to hand over what it still holds
@@ -112,7 +121,10 @@ pub struct ExtensionBridge {
 const TEACH_FLUSH_WAIT: Duration = Duration::from_secs(3);
 
 impl ExtensionBridge {
-    pub fn new() -> Self {
+    /// `tabs_file` keeps the keys of the tabs Nebo has open, so a Nebo that
+    /// stopped mid-run closes them on the next connect; `None` keeps them in
+    /// memory only.
+    pub fn new(tabs_file: Option<std::path::PathBuf>) -> Self {
         let bridge = Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -122,6 +134,8 @@ impl ExtensionBridge {
             page_cache: Arc::new(Mutex::new(HashMap::new())),
             teach: Arc::new(Mutex::new(None)),
             teach_flushed: Arc::new(tokio::sync::Notify::new()),
+            tabs: Arc::new(crate::tab_ledger::TabLedger::new(tabs_file)),
+            opened_tab_ids: Arc::new(Mutex::new(HashMap::new())),
         };
         // Detect default browser in background
         let db = bridge.default_browser.clone();
@@ -151,6 +165,20 @@ impl ExtensionBridge {
         if let Some(cap) = self.teach.lock().await.as_ref() {
             let _ = tx.try_send(teach_command("teach_record_start", &cap.session));
         }
+        // Tabs a Nebo that stopped mid-run left open close in every browser
+        // that connects. Their keys are never used again, so they need not
+        // go ahead of this Nebo's own requests.
+        let orphans = self.tabs.orphans().await;
+        if !orphans.is_empty() {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                for key in orphans {
+                    if tx.send(session_command("close_session_tabs", &key)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let mut conns = self.connections.lock().await;
         conns.insert(
             id,
@@ -173,6 +201,7 @@ impl ExtensionBridge {
             .unwrap_or_default();
         let remaining = conns.len();
         drop(conns);
+        self.opened_tab_ids.lock().await.clear();
         info!(conn_id = conn_id, browser = %browser, remaining = remaining, "extension disconnected");
         if remaining == 0 {
             *self.last_connected.lock().await = Some(Instant::now());
@@ -235,6 +264,10 @@ impl ExtensionBridge {
             }
         }
 
+        if let Some(refusal) = self.close_refusal(tool, args, session_id).await {
+            return Err(refusal);
+        }
+
         // Invalidate this session's cache before mutation tools
         if MUTATION_TOOLS.contains(&tool) {
             self.page_cache.lock().await.remove(&cache_key);
@@ -269,6 +302,10 @@ impl ExtensionBridge {
         };
         drop(conns);
 
+        let tab_key = match session_id {
+            Some(sid) => Some(self.tabs.key(sid).await),
+            None => None,
+        };
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (resp_tx, resp_rx) = oneshot::channel();
         self.pending.lock().await.insert(id, (target_conn, resp_tx));
@@ -279,7 +316,7 @@ impl ExtensionBridge {
             args: args.clone(),
             is_batch: false,
             is_command: false,
-            session_id: session_id.map(|s| s.to_string()),
+            session_id: tab_key.clone(),
         };
 
         if tx.send(request).await.is_err() {
@@ -314,6 +351,10 @@ impl ExtensionBridge {
             }
         };
 
+        if let (true, Ok(value), Some(key)) = (tool == "new_tab", &result, &tab_key) {
+            self.note_opened(key, value).await;
+        }
+
         // Populate read_page cache on success (session-scoped)
         if tool == "read_page" {
             if let Ok(ref value) = result {
@@ -343,6 +384,12 @@ impl ExtensionBridge {
         }
 
         let cache_key = session_id.unwrap_or("_default").to_string();
+
+        for action in &actions {
+            if let Some(refusal) = self.close_refusal(&action.tool, &action.args, session_id).await {
+                return Err(refusal);
+            }
+        }
 
         // Invalidate this session's page cache if any mutation tool is in the batch
         let has_mutation = actions
@@ -378,6 +425,10 @@ impl ExtensionBridge {
         };
         drop(conns);
 
+        let tab_key = match session_id {
+            Some(sid) => Some(self.tabs.key(sid).await),
+            None => None,
+        };
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (resp_tx, resp_rx) = oneshot::channel();
         self.pending.lock().await.insert(id, (target_conn, resp_tx));
@@ -391,7 +442,7 @@ impl ExtensionBridge {
             }),
             is_batch: true,
             is_command: false,
-            session_id: session_id.map(|s| s.to_string()),
+            session_id: tab_key.clone(),
         };
 
         if tx.send(request).await.is_err() {
@@ -427,7 +478,12 @@ impl ExtensionBridge {
                             Ok(item["result"].clone())
                         }
                     })
-                    .collect();
+                    .collect::<Vec<Result<serde_json::Value, String>>>();
+                for (action, result) in actions.iter().zip(&results) {
+                    if let (true, Ok(value), Some(key)) = (action.tool == "new_tab", result, &tab_key) {
+                        self.note_opened(key, value).await;
+                    }
+                }
 
                 // Populate read_page cache from last successful read_page in batch (session-scoped)
                 if let Some(last_read) = actions.iter().rposition(|a| a.tool == "read_page") {
@@ -451,6 +507,50 @@ impl ExtensionBridge {
                 Ok(results)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Why a `close_tab` may not run: it names a tab this run didn't open
+    /// (the owner's, another run's, or one handed to the owner). Every
+    /// `tabId`/`tabIds` entry must be exactly the id of a tab the run opened
+    /// under its current key; anything else (a float, a string, a tab of
+    /// someone else's) is refused. A close naming no tab closes the run's own
+    /// tab and always may.
+    async fn close_refusal(&self, tool: &str, args: &serde_json::Value, session_id: Option<&str>) -> Option<String> {
+        if tool != "close_tab" {
+            return None;
+        }
+        let refusal = |tab: &serde_json::Value| {
+            Some(format!(
+                "Tab {tab} wasn't opened by this work, so it stays open: Nebo never closes the owner's tabs. \
+                 Leave out tab_id to close this conversation's own tab."
+            ))
+        };
+        let mut named: Vec<&serde_json::Value> = args.get("tabId").into_iter().collect();
+        match args.get("tabIds") {
+            None => {}
+            Some(serde_json::Value::Array(ids)) => named.extend(ids),
+            Some(other) => return refusal(other),
+        }
+        if named.is_empty() {
+            return None;
+        }
+        let key = match session_id {
+            Some(sid) => self.tabs.current(sid).await,
+            None => None,
+        };
+        let opened = self.opened_tab_ids.lock().await;
+        let allowed = key.as_ref().and_then(|k| opened.get(k));
+        let refused = named
+            .into_iter()
+            .find(|v| !v.as_i64().filter(|_| v.is_i64() || v.is_u64()).is_some_and(|id| allowed.is_some_and(|ids| ids.contains(&id))))?;
+        refusal(refused)
+    }
+
+    /// Keep the id of a tab `new_tab` opened, under the run's key.
+    async fn note_opened(&self, key: &str, result: &serde_json::Value) {
+        if let Some(id) = result.get("tabId").and_then(|v| v.as_i64()) {
+            self.opened_tab_ids.lock().await.entry(key.to_string()).or_default().insert(id);
         }
     }
 
@@ -478,23 +578,42 @@ impl ExtensionBridge {
     }
 
     /// Send a fire-and-forget command to the extension (e.g., show_indicators, hide_indicators).
-    /// Broadcasts to all active connections. No response is expected.
+    /// Broadcasts to all active connections. No response is expected. A
+    /// session's command goes to its run's tab; a session with no tab open
+    /// has nothing to send it to.
     pub async fn send_command(&self, command: &str, session_id: Option<&str>) {
-        let conns = self.connections.lock().await;
-        if conns.is_empty() {
-            return;
-        }
-        let request = ToolRequest {
-            id: 0,
-            tool: command.to_string(),
-            args: serde_json::Value::Null,
-            is_batch: false,
-            is_command: true,
-            session_id: session_id.map(|s| s.to_string()),
+        let request = match session_id {
+            Some(sid) => match self.tabs.current(sid).await {
+                Some(key) => session_command(command, &key),
+                None => return,
+            },
+            None => ToolRequest {
+                id: 0,
+                tool: command.to_string(),
+                args: serde_json::Value::Null,
+                is_batch: false,
+                is_command: true,
+                session_id: None,
+            },
         };
-        for conn in conns.values() {
-            let _ = conn.tx.send(request.clone()).await;
-        }
+        self.broadcast(request).await;
+    }
+
+    /// The run on `session_id` is over: the tab it opened closes, unless
+    /// `leave_open` (it holds something for the owner, such as a form
+    /// waiting for his approval): then its indicators come off and the tab
+    /// becomes the owner's (`leave_open` to the extension). Either way no run
+    /// may name its tabs by id any more, and the session's next call opens a
+    /// tab of its own. Returns whether the run had a tab open.
+    pub async fn end_session(&self, session_id: &str, leave_open: bool) -> bool {
+        let Some(key) = self.tabs.take(session_id).await else {
+            return false;
+        };
+        self.opened_tab_ids.lock().await.remove(&key);
+        self.broadcast(session_command("hide_indicators", &key)).await;
+        let last = if leave_open { "leave_open" } else { "close_session_tabs" };
+        self.broadcast(session_command(last, &key)).await;
+        true
     }
 }
 
@@ -554,6 +673,18 @@ impl ExtensionBridge {
     }
 }
 
+/// A command for one run's tab: `{type, session_id}`.
+fn session_command(command: &str, key: &str) -> ToolRequest {
+    ToolRequest {
+        id: 0,
+        tool: command.to_string(),
+        args: serde_json::Value::Null,
+        is_batch: false,
+        is_command: true,
+        session_id: Some(key.to_string()),
+    }
+}
+
 /// A teach-recording command for the extension: `{type, session}`.
 fn teach_command(command: &str, session: &str) -> ToolRequest {
     ToolRequest {
@@ -582,7 +713,7 @@ mod result_binding_tests {
 
     #[tokio::test]
     async fn result_only_accepted_from_routed_connection() {
-        let bridge = ExtensionBridge::new();
+        let bridge = ExtensionBridge::new(None);
         *bridge.default_browser.lock().await = Some("chrome".to_string());
         let (real_conn, mut real_rx) = bridge.connect("chrome".to_string()).await;
         let (evil_conn, _evil_rx) = bridge.connect("chrome imposter".to_string()).await;
@@ -628,7 +759,7 @@ mod teach_tests {
     async fn every_browser_records_and_stop_writes_what_they_sent() {
         let dir = std::env::temp_dir().join(format!("nebo-bridge-teach-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let bridge = ExtensionBridge::new();
+        let bridge = ExtensionBridge::new(None);
         let (_a, mut rx_a) = bridge.connect("chrome".into()).await;
         bridge.teach_start("t1", dir.clone(), 1_000).await;
         let start = rx_a.recv().await.unwrap();
@@ -665,5 +796,193 @@ mod teach_tests {
         assert_eq!(line["after"]["heading"], "Done", "what the flush carried is in the record");
         assert!(bridge.teach_stop(None).await.is_none(), "nothing is recording any more");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+
+    /// Answers every tool request it is sent and keeps the commands.
+    fn fake_browser(bridge: &ExtensionBridge, conn: i64, mut rx: mpsc::Receiver<ToolRequest>) -> Arc<Mutex<Vec<ToolRequest>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (b, log) = (bridge.clone(), seen.clone());
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                if !req.is_command {
+                    b.deliver_result(conn, req.id, Ok(serde_json::json!({}))).await;
+                }
+                log.lock().await.push(req);
+            }
+        });
+        seen
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    fn commands(seen: &[ToolRequest]) -> Vec<(String, String)> {
+        seen.iter()
+            .filter(|r| r.is_command)
+            .map(|r| (r.tool.clone(), r.session_id.clone().expect("every tab command names a run's tab")))
+            .collect()
+    }
+
+    /// Each run works in a tab of its own and its end closes that tab; a
+    /// tab left open for the owner stays open, and the run's next call
+    /// opens another. The owner's own tabs are under no key the engine
+    /// sends, so no close ever reaches them.
+    #[tokio::test]
+    async fn a_run_closes_the_tab_it_opened_and_keeps_the_one_it_left_for_the_owner() {
+        let bridge = ExtensionBridge::new(None);
+        let (conn, rx) = bridge.connect("chrome".into()).await;
+        let seen = fake_browser(&bridge, conn, rx);
+
+        bridge.execute("navigate", &serde_json::json!({"url": "https://a.test"}), Some("s1")).await.unwrap();
+        let first = seen.lock().await[0].session_id.clone().unwrap();
+        assert!(first.starts_with("s1#"), "{first}");
+        assert!(bridge.end_session("s1", false).await);
+        assert!(!bridge.end_session("s1", false).await, "nothing left to close");
+        settle().await;
+        assert_eq!(
+            commands(&seen.lock().await),
+            vec![("hide_indicators".into(), first.clone()), ("close_session_tabs".into(), first.clone())]
+        );
+
+        // The next run: a new tab, handed to the owner, then one more page.
+        seen.lock().await.clear();
+        bridge.execute("navigate", &serde_json::json!({"url": "https://form.test"}), Some("s1")).await.unwrap();
+        let form = seen.lock().await[0].session_id.clone().unwrap();
+        assert_ne!(form, first);
+        assert!(bridge.end_session("s1", true).await);
+        bridge.execute("navigate", &serde_json::json!({"url": "https://b.test"}), Some("s1")).await.unwrap();
+        let after = seen.lock().await.iter().rev().find(|r| !r.is_command).unwrap().session_id.clone().unwrap();
+        assert_ne!(after, form, "the run never works in the tab it left for the owner");
+        bridge.end_session("s1", false).await;
+        settle().await;
+        let sent = commands(&seen.lock().await);
+        assert!(!sent.contains(&("close_session_tabs".into(), form.clone())), "the owner's form stays open: {sent:?}");
+        assert!(sent.contains(&("hide_indicators".into(), form.clone())));
+        assert!(sent.contains(&("leave_open".into(), form)), "the extension hands the tab to the owner");
+        assert!(sent.contains(&("close_session_tabs".into(), after)));
+        // A session with no tab open sends nothing.
+        bridge.send_command("show_indicators", Some("never-browsed")).await;
+        assert!(!bridge.end_session("never-browsed", false).await);
+    }
+
+    /// A Nebo that stopped mid-run left its tabs open: the next Nebo closes
+    /// them in every browser that connects to it.
+    #[tokio::test]
+    async fn tabs_left_by_a_stopped_nebo_close_when_the_browser_connects() {
+        let file = std::env::temp_dir().join(format!("nebo-tabs-{}-{:x}.json", std::process::id(), rand::random::<u64>()));
+        let before = ExtensionBridge::new(Some(file.clone()));
+        let (conn, rx) = before.connect("chrome".into()).await;
+        let seen = fake_browser(&before, conn, rx);
+        before.execute("navigate", &serde_json::json!({"url": "https://a.test"}), Some("s1")).await.unwrap();
+        before.execute("navigate", &serde_json::json!({"url": "https://b.test"}), Some("s2")).await.unwrap();
+        before.end_session("s2", false).await;
+        let open = seen.lock().await[0].session_id.clone().unwrap();
+
+        let after = ExtensionBridge::new(Some(file.clone()));
+        for browser in ["chrome", "chrome again"] {
+            let (_conn, mut rx) = after.connect(browser.into()).await;
+            let first = rx.recv().await.unwrap();
+            assert_eq!((first.tool.as_str(), first.session_id.as_deref()), ("close_session_tabs", Some(open.as_str())), "{browser}");
+            settle().await;
+            assert!(rx.try_recv().is_err(), "only the tab that was still open");
+        }
+        let _ = std::fs::remove_file(&file);
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+
+    /// Runs `tool` on the bridge, answering it with `reply`; returns what
+    /// the browser was sent.
+    async fn run(
+        bridge: &ExtensionBridge,
+        conn: i64,
+        rx: &mut mpsc::Receiver<ToolRequest>,
+        tool: &'static str,
+        args: serde_json::Value,
+        session: &'static str,
+        reply: serde_json::Value,
+    ) -> ToolRequest {
+        let b = bridge.clone();
+        let call = tokio::spawn(async move { b.execute(tool, &args, Some(session)).await });
+        let req = rx.recv().await.unwrap();
+        bridge.deliver_result(conn, req.id, Ok(reply)).await;
+        call.await.unwrap().unwrap();
+        req
+    }
+
+    fn refused(result: Result<serde_json::Value, String>) -> bool {
+        result.is_err_and(|e| e.contains("never closes the owner's tabs"))
+    }
+
+    /// A close by id may name only a tab this run opened. The owner's tab, a
+    /// float or a string, another run's tab, and a tab handed to the owner
+    /// are all refused before anything reaches the browser, alone or inside
+    /// a batch. A tab the run opened closes by id; its own tab by no id.
+    #[tokio::test]
+    async fn a_close_by_id_reaches_only_tabs_this_run_opened() {
+        let bridge = ExtensionBridge::new(None);
+        let (conn, mut rx) = bridge.connect("chrome".into()).await;
+        let close = |args: serde_json::Value, session: &'static str| {
+            let b = bridge.clone();
+            async move { b.execute("close_tab", &args, Some(session)).await }
+        };
+
+        // Nothing opened yet: the owner's tab 7 is refused, nothing sent.
+        assert!(refused(close(serde_json::json!({"tabId": 7}), "s1").await));
+        let batch = bridge
+            .batch_execute(
+                vec![BatchAction { tool: "close_tab".into(), args: serde_json::json!({"tabIds": [7]}) }],
+                BatchOptions { stop_on_error: false },
+                Some("s1"),
+            )
+            .await;
+        assert!(batch.is_err_and(|e| e.contains("never closes the owner's tabs")));
+
+        // s1 opens tab 42 and s2 opens tab 43.
+        run(&bridge, conn, &mut rx, "new_tab", serde_json::json!({"url": "https://a.test"}), "s1", serde_json::json!({"tabId": 42})).await;
+        run(&bridge, conn, &mut rx, "new_tab", serde_json::json!({"url": "https://b.test"}), "s2", serde_json::json!({"tabId": 43})).await;
+        for args in [
+            serde_json::json!({"tabId": 42.0}),
+            serde_json::json!({"tabId": "42"}),
+            serde_json::json!({"tabIds": [42, 7]}),
+            serde_json::json!({"tabIds": 42}),
+            serde_json::json!({"tabId": 43}),
+        ] {
+            assert!(refused(close(args.clone(), "s1").await), "{args}");
+        }
+        assert!(rx.try_recv().is_err(), "nothing refused reached the browser");
+
+        // Its own tab 42 closes by id; its own tab by no id.
+        let req = run(&bridge, conn, &mut rx, "close_tab", serde_json::json!({"tabId": 42}), "s1", serde_json::json!("Tab closed")).await;
+        assert_eq!(req.args["tabId"], 42);
+        run(&bridge, conn, &mut rx, "close_tab", serde_json::json!({}), "s1", serde_json::json!("Tab closed")).await;
+
+        // s2 hands tab 43 to the owner: no later run of s2, nor any other
+        // session, may close it by id.
+        assert!(bridge.end_session("s2", true).await);
+        while rx.try_recv().is_ok() {}
+        assert!(refused(close(serde_json::json!({"tabId": 43}), "s2").await), "the next run of s2");
+        assert!(refused(close(serde_json::json!({"tabId": 43}), "s1").await));
+        assert!(rx.try_recv().is_err());
+
+        // A run's ids go with its end, and every id with a closed connection
+        // (a restarted Chrome numbers its tabs anew).
+        run(&bridge, conn, &mut rx, "new_tab", serde_json::json!({"url": "https://c.test"}), "s3", serde_json::json!({"tabId": 44})).await;
+        bridge.end_session("s3", false).await;
+        while rx.try_recv().is_ok() {}
+        assert!(refused(close(serde_json::json!({"tabId": 44}), "s3").await));
+        run(&bridge, conn, &mut rx, "new_tab", serde_json::json!({"url": "https://d.test"}), "s4", serde_json::json!({"tabId": 45})).await;
+        bridge.disconnect(conn).await;
+        let (_conn, _rx) = bridge.connect("chrome".into()).await;
+        assert!(refused(close(serde_json::json!({"tabId": 45}), "s4").await));
     }
 }

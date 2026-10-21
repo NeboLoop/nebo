@@ -168,9 +168,11 @@ pub enum RealtimeCommand {
     /// mono @ 24 kHz by default; μ-law @ 8 kHz for telephony) — forwarded as
     /// a binary WS frame.
     Audio(Bytes),
-    /// Typed user input (no audio): creates a message item and requests a
-    /// response.
-    Text(String),
+    /// Typed user input (no audio): creates a message item, and requests a
+    /// response when `respond`. Without one the model holds the words for
+    /// what comes next and says nothing now (what the owner typed into the
+    /// conversation while on the call: a text turn answers it).
+    Text { text: String, respond: bool },
     /// Barge-in: cancel the in-flight response and cut the model's memory of
     /// its reply back to what the user heard. `played_ms` is how much of the
     /// reply the client played; None estimates it from the wall clock. The
@@ -618,7 +620,7 @@ where
             // transport: "binary" — raw codec bytes, no base64.
             sink.send(Message::Binary(pcm.to_vec().into())).await?;
         }
-        RealtimeCommand::Text(text) => {
+        RealtimeCommand::Text { text, respond } => {
             let item = json!({
                 "type": "conversation.item.create",
                 "item": {
@@ -628,10 +630,12 @@ where
                 },
             });
             sink.send(Message::Text(item.to_string().into())).await?;
-            sink.send(Message::Text(
-                json!({ "type": "response.create" }).to_string().into(),
-            ))
-            .await?;
+            if respond {
+                sink.send(Message::Text(
+                    json!({ "type": "response.create" }).to_string().into(),
+                ))
+                .await?;
+            }
         }
         RealtimeCommand::Interrupt { played_ms } => {
             for frame in interrupt_frames(
@@ -1276,6 +1280,7 @@ async fn handle_server_event(
                 // is fine; it just stops saying them.
                 state.say_refused = true;
                 warn!(frame = %::types::redact::redact(text), "realtime refused a spoken update; no more this call");
+                send(ConversationEvent::SayRefused).await?;
             } else {
                 // The provider's words stay in the log; the client says the
                 // call ended, plainly.
@@ -2189,6 +2194,35 @@ mod tests {
         drop(tx);
     }
 
+    /// Typed words held for later go up whole as one item with no
+    /// `response.create`: the model says nothing for them. Words to answer
+    /// get their response.
+    #[tokio::test]
+    async fn typed_words_held_for_later_ask_for_no_response() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await; // session.update
+            say(&mut ws, json!({"type": "session.created"})).await;
+            let held = next_json(&mut ws).await;
+            let after = next_json(&mut ws).await;
+            let respond = next_json(&mut ws).await;
+            (held, after, respond, ws)
+        });
+        let (tx, _rx) = connect(cfg).await.unwrap();
+        let post = "word ".repeat(1_200);
+        tx.send(RealtimeCommand::Text { text: post.clone(), respond: false }).await.unwrap();
+        tx.send(RealtimeCommand::Text { text: "read it".into(), respond: true }).await.unwrap();
+        let (held, after, respond, _ws) = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held["item"]["content"][0]["text"], post.as_str(), "the words went up cut");
+        assert_eq!(after["item"]["content"][0]["text"], "read it", "held words asked for a response: {after}");
+        assert_eq!(respond["type"], "response.create");
+        drop(tx);
+    }
+
     /// A spoken update goes out as the provider's force message, verbatim,
     /// with no `response.create` (the force message is its own turn). A
     /// refusal of it is logged, never the end of the call, and no further
@@ -2228,7 +2262,7 @@ mod tests {
             }
         }
         tx.send(RealtimeCommand::Say("Now checking.".into())).await.unwrap();
-        tx.send(RealtimeCommand::Text("hello".into())).await.unwrap();
+        tx.send(RealtimeCommand::Text { text: "hello".into(), respond: true }).await.unwrap();
         let (said, next, _line, _l) = tokio::time::timeout(std::time::Duration::from_secs(5), server)
             .await
             .unwrap()
@@ -2242,6 +2276,11 @@ mod tests {
             events.push(e);
         }
         assert!(errors(&events).is_empty(), "a refused update ended the call");
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, ConversationEvent::SayRefused)).count(),
+            1,
+            "the refusal was not told once: {events:?}"
+        );
         drop(tx);
     }
 

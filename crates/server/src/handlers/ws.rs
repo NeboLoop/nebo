@@ -482,8 +482,6 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
 
     // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
     let cleanup_registry = state.run_registry.clone();
-    let cleanup_tools = state.tools.clone();
-    let cleanup_store = state.store.clone();
     let cleanup_token = CancellationToken::new();
     let cleanup_token_clone = cleanup_token.clone();
     tokio::spawn(async move {
@@ -494,18 +492,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String, pl
                 _ = interval.tick() => {
                     let stale_sessions = cleanup_registry.cleanup_stale(600).await;
                     if !stale_sessions.is_empty() {
+                        // Each expired run's own end closes its browser tabs.
                         warn!(cleaned = stale_sessions.len(), "expired stale runs from global registry");
-                        // Clean up browser tab groups for expired sessions.
-                        // Extension tracks tabs by session UUID, so resolve from session_key.
-                        for sk in &stale_sessions {
-                            let session_uuid = cleanup_store
-                                .get_session_by_name(sk)
-                                .ok()
-                                .flatten()
-                                .map(|s| s.id);
-                            let id = session_uuid.as_deref().unwrap_or(sk.as_str());
-                            cleanup_tools.close_browser_session(id).await;
-                        }
                     }
                 }
             }
@@ -1793,6 +1781,11 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     if !hidden && !attachments.is_empty() {
         let names = attachments.iter().map(|a| a.filename.clone()).collect();
         super::voice::shared_on_call(&state.live_calls, &session_key, names);
+    }
+    // What the owner types while on a call in this conversation: the call
+    // holds it whole, as he wrote it.
+    if !hidden {
+        super::voice::typed_on_call(&state.live_calls, &session_key, &prompt);
     }
 
     // `/goal`: set, show or clear the agreed goal. Setting one starts work

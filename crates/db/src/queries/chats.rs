@@ -65,6 +65,22 @@ impl Conversations {
     }
 }
 
+/// [`Store::count_chat_turns_by_day`]'s read. It seeks
+/// idx_chat_messages_time_role and never touches a message row: the
+/// dashboard, which the apps poll, runs it on every load.
+fn chat_turns_by_day_sql() -> String {
+    format!(
+        "SELECT date(m.created_at, 'unixepoch', 'localtime') AS day,
+                substr(c.session_name, 7, instr(substr(c.session_name, 7), ':') - 1) AS agent_id,
+                COUNT(*)
+         FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+         WHERE m.role = 'user' AND m.created_at >= ?1
+           AND c.session_name LIKE 'agent:%:%' AND {}
+         GROUP BY day, agent_id",
+        Conversations::All.sql("c.session_name")
+    )
+}
+
 /// Which of an employee's conversations [`Store::list_chats_by_session_enriched`]
 /// reads, and how many. Every field narrows; the default reads every
 /// conversation, newest first. [`Store::count_conversations`] counts the
@@ -1480,16 +1496,7 @@ impl Store {
     ) -> Result<Vec<(String, String, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!(
-                "SELECT date(m.created_at, 'unixepoch', 'localtime') AS day,
-                        substr(c.session_name, 7, instr(substr(c.session_name, 7), ':') - 1) AS agent_id,
-                        COUNT(*)
-                 FROM chat_messages m JOIN chats c ON c.id = m.chat_id
-                 WHERE m.role = 'user' AND m.created_at >= ?1
-                   AND c.session_name LIKE 'agent:%:%' AND {}
-                 GROUP BY day, agent_id",
-                Conversations::All.sql("c.session_name")
-            ))
+            .prepare(&chat_turns_by_day_sql())
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![since], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -1797,6 +1804,38 @@ mod tests {
             assert!(plan.iter().all(|step| !step.contains("TEMP B-TREE")), "{sql}: {plan:#?}");
             assert!(plan.iter().any(|step| step.contains("idx_chat_messages_chat_time")), "{sql}: {plan:#?}");
         }
+    }
+
+    /// The dashboard's 14-day count of the owner's chat turns reads the
+    /// time/role index alone. Through idx_chat_messages_created_at it read
+    /// every message row in the window for its role and chat — one page per
+    /// message, ~79 MB per poll on a cloud bot (2026-10-21).
+    #[test]
+    fn chat_turns_by_day_reads_the_index_alone() {
+        let (_dir, store) = store();
+        let conn = store.conn().unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", super::chat_turns_by_day_sql()))
+            .unwrap()
+            .query_map([0i64], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.starts_with("SEARCH m USING COVERING INDEX idx_chat_messages_time_role (created_at>?)")),
+            "{plan:#?}"
+        );
+        assert!(plan.iter().all(|step| !step.starts_with("SCAN m")), "{plan:#?}");
+        // One chat's messages by role still seek that chat, never every
+        // message of the role.
+        let plan: Vec<String> = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM chat_messages WHERE chat_id = 'c' AND role = 'user'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(plan.iter().all(|step| step.contains("(chat_id=?)")), "{plan:#?}");
     }
 
     /// A voice note starred on the phone is kept: the flag lands on that

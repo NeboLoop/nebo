@@ -5843,6 +5843,7 @@ dependencies = [
  "libc",
  "nebo-ai",
  "nebo-auth",
+ "nebo-browser",
  "nebo-comm",
  "nebo-command",
  "nebo-config",

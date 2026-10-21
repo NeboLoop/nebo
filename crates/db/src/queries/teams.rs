@@ -25,6 +25,23 @@ pub fn team_thread_key(team_id: &str) -> String {
 /// The segment that marks a project's thread inside a team's key space.
 const PROJECT_SEGMENT: &str = ":project:";
 
+/// The newest post in a team's threads (`latest_team_message`): ?1 is the
+/// team's own key, ?2 the prefix of its projects' keys.
+///
+/// The team's chats drive (a CROSS JOIN keeps them first), each found by
+/// the session-name index, and only their messages are read. Given a plain
+/// JOIN, SQLite walked every message in the database newest first, reading
+/// each row's metadata, until it met one of the team's; a team with no
+/// posts read them all. On 2026-10-21 that was 355–554 MB per `GET /teams`
+/// on a cloud bot, 6–20 s holding its database, while the phone asked for
+/// the roster every few seconds.
+const LATEST_TEAM_MESSAGE: &str = "SELECT m.* FROM chats c CROSS JOIN chat_messages m ON m.chat_id = c.id
+     WHERE (c.session_name = ?1 OR (c.session_name >= ?2 AND c.session_name < ?2 || char(1114111)))
+       AND m.role IN ('user', 'assistant')
+       AND COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.isMeta') END, 0) NOT IN (1, 'true')
+     ORDER BY m.created_at DESC, m.rowid DESC
+     LIMIT 1";
+
 /// The ONE builder for a project's thread key: `team:<team>:project:<id>`.
 /// A project thread is a team-style thread, so it carries the team's prefix
 /// (read state and the roster treat it as one); a one-off project, with no
@@ -509,12 +526,7 @@ impl Store {
         let projects = format!("{own}{PROJECT_SEGMENT}");
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT m.* FROM chat_messages m JOIN chats c ON c.id = m.chat_id
-             WHERE (c.session_name = ?1 OR substr(c.session_name, 1, length(?2)) = ?2)
-               AND m.role IN ('user', 'assistant')
-               AND COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.isMeta') END, 0) NOT IN (1, 'true')
-             ORDER BY m.created_at DESC, m.rowid DESC
-             LIMIT 1",
+            LATEST_TEAM_MESSAGE,
             params![own, projects],
             super::chats::row_to_chat_message,
         )
@@ -797,6 +809,25 @@ mod tests {
         s.append_team_message(&other, None, "assistant", "elsewhere", "Chief of Staff", "chief", &serde_json::json!([]), &[], None).unwrap();
         assert_eq!(s.latest_team_message("t-1").unwrap().unwrap().content, "Executive Assistant: hero script");
         assert_eq!(s.latest_team_message("t-10").unwrap().unwrap().content, "elsewhere");
+    }
+
+    /// The latest line seeks the team's chats by name and reads only their
+    /// messages: it never walks the message table, however many messages
+    /// other chats hold and however long the team has been quiet.
+    #[test]
+    fn the_latest_line_reads_only_the_teams_chats() {
+        let s = store();
+        let conn = s.conn().unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {LATEST_TEAM_MESSAGE}"))
+            .unwrap()
+            .query_map(params!["team:t-1", "team:t-1:project:"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(plan.iter().all(|step| !step.starts_with("SCAN")), "{plan:#?}");
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH c USING INDEX idx_chats_session_name")), "{plan:#?}");
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH m USING INDEX")), "{plan:#?}");
     }
 
     /// The standing rules are the team's own field: empty at first, set with

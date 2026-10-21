@@ -535,6 +535,11 @@ impl Registry {
         self.browser_manager.read().unwrap().clone()
     }
 
+    /// The bot's browser, whose session tabs `close_browser_session` closes.
+    pub fn set_browser(&self, manager: Option<Arc<browser::Manager>>) {
+        *self.browser_manager.write().unwrap() = manager;
+    }
+
     /// Close the browser tab/page a session opened — the canonical cleanup for a
     /// finished sub-agent. No-op when no browser manager is wired or the session
     /// never opened anything. Routes to whichever backend served the calls.
@@ -1413,7 +1418,7 @@ impl Registry {
 
         // Keep a handle to the browser manager so finished sub-agents can close
         // their tab/page via `close_browser_session` (the web tool takes ownership below).
-        *self.browser_manager.write().unwrap() = browser_manager.clone();
+        self.set_browser(browser_manager.clone());
 
         // Files and commands: read_file, edit_file, write_file and
         // run_command are core; the rest of the family is deferred.
