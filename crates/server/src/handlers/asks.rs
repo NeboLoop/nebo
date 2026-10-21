@@ -116,6 +116,11 @@ enum Answers {
 pub(crate) struct Waiting {
     pub card: WaitingAsk,
     answers: Answers,
+    /// A question the verify loop asks about the code work it checks (a
+    /// live verification of the conversation waits on it): the owner's
+    /// instruction about it is his answer in his own words, never a new
+    /// message ([`reply_question`]).
+    about_work: bool,
 }
 
 /// GET /api/v1/asks — everything waiting on the owner's answer, from every
@@ -195,7 +200,19 @@ fn from_parked(state: &AppState, session_key: &str, ask: &PendingAsk) -> Waiting
             widgets: ask.widgets.clone(),
         },
         answers: Answers::Question,
+        about_work: asked_by_verify_loop(state, session_key, &ask.prompt),
     }
+}
+
+/// Whether a live verification of conversation `session_key` waits on the
+/// question `prompt` (its pending ask).
+fn asked_by_verify_loop(state: &AppState, session_key: &str, prompt: &str) -> bool {
+    state
+        .store
+        .list_verifications(&db::VerificationQuery { session_key: Some(session_key), live: true, ..Default::default() })
+        .unwrap_or_default()
+        .iter()
+        .any(|v| v.pending_ask.as_ref().and_then(|a| a["question"].as_str()).is_some_and(|q| q.trim() == prompt.trim()))
 }
 
 /// What a parked question's card offers.
@@ -309,6 +326,7 @@ fn permission_waiting(c: &PermissionAskCard) -> Waiting {
             widgets: None,
         },
         answers: Answers::Permission(offered.into_iter().map(|(_, a)| a).collect()),
+        about_work: false,
     }
 }
 
@@ -479,7 +497,14 @@ fn reply_question(w: &Waiting) -> Question {
     if w.card.free_text {
         criteria.insert(
             OWN_WORDS.into(),
-            if w.card.options.is_empty() {
+            if w.about_work {
+                // The verify loop asks about the code it checks: what he
+                // wants done about it is his answer (live, build 152: "save it
+                // to the thread too" waited in the queue as a new message).
+                "The owner's own answer that is none of the listed answers: what he wants done about this question \
+                 or the work it asks about, including an instruction about it"
+                    .into()
+            } else if w.card.options.is_empty() {
                 "An answer to the question".into()
             } else {
                 "An answer to the question in the owner's own words that is none of the listed answers".into()
@@ -488,9 +513,13 @@ fn reply_question(w: &Waiting) -> Question {
     }
     criteria.insert(
         NOT_AN_ANSWER.into(),
-        "Not an answer to this question: a new request or instruction, a different question, or a remark about \
-         something else"
-            .into(),
+        if w.about_work {
+            "Not about this question or its work: a different question, or a request or remark about something else"
+        } else {
+            "Not an answer to this question: a new request or instruction, a different question, or a remark about \
+             something else"
+        }
+        .into(),
     );
     Question::Choice {
         instructions: "The owner was asked `question`; `options` are the answers it offers. Then the owner said \
@@ -993,6 +1022,7 @@ pub(crate) mod tests {
                 relayed: false, widgets: None,
             },
             answers: Answers::Question,
+            about_work: false,
         }
     }
 
@@ -1172,6 +1202,7 @@ pub(crate) mod tests {
                 relayed: false, widgets: None,
             },
             answers: Answers::Permission(vec![Answer::AllowAlways, Answer::ThisOnce, Answer::No]),
+            about_work: false,
         };
         for (words, i) in [
             ("Allow always", 0),
@@ -1250,6 +1281,24 @@ pub(crate) mod tests {
         w
     }
 
+    /// The verify loop's question takes the owner's instruction about it as
+    /// his answer (live, build 152: it waited in the queue as a new
+    /// message); every other question keeps the 2026-09-29 guard, where a
+    /// new request is not an answer.
+    #[test]
+    fn an_instruction_answers_the_verify_loops_question_and_no_other() {
+        let criteria = |w: &Waiting| match reply_question(w) {
+            Question::Choice { criteria, .. } => criteria,
+            other => panic!("{other:?}"),
+        };
+        let plain = question("q1", "Pin saves only to local store, not to the chat thread", &["Fix it", "Leave it as it is"]);
+        let looped = Waiting { about_work: true, ..question("q2", "Pin saves only to local store, not to the chat thread", &["Fix it", "Leave it as it is"]) };
+        assert!(criteria(&plain)[NOT_AN_ANSWER].contains("a new request or instruction"));
+        assert!(criteria(&looped)[OWN_WORDS].contains("including an instruction about it"));
+        assert!(!criteria(&looped)[NOT_AN_ANSWER].contains("instruction"), "an instruction about it is not 'not an answer'");
+        assert!(criteria(&looped)[NOT_AN_ANSWER].contains("a different question"));
+    }
+
     /// A near tie with "not an answer" keeps the question open.
     #[test]
     fn a_near_not_an_answer_is_no_answer() {
@@ -1288,6 +1337,7 @@ pub(crate) mod tests {
                 ..w.card.clone()
             },
             answers: w.answers.clone(),
+            about_work: false,
         };
         assert_eq!(
             reading_from(&decision(OWN_WORDS, 0.0), &linked),

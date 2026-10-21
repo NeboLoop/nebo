@@ -4538,6 +4538,8 @@
 			"minutes": "{m} Min. {s} Sek."
 		},
 		"answering": "Antwort auf: {question}",
-		"tellIt": "Sag, was zu tun ist"
+		"tellIt": "Sag, was zu tun ist",
+		"sending": "Wird gesendet…",
+		"sendFailed": "Deine Antwort wurde nicht gesendet."
 	}
 }

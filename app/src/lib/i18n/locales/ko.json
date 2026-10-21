@@ -4538,6 +4538,8 @@
 			"minutes": "{m}분 {s}초"
 		},
 		"answering": "답변 중: {question}",
-		"tellIt": "할 일 알려주기"
+		"tellIt": "할 일 알려주기",
+		"sending": "보내는 중…",
+		"sendFailed": "답변을 보내지 못했어요."
 	}
 }

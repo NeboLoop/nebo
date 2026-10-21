@@ -4538,6 +4538,8 @@
 			"minutes": "{m} min {s} s"
 		},
 		"answering": "Respondiendo: {question}",
-		"tellIt": "Dile qué hacer"
+		"tellIt": "Dile qué hacer",
+		"sending": "Enviando…",
+		"sendFailed": "Tu respuesta no se envió."
 	}
 }

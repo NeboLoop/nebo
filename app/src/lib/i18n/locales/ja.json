@@ -4538,6 +4538,8 @@
 			"minutes": "{m}分{s}秒"
 		},
 		"answering": "回答中：{question}",
-		"tellIt": "どうするか伝える"
+		"tellIt": "どうするか伝える",
+		"sending": "送信中…",
+		"sendFailed": "回答を送信できませんでした。"
 	}
 }

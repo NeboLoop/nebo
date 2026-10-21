@@ -254,6 +254,55 @@ const STOP_HERE: &str = "Stop here";
 const KEEP_IN_COPY: &str = "Keep it in its copy";
 const LAND_AFTER_MINE: &str = "Land it after I commit mine";
 const KEEP_MINE: &str = "Keep mine, don't land it";
+/// The owner's answer to one of the loop's questions: a choice the card
+/// offered, or his own words (typed in the conversation, read by the bot as
+/// the answer: `handlers::asks::answer_in_words`).
+#[derive(Debug, Clone, PartialEq)]
+enum Reply {
+    Picked(String),
+    Words(String),
+}
+
+impl Reply {
+    fn text(&self) -> &str {
+        match self {
+            Reply::Picked(t) | Reply::Words(t) => t,
+        }
+    }
+
+    /// What `ask_owner` returned: `picked` is a choice, `own_words` (or an
+    /// open question's `response`) his own words.
+    fn read(result: &serde_json::Value) -> Option<Self> {
+        if let Some(p) = result["picked"].as_str() {
+            return Some(Reply::Picked(p.to_string()));
+        }
+        result["own_words"].as_str().or(result["response"].as_str()).map(|w| Reply::Words(w.to_string()))
+    }
+}
+
+/// The builder told what the owner said in his own words to a question of
+/// the loop's that offered choices: it does that, and the next round checks
+/// it. Nothing lands on words alone.
+fn owner_said(words: &str) -> String {
+    format!(
+        "The owner answered in his own words: \"{}\". Do what he says in your working copy, then end your reply; \
+         the next round checks it before anything lands.",
+        words.trim()
+    )
+}
+
+/// His own words to a question that offered choices (keep going, land it,
+/// keep his edits) are instructions, never a choice guessed from them: the
+/// builder does what he says and the work is checked again. A call of his
+/// (`Decision`) is carried out as he put it, words or choice.
+fn instruction(purpose: &Purpose, answer: Option<&Reply>) -> Option<String> {
+    match (purpose, answer) {
+        (Purpose::Decision { .. }, _) => None,
+        (_, Some(Reply::Words(words))) => Some(owner_said(words)),
+        _ => None,
+    }
+}
+
 const FIX_IT: &str = "Fix it";
 const LEAVE_IT: &str = "Leave it as it is";
 
@@ -541,7 +590,7 @@ impl VerifyCheck {
         context: &str,
         options: &[&str],
         purpose: &Purpose,
-    ) -> Option<String> {
+    ) -> Option<Reply> {
         let ask = json!({ "question": question, "context": context, "options": options, "purpose": purpose });
         let store = self.store();
         let _ = store.set_verification_pending_ask(id, Some(&ask));
@@ -568,12 +617,7 @@ impl VerifyCheck {
         if result.is_error {
             return None;
         }
-        let answer: serde_json::Value = serde_json::from_str(&result.content).unwrap_or_default();
-        answer["picked"]
-            .as_str()
-            .or(answer["own_words"].as_str())
-            .or(answer["response"].as_str())
-            .map(str::to_string)
+        Reply::read(&serde_json::from_str(&result.content).unwrap_or_default())
     }
 
     /// The builder's turn as the parent of its reviewers.
@@ -664,7 +708,7 @@ impl VerifyCheck {
             // The answer does what it did when it was first asked.
             match &purpose {
                 Some(p) => {
-                    if let Some(step) = self.answered(&mut work, &v, p, answer.as_deref()).await {
+                    if let Some(step) = self.answered(&mut work, &v, p, answer.as_ref()).await {
                         return step;
                     }
                 }
@@ -1073,8 +1117,8 @@ impl VerifyCheck {
             );
             match self.ask_owner(&v.id, &d.title, &context, &options, &Purpose::Decision { title: d.title.clone() }).await {
                 Some(answer) => {
-                    decided.push(format!("The owner decided \"{}\": {answer}. Carry it out.", d.title));
-                    asked.push(json!({ "finding": d, "answer": answer }));
+                    decided.push(format!("The owner decided \"{}\": {}. Carry it out.", d.title, answer.text()));
+                    asked.push(json!({ "finding": d, "answer": answer.text() }));
                 }
                 None => unanswered.push(d.clone()),
             }
@@ -1123,7 +1167,7 @@ impl VerifyCheck {
                     .join("\n");
                 let purpose = Purpose::Stalled { open: blocking_now };
                 let answer = self.ask_owner(&v.id, &question, &context, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
-                if let Some(step) = self.answered(work, &after, &purpose, answer.as_deref()).await {
+                if let Some(step) = self.answered(work, &after, &purpose, answer.as_ref()).await {
                     return step.into();
                 }
             }
@@ -1182,7 +1226,7 @@ impl VerifyCheck {
                     work.project_root.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &whole.stat(), &[KEEP_IN_COPY, LAND_ANYWAY], &Purpose::NoChecks).await;
-                return self.answered(work, &after, &Purpose::NoChecks, answer.as_deref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
+                return self.answered(work, &after, &Purpose::NoChecks, answer.as_ref()).await.map_or(RoundEnd::Finished, RoundEnd::from);
             }
             self.finish(&after, "not_verified", Some(reason));
             return RoundEnd::Finished;
@@ -1449,7 +1493,7 @@ impl VerifyCheck {
             );
             let purpose = Purpose::Stalled { open: 1 };
             let answer = self.ask_owner(&v.id, &question, &text, &[KEEP_GOING, LAND_ANYWAY, STOP_HERE], &purpose).await;
-            if let Some(step) = self.answered(work, v, &purpose, answer.as_deref()).await {
+            if let Some(step) = self.answered(work, v, &purpose, answer.as_ref()).await {
                 return step;
             }
         }
@@ -1494,7 +1538,7 @@ impl VerifyCheck {
                     work.work_dir.display()
                 );
                 let answer = self.ask_owner(&v.id, &question, &context, &[LAND_AFTER_MINE, KEEP_MINE], &Purpose::OwnerEdits).await;
-                self.answered(work, v, &Purpose::OwnerEdits, answer.as_deref()).await.unwrap_or(Step::Finished)
+                self.answered(work, v, &Purpose::OwnerEdits, answer.as_ref()).await.unwrap_or(Step::Finished)
             }
             other => {
                 // Why it did not land, as a code; the raw words (a git
@@ -1508,7 +1552,11 @@ impl VerifyCheck {
 
     /// What the owner's answer to one of the loop's questions does, the same
     /// whenever it comes. `None`: the round goes on.
-    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&str>) -> Option<Step> {
+    async fn answered(&self, work: &mut Work, v: &db::Verification, purpose: &Purpose, answer: Option<&Reply>) -> Option<Step> {
+        if let Some(told) = instruction(purpose, answer) {
+            return Some(Step::Continue(told));
+        }
+        let answer = answer.map(Reply::text);
         match purpose {
             Purpose::Decision { title } => Some(match answer {
                 Some(a) => Step::Continue(format!("The owner decided \"{title}\": {a}. Carry it out.")),
@@ -1715,5 +1763,29 @@ mod tests {
             ["Save to the thread", "Keep it local"],
             "the recommended one first, once"
         );
+    }
+
+    /// The card's choice is a choice; his typed words are his own words.
+    #[test]
+    fn an_answer_is_a_choice_or_his_own_words() {
+        assert_eq!(Reply::read(&json!({"picked": "Keep going"})), Some(Reply::Picked("Keep going".into())));
+        assert_eq!(Reply::read(&json!({"own_words": "add a test first"})), Some(Reply::Words("add a test first".into())));
+        assert_eq!(Reply::read(&json!({"response": "yes"})), Some(Reply::Words("yes".into())));
+        assert_eq!(Reply::read(&json!({})), None);
+    }
+
+    /// Review of #998: "keep going" typed to a stalled loop stopped it, and
+    /// anything but the exact choice did the wrong thing on the others.
+    /// Typed words are instructions on every question but a call of his.
+    #[test]
+    fn typed_words_are_instructions_never_a_guessed_choice() {
+        let words = Reply::Words("keep going, but add a test for the total".into());
+        for purpose in [Purpose::Stalled { open: 2 }, Purpose::NoChecks, Purpose::OwnerEdits] {
+            let told = instruction(&purpose, Some(&words)).expect("words are an instruction");
+            assert!(told.contains("add a test for the total") && told.contains("next round checks it"), "{purpose:?}");
+            assert_eq!(instruction(&purpose, Some(&Reply::Picked(LAND_ANYWAY.into()))), None, "a choice does what it says");
+            assert_eq!(instruction(&purpose, None), None);
+        }
+        assert_eq!(instruction(&Purpose::Decision { title: "Pins".into() }, Some(&words)), None, "a call is carried out as he put it");
     }
 }

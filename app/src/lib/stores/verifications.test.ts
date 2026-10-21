@@ -25,9 +25,9 @@ import {
   elapsed,
   inProgress,
   lineWords,
+  answerWaiting,
   loopQuestion,
   openAskFor,
-  typedAnswers,
   onMessage,
   trackConversation,
   verifications,
@@ -199,12 +199,27 @@ describe("the badge", () => {
       expect(loopQuestion(messages, { [checking.id]: checking }, "agent:dev:web")).toBeNull();
     });
 
-    it("takes the owner's typed words as its answer, never as a message queued behind the work", () => {
-      const loop = loopQuestion(messages, { [waiting.id]: waiting }, "agent:dev:web");
-      expect(typedAnswers(loop, "Save it to the thread too", 0)).toBe("ask-2");
-      expect(typedAnswers(loop, "   ", 0)).toBeNull();
-      expect(typedAnswers(loop, "here is a file", 1)).toBeNull();
-      expect(typedAnswers(null, "hello", 0)).toBeNull();
+    it("is answered from the sheet once, found among what the bot still waits on, and confirmed", async () => {
+      const sent: string[] = [];
+      let open = [{ id: "ask-9", question }];
+      const waiting = async () => open;
+      const wait = async () => {
+        open = [];
+      };
+      expect(await answerWaiting(question, (id) => sent.push(id), waiting, wait)).toBe(true);
+      expect(sent).toEqual(["ask-9"]);
+
+      // Not found among what the bot waits on: nothing is sent.
+      expect(await answerWaiting("Another question", (id) => sent.push(id), async () => [{ id: "ask-9", question }], wait)).toBe(false);
+      expect(sent).toEqual(["ask-9"]);
+
+      // The bot still waits after the wait: it did not take it.
+      const stuck = async () => [{ id: "ask-10", question }];
+      expect(await answerWaiting(question, (id) => sent.push(id), stuck, async () => {})).toBe(false);
+      expect(sent).toEqual(["ask-9", "ask-10"]);
+
+      // The bot out of reach: not taken, never thrown.
+      expect(await answerWaiting(question, () => {}, async () => { throw new Error("offline"); }, wait)).toBe(false);
     });
   });
 });

@@ -35,9 +35,10 @@
   const phase = $derived(phaseWords(verification, $t));
   const took = $derived(duration(elapsed(verification, now), $t));
   const ask = $derived(verification.badge.state === 'waiting' && onanswer ? askOf(verification) : null);
-  function say(value: string) {
-    onanswer?.(verification, value);
-    open = false;
+  async function say(value: string): Promise<boolean> {
+    const took = (await onanswer?.(verification, value)) ?? false;
+    if (took) open = false;
+    return took;
   }
 
   type Finding = { id: string; severity: string; title: string; evidence: string };

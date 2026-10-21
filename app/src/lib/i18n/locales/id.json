@@ -4538,6 +4538,8 @@
 			"minutes": "{m} mnt {s} dtk"
 		},
 		"answering": "Menjawab: {question}",
-		"tellIt": "Katakan apa yang harus dilakukan"
+		"tellIt": "Katakan apa yang harus dilakukan",
+		"sending": "Mengirim…",
+		"sendFailed": "Jawabanmu tidak terkirim."
 	}
 }

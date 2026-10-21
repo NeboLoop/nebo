@@ -213,9 +213,10 @@ export function askOf(v: VerificationView): { question: string; options: string[
   return { question, options };
 }
 
-/** Answers the question a verification waits on, with a choice, Skip or
- *  the owner's own words, through the conversation's open question. */
-export type VerificationAnswer = (v: VerificationView, value: string) => void;
+/** Answers the question a verification waits on with a choice or Skip,
+ *  once: true when the bot took it (it no longer waits on the question),
+ *  false when it did not, or the question could not be found. */
+export type VerificationAnswer = (v: VerificationView, value: string) => Promise<boolean>;
 
 /** A conversation message as far as its questions go. */
 type AskLike = { type: string; requestId?: string; prompt?: string; response?: string | null; cancelled?: boolean };
@@ -245,11 +246,32 @@ export function loopQuestion<M extends AskLike>(
   return null;
 }
 
-/** Where the owner's typed words go: with the loop's question open, to it
- *  as his answer (its request id), never queued behind the work; otherwise
- *  null, a message like any other. A message with files is always one. */
-export function typedAnswers(loop: AskLike | null, text: string, files: number): string | null {
-  return loop?.requestId && !files && text.trim() ? loop.requestId : null;
+/** How long an answer from the sheet waits for the bot to take it. */
+export const ANSWER_CONFIRM_MS = 10_000;
+
+/** Answer a question the bot waits on, once, and confirm it took it: the
+ *  ask found by `question` among what the bot still waits on (the card need
+ *  not be on screen), `send` given its id, and the bot asked until it no
+ *  longer waits on it. True when it took it. */
+export async function answerWaiting(
+  question: string | undefined,
+  send: (requestId: string) => void,
+  waiting: () => Promise<{ id: string; question: string }[]>,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+  if (!question) return false;
+  try {
+    const ask = (await waiting()).find((a) => a.question.trim() === question);
+    if (!ask) return false;
+    send(ask.id);
+    for (let waited = 0; waited < ANSWER_CONFIRM_MS; waited += 1000) {
+      await wait(1000);
+      if (!(await waiting()).some((a) => a.id === ask.id)) return true;
+    }
+  } catch {
+    // Not reached: the sheet says it did not send, with Try again.
+  }
+  return false;
 }
 
 /** The one line a verification is in the conversation, the size of a tool

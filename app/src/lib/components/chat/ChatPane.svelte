@@ -63,7 +63,7 @@
   import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
-  import { verifications, trackConversation, onMessage, inProgress, askOf, openAskFor, loopQuestion as loopQuestionOf, typedAnswers } from '$lib/stores/verifications';
+  import { verifications, trackConversation, onMessage, inProgress, askOf, answerWaiting, loopQuestion as loopQuestionOf } from '$lib/stores/verifications';
   import type { VerificationView } from '$lib/api/neboComponents';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
   import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
@@ -1390,21 +1390,18 @@
   ) {
     autoScrollEnabled = true;
     showScrollButton = false;
-    // The verify loop's open question takes his words as its answer, never
-    // as a message queued behind the work.
-    const answers = typedAnswers(loopQuestion, text, files.length);
-    if (answers) {
-      onasksubmit?.(answers, text.trim());
-      return;
-    }
     (onsend as ((t: string, f: typeof files, ...r: unknown[]) => void) | undefined)?.(text, files, ...rest);
   }
 
-  /** Answer the question verification `v` waits on: a choice, Skip, or his
-   *  own words. */
-  function answerVerification(v: VerificationView, value: string) {
-    const ask = openAskFor(messages, askOf(v)?.question);
-    if (ask?.type === 'ask') onasksubmit?.(ask.requestId, value);
+  /** Answer the question verification `v` waits on from its sheet, once,
+   *  and confirm the bot took it. */
+  async function answerVerification(v: VerificationView, value: string): Promise<boolean> {
+    const { listWaitingAsks } = await import('$lib/api/nebo');
+    return answerWaiting(
+      askOf(v)?.question,
+      (requestId) => onasksubmit?.(requestId, value),
+      async () => (await listWaitingAsks())?.asks ?? [],
+    );
   }
 
   // Dropzone state
@@ -1545,7 +1542,9 @@
   // answers it.
   const answering = $derived(isLoading && messages.some((m) => m.type === 'ask' && m.response == null && !m.cancelled && takesWords(m.widgets)));
   /** The open question the verify loop waits on in this conversation: the
-   *  ask whose question a waiting verification holds. */
+   *  ask whose question a waiting verification holds. The composer says it
+   *  is answering it; what he types goes as his message, and the bot reads it
+   *  against the question (`handlers::asks`), the one way words answer. */
   const loopQuestion = $derived.by(() => {
     const m = loopQuestionOf(messages, $verifications, chatSessionKey);
     return m?.type === 'ask' ? m : null;

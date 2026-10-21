@@ -4538,6 +4538,8 @@
 			"minutes": "{m} dk {s} sn"
 		},
 		"answering": "Yanıtlanıyor: {question}",
-		"tellIt": "Ne yapacağını söyle"
+		"tellIt": "Ne yapacağını söyle",
+		"sending": "Gönderiliyor…",
+		"sendFailed": "Yanıtın gönderilmedi."
 	}
 }
