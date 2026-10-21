@@ -741,6 +741,29 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// The copy a helper's run holds its changes in (its whole state, as
+    /// JSON), until they are landed or discarded (`None`).
+    pub fn engine_set_run_held_copy(&self, id: &str, copy: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_runs SET held_copy = ?2 WHERE id = ?1", params![id, copy])
+            .db_err("engine_set_run_held_copy")?;
+        Ok(())
+    }
+
+    /// Every run of `kind` holding a copy, with it: `(run id, copy)`.
+    pub fn engine_runs_holding_copies(&self, kind: &str) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT id, held_copy FROM engine_runs WHERE kind = ?1 AND held_copy IS NOT NULL ORDER BY created_at")
+            .db_err("engine_runs_holding_copies")?;
+        let rows = stmt
+            .query_map(params![kind], |r| Ok((r.get(0)?, r.get(1)?)))
+            .db_err("engine_runs_holding_copies")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_runs_holding_copies")?;
+        Ok(rows)
+    }
+
     /// The definition a run carries — for a case, the binding as it was
     /// last seen, refreshed whenever a signal arrives with a current one.
     pub fn engine_set_run_definition(&self, id: &str, definition: &str) -> Result<(), NeboError> {
@@ -1858,6 +1881,22 @@ mod tests {
 
     fn case<'a>(id: &'a str) -> NewRun<'a> {
         NewRun { id, kind: "case", session_key: "agent:a:case:x", agent_id: "a", lane: "main", ..Default::default() }
+    }
+
+    /// A helper's held copy is kept on its run until it is cleared, and is
+    /// listed by the runs of its kind that hold one.
+    #[test]
+    fn a_runs_held_copy_is_kept_until_cleared() {
+        let s = store();
+        for id in ["h1", "h2"] {
+            s.engine_create_run(&NewRun { id, kind: "subagent", session_key: "agent:a:web", agent_id: "a", lane: "subagent", ..Default::default() }).unwrap();
+        }
+        s.engine_create_run(&case("c1")).unwrap();
+        s.engine_set_run_held_copy("h1", Some(r#"{"Git":{}}"#)).unwrap();
+        s.engine_set_run_held_copy("c1", Some("{}")).unwrap();
+        assert_eq!(s.engine_runs_holding_copies("subagent").unwrap(), [("h1".to_string(), r#"{"Git":{}}"#.to_string())]);
+        s.engine_set_run_held_copy("h1", None).unwrap();
+        assert!(s.engine_runs_holding_copies("subagent").unwrap().is_empty());
     }
 
     /// The next wake is the earliest undelivered timer — not a signal, not a
