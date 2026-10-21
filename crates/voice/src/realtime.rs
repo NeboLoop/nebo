@@ -60,6 +60,13 @@ pub enum AudioFormat {
 }
 
 impl AudioFormat {
+    /// A call's format: telephony carries the carrier's own μ-law end to
+    /// end, so nothing transcodes between the phone and the model; every
+    /// other call is 24 kHz PCM.
+    pub fn for_call(telephony: bool) -> Self {
+        if telephony { Self::G711Ulaw } else { Self::Pcm24k }
+    }
+
     /// The `session.audio.{input,output}.format` object for this format.
     fn as_json(self) -> Value {
         match self {
@@ -70,7 +77,7 @@ impl AudioFormat {
 
     /// Bytes of audio per millisecond: 24 kHz PCM16 mono is 48, 8 kHz μ-law
     /// is 8. Turns forwarded audio into played time.
-    fn bytes_per_ms(self) -> usize {
+    pub fn bytes_per_ms(self) -> usize {
         match self {
             Self::Pcm24k => 48,
             Self::G711Ulaw => 8,
