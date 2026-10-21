@@ -71,6 +71,9 @@ pub struct SpawnRequest {
     /// (empty = the parent's model, `model_override`). The harness resolves
     /// it and refuses a name it doesn't know.
     pub speed: String,
+    /// How long the helper's report may be, in characters, before its
+    /// parent gets a preview and the file it was saved to (0 = the default).
+    pub report_limit: usize,
     /// The parent run's limits. See [`ChildSeat`].
     pub seat: ChildSeat,
 }
@@ -117,6 +120,23 @@ impl SpawnRequest {
             ..Default::default()
         }
     }
+}
+
+/// The safety ceiling on a helper's or coworker's report, in characters. A
+/// report comes back in full up to it; its length is the brief's to set (the
+/// deliverable and its length, and `report_limit` below this). Past it, the
+/// full text is saved to a file and the reader gets a short preview and the
+/// path. (100,000 until 2026-10-20.)
+pub const REPORT_LIMIT: usize = 30_000;
+
+/// The owner's answer to a helper's open question, as `send_message`
+/// relays it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Answer {
+    /// The question's id from the helper's report; `None` answers its
+    /// newest open question.
+    pub question: Option<String>,
+    pub text: String,
 }
 
 /// Result from a helper.
@@ -199,15 +219,20 @@ pub trait SubAgentOrchestrator: Send + Sync {
     /// the message as its next input, reporting the way it was started
     /// (`FollowUp::Continued`). `parent` is [`SpawnRequest::child_of`] the
     /// sender's run: a continued helper runs under the sender's limits.
+    /// `answer` is the owner's answer to one of the helper's open questions:
+    /// it, and only it, settles that question.
     fn send(
         &self,
         task_id: &str,
         message: &str,
+        answer: Option<Answer>,
         parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 
-    /// The helpers `caller` started that are still in hand:
-    /// (task_id, description, status).
+    /// Everything `caller` started that is still in hand, at any depth:
+    /// its helpers, theirs and their research runs, as (task_id,
+    /// description, status); a nested one's description names the helper
+    /// it works under.
     fn list_active(
         &self,
         caller: &str,

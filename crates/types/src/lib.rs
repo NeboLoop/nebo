@@ -1,4 +1,5 @@
 pub mod api;
+pub mod balance;
 pub mod character;
 pub mod constants;
 pub mod error;
@@ -17,4 +18,4 @@ pub mod strutil;
 pub mod timeutil;
 
 pub use error::NeboError;
-pub use owner_need::OwnerNeed;
+pub use owner_need::{OwnerNeed, OwnerQuestion};

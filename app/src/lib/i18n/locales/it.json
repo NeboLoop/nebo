@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} in ingresso · {output} in uscita",
 		"tokenTooltip": "{total} prompt totale · {overhead} sistema+strumenti · {cacheRead} lettura cache",
 		"outOfBalance": "Il tuo piano è esaurito per questo mese. Passa a un piano superiore per continuare.",
+		"balanceBusy": "Il tuo saldo è impegnato da un lavoro in corso. Riprova tra un momento.",
 		"viewPlans": "Vedi i piani",
 		"choosePlan": "Scegli un piano",
 		"documents": "Documenti",
