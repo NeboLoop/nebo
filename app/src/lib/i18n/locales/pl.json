@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} wej. · {output} wyj.",
 		"tokenTooltip": "{total} łącznie prompt · {overhead} system+narzędzia · {cacheRead} odczyt z cache",
 		"outOfBalance": "Twój plan na ten miesiąc został wykorzystany. Zmień plan na wyższy, aby kontynuować.",
+		"balanceBusy": "Twoje saldo jest zajęte przez trwającą pracę. Spróbuj ponownie za chwilę.",
 		"viewPlans": "Zobacz plany",
 		"choosePlan": "Wybierz plan",
 		"documents": "Dokumenty",

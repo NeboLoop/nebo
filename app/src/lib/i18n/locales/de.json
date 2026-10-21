@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} ein · {output} aus",
 		"tokenTooltip": "{total} Prompt gesamt · {overhead} System + Tools · {cacheRead} aus Cache gelesen",
 		"outOfBalance": "Dein Plan ist für diesen Monat aufgebraucht. Upgrade deinen Plan, um weiterzumachen.",
+		"balanceBusy": "Dein Guthaben ist gerade durch laufende Arbeit belegt. Versuch es gleich noch einmal.",
 		"viewPlans": "Pläne ansehen",
 		"choosePlan": "Plan wählen",
 		"documents": "Dokumente",

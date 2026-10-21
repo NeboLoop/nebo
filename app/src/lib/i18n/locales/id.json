@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} masuk · {output} keluar",
 		"tokenTooltip": "{total} total prompt · {overhead} sistem+alat · {cacheRead} baca cache",
 		"outOfBalance": "Paket Anda sudah habis untuk bulan ini. Tingkatkan paket Anda untuk melanjutkan.",
+		"balanceBusy": "Saldo Anda sedang dipakai pekerjaan yang berjalan. Coba lagi sebentar lagi.",
 		"viewPlans": "Lihat paket",
 		"choosePlan": "Pilih paket",
 		"documents": "Dokumen",

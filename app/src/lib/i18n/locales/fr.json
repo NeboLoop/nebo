@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} en entrée · {output} en sortie",
 		"tokenTooltip": "{total} prompt total · {overhead} système+outils · {cacheRead} lecture cache",
 		"outOfBalance": "Votre forfait est épuisé pour ce mois-ci. Passez à un forfait supérieur pour continuer.",
+		"balanceBusy": "Votre solde est occupé par un travail en cours. Réessayez dans un instant.",
 		"viewPlans": "Voir les forfaits",
 		"choosePlan": "Choisir un forfait",
 		"documents": "Documents",

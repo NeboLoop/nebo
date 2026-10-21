@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} vào · {output} ra",
 		"tokenTooltip": "{total} tổng prompt · {overhead} hệ thống+công cụ · {cacheRead} đọc cache",
 		"outOfBalance": "Bạn đã dùng hết gói của tháng này. Hãy nâng cấp gói để tiếp tục.",
+		"balanceBusy": "Số dư của bạn đang được dùng cho công việc đang chạy. Hãy thử lại sau giây lát.",
 		"viewPlans": "Xem các gói",
 		"choosePlan": "Chọn gói",
 		"documents": "Tài liệu",
