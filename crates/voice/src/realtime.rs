@@ -1280,6 +1280,7 @@ async fn handle_server_event(
                 // is fine; it just stops saying them.
                 state.say_refused = true;
                 warn!(frame = %::types::redact::redact(text), "realtime refused a spoken update; no more this call");
+                send(ConversationEvent::SayRefused).await?;
             } else {
                 // The provider's words stay in the log; the client says the
                 // call ended, plainly.
@@ -2275,6 +2276,11 @@ mod tests {
             events.push(e);
         }
         assert!(errors(&events).is_empty(), "a refused update ended the call");
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, ConversationEvent::SayRefused)).count(),
+            1,
+            "the refusal was not told once: {events:?}"
+        );
         drop(tx);
     }
 

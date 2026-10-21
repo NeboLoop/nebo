@@ -509,8 +509,9 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
             "name": "read_aloud",
             "description": "Read the owner's newest typed or pasted message in this conversation \
                             aloud, every word, start to finish. Use it whenever they ask you to read \
-                            it, read it back, or read the whole thing. It hands you the message part \
-                            by part: say each part exactly as written. Never starts work.",
+                            it, read it back, or read the whole thing, and again when they stopped it \
+                            and ask you to go on: it picks up where they stopped. The message is read \
+                            out as written, not by you: say nothing while it plays. Never starts work.",
             "parameters": {"type": "object", "properties": {}}
         }));
         // The owner's spoken answer to anything waiting on him — a question
@@ -1501,14 +1502,17 @@ pub(crate) fn shared_on_call(calls: &LiveCalls, session_key: &str, files: Vec<St
 
 /// Tell the owner's call in conversation `session_key`, if one is live, what
 /// he just typed into it (`text`, his words): the call holds it whole, so
-/// "read me what I just pasted" reads what he pasted.
+/// "read me what I just pasted" reads what he pasted. A file's note in it
+/// (its path, the instructions, a sound's whole transcript) reaches the
+/// call as the file's name and size only.
 pub(crate) fn typed_on_call(calls: &LiveCalls, session_key: &str, text: &str) {
-    if text.trim().is_empty() {
+    let words = crate::attachments::references(text);
+    if words.trim().is_empty() {
         return;
     }
     let call = calls.lock().unwrap_or_else(|e| e.into_inner()).get(session_key).cloned();
     if let Some(call) = call
-        && let Err(e) = call.try_send(CallNews::Typed(text.to_string()))
+        && let Err(e) = call.try_send(CallNews::Typed(words.trim().to_string()))
     {
         // The message is in the conversation either way; only the call misses it.
         warn!(session_key, error = %e, "voice: a typed message could not be handed to the call");
@@ -1516,76 +1520,136 @@ pub(crate) fn typed_on_call(calls: &LiveCalls, session_key: &str, text: &str) {
 }
 
 /// What the voice model is given when the owner types during the call: his
-/// message, whole up to [`CALL_TYPED_CHARS`]. Nothing is said for it: a text
-/// turn answers it, and its reply reaches the call as any reply does.
+/// message, whole up to [`CALL_TYPED_CHARS`] (its files already short
+/// references, [`typed_on_call`]). It is marked answered: a text turn answers it in writing and
+/// its reply reaches the call as any reply does, so the call never answers
+/// it itself, now or on a later turn.
 fn typed_on_call_line(text: &str) -> String {
     format!(
-        "(The owner just typed this into our conversation. A written reply there answers it and comes to you \
-         when it is ready, so do not answer it now. If it asks for something to be read aloud, call `read_aloud` \
-         when you next speak.)\n\n{}",
-        typed_for_call(text.trim())
+        "(Already answered in writing: the owner typed this into our conversation, and the written reply \
+         there is its answer, passed to you when it is ready. Never answer it yourself, now or later. If it \
+         asks for something to be read aloud, call `read_aloud` when you next speak.)\n\n{}",
+        typed_for_call(text)
     )
 }
 
-/// The most of a message the model is handed to read aloud in one response:
-/// a call read 1,548 characters in one, word for word (2026-10-21).
+/// The most of a message said in one force message: the size of one reply
+/// a call already reads out in one go (1,548 characters, 2026-10-21). The
+/// provider documents no limit on `force_message` text; parts keep each
+/// one short enough to stop at once and to pick up again.
 const READ_PART_CHARS: usize = 1_500;
 
-/// A message being read aloud on the call ([`RealtimeCommand::Text`] per
-/// part, each sent once the part before it has been said): every word, in
-/// order, with no prompt between parts. The owner speaking stops it.
+/// The row the thread keeps for a reading: the message is already a row,
+/// and the call's speech for it is not kept.
+const READ_ALOUD_ROW: &str = "Read your message aloud.";
+
+/// How much of a part may still be waiting to play at the client when the
+/// next part is asked for: enough for it to be ready before the line goes
+/// quiet, never a backlog of audio made and paid for ahead of the owner.
+const READ_AHEAD: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The owner's message being read aloud on the call: each part said as it
+/// is, outside the model ([`RealtimeCommand::Say`]), the next one asked for
+/// only once the one before is all but heard. The owner speaking pauses it,
+/// and asking again picks up at the first part he did not hear.
 #[derive(Default)]
 struct ReadAloud {
-    parts: std::collections::VecDeque<String>,
-    total: usize,
+    /// What is being read, and its parts.
+    text: String,
+    parts: Vec<String>,
+    /// The first part not handed out yet.
+    next: usize,
+    /// The part being said, and whether its audio has all been made.
+    in_flight: Option<usize>,
+    made: bool,
     /// The words said before the reading began are still playing: the first
     /// part waits for them to end, so two responses never overlap.
     held: bool,
+    /// The owner spoke over it.
+    paused: bool,
+}
+
+/// What asking for a reading did.
+#[derive(Debug, PartialEq)]
+enum ReadStart {
+    /// From the top: how many parts.
+    Started(usize),
+    /// From part `.0` (1-based) of `.1`, the first the owner did not hear.
+    Resumed(usize, usize),
+    /// A reading is under way: nothing changes.
+    AlreadyReading,
 }
 
 impl ReadAloud {
-    /// Read `text` from its start; `held` while the reply that asked for it
-    /// still plays. Returns how many parts it takes.
-    fn start(&mut self, text: &str, held: bool) -> usize {
-        self.parts = read_parts(text, READ_PART_CHARS).into();
-        self.total = self.parts.len();
-        self.held = held;
-        self.total
+    /// Read `text`; `held` while the reply that asked for it still plays.
+    /// The same text, paused, goes on from where it stopped.
+    fn start(&mut self, text: &str, held: bool) -> ReadStart {
+        if self.active() {
+            return ReadStart::AlreadyReading;
+        }
+        if self.paused && self.text == text && self.next < self.parts.len() {
+            self.paused = false;
+            self.held = held;
+            return ReadStart::Resumed(self.next + 1, self.parts.len());
+        }
+        *self = ReadAloud { text: text.to_string(), parts: read_parts(text, READ_PART_CHARS), held, ..ReadAloud::default() };
+        ReadStart::Started(self.parts.len())
     }
 
-    /// What was playing has ended.
+    /// A part is out or still to go, and the owner has not stopped it.
+    fn active(&self) -> bool {
+        !self.paused && (self.in_flight.is_some() || self.next < self.parts.len())
+    }
+
+    /// A response's audio has all been made: the part being said, or the
+    /// words that held the reading back.
     fn played(&mut self) {
         self.held = false;
+        if self.in_flight.is_some() {
+            self.made = true;
+        }
     }
 
-    /// What the model is handed next, or None when every part is out (or
-    /// the first still waits).
-    fn next(&mut self) -> Option<String> {
-        if self.held {
+    /// The next part to say, given how much audio still waits to play at
+    /// the client (`queued`); None while the part before it is still being
+    /// made or has more than [`READ_AHEAD`] left to play, and once all are out.
+    fn next(&mut self, queued: std::time::Duration) -> Option<String> {
+        if self.paused || self.held {
             return None;
         }
-        let part = self.parts.pop_front()?;
-        let n = self.total - self.parts.len();
-        let after = if n < self.total {
-            "The next part follows on its own."
-        } else {
-            "This is the last part: when it is said, stop."
-        };
-        Some(format!(
-            "(Read this aloud now, exactly as written, word for word from its first word to its last: part {n} \
-             of {} of the owner's message. Add nothing before or after it, skip nothing, and do not comment, \
-             summarize or ask anything. {after})\n\n{part}",
-            self.total
-        ))
+        if self.in_flight.is_some() {
+            if !self.made || queued > READ_AHEAD {
+                return None;
+            }
+            self.in_flight = None;
+        }
+        let part = self.parts.get(self.next)?.clone();
+        self.in_flight = Some(self.next);
+        self.next += 1;
+        self.made = false;
+        Some(part)
     }
 
-    /// The owner spoke over it: the rest is not read.
+    /// How long until the part being said is near enough its end for the
+    /// next to be asked for; None when nothing waits on the line's pace.
+    fn due_in(&self, queued: std::time::Duration) -> Option<std::time::Duration> {
+        (self.in_flight.is_some() && self.made && !self.paused && queued > READ_AHEAD).then(|| queued - READ_AHEAD)
+    }
+
+    /// The owner spoke over it: the part he was hearing is the one asking
+    /// again picks up at.
+    fn pause(&mut self) {
+        if let Some(part) = self.in_flight.take() {
+            self.next = part;
+        }
+        if !self.parts.is_empty() {
+            self.paused = true;
+        }
+    }
+
+    /// Over: nothing more is read, and asking again starts from the top.
     fn stop(&mut self) {
-        self.parts.clear();
-    }
-
-    fn reading(&self) -> bool {
-        !self.parts.is_empty()
+        *self = ReadAloud::default();
     }
 }
 
@@ -1606,7 +1670,7 @@ fn read_parts(text: &str, cap: usize) -> Vec<String> {
             .map(|at| at + 2)
             .filter(|at| *at > window.len() / 2)
             .or(sentence)
-            .or_else(|| window.rfind(char::is_whitespace).map(|at| at + 1))
+            .or_else(|| window.char_indices().rev().find(|(_, c)| c.is_whitespace()).map(|(at, c)| at + c.len_utf8()))
             .filter(|at| *at > 0)
             .unwrap_or(window_end);
         parts.push(rest[..split].to_string());
@@ -2134,10 +2198,16 @@ const CALL_MESSAGE_CHARS: usize = 1_500;
 /// was all he wrote (2026-10-21). Above it the call is told how long it is;
 /// `read_aloud` reads every word either way.
 const CALL_TYPED_CHARS: usize = 30_000;
-/// The newest text files shared in the chat a call carries, and the most of
-/// one it holds: a longer file is named, never inlined.
+/// How recent the owner's newest typed message must be for a call to start
+/// holding it whole: one typed earlier is older history, capped like the
+/// rest (`read_aloud` still reads it whole).
+const CALL_TYPED_RECENT_SECS: i64 = 30 * 60;
+/// The newest text files shared in the chat a call carries, the most of one
+/// it holds, and the largest it reads at all: a bigger file is named, never
+/// read in.
 const CALL_FILES: usize = 2;
 const CALL_FILE_CHARS: usize = 10_000;
+const CALL_FILE_READ_BYTES: u64 = 64 * 1024;
 
 /// The chat so far, injected into the voice session's instructions so the
 /// agent picks the conversation up mid-thread: its recent messages and the
@@ -2149,7 +2219,7 @@ fn chat_history_context(state: &AppState, chat_id: &str) -> String {
         return String::new();
     };
     let uploads = config::data_dir().map(|d| d.join("files").join("uploads")).unwrap_or_default();
-    call_history(&messages, &uploads)
+    call_history(&messages, &uploads, chrono::Utc::now().timestamp())
 }
 
 /// The message rows a call's history is made of: what the owner and the
@@ -2162,10 +2232,11 @@ fn said_rows(messages: &[db::models::ChatMessage]) -> Vec<&db::models::ChatMessa
         .collect()
 }
 
-/// Whether `m` is a message the owner typed or pasted, not one he spoke on a
-/// call.
+/// Whether `m` is a message the owner himself typed or pasted: it carries
+/// the owner's mark ([`crate::codes::owner_wrote`]). What he said on a call,
+/// a coworker's message and a parent's hand-off never do.
 fn typed_by_owner(m: &db::models::ChatMessage) -> bool {
-    m.role == "user" && !m.metadata.as_deref().is_some_and(|md| md.contains("\"voice\":true"))
+    m.role == "user" && crate::codes::owner_wrote(m.metadata.as_deref())
 }
 
 /// The owner's newest typed message in `messages`, in his own words: each
@@ -2193,10 +2264,14 @@ fn typed_for_call(text: &str) -> String {
     )
 }
 
-/// [`chat_history_context`] from the chat's rows and the upload store.
-fn call_history(messages: &[db::models::ChatMessage], uploads: &std::path::Path) -> String {
+/// [`chat_history_context`] from the chat's rows and the upload store, at
+/// `now` (unix seconds).
+fn call_history(messages: &[db::models::ChatMessage], uploads: &std::path::Path, now: i64) -> String {
     let said = said_rows(messages);
-    let newest_typed = said.iter().rposition(|m| typed_by_owner(m));
+    let newest_typed = said
+        .iter()
+        .rposition(|m| typed_by_owner(m))
+        .filter(|&i| now - said[i].created_at <= CALL_TYPED_RECENT_SECS);
     let mut tail = Vec::new();
     let mut used = 0;
     for (i, m) in said.iter().enumerate().rev() {
@@ -2258,17 +2333,17 @@ fn shared_files<'a>(messages: impl DoubleEndedIterator<Item = &'a str>, uploads:
             // holds no document (2026-10-21, the owner: "if I upload a
             // 500-page document, that certainly does not go to the voice model").
             let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { continue };
-            let body = if size as usize <= CALL_FILE_CHARS * 4 { std::fs::read_to_string(path).ok() } else { None };
-            match body.filter(|b| b.chars().count() <= CALL_FILE_CHARS) {
-                Some(body) => files.push((name, body)),
-                None => files.push((
-                    name,
-                    format!(
-                        "(A {} document, too long to hold on a call. The `nebo` tool reads it when the owner asks about it.)",
-                        crate::attachments::size_label(size)
-                    ),
-                )),
-            }
+            let size_label = crate::attachments::size_label(size);
+            let body = if size > CALL_FILE_READ_BYTES {
+                format!("(A {size_label} document, too long to hold on a call. The `nebo` tool reads it when the owner asks about it.)")
+            } else {
+                match std::fs::read(path).map(String::from_utf8) {
+                    Ok(Ok(text)) => text.chars().take(CALL_FILE_CHARS).collect(),
+                    Ok(Err(_)) => format!("(A {size_label} file that is not plain text. The `nebo` tool can open it.)"),
+                    Err(_) => continue,
+                }
+            };
+            files.push((name, body));
         }
     }
     files
@@ -2703,10 +2778,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              given a notice that another employee is waiting on them elsewhere, say it once in \
              one short sentence and nothing more: it is answered on its card, never by you. \
              When the user asks you to read their message to them (\"read it to me\", \"read the \
-             whole thing\"), call `read_aloud` and read every part it hands you exactly as written, \
-             word for word, start to finish: never summarize it, skip any of it, comment on it, \
-             argue about it or ask whether they want a summary. Summarize only when they ask for \
-             a summary.",
+             whole thing\", \"keep going\"), call `read_aloud`: it reads every word of it out as \
+             written, start to finish, and you say nothing while it plays. Never summarize it, skip \
+             any of it, comment on it, argue about it or ask whether they want a summary instead. \
+             Summarize only when they ask for a summary.",
         );
     }
     // The owner's call from the phone app: the same rule a typed turn there
@@ -3291,6 +3366,8 @@ async fn handle_conversation_session(
     // reply audio is playing now.
     let mut reading = ReadAloud::default();
     let mut playing = false;
+    // The provider refused words said as they are: no reading this call.
+    let mut say_refused = false;
     // The model is saying another conversation's notice: heard, never sent
     // to the client as transcript text (live 2026-10-02: Bookkeeper's ask,
     // spoken on Flip-Flap's call, showed in Flip-Flap's chat).
@@ -3309,6 +3386,9 @@ async fn handle_conversation_session(
     let mut client_heard = tokio::time::Instant::now();
 
     loop {
+        // When the part being read will be near enough its end to ask for
+        // the next, while that is still ahead.
+        let read_due = reading.due_in(line.queued_audio());
         tokio::select! {
             // Events from the realtime engine -> client (+ tool dispatch)
             event = rt_rx.recv() => {
@@ -3324,7 +3404,7 @@ async fn handle_conversation_session(
                         // sent goes, as the client drops what it holds, and
                         // a reading stops where it is.
                         line.cut();
-                        reading.stop();
+                        reading.pause();
                         unseen_speech = false;
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
@@ -3380,6 +3460,28 @@ async fn handle_conversation_session(
                     // The line could not come back while running work holds
                     // the balance: the same words as a refused connect.
                     ConversationEvent::BalanceReserved => Some(connect_failure_words(&voice::VoiceError::BalanceReserved)),
+                    // Words said as they are were refused: a reading under
+                    // way stops, and the call says plainly that it cannot.
+                    ConversationEvent::SayRefused => {
+                        say_refused = true;
+                        if reading.active() {
+                            reading.stop();
+                            if rt_tx
+                                .send(RealtimeCommand::Text {
+                                    text: "(Reading the message out word for word is not available on this call. \
+                                           Tell the owner so in one short sentence.)"
+                                        .to_string(),
+                                    respond: true,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            responding = true;
+                        }
+                        None
+                    }
                     ConversationEvent::AudioChunk(data) => {
                         if !line.audio(data) {
                             break;
@@ -3465,13 +3567,35 @@ async fn handle_conversation_session(
                                 .as_deref()
                                 .and_then(|c| state.store.get_chat_messages(c).ok())
                                 .and_then(|m| newest_typed(&m));
-                            // The parts are the answer: they go once the
-                            // output is in, so the call is not asked to speak.
+                            // The parts are said as they are, outside the
+                            // model: its output asks for no words of its own.
                             let (content, speak) = match typed {
+                                _ if say_refused => (
+                                    "Reading it out word for word is not available on this call. Say so in one short sentence.".to_string(),
+                                    true,
+                                ),
                                 Some(text) => {
-                                    let parts = reading.start(&text, playing);
-                                    info!(session_key = %ctx.session_key, chars = text.chars().count(), parts, "voice read aloud");
-                                    (format!("Reading it aloud now in {parts} part(s), each handed to you in turn."), false)
+                                    let started = reading.start(&text, playing);
+                                    info!(session_key = %ctx.session_key, chars = text.chars().count(), ?started, "voice read aloud");
+                                    // What the call says from here is the
+                                    // owner's own message: the thread keeps
+                                    // one short line for it, never the text again.
+                                    if !matches!(started, ReadStart::AlreadyReading) {
+                                        let mut rows = ledger.relayed();
+                                        if matches!(started, ReadStart::Started(_)) {
+                                            rows.push(Row::Assistant(READ_ALOUD_ROW.to_string(), chrono::Utc::now().timestamp()));
+                                        }
+                                        sink.write(&state, &line, rows);
+                                        if !line.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())) {
+                                            break;
+                                        }
+                                    }
+                                    let said = match started {
+                                        ReadStart::Started(parts) => format!("Reading it aloud now, word for word, in {parts} part(s). Say nothing while it plays."),
+                                        ReadStart::Resumed(part, parts) => format!("Going on from part {part} of {parts}. Say nothing while it plays."),
+                                        ReadStart::AlreadyReading => "It is being read aloud right now. Say nothing.".to_string(),
+                                    };
+                                    (said, false)
                                 }
                                 None => ("There is no typed message in this conversation to read.".to_string(), true),
                             };
@@ -3639,11 +3763,17 @@ async fn handle_conversation_session(
             _ = tokio::time::sleep_until(quiet_since + NARRATE_EVERY),
                 if step.is_some() && narrating.is_none() && quiet_since.elapsed() < NARRATE_EVERY => {}
 
+            // The part being read is near enough its end at the client for
+            // the next to be asked for.
+            _ = tokio::time::sleep(read_due.unwrap_or_default()), if read_due.is_some() => {}
+
             // A turn ran in this conversation outside the call, or the call's
             // own hand-off started a step.
             Some(news) = heard_rx.recv() => {
                 if let CallNews::Typed(text) = news {
-                    // Held now, said never: the model has it for what comes next.
+                    // A new message ends any reading. It is held now, said
+                    // never: the model has it for what comes next.
+                    reading.stop();
                     if rt_tx.send(RealtimeCommand::Text { text: typed_on_call_line(&text), respond: false }).await.is_err() {
                         break;
                     }
@@ -3682,7 +3812,7 @@ async fn handle_conversation_session(
                         ClientFrame::Interrupt { played_ms } => {
                             info!(?played_ms, "conversation interrupt received");
                             line.cut();
-                            reading.stop();
+                            reading.pause();
                             if rt_tx.send(RealtimeCommand::Interrupt { played_ms }).await.is_err() {
                                 break;
                             }
@@ -3746,17 +3876,17 @@ async fn handle_conversation_session(
             quiet_since = tokio::time::Instant::now();
         }
 
-        // The next part of a reading goes once the part before it is said:
-        // the owner is not speaking and nothing else is owed or playing.
-        // News waits for the reading to end.
-        if reading.reading()
+        // The next part of a reading is said once the part before it is all
+        // but heard: the owner is not speaking and nothing else is owed or
+        // playing. News waits for the reading to end.
+        if reading.active()
             && !responding
             && pending_tools == 0
             && held_runs.is_empty()
             && !ledger.open
-            && let Some(part) = reading.next()
+            && let Some(part) = reading.next(line.queued_audio())
         {
-            if rt_tx.send(RealtimeCommand::Text { text: part, respond: true }).await.is_err() {
+            if rt_tx.send(RealtimeCommand::Say(part)).await.is_err() {
                 break;
             }
             responding = true;
@@ -3766,7 +3896,7 @@ async fn handle_conversation_session(
         // the owner is not speaking, no reply is owed or playing, and no
         // tool is out. The thread already has it as a row; the model's
         // retelling writes none.
-        if !to_say.is_empty() && !responding && pending_tools == 0 && held_runs.is_empty() && !ledger.open {
+        if !to_say.is_empty() && !responding && !reading.active() && pending_tools == 0 && held_runs.is_empty() && !ledger.open {
             // An ask answered or dropped while it waited here is not said.
             let waiting: std::collections::HashSet<String> =
                 super::asks::waiting(&state, None).await.into_iter().map(|w| w.card.id).collect();
@@ -3880,6 +4010,31 @@ struct ClientLine {
     tx: Option<mpsc::UnboundedSender<Outbound>>,
     task: tokio::task::JoinHandle<()>,
     bytes_per_ms: usize,
+    queued: std::sync::Arc<QueuedAudio>,
+}
+
+/// The reply audio a [`ClientLine`] holds that the client has not played
+/// yet: what waits in its queue, and when what it sent finishes playing.
+struct QueuedAudio {
+    waiting: std::sync::Mutex<(std::time::Duration, tokio::time::Instant)>,
+}
+
+impl QueuedAudio {
+    fn new() -> Self {
+        QueuedAudio { waiting: std::sync::Mutex::new((std::time::Duration::ZERO, tokio::time::Instant::now())) }
+    }
+
+    fn update(&self, f: impl FnOnce(&mut std::time::Duration, &mut tokio::time::Instant)) {
+        let mut w = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        let (queued, played_to) = &mut *w;
+        f(queued, played_to);
+    }
+
+    /// How long the audio not yet played at the client runs.
+    fn left(&self) -> std::time::Duration {
+        let (queued, played_to) = *self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        queued + played_to.saturating_duration_since(tokio::time::Instant::now())
+    }
 }
 
 impl ClientLine {
@@ -3888,10 +4043,12 @@ impl ClientLine {
         S: futures::Sink<Message> + Unpin + Send + 'static,
     {
         let (tx, rx) = mpsc::unbounded_channel();
+        let queued = std::sync::Arc::new(QueuedAudio::new());
         ClientLine {
             tx: Some(tx),
-            task: tokio::spawn(write_client_line(sink, rx)),
+            task: tokio::spawn(write_client_line(sink, rx, queued.clone())),
             bytes_per_ms: format.bytes_per_ms(),
+            queued,
         }
     }
 
@@ -3903,7 +4060,14 @@ impl ClientLine {
     /// Queue reply audio, paced. False once the line is gone.
     fn audio(&self, pcm: axum::body::Bytes) -> bool {
         let plays = std::time::Duration::from_micros((pcm.len() * 1000 / self.bytes_per_ms) as u64);
+        self.queued.update(|queued, _| *queued += plays);
         self.queue(Outbound::Audio(Message::Binary(pcm), plays))
+    }
+
+    /// How long the reply audio the client has not played yet runs: what
+    /// still waits here and what is on its way.
+    fn queued_audio(&self) -> std::time::Duration {
+        self.queued.left()
     }
 
     /// The reply was cut (the owner talked over it): what of its audio has
@@ -3932,7 +4096,7 @@ impl Drop for ClientLine {
 
 /// The sending side of a [`ClientLine`]. A cut reaches the audio queued
 /// before it, never audio queued after.
-async fn write_client_line<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<Outbound>)
+async fn write_client_line<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<Outbound>, queued: std::sync::Arc<QueuedAudio>)
 where
     S: futures::Sink<Message> + Unpin + Send,
 {
@@ -3943,9 +4107,24 @@ where
     // When the audio sent so far finishes playing at the client.
     let mut played_to = Instant::now();
     let mut open = true;
+    // Audio dropped unsent, and the client's playback cut short with it.
+    let drop_audio = |queue: &mut std::collections::VecDeque<Outbound>| {
+        let mut dropped = std::time::Duration::ZERO;
+        queue.retain(|o| match o {
+            Outbound::Audio(_, plays) => {
+                dropped += *plays;
+                false
+            }
+            _ => true,
+        });
+        queued.update(|q, to| {
+            *q = q.saturating_sub(dropped);
+            *to = Instant::now();
+        });
+    };
     let take = |queue: &mut std::collections::VecDeque<Outbound>, played_to: &mut Instant, out: Outbound| match out {
         Outbound::Cut => {
-            queue.retain(|o| !matches!(o, Outbound::Audio(..)));
+            drop_audio(queue);
             *played_to = Instant::now();
         }
         out => queue.push_back(out),
@@ -3956,7 +4135,7 @@ where
         }
         if !open {
             // The call is over: nobody is listening to the rest of a reply.
-            queue.retain(|o| !matches!(o, Outbound::Audio(..)));
+            drop_audio(&mut queue);
         }
         let due = match queue.front() {
             None if open => {
@@ -3985,6 +4164,10 @@ where
         let frame = match queue.pop_front() {
             Some(Outbound::Audio(frame, plays)) => {
                 played_to = played_to.max(Instant::now()) + plays;
+                queued.update(|q, to| {
+                    *q = q.saturating_sub(plays);
+                    *to = played_to;
+                });
                 frame
             }
             Some(Outbound::Frame(frame)) => frame,
@@ -4149,6 +4332,9 @@ mod voice_prompt_tests {
 
     use super::*;
 
+    const NOW: i64 = 1_800_000_000;
+    const OWNER: Option<&str> = Some(r#"{"owner":true}"#);
+
     fn row(role: &str, content: &str, metadata: Option<&str>) -> db::models::ChatMessage {
         db::models::ChatMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -4156,7 +4342,7 @@ mod voice_prompt_tests {
             role: role.into(),
             content: content.into(),
             metadata: metadata.map(str::to_string),
-            created_at: 0,
+            created_at: NOW - 60,
             day_marker: None,
             tool_calls: None,
             tool_results: None,
@@ -4188,16 +4374,36 @@ mod voice_prompt_tests {
         assert!(post.chars().count() >= 5_400);
         let older = "o".repeat(4_000);
         let rows = [
-            row("user", &older, Some(r#"{"owner":true}"#)),
-            row("user", &post, Some(r#"{"owner":true}"#)),
+            row("user", &older, OWNER),
+            row("user", &post, OWNER),
             row("user", "Read it to me.", Some(r#"{"voice":true}"#)),
             row("assistant", "Here it is.", Some(r#"{"voice":true}"#)),
         ];
-        let history = call_history(&rows, std::path::Path::new("/nonexistent"));
+        let history = call_history(&rows, std::path::Path::new("/nonexistent"), NOW);
         assert!(history.contains(&format!("User (typed): {post}")), "the post was cut: {history}");
-        assert!(history.contains("that you don't need the most intelligent model"));
         assert!(!history.contains(&older), "an older message was not capped");
         assert!(history.contains(&format!("User: {}", "o".repeat(CALL_MESSAGE_CHARS))));
+    }
+
+    /// Only a recent message the owner himself typed is held whole: one
+    /// from an hour ago, a coworker's message and a parent's hand-off keep
+    /// the cap older history has.
+    #[test]
+    fn only_the_owners_recent_typed_message_is_held_whole() {
+        let post = pasted_post(5_500);
+        let capped = format!("{}", post.chars().take(CALL_MESSAGE_CHARS).collect::<String>());
+        let mut old = row("user", &post, OWNER);
+        old.created_at = NOW - 3_600;
+        for (rows, why) in [
+            (vec![old], "an hour-old message"),
+            (vec![row("user", &post, Some(r#"{"coworker":"Pam","from":"coworker"}"#))], "a coworker's message"),
+            (vec![row("user", &post, Some(r#"{"arrivedMidTurn":true,"from":"parent"}"#))], "a parent's hand-off"),
+            (vec![row("user", &post, None)], "an unmarked row"),
+        ] {
+            let history = call_history(&rows, std::path::Path::new("/nonexistent"), NOW);
+            assert!(!history.contains("(typed)") && history.contains(&format!("User: {capped}\n")), "{why} was held whole: {history}");
+            assert_eq!(newest_typed(&rows).is_some(), why == "an hour-old message", "{why}");
+        }
     }
 
     /// The call is never left holding a message that stops mid-sentence: the
@@ -4207,8 +4413,8 @@ mod voice_prompt_tests {
     #[test]
     fn the_call_never_holds_the_post_cut_mid_sentence() {
         let post = pasted_post(5_500);
-        let rows = [row("user", &post, None), row("user", "There you go.", Some(r#"{"voice":true}"#))];
-        let history = call_history(&rows, std::path::Path::new("/nonexistent"));
+        let rows = [row("user", &post, OWNER), row("user", "There you go.", Some(r#"{"voice":true}"#))];
+        let history = call_history(&rows, std::path::Path::new("/nonexistent"), NOW);
         let line = history.lines().find(|l| l.contains("Thanks for taking a look!"));
         assert!(line.is_some_and(|l| l.trim_end().ends_with("Thanks for taking a look!")), "the post's own end is not in the call: {history}");
         assert!(!history.contains("One of those principles is\n"));
@@ -4229,87 +4435,167 @@ mod voice_prompt_tests {
 
     /// An image, an audio transcript and a large document in a message
     /// reach the call as a name and a size, never their contents or paths:
-    /// a 500-page upload is named, not read in.
+    /// a 500-page upload is named, not read in. A brief a little over the
+    /// limit still gives its first 10,000 characters, and a file that is
+    /// not text is called that.
     #[test]
     fn files_reach_the_call_as_a_short_reference() {
         let dir = tempfile::tempdir().unwrap();
         let uploads = dir.path().join("uploads");
         std::fs::create_dir_all(&uploads).unwrap();
-        let book = uploads.join("manual.txt");
-        std::fs::write(&book, "Page of the manual. ".repeat(60_000)).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let p = uploads.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        let book = file("manual.txt", "Page of the manual. ".repeat(60_000).as_bytes());
+        let attached = |name: &str, size: u64, p: &std::path::Path| {
+            crate::attachments::note(crate::attachments::Kind::File, name, size, &format!("saved at {}. Its contents are not included above", p.display()))
+        };
         let typed = format!(
             "what do you think?{}{}{}",
             crate::attachments::note(crate::attachments::Kind::File, "photo.jpg", 1_300_000, "an image, shown above — saved at /u/photo.jpg"),
             crate::attachments::transcript("memo.m4a", 30_000, "the whole secret memo"),
-            crate::attachments::note(
-                crate::attachments::Kind::File,
-                "manual.txt",
-                1_200_000,
-                &format!("saved at {}. Its contents are not included above", book.display())
-            ),
+            attached("manual.txt", 1_200_000, &book),
         );
-        let history = call_history(&[row("user", &typed, None)], &uploads);
+        let history = call_history(&[row("user", &typed, OWNER)], &uploads, NOW);
         assert!(history.contains("User (typed): what do you think?\n[Attached: photo.jpg (1.2 MB)]\n[Audio: memo.m4a (29 KB)]\n[Attached: manual.txt (1.1 MB)]"), "{history}");
         assert!(!history.contains("/u/photo.jpg") && !history.contains("secret memo"), "{history}");
         assert!(!history.contains("Page of the manual"), "the document was inlined");
         assert!(history.contains("--- manual.txt ---\n(A 1.1 MB document, too long to hold on a call."), "{history}");
+
+        let brief = file("brief.md", "Ask me this. ".repeat(1_000).as_bytes());
+        let binary = file("export.txt", &[0xff, 0xfe, 0x00, 0x41, 0xc3]);
+        let rows = [row("user", &attached("brief.md", 13_000, &brief), OWNER), row("user", &attached("export.txt", 5, &binary), OWNER)];
+        let files = shared_files(rows.iter().map(|m| m.content.as_str()), &uploads);
+        assert_eq!(files[0], ("export.txt".to_string(), "(A 0 KB file that is not plain text. The `nebo` tool can open it.)".to_string()));
+        assert_eq!(files[1].1, "Ask me this. ".repeat(1_000).chars().take(CALL_FILE_CHARS).collect::<String>());
     }
 
-    /// What the owner types while on the call reaches it whole, held for
-    /// what comes next; a call on another conversation hears nothing.
+    /// What the owner types while on the call reaches it whole, a file in it
+    /// as its name only, marked as answered in writing; a call on another
+    /// conversation hears nothing.
     #[tokio::test]
     async fn a_message_typed_during_the_call_reaches_it_whole() {
         let calls: LiveCalls = Default::default();
         let (tx, mut rx) = mpsc::channel(4);
         let _on = OnCall::join(&calls, "agent:a:thread:c", tx);
         let post = pasted_post(5_500);
+        let with_file = format!(
+            "{post}{}",
+            crate::attachments::transcript("memo.m4a", 30_000, "every private word of the memo")
+        );
         typed_on_call(&calls, "agent:a:thread:other", "not this one");
-        typed_on_call(&calls, "agent:a:thread:c", &post);
+        typed_on_call(&calls, "agent:a:thread:c", &with_file);
         let Some(CallNews::Typed(heard)) = rx.recv().await else { panic!("the call heard nothing") };
-        assert_eq!(heard, post);
+        assert_eq!(heard, format!("{post}\n[Audio: memo.m4a (29 KB)]"));
         let line = typed_on_call_line(&heard);
-        assert!(line.ends_with(&post), "the call was handed a cut message");
+        assert!(line.starts_with("(Already answered in writing"), "{line}");
+        assert!(line.contains("Never answer it yourself, now or later"));
+        assert!(line.ends_with(&heard), "the call was handed a cut message");
+        assert!(!line.contains("private word"));
         assert!(rx.try_recv().is_err());
     }
 
-    /// "Read it to me, the whole way": a long message is handed to the
-    /// model part after part, in order, each to be said word for word, with
-    /// nothing dropped and no prompt between parts; the first waits for what
-    /// is playing, and the owner speaking stops the rest.
+    const SECOND: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// Says every part of `reading` as a call would: each part's audio made,
+    /// then played down to `READ_AHEAD`, before the next is asked for.
+    fn read_out(reading: &mut ReadAloud) -> Vec<String> {
+        let mut said = Vec::new();
+        while let Some(part) = reading.next(std::time::Duration::ZERO) {
+            said.push(part);
+            reading.played();
+        }
+        said
+    }
+
+    /// "Read it to me, the whole way": a long message is said as it is,
+    /// part after part, in order, with nothing dropped and no prompt between
+    /// parts; the first waits for what is playing.
     #[test]
     fn a_long_message_is_read_aloud_whole_in_order() {
         let text = format!("{}\n\n{}Ünïcödé — the end.", pasted_post(5_500), "Never cut. ".repeat(4_000));
         let mut reading = ReadAloud::default();
-        let parts = reading.start(&text, true);
+        let ReadStart::Started(parts) = reading.start(&text, true) else { panic!() };
         assert!(parts > 20, "{parts} parts");
-        assert_eq!(reading.next(), None, "the first part talked over what was playing");
+        assert_eq!(reading.next(std::time::Duration::ZERO), None, "the first part talked over what was playing");
         reading.played();
-        let mut said = String::new();
-        let mut handed = 0;
-        while let Some(line) = reading.next() {
-            handed += 1;
-            assert!(line.starts_with("(Read this aloud now, exactly as written, word for word"), "{line}");
-            assert!(line.contains(&format!("part {handed} of {parts}")));
-            assert!(!line.to_lowercase().contains("would you like"), "the reading asks the owner: {line}");
-            let (_, part) = line.split_once(")\n\n").unwrap();
-            assert!(part.chars().count() <= READ_PART_CHARS);
-            said.push_str(part);
-        }
-        assert_eq!(handed, parts);
-        assert_eq!(said, text, "the parts read are not the message");
-
-        reading.start(&text, false);
-        assert!(reading.next().is_some());
-        reading.stop();
-        assert!(!reading.reading() && reading.next().is_none(), "a barge-in did not stop the reading");
+        let said = read_out(&mut reading);
+        assert_eq!(said.len(), parts);
+        assert!(said.iter().all(|p| p.chars().count() <= READ_PART_CHARS));
+        assert_eq!(said.concat(), text, "the parts said are not the message");
+        assert!(!reading.active(), "a finished reading still runs");
     }
 
-    /// Parts end where a sentence or a word does, and a text with no place
-    /// to break is still read whole.
+    /// The next part is not asked for while the part before it is still
+    /// being made, or has more than a second left to play at the client:
+    /// nothing is made and paid for far ahead of what the owner hears.
+    #[test]
+    fn the_next_part_waits_for_the_one_before_to_be_all_but_heard() {
+        let mut reading = ReadAloud::default();
+        reading.start(&"Word by word. ".repeat(500), false);
+        let first = reading.next(std::time::Duration::ZERO).unwrap();
+        assert_eq!(reading.next(std::time::Duration::ZERO), None, "asked for part 2 while part 1 was being made");
+        reading.played();
+        let queued = std::time::Duration::from_secs(40);
+        assert_eq!(reading.next(queued), None, "asked for part 2 with 40 s of part 1 still to play");
+        assert_eq!(reading.next(SECOND + std::time::Duration::from_millis(1)), None);
+        assert_eq!(reading.due_in(queued), Some(queued - READ_AHEAD));
+        let second = reading.next(SECOND).expect("part 2 was never asked for");
+        assert!(text_follows(&first, &second));
+    }
+
+    fn text_follows(a: &str, b: &str) -> bool {
+        "Word by word. ".repeat(500).starts_with(&format!("{a}{b}"))
+    }
+
+    /// Asking again while it reads changes nothing; the owner speaking
+    /// pauses it, and asking again goes on from the part he did not hear
+    /// all of, never from the top. A new typed message stops it.
+    #[test]
+    fn a_reading_is_never_restarted_and_goes_on_where_it_stopped() {
+        let text = "Every word counts here. ".repeat(400);
+        let mut reading = ReadAloud::default();
+        let ReadStart::Started(parts) = reading.start(&text, false) else { panic!() };
+        let first = reading.next(std::time::Duration::ZERO).unwrap();
+        reading.played();
+        let second = reading.next(std::time::Duration::ZERO).unwrap();
+        assert_eq!(reading.start(&text, false), ReadStart::AlreadyReading);
+        assert_eq!(reading.next(std::time::Duration::ZERO), None, "asking again restarted the reading");
+
+        // He talks over part 2: part 2 is what "keep going" says next.
+        reading.pause();
+        assert!(!reading.active());
+        assert_eq!(reading.next(std::time::Duration::ZERO), None, "a paused reading went on by itself");
+        assert_eq!(reading.start(&text, false), ReadStart::Resumed(2, parts));
+        let mut said = vec![first, reading.next(std::time::Duration::ZERO).unwrap()];
+        assert_eq!(said[1], second, "it did not go on from the part he missed");
+        reading.played();
+        said.extend(read_out(&mut reading));
+        assert_eq!(said.concat(), text);
+
+        reading.start(&text, false);
+        reading.next(std::time::Duration::ZERO);
+        reading.stop();
+        assert!(!reading.active());
+        assert!(matches!(reading.start(&text, false), ReadStart::Started(_)), "a stopped reading resumed");
+    }
+
+    /// Parts end where a sentence or a word does — any space, a no-break or
+    /// an ideographic one too — and a text with no place to break is still
+    /// read whole.
     #[test]
     fn read_parts_break_at_sentences_and_drop_nothing() {
         let text = "One two three. Four five six. Seven.";
         assert_eq!(read_parts(text, 20), ["One two three. ", "Four five six. ", "Seven."]);
+        for space in ['\u{00A0}', '\u{3000}'] {
+            let words = format!("word{space}").repeat(1_000);
+            let parts = read_parts(&words, 1_500);
+            assert_eq!(parts.concat(), words);
+            assert!(parts[0].ends_with(space), "{:?}", &parts[0][parts[0].len() - 8..]);
+            assert!(parts.iter().all(|p| p.chars().count() <= 1_500));
+        }
         let solid = "é".repeat(3_100);
         let parts = read_parts(&solid, 1_500);
         assert_eq!(parts.concat(), solid);
@@ -5582,5 +5868,26 @@ mod client_line_tests {
         assert!(before + after < 10, "the rest of the reply is dropped: {} chunks", before + after);
         let tail = tokio::time::timeout(Duration::from_millis(600), ws.next()).await;
         assert!(tail.is_err(), "nothing of the cut reply follows: {tail:?}");
+    }
+
+    /// The line says how much reply audio the client has still to play:
+    /// all of a burst at first, less as it plays out, and none once cut.
+    /// A reading asks for its next part from this.
+    #[tokio::test]
+    async fn the_line_says_how_much_audio_is_still_to_play() {
+        let (sink, _client) = futures::channel::mpsc::unbounded::<Message>();
+        let line = ClientLine::open(sink, voice::realtime::AudioFormat::Pcm24k);
+        assert_eq!(line.queued_audio(), Duration::ZERO);
+        for n in 0..50 {
+            assert!(line.audio(chunk(n)));
+        }
+        let full = line.queued_audio();
+        assert!(full > Duration::from_millis(4_800) && full <= Duration::from_secs(5), "{full:?}");
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        let later = line.queued_audio();
+        assert!(later < full - Duration::from_millis(700) && later > Duration::from_secs(3), "{later:?}");
+        line.cut();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(line.queued_audio() < Duration::from_millis(50), "a cut left {:?}", line.queued_audio());
     }
 }

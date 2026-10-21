@@ -49,6 +49,10 @@ pub enum ConversationEvent {
     /// The upstream conversation id (xAI resumption) — reconnect with it to
     /// resume history within its 30-minute expiry window.
     ConversationId(String),
+    /// The provider refused words to be said as they are
+    /// ([`crate::realtime::RealtimeCommand::Say`]): none are said this call.
+    /// Told once, at the refusal; the call itself carries on.
+    SayRefused,
     /// The call ended on a failure. The text is what the client shows, as
     /// is: a plain sentence such as [`CALL_ENDED`], never error detail.
     Error(String),
