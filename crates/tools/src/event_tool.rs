@@ -584,9 +584,6 @@ mod tests {
         ] {
             assert_eq!(at(key, door), "", "{what}");
         }
-        // A conversation that was deleted is no place to answer.
-        store.delete_chat("X").unwrap();
-        assert_eq!(at(thread, Door::Chat), "", "a deleted conversation");
     }
 
     #[test]

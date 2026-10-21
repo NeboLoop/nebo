@@ -291,16 +291,13 @@ pub mod link {
     }
 
     /// The conversation a session is holding now (the session key is its
-    /// name), or "" when there is no such session or the owner deleted that
-    /// conversation: a session always names a chat id
-    /// (`resolve_session_chat_id`), even once its chat is gone.
+    /// name), or "" when there is no such session.
     pub fn conversation(store: &db::Store, session_key: &str) -> String {
         store
             .get_session_by_name(session_key)
             .ok()
             .flatten()
             .map(|s| store.resolve_session_chat_id(&s.id))
-            .filter(|chat_id| matches!(store.get_chat(chat_id), Ok(Some(_))))
             .unwrap_or_default()
     }
 
@@ -393,13 +390,8 @@ pub mod link {
             let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
             assert_eq!(session_chat(&store, "emp", "agent:emp:web"), "/emp", "no session: the employee");
             let s = store.create_session("s1", Some("agent:emp:web"), Some("agent"), Some("emp"), None).unwrap();
-            let chat_id = store.resolve_session_chat_id(&s.id);
-            assert_eq!(session_chat(&store, "emp", "agent:emp:web"), "/emp", "no conversation yet: the employee");
-            store.create_chat_for_session(&chat_id, "agent:emp:web", "t", None).unwrap();
-            let expected = format!("/emp/threads/{}", urlencoding::encode(&chat_id));
+            let expected = format!("/emp/threads/{}", urlencoding::encode(&store.resolve_session_chat_id(&s.id)));
             assert_eq!(session_chat(&store, "emp", "agent:emp:web"), expected);
-            store.delete_chat(&chat_id).unwrap();
-            assert_eq!(session_chat(&store, "emp", "agent:emp:web"), "/emp", "a deleted conversation: the employee, never a dead link");
         }
     }
 }

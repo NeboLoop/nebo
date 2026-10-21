@@ -5369,8 +5369,9 @@ async fn a_timer_asked_for_in_a_conversation_answers_in_it() {
 }
 
 /// A timer that comes due while its conversation is busy joins the turn
-/// running there, which answers it; the Inbox still points the owner at
-/// that answer, by the same rule as a timer that ran a turn of its own.
+/// running there, which answers it. The fire ends as soon as its request is
+/// in; the Inbox still points the owner at that answer once it lands, by the
+/// same rule as a timer that ran a turn of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_timer_due_while_its_conversation_is_busy_is_answered_by_the_running_turn() {
     let nebo = session().await;
@@ -5397,24 +5398,122 @@ async fn a_timer_due_while_its_conversation_is_busy_is_answered_by_the_running_t
 
     rig.owner_writes(KEY, "assistant", None, "OWNER-143 long job please").await;
     rig.until(20, "the long turn is running", || rig.busy(KEY)).await;
-    let state = nebo.state.clone();
-    let fired = tokio::spawn(async move { crate::scheduler::execute_job(&state, &job, true).await });
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    rig.company.open("g143");
-    let (ok, _, err) = tokio::time::timeout(std::time::Duration::from_secs(60), fired).await.expect("the fire ends").unwrap();
+    // The fire ends once its request is in the running turn: it never waits
+    // on that turn, so no restart can find it still going.
+    let (ok, _, err) = tokio::time::timeout(std::time::Duration::from_secs(20), crate::scheduler::execute_job(&nebo.state, &job, true))
+        .await
+        .expect("the fire ends while the turn it joined is still held");
     assert!(ok, "{err:?}");
+    assert!(rig.busy(KEY), "the owner's turn is still running");
+    rig.company.open("g143");
 
+    let user = store.ensure_local_user_id().unwrap();
+    let job_id = job.id;
+    let items = || -> Vec<db::models::Notification> {
+        store
+            .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.id.starts_with(&format!("schedule:{job_id}:")))
+            .collect()
+    };
+    rig.until(30, "the Inbox points at the answer", || !items().is_empty()).await;
     let thread = rig.thread(KEY);
     let answer = thread.iter().rfind(|m| m.role == "assistant").expect("an answer");
     assert_eq!(answer.content, "REPORT-143: the oven is at 350.", "{thread:#?}");
-    let user = store.ensure_local_user_id().unwrap();
-    let job_id = store.get_cron_job_by_name("oven-143").unwrap().unwrap().id;
-    let item = store
-        .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
-        .unwrap()
-        .into_iter()
-        .find(|n| n.id.starts_with(&format!("schedule:{job_id}:")))
-        .expect("the Inbox points at the answer");
+    let item = items().pop().unwrap();
     let chat = tools::owner_notify::link::conversation(store, KEY);
     assert_eq!(item.action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)));
+}
+
+/// A timer fire cut off by a restart after its request was already written
+/// into the owner's conversation is queued again by the boot sweep. It never
+/// runs again: the request is not asked twice. The conversation answers the
+/// request the dead turn left, and the Inbox points at that answer once,
+/// however many passes or restarts follow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
+    let nebo = session().await;
+    const KEY: &str = "agent:assistant:thread:timer-144";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if t.new_text().contains("MARK-144 check the oven") {
+            return Some(Step::say("REPORT-144: the oven is at 350."));
+        }
+        t.new_text().contains("OWNER-144 ").then(|| Step::say("Timer set."))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(KEY, "assistant", None, "OWNER-144 tell me the oven in a minute").await;
+    rig.until(20, "the owner is answered", || rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content == "Timer set.")).await;
+    let store = nebo.store();
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "")
+        .in_run(Some("run-144"), KEY)
+        .asked_in_chat(&tools::owner_notify::link::conversation(store, KEY));
+    let job = store
+        .create_cron_job("oven-144", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-144 check the oven"), None, None, true, Some("assistant"), None, None, &made)
+        .unwrap();
+
+    // The last process: the fire was running, and its request was in the
+    // conversation, when the process ended. Nothing answered it.
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let inputs = serde_json::json!({ "job_id": job.id, "name": job.name, "manual": false }).to_string();
+    store
+        .engine_create_run(&db::NewRun {
+            id: &run_id,
+            kind: "task",
+            session_key: "cron-oven-144",
+            agent_id: "assistant",
+            lane: "main",
+            inputs: Some(&inputs),
+            external_ref: Some(&db::cron_ref(job.id)),
+            state: Some("running"),
+            ..Default::default()
+        })
+        .unwrap();
+    let sessions = nebo.state.harness.sessions();
+    let session_id = sessions.resolve_session_id_by_key(KEY).unwrap();
+    sessions
+        .append_message(
+            &session_id,
+            "user",
+            "The schedule \"oven-144\" set in this conversation is due now. Do what it asks.\n\nMARK-144 check the oven",
+            None,
+            None,
+            Some(r#"{"isMeta":true,"hiddenPrompt":true}"#),
+        )
+        .unwrap();
+
+    // The restart: the boot sweep queues the cut-off fire again.
+    let t = chrono::Utc::now().timestamp();
+    store.engine_set_run_state(&run_id, "interrupted", t, None).unwrap();
+    assert!(store.engine_resume_once(&run_id, t).unwrap());
+    rig.until(30, "the fire is settled without running again", || {
+        store.engine_get_run(&run_id).ok().flatten().is_some_and(|r| r.state == "done")
+    })
+    .await;
+    let run = store.engine_get_run(&run_id).unwrap().unwrap();
+    assert!(run.result.as_deref().is_some_and(|r| r.contains("already in the owner's conversation")), "{run:?}");
+
+    let user = store.ensure_local_user_id().unwrap();
+    let items = || -> Vec<db::models::Notification> {
+        store
+            .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.id.starts_with(&format!("schedule:{}:", job.id)))
+            .collect()
+    };
+    rig.until(30, "the conversation answers and the Inbox points at it", || !items().is_empty()).await;
+    let thread = rig.thread(KEY);
+    assert_eq!(thread.iter().filter(|m| m.content.contains("MARK-144")).count(), 1, "asked once: {thread:#?}");
+    let answer = thread.iter().rfind(|m| m.role == "assistant").expect("an answer");
+    assert_eq!(answer.content, "REPORT-144: the oven is at 350.", "{thread:#?}");
+    let chat = tools::owner_notify::link::conversation(store, KEY);
+    assert_eq!(items()[0].action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)));
+
+    // Another restart, and more passes: nothing is asked or pointed at again.
+    crate::scheduler::follow_up_after_restart(&nebo.state, i64::MAX).await;
+    crate::scheduler::settle_follow_ups(&nebo.state).await;
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+    assert_eq!(items().len(), 1, "pointed at once");
+    assert_eq!(rig.thread(KEY).iter().filter(|m| m.content.starts_with("REPORT-144")).count(), 1, "answered once");
 }

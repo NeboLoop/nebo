@@ -705,6 +705,24 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The newest prompt the platform wrote (a hidden row) into any of
+    /// session `session_name`'s conversations at or after `since` (unix
+    /// seconds) whose text begins with `prefix`.
+    pub fn last_hidden_prompt_in_session(&self, session_name: &str, prefix: &str, since: i64) -> Result<Option<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT m.* FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+             WHERE c.session_name = ?1 AND m.role = 'user' AND m.created_at >= ?3
+               AND COALESCE(json_extract(m.metadata, '$.hiddenPrompt'), 0) IN (1, 'true')
+               AND substr(m.content, 1, length(?2)) = ?2
+             ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1",
+            params![session_name, prefix, since],
+            row_to_chat_message,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The title a chat has until it is named.
     pub const DEFAULT_CHAT_TITLE: &'static str = "New Chat";
 

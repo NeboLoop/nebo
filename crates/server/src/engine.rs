@@ -1183,6 +1183,21 @@ async fn drive(state: &AppState) {
             let _ = store.engine_set_run_state(&run.id, "failed", t, Some("scheduled job no longer exists"));
             continue;
         }
+        // A fire the boot sweep queued again may have nothing left to do.
+        if let Some(job) = &job {
+            match crate::scheduler::fire_settled(state, job, run.created_at, inputs["manual"].as_bool().unwrap_or(false)).await {
+                Some(crate::scheduler::FireSettled::SwitchedOff) => {
+                    let _ = store.engine_set_run_state(&run.id, "cancelled", t, Some("its schedule was switched off"));
+                    continue;
+                }
+                Some(crate::scheduler::FireSettled::HandedOver) => {
+                    let _ = store.engine_set_run_result(&run.id, "its request was already in the owner's conversation, which answers it", None);
+                    let _ = store.engine_set_run_state(&run.id, "done", t, None);
+                    continue;
+                }
+                None => {}
+            }
+        }
         if let Err(e) = store.engine_set_run_state(&run.id, "running", t, None) {
             warn!(run = %run.id, error = %e, "engine: mark running failed");
             continue;
@@ -1249,6 +1264,7 @@ async fn drive(state: &AppState) {
     }
 
     settle_held_sends(store, &state.permission_asks);
+    crate::scheduler::settle_follow_ups(state).await;
     resume_asks(store, &state.permission_asks, &state.tools, t);
     finish_temporary_work(state).await;
     finish_project_runs(state).await;
