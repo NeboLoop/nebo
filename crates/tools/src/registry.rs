@@ -95,6 +95,18 @@ pub struct ToolResult {
     /// conversation that started the helper (`ask_owner`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<types::OwnerQuestion>,
+    /// The call was refused because running work holds the owner's balance,
+    /// before anything in it was served: [`Registry::execute`] gives the
+    /// call's slot back, waits as asked and runs it again. Set by the tool
+    /// that met the refusal (`with_held_balance`), never by text.
+    #[serde(skip)]
+    pub held_balance: Option<types::balance::Held>,
+    /// The input a held call runs again with after its wait, when the first
+    /// attempt settled something the input left open (the capture a desktop
+    /// action picked its target from): so the second attempt acts on what
+    /// the first one saw. `None`: the input it ran with.
+    #[serde(skip)]
+    pub rerun_input: Option<serde_json::Value>,
     /// The call did not run: the permission check parked it on the owner.
     /// The ask's id, so a workflow activity can suspend on the same ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,6 +150,21 @@ impl ToolResult {
             terminal: true,
             ..Default::default()
         }
+    }
+
+    /// Mark the call refused because running work holds the balance, before
+    /// anything in it was served (builder; chains off `error`): the registry
+    /// waits it out and runs the call again.
+    pub fn with_held_balance(mut self, held: types::balance::Held) -> Self {
+        self.held_balance = Some(held);
+        self
+    }
+
+    /// The input to run a held call again with (builder; chains off
+    /// `with_held_balance`).
+    pub fn with_rerun_input(mut self, input: serde_json::Value) -> Self {
+        self.rerun_input = Some(input);
+        self
     }
 
     /// Attach an upstream HTTP status (builder; chains off `ok`/`error`).
@@ -1130,7 +1157,7 @@ impl Registry {
         }
 
         let permit_kind = tool.resource_permit(&input);
-        let _permit_guard = match permit_kind {
+        let mut resource = match permit_kind {
             Some(kind) => {
                 debug!(tool = %name, resource = ?kind, "acquiring resource permit");
                 Some(self.resource_permits.acquire(kind).await)
@@ -1151,7 +1178,32 @@ impl Registry {
         }
 
         let threshold = if ctx.whole_result { None } else { crate::result_shape::threshold(tool.max_result_chars(&input)) };
-        let mut result = tool.execute_dyn(ctx, input.clone()).await;
+        // The one place a tool call waits out a balance held by running work
+        // (a Janus tool sends once and says so): with every slot the call
+        // holds given back (its resource permit here, its tool-pool slot in
+        // `wait_out`) and taken again before the call runs again, from the
+        // call's one budget, stopping when the run stops. Past the budget
+        // the call's own words stand (the busy sentence).
+        let mut waits = types::balance::ReservedWaits::default();
+        let mut run_input = input.clone();
+        let mut result = loop {
+            if resource.is_none()
+                && let Some(kind) = permit_kind
+            {
+                resource = Some(self.resource_permits.acquire(kind).await);
+            }
+            let mut result = tool.execute_dyn(ctx, run_input.clone()).await;
+            let Some(held) = result.held_balance else { break result };
+            if let Some(pinned) = result.rerun_input.take() {
+                run_input = pinned;
+            }
+            let Some(wait) = waits.next(held.retry_after) else { break result };
+            debug!(tool = %name, wait_ms = wait.as_millis() as u64, "balance held by running work; calling again after the wait");
+            drop(resource.take());
+            if !ctx.wait_out(wait).await {
+                break result;
+            }
+        };
         if !result.is_error {
             self.gate.ran(ctx, &call, &result).await;
         }
@@ -1877,6 +1929,133 @@ pub(crate) mod tests {
                 }
             })
         }
+    }
+
+    /// A Janus tool refused once because running work holds the balance,
+    /// before anything was served; then it answers.
+    struct HeldOnce(std::sync::atomic::AtomicUsize);
+
+    impl DynTool for HeldOnce {
+        fn name(&self) -> &str {
+            "heldonce"
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        // Like a desktop tool: it holds the screen while it runs.
+        fn resource_permit(&self, _input: &serde_json::Value) -> Option<ResourceKind> {
+            Some(ResourceKind::Screen)
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            _input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    let held = types::balance::Held { retry_after: Some(std::time::Duration::from_secs(1)) };
+                    return ToolResult::error(ai::BALANCE_BUSY).with_held_balance(held);
+                }
+                ToolResult::ok("answered")
+            })
+        }
+    }
+
+    /// The registry is the one place a tool call waits out a held balance:
+    /// with every slot the call holds given back for the wait (its tool-pool
+    /// slot and its resource permit: another call can run), then the same
+    /// call again, served.
+    #[tokio::test]
+    async fn a_held_balance_is_waited_out_with_the_calls_slot_given_back() {
+        let registry = Registry::new(crate::gate::test_gate());
+        registry.register(Box::new(HeldOnce(Default::default()))).await;
+        let pool = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let mut ctx = ToolContext::default();
+        ctx.slot = Some(crate::ToolSlot::take(pool.clone()).await);
+        assert_eq!(pool.available_permits(), 0, "the call holds the only slot");
+        let probe = async {
+            // Inside the wait (at least the one second asked for).
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            let other = tokio::time::timeout(std::time::Duration::from_millis(500), pool.clone().acquire_owned())
+                .await
+                .expect("the slot is free while the call waits");
+            drop(other);
+            let screen = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                registry.resource_permits.acquire(ResourceKind::Screen),
+            )
+            .await
+            .expect("the resource permit is free while the call waits");
+            drop(screen);
+        };
+        let (result, ()) = tokio::join!(registry.execute(&ctx, "heldonce", serde_json::json!({})), probe);
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.content, "answered");
+        assert_eq!(pool.available_permits(), 0, "the call holds its slot again");
+    }
+
+    /// A held call that settled something its input left open (the capture
+    /// a desktop action picked from) runs again with that pinned, never with
+    /// whatever is latest by then.
+    struct PinsOnHold;
+
+    impl DynTool for PinsOnHold {
+        fn name(&self) -> &str {
+            "pinsonhold"
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": { "snapshot_id": { "type": "string" } } })
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                match input.get("snapshot_id").and_then(|v| v.as_str()) {
+                    Some(id) => ToolResult::ok(format!("acted on {id}")),
+                    None => {
+                        let held = types::balance::Held { retry_after: Some(std::time::Duration::from_secs(1)) };
+                        ToolResult::error(ai::BALANCE_BUSY)
+                            .with_held_balance(held)
+                            .with_rerun_input(serde_json::json!({ "snapshot_id": "snap-first" }))
+                    }
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_call_runs_again_on_what_its_first_attempt_settled() {
+        let registry = Registry::new(crate::gate::test_gate());
+        registry.register(Box::new(PinsOnHold)).await;
+        let result = registry.execute(&ToolContext::default(), "pinsonhold", serde_json::json!({})).await;
+        assert_eq!(result.content, "acted on snap-first");
+    }
+
+    /// A stopped run stops waiting at once; the call's own words stand.
+    #[tokio::test]
+    async fn a_stopped_run_stops_waiting_out_a_held_balance() {
+        let registry = Registry::new(crate::gate::test_gate());
+        registry.register(Box::new(HeldOnce(Default::default()))).await;
+        let ctx = ToolContext::default();
+        ctx.cancel_token.cancel();
+        let started = std::time::Instant::now();
+        let result = registry.execute(&ctx, "heldonce", serde_json::json!({})).await;
+        assert!(result.is_error && result.content.starts_with(ai::BALANCE_BUSY), "{}", result.content);
+        assert!(started.elapsed() < std::time::Duration::from_millis(900), "{:?}", started.elapsed());
     }
 
     #[tokio::test]
@@ -2913,13 +3092,14 @@ pub(crate) mod tests {
     /// (ask_owner 1,477, +124): 18,461. 2026-10-20: the owner's decision on a
     /// helper's question goes back in send_message's `answer`, the one
     /// thing that settles it (send_message 1,527, +186; delegate +11):
-    /// 18,658. The owner, 2026-10-19: a helper that changes his files works
-    /// in its own copy, and its changes reach them only when the
-    /// conversation that started it lands them; send_message takes `changes`
-    /// (land or discard), and isolation is for any helper that changes his
-    /// files, not only code (send_message 1,671, delegate 2,950, +153):
-    /// 18,811.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_811;
+    /// 18,658. 2026-10-20: an answer names the question it settles
+    /// (send_message `question`, 1,646, +119): 18,777. The owner,
+    /// 2026-10-19: a helper that changes his files works in its own copy,
+    /// and its changes reach them only when the conversation that started it
+    /// lands them; send_message takes `changes` (land or discard), and
+    /// isolation is for any helper that changes his files, not only code:
+    /// 18,930.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_930;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

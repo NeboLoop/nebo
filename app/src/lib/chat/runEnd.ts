@@ -11,6 +11,11 @@ export const QUEUED_INTO_RUNNING_TURN = 'queued_into_running_turn';
  *  here, once, in the thread, with the Sign in action, never as an error. */
 export const NOT_SIGNED_IN = 'not_signed_in';
 
+/** The typed stop of a turn whose balance was held by work already running
+ *  (the balance covers the turn): worded here, once, in the thread, in the
+ *  owner's language — never as out of balance, never as an error. */
+export const BALANCE_RESERVED = 'balance_reserved';
+
 /** Whether `chat_complete` / `chat_error` / `chat_cancelled` ends the run on
  *  its session: every one does except a queued message's own completion. */
 export function endsRun(data: { stop_reason?: unknown } | null | undefined): boolean {

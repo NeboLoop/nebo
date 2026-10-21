@@ -300,12 +300,16 @@ impl DecideClient {
     /// Ask every question in `questions` about `state` in one round trip.
     /// `trace` names what the decision is for, sent to Janus as `X-Purpose`
     /// with the ids in scope, the same headers the chat path sends (the
-    /// owner's endpoint gets the decision alone).
+    /// owner's endpoint gets the decision alone). With `waits`, a balance
+    /// held by running work is waited out here from that one budget; without
+    /// (a tool call: its registry waits with the call's slot given back) the
+    /// request is sent once and the refusal comes back with its wait.
     pub async fn decide(
         &self,
         trace: &RequestTrace,
         state: &serde_json::Value,
         questions: &BTreeMap<&str, Question>,
+        mut waits: Option<&mut crate::ReservedWaits>,
     ) -> Result<Decision, ProviderError> {
         if let Some(endpoint) = (self.endpoint)(trace) {
             // The owner pointed this slot at his own endpoint: a failure there
@@ -318,7 +322,7 @@ impl DecideClient {
             });
             let url = systemone_url(&endpoint.base_url);
             let req = || self.http.post(&url).timeout(DECIDE_TIMEOUT).bearer_auth(&endpoint.key).json(&body);
-            let result = self.send(req).await;
+            let result = self.send(req, waits.as_deref_mut()).await;
             if let Err(e) = &result {
                 tracing::warn!(profile = %endpoint.profile_id, model = %endpoint.model, error = %e, "the owner's decision endpoint failed");
             }
@@ -345,18 +349,21 @@ impl DecideClient {
                 None => req,
             }
         };
-        self.send(req).await
+        self.send(req, waits).await
     }
 
     /// Send one decision request (built fresh per attempt), retrying once
-    /// after a rate limit or an overload.
-    async fn send(&self, req: impl Fn() -> reqwest::RequestBuilder) -> Result<Decision, ProviderError> {
+    /// after a rate limit or an overload. Both sends share the decision's one
+    /// budget for waiting out a held balance, when it waits.
+    async fn send(
+        &self,
+        req: impl Fn() -> reqwest::RequestBuilder,
+        mut waits: Option<&mut crate::ReservedWaits>,
+    ) -> Result<Decision, ProviderError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let req = req();
-            let resp = req
-                .send()
+            let resp = crate::http::send(&req, waits.as_deref_mut())
                 .await
                 .map_err(|e| ProviderError::Request(e.to_string()))?;
             let status = resp.status();
@@ -366,7 +373,8 @@ impl DecideClient {
                     .await
                     .map_err(|e| ProviderError::Request(format!("systemone decode: {e}")));
             }
-            let err = classify(status.as_u16(), resp.text().await.unwrap_or_default());
+            let retry_after = crate::http::retry_after_secs(resp.headers());
+            let err = classify(status.as_u16(), resp.text().await.unwrap_or_default(), retry_after);
             if attempt == 1 && err.is_retryable() {
                 tokio::time::sleep(RETRY_AFTER).await;
                 continue;
@@ -385,7 +393,7 @@ pub const USAGE_LIMIT_EXCEEDED: &str = "USAGE_LIMIT_EXCEEDED";
 /// retryable ones. A 429 carrying [`USAGE_LIMIT_EXCEEDED`] is not
 /// throttling: a retry gets the same answer until the account is funded, so
 /// it comes back as a final `Api` error with that code.
-fn classify(status: u16, text: String) -> ProviderError {
+fn classify(status: u16, text: String, retry_after_secs: Option<u64>) -> ProviderError {
     let envelope = serde_json::from_str::<serde_json::Value>(&text).ok();
     let field = |name: &str| {
         envelope
@@ -396,6 +404,9 @@ fn classify(status: u16, text: String) -> ProviderError {
             .map(str::to_owned)
     };
     let message = field("message").unwrap_or_else(|| text.clone());
+    if crate::is_balance_reserved(status, &text) {
+        return ProviderError::BalanceReserved { retry_after_secs };
+    }
     match status {
         401 | 403 => ProviderError::Auth(text),
         429 if field("code").as_deref() == Some(USAGE_LIMIT_EXCEEDED) || text.contains(USAGE_LIMIT_EXCEEDED) => {
@@ -461,18 +472,18 @@ mod tests {
 
     #[test]
     fn only_rate_limits_and_overloads_are_retried() {
-        assert!(classify(429, String::new()).is_retryable());
-        assert!(classify(502, "upstream 529".into()).is_retryable());
-        assert!(!classify(422, "bad question".into()).is_retryable());
-        assert!(!classify(401, String::new()).is_retryable());
-        assert!(matches!(classify(401, String::new()), ProviderError::Auth(_)));
-        assert!(matches!(classify(429, String::new()), ProviderError::RateLimit { .. }));
+        assert!(classify(429, String::new(), None).is_retryable());
+        assert!(classify(502, "upstream 529".into(), None).is_retryable());
+        assert!(!classify(422, "bad question".into(), None).is_retryable());
+        assert!(!classify(401, String::new(), None).is_retryable());
+        assert!(matches!(classify(401, String::new(), None), ProviderError::Auth(_)));
+        assert!(matches!(classify(429, String::new(), None), ProviderError::RateLimit { .. }));
     }
 
     #[test]
     fn a_funding_429_is_final_and_says_so() {
         let body = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#;
-        let err = classify(429, body.into());
+        let err = classify(429, body.into(), None);
         assert!(!err.is_retryable(), "nothing can pay: a retry gets the same answer");
         match err {
             ProviderError::Api { code, message, .. } => {
@@ -482,12 +493,21 @@ mod tests {
             other => panic!("expected the funding refusal, got {other:?}"),
         }
         // A bad request keeps its status and Janus's own words.
-        match classify(400, r#"{"error":{"message":"criteria must be an object"}}"#.into()) {
+        match classify(400, r#"{"error":{"message":"criteria must be an object"}}"#.into(), None) {
             ProviderError::Api { code, message, retryable } => {
                 assert_eq!((code.as_str(), message.as_str(), retryable), ("400", "criteria must be an object", false));
             }
             other => panic!("expected a 400, got {other:?}"),
         }
+    }
+
+    /// Running work holding the balance is never the funding refusal.
+    #[test]
+    fn a_reserved_balance_is_busy_not_unfunded() {
+        let body = r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved","retryable":true}}"#;
+        let err = classify(429, body.into(), None);
+        assert!(matches!(err, ProviderError::BalanceReserved { .. }), "{err:?}");
+        assert!(!err.is_retryable());
     }
 
     #[test]
@@ -587,7 +607,7 @@ mod tests {
                 Some(DecideEndpoint { base_url: owner.clone(), key: "owner-key".into(), model: "jev-owner".into(), profile_id: "p1".into() })
             });
         let d = client
-            .decide(&RequestTrace::new("test"), &serde_json::json!({"text": "hi"}), &one_question())
+            .decide(&RequestTrace::new("test"), &serde_json::json!({"text": "hi"}), &one_question(), None)
             .await
             .unwrap();
         assert_eq!(d.model, "jev-1.13.0", "the versioned model that answered");
@@ -612,7 +632,7 @@ mod tests {
                 Some(DecideEndpoint { base_url: owner.clone(), key: "stale".into(), model: "jev-latest".into(), profile_id: "p1".into() })
             });
         let err = client
-            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
+            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question(), None)
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::Auth(_)), "{err:?}");
@@ -626,7 +646,7 @@ mod tests {
         let client = DecideClient::new(&janus, || Some(Bearer { token: "nebo-token".into(), bot_id: Some("bot-1".into()) }))
             .with_endpoint(|_| None);
         client
-            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question())
+            .decide(&RequestTrace::new("test"), &serde_json::json!({}), &one_question(), None)
             .await
             .unwrap();
         let seen = janus_seen.lock().unwrap().clone();

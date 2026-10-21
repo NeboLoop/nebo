@@ -197,7 +197,7 @@ pub async fn decide(
         return Heard { intent: undecided("no_client"), save: unasked("no_client") };
     };
     let trace = ai::RequestTrace { agent_id: agent_id.to_string(), ..ai::RequestTrace::new("mid_turn_intent") };
-    let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state(asked), &questions)).await {
+    let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state(asked), &questions, Some(&mut ai::ReservedWaits::default()))).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             warn!(site = "mid_turn_intent", error = %e, "the decision failed");

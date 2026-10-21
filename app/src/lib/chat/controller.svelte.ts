@@ -20,7 +20,7 @@ import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboCompo
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages, lastRunError } from '$lib/chat/history';
-import { endsRun, NOT_SIGNED_IN } from '$lib/chat/runEnd';
+import { endsRun } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
@@ -731,9 +731,9 @@ export function createChatController(config: ChatControllerConfig) {
     activityStatus = '';
     const content = data.error || get(t)('common.errorOccurred');
     const reason = typeof data.stop_reason === 'string' && data.stop_reason ? data.stop_reason : undefined;
-    // A typed stop is worded once, in the thread, with its own action: no
-    // banner over it.
-    if (reason !== NOT_SIGNED_IN) chatError = content;
+    // A typed stop (`NOT_SIGNED_IN`, `BALANCE_RESERVED`) is worded once, in
+    // the thread: no banner over it.
+    if (!reason) chatError = content;
     // The banner can be dismissed; the thread keeps where the run stopped,
     // as a reloaded thread shows the row the server stored for it.
     const last = messages[messages.length - 1];
