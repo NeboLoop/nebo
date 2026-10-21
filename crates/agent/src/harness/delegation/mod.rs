@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::{Harness, HarnessError, SeatRequest, TurnHandle, TurnInput, TurnMode, TurnRequest};
 use crate::session::SessionManager;
@@ -426,7 +426,17 @@ impl TurnStarter for Harness {
 #[derive(Debug, Clone)]
 pub struct HelperEvent {
     pub parent_session_key: String,
-    pub event: ai::StreamEvent,
+    pub update: HelperUpdate,
+}
+
+#[derive(Debug, Clone)]
+pub enum HelperUpdate {
+    /// A helper's start, step or end (`SubagentStart`, `SubagentProgress`,
+    /// `SubagentComplete`), its widgets carrying its `task_id` and `title`.
+    Step(ai::StreamEvent),
+    /// The titles that changed when one of the session's helpers started
+    /// or ended, as (task id, title): every running sibling's at once.
+    Titles(Vec<(String, String)>),
 }
 
 /// One line of a caller's helper list.
@@ -434,6 +444,9 @@ pub struct HelperEvent {
 pub struct HelperStatus {
     pub task_id: String,
     pub description: String,
+    /// What the owner's screen calls it: its description, unless a running
+    /// sibling's reads the same ([`tools::humanize::sibling_titles`]).
+    pub title: String,
     pub running: bool,
     /// The helper's own session, where its steps are kept.
     pub session_key: String,
@@ -459,6 +472,16 @@ struct Helper {
     parent_key: String,
     session_key: String,
     description: String,
+    /// What it was asked, whole: a research run's question, a helper's
+    /// brief. Its description is a short form of it.
+    brief: String,
+    /// Its title among its running siblings, set as one starts or ends
+    /// ([`Helpers::retitle`]); empty until its first.
+    title: String,
+    /// Its place in its session's start order, and its title's number;
+    /// both given as it first started and never changed.
+    seq: u64,
+    number: u32,
     kind: HelperKind,
     /// The speed it was started at; `None` = its parent's.
     speed: Option<String>,
@@ -577,6 +600,11 @@ impl Helper {
         let reader = tools::result_shape::Reader::of(&self.parent_seat.door);
         collect::assemble(&self.earlier_reports, &self.questions, fresh_only, spill_dir, self.report_limit, reader)
     }
+
+    /// Its title among its siblings; its description before its first.
+    fn shown_title(&self) -> String {
+        if self.title.is_empty() { tools::humanize::numbered(&self.description, "") } else { self.title.clone() }
+    }
 }
 
 /// The `helper_kind` a background work run is stored under: it runs code,
@@ -602,6 +630,9 @@ struct State {
     /// Helpers whose copy is being landed or discarded right now: one
     /// decision at a time per copy, and no follow-up into it meanwhile.
     settling: std::collections::HashSet<String>,
+    /// Per session: the order its helpers started in and the numbers their
+    /// titles were given ([`Helpers::place`]).
+    conversations: HashMap<String, Conversation>,
 }
 
 /// A copy an isolated helper holds, as it is kept on the helper's run.
@@ -624,6 +655,61 @@ struct Settling<'a> {
 impl Drop for Settling<'_> {
     fn drop(&mut self) {
         self.helpers.state().settling.remove(self.task_id);
+    }
+}
+
+/// What a session's helpers have taken, every one it ever started: its
+/// start order and the numbers given per description (by
+/// [`tools::humanize::title_key`]). Read from their rows the first time
+/// it's needed, and dropped once the session has no helper in hand.
+#[derive(Default)]
+struct Conversation {
+    next_seq: u64,
+    numbers: HashMap<String, std::collections::BTreeSet<u32>>,
+    /// Its helpers' rows were read; until then, numbers follow the highest
+    /// one in hand, so none given before can repeat.
+    loaded: bool,
+    /// Helpers placed and not yet in hand: it isn't dropped under them.
+    placing: usize,
+}
+
+impl Conversation {
+    /// The number for a helper with description key `key`: the least it
+    /// never gave, taken at once. 0 (none) while its rows couldn't be read:
+    /// a number given then could repeat one given before.
+    fn take_number(&mut self, key: &str) -> u32 {
+        if !self.loaded {
+            return 0;
+        }
+        let taken = self.numbers.entry(key.to_string()).or_default();
+        let number = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
+        taken.insert(number);
+        number
+    }
+
+    fn take_seq(&mut self) -> u64 {
+        self.next_seq += 1;
+        self.next_seq - 1
+    }
+}
+
+/// Where a helper stands among its session's: its place in their start
+/// order and its title's number (given per description). Kept on its row.
+struct Placed {
+    seq: u64,
+    number: u32,
+}
+
+/// A session's record held in hand while a helper is read back from its
+/// row ([`Helpers::hold_record`]); let go when dropped.
+struct RecordHold<'a> {
+    helpers: &'a Helpers,
+    parent_key: String,
+}
+
+impl Drop for RecordHold<'_> {
+    fn drop(&mut self) {
+        self.helpers.state().placed(&self.parent_key);
     }
 }
 
@@ -691,6 +777,24 @@ impl State {
         }
     }
 
+    /// A helper placed under session `parent_key` is in hand (or never
+    /// started, or was never read back): the record is let go of, and
+    /// dropped if nothing holds it.
+    fn placed(&mut self, parent_key: &str) {
+        if let Some(c) = self.conversations.get_mut(parent_key) {
+            c.placing = c.placing.saturating_sub(1);
+        }
+        self.drop_idle(parent_key);
+    }
+
+    /// A session with no helper in hand and none being placed drops its
+    /// record; it is read back from the rows when next needed.
+    fn drop_idle(&mut self, parent_key: &str) {
+        if !self.helpers.values().any(|o| o.parent_key == parent_key) && self.conversations.get(parent_key).is_some_and(|c| c.placing == 0) {
+            self.conversations.remove(parent_key);
+        }
+    }
+
     /// Drop a helper that is done with nothing running under it, and the
     /// finished helpers it started. Its row stays: `read_output` and a
     /// resuming `send` read that.
@@ -699,6 +803,7 @@ impl State {
             return;
         };
         self.stops.remove(&h.session_key);
+        self.drop_idle(&h.parent_key);
         let children: Vec<String> = self
             .helpers
             .iter()
@@ -730,6 +835,8 @@ pub struct Helpers {
     wake: Option<mpsc::UnboundedSender<String>>,
     /// Where helper progress goes for the owner's screen.
     ui: Option<mpsc::UnboundedSender<HelperEvent>>,
+    /// Woken as a helper starts or ends ([`Helpers::changes`]).
+    changes: tokio::sync::Notify,
     foreground_budget: Duration,
     state: Mutex<State>,
 }
@@ -748,9 +855,171 @@ impl Helpers {
             starter,
             wake,
             ui,
+            changes: tokio::sync::Notify::new(),
             foreground_budget: FOREGROUND_BUDGET,
             state: Mutex::new(State::default()),
         })
+    }
+
+    /// Woken as soon as a helper starts or ends, once the list says so:
+    /// what the owner's list of background work waits on to look again.
+    pub fn changes(&self) -> &tokio::sync::Notify {
+        &self.changes
+    }
+
+    /// The running helpers of session `parent_key`, in the order they
+    /// started.
+    fn running_of(state: &State, parent_key: &str) -> Vec<String> {
+        let mut ids: Vec<(u64, String)> = state
+            .helpers
+            .iter()
+            .filter(|(_, h)| h.running && h.parent_key == parent_key)
+            .map(|(id, h)| (h.seq, id.clone()))
+            .collect();
+        ids.sort();
+        ids.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Hold session `parent_key`'s record in hand, counted under the same
+    /// lock that checks whether its helpers' rows were read, so it can't be
+    /// dropped meanwhile; read them now if not (once more if the first read
+    /// fails). When both fail it is logged as an error, no number is given
+    /// until a later read succeeds, and the next start reads again. Let go
+    /// with [`State::placed`].
+    fn hold_record(&self, parent_key: &str) {
+        let loaded = {
+            let mut state = self.state();
+            let conversation = state.conversations.entry(parent_key.to_string()).or_default();
+            conversation.placing += 1;
+            conversation.loaded
+        };
+        if loaded {
+            return;
+        }
+        let read = || self.store.engine_run_inputs_under(ROW_KIND, &helper_key(parent_key, ""));
+        let rows = read().or_else(|_| read());
+        let mut state = self.state();
+        let conversation = state.conversations.entry(parent_key.to_string()).or_default();
+        if conversation.loaded {
+            return;
+        }
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(e) => {
+                error!(parent = %parent_key, error = %e, "helper titles: the conversation's helpers could not be read twice; no numbers are given until a read succeeds");
+                return;
+            }
+        };
+        for (id, session_key, inputs) in rows {
+            if session_key != helper_key(parent_key, &id) {
+                continue;
+            }
+            let inputs = inputs.as_deref().and_then(|i| serde_json::from_str::<serde_json::Value>(i).ok()).unwrap_or_default();
+            if let Some(seq) = inputs["seq"].as_u64() {
+                conversation.next_seq = conversation.next_seq.max(seq + 1);
+            }
+            if let (Some(number), Some(description)) = (inputs["number"].as_u64().filter(|n| *n > 0), inputs["description"].as_str()) {
+                conversation.numbers.entry(tools::humanize::description_key(description)).or_default().insert(number as u32);
+            }
+        }
+        conversation.loaded = true;
+    }
+
+    /// Place a helper starting under session `parent_key`: next in its
+    /// start order, and the least number no helper the session ever started
+    /// with the same description ([`tools::humanize::description_key`]) was
+    /// given. Given once, never changed; [`State::placed`] once it's in
+    /// hand.
+    fn place(&self, parent_key: &str, description: &str) -> Placed {
+        self.hold_record(parent_key);
+        self.give_place(parent_key, description)
+    }
+
+    /// The place and number of a helper starting under session
+    /// `parent_key`, whose record is held ([`Helpers::hold_record`]).
+    fn give_place(&self, parent_key: &str, description: &str) -> Placed {
+        let mut state = self.state();
+        let conversation = state.conversations.entry(parent_key.to_string()).or_default();
+        Placed { seq: conversation.take_seq(), number: conversation.take_number(&tools::humanize::description_key(description)) }
+    }
+
+    /// A placed helper that never started.
+    fn unplace(&self, parent_key: &str) {
+        self.state().placed(parent_key);
+    }
+
+    /// Title the running helpers of session `parent_key` apart
+    /// ([`tools::humanize::sibling_titles`], [`tools::humanize::shown_titles`])
+    /// as one of them starts or ends: the titles that changed reach the
+    /// owner's screen in one event, and whoever watches
+    /// [`Helpers::changes`] looks again. The titles are worked out off the
+    /// lock; when the running set moved meanwhile, the start or end that
+    /// moved it titles them instead. Every title goes out under the lock it
+    /// is written under, so none arrives after a newer one.
+    fn retitle(&self, parent_key: &str) {
+        let asked: Vec<(String, String, String)> = {
+            let mut state = self.state();
+            let ids = Self::running_of(&state, parent_key);
+            let mut seen = std::collections::HashSet::new();
+            let alike = ids.iter().any(|id| !seen.insert(tools::humanize::description_key(&state.helpers[id].description)));
+            if !alike {
+                // No two read the same: each is its description, and no
+                // brief is read.
+                let bases = tools::humanize::sibling_titles(&ids.iter().map(|id| (state.helpers[id].description.as_str(), "")).collect::<Vec<_>>());
+                self.write_titles(&mut state, parent_key, ids, bases);
+                drop(state);
+                self.changes.notify_one();
+                return;
+            }
+            ids.into_iter()
+                .map(|id| {
+                    let h = &state.helpers[&id];
+                    let (description, brief) = (h.description.clone(), h.brief.clone());
+                    (id, description, brief)
+                })
+                .collect()
+        };
+        let bases = tools::humanize::sibling_titles(&asked.iter().map(|(_, d, b)| (d.as_str(), b.as_str())).collect::<Vec<_>>());
+        {
+            let mut state = self.state();
+            let ids = Self::running_of(&state, parent_key);
+            if ids.iter().eq(asked.iter().map(|(id, _, _)| id)) {
+                self.write_titles(&mut state, parent_key, ids, bases);
+            }
+        }
+        self.changes.notify_one();
+    }
+
+    /// Keep the titles of running helpers `ids` of session `parent_key`
+    /// from their `bases`, told apart by their numbers wherever two would
+    /// read the same ([`tools::humanize::shown_titles`]), and tell the
+    /// owner's screen the titles that changed, in one event, while `state`
+    /// is still held.
+    fn write_titles(&self, state: &mut State, parent_key: &str, ids: Vec<String>, bases: Vec<String>) {
+        let shown = tools::humanize::shown_titles(
+            &ids.iter().zip(&bases).map(|(id, base)| (base.as_str(), state.helpers[id].number, state.helpers[id].seq)).collect::<Vec<_>>(),
+        );
+        let changed: Vec<(String, String)> = ids
+            .into_iter()
+            .zip(shown)
+            .filter_map(|(id, title)| {
+                let h = state.helpers.get_mut(&id)?;
+                (h.title != title).then(|| {
+                    h.title = title.clone();
+                    (id, title)
+                })
+            })
+            .collect();
+        if !changed.is_empty()
+            && let Some(ui) = &self.ui
+        {
+            let _ = ui.send(HelperEvent { parent_session_key: parent_key.to_string(), update: HelperUpdate::Titles(changed) });
+        }
+    }
+
+    /// The session helper `task_id` reports to.
+    fn parent_of(&self, task_id: &str) -> Option<String> {
+        self.state().helpers.get(task_id).map(|h| h.parent_key.clone())
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -883,6 +1152,7 @@ impl Helpers {
         }
         let copy = isolation.as_ref().map(|iso| iso.path().to_string_lossy().into_owned());
 
+        let placed = self.place(parent_key, &spec.description);
         let inputs = serde_json::json!({
             "prompt": spec.prompt,
             "description": spec.description,
@@ -893,6 +1163,8 @@ impl Helpers {
             "isolation": isolation.as_ref().map(|_| "worktree"),
             "project": isolation.as_ref().map(|iso| iso.root().to_string_lossy().into_owned()),
             "copy": isolation.as_ref().map(|iso| iso.path().to_string_lossy().into_owned()),
+            "seq": placed.seq,
+            "number": placed.number,
         })
         .to_string();
         let created = self
@@ -908,6 +1180,7 @@ impl Helpers {
             })
             .map_err(|e| format!("Could not start the helper: {e}"));
         if let Err(e) = created {
+            self.unplace(parent_key);
             if let Some(iso) = &mut isolation {
                 // Never used: nothing in it.
                 crate::worktree::put_away(iso, &spec.description).await;
@@ -936,12 +1209,17 @@ impl Helpers {
             if let Some(iso) = isolation {
                 state.copies.insert(task_id.clone(), Held { iso, unfinished: None });
             }
+            state.placed(parent_key);
             state.helpers.insert(
                 task_id.clone(),
                 Helper {
                     parent_key: parent_key.to_string(),
                     session_key,
                     description: spec.description.clone(),
+                    brief: spec.prompt.clone(),
+                    title: String::new(),
+                    seq: placed.seq,
+                    number: placed.number,
                     kind: spec.kind,
                     speed: spec.speed.clone(),
                     report_limit: collect::report_limit(spec.report_limit),
@@ -976,34 +1254,56 @@ impl Helpers {
     /// the caller's helpers like any other: its row, its progress on the
     /// owner's screen, the session's stop token (the owner's Stop and
     /// stop_task reach it), and one notification when it ends. It takes no
-    /// messages. Returns the launch receipt.
-    pub fn start_work(self: &Arc<Self>, turn: &TurnRequest, description: &str, work: tools::orchestrator::Work) -> Result<(String, String), String> {
+    /// messages. `brief` is what it was asked, whole (`description` is a
+    /// short form of it). Returns the launch receipt.
+    pub fn start_work(
+        self: &Arc<Self>,
+        turn: &TurnRequest,
+        description: &str,
+        brief: &str,
+        work: tools::orchestrator::Work,
+    ) -> Result<(String, String), String> {
         let parent_key = turn.session_key.clone();
         let task_id = format!("h-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
         let session_key = helper_key(&parent_key, &task_id);
-        let inputs = serde_json::json!({ "description": description, "helper_kind": WORK_KIND }).to_string();
-        self.store
-            .engine_create_run(&db::NewRun {
-                id: &task_id,
-                kind: ROW_KIND,
-                session_key: &session_key,
-                agent_id: &turn.seat.agent_id,
-                lane: "subagent",
-                inputs: Some(&inputs),
-                ..Default::default()
-            })
-            .map_err(|e| format!("Could not start {description}: {e}"))?;
+        let placed = self.place(&parent_key, description);
+        let inputs = serde_json::json!({
+            "description": description,
+            "prompt": brief,
+            "helper_kind": WORK_KIND,
+            "seq": placed.seq,
+            "number": placed.number,
+        })
+        .to_string();
+        let created = self.store.engine_create_run(&db::NewRun {
+            id: &task_id,
+            kind: ROW_KIND,
+            session_key: &session_key,
+            agent_id: &turn.seat.agent_id,
+            lane: "subagent",
+            inputs: Some(&inputs),
+            ..Default::default()
+        });
+        if let Err(e) = created {
+            self.unplace(&parent_key);
+            return Err(format!("Could not start {description}: {e}"));
+        }
         let _ = self.store.update_task_running(&task_id);
         let cancel = {
             let mut state = self.state();
             let cancel = state.session_token(&parent_key).child_token();
             state.stops.insert(session_key.clone(), cancel.clone());
+            state.placed(&parent_key);
             state.helpers.insert(
                 task_id.clone(),
                 Helper {
                     parent_key: parent_key.clone(),
                     session_key,
                     description: description.to_string(),
+                    brief: brief.to_string(),
+                    title: String::new(),
+                    seq: placed.seq,
+                    number: placed.number,
                     kind: HelperKind::General,
                     speed: None,
                     report_limit: collect::REPORT_LIMIT,
@@ -1034,7 +1334,11 @@ impl Helpers {
                 Ok(completion) => completion,
                 Err(panic) => this.failed(&id, &format!("the helper crashed: {}", panic_text(&*panic))),
             };
+            let parent = this.parent_of(&id);
             this.finish(&id, completion);
+            if let Some(parent) = parent {
+                this.retitle(&parent);
+            }
         });
         let receipt = launch_result(&task_id);
         Ok((task_id, receipt))
@@ -1167,6 +1471,7 @@ impl Helpers {
         cancel: CancellationToken,
         work: tools::orchestrator::Work,
     ) -> Completion {
+        self.retitle(parent_key);
         self.emit(parent_key, ai::StreamEvent::subagent_start(task_id, description));
         let (progress_tx, mut progress_rx) = mpsc::channel::<ai::StreamEvent>(64);
         let forward = {
@@ -1343,6 +1648,12 @@ impl Helpers {
         };
         let deliver = |sessions: &SessionManager| deliver_text(sessions, message);
 
+        // A helper read back from its row keeps its place and number; its
+        // session's record is held until then.
+        self.hold_record(caller);
+        let _hold = RecordHold { helpers: self, parent_key: caller.to_string() };
+        let kept = row_inputs(&self.store, &row).unwrap_or_default();
+        let mut given: Vec<(&str, u64)> = Vec::new();
         // Decide and deliver under the lock the helper's finish takes, so a
         // message either reaches a running turn or finds the helper finished.
         let resume = {
@@ -1433,10 +1744,43 @@ impl Helpers {
             };
             let copy = state.copies.get(task_id).map(|h| h.iso.path().to_string_lossy().into_owned());
             let req = child::child_request(&parent, task_id, &spec, copy.as_deref(), TurnInput::None);
+            // Read back from its row: its place and number, or, for a row
+            // from before they were kept, the next of each, taken now.
+            let (seq, number) = if state.helpers.contains_key(task_id) {
+                (0, 0)
+            } else {
+                let conversation = state.conversations.entry(caller.to_string()).or_default();
+                let seq = match kept["seq"].as_u64() {
+                    Some(seq) => {
+                        conversation.next_seq = conversation.next_seq.max(seq + 1);
+                        seq
+                    }
+                    None => {
+                        let seq = conversation.take_seq();
+                        given.push(("seq", seq));
+                        seq
+                    }
+                };
+                let number = match kept["number"].as_u64().filter(|n| *n > 0) {
+                    Some(n) => n as u32,
+                    None => {
+                        let n = conversation.take_number(&tools::humanize::description_key(&spec.description));
+                        if n > 0 {
+                            given.push(("number", u64::from(n)));
+                        }
+                        n
+                    }
+                };
+                (seq, number)
+            };
             let helper = state.helpers.entry(task_id.to_string()).or_insert_with(|| Helper {
                 parent_key: caller.to_string(),
                 session_key: row.session_key.clone(),
                 description: spec.description.clone(),
+                brief: spec.prompt.clone(),
+                title: String::new(),
+                seq,
+                number,
                 kind: spec.kind,
                 speed: spec.speed.clone(),
                 report_limit: collect::report_limit(spec.report_limit),
@@ -1492,6 +1836,13 @@ impl Helpers {
             }
             req
         };
+        // A row from before places and numbers were kept keeps the ones
+        // just given.
+        for (field, value) in given {
+            if let Err(e) = self.store.engine_set_run_input(task_id, field, value) {
+                warn!(task_id = %task_id, error = %e, "helper titles: could not keep the helper's {field} on its row");
+            }
+        }
         self.running_again(task_id);
         self.spawn_turn(task_id.to_string(), resume);
         Ok(launch_result(task_id))
@@ -1868,6 +2219,7 @@ impl Helpers {
             .map(|(id, h)| HelperStatus {
                 task_id: id.clone(),
                 description: h.description.clone(),
+                title: h.shown_title(),
                 running: h.running,
                 waiting: h.held.is_some(),
                 session_key: h.session_key.clone(),
@@ -1976,7 +2328,11 @@ impl Helpers {
                         crashed
                     }
                 };
+                let parent = this.parent_of(&task_id);
                 next = this.finish(&task_id, completion);
+                if let Some(parent) = parent {
+                    this.retitle(&parent);
+                }
             }
         });
     }
@@ -2018,6 +2374,7 @@ impl Helpers {
                 h.map(|h| h.description.clone()).unwrap_or_default(),
             )
         };
+        self.retitle(&parent_key);
         self.emit(&parent_key, ai::StreamEvent::subagent_start(task_id, description.as_str()));
 
         let progress = self.progress_forwarder(&parent_key, task_id);
@@ -2234,20 +2591,36 @@ impl Helpers {
         Some(tx)
     }
 
-    fn emit(&self, parent_key: &str, event: ai::StreamEvent) {
-        // Background work's latest progress line is kept with it, so a
-        // screen that opens after the event still reads what it is doing.
-        if event.event_type == ai::StreamEventType::SubagentProgress
-            && let Some(widgets) = event.widgets.as_ref()
-            && let (Some(task_id), Some(activity)) = (widgets["task_id"].as_str(), widgets["current_operation"].as_str())
-            && let Some(helper) = self.state().helpers.get_mut(task_id)
-        {
-            helper.activity = activity.to_string();
-            helper.call = None;
-        }
+    /// A helper's start, step or end for the owner's screen, with its
+    /// title as it stands ([`Helper::shown_title`]; the description the
+    /// event carries for a helper already gone), sent under the lock the
+    /// title is read under.
+    fn emit(&self, parent_key: &str, mut event: ai::StreamEvent) {
+        let widgets = event.widgets.get_or_insert_with(|| serde_json::json!({}));
+        let task_id = widgets["task_id"].as_str().unwrap_or_default().to_string();
+        // Held until the event is sent: a retitle can't slip between reading
+        // the title and sending it.
+        let mut state = self.state();
+        let title = match state.helpers.get_mut(&task_id) {
+            Some(h) => {
+                // Background work's latest progress line is kept with it, so
+                // a screen that opens after the event still reads what it is
+                // doing.
+                if event.event_type == ai::StreamEventType::SubagentProgress
+                    && let Some(activity) = widgets["current_operation"].as_str()
+                {
+                    h.activity = activity.to_string();
+                    h.call = None;
+                }
+                h.shown_title()
+            }
+            None => widgets["description"].as_str().unwrap_or_default().to_string(),
+        };
+        widgets["title"] = title.into();
         if let Some(ui) = &self.ui {
-            let _ = ui.send(HelperEvent { parent_session_key: parent_key.to_string(), event });
+            let _ = ui.send(HelperEvent { parent_session_key: parent_key.to_string(), update: HelperUpdate::Step(event) });
         }
+        drop(state);
     }
 
     /// A helper's turn ended. A message or notification that reached its
@@ -2733,6 +3106,7 @@ mod tests {
                 starter: starter.unwrap_or_else(|| Arc::new(Scripted { started: started_tx, busy: busy.clone() })),
                 wake: Some(wake_tx),
                 ui: Some(ui_tx),
+                changes: tokio::sync::Notify::new(),
                 foreground_budget: budget,
                 state: Mutex::new(State::default()),
             });
@@ -2946,8 +3320,9 @@ mod tests {
         let mut kinds = Vec::new();
         while let Ok(e) = rig.ui.try_recv() {
             assert_eq!(e.parent_session_key, "agent:bookkeeper:web");
-            assert!(!e.event.text.contains("narrating"), "helper text never reaches the parent's screen");
-            kinds.push(e.event.event_type);
+            let Some(ev) = step(&e) else { continue };
+            assert!(!ev.text.contains("narrating"), "helper text never reaches the parent's screen");
+            kinds.push(ev.event_type.clone());
         }
         use ai::StreamEventType::*;
         assert!(kinds.iter().all(|k| matches!(k, SubagentStart | SubagentProgress | SubagentComplete)), "{kinds:?}");
@@ -3054,6 +3429,355 @@ mod tests {
     }
 
     /// Work handed a oneshot to finish on and a slot to report its stop.
+    /// A helper's start, step or end; `None` for a titles event.
+    fn step(e: &HelperEvent) -> Option<&StreamEvent> {
+        match &e.update {
+            HelperUpdate::Step(ev) => Some(ev),
+            HelperUpdate::Titles(_) => None,
+        }
+    }
+
+    /// Every event on the owner's screen so far.
+    async fn screen(rig: &mut Rig) -> Vec<HelperEvent> {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut out = Vec::new();
+        while let Ok(e) = rig.ui.try_recv() {
+            out.push(e);
+        }
+        out
+    }
+
+    const OPENING: &str = "What concrete dated evidence exists between July 22, 2026 and October 1, 2026 that";
+
+    /// Research runs started alike are told apart as they start: each
+    /// start and step carries the title, one event retitles every running
+    /// sibling at once, the list reads the same titles, and the running set
+    /// wakes whoever watches it. When one ends the other reverts.
+    #[tokio::test]
+    async fn sibling_titles_follow_starts_and_ends() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let nvidia = format!("{OPENING} Nvidia revenue grew in Q3?");
+        let apple = format!("{OPENING} Apple shipped a foldable?");
+        let description = |q: &str| format!("research: {}", tools::humanize::cap_words(q, tools::humanize::DESCRIPTION_CAP));
+
+        let (work_a, go_a, _) = gated_work("A");
+        let (a, _) = rig.helpers.start_work(&owner, &description(&nvidia), &nvidia, work_a).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), rig.helpers.changes().notified()).await.expect("a start wakes the list");
+        let alone = screen(&mut rig).await;
+        let start = alone.iter().filter_map(step).find(|e| e.event_type == ai::StreamEventType::SubagentStart).unwrap();
+        assert_eq!(start.widgets.as_ref().unwrap()["title"], description(&nvidia), "alone, its natural title");
+
+        let (work_b, _go_b, _) = gated_work("B");
+        let (b, _) = rig.helpers.start_work(&owner, &description(&apple), &apple, work_b).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), rig.helpers.changes().notified()).await.expect("a start wakes the list");
+        let events = screen(&mut rig).await;
+        let titles: Vec<_> = events
+            .iter()
+            .filter_map(|e| match &e.update {
+                HelperUpdate::Titles(t) => Some(t.clone()),
+                HelperUpdate::Step(_) => None,
+            })
+            .collect();
+        let mut retitled = titles.last().expect("one titles event").clone();
+        retitled.sort();
+        let mut expected = vec![(a.clone(), "research: …Nvidia revenue grew in Q3?".to_string()), (b.clone(), "research: …Apple shipped a foldable?".to_string())];
+        expected.sort();
+        assert_eq!(retitled, expected, "both siblings in one event");
+        let progress = events
+            .iter()
+            .filter_map(step)
+            .find(|e| e.event_type == ai::StreamEventType::SubagentProgress && e.widgets.as_ref().unwrap()["task_id"] == b.as_str())
+            .unwrap();
+        assert_eq!(progress.widgets.as_ref().unwrap()["title"], "research: …Apple shipped a foldable?", "a step carries the title");
+        let listed: std::collections::HashMap<_, _> = rig.helpers.list(Some(key), false).into_iter().map(|h| (h.task_id, h.title)).collect();
+        assert_eq!(listed[&a], "research: …Nvidia revenue grew in Q3?");
+
+        let _ = go_a.send(());
+        rig.next_wake().await;
+        let events = screen(&mut rig).await;
+        let complete = events.iter().filter_map(step).find(|e| e.event_type == ai::StreamEventType::SubagentComplete).unwrap();
+        assert_eq!(complete.widgets.as_ref().unwrap()["title"], "research: …Nvidia revenue grew in Q3?", "an end carries its title");
+        let reverted = events.iter().find_map(|e| match &e.update {
+            HelperUpdate::Titles(t) => Some(t.clone()),
+            HelperUpdate::Step(_) => None,
+        });
+        assert_eq!(reverted, Some(vec![(b.clone(), description(&apple))]), "alone again, B reads as it did");
+        assert_eq!(rig.helpers.list(Some(key), false).into_iter().find(|h| h.task_id == b).unwrap().title, description(&apple));
+    }
+
+    /// Only helpers of one conversation are siblings: alike work one level
+    /// down (a helper's own helper) keeps its natural title.
+    #[tokio::test]
+    async fn helpers_at_different_depths_are_not_siblings() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let top = "agent:analyst:web";
+        let owner = rig.owner_turn(top);
+        let q1 = format!("{OPENING} Nvidia revenue grew in Q3?");
+        let q2 = format!("{OPENING} Apple shipped a foldable?");
+        let d = "research: rivals";
+        let (w1, _g1, _) = gated_work("1");
+        let (a, _) = rig.helpers.start_work(&owner, d, &q1, w1).unwrap();
+        let below = rig.owner_turn(&helper_key(top, &a));
+        let (w2, _g2, _) = gated_work("2");
+        let (b, _) = rig.helpers.start_work(&below, d, &q2, w2).unwrap();
+        let _ = screen(&mut rig).await;
+        let title = |id: &str| rig.helpers.list(None, false).into_iter().find(|h| h.task_id == id).unwrap().title;
+        assert_eq!((title(&a), title(&b)), (d.to_string(), d.to_string()));
+    }
+
+    /// An event for a helper already gone still names it: its title falls
+    /// back to the description the event carries, never empty.
+    #[tokio::test]
+    async fn an_event_for_a_gone_helper_falls_back_to_its_description() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        rig.helpers.emit("agent:analyst:web", StreamEvent::subagent_complete("h-gone", "research: rents", true));
+        let e = rig.ui.try_recv().unwrap();
+        assert_eq!(step(&e).unwrap().widgets.as_ref().unwrap()["title"], "research: rents");
+    }
+
+    /// The number helper `id` was given as it started.
+    fn number_of(rig: &Rig, id: &str) -> u32 {
+        rig.helpers.state().helpers[id].number
+    }
+
+    /// The titles of the session's running helpers, which must all differ.
+    fn assert_titles_distinct(rig: &Rig, key: &str) {
+        let titles: Vec<String> = rig.helpers.list(Some(key), false).into_iter().filter(|h| h.running).map(|h| h.title).collect();
+        let set: std::collections::HashSet<String> = titles.iter().map(|t| tools::humanize::title_key(t)).collect();
+        assert_eq!(set.len(), titles.len(), "{titles:#?}");
+    }
+
+    /// The reviewer's case: X runs and finishes, Y starts, W (asked what X
+    /// was) starts, X is resumed. X and W never read the same.
+    #[tokio::test]
+    async fn a_resumed_helper_never_reads_as_a_later_twin() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:bookkeeper:web";
+        let owner = rig.owner_turn(key);
+        let ask = |prompt: &str| serde_json::json!({"description": "scan logs", "prompt": prompt, "helper_type": "explore"});
+        let x = task_id_of(&rig.helpers.delegate(&owner, None, &[], &ask("Scan the payment logs.")).await.unwrap());
+        let child = rig.next_turn().await;
+        rig.heard(&child.request.session_key);
+        child.answer("Three errors.").await;
+        rig.next_wake().await;
+        let _y = task_id_of(&rig.helpers.delegate(&owner, None, &[], &ask("Scan the login logs.")).await.unwrap());
+        let _child_y = rig.next_turn().await;
+        let w = task_id_of(&rig.helpers.delegate(&owner, None, &[], &ask("Scan the payment logs.")).await.unwrap());
+        let _child_w = rig.next_turn().await;
+        rig.helpers.send(&owner, None, &[], &x, "Which job threw them?", None).await.unwrap();
+        let _resumed = rig.next_turn().await;
+        let _ = screen(&mut rig).await;
+        assert_titles_distinct(&rig, key);
+        assert_ne!(title_of(&rig, &x), title_of(&rig, &w));
+        assert_eq!((number_of(&rig, &x), number_of(&rig, &w)), (1, 3));
+    }
+
+    /// Helpers start, finish and resume in any order: the running ones'
+    /// titles always differ, and no number ever changes.
+    #[tokio::test]
+    async fn titles_stay_distinct_through_starts_ends_and_resumes() {
+        let mut seed = 3u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let prompts = ["Scan the payment logs.", "Scan the login logs.", "Scan the payment logs for refunds."];
+        for _ in 0..4 {
+            let mut rig = Rig::new(FOREGROUND_BUDGET);
+            let key = "agent:bookkeeper:web";
+            let owner = rig.owner_turn(key);
+            let mut running: Vec<(String, Started)> = Vec::new();
+            let mut finished: Vec<String> = Vec::new();
+            let mut numbers: HashMap<String, u32> = HashMap::new();
+            for _ in 0..12 {
+                match next() % 3 {
+                    0 => {
+                        let input = serde_json::json!({"description": "scan logs", "prompt": prompts[next() % prompts.len()], "helper_type": "explore"});
+                        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
+                        running.push((id, rig.next_turn().await));
+                    }
+                    1 if !running.is_empty() => {
+                        let (id, child) = running.remove(next() % running.len());
+                        rig.heard(&child.request.session_key);
+                        child.answer("Done.").await;
+                        rig.next_wake().await;
+                        finished.push(id);
+                    }
+                    _ if !finished.is_empty() => {
+                        let id = finished.remove(next() % finished.len());
+                        rig.helpers.send(&owner, None, &[], &id, "One more thing.", None).await.unwrap();
+                        running.push((id, rig.next_turn().await));
+                    }
+                    _ => continue,
+                }
+                let _ = screen(&mut rig).await;
+                assert_titles_distinct(&rig, key);
+                for (id, _) in &running {
+                    assert_eq!(*numbers.entry(id.clone()).or_insert(number_of(&rig, id)), number_of(&rig, id), "{id}'s number changed");
+                }
+            }
+        }
+    }
+
+    /// A session with no helper in hand drops its record; the next helper
+    /// reads it back from the rows, so no number repeats. A row from before
+    /// numbers were kept is given the next free one when it resumes.
+    #[tokio::test]
+    async fn a_session_record_is_dropped_and_read_back() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let (work, go, _) = gated_work("A");
+        let (a, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work).unwrap();
+        let _ = go.send(());
+        rig.next_wake().await;
+        let _ = screen(&mut rig).await;
+        assert!(!rig.helpers.state().helpers.contains_key(&a));
+        assert!(!rig.helpers.state().conversations.contains_key(key), "nothing in hand: dropped");
+        let (work, _go, _) = gated_work("B");
+        let (b, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work).unwrap();
+        assert_eq!(number_of(&rig, &b), 2, "read back: 1 was A's");
+    }
+
+    /// A helper's row from before numbers were kept resumes with the next
+    /// free number, taken for good.
+    #[tokio::test]
+    async fn an_old_row_resumes_with_the_next_free_number() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:bookkeeper:web";
+        let owner = rig.owner_turn(key);
+        let input = serde_json::json!({"description": "scan logs", "prompt": "Scan.", "helper_type": "explore"});
+        let first = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
+        let _child = rig.next_turn().await;
+        let old = "h-0123456789ab";
+        let inputs = serde_json::json!({"description": "scan logs", "prompt": "Scan more.", "helper_kind": "explore"}).to_string();
+        rig.store
+            .engine_create_run(&db::NewRun { id: old, kind: ROW_KIND, session_key: &helper_key(key, old), agent_id: "bookkeeper", lane: "subagent", inputs: Some(&inputs), ..Default::default() })
+            .unwrap();
+        rig.store.update_task_completed(old, Some("Done.")).unwrap();
+        rig.sessions.get_or_create(&helper_key(key, old), "owner-1").unwrap();
+        rig.helpers.send(&owner, None, &[], old, "Again?", None).await.unwrap();
+        let _resumed = rig.next_turn().await;
+        let _ = screen(&mut rig).await;
+        assert_eq!((number_of(&rig, &first), number_of(&rig, old)), (1, 2));
+        assert_titles_distinct(&rig, key);
+        let kept: serde_json::Value = serde_json::from_str(&rig.store.engine_get_run(old).unwrap().unwrap().inputs.unwrap()).unwrap();
+        assert_eq!((kept["number"].as_u64(), kept["description"].as_str()), (Some(2), Some("scan logs")), "kept on its row");
+        assert!(kept["seq"].as_u64().is_some());
+    }
+
+    /// A start holds its session's record from the moment it checks it:
+    /// the last helper ending meanwhile doesn't drop it, so the start never
+    /// gets a place or number given before.
+    #[tokio::test]
+    async fn a_record_held_for_a_start_is_never_dropped_under_it() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let (work, go, _) = gated_work("A");
+        rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work).unwrap();
+        // A second start checks the record...
+        rig.helpers.hold_record(key);
+        // ...and the last helper ends before it takes its place.
+        let _ = go.send(());
+        rig.next_wake().await;
+        let _ = screen(&mut rig).await;
+        assert!(rig.helpers.state().conversations.get(key).is_some_and(|c| c.loaded), "held: not dropped");
+        let placed = rig.helpers.give_place(key, "research: rents");
+        rig.helpers.state().placed(key);
+        assert_eq!((placed.seq, placed.number), (1, 2));
+        assert!(!rig.helpers.state().conversations.contains_key(key), "let go with nothing in hand: dropped");
+    }
+
+    /// Helper `id`'s title as the list shows it.
+    fn title_of(rig: &Rig, id: &str) -> String {
+        rig.helpers.list(None, false).into_iter().find(|h| h.task_id == id).map(|h| h.title).unwrap_or_default()
+    }
+
+    /// A helper's number is given as it starts and never changes: one that
+    /// ends doesn't renumber the others, and a later one never takes the
+    /// number of one that ended.
+    #[tokio::test]
+    async fn an_ended_sibling_never_renumbers_the_others() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let (work_a, go_a, _) = gated_work("A");
+        let (a, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work_a).unwrap();
+        let (work_b, _go_b, _) = gated_work("B");
+        let (b, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work_b).unwrap();
+        let _ = screen(&mut rig).await;
+        assert_eq!((title_of(&rig, &a), title_of(&rig, &b)), ("research: rents · 1".to_string(), "research: rents · 2".to_string()));
+
+        let _ = go_a.send(());
+        rig.next_wake().await;
+        let _ = screen(&mut rig).await;
+        assert_eq!(title_of(&rig, &b), "research: rents", "alone, B needs no number");
+        assert_eq!(number_of(&rig, &b), 2, "B keeps its number as A ends");
+        let (work_c, _go_c, _) = gated_work("C");
+        let (c, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work_c).unwrap();
+        let _ = screen(&mut rig).await;
+        assert_eq!(title_of(&rig, &c), "research: rents · 3", "the number A had stays A's");
+        assert_eq!(title_of(&rig, &b), "research: rents · 2", "beside C, B shows the number it always had");
+    }
+
+    /// Siblings started in the same second are numbered in the order they
+    /// started, not by their ids.
+    #[tokio::test]
+    async fn same_second_starts_number_in_start_order() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:analyst:web");
+        let mut ids = Vec::new();
+        let mut gates = Vec::new();
+        for _ in 0..5 {
+            let (work, go, _) = gated_work("x");
+            gates.push(go);
+            ids.push(rig.helpers.start_work(&owner, "research: rents", "Phoenix rents", work).unwrap().0);
+        }
+        let _ = screen(&mut rig).await;
+        let titles: Vec<String> = ids.iter().map(|id| title_of(&rig, id)).collect();
+        assert_eq!(titles, ["research: rents · 1", "research: rents · 2", "research: rents · 3", "research: rents · 4", "research: rents · 5"]);
+    }
+
+    /// A finished helper resumed, after a restart too, keeps its number;
+    /// and one started after a restart never takes a number given before
+    /// it.
+    #[tokio::test]
+    async fn numbers_survive_a_resume_and_a_restart() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:bookkeeper:web";
+        let owner = rig.owner_turn(key);
+        let input = serde_json::json!({"description": "scan logs", "prompt": "Scan.", "helper_type": "explore"});
+        let first = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
+        let child_1 = rig.next_turn().await;
+        let second = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
+        let child_2 = rig.next_turn().await;
+        let _ = screen(&mut rig).await;
+        assert_eq!((title_of(&rig, &first), title_of(&rig, &second)), ("scan logs · 1".to_string(), "scan logs · 2".to_string()));
+        for child in [child_1, child_2] {
+            rig.heard(&child.request.session_key);
+            child.answer("Three errors.").await;
+            rig.next_wake().await;
+        }
+
+        // A restart: a fresh registry knows them only by their rows.
+        let Rig { store, _dir, .. } = rig;
+        let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
+        let owner = rig.owner_turn(key);
+        rig.helpers.send(&owner, None, &[], &second, "Which job threw them?", None).await.unwrap();
+        let _resumed = rig.next_turn().await;
+        let _ = screen(&mut rig).await;
+        assert_eq!(number_of(&rig, &second), 2, "resumed, it keeps its number");
+        let third = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
+        let _child_3 = rig.next_turn().await;
+        let _ = screen(&mut rig).await;
+        assert_eq!(title_of(&rig, &third), "scan logs · 3", "1 and 2 were given before the restart");
+        assert_eq!(title_of(&rig, &second), "scan logs · 2");
+        let _ = first;
+    }
+
     fn gated_work(report: &str) -> (tools::orchestrator::Work, oneshot::Sender<()>, oneshot::Receiver<bool>) {
         let (go, wait) = oneshot::channel::<()>();
         let (stopped_tx, stopped) = oneshot::channel::<bool>();
@@ -3105,7 +3829,7 @@ mod tests {
                 Ok("done".to_string())
             })
         });
-        let (id, _) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
+        let (id, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents in 2026", work).unwrap();
         let run_session = helper_key(key, &id);
 
         let first = tokio::time::timeout(Duration::from_secs(5), rig.started.recv()).await.unwrap().unwrap();
@@ -3140,14 +3864,14 @@ mod tests {
         let key = "agent:analyst:web";
         let owner = rig.owner_turn(key);
         let (work, go, _stopped) = gated_work("# Research: rents\nRents rose 4%.");
-        let (id, receipt) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
+        let (id, receipt) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents in 2026", work).unwrap();
         assert_eq!(receipt, launch_result(&id), "the receipt, while the work still runs");
         assert!(rig.helpers.list(Some(key), false).iter().any(|h| h.task_id == id && h.running));
 
         let mut activity = None;
         for _ in 0..3 {
             let ev = tokio::time::timeout(Duration::from_secs(5), rig.ui.recv()).await.unwrap().unwrap();
-            if let Some(op) = ev.event.widgets.as_ref().and_then(|w| w["current_operation"].as_str()) {
+            if let Some(op) = step(&ev).and_then(|e| e.widgets.as_ref()).and_then(|w| w["current_operation"].as_str()) {
                 activity = Some((ev.parent_session_key.clone(), op.to_string()));
                 break;
             }
@@ -3172,7 +3896,7 @@ mod tests {
         let key = "agent:analyst:web";
         let owner = rig.owner_turn(key);
         let (work, _go, stopped) = gated_work("never");
-        let (id, _) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
+        let (id, _) = rig.helpers.start_work(&owner, "research: rents", "Phoenix rents in 2026", work).unwrap();
         rig.helpers.stop_session(Some(key));
         let ended = tokio::time::timeout(Duration::from_secs(5), stopped).await.expect("the stop ended the work");
         assert_ne!(ended, Ok(false), "it ended by the stop, not by finishing");
@@ -3202,6 +3926,7 @@ mod tests {
             vec![HelperStatus {
                 task_id: id.clone(),
                 description: "read the ledger".into(),
+                title: "read the ledger".into(),
                 running: true,
                 session_key: helper_key("agent:bookkeeper:web", &id),
                 call: None,
@@ -3238,7 +3963,7 @@ mod tests {
         let done = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let ev = rig.ui.recv().await.expect("the helper's events");
-                if ev.event.event_type == ai::StreamEventType::SubagentComplete {
+                if step(&ev).is_some_and(|e| e.event_type == ai::StreamEventType::SubagentComplete) {
                     return ev;
                 }
             }
@@ -3246,7 +3971,8 @@ mod tests {
         .await
         .expect("the stop is heard within a second");
         assert_eq!(done.parent_session_key, key);
-        assert_eq!(done.event.widgets.as_ref().map(|w| w["success"].clone()), Some(serde_json::json!(false)), "{:?}", done.event);
+        let done = step(&done).unwrap();
+        assert_eq!(done.widgets.as_ref().map(|w| w["success"].clone()), Some(serde_json::json!(false)), "{done:?}");
         // The row follows the event at once.
         for _ in 0..20 {
             if !rig.notification_rows(key).is_empty() {
@@ -4532,7 +5258,7 @@ mod tests {
         let (a_id, a, b) = a_with_running_child(&mut rig, &owner).await;
         let b_id = split_helper_key(&b.request.session_key).unwrap().1.to_string();
         let (work, go, _stopped) = gated_work("Rents rose 4%.");
-        let (r_id, _) = rig.helpers.start_work(&b.request, "research: rents", work).unwrap();
+        let (r_id, _) = rig.helpers.start_work(&b.request, "research: rents", "Phoenix rents in 2026", work).unwrap();
         b.answer("Research is running.").await;
         until_held(&rig, &b_id).await;
         a.answer("Waiting on the contacts.").await;
@@ -4566,7 +5292,7 @@ mod tests {
         let a_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Plan.", None)).await.unwrap());
         let a = rig.next_turn().await;
         let (work, _go, stopped) = gated_work("never");
-        rig.helpers.start_work(&a.request, "research: rents", work).unwrap();
+        rig.helpers.start_work(&a.request, "research: rents", "Phoenix rents in 2026", work).unwrap();
         a.answer("Research is running.").await;
         until_held(&rig, &a_id).await;
         let said = rig.helpers.stop("agent:sdr:web", &a_id).unwrap();
@@ -4578,7 +5304,7 @@ mod tests {
         let b_id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Price it.", None)).await.unwrap());
         let b = rig.next_turn().await;
         let (work, _go, stopped) = gated_work("never");
-        rig.helpers.start_work(&b.request, "research: prices", work).unwrap();
+        rig.helpers.start_work(&b.request, "research: prices", "Phoenix rents in 2026", work).unwrap();
         let _ = b.events.send(StreamEvent::error("provider down")).await;
         let _ = b.events.send(StreamEvent::done()).await;
         let ended = tokio::time::timeout(Duration::from_secs(5), stopped).await.expect("the research stopped with it");
@@ -4596,7 +5322,7 @@ mod tests {
         let (_a_id, _a, b) = a_with_running_child(&mut rig, &owner).await;
         let b_id = split_helper_key(&b.request.session_key).unwrap().1.to_string();
         let (work, _go, stopped) = gated_work("never");
-        let (r_id, _) = rig.helpers.start_work(&b.request, "research: rents", work).unwrap();
+        let (r_id, _) = rig.helpers.start_work(&b.request, "research: rents", "Phoenix rents in 2026", work).unwrap();
         let tree = rig.helpers.list(Some("agent:sdr:web"), true);
         let research = tree.iter().find(|h| h.task_id == r_id).expect("listed from the top");
         assert!(research.running && research.parent_key == b.request.session_key);
@@ -4653,7 +5379,7 @@ mod tests {
         let (a_id, a, b) = a_with_running_child(&mut rig, &owner).await;
         let b_id = split_helper_key(&b.request.session_key).unwrap().1.to_string();
         let (work, _go, stopped) = gated_work("never");
-        rig.helpers.start_work(&b.request, "research: rents", work).unwrap();
+        rig.helpers.start_work(&b.request, "research: rents", "Phoenix rents in 2026", work).unwrap();
         b.answer("Research is running.").await;
         until_held(&rig, &b_id).await;
         a.answer("Waiting on the contacts.").await;

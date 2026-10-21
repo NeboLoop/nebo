@@ -791,6 +791,11 @@ export function createChatController(config: ChatControllerConfig) {
     helpers = applyHelperEvent(helpers, 'subagent_complete', data);
   }
 
+  function handleSubagentTitles(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_titles', data);
+  }
+
   function handleSubagentProgress(data: any) {
     if (!isMyEvent(data)) return;
     helpers = applyHelperEvent(helpers, 'subagent_progress', data);
@@ -953,6 +958,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('subagent_start', handleSubagentStart));
   unsubs.push(onServer('subagent_progress', handleSubagentProgress));
   unsubs.push(onServer('subagent_complete', handleSubagentComplete));
+  unsubs.push(ws.on('subagent_titles', handleSubagentTitles));
   unsubs.push(onServer('session_reset', handleSessionReset));
 
   // The agreed goal: loaded with the thread, then kept by `goal_status`.

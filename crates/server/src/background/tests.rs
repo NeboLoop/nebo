@@ -184,6 +184,7 @@ fn helper(task_id: &str, running: bool, parent: &str, agent: &str) -> agent::har
     agent::harness::delegation::HelperStatus {
         task_id: task_id.into(),
         description: "price the Rivera order".into(),
+        title: "price the Rivera order".into(),
         running,
         session_key: format!("subagent:{parent}:{task_id}"),
         call: Some(tools::humanize::call("read_file", &serde_json::json!({"path": "orders.csv"}))),
@@ -208,6 +209,14 @@ fn helpers_list_the_running_ones_where_they_report() {
     assert_eq!(t.session_key.as_deref(), Some("agent:ava:web"));
     assert_eq!(t.started_at, Some(500));
     assert_eq!(t.actions, vec![Action::Stop]);
+}
+
+/// A helper is listed by its title among its siblings, which the helper
+/// registry keeps (`tools::humanize::sibling_titles`).
+#[test]
+fn a_helper_is_listed_by_its_title() {
+    let h = agent::harness::delegation::HelperStatus { title: "price the Rivera order — …Ohio".into(), ..helper("h-1", true, "agent:ava:web", "ava") };
+    assert_eq!(helpers(vec![h], &|_| None)[0].title, "price the Rivera order — …Ohio");
 }
 
 /// An employee's list is its own work and the work it passed on; "main"
@@ -319,7 +328,7 @@ fn output_shows_its_end() {
     let long = format!("{}END", "x".repeat(OUTPUT_TAIL_CHARS));
     let t = tail(&long);
     assert!(t.truncated && t.output.ends_with("END") && t.output.chars().count() == OUTPUT_TAIL_CHARS);
-    assert_eq!(tail("ok"), OutputTail { output: "ok".into(), truncated: false });
+    assert_eq!(tail("ok"), OutputTail { output: "ok".into(), truncated: false, brief: String::new() });
 }
 
 // ── over the API, on a running server ───────────────────────────────────
@@ -352,7 +361,26 @@ async fn the_api_lists_acts_and_stops_everything() {
     assert_eq!(t["actions"], serde_json::json!(["pause", "delete"]));
 
     let out = nebo.get_ok(&format!("/background/{}/output", urlencode(&id))).await;
-    assert_eq!(out, serde_json::json!({ "output": "", "truncated": false }), "it has not run yet");
+    assert_eq!(out, serde_json::json!({ "output": "", "truncated": false, "brief": "" }), "it has not run yet; a timer has no brief");
+
+    // A helper's card shows its title; its whole question comes with its
+    // output, when the owner opens it.
+    let helper_id = format!("h-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let question = "What concrete dated evidence exists between July 22 and October 1 that Phoenix rents fell?";
+    let inputs = serde_json::json!({ "description": "research: What concrete dated evidence…", "prompt": question, "helper_kind": "research" }).to_string();
+    nebo.store()
+        .engine_create_run(&db::NewRun {
+            id: &helper_id,
+            kind: "helper",
+            session_key: &format!("subagent:agent:{agent}:web:{helper_id}"),
+            agent_id: &agent,
+            lane: "subagent",
+            inputs: Some(&inputs),
+            ..Default::default()
+        })
+        .unwrap();
+    let out = nebo.get_ok(&format!("/background/{}/output", urlencode(&format!("helper:{helper_id}")))).await;
+    assert_eq!(out["brief"], question, "{out}");
 
     let (status, _) = nebo.post(&format!("/background/{}/approve", urlencode(&id)), &serde_json::json!({})).await;
     assert_eq!(status, 400, "a timer has nothing to approve");

@@ -188,6 +188,12 @@ pub struct EngineEffect {
     pub completed_at: Option<i64>,
 }
 
+/// Runs of one kind under a session-key prefix, as a range on
+/// `idx_engine_runs_session` (every key that starts with the prefix sorts
+/// between it and it followed by the last code point).
+const RUNS_UNDER: &str = "SELECT id, session_key, inputs FROM engine_runs
+     WHERE session_key >= ?2 AND session_key < ?2 || char(1114111) AND kind = ?1";
+
 const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at, pending_questions";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
@@ -844,6 +850,31 @@ impl Store {
             .db_err("engine_queued_runs_of_kind")?
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_queued_runs_of_kind")?;
+        Ok(rows)
+    }
+
+    /// Set one number field of run `id`'s inputs, keeping the rest.
+    pub fn engine_set_run_input(&self, id: &str, field: &str, value: u64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET inputs = json_set(COALESCE(inputs, '{}'), '$.' || ?2, ?3) WHERE id = ?1",
+            params![id, field, value as i64],
+        )
+        .db_err("engine_set_run_input")?;
+        Ok(())
+    }
+
+    /// The id, session key and inputs of every run of one kind whose
+    /// session key starts with `prefix`, whatever its state: a seek on the
+    /// session index ([`RUNS_UNDER`]).
+    pub fn engine_run_inputs_under(&self, kind: &str, prefix: &str) -> Result<Vec<(String, String, Option<String>)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(RUNS_UNDER).db_err("engine_run_inputs_under")?;
+        let rows = stmt
+            .query_map(params![kind, prefix], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .db_err("engine_run_inputs_under")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_run_inputs_under")?;
         Ok(rows)
     }
 
@@ -1824,6 +1855,24 @@ mod tests {
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-engine-test-{}.db", uuid::Uuid::new_v4()));
         Store::new(&path.to_string_lossy()).expect("store")
+    }
+
+    /// Runs under a session-key prefix: every one that starts with it and
+    /// none other, read by a seek on the session index, never a scan.
+    #[test]
+    fn runs_under_a_prefix_seek_the_session_index() {
+        let store = store();
+        for (id, key) in [("h-1", "subagent:agent:a:web:h-1"), ("h-2", "subagent:agent:a:web:h-2"), ("h-3", "subagent:agent:a:webx:h-3"), ("h-4", "subagent:agent:b:web:h-4")] {
+            store
+                .engine_create_run(&NewRun { id, kind: "helper", session_key: key, agent_id: "a", lane: "subagent", inputs: Some("{\"number\":1}"), ..Default::default() })
+                .unwrap();
+        }
+        let under: Vec<String> = store.engine_run_inputs_under("helper", "subagent:agent:a:web:").unwrap().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(under, ["h-1", "h-2"]);
+        let conn = store.conn().unwrap();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {}", super::RUNS_UNDER)).unwrap();
+        let plan: Vec<String> = stmt.query_map(params!["helper", "subagent:agent:a:web:"], |row| row.get::<_, String>(3)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH engine_runs USING INDEX idx_engine_runs_session (session_key>? AND session_key<?)")), "{plan:#?}");
     }
 
     fn signal<'a>(key: &'a str, idem: &'a str) -> NewEvent<'a> {
