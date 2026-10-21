@@ -9,8 +9,10 @@
 //! - `fixture-upstream`: an address each accepted connection is relayed to,
 //!   so a test can answer the requests in-process.
 //! - `fixture-launches`: appended with this process's pid on every start.
-//! - `fixture-token`: written with the `NEBO_SIDECAR_TOKEN` this launch was
-//!   given, so the in-process server can refuse calls that do not carry it.
+//! - `fixture-token`, `fixture-app-token`, `fixture-port`: written with the
+//!   `NEBO_SIDECAR_TOKEN` and `NEBO_APP_TOKEN` this launch was given and the
+//!   port it listens on, so the in-process server can refuse calls without
+//!   the sidecar token and answer the health challenge as the SDKs do.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -29,6 +31,8 @@ fn main() {
         .expect("fixture-launches");
     writeln!(launches, "{}", std::process::id()).expect("record launch");
     fs::write(dir.join("fixture-token"), &token).expect("fixture-token");
+    let app_token = env::var("NEBO_APP_TOKEN").expect("NEBO_APP_TOKEN");
+    fs::write(dir.join("fixture-app-token"), &app_token).expect("fixture-app-token");
 
     // Nebo holds the write end of our stdin: EOF means Nebo is gone.
     thread::spawn(|| {
@@ -45,6 +49,7 @@ fn main() {
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local addr");
+    fs::write(dir.join("fixture-port"), addr.port().to_string()).expect("fixture-port");
     println!("nebo-app-listening {addr}");
     std::io::stdout().flush().expect("announce");
     eprintln!("fixture: listening on {addr}");

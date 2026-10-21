@@ -7,7 +7,9 @@
 //! The fixture relays every connection to a stand-in sidecar server each
 //! [`TestApp`] runs in this process ([`serve_as_sidecar`]): it answers
 //! `UIService` the way the SDKs do, refusing any call that does not carry the
-//! launch's `NEBO_SIDECAR_TOKEN`.
+//! launch's `NEBO_SIDECAR_TOKEN` and answering the health challenge with the
+//! proof ([`crate::runtime::proof`]) — or, told to be an imposter, with the
+//! proof a process that only saw the sidecar token could make.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -66,7 +68,7 @@ impl TestApp {
         .expect("manifest");
         let app = Self { _root: root, id: id.to_string(), home, tool_dir };
         app.install_binary();
-        let upstream = serve_as_sidecar(app.tool_dir.join("fixture-token"));
+        let upstream = serve_as_sidecar(app.tool_dir.clone());
         std::fs::write(app.tool_dir.join("fixture-upstream"), upstream.to_string()).expect("fixture-upstream");
         app
     }
@@ -97,6 +99,17 @@ impl TestApp {
         std::fs::write(self.tool_dir.join("fixture-mode"), mode).expect("fixture-mode");
     }
 
+    /// Answer the health challenge as an imposter would: something that took
+    /// the sidecar's place and saw the sidecar token, but never the app token.
+    pub fn set_imposter(&self, imposter: bool) {
+        let flag = self.tool_dir.join("fixture-imposter");
+        if imposter {
+            std::fs::write(flag, "").expect("fixture-imposter");
+        } else {
+            let _ = std::fs::remove_file(flag);
+        }
+    }
+
     /// How many times the program has started.
     pub fn launches(&self) -> usize {
         std::fs::read_to_string(self.tool_dir.join("fixture-launches"))
@@ -121,17 +134,21 @@ pub fn exists(pid: u32) -> bool {
 /// thread for the life of the test process: answers `HandleRequest` with
 /// "<method> <path>" and `HealthCheck` as healthy, and refuses every call
 /// whose bearer token is not the `NEBO_SIDECAR_TOKEN` the sidecar was launched
-/// with (read from `token_file`, which the fixture writes on each launch).
-fn serve_as_sidecar(token_file: PathBuf) -> SocketAddr {
+/// with. Reads what the fixture writes into `dir` on each launch.
+fn serve_as_sidecar(dir: PathBuf) -> SocketAddr {
     use proto::ui_service_server::{UiService, UiServiceServer};
 
     struct Echo {
-        token_file: PathBuf,
+        dir: PathBuf,
     }
 
     impl Echo {
+        fn read(&self, name: &str) -> String {
+            std::fs::read_to_string(self.dir.join(name)).unwrap_or_default()
+        }
+
         fn check<T>(&self, req: &tonic::Request<T>) -> Result<(), tonic::Status> {
-            let token = std::fs::read_to_string(&self.token_file).unwrap_or_default();
+            let token = self.read("fixture-token");
             let bearer = req.metadata().get("authorization").and_then(|v| v.to_str().ok());
             if token.is_empty() || bearer != Some(format!("Bearer {token}").as_str()) {
                 return Err(tonic::Status::unauthenticated("no valid sidecar token"));
@@ -147,7 +164,21 @@ fn serve_as_sidecar(token_file: PathBuf) -> SocketAddr {
             req: tonic::Request<proto::HealthCheckRequest>,
         ) -> Result<tonic::Response<proto::HealthCheckResponse>, tonic::Status> {
             self.check(&req)?;
-            Ok(tonic::Response::new(proto::HealthCheckResponse { healthy: true, ..Default::default() }))
+            let sidecar_token = self.read("fixture-token");
+            // An imposter never saw the app token; the best it can do is key
+            // the proof with what it did see.
+            let key = if self.dir.join("fixture-imposter").exists() { sidecar_token.clone() } else { self.read("fixture-app-token") };
+            let port: u16 = self.read("fixture-port").trim().parse().unwrap_or(0);
+            let nonce = req
+                .metadata()
+                .get("x-nebo-challenge")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| hex::decode(v).ok())
+                .unwrap_or_default();
+            let mut answer = tonic::Response::new(proto::HealthCheckResponse { healthy: true, ..Default::default() });
+            let proof = hex::encode(crate::runtime::proof(&key, &nonce, &sidecar_token, port));
+            answer.metadata_mut().insert("x-nebo-proof", proof.parse().expect("hex is a header value"));
+            Ok(answer)
         }
         async fn configure(
             &self,
@@ -179,7 +210,7 @@ fn serve_as_sidecar(token_file: PathBuf) -> SocketAddr {
             let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
             let incoming = futures::stream::unfold(listener, |l| async move { Some((l.accept().await.map(|(s, _)| s), l)) });
             let _ = tonic::transport::Server::builder()
-                .add_service(UiServiceServer::new(Echo { token_file }))
+                .add_service(UiServiceServer::new(Echo { dir }))
                 .serve_with_incoming(incoming)
                 .await;
         });

@@ -24,7 +24,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{info, warn};
 
 use crate::manifest::Manifest;
-use crate::runtime::{Process, Runtime};
+use crate::runtime::{Health, Process, Runtime};
 
 /// How a supervisor waits between attempts and decides a sidecar is down.
 #[derive(Debug, Clone)]
@@ -351,13 +351,20 @@ async fn watch_process(
                     process.stop().await;
                     return (Ended::BinaryChanged, false);
                 }
-                if answers(&process).await {
-                    misses = 0;
-                } else {
-                    misses += 1;
-                    if misses >= policy.probe_misses {
+                match crate::runtime::probe(process.addr, &process.sidecar_token, &process.app_token).await {
+                    Health::Proven => misses = 0,
+                    Health::Unreachable => {
+                        misses += 1;
+                        if misses >= policy.probe_misses {
+                            process.stop().await;
+                            return (Ended::Down(format!("stopped accepting connections ({misses} probes in a row)")), false);
+                        }
+                    }
+                    // Whatever holds its address is not the sidecar: stop
+                    // sending it anything, now.
+                    Health::Unproven(why) => {
                         process.stop().await;
-                        return (Ended::Down(format!("stopped accepting connections ({misses} probes in a row)")), false);
+                        return (Ended::Down(format!("{} ({why})", Health::UNPROVEN)), false);
                     }
                 }
             }
@@ -368,7 +375,7 @@ async fn watch_process(
                 }
                 Some(Cmd::Revive(reply)) => {
                     out.waiting.push(reply);
-                    if !answers(&process).await {
+                    if crate::runtime::probe(process.addr, &process.sidecar_token, &process.app_token).await != Health::Proven {
                         process.stop().await;
                         return (Ended::Down("a request could not reach it".into()), true);
                     }
@@ -377,11 +384,6 @@ async fn watch_process(
             },
         }
     }
-}
-
-/// Whether the sidecar answers a call carrying its token right now.
-async fn answers(process: &Process) -> bool {
-    crate::runtime::answers(process.addr, &process.sidecar_token).await
 }
 
 #[cfg(test)]
@@ -431,10 +433,10 @@ mod process_tests {
         }
     }
 
-    /// Whether it answers a call carrying its token, as the probe asks.
+    /// Whether it answers the probe's challenge and proves itself.
     async fn connects(state: &SidecarState) -> bool {
         let l = running(state);
-        crate::runtime::answers(l.addr, &l.sidecar_token).await
+        crate::runtime::probe(l.addr, &l.sidecar_token, &l.app_token).await == Health::Proven
     }
 
     /// Wait until the state satisfies `f`, or fail after `secs`.
@@ -507,6 +509,34 @@ mod process_tests {
         assert_ne!(running(&again).addr, first.addr);
         assert!(connects(&again).await, "the relaunched one answers");
         drop(imposter);
+        sup.shutdown().await;
+    }
+
+    /// Something on the sidecar's address that saw the sidecar token on
+    /// Nebo's calls answers the health check with a correct-looking proof,
+    /// keyed with that token. It cannot hold the app token, so the proof is
+    /// wrong: the first probe stops it — no grace for misses — and the
+    /// supervisor relaunches the real sidecar. The real one proves itself.
+    #[tokio::test]
+    async fn an_imposter_that_captured_the_sidecar_token_cannot_prove_itself() {
+        let app = TestApp::new("captured");
+        // Probes far apart, so it is one probe, not a run of misses, that ends it.
+        let policy = RestartPolicy { probe_misses: 100, ..quick() };
+        let sup = start(&app, policy);
+        let real = sup.settled(Duration::from_secs(20)).await;
+        assert!(connects(&real).await, "the real sidecar proves itself");
+        app.set_imposter(true);
+        let caught = until(&sup, 10, |s| !s.is_running()).await;
+        let reason = match &caught {
+            SidecarState::Restarting { reason, .. } | SidecarState::Failed { reason, .. } => reason.clone(),
+            other => panic!("expected it taken down, got {other:?}"),
+        };
+        assert!(reason.contains(Health::UNPROVEN), "{reason}");
+        assert!(reason.contains("a wrong proof"), "{reason}");
+        assert!(!test_sidecar::exists(pid(&real)), "the process behind the address was stopped");
+        app.set_imposter(false);
+        let again = until(&sup, 20, |s| matches!(s, SidecarState::Running(l) if l.pid != pid(&real))).await;
+        assert!(connects(&again).await);
         sup.shutdown().await;
     }
 

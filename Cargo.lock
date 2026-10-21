@@ -6098,6 +6098,7 @@ dependencies = [
  "futures",
  "hex",
  "hkdf",
+ "hmac",
  "libc",
  "nebo-comm",
  "nebo-command",

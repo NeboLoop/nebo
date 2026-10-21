@@ -25,6 +25,11 @@ use crate::sandbox;
 /// takes over a sidecar's port learns only a token that opens nothing in Nebo.
 pub const LISTENING: &str = "nebo-app-listening ";
 
+/// The request header carrying a health probe's nonce, and the response header
+/// carrying the sidecar's proof (see [`proof`]).
+const CHALLENGE: &str = "x-nebo-challenge";
+const PROOF: &str = "x-nebo-proof";
+
 /// How long a health probe waits for the sidecar's answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -357,15 +362,21 @@ impl Runtime {
             }
         }
 
-        // Health check: the same token-gated call the supervisor probes with.
-        // Best effort here: a sidecar may initialize lazily, so a failure is
-        // only logged; the supervisor's probes decide whether it is alive.
-        if !answers(process.addr, &process.sidecar_token).await {
-            warn!(
+        // Health check: the same challenge the supervisor probes with. A
+        // sidecar that answers without proving itself is refused at once; one
+        // that does not answer yet may be initializing lazily, so that is only
+        // logged and the supervisor's probes decide whether it is alive.
+        match probe(process.addr, &process.sidecar_token, &process.app_token).await {
+            Health::Proven => {}
+            Health::Unreachable => warn!(
                 tool = process.manifest.id.as_str(),
                 addr = %process.addr,
                 "health check failed after the sidecar announced its address (tool may use lazy init)"
-            );
+            ),
+            Health::Unproven(why) => {
+                process.stop().await;
+                return Err(NappError::Runtime(format!("{} ({why})", Health::UNPROVEN)));
+            }
         }
 
         info!(tool = process.manifest.id.as_str(), pid, addr = %process.addr, "tool launched");
@@ -479,21 +490,71 @@ pub(crate) async fn handle_request(
     client(addr)?.handle_request(authorized(sidecar_token, req)?).await.map(|r| r.into_inner())
 }
 
-/// Whether the sidecar at `addr` answers a call carrying its token: the health
-/// probe, at launch and while it runs. A bare connection proves nothing — if
-/// the sidecar stopped listening, another process may hold its port. Answered
-/// means `UIService.HealthCheck` succeeded, or the server checked the token
-/// and has no UI service (`Unimplemented`). Anything else — nothing listening,
-/// not gRPC, a token refused — means the sidecar is not there.
-pub(crate) async fn answers(addr: SocketAddr, sidecar_token: &str) -> bool {
-    let probe = async {
-        let req = authorized(sidecar_token, proto::HealthCheckRequest {})?;
+/// What a health probe found at a sidecar's address.
+#[derive(Debug, PartialEq)]
+pub enum Health {
+    /// It answered and proved it holds this launch's `NEBO_APP_TOKEN`.
+    Proven,
+    /// Nothing answered: not listening, not speaking gRPC, or too slow.
+    Unreachable,
+    /// Something answered but did not prove it is this app's sidecar: no
+    /// proof, a wrong one, or the sidecar token refused. Never retried.
+    Unproven(String),
+}
+
+impl Health {
+    pub const UNPROVEN: &'static str = "answered its health check without proving it is this app's sidecar";
+}
+
+/// The health proof for one probe: `HMAC-SHA256(key = NEBO_APP_TOKEN,
+/// nonce || NEBO_SIDECAR_TOKEN || port as 2 bytes big-endian)`. Only the
+/// sidecar Nebo launched holds `NEBO_APP_TOKEN` — Nebo never sends it — so a
+/// process that took the sidecar's port and saw the sidecar token on Nebo's
+/// calls still cannot compute it. The port binds the proof to the address the
+/// sidecar announced.
+pub fn proof(app_token: &str, nonce: &[u8], sidecar_token: &str, port: u16) -> [u8; 32] {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(app_token.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(nonce);
+    mac.update(sidecar_token.as_bytes());
+    mac.update(&port.to_be_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+/// The health probe, at launch, on the supervisor's timer and on revive.
+/// A bare connection proves nothing — if the sidecar stopped listening,
+/// another process may hold its port. Nebo calls `UIService.HealthCheck` with
+/// the sidecar token and a fresh nonce ([`CHALLENGE`]), and the answer must
+/// carry the [`proof`] for it ([`PROOF`]), checked in constant time.
+pub async fn probe(addr: SocketAddr, sidecar_token: &str, app_token: &str) -> Health {
+    use hmac::Mac;
+    use rand::Rng;
+    let nonce: [u8; 32] = rand::thread_rng().r#gen();
+    let call = async {
+        let mut req = authorized(sidecar_token, proto::HealthCheckRequest {})?;
+        let challenge = hex::encode(nonce).parse().map_err(|_| tonic::Status::internal("challenge header"))?;
+        req.metadata_mut().insert(CHALLENGE, challenge);
         client(addr)?.health_check(req).await
     };
-    match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
-        Ok(Ok(_)) => true,
-        Ok(Err(status)) => status.code() == tonic::Code::Unimplemented,
-        Err(_) => false,
+    let answer = match tokio::time::timeout(PROBE_TIMEOUT, call).await {
+        Err(_) => return Health::Unreachable,
+        // A connection that could not be made, or one that never spoke gRPC.
+        Ok(Err(status)) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::Unknown) => {
+            return Health::Unreachable;
+        }
+        Ok(Err(status)) => return Health::Unproven(format!("{}: {}", status.code(), status.message())),
+        Ok(Ok(answer)) => answer,
+    };
+    let Some(presented) = answer.metadata().get(PROOF).and_then(|v| v.to_str().ok()).and_then(|v| hex::decode(v).ok()) else {
+        return Health::Unproven("no proof".into());
+    };
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(app_token.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(&nonce);
+    mac.update(sidecar_token.as_bytes());
+    mac.update(&addr.port().to_be_bytes());
+    match mac.verify_slice(&presented) {
+        Ok(()) => Health::Proven,
+        Err(_) => Health::Unproven("a wrong proof".into()),
     }
 }
 
@@ -601,6 +662,20 @@ mod tests {
         let pieces: Vec<&[u8]> = log.split(|b| *b == b'\n').filter(|p| !p.is_empty()).collect();
         assert!(pieces.iter().all(|p| p.len() as u64 <= MAX_LINE), "every piece is bounded");
         assert_eq!(pieces.iter().map(|p| p.len()).sum::<usize>(), huge.len() + "nebo-app-listening 127.0.0.1:5000".len());
+    }
+
+    /// The vector every SDK checks its own proof against: the formula is one
+    /// contract across Nebo and the Rust, Go and C SDKs.
+    #[test]
+    fn the_proof_matches_the_shared_vector() {
+        let nonce: Vec<u8> = (0u8..32).collect();
+        let p = proof(
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+            &nonce,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            54321,
+        );
+        assert_eq!(hex::encode(p), "f67ca363caac14eb7f345df8c7548d11a40334c55d255e30ec02339265ed8db8");
     }
 
     /// No computer is ever exposed: an address another computer could reach

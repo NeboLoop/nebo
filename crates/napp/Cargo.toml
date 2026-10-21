@@ -45,6 +45,7 @@ notify = "7"
 futures = { workspace = true }
 proto = { workspace = true }
 tonic = "0.12"
+hmac = "0.12"
 
 [dev-dependencies]
 proto = { workspace = true, features = ["server"] }

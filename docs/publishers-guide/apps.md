@@ -821,7 +821,8 @@ The SDKs (`nebo-sdk-rust`, `nebo-sdk-go`, `nebo-sdk-c`) do all of this in their 
 1. Bind TCP on `127.0.0.1:0` — loopback only, never `0.0.0.0`; port `0` so the system picks a free port.
 2. Serve the `UIService` gRPC service on it.
 3. Print one line on stdout once it is listening, and flush it: `nebo-app-listening 127.0.0.1:<port>`. Nebo reads it, accepts only a loopback address, and connects there.
-4. Refuse every call that does not carry `authorization: Bearer <NEBO_SIDECAR_TOKEN>` with `UNAUTHENTICATED`, including a call carrying `NEBO_APP_TOKEN`. Nebo sends the sidecar token on every call; nothing else on the computer has it. Answer `UIService.HealthCheck` (with that token): it is Nebo's health probe.
+4. Refuse every call that does not carry `authorization: Bearer <NEBO_SIDECAR_TOKEN>` with `UNAUTHENTICATED`, including a call carrying `NEBO_APP_TOKEN`. Nebo sends the sidecar token on every call; nothing else on the computer has it. Answer `UIService.HealthCheck` (with that token): it is Nebo's health probe, and it carries a challenge (below).
+6. Prove yourself on every health probe. The probe carries `x-nebo-challenge`: a fresh 32-byte nonce in lowercase hex. Answer OK with the response header `x-nebo-proof` = lowercase hex of HMAC-SHA256 with key `NEBO_APP_TOKEN` over `nonce bytes || NEBO_SIDECAR_TOKEN || your port as 2 bytes big-endian`. Only the sidecar Nebo launched holds `NEBO_APP_TOKEN` (Nebo never sends it), so a process that took your port cannot answer; Nebo stops sending it anything at once and relaunches you.
 5. Exit when stdin closes. Nebo holds the other end for the sidecar's whole life, so this is how a sidecar notices Nebo is gone, however it went. Exit on SIGTERM too.
 
 Minimal Rust example, with the SDK:
@@ -891,7 +892,7 @@ The sidecar must print `nebo-app-listening <address>` within the `startup_timeou
 One supervisor per sidecar starts, watches and restarts it — at boot, on the first request, on "Try again", and after every failure:
 
 - **Exit awaited** — the moment the process exits for any reason, Nebo logs its exit status (code or signal) with the last lines of `sidecar.log`, and restarts it.
-- **Probed with its token** — every 3 seconds Nebo calls `UIService.HealthCheck` on the sidecar's address with the sidecar token (a sidecar with no UI service may answer `UNIMPLEMENTED`). A bare connection never counts: if the sidecar stopped listening and another process took its port, the probe fails. Three failed probes in a row mean the process is no longer serving, and it is stopped and restarted. A request that cannot reach the sidecar triggers the same restart at once (and a GET/HEAD is sent again to the new process).
+- **Probed with a challenge** — every 3 seconds Nebo calls `UIService.HealthCheck` on the sidecar's address with the sidecar token and a fresh nonce, and checks the proof in the answer (see Sidecar Startup). A bare connection never counts. An answer without a valid proof means something other than your sidecar holds its address: Nebo stops it at once and relaunches. No answer at all counts as a miss; three in a row mean the process is no longer serving, and it is stopped and restarted. A request that cannot reach the sidecar triggers the same restart at once (and a GET/HEAD is sent again to the new process).
 - **Backoff** — 1s, 2s, 4s, … capped at 60s. The count resets once a sidecar has served for a minute.
 - **Failed** — after 5 consecutive failures the sidecar is `failed`, with the reason. Nebo keeps retrying every 60s without the state flapping. A permanent cause — no program, one the system refuses to run, a damaged manifest — is `failed` at once, with "Reinstall" in the message.
 - **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process and runs the new one, re-registering tools from `agent.json`. This is not a crash — no backoff, no count. The change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch.
@@ -920,7 +921,7 @@ Nebo owns the full lifecycle of every sidecar. When Nebo shuts down (SIGTERM, Ct
 You do not need to manage sidecar lifetime yourself. Nebo handles:
 - **Auto-launch** — the first API request to a sidecar starts it if nothing has
 - **Restore on server restart** — every enabled app's sidecar is put under supervision when the server starts; a launch that fails at boot is retried, not forgotten
-- **Health checks** — exit awaited, a token-carrying health call every 3 seconds
+- **Health checks** — exit awaited, a challenged health call every 3 seconds
 - **Crash recovery** — auto-restart with exponential backoff, `failed` with the reason after repeated failures
 - **Hot-reload** — restart on binary change (no backoff)
 - **Shutdown** — SIGTERM on Nebo exit, never counted as a crash
