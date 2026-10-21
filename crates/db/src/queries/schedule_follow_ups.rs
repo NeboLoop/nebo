@@ -22,6 +22,9 @@ pub struct ScheduleFollowUp {
     /// pending | asked_again | pointed | unanswered.
     pub state: String,
     pub asked_again_at: Option<i64>,
+    /// Set when a turn that took it in ended waiting on the owner: the
+    /// last message row (its rowid) then. The answer comes after it.
+    pub resume_after: Option<i64>,
     pub answer_id: Option<String>,
     pub created_at: i64,
 }
@@ -37,7 +40,7 @@ pub struct NewScheduleFollowUp<'a> {
     pub asked_at: i64,
 }
 
-const COLUMNS: &str = "request_id, session_key, chat_id, job_id, job_name, agent_id, asked_at, state, asked_again_at, answer_id, created_at";
+const COLUMNS: &str = "request_id, session_key, chat_id, job_id, job_name, agent_id, asked_at, state, asked_again_at, resume_after, answer_id, created_at";
 
 fn row_to_follow_up(r: &rusqlite::Row) -> rusqlite::Result<ScheduleFollowUp> {
     Ok(ScheduleFollowUp {
@@ -50,8 +53,9 @@ fn row_to_follow_up(r: &rusqlite::Row) -> rusqlite::Result<ScheduleFollowUp> {
         asked_at: r.get(6)?,
         state: r.get(7)?,
         asked_again_at: r.get(8)?,
-        answer_id: r.get(9)?,
-        created_at: r.get(10)?,
+        resume_after: r.get(9)?,
+        answer_id: r.get(10)?,
+        created_at: r.get(11)?,
     })
 }
 
@@ -102,6 +106,20 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// A turn that took the request in ended waiting on the owner (an
+    /// approval, a question), with `resume_after` the last message row then:
+    /// the follow-up stays open for the turn his reply resumes.
+    pub fn await_schedule_follow_up(&self, request_id: &str, resume_after: i64) -> Result<bool, NeboError> {
+        let n = self
+            .conn()?
+            .execute(
+                "UPDATE schedule_follow_ups SET resume_after = ?2 WHERE request_id = ?1 AND state IN ('pending', 'asked_again')",
+                params![request_id, resume_after],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(n == 1)
+    }
+
     /// Settle an open follow-up: `answer_id` Some = pointed at it, None =
     /// unanswered. True for the one call that settled it.
     pub fn settle_schedule_follow_up(&self, request_id: &str, answer_id: Option<&str>, at: i64) -> Result<bool, NeboError> {
@@ -131,6 +149,8 @@ mod tests {
         assert_eq!(s.keep_schedule_follow_up(&new).unwrap(), kept, "kept once");
         assert_eq!(s.open_schedule_follow_ups(Some("agent:a:web")).unwrap().len(), 1);
         assert!(s.open_schedule_follow_ups(Some("other")).unwrap().is_empty());
+        assert!(s.await_schedule_follow_up("r1", 42).unwrap());
+        assert_eq!(s.open_schedule_follow_ups(None).unwrap()[0].resume_after, Some(42), "it waits on the owner, open");
         assert!(s.ask_schedule_follow_up_again("r1", 200).unwrap());
         assert!(!s.ask_schedule_follow_up_again("r1", 201).unwrap(), "asked again once");
         assert!(s.settle_schedule_follow_up("r1", Some("m9"), 300).unwrap());

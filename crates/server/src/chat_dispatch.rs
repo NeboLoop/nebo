@@ -205,9 +205,6 @@ pub(crate) struct TurnEnd<'a> {
     /// The typed stop reason + status line, when the run ended via a
     /// ControlNotice, so the UI renders it as status, never prose.
     pub control_stop: Option<&'a (String, String)>,
-    /// The reason on the run's Done event (`TurnExit::label`), when it
-    /// reached one: `text_response` is a turn that ended with its answer.
-    pub done: Option<&'a str>,
 }
 
 /// The ONE way a drained run tells the app its turn is over. Every consumer
@@ -229,12 +226,6 @@ pub(crate) async fn finish_turn(state: &AppState, run: &RunHandle, end: TurnEnd<
     // An approval the run asked for stays open past the turn when something
     // still waits on it (a suggested goal is decided whenever the owner gets
     // to it): `approval_channels` closes it on the decision, not here.
-    // A schedule's request this turn took in is settled by its end: input
-    // that only joined a running turn ended nothing.
-    let joined = end.control_stop.is_some_and(|(reason, _)| reason == agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN);
-    if let Some(session_key) = end.payload["session_id"].as_str().filter(|_| !joined) {
-        crate::scheduler::turn_ended(state, session_key, end.done == Some("text_response")).await;
-    }
     let mut payload = end.payload;
     payload["artifacts"] = serde_json::json!(end.artifacts);
     if let Some((reason, notice)) = end.control_stop {
@@ -895,8 +886,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut run_error: Option<String> = None;
                 // Its typed stop reason, when it carried one.
                 let mut run_error_reason: Option<String> = None;
-                // The reason on the run's Done event.
-                let mut done_reason: Option<String> = None;
                 let mut reply_stream = ReplyStream::new();
 
                 // Comm streaming: send chunks to NeboAI as they arrive.
@@ -1563,7 +1552,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             );
                             reply_stream.step_done();
                         }
-                        StreamEventType::Done => done_reason = event.stop_reason.clone(),
+                        StreamEventType::Done => {}
                     }
                 }
 
@@ -1868,7 +1857,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         payload,
                         artifacts: &chat_artifacts,
                         control_stop: control_stop.as_ref(),
-                        done: done_reason.as_deref(),
                     },
                 )
                 .await;
@@ -1893,7 +1881,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 finish_turn(
                     &ask_state,
                     &_run_handle,
-                    TurnEnd { payload: ws_payload!(), artifacts: &[], control_stop: None, done: None },
+                    TurnEnd { payload: ws_payload!(), artifacts: &[], control_stop: None },
                 )
                 .await;
             }

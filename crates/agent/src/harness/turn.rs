@@ -657,6 +657,7 @@ async fn run(
         )
         .await;
     drop(guard);
+    h.turn_ended(&session_key, &exit.label());
     if carried > 0 {
         match h.answer_thread() {
             Some(answer) => {

@@ -10,6 +10,9 @@
 -- it in ended with the process; the conversation was asked to answer it,
 -- once) | pointed (the owner was pointed at answer_id) | unanswered (a turn
 -- ended without answering it: stopped, failed, or the owner wrote first).
+-- resume_after: set when a turn that took it in ended waiting on the owner
+-- (an approval, a question): the last message row then. The answer comes
+-- after it, from the turn his reply resumes.
 -- +goose Up
 CREATE TABLE schedule_follow_ups (
     request_id TEXT PRIMARY KEY,
@@ -21,6 +24,7 @@ CREATE TABLE schedule_follow_ups (
     asked_at INTEGER NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     asked_again_at INTEGER,
+    resume_after INTEGER,
     answer_id TEXT,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     settled_at INTEGER

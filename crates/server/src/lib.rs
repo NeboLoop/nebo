@@ -3113,6 +3113,11 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 let state = state.clone();
                 Arc::new(move |id: &str| verification::broadcast(&state, id))
             }),
+            // A schedule's request a turn took in is settled by its end.
+            turn_ended: Some({
+                let state = state.clone();
+                Arc::new(move |session_key: &str, exit: &str| scheduler::turn_ended(&state, session_key, exit))
+            }),
         });
         // `suggest_goal` reaches the agreed goal through the harness.
         state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(

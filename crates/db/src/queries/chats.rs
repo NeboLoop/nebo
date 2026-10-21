@@ -739,30 +739,34 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// The reply to message `request_id` in its conversation: the last
-    /// assistant message with words after it and before the owner's next
-    /// message (a user row that is not Nebo's own, `isMeta`). None when
-    /// there is none.
-    pub fn reply_before_owner_speaks(&self, request_id: &str) -> Result<Option<ChatMessage>, NeboError> {
+    /// The messages written into any of session `session_name`'s
+    /// conversations after message `message_id`, in the order they were
+    /// written (rowid: a voice reply is stored with the time it was said,
+    /// after the fact), with each one's rowid; at most `limit`.
+    pub fn session_messages_after(&self, session_name: &str, message_id: &str, limit: i64) -> Result<Vec<(i64, ChatMessage)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.rowid AS rid, m.* FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+                 WHERE c.session_name = ?1 AND m.rowid > (SELECT rowid FROM chat_messages WHERE id = ?2)
+                 ORDER BY m.rowid LIMIT ?3",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_name, message_id, limit], |r| Ok((r.get::<_, i64>("rid")?, row_to_chat_message(r)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The last message row (its rowid) written into any of session
+    /// `session_name`'s conversations.
+    pub fn session_last_message_rowid(&self, session_name: &str) -> Result<Option<i64>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "WITH req AS (SELECT chat_id, created_at, rowid AS rid FROM chat_messages WHERE id = ?1),
-             owner_next AS (
-                 SELECT o.created_at, o.rowid AS rid FROM chat_messages o, req
-                 WHERE o.chat_id = req.chat_id AND o.role = 'user'
-                   AND COALESCE(json_extract(o.metadata, '$.isMeta'), 0) NOT IN (1, 'true')
-                   AND (o.created_at, o.rowid) > (req.created_at, req.rid)
-                 ORDER BY o.created_at, o.rowid LIMIT 1
-             )
-             SELECT m.* FROM chat_messages m, req
-             WHERE m.chat_id = req.chat_id AND m.role = 'assistant' AND trim(m.content) <> ''
-               AND (m.created_at, m.rowid) > (req.created_at, req.rid)
-               AND NOT EXISTS (SELECT 1 FROM owner_next WHERE (owner_next.created_at, owner_next.rid) < (m.created_at, m.rowid))
-             ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1",
-            params![request_id],
-            row_to_chat_message,
+            "SELECT MAX(m.rowid) FROM chat_messages m JOIN chats c ON c.id = m.chat_id WHERE c.session_name = ?1",
+            params![session_name],
+            |r| r.get(0),
         )
-        .optional()
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 

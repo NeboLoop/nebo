@@ -5519,7 +5519,7 @@ async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
     // Another restart, and another turn's end: nothing is asked or pointed
     // at again.
     crate::scheduler::follow_up_after_restart(&nebo.state, i64::MAX).await;
-    crate::scheduler::turn_ended(&nebo.state, KEY, true).await;
+    crate::scheduler::turn_ended(&nebo.state, KEY, "text_response");
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
     assert_eq!(items().len(), 1, "pointed at once");
     assert_eq!(rig.thread(KEY).iter().filter(|m| m.content.starts_with("REPORT-144")).count(), 1, "answered once");
