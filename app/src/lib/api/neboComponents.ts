@@ -295,6 +295,22 @@ export interface BackupsResponse {
 	backups: Backup[]
 }
 
+export interface Badge {
+	state: string
+	reviewers: number
+	lenses: string[]
+	rounds: number
+	checks: string[]
+	checksPassed: boolean
+	openBlockers: number
+	openMajors: number
+	openMinors: number
+	deferred: number
+	reason?: Why
+	landed: string
+	place: string
+}
+
 export interface BillingPriceInfo {
 	id?: string
 	stripePriceId?: string
@@ -1480,6 +1496,11 @@ export interface RosterTeam extends Team {
 	latest?: TeamMessage
 }
 
+export interface RoundView extends VerificationRound {
+	result?: Why
+	costMicrocents: number
+}
+
 export interface RuleCandidate extends RuleWords {
 	id: string
 	agentId: string
@@ -1807,6 +1828,10 @@ export interface Verification {
 	finishedAt?: number
 }
 
+export interface VerificationList {
+	verifications: VerificationView[]
+}
+
 export interface VerificationRound {
 	verificationId: string
 	round: number
@@ -1826,6 +1851,13 @@ export interface VerificationRound {
 	reviewerPrefix: string
 	startedAt: number
 	finishedAt?: number
+}
+
+export interface VerificationView extends Verification {
+	agentName: string
+	badge: Badge
+	history: RoundView[]
+	costMicrocents: number
 }
 
 export interface View {
@@ -1855,6 +1887,11 @@ export interface WaitingAsk {
 export interface WaitingAsksResponse {
 	asks: WaitingAsk[]
 	total: number
+}
+
+export interface Why {
+	code: string
+	args?: Record<string, unknown>
 }
 
 export interface WorkDocument {
@@ -2362,6 +2399,7 @@ export interface GetRunResponse {
 	activities: WorkflowActivityResult[]
 	taskItems: unknown
 	display: RunDisplay
+	verifications: VerificationView[]
 }
 
 export interface GetSessionMessagesResponse {
