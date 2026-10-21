@@ -634,6 +634,10 @@ async fn run(
             req = Some(follow_up(cx.request));
         }
     }
+    // However the run ended (answered, failed, stopped), the tabs it opened
+    // in the owner's browser close: a tab it left open for him stays. Before
+    // the slot frees, so the session's next turn never loses a tab to it.
+    h.tools.close_browser_session(&session_id).await;
     // The slot is closing, so no row is written into this turn from here:
     // what the owner sent while it ran is in the thread now.
     let _ = tx
@@ -3476,6 +3480,8 @@ mod tests {
         /// Text built from the request, streamed in pieces of a few chars,
         /// then this tool's call when there is one.
         Text(String, Option<&'static str>),
+        /// The provider refuses the request for good: no retry helps.
+        Fails,
     }
 
     /// What the probe tools saw: each call's tool, and whether it started
@@ -3691,6 +3697,13 @@ mod tests {
             }
             Step::Transient => return Err(ai::ProviderError::Request("connection reset".into())),
             Step::Overflow => return Err(ai::ProviderError::ContextOverflow),
+            Step::Fails => {
+                return Err(ai::ProviderError::Api {
+                    code: "invalid_request".into(),
+                    message: "The request was refused.".into(),
+                    retryable: false,
+                });
+            }
             Step::Paid(inner, microdollars) => {
                 let (mut list, stop) = answer(*inner)?;
                 list.push(StreamEvent::usage(ai::UsageInfo {
@@ -5130,6 +5143,160 @@ mod tests {
             read_only: false,
         };
         (input, refusing)
+    }
+
+    /// Opens a page in the owner's Chrome for the run it is called in.
+    struct Browse(Arc<browser::Manager>);
+
+    impl tools::registry::DynTool for Browse {
+        fn name(&self) -> &str {
+            "browse"
+        }
+        fn description(&self) -> String {
+            "opens a page".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let executor = self.0.executor().expect("executor");
+                match executor.execute("navigate", &serde_json::json!({"url": "https://a.test"}), Some(&ctx.session_id)).await {
+                    Ok(_) => tools::ToolResult::ok("opened"),
+                    Err(e) => tools::ToolResult::error(e.to_string()),
+                }
+            })
+        }
+    }
+
+    /// The owner's Chrome: answers every request and keeps what it was sent.
+    async fn owners_chrome(mgr: &browser::Manager) -> Arc<std::sync::Mutex<Vec<browser::extension_bridge::ToolRequest>>> {
+        let bridge = mgr.bridge();
+        let (conn, mut rx) = bridge.connect("chrome".into()).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                if !req.is_command {
+                    bridge.deliver_result(conn, req.id, Ok(serde_json::json!({}))).await;
+                }
+                log.lock().unwrap().push(req);
+            }
+        });
+        seen
+    }
+
+    /// What the owner's Chrome was sent, once it has read the run's last
+    /// command (the run sends it before it frees the session).
+    async fn sent_to(chrome: &std::sync::Mutex<Vec<browser::extension_bridge::ToolRequest>>) -> Vec<browser::extension_bridge::ToolRequest> {
+        for _ in 0..100 {
+            if chrome.lock().unwrap().iter().any(|r| r.tool == "hide_indicators") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        chrome.lock().unwrap().clone()
+    }
+
+    /// However a run ends (answered, failed, stopped by the owner, or
+    /// stopped because it was stuck), the tab it opened in the owner's
+    /// Chrome closes with it: the close names that run's tab and nothing
+    /// else, so no tab of the owner's own is touched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_way_a_run_ends_closes_the_tab_it_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let (input, _) = missing_content();
+        let stuck: Vec<Step> = std::iter::once(Step::Call("browse", serde_json::json!({})))
+            .chain((0..22).map(|_| Step::Call("write_file", input.clone())))
+            .collect();
+        for (end, script) in [
+            ("text_response", vec![Step::Call("browse", serde_json::json!({})), Step::Say("Done.")]),
+            ("provider_failed", vec![Step::Call("browse", serde_json::json!({})), Step::Fails]),
+            ("cancelled", vec![Step::Call("browse", serde_json::json!({})), Step::Say("unused")]),
+            ("terminal_tool_error", stuck),
+        ] {
+            let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned()));
+            let chrome = owners_chrome(&mgr).await;
+            let model = Scripted::new(script);
+            let (_, refusing) = missing_content();
+            let h = harness_with(&model, vec![Box::new(Browse(mgr.clone())), Box::new(refusing)]).await;
+            h.tools.set_browser(Some(mgr.clone()));
+            let req = if end == "terminal_tool_error" { scheduled("Check the site") } else { owner("Check the site") };
+            if end == "cancelled" {
+                // The owner stops the run once its page is open.
+                let cancel = req.cancel.clone();
+                let hook: Hook = Box::pin(async move { cancel.cancel() });
+                let mut script = model.script.lock().unwrap();
+                let last = script.pop_back().unwrap();
+                script.push_back(Step::During(Box::new(last), hook));
+            }
+            let events = run_turn(&h, req).await;
+            assert_eq!(exit_of(&events), end);
+            let seen = sent_to(&chrome).await;
+            let tab = seen.iter().find(|r| !r.is_command).and_then(|r| r.session_id.clone()).expect("the run opened a tab");
+            let closes: Vec<Option<String>> =
+                seen.iter().filter(|r| r.tool == "close_session_tabs").map(|r| r.session_id.clone()).collect();
+            assert_eq!(closes, vec![Some(tab)], "{end}: the run's own tab closes, and only it");
+        }
+    }
+
+    /// A tab the run left open for the owner stays open when it ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tab_left_open_for_the_owner_stays_open_when_the_run_ends() {
+        struct LeaveOpen(Arc<browser::Manager>);
+        impl tools::registry::DynTool for LeaveOpen {
+            fn name(&self) -> &str {
+                "leave_open"
+            }
+            fn description(&self) -> String {
+                "leaves the page open".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move {
+                    assert!(self.0.executor().unwrap().leave_open_for_owner(&ctx.session_id).await);
+                    tools::ToolResult::ok("left open")
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned()));
+        let chrome = owners_chrome(&mgr).await;
+        let model = Scripted::new(vec![
+            Step::Call("browse", serde_json::json!({})),
+            Step::Call("leave_open", serde_json::json!({})),
+            Step::Say("The form is open for you to approve."),
+        ]);
+        let h = harness_with(&model, vec![Box::new(Browse(mgr.clone())), Box::new(LeaveOpen(mgr.clone()))]).await;
+        h.tools.set_browser(Some(mgr.clone()));
+        assert_eq!(exit_of(&run_turn(&h, owner("Fill in the form")).await), "text_response");
+        let seen = sent_to(&chrome).await;
+        assert!(seen.iter().any(|r| !r.is_command), "the run opened its tab");
+        assert!(!seen.iter().any(|r| r.tool == "close_session_tabs"), "the form stays open: {seen:?}");
+        assert!(seen.iter().any(|r| r.tool == "hide_indicators"), "Nebo lets go of it");
     }
 
     /// A turn nobody watches: a scheduled run.

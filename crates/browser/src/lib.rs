@@ -15,6 +15,7 @@ pub mod session;
 pub mod snapshot;
 pub mod snapshot_store;
 pub mod storage;
+pub mod tab_ledger;
 pub mod teach;
 
 pub use cdp_bridge::{CdpBridge, ObscuraConfig, find_obscura};

@@ -57,6 +57,7 @@ blas-src = { version = "0.10", features = ["accelerate"] }
 
 [dev-dependencies]
 tempfile = "3"
+browser = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rusqlite = { workspace = true }
 base64 = "0.22"

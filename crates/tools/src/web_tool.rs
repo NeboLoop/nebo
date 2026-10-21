@@ -1811,6 +1811,7 @@ enum Kind {
     BrowserListTabs,
     BrowserNewTab,
     BrowserCloseTab,
+    BrowserLeaveOpen,
     BrowserConsole,
     BrowserNetwork,
     BrowserUpload,
@@ -1836,6 +1837,7 @@ const KINDS: &[Kind] = &[
     Kind::BrowserListTabs,
     Kind::BrowserNewTab,
     Kind::BrowserCloseTab,
+    Kind::BrowserLeaveOpen,
     Kind::BrowserConsole,
     Kind::BrowserNetwork,
     Kind::BrowserUpload,
@@ -1863,6 +1865,7 @@ impl Kind {
             Kind::BrowserListTabs => "browser_list_tabs",
             Kind::BrowserNewTab => "browser_new_tab",
             Kind::BrowserCloseTab => "browser_close_tab",
+            Kind::BrowserLeaveOpen => "browser_leave_open",
             Kind::BrowserConsole => "browser_console",
             Kind::BrowserNetwork => "browser_network",
             Kind::BrowserUpload => "browser_upload",
@@ -1885,7 +1888,12 @@ impl Kind {
         self.is_browser()
             && !matches!(
                 self,
-                Kind::BrowserBatch | Kind::BrowserFillForm | Kind::BrowserHistory | Kind::BrowserStatus | Kind::BrowserExpect
+                Kind::BrowserBatch
+                    | Kind::BrowserFillForm
+                    | Kind::BrowserHistory
+                    | Kind::BrowserStatus
+                    | Kind::BrowserExpect
+                    | Kind::BrowserLeaveOpen
             )
     }
 
@@ -1903,6 +1911,7 @@ impl Kind {
             Kind::BrowserListTabs => "list open browser tabs",
             Kind::BrowserNewTab => "open a new browser tab",
             Kind::BrowserCloseTab => "close a browser tab",
+            Kind::BrowserLeaveOpen => "leave a page open for the owner to finish",
             Kind::BrowserConsole => "read browser console messages errors",
             Kind::BrowserNetwork => "read the page's network requests",
             Kind::BrowserUpload => "upload a file to a web page",
@@ -1973,6 +1982,10 @@ impl Kind {
                 .to_string(),
             Kind::BrowserCloseTab => "Closes a browser tab: the one `tab_id` names (from browser_list_tabs), or this conversation's tab.\n\
                 - Close tabs you opened once you're done with them."
+                .to_string(),
+            Kind::BrowserLeaveOpen => "Leaves this conversation's tab open in the owner's Chrome for him to finish, such as a form waiting for his approval or payment. Every other tab you open closes when the work ends.\n\
+                - Say in `reason` what the page is waiting for him to do, and tell him in your reply.\n\
+                - Browsing after this opens a new tab."
                 .to_string(),
             Kind::BrowserConsole => "Reads the current page's console messages (logs, warnings, errors).\n\
                 - Pass a `pattern` to keep to the messages you need; only_errors for errors and exceptions."
@@ -2126,6 +2139,13 @@ impl Kind {
                 "properties": {
                     "tab_id": {"type": "integer", "description": "The tab to close, from browser_list_tabs. Default: this conversation's tab."}
                 }
+            }),
+            Kind::BrowserLeaveOpen => json!({
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "What the page is waiting for the owner to do, in a few words."}
+                },
+                "required": ["reason"]
             }),
             Kind::BrowserConsole => json!({
                 "type": "object",
@@ -2378,7 +2398,7 @@ impl Kind {
             Kind::BrowserPageTools => ("webmcp_list", serde_json::json!({})),
             Kind::BrowserCallPageTool => ("webmcp_call", pick(&[("name", "name"), ("args", "args")])),
             Kind::BrowserExpect => ("expect", expect_page_args(input)),
-            Kind::SearchWeb | Kind::FetchUrl | Kind::HttpRequest => return None,
+            Kind::SearchWeb | Kind::FetchUrl | Kind::HttpRequest | Kind::BrowserLeaveOpen => return None,
         })
     }
 
@@ -2415,6 +2435,7 @@ impl Kind {
             Kind::BrowserListTabs => String::from("listing browser tabs"),
             Kind::BrowserNewTab => format!("opening {site} in a new tab"),
             Kind::BrowserCloseTab => String::from("closing a tab"),
+            Kind::BrowserLeaveOpen => String::from("leaving the page open for you"),
             Kind::BrowserConsole => String::from("reading the page's console"),
             Kind::BrowserNetwork => String::from("reading the page's requests"),
             Kind::BrowserUpload => String::from("uploading files"),
@@ -2579,8 +2600,9 @@ impl DynTool for WebTool {
             let group_key = WebCore::session_group_key(&ctx.session_key);
 
             // The extension shows this session's tab group while it works
-            // (a search may run in the browser too).
-            if (self.kind.is_browser() || self.kind == Kind::SearchWeb)
+            // (a search may run in the browser too); a tab left for the
+            // owner is his, not Nebo's at work.
+            if ((self.kind.is_browser() && self.kind != Kind::BrowserLeaveOpen) || self.kind == Kind::SearchWeb)
                 && let Some(executor) = self.core.browser.as_ref().and_then(|m| m.executor())
             {
                 executor.send_command("show_indicators", Some(session_id)).await;
@@ -2609,6 +2631,7 @@ impl DynTool for WebTool {
                     self.core.handle_http(m, &input, ctx.whole_result).await
                 }
                 Kind::BrowserExpect => self.core.handle_expect(&input, session_id, &group_key).await,
+                Kind::BrowserLeaveOpen => self.core.leave_open(&input, session_id).await,
                 kind => match kind.browser_step(&input) {
                     Some((action, args)) => self.core.handle_browser(action, &args, session_id, &group_key).await,
                     None => ToolResult::error(format!("{} is not a browser step.", kind.name())),
@@ -2683,6 +2706,22 @@ impl WebCore {
     /// and poll until they match or the wait is over. A mismatch is a
     /// terminal error: the run stops and the owner reads which step and what
     /// differed, instead of the next step running on the wrong page.
+    /// The session's tab in the owner's Chrome stays open when the work
+    /// ends, for him to finish (`browser_leave_open`).
+    async fn leave_open(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
+        let Some(executor) = self.browser.as_ref().and_then(|m| m.executor()) else {
+            return ToolResult::error("No browser is connected.");
+        };
+        if !executor.leave_open_for_owner(session_id).await {
+            return ToolResult::error("This conversation has no tab open in the owner's Chrome to leave open.");
+        }
+        let reason = str_field(input, "reason").unwrap_or_default().trim();
+        ToolResult::ok(format!(
+            "The tab stays open in the owner's Chrome when this work ends, for him to finish: {reason}. \
+             Tell him it is there and what it is waiting for. Browsing from here opens a new tab."
+        ))
+    }
+
     async fn handle_expect(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
         let step = str_field(input, "step").unwrap_or("").trim().to_string();
         let wait = std::time::Duration::from_millis(
@@ -4254,6 +4293,40 @@ mod interface_tests {
 
     fn tool(name: &str) -> WebTool {
         tools(WebCore::new()).into_iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// browser_leave_open hands the conversation's tab in the owner's
+    /// Chrome to him: its indicators come off, it is never closed, and the
+    /// model is told to say so. With no tab of his open it says there is none.
+    #[tokio::test]
+    async fn leave_open_hands_the_tab_to_the_owner() {
+        let dir = std::env::temp_dir().join(format!("nebo-leave-open-{}", uuid::Uuid::new_v4()));
+        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.to_string_lossy().into_owned()));
+        let bridge = mgr.bridge();
+        let (conn, mut rx) = bridge.connect("chrome".into()).await;
+        let leave = tools(WebCore::new().with_browser(mgr.clone())).into_iter().find(|t| t.name() == "browser_leave_open").unwrap();
+        let ctx = ToolContext { session_id: "s1".into(), ..Default::default() };
+
+        let none = leave.execute_dyn(&ctx, json!({"reason": "approve the order"})).await;
+        assert!(none.is_error && none.content.contains("no tab open"), "{}", none.content);
+
+        let b = bridge.clone();
+        let open = tokio::spawn(async move { b.execute("navigate", &json!({"url": "https://shop.test"}), Some("s1")).await });
+        let nav = rx.recv().await.unwrap();
+        bridge.deliver_result(conn, nav.id, Ok(json!({}))).await;
+        open.await.unwrap().unwrap();
+
+        let left = leave.execute_dyn(&ctx, json!({"reason": "approve the order"})).await;
+        assert!(!left.is_error && left.content.contains("approve the order"), "{}", left.content);
+        let mut sent = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            sent.push((r.tool, r.session_id));
+        }
+        assert_eq!(sent, vec![("hide_indicators".to_string(), nav.session_id.clone())]);
+        mgr.executor().unwrap().close_session("s1").await;
+        assert!(rx.try_recv().is_err(), "the run's end never closes the tab it left for the owner");
+        assert!(KINDS.iter().any(|k| *k == Kind::BrowserLeaveOpen && !k.batchable()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A browser request loads open, act and read in its first step, so the
