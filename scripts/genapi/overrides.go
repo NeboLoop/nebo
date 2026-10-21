@@ -29,6 +29,9 @@ var typeOverrides = map[string]string{
 	"pin_chat.pinnedAt":          "number | null",
 	"edit_team.team":        "Team",
 
+	// ── Providers: how a turn reaches each connection ──
+	"list_providers.routes": "Record<string, ConnectionRoute>",
+
 	// ── Active agents ──
 	"get_active_agents.agents": "ActiveAgent[]",
 
@@ -133,6 +136,11 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	// How a turn reaches a connection (handlers/provider.rs connection_route).
+	"ConnectionRoute": `export interface ConnectionRoute {
+	via: 'janus' | 'direct'
+	signInRequired: boolean
+}`,
 	// A file as it travels (comm::wire::Attachment), in an upload's status
 	// (handlers/uploads.rs UploadStatus).
 	"Attachment": `export interface Attachment {

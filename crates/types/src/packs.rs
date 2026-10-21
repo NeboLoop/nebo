@@ -167,13 +167,28 @@ impl PackLanes {
     }
 }
 
-/// A provider's own reasoning effort, set per level.
+/// A provider's own reasoning effort, set per level. `Max` is the model's
+/// top level: through Janus each model's own (`max` on the Claude models
+/// that offer it), and `High` on a provider with nothing above it
+/// ([`ProviderEffort::standard`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderEffort {
     Low,
     Medium,
     High,
+    Max,
+}
+
+impl ProviderEffort {
+    /// The effort as a provider that knows only low, medium and high takes
+    /// it: `Max` is `High`.
+    pub fn standard(self) -> Self {
+        match self {
+            ProviderEffort::Max => ProviderEffort::High,
+            e => e,
+        }
+    }
 }
 
 /// The provider effort each level runs at. Absent: the provider's default.
@@ -219,10 +234,6 @@ pub struct Pack {
     pub fallback: bool,
     /// The built-in Nebo AI pack: never edited or deleted.
     pub built_in: bool,
-    /// Janus Auto picks the level per step across this pack's models, with
-    /// the owner's keys passed per request (stored now; Janus routes later).
-    #[serde(default)]
-    pub route_through_janus: bool,
     #[serde(default)]
     pub lanes: PackLanes,
     #[serde(default)]
@@ -265,13 +276,13 @@ pub fn nebo_ai() -> Pack {
         },
         fallback: false,
         built_in: true,
-        route_through_janus: false,
         lanes: PackLanes { workflow: Some(Effort::Instant), ..PackLanes::default() },
-        // Low is Instant with a little thinking; Max is High at its highest
-        // effort until Janus has a speed above `nebo-1-pro`.
+        // Low is Instant with a little thinking; Max is High at the model's
+        // top effort (Janus maps it per model; high where there is nothing
+        // above it) until Janus has a speed above `nebo-1-pro`.
         level_effort: LevelEffort {
             low: Some(ProviderEffort::Low),
-            max: Some(ProviderEffort::High),
+            max: Some(ProviderEffort::Max),
             ..LevelEffort::default()
         },
     }
@@ -321,10 +332,12 @@ pub const NEBO_AI_VOICE: &str = "janus/nebo-1-voice";
 /// its own.
 pub const XAI_VOICE_MODEL: &str = "grok-voice-latest";
 
-/// Whether a connection (its provider kind and base URL) is xAI's: the only
-/// realtime protocol calls speak today.
-pub fn is_xai_connection(kind: &str, base_url: Option<&str>) -> bool {
-    kind.split('@').next() == Some("xai") || base_url.is_some_and(|u| u.contains("api.x.ai"))
+/// Whether a connection (its provider kind) is xAI's, the only realtime
+/// protocol calls speak today: the built-in xAI kind, whose key goes through
+/// Janus. A URL the owner typed is his own endpoint, reached direct, never
+/// read as xAI's.
+pub fn is_xai_connection(kind: &str) -> bool {
+    kind.split('@').next() == Some("xai")
 }
 
 /// Whether `model` (a model name, no provider) is one of xAI's realtime
@@ -369,7 +382,7 @@ mod tests {
     use super::*;
 
     fn byo(levels: PackLevels) -> Pack {
-        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), lanes: PackLanes::default(), ..nebo_ai() }
+        Pack { id: "mine".into(), name: "Mine".into(), levels, fallback: true, built_in: false, level_effort: LevelEffort::default(), lanes: PackLanes::default() }
     }
 
     #[test]
@@ -407,7 +420,7 @@ mod tests {
         assert_eq!(nebo.model_for_ref(Some(Effort::Max)), Some("janus/nebo-1-pro"));
         assert_eq!(nebo.effort_for(Effort::Low), Some(ProviderEffort::Low), "Instant, thinking a little");
         assert_eq!(nebo.effort_for(Effort::High), None, "nebo-1-pro at its default");
-        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::High), "nebo-1-pro at its highest");
+        assert_eq!(nebo.effort_for(Effort::Max), Some(ProviderEffort::Max), "nebo-1-pro at the model's top effort");
         assert_eq!(nebo.lanes.build, None, "building is not pinned");
         assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::High)), Some(Effort::High), "built at the level chosen");
         assert_eq!(nebo.lanes.level(Lane::Build, Some(Effort::Instant)), Some(Effort::Instant), "even Instant, when chosen");
@@ -438,9 +451,8 @@ mod tests {
         assert_eq!(nebo_ai().levels.voice.as_deref(), Some("janus/nebo-1-voice"));
         assert!(is_xai_voice_model("grok-voice-latest") && is_xai_voice_model(XAI_VOICE_MODEL));
         assert!(!is_xai_voice_model("grok-4") && !is_xai_voice_model("gpt-realtime-2") && !is_xai_voice_model("nebo-1-voice"));
-        assert!(is_xai_connection("xai", None) && is_xai_connection("xai@k1", None));
-        assert!(is_xai_connection("openai_compatible@k1", Some("https://api.x.ai/v1")));
-        assert!(!is_xai_connection("openai@k1", Some("https://api.openai.com/v1")) && !is_xai_connection("janus", None));
+        assert!(is_xai_connection("xai") && is_xai_connection("xai@k1"));
+        assert!(!is_xai_connection("openai_compatible@k1") && !is_xai_connection("openai@k1") && !is_xai_connection("janus"));
     }
 
     #[test]
@@ -468,19 +480,21 @@ mod tests {
     }
 
     #[test]
-    fn lanes_effort_and_routing_carry_as_the_contract_names_them() {
+    fn lanes_and_effort_carry_as_the_contract_names_them() {
         let mut p = byo(PackLevels { decisions: Some("systemone_compatible@k1/jev-latest".into()), ..Default::default() });
-        p.route_through_janus = true;
         p.lanes.heartbeat = Some(Effort::Instant);
         p.level_effort.max = Some(ProviderEffort::High);
         let v = serde_json::to_value(&p).unwrap();
-        assert_eq!(v["routeThroughJanus"], true);
+        assert!(v.get("routeThroughJanus").is_none(), "no pack routes through Janus by choice: {v}");
         assert_eq!(v["lanes"], serde_json::json!({"heartbeat": "instant"}));
         assert_eq!(v["levelEffort"], serde_json::json!({"max": "high"}));
         assert_eq!(v["levels"]["decisions"], "systemone_compatible@k1/jev-latest");
         // A pack saved before these fields reads with their defaults.
         let old: Pack = serde_json::from_value(serde_json::json!({"id": "o", "name": "Old", "levels": {}, "fallback": true, "builtIn": false})).unwrap();
-        assert!(!old.route_through_janus && old.lanes == PackLanes::default());
+        assert!(old.lanes == PackLanes::default());
+        // One saved with the old toggle reads the same: the toggle is gone.
+        let toggled: Pack = serde_json::from_value(serde_json::json!({"id": "t", "name": "T", "levels": {}, "fallback": true, "builtIn": false, "routeThroughJanus": true})).unwrap();
+        assert_eq!(toggled.lanes, PackLanes::default());
         let lanes: PackLanes = serde_json::from_value(serde_json::json!({"build": "max", "workflow": "instant"})).unwrap();
         assert_eq!((lanes.level(Lane::Build, None), lanes.level(Lane::Workflow, None)), (Some(Effort::Max), Some(Effort::Instant)));
     }

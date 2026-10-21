@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "OpenAI互換の任意のURL（Groq、Together、DeepSeek、xAI、Mistral…）",
 			"systemone_compatible": "SystemOne互換の任意のURL（判断モデル: Jev、Clef…）"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "idでモデルを追加",
 		"addModelByIdPlaceholder": "例: claude-opus-5",
 		"addModel": "モデルを追加",
-		"addModelHint": "能力は、既知のモデルファミリーに対するNeboのデフォルトから決まります。",
 		"editProvider": "プロバイダーを編集",
 		"nameHint": "会社用のキーと個人用のキーを区別しやすくするため、各キーに名前を付けてください。",
 		"baseUrlRequired": "ベースURLは必須です",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "次のメッセージから適用されます。再起動は不要です。",
 		"defaultSaveFailed": "デフォルトを変更できませんでした。",
 		"badgeDefault": "デフォルト",
-		"badgeJanus": "Nebo AI経由",
 		"readOnly": "読み取り専用",
 		"colLevel": "レベル",
 		"colRunsOn": "動作先",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Neboの組み込みの安全なデフォルト（判断モデルなし）",
 		"decisionsDefaultOption": "Nebo AI · Jev（デフォルト）",
 		"withEffort": "{effort}の労力",
-		"localNoJanus": "Nebo AI経由にはできません: そのモデルはこのコンピューター上で動作します。",
 		"removeConfirm": "{name} を削除しますか？まだ使用している社員はNebo AIで動作し、その旨が伝えられます。",
 		"loadFailed": "パックを読み込めませんでした。",
 		"saveFailed": "パックを保存できませんでした。",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "ヘルパー",
 		"laneBuild": "作成",
 		"laneWorkflow": "ワークフロー",
-		"laneByWork": "作業内容で選択",
-		"routeJanus": "Nebo AI経由にする",
-		"routeJanusHint": "Nebo AIは、料金を抑えるためにこのパックのモデル間で各ステップのレベルを選びます。あなたのキーは各リクエストとともに送られ、保存されることはありません。ルーティング料金: {fee}。",
-		"routeJanusLocal": "このコンピューター上のモデル（Ollama、Claude Code、Codex）は常に直接動作します。ボイスはルーティングされません。"
+		"laneByWork": "作業内容で選択"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo はアプリが開いている間だけ動作します。終了後も動かし続けるには、ログイン項目で Nebo をオンにしてください。",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "Lumenに40個を再注文しました",
 		"taskVideo": "火曜日の動画を投稿しました",
 		"taskInvoices": "請求書のリマインダーを3件送りました"
+	},
+	"ownKey": {
+		"signedOut": "自分の {provider} キーを使うには NeboAI にサインインしてください。",
+		"keyRejected": "{provider} の API キーが拒否されました。設定 > プロバイダー で確認してください。",
+		"keyUnusable": "{provider} の API キーではこのモデルを実行できません。設定 > プロバイダー でモデルを確認してください。",
+		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。"
 	},
 	"verify": {
 		"badge": {

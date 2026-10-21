@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Bất kỳ URL tương thích OpenAI nào (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Bất kỳ URL tương thích SystemOne nào (mô hình quyết định: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Thêm một mô hình bằng id của nó",
 		"addModelByIdPlaceholder": "ví dụ: claude-opus-5",
 		"addModel": "Thêm mô hình",
-		"addModelHint": "Khả năng được lấy từ mặc định của Nebo cho các dòng mô hình đã biết.",
 		"editProvider": "Sửa nhà cung cấp",
 		"nameHint": "Đặt tên cho mỗi khóa, để khóa công ty và khóa cá nhân dễ phân biệt.",
 		"baseUrlRequired": "Cần có URL cơ sở",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "Áp dụng cho tin nhắn tiếp theo. Không cần khởi động lại.",
 		"defaultSaveFailed": "Không thể thay đổi mặc định.",
 		"badgeDefault": "Mặc định",
-		"badgeJanus": "Định tuyến qua Nebo AI",
 		"readOnly": "Chỉ đọc",
 		"colLevel": "Mức",
 		"colRunsOn": "Chạy trên",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Mặc định an toàn tích hợp sẵn của Nebo (không có mô hình quyết định)",
 		"decisionsDefaultOption": "Nebo AI · Jev (mặc định)",
 		"withEffort": "Nỗ lực {effort}",
-		"localNoJanus": "Không thể định tuyến qua Nebo AI: mô hình của nó chạy trên máy tính này.",
 		"removeConfirm": "Xóa {name}? Nhân viên vẫn dùng gói này sẽ chạy trên Nebo AI, và sẽ được thông báo về điều đó.",
 		"loadFailed": "Không thể tải các gói.",
 		"saveFailed": "Không thể lưu gói.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "Trợ lý",
 		"laneBuild": "Xây dựng",
 		"laneWorkflow": "Quy trình",
-		"laneByWork": "Chọn theo công việc",
-		"routeJanus": "Định tuyến qua Nebo AI",
-		"routeJanusHint": "Nebo AI chọn mức cho mỗi bước trong số các mô hình của gói này để giảm hóa đơn của bạn. Khóa của bạn đi cùng mỗi yêu cầu và không bao giờ được lưu trữ. Phí định tuyến: {fee}.",
-		"routeJanusLocal": "Các mô hình trên máy tính này (Ollama, Claude Code, Codex) luôn chạy trực tiếp. Giọng nói không bao giờ được định tuyến."
+		"laneByWork": "Chọn theo công việc"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo chỉ chạy khi ứng dụng đang mở. Để Nebo tiếp tục làm việc sau khi thoát, hãy bật Nebo trong Mục đăng nhập.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "Đã đặt lại 40 sản phẩm từ Lumen",
 		"taskVideo": "Đã đăng video thứ Ba",
 		"taskInvoices": "Đã gửi 3 lời nhắc hóa đơn"
+	},
+	"ownKey": {
+		"signedOut": "Đăng nhập NeboAI để dùng khóa {provider} của riêng bạn.",
+		"keyRejected": "Khóa API {provider} của bạn bị từ chối. Hãy kiểm tra trong Cài đặt > Nhà cung cấp.",
+		"keyUnusable": "Khóa API {provider} của bạn không chạy được mô hình này. Hãy kiểm tra mô hình trong Cài đặt > Nhà cung cấp.",
+		"connectionSignIn": "Đăng nhập NeboAI để dùng khóa này: khóa của riêng bạn chạy trên tài khoản NeboAI của bạn."
 	},
 	"verify": {
 		"badge": {

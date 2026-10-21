@@ -6,6 +6,8 @@ import {
 	isDefaultPack,
 	levelRows,
 	parseContext,
+	blankHand,
+	handBody,
 	parseModelString,
 	runsOn,
 	shortContext,
@@ -19,7 +21,7 @@ const choices: PackChoice[] = [
 ];
 
 function pack(levels: Pack['levels']): Pack {
-	return { id: 'a', name: 'A', levels, fallback: true, builtIn: false, routeThroughJanus: false, lanes: {}, levelEffort: {} };
+	return { id: 'a', name: 'A', levels, fallback: true, builtIn: false, lanes: {}, levelEffort: {} };
 }
 
 function model(p: Partial<CatalogModel> & { modelId: string }): CatalogModel {
@@ -114,4 +116,22 @@ it('formats and parses context windows and URLs', () => {
 	expect(parseContext('131,072')).toBe(131072);
 	expect(parseContext('')).toBeUndefined();
 	expect(shortUrl('https://api.groq.com/openai/v1/')).toBe('api.groq.com/openai/v1');
+});
+
+// A model added by its id on a connection card and one added in Add
+// provider start with the same abilities: a chat model that reads images and
+// calls tools, so it can fill a pack's Vision slot.
+it('a model added by hand reads images and calls tools', () => {
+	expect(handBody(blankHand('gpt-x'))).toEqual({
+		modelId: 'gpt-x',
+		kind: 'chat',
+		contextWindow: undefined,
+		capabilities: ['vision', 'tools']
+	});
+	expect(handBody({ ...blankHand('m'), vision: false, thinking: true, contextWindow: '128,000' })).toEqual({
+		modelId: 'm',
+		kind: 'chat',
+		contextWindow: 128000,
+		capabilities: ['tools', 'thinking']
+	});
 });

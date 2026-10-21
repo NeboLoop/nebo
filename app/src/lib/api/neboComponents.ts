@@ -1190,7 +1190,6 @@ export interface Pack {
 	levels: PackLevels
 	fallback: boolean
 	builtIn: boolean
-	routeThroughJanus?: boolean
 	lanes?: PackLanes
 	levelEffort?: LevelEffort
 }
@@ -1994,7 +1993,7 @@ export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
 
 export type Mode = 'automatic' | 'ask' | 'plan' | 'full_access'
 
-export type ProviderEffort = 'low' | 'medium' | 'high'
+export type ProviderEffort = 'low' | 'medium' | 'high' | 'max'
 
 export type RosterKind = 'employee' | 'team'
 
@@ -2651,6 +2650,7 @@ export interface ListProjectsResponse {
 
 export interface ListProvidersResponse {
 	profiles: AuthProfile[]
+	routes: Record<string, ConnectionRoute>
 }
 
 export interface ListRegistryResponse {
@@ -3439,6 +3439,11 @@ export interface CommanderNode {
 	role: string
 	type: string
 	parentId?: string
+}
+
+export interface ConnectionRoute {
+	via: 'janus' | 'direct'
+	signInRequired: boolean
 }
 
 export interface EnrichedChat {

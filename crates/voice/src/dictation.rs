@@ -42,12 +42,14 @@ const HOLD_LIMIT: usize = 1_000_000;
 /// One dictation's line.
 #[derive(Debug, Clone)]
 pub struct DictationConfig {
-    /// `wss://.../v1/stt` (Janus relay or the provider direct).
+    /// Janus's `wss://.../v1/stt`.
     pub endpoint: String,
-    /// Janus JWT for the relay leg, the owner's key for direct.
+    /// The owner's NeboAI token.
     pub bearer: String,
     /// Janus attribution header (X-Bot-ID).
     pub bot_id: Option<String>,
+    /// The owner's own key, when it is his that pays (`types::own_key`).
+    pub own_key: Option<types::own_key::OwnKey>,
     /// The phone's PCM16 mono rate.
     pub sample_rate: u32,
     /// BCP-47 language of the speaker ("en", "pt-BR"); none = the
@@ -186,7 +188,7 @@ pub async fn run(
     // Janus files the minutes under Transcription, with every other
     // transcription the bot asks for.
     let mut waits = ::types::balance::ReservedWaits::default();
-    let dial = open(&url, &cfg.bearer, cfg.bot_id.as_deref(), "transcribe", None, &mut waits);
+    let dial = open(&url, &cfg.bearer, cfg.bot_id.as_deref(), cfg.own_key.as_ref(), "transcribe", None, &mut waits);
     tokio::pin!(dial);
     let ws: Socket = loop {
         tokio::select! {
@@ -339,6 +341,7 @@ mod tests {
             endpoint,
             bearer: "token".into(),
             bot_id: Some("bot-1".into()),
+            own_key: Some(types::own_key::OwnKey { provider: "xai".into(), key: "xai-own".into() }),
             sample_rate: 16_000,
             language: Some("en".into()),
             keyterms: Vec::new(),
@@ -455,6 +458,9 @@ mod tests {
         assert_eq!(header("authorization").as_deref(), Some("Bearer token"));
         assert_eq!(header("x-purpose").as_deref(), Some("transcribe"));
         assert_eq!(header("x-bot-id").as_deref(), Some("bot-1"));
+        // The owner's own xAI key rides to Janus beside his NeboAI token.
+        assert_eq!(header("x-provider-api-key").as_deref(), Some("xai-own"));
+        assert_eq!(header("x-provider").as_deref(), Some("xai"));
         in_tx.send(DictationInput::Audio(Bytes::from_static(b"three"))).await.unwrap();
         // Nothing goes up before the far end is ready.
         say(&mut far, json!({"type":"transcript.created"})).await;

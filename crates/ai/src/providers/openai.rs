@@ -35,6 +35,10 @@ pub struct OpenAIProvider {
     bot_id: Option<String>,
     /// Optional lane identifier sent as X-Lane header (used by Janus for routing).
     lane: Option<String>,
+    /// The owner's own key, when this provider is his paid connection
+    /// reached through Janus (`types::own_key`): sent on every request, so
+    /// Janus calls his provider on it and charges the platform fee alone.
+    own_key: Option<::types::own_key::OwnKey>,
     /// HTTP client wrapped in RwLock for connection reset recovery.
     http_client: RwLock<reqwest::Client>,
 }
@@ -48,6 +52,7 @@ impl OpenAIProvider {
             provider_id: "openai".to_string(),
             bot_id: None,
             lane: None,
+            own_key: None,
             http_client: RwLock::new(crate::http::streaming_client()),
         }
     }
@@ -61,6 +66,7 @@ impl OpenAIProvider {
             provider_id: "openai".to_string(),
             bot_id: None,
             lane: None,
+            own_key: None,
             http_client: RwLock::new(crate::http::streaming_client()),
         }
     }
@@ -80,6 +86,12 @@ impl OpenAIProvider {
         self.lane = Some(lane.into());
     }
 
+    /// Carry the owner's own key to Janus on every request (the provider's
+    /// base URL is then Janus's, its bearer the NeboAI token).
+    pub fn set_own_key(&mut self, own_key: ::types::own_key::OwnKey) {
+        self.own_key = Some(own_key);
+    }
+
     /// Build async-openai messages from our generic format.
     /// OpenAI's own API takes `prompt_cache_key` (requests with the same
     /// key and prefix land on the same cache). Other OpenAI-compatible
@@ -89,7 +101,7 @@ impl OpenAIProvider {
         self.base_url.starts_with("https://api.openai.com/")
     }
 
-    fn build_messages(&self, req: &ChatRequest) -> Vec<ChatCompletionRequestMessage> {
+    fn build_messages(&self, req: &ChatRequest) -> BuiltMessages {
         // Build indexes for history sanitisation (same as Go buildMessages):
         // - respondedToolIDs: tool_call_ids that have a matching tool-result message
         // - issuedToolIDs: tool_call_ids that appear in an assistant tool_calls field
@@ -118,6 +130,8 @@ impl OpenAIProvider {
 
         let mut messages = Vec::new();
         let mut skipped_orphans = 0u32;
+        let mut system_marked = 0usize;
+        let mut thinking = HashMap::new();
 
         // Add system message(s).
         // When cache_breakpoints are provided, split the system prompt at those
@@ -153,6 +167,7 @@ impl OpenAIProvider {
                             name: None,
                         },
                     ));
+                    system_marked += 1;
                     cursor = bp;
                 }
                 // Remaining tail (mutable portion)
@@ -248,6 +263,9 @@ impl OpenAIProvider {
                             None
                         };
 
+                        if !msg.thinking.is_empty() {
+                            thinking.insert(messages.len(), msg.thinking.clone());
+                        }
                         messages.push(ChatCompletionRequestMessage::Assistant(
                             ChatCompletionRequestAssistantMessage {
                                 content,
@@ -303,7 +321,13 @@ impl OpenAIProvider {
             debug!(skipped_orphans, "cleaned orphaned tool_calls from history");
         }
 
-        messages
+        BuiltMessages { messages, system_marked, thinking }
+    }
+
+    /// Whether this provider's requests go through Janus: Nebo AI's, or the
+    /// owner's own paid key, which Janus calls his provider on.
+    fn via_janus(&self) -> bool {
+        self.provider_id == "janus" || self.own_key.is_some()
     }
 
     /// Handle raw SSE byte stream, converting to our StreamEvent types.
@@ -337,6 +361,9 @@ impl OpenAIProvider {
         // totals) count a ~200-token turn as tens of thousands — so we hold
         // the latest values and emit exactly ONE Usage event after the loop.
         let mut latest_usage: Option<UsageInfo> = None;
+        // Signed thinking blocks from `reasoning_details` (Anthropic through
+        // Janus), handed over whole once each carries its signature.
+        let mut reasoning = super::anthropic_wire::ReasoningBlocks::default();
 
         'outer: while let Some(result) = byte_stream.next().await {
             let bytes = match result {
@@ -438,6 +465,22 @@ impl OpenAIProvider {
                             }
                         }
 
+                        // Thinking (`reasoning_content`) streams to the UI as it
+                        // comes; signed blocks (`reasoning_details`) go to the
+                        // runner whole, to send back with their turn.
+                        if let Some(choices) = raw_val.as_ref().and_then(|v| v.get("choices")).and_then(|c| c.as_array()) {
+                            for delta in choices.iter().filter_map(|c| c.get("delta")) {
+                                if let Some(text) = delta.get("reasoning_content").and_then(|t| t.as_str()).filter(|t| !t.is_empty()) {
+                                    let _ = tx.send(StreamEvent::thinking(text)).await;
+                                }
+                                if let Some(items) = delta.get("reasoning_details").and_then(|d| d.as_array()) {
+                                    for block in reasoning.absorb(items) {
+                                        let _ = tx.send(StreamEvent::thinking_block(block)).await;
+                                    }
+                                }
+                            }
+                        }
+
                         let response: CreateChatCompletionStreamResponse =
                             match serde_json::from_str(&data) {
                                 Ok(r) => r,
@@ -516,15 +559,17 @@ impl OpenAIProvider {
                                 .and_then(|d| d.cached_tokens)
                                 .unwrap_or(0) as i32;
                             // Janus adds `usage.cost_micro` (microdollars for the
-                            // model it routed to). The typed chunk cannot carry
-                            // it, so read it off the raw JSON beside it.
-                            let cost_micro = serde_json::from_str::<serde_json::Value>(&data)
-                                .ok()
-                                .and_then(|v| v.pointer("/usage/cost_micro").and_then(|c| c.as_i64()));
+                            // model it routed to) and the tokens written to the
+                            // prompt cache. The typed chunk cannot carry them,
+                            // so read them off the raw JSON beside it.
+                            let raw_usage = raw_val.as_ref().and_then(|v| v.get("usage"));
+                            let cost_micro = raw_usage.and_then(|u| u.get("cost_micro")).and_then(|c| c.as_i64());
+                            let cache_write = raw_usage.and_then(cache_writes).unwrap_or(0);
                             latest_usage = Some(usage_from_openai(
                                 usage.prompt_tokens as i32,
                                 usage.completion_tokens as i32,
                                 cached,
+                                cache_write,
                                 cost_micro,
                             ));
                         }
@@ -613,7 +658,7 @@ impl Provider for OpenAIProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
-        let messages = self.build_messages(req);
+        let BuiltMessages { messages, system_marked, thinking } = self.build_messages(req);
 
         let model = crate::chosen_model(&req.model, &self.model, &self.provider_id)?;
 
@@ -691,17 +736,27 @@ impl Provider for OpenAIProvider {
             }
         }
         // The pack level's provider effort, only for a model that thinks —
-        // or for Janus, which applies it per model of its pool and drops it
-        // where a model can't take it: OpenRouter normalizes it as
-        // `reasoning.effort`; the OpenAI format names it `reasoning_effort`.
+        // or for Janus's own models, where Janus applies it per model of its
+        // pool and drops it where a model can't take it. The OpenAI format
+        // names it `reasoning_effort`; Janus puts it in each provider's own
+        // shape for an owner's key.
+        // (An owner's own model through Janus names its model itself: it
+        // gets the effort only when it thinks, as on a direct call, since a
+        // model that does not reason refuses the field.)
+        // Max (the model's top level) is Janus's to map per model; a provider
+        // reached directly knows nothing above high.
         let thinks = req.enable_thinking || self.provider_id == "janus";
-        if let (Some(effort), true, serde_json::Value::Object(map)) = (req.effort, thinks, &mut body_val) {
-            let e = serde_json::json!(effort);
-            if self.provider_id == "openrouter" {
-                map.insert("reasoning".to_string(), serde_json::json!({ "effort": e }));
-            } else {
-                map.insert("reasoning_effort".to_string(), e);
-            }
+        let effort = req.effort.map(|e| if self.via_janus() { e } else { e.standard() });
+        if let (Some(effort), true, serde_json::Value::Object(map)) = (effort, thinks, &mut body_val) {
+            map.insert("reasoning_effort".to_string(), serde_json::json!(effort));
+        }
+        // An Anthropic model through Janus: cache markers per stable chunk,
+        // deferred tools, the thinking budget and signed thinking sent back
+        // (`anthropic_wire`).
+        let claude_wire = self.via_janus()
+            && super::anthropic_wire::is_anthropic(self.own_key.as_ref().map(|k| k.provider.as_str()), &self.provider_id, &model);
+        if claude_wire {
+            super::anthropic_wire::apply(&mut body_val, req, system_marked, &thinking);
         }
 
         // LLM payload breakdown — logged on every request so we can MEASURE where the
@@ -782,6 +837,19 @@ impl Provider for OpenAIProvider {
         let url = format!("{}/chat/completions", self.base_url);
         let mut headers = reqwest::header::HeaderMap::new();
         let api_key = self.api_key.current();
+        if let Some(own) = &self.own_key {
+            // His key reaches his provider through Janus, which needs his
+            // NeboAI account to charge the platform fee to.
+            if api_key.is_empty() {
+                let name = crate::provider_name(&self.provider_id);
+                return Err(own_key_error(SIGNED_OUT, &self.provider_id, &format!("Sign in to NeboAI to use your own {name} key.")));
+            }
+            for (name, value) in own.headers() {
+                if let Ok(v) = value.parse() {
+                    headers.insert(reqwest::header::HeaderName::from_static(own_key_header(name)), v);
+                }
+            }
+        }
         if !api_key.is_empty() {
             headers.insert(
                 reqwest::header::AUTHORIZATION,
@@ -804,6 +872,14 @@ impl Provider for OpenAIProvider {
         // Purpose + trace headers — let Janus group usage by what the call was
         // for and attribute it to the agent/run/workflow/action/step behind it.
         headers.extend(req.trace.headers());
+        // A Claude reply's block order (`reasoning.order`) is sent only to a
+        // caller that asks for it: Nebo keeps it and sends it back.
+        if claude_wire {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-reasoning-order"),
+                reqwest::header::HeaderValue::from_static("1"),
+            );
+        }
         // A one-off request is cached nowhere (`ChatRequest::cache_breakpoints`).
         if req.cache_breakpoints.is_empty() {
             let (name, value) = crate::PROMPT_CACHE_OFF;
@@ -839,6 +915,11 @@ impl Provider for OpenAIProvider {
                 model = model,
                 "provider HTTP error"
             );
+            if self.own_key.is_some()
+                && let Some(refused) = own_key_refused(&body, &self.provider_id)
+            {
+                return Err(refused);
+            }
             return Err(map_http_error(status.as_u16(), &body, &model, &url, retry_after));
         }
 
@@ -1010,6 +1091,45 @@ fn go_duration_secs(s: &str) -> Option<u64> {
 /// gateway already tried every route before answering).
 fn is_final_error(err: &serde_json::Value, code: &str) -> bool {
     code == CONTENT_FILTERED || err.get("retryable").and_then(|r| r.as_bool()) == Some(false)
+}
+
+/// The code a chat on the owner's own key fails with when Nebo is not
+/// signed in to NeboAI: Janus carries his key, on his account.
+pub const SIGNED_OUT: &str = "neboai_signed_out";
+
+/// The lowercase name `reqwest` takes for a `types::own_key` header.
+fn own_key_header(name: &str) -> &'static str {
+    match name {
+        ::types::own_key::KEY_HEADER => "x-provider-api-key",
+        _ => "x-provider",
+    }
+}
+
+/// Janus's answer when the owner's own key cannot serve: his provider
+/// refused it (`PROVIDER_KEY_REJECTED`), or it cannot pay the route
+/// (`PROVIDER_KEY_UNUSABLE`). Either is his to fix, so it is final and says
+/// so plainly; any other answer is `None` (the usual mapping).
+fn own_key_refused(body: &str, provider_id: &str) -> Option<ProviderError> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let code = v["error"]["code"].as_str()?;
+    let name = crate::provider_name(provider_id);
+    let message = match code {
+        "PROVIDER_KEY_REJECTED" => format!("Your {name} API key was refused. Check it in Settings > Providers."),
+        "PROVIDER_KEY_UNUSABLE" => format!("Your {name} API key can't run this model. Check the model on it in Settings > Providers."),
+        _ => return None,
+    };
+    Some(own_key_error(code, provider_id, &message))
+}
+
+/// A final error about the owner's own connection, his to fix: its text is
+/// `CODE(Provider): English`, which the app reads back to word it in his
+/// language (`ownKeyError` in the app), as it reads `USAGE_LIMIT_EXCEEDED`.
+fn own_key_error(code: &str, provider_id: &str, english: &str) -> ProviderError {
+    ProviderError::Api {
+        code: code.to_string(),
+        message: format!("{code}({}): {english}", crate::provider_name(provider_id)),
+        retryable: false,
+    }
 }
 
 /// Map HTTP error status + body to our ProviderError type.
@@ -1237,6 +1357,16 @@ struct SessionToolResult {
     is_error: bool,
 }
 
+/// The messages of a request, with what an Anthropic model through Janus
+/// needs beside them (`anthropic_wire::apply`): how many leading system
+/// messages are stable chunks, and the signed thinking of each assistant
+/// message by its index.
+struct BuiltMessages {
+    messages: Vec<ChatCompletionRequestMessage>,
+    system_marked: usize,
+    thinking: HashMap<usize, Vec<ThinkingBlock>>,
+}
+
 /// OpenAI-protocol usage into Nebo's `UsageInfo`.
 ///
 /// OpenAI counts cached tokens as a SUBSET of `prompt_tokens`; Anthropic (and
@@ -1244,15 +1374,31 @@ struct SessionToolResult {
 /// context calibration that sums input + cache_read + cache_creation) treats
 /// them as DISJOINT. Convert at the boundary, once, or a 74% cache hit reads
 /// as a context 74% larger than it is and compaction fires early.
-fn usage_from_openai(prompt_tokens: i32, completion_tokens: i32, cached_tokens: i32, cost_micro: Option<i64>) -> UsageInfo {
+///
+/// Cache writes (Janus reports them for Anthropic models) are a subset of
+/// `prompt_tokens` too, and disjoint downstream, the same way.
+fn usage_from_openai(prompt_tokens: i32, completion_tokens: i32, cached_tokens: i32, cache_write_tokens: i32, cost_micro: Option<i64>) -> UsageInfo {
     let cached = cached_tokens.clamp(0, prompt_tokens.max(0));
+    let written = cache_write_tokens.clamp(0, (prompt_tokens - cached).max(0));
     UsageInfo {
         cost_microdollars: cost_micro.filter(|c| *c > 0),
-        input_tokens: prompt_tokens - cached,
+        input_tokens: prompt_tokens - cached - written,
         output_tokens: completion_tokens,
         cache_read_input_tokens: cached,
+        cache_creation_input_tokens: written,
         ..Default::default()
     }
+}
+
+/// The tokens a reply wrote to the prompt cache, from an OpenAI-format
+/// `usage`: `prompt_tokens_details.cache_creation_input_tokens` (Janus),
+/// `prompt_tokens_details.cache_write_tokens`, or a top-level
+/// `cache_creation_input_tokens`.
+fn cache_writes(usage: &serde_json::Value) -> Option<i32> {
+    ["/prompt_tokens_details/cache_creation_input_tokens", "/prompt_tokens_details/cache_write_tokens", "/cache_creation_input_tokens"]
+        .iter()
+        .find_map(|p| usage.pointer(p).and_then(|v| v.as_i64()))
+        .map(|n| n as i32)
 }
 
 #[cfg(test)]
@@ -1263,15 +1409,15 @@ mod usage_semantics_tests {
     /// sent 46,944 uncached tokens, not 319,072.
     #[test]
     fn openai_cached_tokens_are_a_subset_of_prompt_tokens() {
-        let u = usage_from_openai(183_008, 20, 136_064, None);
+        let u = usage_from_openai(183_008, 20, 136_064, 0, None);
         assert_eq!(u.input_tokens, 46_944);
         assert_eq!(u.cache_read_input_tokens, 136_064);
         assert_eq!(u.input_tokens + u.cache_read_input_tokens, 183_008, "the sum is the prompt");
         // Providers without a breakdown are unchanged.
-        let u = usage_from_openai(100, 5, 0, None);
+        let u = usage_from_openai(100, 5, 0, 0, None);
         assert_eq!((u.input_tokens, u.cache_read_input_tokens), (100, 0));
         // A malformed breakdown never goes negative.
-        let u = usage_from_openai(10, 1, 50, None);
+        let u = usage_from_openai(10, 1, 50, 0, None);
         assert_eq!((u.input_tokens, u.cache_read_input_tokens), (0, 10));
     }
 }
@@ -1728,6 +1874,151 @@ mod tests {
         assert!(!other.contains("reasoning"), "{other}");
     }
 
+    /// The request (head and body) a provider sends for `req`, answered
+    /// with an empty stream.
+    async fn request_sent(build: impl FnOnce(String) -> OpenAIProvider, req: ChatRequest) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n";
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let provider = build(format!("http://{addr}/v1"));
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        server.await.unwrap().to_ascii_lowercase()
+    }
+
+    // Max is each model's top effort through Janus ("max", mapped per model
+    // there); a provider reached directly knows nothing above high. A Claude
+    // route asks Janus for the reply's block order (x-reasoning-order) and
+    // its thinking at Max as reasoning.effort; no other route does.
+    #[tokio::test]
+    async fn max_is_the_models_top_effort_through_janus() {
+        let req = || ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            effort: Some(types::packs::ProviderEffort::Max),
+            enable_thinking: true,
+            ..ChatRequest::new(RequestTrace::new("chat"))
+        };
+        let sent = request_sent(
+            |url| {
+                let mut p = OpenAIProvider::with_base_url(String::from("nebo-token"), "nebo-1-pro".into(), url);
+                p.set_provider_id("janus");
+                p
+            },
+            req(),
+        )
+        .await;
+        assert!(sent.contains(r#""reasoning_effort":"max""#), "{sent}");
+        assert!(!sent.contains("x-reasoning-order"), "not a Claude route: {sent}");
+
+        let sent = request_sent(
+            |url| {
+                let mut p = OpenAIProvider::with_base_url(String::from("sk"), "m".into(), url);
+                p.set_provider_id("openai_compatible");
+                p
+            },
+            req(),
+        )
+        .await;
+        assert!(sent.contains(r#""reasoning_effort":"high""#), "a direct provider: high: {sent}");
+
+        let sent = request_sent(
+            |url| {
+                let mut p = OpenAIProvider::with_base_url(String::from("nebo-token"), "claude-x".into(), url);
+                p.set_provider_id("anthropic");
+                p.set_own_key(::types::own_key::OwnKey { provider: "anthropic".into(), key: "sk-own".into() });
+                p
+            },
+            req(),
+        )
+        .await;
+        assert!(sent.contains("x-reasoning-order: 1"), "{sent}");
+        assert!(sent.contains(r#""reasoning":{"effort":"max"}"#), "{sent}");
+        assert!(!sent.contains("reasoning_effort"), "{sent}");
+    }
+
+    /// A provider on Janus with the owner's own key, answering once with
+    /// `status` and `body`; the request head it sent comes back.
+    async fn own_key_call(bearer: &str, status: &'static str, body: &'static str) -> (Result<EventReceiver, ProviderError>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else { return String::new() };
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap();
+            let resp = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let mut provider = OpenAIProvider::with_base_url(bearer.to_string(), "claude-x".into(), format!("http://{addr}/v1"));
+        provider.set_provider_id("anthropic");
+        provider.set_own_key(::types::own_key::OwnKey { provider: "anthropic".into(), key: "sk-own".into() });
+        let req = ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("chat"))
+        };
+        let result = provider.stream(&req).await;
+        if bearer.is_empty() {
+            server.abort();
+            return (result, String::new());
+        }
+        (result, server.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_own_key_rides_to_janus_beside_the_neboai_token() {
+        let (_, head) = own_key_call("nebo-token", "200 OK", "").await;
+        let head = head.to_ascii_lowercase();
+        assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+        assert!(head.contains("authorization: bearer nebo-token"), "{head}");
+        assert!(head.contains("x-provider-api-key: sk-own"), "{head}");
+        assert!(head.contains("x-provider: anthropic"), "{head}");
+        assert!(head.contains(r#""model":"claude-x""#), "the owner's model, verbatim: {head}");
+    }
+
+    #[tokio::test]
+    async fn an_own_key_without_a_neboai_account_asks_to_sign_in() {
+        match own_key_call("", "200 OK", "").await.0 {
+            Err(ProviderError::Api { code, message, retryable: false }) => {
+                assert_eq!(code, SIGNED_OUT);
+                assert_eq!(message, "neboai_signed_out(Anthropic): Sign in to NeboAI to use your own Anthropic key.");
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_own_key_is_the_owners_to_fix_and_final() {
+        let body = r#"{"error":{"code":"PROVIDER_KEY_REJECTED","message":"upstream said no"}}"#;
+        match own_key_call("nebo-token", "400 Bad Request", body).await.0 {
+            Err(ProviderError::Api { code, message, retryable: false }) => {
+                assert_eq!(code, "PROVIDER_KEY_REJECTED");
+                assert_eq!(message, "PROVIDER_KEY_REJECTED(Anthropic): Your Anthropic API key was refused. Check it in Settings > Providers.");
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+
+    /// An empty balance on an own-key request reads as Nebo AI's does, so
+    /// the app shows its add-funds message (`USAGE_LIMIT_EXCEEDED`).
+    #[tokio::test]
+    async fn an_empty_balance_on_an_own_key_is_the_add_funds_refusal() {
+        let body = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"Usage limit exceeded: balance_exhausted"}}"#;
+        match own_key_call("nebo-token", "429 Too Many Requests", body).await.0 {
+            Err(ProviderError::Api { code, message, retryable: false }) => {
+                assert_eq!(code, "USAGE_LIMIT_EXCEEDED");
+                assert!(message.starts_with("USAGE_LIMIT_EXCEEDED"), "{message}");
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+    }
+
     // The hub rotates the NeboAI token on every comms connect, so a Janus
     // provider built once must present the token current at each request,
     // never the one it was built with.
@@ -1975,5 +2266,289 @@ mod tests {
         while rx.recv().await.is_some() {}
         let sent = server.await.unwrap();
         assert!(sent.contains(r#""max_completion_tokens":256"#), "{sent}");
+    }
+}
+
+#[cfg(test)]
+mod anthropic_wire_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// A fake Janus answering one request with `sse`; the request's JSON
+    /// body comes back.
+    async fn janus(sse: &'static str) -> (String, tokio::task::JoinHandle<serde_json::Value>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = vec![0u8; 65536];
+            loop {
+                let n = sock.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some(head_end) = text.find("\r\n\r\n") {
+                    let len = text[..head_end]
+                        .lines()
+                        .find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                        .unwrap_or(0);
+                    if buf.len() >= head_end + 4 + len {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}");
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let body = &text[text.find("\r\n\r\n").unwrap() + 4..];
+            serde_json::from_str(body).unwrap()
+        });
+        (format!("http://{addr}"), server)
+    }
+
+    fn own_anthropic(base: String) -> OpenAIProvider {
+        let mut p = OpenAIProvider::with_base_url("neboai-token".to_string(), "claude-sonnet-5".into(), base);
+        p.set_provider_id("anthropic");
+        p.set_own_key(::types::own_key::OwnKey { provider: "anthropic".into(), key: "sk-ant".into() });
+        p
+    }
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition { name: name.into(), description: format!("{name} tool"), input_schema: serde_json::json!({"type": "object"}) }
+    }
+
+    const DONE: &str = "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
+    async fn sent(provider: &OpenAIProvider, server: tokio::task::JoinHandle<serde_json::Value>, req: &ChatRequest) -> serde_json::Value {
+        let mut rx = provider.stream(req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        server.await.unwrap()
+    }
+
+    // The deleted direct client's cache markers, on Janus's OpenAI-format
+    // door: each stable system chunk, the last tool, the last message; and
+    // the thinking budget's default for an own-key Anthropic model.
+    #[tokio::test]
+    async fn an_anthropic_model_through_janus_carries_its_cache_markers_and_budget() {
+        let (base, server) = janus(DONE).await;
+        let provider = own_anthropic(base);
+        let system = "STABLE ONE. STABLE TWO. dynamic tail".to_string();
+        let req = ChatRequest {
+            system: system.clone(),
+            cache_breakpoints: vec![11, 23],
+            tools: vec![tool("a"), tool("b")],
+            enable_thinking: true,
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let body = sent(&provider, server, &req).await;
+        let msgs = body["messages"].as_array().unwrap();
+        let marked = |m: &serde_json::Value| m["content"][0]["cache_control"]["type"] == "ephemeral";
+        assert!(marked(&msgs[0]) && marked(&msgs[1]), "{body}");
+        assert_eq!(msgs[0]["content"][0]["text"], "STABLE ONE.");
+        assert_eq!(msgs[2]["content"], " dynamic tail", "the tail is not cached");
+        assert!(marked(&msgs[3]), "the last message: {body}");
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["reasoning"]["max_tokens"], 10_000);
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    // A deferred tool a result loaded is sent with `defer_loading`, and the
+    // result names it by `tool_reference` in place of its definition's text.
+    #[tokio::test]
+    async fn a_loaded_tool_is_deferred_and_referenced() {
+        let (base, server) = janus(DONE).await;
+        let provider = own_anthropic(base);
+        let loaded = tool("loaded");
+        let content = format!("Found:\n{}", functions_block([&loaded]));
+        let req = ChatRequest {
+            tools: vec![tool("core"), loaded.clone()],
+            cache_breakpoints: vec![1],
+            system: "S rest".into(),
+            messages: vec![
+                Message { role: "user".into(), content: "find it".into(), ..Default::default() },
+                Message {
+                    role: "assistant".into(),
+                    tool_calls: Some(serde_json::json!([{"id": "c1", "name": "find_tools", "input": {}}])),
+                    thinking: vec![ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() }],
+                    ..Default::default()
+                },
+                Message {
+                    role: "tool".into(),
+                    tool_results: Some(serde_json::json!([{"tool_call_id": "c1", "content": content, "loadedTools": [function_entry(&loaded)]}])),
+                    ..Default::default()
+                },
+            ],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let body = sent(&provider, server, &req).await;
+        assert_eq!(body["tools"][1]["defer_loading"], true, "{body}");
+        assert!(body["tools"][0].get("defer_loading").is_none());
+        assert_eq!(body["tools"][0]["cache_control"]["type"], "ephemeral", "the last tool loaded up front");
+        let msgs = body["messages"].as_array().unwrap();
+        let tool_msg = msgs.iter().find(|m| m["role"] == "tool").unwrap();
+        assert_eq!(tool_msg["content"][0]["text"], "Found:");
+        assert_eq!(tool_msg["content"][1]["type"], "tool_reference");
+        assert_eq!(tool_msg["content"][1]["tool_name"], "loaded");
+        // The signed thinking goes back on its turn.
+        let assistant = msgs.iter().find(|m| m["role"] == "assistant").unwrap();
+        assert_eq!(assistant["reasoning_details"][0]["type"], "reasoning.text");
+        assert_eq!(assistant["reasoning_details"][0]["text"], "plan");
+        assert_eq!(assistant["reasoning_details"][0]["signature"], "sig-1");
+    }
+
+    // Every breakpoint counts against Anthropic's four, tools included: with
+    // more stable chunks than fit, the newest three system chunks and the
+    // last message are marked and the tool is not; markers name no `ttl`
+    // (Janus writes five-minute entries only).
+    #[tokio::test]
+    async fn cache_markers_never_exceed_four_across_tools_system_and_messages() {
+        let (base, server) = janus(DONE).await;
+        let provider = own_anthropic(base);
+        let req = ChatRequest {
+            system: "AAAA BBBB CCCC DDDD EEEE tail".into(),
+            cache_breakpoints: vec![5, 10, 15, 20, 25],
+            tools: vec![tool("a"), tool("b")],
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let body = sent(&provider, server, &req).await;
+        let text = body.to_string();
+        assert_eq!(text.matches("cache_control").count(), 4, "{body}");
+        assert!(!text.contains("ttl"), "{body}");
+        let msgs = body["messages"].as_array().unwrap();
+        let last = msgs.last().unwrap();
+        assert_eq!(last["content"][0]["cache_control"]["type"], "ephemeral", "the last message keeps its marker");
+        assert!(body["tools"].as_array().unwrap().iter().all(|t| t.get("cache_control").is_none()), "{body}");
+    }
+
+    // An assistant turn's reasoning goes back exactly as it came: every item
+    // in its order, in Claude's format, the reply's block order included.
+    #[tokio::test]
+    async fn reasoning_details_go_back_in_order_in_claudes_format() {
+        let (base, server) = janus(DONE).await;
+        let provider = own_anthropic(base);
+        let order = vec![serde_json::json!({"type": "thinking"}), serde_json::json!({"type": "text", "length": 4}), serde_json::json!({"type": "tool_use", "id": "c1"})];
+        let req = ChatRequest {
+            tools: vec![tool("find_tools")],
+            messages: vec![
+                Message { role: "user".into(), content: "go".into(), ..Default::default() },
+                Message {
+                    role: "assistant".into(),
+                    content: "Look".into(),
+                    tool_calls: Some(serde_json::json!([{"id": "c1", "name": "find_tools", "input": {}}])),
+                    thinking: vec![
+                        ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() },
+                        ThinkingBlock::RedactedThinking { data: "opaque".into() },
+                        ThinkingBlock::BlockOrder { blocks: order.clone(), content: None },
+                    ],
+                    ..Default::default()
+                },
+                Message { role: "tool".into(), tool_results: Some(serde_json::json!([{"tool_call_id": "c1", "content": "r"}])), ..Default::default() },
+            ],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let body = sent(&provider, server, &req).await;
+        let assistant = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "assistant").unwrap().clone();
+        assert_eq!(
+            assistant["reasoning_details"],
+            serde_json::json!([
+                {"type": "reasoning.text", "text": "plan", "signature": "sig-1", "format": "anthropic-claude-v1"},
+                {"type": "reasoning.encrypted", "data": "opaque", "format": "anthropic-claude-v1"},
+                {"type": "reasoning.order", "format": "anthropic-claude-v1", "blocks": order},
+            ])
+        );
+    }
+
+    // Only Claude's reasoning is read from a reply: another format is
+    // dropped; the reply's block order is kept as it came, after its blocks.
+    #[test]
+    fn only_claudes_reasoning_details_are_read() {
+        let mut blocks = super::super::anthropic_wire::ReasoningBlocks::default();
+        let got = blocks.absorb(&[
+            serde_json::json!({"type": "reasoning.encrypted", "data": "gAAAA", "format": "openai-responses-v1"}),
+            serde_json::json!({"type": "reasoning.text", "text": "plan", "signature": "sig-1", "format": "anthropic-claude-v1"}),
+            serde_json::json!({"type": "reasoning.order", "format": "anthropic-claude-v1", "blocks": [{"type": "thinking"}, {"type": "text", "length": 2}]}),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                ThinkingBlock::Thinking { thinking: "plan".into(), signature: "sig-1".into() },
+                ThinkingBlock::BlockOrder { blocks: vec![serde_json::json!({"type": "thinking"}), serde_json::json!({"type": "text", "length": 2})], content: None },
+            ]
+        );
+    }
+
+    // Only an Anthropic model gets them: an own OpenAI key, and Nebo AI's
+    // own speeds, are sent as before.
+    #[tokio::test]
+    async fn other_models_are_sent_as_before() {
+        for (provider_id, own, model) in [("openai", Some("openai"), "gpt-6"), ("janus", None, "nebo-1")] {
+            let (base, server) = janus(DONE).await;
+            let mut p = OpenAIProvider::with_base_url("t".to_string(), model.into(), base);
+            p.set_provider_id(provider_id);
+            if let Some(own) = own {
+                p.set_own_key(::types::own_key::OwnKey { provider: own.into(), key: "k".into() });
+            }
+            let req = ChatRequest {
+                system: "S rest".into(),
+                cache_breakpoints: vec![1],
+                tools: vec![tool("a")],
+                messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+                ..ChatRequest::new(RequestTrace::new("agent_turn"))
+            };
+            let body = sent(&p, server, &req).await;
+            assert!(!body.to_string().contains("cache_control"), "{provider_id}: {body}");
+        }
+        // A Claude model of Nebo AI's gets them.
+        let (base, server) = janus(DONE).await;
+        let mut p = OpenAIProvider::with_base_url("t".to_string(), "claude-haiku-5-5".into(), base);
+        p.set_provider_id("janus");
+        let req = ChatRequest {
+            system: "S rest".into(),
+            cache_breakpoints: vec![1],
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        assert!(sent(&p, server, &req).await.to_string().contains("cache_control"));
+    }
+
+    // Janus's reply: thinking text streams to the UI, the signed block comes
+    // whole for the runner, and the cache reads and writes are counted.
+    #[tokio::test]
+    async fn thinking_and_cache_usage_come_back() {
+        const SSE: &str = concat!(
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hard\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"thinking hard\",\"signature\":\"sig-9\"}]}}]}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":5,\"total_tokens\":1005,\"prompt_tokens_details\":{\"cached_tokens\":800,\"cache_creation_input_tokens\":150},\"cost_micro\":42}}\n\n",
+            "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        let (base, server) = janus(SSE).await;
+        let provider = own_anthropic(base);
+        let req = ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        };
+        let mut rx = provider.stream(&req).await.unwrap();
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv().await {
+            events.push(e);
+        }
+        server.await.unwrap();
+        let thought: String = events.iter().filter(|e| e.event_type == StreamEventType::Thinking).map(|e| e.text.as_str()).collect();
+        assert_eq!(thought, "thinking hard");
+        let block = events.iter().find(|e| e.event_type == StreamEventType::ThinkingBlock).and_then(|e| e.payload.clone()).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ThinkingBlock>(block).unwrap(),
+            ThinkingBlock::Thinking { thinking: "thinking hard".into(), signature: "sig-9".into() }
+        );
+        let usage = events.iter().find_map(|e| e.usage.clone()).unwrap();
+        assert_eq!((usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens), (50, 800, 150));
+        assert_eq!(usage.cost_microdollars, Some(42));
     }
 }

@@ -214,7 +214,6 @@ mod tests {
             levels: types::packs::PackLevels { medium: Some("anthropic@a1/model-b".into()), ..Default::default() },
             fallback: true,
             built_in: false,
-            route_through_janus: false,
             lanes: Default::default(),
             level_effort: Default::default(),
         };

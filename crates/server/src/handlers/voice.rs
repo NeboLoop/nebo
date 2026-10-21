@@ -104,17 +104,12 @@ pub async fn conversation_ws_handler(
 }
 
 /// Resolve the dictation leg for `path` (`/v1/stt`; a voice call's leg is
-/// its pack's Voice, [`realtime_leg`]) — the same direct-vs-Janus split as text
-/// providers: a user-owned xAI key dials api.x.ai directly (no Janus, no
-/// metering — their key); otherwise the NeboAI account rides Janus's metered
-/// relay with the user's Janus JWT.
-fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String)> {
-    if let Ok(Some(profile)) = state.store.get_best_auth_profile("xai")
-        && let key = auth::credential::profile_key(&profile)
-        && !key.is_empty()
-    {
-        return Some((format!("wss://api.x.ai{path}"), key));
-    }
+/// its pack's Voice, [`realtime_leg`]): always Janus's metered relay on the
+/// owner's NeboAI token, carrying his own xAI key when he has one (Janus
+/// dials xAI on it and charges the platform fee). `(endpoint, bearer, own
+/// key)`; `None` with no NeboAI account.
+fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String, Option<types::own_key::OwnKey>)> {
+    let own_key = state.store.get_best_auth_profile("xai").ok().flatten().as_ref().and_then(auth::credential::own_key);
     let token = crate::codes::neboai_token(state)?;
     let url = state
         .config
@@ -122,7 +117,7 @@ fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String)
         .janus_url
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
-    Some((format!("{}{path}", url.trim_end_matches('/')), token))
+    Some((format!("{}{path}", url.trim_end_matches('/')), token, own_key))
 }
 
 /// Dictation from the phone app: `/ws/voice/dictation`.
@@ -167,8 +162,8 @@ pub async fn dictation_ws_handler(
 
 async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: DictationQuery) {
     use voice::dictation::{DictationConfig, DictationEvent, DictationInput};
-    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/stt") else {
-        let msg = DictationEvent::Error("dictation needs a NeboAI account or an xAI API key".into()).to_json();
+    let Some((endpoint, bearer, own_key)) = resolve_realtime_leg(&state, "/v1/stt") else {
+        let msg = DictationEvent::Error("Dictation needs a NeboAI account. Sign in to NeboAI and try again.".into()).to_json();
         let _ = socket.send(Message::Text(msg.to_string().into())).await;
         let _ = socket.send(Message::Close(None)).await;
         return;
@@ -177,6 +172,7 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
         endpoint,
         bearer,
         bot_id: config::read_bot_id(),
+        own_key,
         sample_rate: q.sample_rate.filter(|r| (8_000..=48_000).contains(r)).unwrap_or(voice::dictation::DEFAULT_SAMPLE_RATE),
         language: q.language,
         keyterms: voice_keyterms(&state.store),
@@ -231,15 +227,13 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
     info!("dictation ended");
 }
 
-/// xAI's realtime endpoint, which an owner's own xAI connection dials.
-const XAI_REALTIME_URL: &str = "wss://api.x.ai/v1/realtime";
-
-/// A call's realtime upstream leg: where it dials, the model it asks for
-/// and its bearer.
+/// A call's realtime upstream leg: where it dials, the model it asks for,
+/// its bearer, and the owner's own key when it is his that pays.
 struct RealtimeLeg {
     endpoint: String,
     model: String,
     bearer: String,
+    own_key: Option<types::own_key::OwnKey>,
 }
 
 /// Why a call has no realtime leg.
@@ -247,28 +241,29 @@ struct RealtimeLeg {
 enum LegRefusal {
     /// The pack's Voice model can't take the call (`Harness::call_voice`).
     Voice(agent::harness::turn::VoiceRefusal),
-    /// Nebo AI's Voice, and this bot has no NeboAI account to ride Janus on.
+    /// No NeboAI account to ride Janus on (every call does, on Nebo AI's
+    /// Voice or the owner's own key).
     NoAccount,
 }
 
 /// The realtime leg of a call with `agent_id` (empty: the bot's default),
 /// from its intelligence pack's Voice model (`Harness::call_voice`), the
-/// one place a call's model is chosen. Nebo AI's Voice rides Janus's
-/// metered relay with the owner's NeboAI token, asking it for the relay
-/// alias; an xAI realtime model on the owner's own xAI connection dials xAI
-/// direct with that connection's key (no Janus, no metering).
+/// one place a call's model is chosen. Every call rides Janus's metered
+/// relay with the owner's NeboAI token: Nebo AI's Voice asks it for the
+/// relay alias; an xAI realtime model on the owner's own xAI connection
+/// carries that connection's key, and Janus dials xAI on it and charges the
+/// platform fee.
 fn realtime_leg(state: &AppState, agent_id: &str) -> Result<RealtimeLeg, LegRefusal> {
     use agent::harness::turn::CallVoice;
-    match state.harness.call_voice(agent_id).map_err(LegRefusal::Voice)? {
-        CallVoice::Janus(model) => {
-            let bearer = crate::codes::neboai_token(state).ok_or(LegRefusal::NoAccount)?;
-            Ok(RealtimeLeg { endpoint: janus_realtime_url(&state.config.neboai.janus_url), model, bearer })
-        }
-        CallVoice::Own { profile, model } => Ok(RealtimeLeg {
-            endpoint: XAI_REALTIME_URL.into(),
-            model,
-            bearer: auth::credential::profile_key(&profile),
-        }),
+    let voice = state.harness.call_voice(agent_id).map_err(LegRefusal::Voice)?;
+    let bearer = crate::codes::neboai_token(state).ok_or(LegRefusal::NoAccount)?;
+    let endpoint = janus_realtime_url(&state.config.neboai.janus_url);
+    match voice {
+        CallVoice::Janus(model) => Ok(RealtimeLeg { endpoint, model, bearer, own_key: None }),
+        CallVoice::Own { profile, model } => match auth::credential::own_key(&profile) {
+            Some(own_key) => Ok(RealtimeLeg { endpoint, model, bearer, own_key: Some(own_key) }),
+            None => Err(LegRefusal::Voice(agent::harness::turn::VoiceRefusal::Unreachable)),
+        },
     }
 }
 
@@ -311,7 +306,7 @@ fn leg_refusal_words(refusal: &LegRefusal) -> (Option<&'static str>, &'static st
             Some("voice_model_unreachable"),
             "This pack's voice model isn't connected. Connect it again, or pick another voice model in the pack.",
         ),
-        LegRefusal::NoAccount => (None, "Voice needs a NeboAI account, or a pack whose voice model uses your own key."),
+        LegRefusal::NoAccount => (None, "Voice needs a NeboAI account. Sign in to NeboAI and try again."),
     }
 }
 
@@ -350,6 +345,7 @@ pub async fn voice_sample(
         endpoint: leg.endpoint,
         model: leg.model,
         bearer: leg.bearer,
+        own_key: leg.own_key,
         voice: voice_id.clone(),
         tools: vec![],
         instructions: "You are demonstrating this voice for a short preview. \
@@ -2439,6 +2435,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         endpoint: leg.endpoint,
         model: leg.model,
         bearer: leg.bearer,
+        own_key: leg.own_key,
         bot_id: q.agent_id.clone(),
         tools: voice_tools(declare_transfer, telephony, &tree_intents),
         instructions,

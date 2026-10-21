@@ -19,11 +19,7 @@
   import * as api from '$lib/api/nebo';
   import type { LevelEffort, Pack, PackChoice, PackLanes, PackLevels } from '$lib/api/neboComponents';
   import { EFFORTS, type Effort } from '$lib/models/speeds';
-  import { choiceProviderLabel, isDefaultPack, levelRows, packUsesLocal, runsOn } from '$lib/models/connections';
-
-  // PLACEHOLDER — the Janus routing fee is not decided yet. Replace with the
-  // real fee (from Janus or pricing) before Route through Janus ships.
-  const ROUTING_FEE_PLACEHOLDER = '[FEE]';
+  import { choiceProviderLabel, isDefaultPack, levelRows, runsOn } from '$lib/models/connections';
 
   const LANES = ['heartbeat', 'scheduled', 'communication', 'helpers', 'build', 'workflow'] as const;
   type Lane = (typeof LANES)[number];
@@ -41,7 +37,7 @@
     build: 'settingsPacks.laneBuild',
     workflow: 'settingsPacks.laneWorkflow',
   };
-  const PROVIDER_EFFORTS = ['low', 'medium', 'high'] as const;
+  const PROVIDER_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
 
   let loading = $state(true);
   let error = $state('');
@@ -57,7 +53,7 @@
   // The editor: null when closed; id '' for a new pack.
   let editing = $state<{
     id: string; name: string; levels: PackLevels; fallback: boolean;
-    routeThroughJanus: boolean; lanes: PackLanes; levelEffort: LevelEffort;
+    lanes: PackLanes; levelEffort: LevelEffort;
   } | null>(null);
   let saving = $state(false);
   let editError = $state('');
@@ -127,9 +123,9 @@
     editing = pack
       ? {
           id: pack.id, name: pack.name, levels: { ...pack.levels }, fallback: pack.fallback,
-          routeThroughJanus: !!pack.routeThroughJanus, lanes: { ...(pack.lanes ?? {}) }, levelEffort: { ...(pack.levelEffort ?? {}) },
+          lanes: { ...(pack.lanes ?? {}) }, levelEffort: { ...(pack.levelEffort ?? {}) },
         }
-      : { id: '', name: '', levels: {}, fallback: true, routeThroughJanus: false, lanes: {}, levelEffort: {} };
+      : { id: '', name: '', levels: {}, fallback: true, lanes: {}, levelEffort: {} };
   }
 
   /** Drop empty values: absent means "nearest level" / "chosen by the work" / "provider default". */
@@ -142,10 +138,6 @@
     return out as T;
   }
 
-  const editorUsesLocal = $derived(
-    !!editing && Object.values(editing.levels).some((v) => !!v && !!allChoices.find((c) => c.value === v)?.local),
-  );
-
   async function save() {
     if (!editing) return;
     if (!editing.name.trim()) { editError = $t('settingsPacks.nameRequired'); return; }
@@ -155,7 +147,6 @@
       name: editing.name.trim(),
       levels: compact(editing.levels),
       fallback: editing.fallback,
-      routeThroughJanus: editing.routeThroughJanus,
       lanes: compact(editing.lanes),
       levelEffort: compact(editing.levelEffort),
     };
@@ -264,9 +255,6 @@
                 {#if isDefaultPack(defaultValue, pack.id)}
                   <span class="badge badge-primary badge-sm">{$t('settingsPacks.badgeDefault')}</span>
                 {/if}
-                {#if pack.routeThroughJanus}
-                  <span class="badge badge-info badge-outline badge-sm">{$t('settingsPacks.badgeJanus')}</span>
-                {/if}
                 {#if !pack.builtIn && !pack.fallback}
                   <span class="badge badge-warning badge-outline badge-sm">{$t('settingsPacks.neverNeboAi')}</span>
                 {/if}
@@ -314,9 +302,6 @@
                 {@render runsOnCell(pack.levels.decisions, pack.fallback || pack.builtIn ? $t('settingsPacks.decisionsDefault') : $t('settingsPacks.decisionsNone'))}
               </div>
             </div>
-            {#if !pack.builtIn && packUsesLocal(pack, allChoices)}
-              <p class="text-xs text-base-content/50 mt-2">{$t('settingsPacks.localNoJanus')}</p>
-            {/if}
           </div>
         {/each}
       </div>
@@ -435,16 +420,8 @@
           </div>
         </section>
 
-        <!-- Routing and fallback -->
+        <!-- Fallback -->
         <section class="flex flex-col gap-4">
-          <label class="flex items-start justify-between gap-4 cursor-pointer">
-            <span class="flex flex-col gap-1">
-              <span class="text-sm font-medium">{$t('settingsPacks.routeJanus')}</span>
-              <span class="text-xs text-base-content/50">{$t('settingsPacks.routeJanusHint', { values: { fee: ROUTING_FEE_PLACEHOLDER } })}</span>
-              <span class="text-xs {editorUsesLocal ? 'text-warning' : 'text-base-content/40'}">{$t('settingsPacks.routeJanusLocal')}</span>
-            </span>
-            <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 mt-0.5" bind:checked={editing.routeThroughJanus} />
-          </label>
           <label class="flex items-start justify-between gap-4 cursor-pointer">
             <span class="flex flex-col gap-1">
               <span class="text-sm font-medium">{$t('settingsPacks.fallback')}</span>

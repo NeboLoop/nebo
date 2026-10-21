@@ -13,6 +13,8 @@ export const CONNECTION_KINDS = [
 	'openai',
 	'google',
 	'openrouter',
+	'deepseek',
+	'xai',
 	'openai_compatible',
 	'systemone_compatible'
 ] as const;
@@ -99,11 +101,6 @@ export function isDefaultPack(defaultValue: string | undefined, packId: string):
 	return defaultValue === `pack/${packId}` || defaultValue.startsWith(`pack/${packId}/`);
 }
 
-/** Whether any model a pack names runs on this computer (it can't route through Janus). */
-export function packUsesLocal(pack: Pack, choices: PackChoice[]): boolean {
-	return Object.values(pack.levels).some((v) => !!v && !!choices.find((c) => c.value === v)?.local);
-}
-
 // ── Browse models ───────────────────────────────────────────────────
 
 export type CatalogFilters = {
@@ -170,4 +167,32 @@ export function shortContext(tokens: number | undefined): string {
 export function parseContext(text: string): number | undefined {
 	const n = Number(text.replace(/[^\d]/g, ''));
 	return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** A model the owner adds by hand, as the forms hold it. */
+export type HandModel = {
+	kind: string;
+	modelId: string;
+	contextWindow: string;
+	vision: boolean;
+	tools: boolean;
+	thinking: boolean;
+};
+
+/** A model added by hand starts as a chat model that reads images and calls tools. */
+export const blankHand = (modelId = ''): HandModel => ({
+	kind: 'chat',
+	modelId,
+	contextWindow: '',
+	vision: true,
+	tools: true,
+	thinking: false
+});
+
+/** The body that adds a hand model to a connection. */
+export function handBody(m: HandModel) {
+	const capabilities = [m.vision && 'vision', m.tools && 'tools', m.thinking && 'thinking'].filter(
+		(c): c is string => Boolean(c)
+	);
+	return { modelId: m.modelId, kind: m.kind, contextWindow: parseContext(m.contextWindow), capabilities };
 }

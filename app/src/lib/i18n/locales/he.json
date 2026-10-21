@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "כל כתובת URL תואמת OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "כל כתובת URL תואמת SystemOne (מודלי החלטה: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "הוסף מודל לפי המזהה שלו",
 		"addModelByIdPlaceholder": "למשל claude-opus-5",
 		"addModel": "הוסף מודל",
-		"addModelHint": "היכולות מגיעות מברירות המחדל של Nebo למשפחות מודלים מוכרות.",
 		"editProvider": "ערוך ספק",
 		"nameHint": "תן שם לכל מפתח, כך שמפתח חברה ומפתח אישי יהיו קלים להבחין ביניהם.",
 		"baseUrlRequired": "כתובת בסיס נדרשת",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "חל על ההודעה הבאה. בלי הפעלה מחדש.",
 		"defaultSaveFailed": "לא ניתן לשנות את ברירת המחדל.",
 		"badgeDefault": "ברירת מחדל",
-		"badgeJanus": "עובר דרך Nebo AI",
 		"readOnly": "לקריאה בלבד",
 		"colLevel": "רמה",
 		"colRunsOn": "רץ על",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "ברירות המחדל הבטוחות המובנות של Nebo (בלי מודל החלטה)",
 		"decisionsDefaultOption": "Nebo AI · Jev (ברירת מחדל)",
 		"withEffort": "מאמץ {effort}",
-		"localNoJanus": "לא ניתן לנתב דרך Nebo AI: המודל שלו רץ על המחשב הזה.",
 		"removeConfirm": "להסיר את {name}? עובד שעדיין עליה ירוץ על Nebo AI, ויקבל על כך הודעה.",
 		"loadFailed": "לא ניתן לטעון את החבילות.",
 		"saveFailed": "לא ניתן לשמור את החבילה.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "עוזרים",
 		"laneBuild": "בנייה",
 		"laneWorkflow": "תהליכי עבודה",
-		"laneByWork": "נבחר לפי העבודה",
-		"routeJanus": "נתב דרך Nebo AI",
-		"routeJanusHint": "Nebo AI בוחר את הרמה בכל שלב בין המודלים של חבילה זו כדי להוריד את החשבון שלך. המפתחות שלך נשלחים עם כל בקשה ולעולם לא נשמרים. עמלת ניתוב: {fee}.",
-		"routeJanusLocal": "מודלים על המחשב הזה (Ollama, Claude Code, Codex) תמיד רצים ישירות. קול לעולם לא עובר ניתוב."
+		"laneByWork": "נבחר לפי העבודה"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo פועל רק כשהאפליקציה פתוחה. כדי שימשיך לעבוד אחרי הסגירה, הפעילו את Nebo בפריטי התחברות.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "הוזמנו מחדש 40 יחידות מ-Lumen",
 		"taskVideo": "הסרטון של יום שלישי פורסם",
 		"taskInvoices": "נשלחו 3 תזכורות לחשבוניות"
+	},
+	"ownKey": {
+		"signedOut": "התחבר ל-NeboAI כדי להשתמש במפתח {provider} שלך.",
+		"keyRejected": "מפתח ה-API שלך של {provider} נדחה. בדוק אותו בהגדרות > ספקים.",
+		"keyUnusable": "מפתח ה-API שלך של {provider} לא יכול להריץ את המודל הזה. בדוק את המודל שלו בהגדרות > ספקים.",
+		"connectionSignIn": "התחבר ל-NeboAI כדי להשתמש במפתח הזה: המפתחות שלך פועלים דרך חשבון ה-NeboAI שלך."
 	},
 	"verify": {
 		"badge": {

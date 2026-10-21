@@ -1,10 +1,10 @@
 //! xAI Grok realtime (speech-to-speech) client.
 //!
-//! One WebSocket to a realtime endpoint — either Janus's metered relay
-//! (`wss://janus.neboai.com/v1/realtime`, Bearer = the user's Janus JWT) or
-//! xAI direct (`wss://api.x.ai/v1/realtime`, Bearer = a user-owned xAI key).
-//! Both speak the same protocol; Janus forwards frames verbatim and bills
-//! wall-clock minutes.
+//! One WebSocket to Janus's metered realtime relay
+//! (`wss://janus.neboai.com/v1/realtime`, Bearer = the owner's NeboAI token),
+//! on Nebo's keys or on his own xAI key (`X-Provider-API-Key`, the platform
+//! fee only). Janus speaks xAI's protocol, forwards frames verbatim and
+//! bills wall-clock minutes.
 //!
 //! The session exposes the same channel shape as the old cascade
 //! orchestrator: commands in, [`ConversationEvent`]s out — so the
@@ -96,17 +96,21 @@ impl AudioFormat {
 /// Configuration for one realtime session.
 #[derive(Debug, Clone)]
 pub struct RealtimeConfig {
-    /// `wss://.../v1/realtime` (Janus relay or xAI direct).
+    /// `wss://.../v1/realtime`: Janus's relay, on Nebo's keys or the
+    /// owner's own xAI key (`own_key`). Always set by the caller.
     pub endpoint: String,
     /// The model the endpoint is asked for: the call's intelligence pack's
-    /// Voice model (`agent::harness::turn::CallVoice`), `nebo-1-voice` on
-    /// Janus's relay or an xAI realtime model such as `grok-voice-latest`
-    /// direct. Always set by the caller: nothing here picks one.
+    /// Voice model (`agent::harness::turn::CallVoice`), `nebo-1-voice` or
+    /// an xAI realtime model such as `grok-voice-latest` on the owner's
+    /// key. Always set by the caller: nothing here picks one.
     pub model: String,
-    /// Bearer token: Janus JWT for the relay leg, xAI API key for direct.
+    /// Bearer token: the owner's NeboAI token (Janus's relay).
     pub bearer: String,
-    /// Janus attribution header (X-Bot-ID); ignored by xAI direct.
+    /// Janus attribution header (X-Bot-ID).
     pub bot_id: Option<String>,
+    /// The owner's own xAI key, when his pack's voice runs on it: Janus
+    /// dials xAI on it and charges the platform fee (`types::own_key`).
+    pub own_key: Option<types::own_key::OwnKey>,
     /// Resume a previous conversation (xAI resumption; 30 min expiry).
     pub conversation_id: Option<String>,
     /// System prompt for the voice agent.
@@ -132,10 +136,12 @@ pub struct RealtimeConfig {
 impl Default for RealtimeConfig {
     fn default() -> Self {
         Self {
-            endpoint: "wss://api.x.ai/v1/realtime".into(),
+            // No call dials a provider direct: the caller names Janus's relay.
+            endpoint: String::new(),
             model: String::new(),
             bearer: String::new(),
             bot_id: None,
+            own_key: None,
             conversation_id: None,
             instructions: String::new(),
             voice: "eve".into(),
@@ -222,11 +228,12 @@ async fn dial(
     waits: &mut ::types::balance::ReservedWaits,
 ) -> Result<Socket, VoiceError> {
     // Janus groups usage by purpose; a realtime session is always voice.
-    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), "voice", connect_limit, waits).await
+    open(&realtime_url(cfg), &cfg.bearer, cfg.bot_id.as_deref(), cfg.own_key.as_ref(), "voice", connect_limit, waits).await
 }
 
 /// Open a socket to a Janus (or direct) audio endpoint: the bearer, the bot
-/// it is for, and the purpose Janus groups the usage under. The voice call
+/// it is for, the owner's own key when it is his that pays, and the purpose
+/// Janus groups the usage under. The voice call
 /// and dictation both dial through here. Janus admits a line at connect; a
 /// refusal because running work holds the balance is dialed again after the
 /// waits `types::balance::ReservedWaits` gives, and one that outlasts them is
@@ -238,12 +245,13 @@ pub(crate) async fn open(
     url: &str,
     bearer: &str,
     bot_id: Option<&str>,
+    own_key: Option<&types::own_key::OwnKey>,
     purpose: &'static str,
     connect_limit: Option<std::time::Duration>,
     waits: &mut ::types::balance::ReservedWaits,
 ) -> Result<Socket, VoiceError> {
     loop {
-        let dialing = dial_once(url, bearer, bot_id, purpose);
+        let dialing = dial_once(url, bearer, bot_id, own_key, purpose);
         let dialed = match connect_limit {
             Some(limit) => tokio::time::timeout(limit, dialing)
                 .await
@@ -275,6 +283,7 @@ async fn dial_once(
     url: &str,
     bearer: &str,
     bot_id: Option<&str>,
+    own_key: Option<&types::own_key::OwnKey>,
     purpose: &'static str,
 ) -> Result<Socket, Dialed> {
     let failed = |e: String| Dialed::Failed(VoiceError::Realtime(e));
@@ -290,6 +299,11 @@ async fn dial_once(
     if let Some(bot_id) = bot_id {
         if let Ok(v) = bot_id.parse() {
             request.headers_mut().insert("X-Bot-ID", v);
+        }
+    }
+    for (name, value) in own_key.iter().flat_map(|k| k.headers()) {
+        if let Ok(v) = value.parse() {
+            request.headers_mut().insert(name, v);
         }
     }
     request
@@ -1329,11 +1343,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(realtime_url(&cfg), "wss://janus.example/v1/realtime?model=nebo-1-voice");
-        cfg.endpoint = "wss://api.x.ai/v1/realtime".into();
         cfg.model = "grok-voice-latest".into();
         cfg.conversation_id = Some("c1".into());
-        assert_eq!(realtime_url(&cfg), "wss://api.x.ai/v1/realtime?model=grok-voice-latest&conversation_id=c1");
-        assert!(RealtimeConfig::default().model.is_empty(), "no model is hard-coded");
+        assert_eq!(realtime_url(&cfg), "wss://janus.example/v1/realtime?model=grok-voice-latest&conversation_id=c1");
+        let default = RealtimeConfig::default();
+        assert!(default.model.is_empty(), "no model is hard-coded");
+        assert!(default.endpoint.is_empty(), "no provider is dialed direct");
     }
 
     /// The session.update frame must pin the invariants the relay depends on:
@@ -2270,7 +2285,7 @@ mod tests {
             refuse_reserved(&l, 0).await;
             let _ws = accept(&l).await;
         });
-        let opened = open(&cfg.endpoint, "tok", None, "voice", None, &mut ::types::balance::ReservedWaits::default()).await;
+        let opened = open(&cfg.endpoint, "tok", None, None, "voice", None, &mut ::types::balance::ReservedWaits::default()).await;
         assert!(opened.is_ok(), "{:?}", opened.err());
         far.await.unwrap();
     }
@@ -2285,7 +2300,7 @@ mod tests {
                 refuse_reserved(&l, 0).await;
             }
         });
-        let err = open(&cfg.endpoint, "tok", None, "voice", None, &mut ::types::balance::ReservedWaits::default()).await.err().expect("refused");
+        let err = open(&cfg.endpoint, "tok", None, None, "voice", None, &mut ::types::balance::ReservedWaits::default()).await.err().expect("refused");
         assert!(matches!(err, VoiceError::BalanceReserved), "{err:?}");
         assert_eq!(err.to_string(), ::types::balance::BALANCE_BUSY);
         far.await.unwrap();

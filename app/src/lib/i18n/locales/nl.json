@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Elke OpenAI-compatibele URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Elke SystemOne-compatibele URL (beslismodellen: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Voeg een model toe via de id",
 		"addModelByIdPlaceholder": "bijv. claude-opus-5",
 		"addModel": "Model toevoegen",
-		"addModelHint": "Mogelijkheden komen van Nebo's standaardinstellingen voor bekende modelfamilies.",
 		"editProvider": "Provider bewerken",
 		"nameHint": "Geef elke sleutel een naam, zodat een bedrijfssleutel en een persoonlijke sleutel makkelijk te onderscheiden zijn.",
 		"baseUrlRequired": "Basis-URL is verplicht",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "Geldt voor het volgende bericht. Geen herstart nodig.",
 		"defaultSaveFailed": "Kon de standaard niet wijzigen.",
 		"badgeDefault": "Standaard",
-		"badgeJanus": "Loopt via Nebo AI",
 		"readOnly": "Alleen lezen",
 		"colLevel": "Niveau",
 		"colRunsOn": "Draait op",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Nebo's ingebouwde veilige standaarden (geen beslismodel)",
 		"decisionsDefaultOption": "Nebo AI · Jev (standaard)",
 		"withEffort": "Inspanning: {effort}",
-		"localNoJanus": "Kan niet via Nebo AI lopen: het model draait op deze computer.",
 		"removeConfirm": "{name} verwijderen? Een medewerker die er nog op staat, draait op Nebo AI en wordt daarover geïnformeerd.",
 		"loadFailed": "Kon de pakketten niet laden.",
 		"saveFailed": "Kon het pakket niet opslaan.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "Hulpmedewerkers",
 		"laneBuild": "Bouwen",
 		"laneWorkflow": "Workflows",
-		"laneByWork": "Gekozen op basis van het werk",
-		"routeJanus": "Via Nebo AI laten lopen",
-		"routeJanusHint": "Nebo AI kiest bij elke stap het niveau over de modellen van dit pakket om je rekening te verlagen. Je sleutels gaan mee met elk verzoek en worden nooit opgeslagen. Routeringskosten: {fee}.",
-		"routeJanusLocal": "Modellen op deze computer (Ollama, Claude Code, Codex) draaien altijd direct. Stem routeert nooit."
+		"laneByWork": "Gekozen op basis van het werk"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo werkt alleen zolang de app open is. Zet Nebo aan bij Inloggen om het te laten doorwerken na het afsluiten.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "40 stuks bijbesteld bij Lumen",
 		"taskVideo": "De video van dinsdag geplaatst",
 		"taskInvoices": "3 betalingsherinneringen verstuurd"
+	},
+	"ownKey": {
+		"signedOut": "Meld je aan bij NeboAI om je eigen {provider}-sleutel te gebruiken.",
+		"keyRejected": "Je {provider}-API-sleutel is geweigerd. Controleer hem bij Instellingen > Providers.",
+		"keyUnusable": "Je {provider}-API-sleutel kan dit model niet uitvoeren. Controleer het model erop bij Instellingen > Providers.",
+		"connectionSignIn": "Meld je aan bij NeboAI om deze sleutel te gebruiken: je eigen sleutels draaien op je NeboAI-account."
 	},
 	"verify": {
 		"badge": {

@@ -19,13 +19,12 @@ fn pack_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pack> {
         levels: serde_json::from_str::<PackLevels>(&json("levels")?).unwrap_or_default(),
         fallback: row.get::<_, i64>("fallback")? != 0,
         built_in: false,
-        route_through_janus: row.get::<_, i64>("route_through_janus")? != 0,
         lanes: serde_json::from_str::<PackLanes>(&json("lanes")?).unwrap_or_default(),
         level_effort: serde_json::from_str::<LevelEffort>(&json("level_effort")?).unwrap_or_default(),
     })
 }
 
-const COLUMNS: &str = "id, name, levels, fallback, route_through_janus, lanes, level_effort";
+const COLUMNS: &str = "id, name, levels, fallback, lanes, level_effort";
 
 impl Store {
     /// Every pack: Nebo AI first, then the owner's by name.
@@ -65,12 +64,12 @@ impl Store {
         let effort = serde_json::to_string(&pack.level_effort).map_err(db_err)?;
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO intelligence_packs (id, name, levels, fallback, route_through_janus, lanes, level_effort)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO intelligence_packs (id, name, levels, fallback, lanes, level_effort)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, levels = excluded.levels,
-                 fallback = excluded.fallback, route_through_janus = excluded.route_through_janus,
-                 lanes = excluded.lanes, level_effort = excluded.level_effort, updated_at = unixepoch()",
-            params![pack.id, pack.name, levels, pack.fallback as i64, pack.route_through_janus as i64, lanes, effort],
+                 fallback = excluded.fallback, lanes = excluded.lanes, level_effort = excluded.level_effort,
+                 updated_at = unixepoch()",
+            params![pack.id, pack.name, levels, pack.fallback as i64, lanes, effort],
         )
         .map_err(db_err)?;
         Ok(())
@@ -107,7 +106,6 @@ mod tests {
             levels: PackLevels { medium: Some("anthropic/claude-sonnet".into()), ..Default::default() },
             fallback: true,
             built_in: false,
-            route_through_janus: true,
             lanes: types::packs::PackLanes { heartbeat: Some(Effort::Instant), ..Default::default() },
             level_effort: Default::default(),
         };

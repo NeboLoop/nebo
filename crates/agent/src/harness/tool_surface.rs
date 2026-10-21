@@ -10,8 +10,9 @@
 //! call: a child run sends the parent's exact tool array, so its prefix is
 //! cache-identical, and a disallowed call is refused when it is made. A
 //! provider that loads tools by reference keeps a load out of the prefix
-//! altogether: Anthropic's sends a tool a result loaded as `defer_loading`
-//! and the result names it with a `tool_reference` (`ai::providers::anthropic`).
+//! altogether: an Anthropic model (reached through Janus) is sent a tool a
+//! result loaded as `defer_loading`, and the result names it with a
+//! `tool_reference` part (`ai::providers::anthropic_wire`).
 //!
 //! Everything else is deferred: listed by name with what it is for (its
 //! search hint), narrowed to what the run may use (an employee's job names

@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "任意與 OpenAI 相容的 URL（Groq、Together、DeepSeek、xAI、Mistral…）",
 			"systemone_compatible": "任意與 SystemOne 相容的 URL（決策模型：Jev、Clef…）"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "依 id 新增模型",
 		"addModelByIdPlaceholder": "例如 claude-opus-5",
 		"addModel": "新增模型",
-		"addModelHint": "能力來自 Nebo 針對已知模型系列的預設設定。",
 		"editProvider": "編輯供應商",
 		"nameHint": "為每個金鑰命名，以便輕鬆區分公司金鑰與個人金鑰。",
 		"baseUrlRequired": "必須填寫基礎 URL",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "適用於下一則訊息。不需要重新啟動。",
 		"defaultSaveFailed": "無法變更預設設定。",
 		"badgeDefault": "預設",
-		"badgeJanus": "透過 Nebo AI 路由",
 		"readOnly": "僅供檢視",
 		"colLevel": "等級",
 		"colRunsOn": "運作在",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Nebo 內建的安全預設設定（無決策模型）",
 		"decisionsDefaultOption": "Nebo AI · Jev（預設）",
 		"withEffort": "{effort} 投入",
-		"localNoJanus": "無法透過 Nebo AI 路由：它的模型運作在這台電腦上。",
 		"removeConfirm": "移除 {name}？仍在使用它的員工會運作在 Nebo AI 上，並會被告知這一點。",
 		"loadFailed": "無法載入智慧包。",
 		"saveFailed": "無法儲存智慧包。",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "助手",
 		"laneBuild": "建構",
 		"laneWorkflow": "工作流程",
-		"laneByWork": "依工作選擇",
-		"routeJanus": "透過 Nebo AI 路由",
-		"routeJanusHint": "Nebo AI 會在此智慧包的模型之間為每一步選擇等級，以降低你的帳單。你的金鑰會隨每個請求一起傳送，且絕不會被儲存。路由費：{fee}。",
-		"routeJanusLocal": "這台電腦上的模型（Ollama、Claude Code、Codex）永遠直接運作。語音永不路由。"
+		"laneByWork": "依工作選擇"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo 只會在 App 開啟時執行。若要在結束後繼續工作，請在「登入項目」中開啟 Nebo。",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "已向 Lumen 補訂 40 件",
 		"taskVideo": "已發布週二的影片",
 		"taskInvoices": "已寄出 3 則發票提醒"
+	},
+	"ownKey": {
+		"signedOut": "登入 NeboAI 才能使用你自己的 {provider} 金鑰。",
+		"keyRejected": "你的 {provider} API 金鑰遭到拒絕。請在 設定 > 供應商 中檢查。",
+		"keyUnusable": "你的 {provider} API 金鑰無法執行此模型。請在 設定 > 供應商 中檢查該金鑰的模型。",
+		"connectionSignIn": "登入 NeboAI 才能使用此金鑰：你自己的金鑰在你的 NeboAI 帳戶上執行。"
 	},
 	"verify": {
 		"badge": {

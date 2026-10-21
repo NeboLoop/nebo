@@ -59,6 +59,7 @@
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { trailingLink } from '$lib/chat/errorLink';
+  import { ownKeyError } from '$lib/chat/ownKeyError';
   import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
@@ -2255,6 +2256,7 @@
       {:else if msg.type === 'runError'}
         <!-- Where a run stopped on an error: it stays in the thread. -->
         {@const link = trailingLink(msg.content)}
+        {@const ownKey = ownKeyError(msg.content)}
         <div class="chat-run-error" role="note">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 mt-0.5 text-error" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <div class="min-w-0">
@@ -2262,6 +2264,8 @@
             <div class="chat-run-error-text">
               {#if msg.content.includes('USAGE_LIMIT_EXCEEDED')}
                 {$t('chat.outOfBalance')}
+              {:else if ownKey}
+                {$t(ownKey.key, { values: { provider: ownKey.provider } })}
               {:else if link}
                 {link.text} <a class="link" href={link.url} target="_blank" rel="noopener noreferrer">{link.label}</a>
               {:else}
@@ -2507,6 +2511,9 @@
         <span class="text-xs text-base-content">
           {#if isOutOfBalance}
             {$t('chat.outOfBalance')}
+          {:else if ownKeyError(chatError)}
+            {@const ownKey = ownKeyError(chatError)}
+            {$t(ownKey?.key ?? '', { values: { provider: ownKey?.provider ?? '' } })}
           {:else}
             {@const link = trailingLink(chatError)}
             {#if link}

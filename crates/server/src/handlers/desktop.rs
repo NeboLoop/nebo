@@ -321,19 +321,17 @@ fn teach_briefing(rec: &tools::desktop_session::Finished, has_timeline: bool, na
 }
 
 /// Transcribe the narration with the speech-to-text path attachments use
-/// (an OpenAI key of the owner's own goes direct; otherwise NeboAI's
-/// gateway) and write it beside the recording. The words are never logged.
+/// (Janus, on the owner's own OpenAI key when he has one) and write it beside the recording. The words are never logged.
 async fn narrate(
     state: &AppState,
     rec: &tools::desktop_session::Finished,
     audio: &std::path::Path,
     offset: Duration,
 ) -> Result<Narration, String> {
-    let (key, base_url, model) =
-        crate::transcription_endpoint(state).ok_or("no transcription provider is configured")?;
+    let endpoint = crate::transcription_endpoint(state).ok_or("no transcription provider is configured")?;
     let bytes = tokio::fs::read(audio).await.map_err(|e| format!("the narration could not be read: {e}"))?;
     let name = audio.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let heard = ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &key, &base_url, &model, &name, bytes)
+    let heard = ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &endpoint, &name, bytes)
         .await
         .map_err(|e| e.to_string())?;
     if heard.text.is_empty() {

@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Qualquer URL compatível com OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Qualquer URL compatível com SystemOne (modelos de decisão: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Adicionar um modelo pelo id",
 		"addModelByIdPlaceholder": "p. ex. claude-opus-5",
 		"addModel": "Adicionar modelo",
-		"addModelHint": "As capacidades vêm das predefinições da Nebo para famílias de modelos conhecidas.",
 		"editProvider": "Editar fornecedor",
 		"nameHint": "Dê um nome a cada chave, para que uma chave da empresa e uma chave pessoal sejam fáceis de distinguir.",
 		"baseUrlRequired": "O URL base é obrigatório",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "Aplica-se à próxima mensagem. Sem reiniciar.",
 		"defaultSaveFailed": "Não foi possível alterar a predefinição.",
 		"badgeDefault": "Predefinição",
-		"badgeJanus": "Passa pelo Nebo AI",
 		"readOnly": "Só de leitura",
 		"colLevel": "Nível",
 		"colRunsOn": "Funciona com",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Predefinições seguras integradas da Nebo (sem modelo de decisão)",
 		"decisionsDefaultOption": "Nebo AI · Jev (predefinição)",
 		"withEffort": "Esforço: {effort}",
-		"localNoJanus": "Não é possível passar pelo Nebo AI: o modelo dele funciona neste computador.",
 		"removeConfirm": "Remover {name}? Um funcionário que ainda esteja nele passa a funcionar com a Nebo AI, e é avisado disso.",
 		"loadFailed": "Não foi possível carregar os pacotes.",
 		"saveFailed": "Não foi possível guardar o pacote.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "Auxiliares",
 		"laneBuild": "Criação",
 		"laneWorkflow": "Fluxos de trabalho",
-		"laneByWork": "Escolhido pelo trabalho",
-		"routeJanus": "Encaminhar pelo Nebo AI",
-		"routeJanusHint": "O Nebo AI escolhe o nível em cada etapa entre os modelos deste pacote para reduzir a sua conta. As suas chaves são enviadas com cada pedido e nunca são guardadas. Taxa de encaminhamento: {fee}.",
-		"routeJanusLocal": "Os modelos neste computador (Ollama, Claude Code, Codex) funcionam sempre diretamente. A voz nunca é encaminhada."
+		"laneByWork": "Escolhido pelo trabalho"
 	},
 	"loginItemsBanner": {
 		"text": "O Nebo só funciona enquanto a app está aberta. Para continuar a trabalhar depois de a fechar, ative o Nebo em Elementos de início de sessão.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "Encomendou 40 unidades à Lumen",
 		"taskVideo": "Publicou o vídeo de terça-feira",
 		"taskInvoices": "Enviou 3 lembretes de fatura"
+	},
+	"ownKey": {
+		"signedOut": "Inicie sessão no NeboAI para usar a sua própria chave da {provider}.",
+		"keyRejected": "A sua chave de API da {provider} foi recusada. Verifique-a em Definições > Fornecedores.",
+		"keyUnusable": "A sua chave de API da {provider} não consegue executar este modelo. Verifique o modelo em Definições > Fornecedores.",
+		"connectionSignIn": "Inicie sessão no NeboAI para usar esta chave: as suas próprias chaves funcionam na sua conta NeboAI."
 	},
 	"verify": {
 		"badge": {

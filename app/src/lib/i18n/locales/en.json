@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Any OpenAI-compatible URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Any SystemOne-compatible URL (decision models: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Add a model by its id",
 		"addModelByIdPlaceholder": "e.g. claude-opus-5",
 		"addModel": "Add model",
-		"addModelHint": "Abilities come from Nebo's defaults for known model families.",
 		"editProvider": "Edit provider",
 		"nameHint": "Name each key, so a company key and a personal key are easy to tell apart.",
 		"baseUrlRequired": "Base URL is required",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "Applies to the next message. No restart.",
 		"defaultSaveFailed": "Could not change the default.",
 		"badgeDefault": "Default",
-		"badgeJanus": "Routes through Nebo AI",
 		"readOnly": "Read only",
 		"colLevel": "Level",
 		"colRunsOn": "Runs on",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Nebo's built-in safe defaults (no decision model)",
 		"decisionsDefaultOption": "Nebo AI · Jev (default)",
 		"withEffort": "{effort} effort",
-		"localNoJanus": "Can't route through Nebo AI: its model runs on this computer.",
 		"removeConfirm": "Remove {name}? An employee still on it runs on Nebo AI, and is told so.",
 		"loadFailed": "Could not load the packs.",
 		"saveFailed": "Could not save the pack.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "Helpers",
 		"laneBuild": "Building",
 		"laneWorkflow": "Workflows",
-		"laneByWork": "Chosen by the work",
-		"routeJanus": "Route through Nebo AI",
-		"routeJanusHint": "Nebo AI picks the level for each step across this pack's models to lower your bill. Your keys go with each request and are never stored. Routing fee: {fee}.",
-		"routeJanusLocal": "Models on this computer (Ollama, Claude Code, Codex) always run direct. Voice never routes."
+		"laneByWork": "Chosen by the work"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo runs only while the app is open. To keep it working after you quit, turn on Nebo in Login Items.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "Reordered 40 units from Lumen",
 		"taskVideo": "Posted Tuesday's video",
 		"taskInvoices": "Sent 3 invoice reminders"
+	},
+	"ownKey": {
+		"signedOut": "Sign in to NeboAI to use your own {provider} key.",
+		"keyRejected": "Your {provider} API key was refused. Check it in Settings > Providers.",
+		"keyUnusable": "Your {provider} API key can't run this model. Check the model on it in Settings > Providers.",
+		"connectionSignIn": "Sign in to NeboAI to use this key: your own keys run on your NeboAI account."
 	},
 	"verify": {
 		"badge": {

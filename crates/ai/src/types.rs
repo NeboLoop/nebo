@@ -635,6 +635,16 @@ pub struct ImageContent {
 pub enum ThinkingBlock {
     Thinking { thinking: String, signature: String },
     RedactedThinking { data: String },
+    /// The order the turn's blocks were produced in (Janus's
+    /// `reasoning.order`), kept as it came and sent back with the turn so
+    /// the provider replays the turn exactly as it wrote it, with the turn's
+    /// text as it was received (`content`; the stored text may have been
+    /// rewritten since: `providers::anthropic_wire::as_received`).
+    BlockOrder {
+        blocks: Vec<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    },
 }
 
 /// A message in a conversation.
@@ -1061,6 +1071,20 @@ pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// A provider connection's kind as the owner reads it.
+pub fn provider_name(provider: &str) -> &str {
+    match provider {
+        "anthropic" => "Anthropic",
+        "openai" => "OpenAI",
+        "google" => "Google",
+        "deepseek" => "DeepSeek",
+        "openrouter" => "OpenRouter",
+        "xai" => "xAI",
+        "openai_compatible" => "OpenAI-compatible",
+        other => other,
+    }
+}
+
 /// Check if an error indicates context window overflow.
 /// The model a request goes to: the one it names, else the one its provider
 /// connection was given. A provider the owner added runs only a model he
@@ -1070,13 +1094,8 @@ pub fn chosen_model<'a>(asked: &'a str, own: &'a str, provider: &str) -> Result<
     let model = if asked.trim().is_empty() { own } else { asked };
     if model.trim().is_empty() {
         let name = match provider {
-            "anthropic" => "Anthropic",
-            "openai" => "OpenAI",
-            "google" => "Google",
-            "deepseek" => "DeepSeek",
-            "openrouter" => "OpenRouter",
             "openai_compatible" => "this OpenAI-compatible provider",
-            other => other,
+            other => provider_name(other),
         };
         return Err(ProviderError::Api {
             code: "model_not_chosen".into(),

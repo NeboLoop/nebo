@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "URL yang kompatibel dengan OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "URL yang kompatibel dengan SystemOne (model keputusan: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Tambahkan model dengan id-nya",
 		"addModelByIdPlaceholder": "mis. claude-opus-5",
 		"addModel": "Tambah model",
-		"addModelHint": "Kemampuan berasal dari default Nebo untuk keluarga model yang dikenal.",
 		"editProvider": "Edit penyedia",
 		"nameHint": "Beri nama setiap kunci, agar kunci perusahaan dan kunci pribadi mudah dibedakan.",
 		"baseUrlRequired": "URL Dasar wajib diisi",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "Berlaku untuk pesan berikutnya. Tidak perlu memulai ulang.",
 		"defaultSaveFailed": "Tidak dapat mengubah default.",
 		"badgeDefault": "Default",
-		"badgeJanus": "Dialihkan melalui Nebo AI",
 		"readOnly": "Hanya baca",
 		"colLevel": "Tingkat",
 		"colRunsOn": "Berjalan di",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Default aman bawaan Nebo (tanpa model keputusan)",
 		"decisionsDefaultOption": "Nebo AI · Jev (default)",
 		"withEffort": "Upaya {effort}",
-		"localNoJanus": "Tidak dapat dialihkan melalui Nebo AI: modelnya berjalan di komputer ini.",
 		"removeConfirm": "Hapus {name}? Karyawan yang masih memakainya akan berjalan di Nebo AI, dan diberi tahu.",
 		"loadFailed": "Tidak dapat memuat paket.",
 		"saveFailed": "Tidak dapat menyimpan paket.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "Pembantu",
 		"laneBuild": "Pembuatan",
 		"laneWorkflow": "Alur kerja",
-		"laneByWork": "Dipilih berdasarkan pekerjaan",
-		"routeJanus": "Dialihkan melalui Nebo AI",
-		"routeJanusHint": "Nebo AI memilih tingkat untuk setiap langkah di seluruh model paket ini untuk menekan tagihan Anda. Kunci Anda ikut di setiap permintaan dan tidak pernah disimpan. Biaya perutean: {fee}.",
-		"routeJanusLocal": "Model di komputer ini (Ollama, Claude Code, Codex) selalu berjalan langsung. Suara tidak pernah dialihkan."
+		"laneByWork": "Dipilih berdasarkan pekerjaan"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo hanya berjalan selama aplikasi terbuka. Agar tetap bekerja setelah ditutup, aktifkan Nebo di Item Login.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "Memesan ulang 40 unit dari Lumen",
 		"taskVideo": "Memposting video hari Selasa",
 		"taskInvoices": "Mengirim 3 pengingat faktur"
+	},
+	"ownKey": {
+		"signedOut": "Masuk ke NeboAI untuk memakai kunci {provider} milik Anda.",
+		"keyRejected": "Kunci API {provider} Anda ditolak. Periksa di Pengaturan > Penyedia.",
+		"keyUnusable": "Kunci API {provider} Anda tidak dapat menjalankan model ini. Periksa modelnya di Pengaturan > Penyedia.",
+		"connectionSignIn": "Masuk ke NeboAI untuk memakai kunci ini: kunci milik Anda berjalan di akun NeboAI Anda."
 	},
 	"verify": {
 		"badge": {

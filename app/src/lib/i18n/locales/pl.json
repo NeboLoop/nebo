@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Każdy URL zgodny z OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Każdy URL zgodny z SystemOne (modele decyzyjne: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Dodaj model po jego id",
 		"addModelByIdPlaceholder": "np. claude-opus-5",
 		"addModel": "Dodaj model",
-		"addModelHint": "Możliwości pochodzą z domyślnych ustawień Nebo dla znanych rodzin modeli.",
 		"editProvider": "Edytuj dostawcę",
 		"nameHint": "Nazwij każdy klucz, aby łatwo odróżnić klucz firmowy od osobistego.",
 		"baseUrlRequired": "Bazowy URL jest wymagany",
@@ -4019,7 +4020,6 @@
 		"botDefaultHint": "Dotyczy następnej wiadomości. Bez ponownego uruchamiania.",
 		"defaultSaveFailed": "Nie udało się zmienić wartości domyślnej.",
 		"badgeDefault": "Domyślny",
-		"badgeJanus": "Przechodzi przez Nebo AI",
 		"readOnly": "Tylko do odczytu",
 		"colLevel": "Poziom",
 		"colRunsOn": "Działa na",
@@ -4047,7 +4047,6 @@
 		"decisionsNone": "Wbudowane bezpieczne ustawienia domyślne Nebo (brak modelu decyzyjnego)",
 		"decisionsDefaultOption": "Nebo AI · Jev (domyślny)",
 		"withEffort": "Wysiłek: {effort}",
-		"localNoJanus": "Nie można przejść przez Nebo AI: jego model działa na tym komputerze.",
 		"removeConfirm": "Usunąć {name}? Pracownik wciąż na nim ustawiony będzie działać na Nebo AI, i zostanie o tym poinformowany.",
 		"loadFailed": "Nie udało się wczytać pakietów.",
 		"saveFailed": "Nie udało się zapisać pakietu.",
@@ -4065,10 +4064,7 @@
 		"laneHelpers": "Pomocnicy",
 		"laneBuild": "Tworzenie",
 		"laneWorkflow": "Przepływy pracy",
-		"laneByWork": "Wybierane według zadania",
-		"routeJanus": "Przekieruj przez Nebo AI",
-		"routeJanusHint": "Nebo AI wybiera poziom na każdym kroku wśród modeli tego pakietu, aby zmniejszyć twój rachunek. Twoje klucze są przesyłane z każdym żądaniem i nigdy nie są przechowywane. Opłata za routing: {fee}.",
-		"routeJanusLocal": "Modele na tym komputerze (Ollama, Claude Code, Codex) zawsze działają bezpośrednio. Głos nigdy nie jest kierowany przez Janus."
+		"laneByWork": "Wybierane według zadania"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo działa tylko wtedy, gdy aplikacja jest otwarta. Aby działało po jej zamknięciu, włącz Nebo w Rzeczach otwieranych podczas logowania.",
@@ -4350,6 +4346,12 @@
 		"taskReorder": "Zamówiono 40 sztuk od Lumen",
 		"taskVideo": "Opublikowano wtorkowy film",
 		"taskInvoices": "Wysłano 3 przypomnienia o fakturach"
+	},
+	"ownKey": {
+		"signedOut": "Zaloguj się do NeboAI, aby używać własnego klucza {provider}.",
+		"keyRejected": "Twój klucz API {provider} został odrzucony. Sprawdź go w Ustawienia > Dostawcy.",
+		"keyUnusable": "Twój klucz API {provider} nie może uruchomić tego modelu. Sprawdź model w Ustawienia > Dostawcy.",
+		"connectionSignIn": "Zaloguj się do NeboAI, aby używać tego klucza: własne klucze działają na Twoim koncie NeboAI."
 	},
 	"verify": {
 		"badge": {
