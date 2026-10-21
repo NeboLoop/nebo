@@ -1,7 +1,7 @@
 //! An app's page is confined to its own app.
 //!
 //! The page runs in an origin of its own (a CSP sandbox, so its origin is
-//! opaque) and proves itself with its app's pass (`napp::app_view`) alone:
+//! opaque) and proves itself with its app's pass (`napp::page_pass`) alone:
 //! in a browser on this computer, through the tunnel (where the hub forwards
 //! its calls unchecked), and in Nebo's own headless browser. The pass opens
 //! that app's routes and nothing of the owner's: not his agents, not
@@ -73,7 +73,7 @@ async fn an_app_page_reaches_its_own_app_alone() {
         .and_then(|r| r.split('/').next())
         .unwrap()
         .to_string();
-    assert!(napp::app_view::admits(&pass, APP) && !napp::app_view::admits(&pass, OTHER));
+    assert!(napp::page_pass::admits(&pass, &napp::page_pass::Scope::App(APP.to_string())) && !napp::page_pass::admits(&pass, &napp::page_pass::Scope::App(OTHER.to_string())));
 
     // The page, under its pass: sandboxed, readable by its own opaque origin,
     // and its files load with the pass its address carries.
@@ -202,7 +202,7 @@ async fn an_app_page_reaches_its_own_app_alone() {
 
     // A page whose pass is gone (the bot restarted), reopened by the owner:
     // a new pass in the old one's place.
-    napp::app_view::revoke(&pass);
+    napp::page_pass::revoke(&pass);
     let reopened = http
         .get(format!("{base}/k/{pass}/apps/{APP}/ui/index.html"))
         .header("cookie", &session)
@@ -232,7 +232,7 @@ async fn an_unchecked_tunnel_request_opens_only_its_apps_routes() {
     let server = TestServer::boot().await;
     let base = format!("http://127.0.0.1:{}", server.port);
     let http = client();
-    let pass = napp::app_view::grant(APP, std::time::Duration::from_secs(60));
+    let pass = napp::page_pass::grant(napp::page_pass::Scope::App(APP.to_string()), std::time::Duration::from_secs(60));
     let unchecked = |req: reqwest::RequestBuilder| {
         req.header("host", "neboai.com")
             .header(comm::tunnel::TUNNEL_UNVERIFIED_HEADER, comm::tunnel::tunnel_auth_secret())
@@ -277,5 +277,5 @@ async fn an_unchecked_tunnel_request_opens_only_its_apps_routes() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
-    napp::app_view::revoke(&pass);
+    napp::page_pass::revoke(&pass);
 }

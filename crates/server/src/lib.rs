@@ -7939,7 +7939,7 @@ fn cors_layer() -> CorsLayer {
             // with its pass: the one opaque origin let through, and only on
             // what the pass opens. Its session cookie is never sent there.
             if origin.as_bytes() == b"null" {
-                return middleware::pass_opens(parts.extensions.get::<middleware::PathCredential>(), parts.uri.path());
+                return middleware::pass_opens(parts.extensions.get::<middleware::PathCredential>(), &parts.method, parts.uri.path());
             }
             static_origins.contains(origin)
         }))

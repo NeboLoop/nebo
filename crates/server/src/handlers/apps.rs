@@ -25,7 +25,7 @@ use db;
 ///
 /// - The app's page, wherever it is open (a browser, the mobile app through
 ///   the tunnel, the desktop window, Nebo's headless browser), carries the
-///   app's pass (`napp::app_view`) as its path credential, and
+///   app's pass (`napp::page_pass`) as its path credential, and
 ///   `middleware::path_credential` shows it here (`app_view_admits`). A pass
 ///   is minted for one app and opens that app alone.
 /// - The app's sidecar sends its `NEBO_APP_TOKEN` as `Authorization: Bearer`.
@@ -293,7 +293,7 @@ pub async fn serve_app_ui(
     serve_app_ui_inner(&state, &agent_id, &path, &uri, &headers).await
 }
 
-/// How long an app page's pass lasts (`napp::app_view`): longer than a page
+/// How long an app page's pass lasts (`napp::page_pass`): longer than a page
 /// stays open between reloads. Each open gets a new one, and a reload of a
 /// page whose pass is gone (the bot restarted) gets a new one too
 /// ([`with_pass`]).
@@ -346,7 +346,7 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str, uri: &
     // the owner's sign-in, and everything it asks for proves itself with
     // the pass.
     if is_html(&target) && !crate::middleware::app_view_admits(headers, agent_id) {
-        let pass = napp::app_view::grant(agent_id, PAGE_PASS_TTL);
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_TTL);
         let mut r = Response::new(Body::empty());
         *r.status_mut() = StatusCode::SEE_OTHER;
         let replacing = crate::middleware::carried_path_credential(headers);
@@ -416,7 +416,7 @@ struct Devtools<'a> {
 #[derive(Debug, Clone, Copy)]
 struct DesktopPage<'a> {
     app_id: &'a str,
-    /// A pass for this one app's socket (`napp::app_view`): the window's
+    /// A pass for this one app's socket (`napp::page_pass`): the window's
     /// WebSocket goes to this server directly, carrying no session.
     pass: &'a str,
     port: u16,
@@ -445,7 +445,7 @@ struct DesktopApp {
     /// folder scan alone never finds it (live 2026-10-05: "App not found"
     /// for Design Studio on the desktop).
     ui_dir: Option<PathBuf>,
-    /// The app's pass (`napp::app_view`, [`PAGE_PASS_TTL`]): the one
+    /// The app's pass (`napp::page_pass`, [`PAGE_PASS_TTL`]): the one
     /// credential the window's requests carry. The shell's proxy sends the
     /// page's calls on with it, never the install key, and the page reaches
     /// this server with it directly (its socket, a film it streams). Empty
@@ -466,7 +466,7 @@ pub async fn desktop_app(
     let store = &state.store;
     let developer = matches!(store.get_settings(), Ok(Some(s)) if s.developer_mode != 0);
     let is_app = matches!(store.get_agent(&agent_id), Ok(Some(a)) if a.is_app.unwrap_or(0) != 0);
-    let pass = if is_app { napp::app_view::grant(&agent_id, PAGE_PASS_TTL) } else { String::new() };
+    let pass = if is_app { napp::page_pass::grant(napp::page_pass::Scope::App(agent_id.to_string()), PAGE_PASS_TTL) } else { String::new() };
     axum::Json(DesktopApp {
         offers_publish: developer && store.app_developer_mode() && own_app(store, &agent_id).is_some(),
         developer_script: desktop_script(store, state.config.port, &agent_id, &pass),
@@ -2069,6 +2069,9 @@ pub fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("m4a") => "audio/mp4",
         Some("aac") => "audio/aac",
         Some("flac") => "audio/flac",
+        // Captions: a browser takes a <track> only as text/vtt.
+        Some("vtt") => "text/vtt; charset=utf-8",
+        Some("srt") => "application/x-subrip",
         Some("glb") => "model/gltf-binary",
         Some("gltf") => "model/gltf+json",
         _ => "application/octet-stream",
@@ -2181,11 +2184,11 @@ mod connection_origin_tests {
         h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
         assert!(!app_connection_origin_allowed(&h, "app-a"));
         // The app's own sandboxed page (`Origin: null`) with its pass.
-        let pass = napp::app_view::grant("app-a", std::time::Duration::from_secs(60));
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         h.insert(crate::middleware::APP_VIEW_PASS, pass.parse().unwrap());
         assert!(app_connection_origin_allowed(&h, "app-a"));
         assert!(!app_connection_origin_allowed(&h, "app-b"), "another app's pass");
-        napp::app_view::revoke(&pass);
+        napp::page_pass::revoke(&pass);
     }
 
     /// A sidecar is sent the request's own headers, never a credential the
@@ -2273,7 +2276,7 @@ mod developer_mode_tests {
         app(&store, "app-m", "Bought");
         store.set_agent_napp_path("app-m", "/data/nebo/agents/bought.napp").unwrap();
 
-        let pass = napp::app_view::grant("app-a", std::time::Duration::from_secs(60));
+        let pass = napp::page_pass::grant(napp::page_pass::Scope::App("app-a".to_string()), std::time::Duration::from_secs(60));
         assert_eq!(desktop_script(&store, 27895, "app-m", "p"), "", "installed: no developer tooling");
         assert_eq!(desktop_script(&store, 27895, "nope", "p"), "");
 

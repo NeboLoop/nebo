@@ -120,6 +120,39 @@ pub fn workspace_dir() -> Result<PathBuf, NeboError> {
     Ok(ws)
 }
 
+/// A name at the file store's top that is Nebo's own, never the owner's
+/// work: hidden folders (`.shared`, `.previews`), work versions and their
+/// blobs, uploads, the media cast, and the tools' screen captures.
+pub fn store_own(name: &str) -> bool {
+    name.starts_with('.')
+        || matches!(name, "work" | "uploads" | "cast")
+        || name.starts_with("screenshot-")
+        || name.starts_with("capture-")
+}
+
+/// The coding agents' own folders at the workspace's top (`~/NeboAI/claude-code`,
+/// `codex-2`, `gemini-cli`: nebo-runtimes `AcpAgent::KNOWN` keys, plus a suffix
+/// for a second one): their projects keep their own history (git), never ours.
+/// ponytail: matched by name; an owner folder named `codex-notes` is left out too.
+const AGENT_FOLDERS: &[&str] = &["claude-code", "codex", "gemini", "opencode"];
+
+/// A coding agent's own folder at the workspace's top (`AGENT_FOLDERS`).
+pub fn agent_folder(name: &str) -> bool {
+    AGENT_FOLDERS.iter().any(|a| name == *a || name.starts_with(&format!("{a}-")))
+}
+
+/// THE rule for what of the workspace any route may serve or a grant may
+/// name (`rel`, relative to the workspace, `/`- or `\`-separated): never
+/// Nebo's own names at its top ([`store_own`]), never a coding agent's
+/// folder ([`agent_folder`]), never anything hidden at any depth. The files
+/// route, an app's file route and an app's `filesystem:read:` grant all ask
+/// this, and nothing else decides it.
+pub fn workspace_private(rel: &str) -> bool {
+    let mut parts = rel.split(['/', '\\']).filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else { return true };
+    store_own(first) || agent_folder(first) || parts.any(|p| p.starts_with('.'))
+}
+
 /// Industry, franchise, and company packs installed on this Nebo:
 /// `<data_dir>/packs/<slug>/` with `INDUSTRY.md`, `FRANCHISE.md`, or
 /// `COMPANY.md` and the typed folders beside it.
@@ -430,4 +463,33 @@ fn sanitize_path_component(s: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod workspace_private_tests {
+    use super::workspace_private;
+
+    /// What no route serves out of the workspace and no grant names.
+    #[test]
+    fn nebo_s_own_names_agents_folders_and_hidden_parts_are_private() {
+        for private in [
+            "",
+            ".shared/a.png",
+            "work/blobs/x",
+            "uploads/a.png",
+            "cast/a.png",
+            "screenshot-1.png",
+            "claude-code/repo/src/main.rs",
+            "codex-2/notes.md",
+            "gemini",
+            "Media/Projects/reel/.proxies/a.mp4",
+            "Docs/.env",
+            "Media\\.git\\config",
+        ] {
+            assert!(workspace_private(private), "{private}");
+        }
+        for open in ["Media/Projects/reel/render.mp4", "Docs/a.pdf", "README.md", "codex.txt"] {
+            assert!(!workspace_private(open), "{open}");
+        }
+    }
 }

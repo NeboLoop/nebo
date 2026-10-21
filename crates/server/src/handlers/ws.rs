@@ -213,7 +213,7 @@ pub async fn app_ws_handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    // An app page holding its own pass (`napp::app_view`) opens its own
+    // An app page holding its own pass (`napp::page_pass`) opens its own
     // socket from wherever it runs: a sandboxed page's Origin is `null`.
     if !crate::middleware::app_view_admits(&headers, &agent_id)
         && !origin_is_trusted(&headers)
