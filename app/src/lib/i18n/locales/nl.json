@@ -4464,7 +4464,7 @@
 			"needs_decision": "Heeft je beslissing nodig: {items}",
 			"stopped_by_owner": "Door jou gestopt; open problemen: {open, plural, other {#}}",
 			"stalled": "Geen voortgang meer; open problemen: {open, plural, other {#}}",
-			"no_checks": "Er konden geen tests of build draaien",
+			"no_checks": "Niets heeft aangetoond dat het werkt: het project heeft geen build, typecontrole of tests om te draaien",
 			"landed_unreviewed": "Doorgevoerd zonder geslaagde review, op jouw keuze",
 			"edits_in_way": "Nog niet doorgevoerd: jouw wijzigingen staan nog in de weg",
 			"kept_own_edits": "Niet doorgevoerd: je hebt je eigen wijzigingen gehouden, en de wijziging wacht in haar kopie",

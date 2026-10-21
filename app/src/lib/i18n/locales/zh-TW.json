@@ -4464,7 +4464,7 @@
 			"needs_decision": "需要你的決定：{items}",
 			"stopped_by_owner": "已由你停止，未解決的問題：{open, plural, other {# 個}}",
 			"stalled": "不再有進展，未解決的問題：{open, plural, other {# 個}}",
-			"no_checks": "沒有可執行的測試或建置",
+			"no_checks": "沒有任何檢查證明它能正常運作：此專案沒有可執行的建置、型別檢查或測試",
 			"landed_unreviewed": "未通過審查，依你的選擇已併入",
 			"edits_in_way": "尚未併入：你的編輯仍擋在前面",
 			"kept_own_edits": "未併入：你保留了自己的編輯，這項變更在它的副本中等待",

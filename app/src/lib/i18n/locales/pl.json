@@ -4464,7 +4464,7 @@
 			"needs_decision": "Potrzebuje Twojej decyzji: {items}",
 			"stopped_by_owner": "Zatrzymane przez Ciebie; otwarte problemy: {open, plural, other {#}}",
 			"stalled": "Przestało robić postępy; otwarte problemy: {open, plural, other {#}}",
-			"no_checks": "Nie udało się uruchomić testów ani kompilacji",
+			"no_checks": "Nic nie potwierdziło, że to działa: projekt nie ma kompilacji, sprawdzania typów ani testów do uruchomienia",
 			"landed_unreviewed": "Wdrożone bez zaliczonego przeglądu, na Twoje życzenie",
 			"edits_in_way": "Jeszcze nie wdrożone: Twoje zmiany wciąż stoją na drodze",
 			"kept_own_edits": "Nie wdrożone: zachowałeś własne zmiany, a ta zmiana czeka w swojej kopii",

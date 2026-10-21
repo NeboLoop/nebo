@@ -2,7 +2,8 @@
 //!
 //! When the builder answers with no more calls, each project the turn
 //! changed goes through a round: the project's own build and tests run in
-//! the work's folder, then independent reviewers (one per lens, fresh, told
+//! the work's folder (an app's own check is its page's live load, on a
+//! phone and a desktop), then independent reviewers (one per lens, fresh, told
 //! to refute) review the change: the whole change in round 1, the fixes
 //! since in later rounds. Findings go back to the same builder, in the same
 //! turn, as its next step; it fixes them in its copy and answers again, and
@@ -882,15 +883,22 @@ impl VerifyCheck {
             ..Default::default()
         };
         // The plain-code step: the project's own build and tests, within
-        // the build folders' disk cap. The round's record says, as it goes,
-        // which checks it runs and what each came to, then each reviewer's
-        // result as it arrives: the owner watches the round, not a spinner.
+        // the build folders' disk cap. An app's own check is its live load,
+        // after the checks its `checks/` folder declares. The round's record
+        // says, as it goes, which checks it runs and what each came to, then
+        // each reviewer's result as it arrives: the owner watches the round,
+        // not a spinner.
         super::work::cap_builds();
-        let checks = checks::detect(&work.work_dir, &whole.paths());
-        row.detail = json!({
-            "whole": whole.stat(),
-            "checksPlanned": checks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-        });
+        let app = (work.kind == WorkKind::AppPages).then(|| self.app_of(work)).flatten();
+        let checks = match work.kind {
+            WorkKind::AppPages => app.as_ref().map(|a| app_checks(a, &work.work_dir)).unwrap_or_default(),
+            _ => checks::detect(&work.work_dir, &whole.paths()),
+        };
+        let mut planned: Vec<&str> = checks.iter().map(|c| c.label.as_str()).collect();
+        if work.kind == WorkKind::AppPages {
+            planned.push(LIVE_CHECK_LABEL);
+        }
+        row.detail = json!({ "whole": whole.stat(), "checksPlanned": planned });
         self.record_round(&row);
         let mut ctx = self.tool_ctx();
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
@@ -898,13 +906,32 @@ impl VerifyCheck {
             Ok(build) => build,
             Err(e) => return self.review_incomplete(v, &mut row, &e),
         };
-        let mut runs: Vec<CheckRun> = Vec::with_capacity(checks.len());
+        let mut runs: Vec<CheckRun> = Vec::with_capacity(planned.len());
         for check in &checks {
             runs.extend(checks::run(&self.harness.tools, &ctx, std::slice::from_ref(check), &build).await);
             row.checks = json!(runs);
             self.record_round(&row);
             if self.cancel.is_cancelled() {
                 break;
+            }
+        }
+        // No browser to load the app in: its live check can't run, and the
+        // work can't be verified.
+        let mut live_unavailable = None;
+        if work.kind == WorkKind::AppPages && !self.cancel.is_cancelled() {
+            match self.live_check(app.as_ref()).await {
+                Ok(run) => {
+                    runs.push(run);
+                    row.checks = json!(runs);
+                    self.record_round(&row);
+                }
+                Err(why) => {
+                    // Never shown as running: it isn't one of the checks.
+                    planned.pop();
+                    row.detail["checksPlanned"] = json!(planned);
+                    self.record_round(&row);
+                    live_unavailable = Some(why);
+                }
             }
         }
         if self.cancel.is_cancelled() {
@@ -1194,6 +1221,10 @@ impl VerifyCheck {
                  end your reply; the next round reviews them."
             ));
         }
+        if let Some(why) = live_unavailable {
+            self.finish(&after, "not_verified", Some(why));
+            return RoundEnd::Finished;
+        }
         if runs.is_empty() {
             // Reviewed, but no build or test could run: not verified.
             let reason = Why::new("no_checks");
@@ -1215,8 +1246,9 @@ impl VerifyCheck {
 
 impl VerifyCheck {
     /// A clean round: the work is verified. A copy this loop made catches up
-    /// with the owner's project and lands; an app's pages are reloaded and
-    /// checked live; a helper's copy waits for its parent to land it.
+    /// with the owner's project and lands; an app's pages are live where
+    /// they are (their live load passed in the round); a helper's copy waits
+    /// for its parent to land it.
     async fn land(&self, mut work: Work, notes: &str) -> Step {
         let store = self.store().clone();
         let Some(v) = store.get_verification(&work.id).ok().flatten() else {
@@ -1224,16 +1256,7 @@ impl VerifyCheck {
         };
         match work.kind {
             WorkKind::Isolated => {}
-            // An app's pages are live where they are: verified only when
-            // the page reloads and checks out.
-            WorkKind::AppPages => {
-                match self.live_check_app(&work, &v).await {
-                    Err(why) => self.finish(&v, "not_verified", Some(why)),
-                    Ok(()) => self.finish(&v, "verified", None),
-                }
-                return Step::Finished;
-            }
-            WorkKind::HelperCopy | WorkKind::Folder => {
+            WorkKind::AppPages | WorkKind::HelperCopy | WorkKind::Folder => {
                 self.finish(&v, "verified", None);
                 return Step::Finished;
             }
@@ -1605,61 +1628,61 @@ impl VerifyCheck {
         None
     }
 
-    /// An app's pages after a clean round: reloaded where they are open and
-    /// checked live in a view of their own. It checks out only when the app
-    /// exists, its page loads (its folder, its entry page, every file it
-    /// loads) and that load had zero errors. No view that can be opened is
-    /// a failure, never a pass; no browser to open one in is said as such
-    /// (`live_unavailable`). `Err` is why it did not check out.
-    async fn live_check_app(&self, work: &Work, v: &db::Verification) -> Result<(), Why> {
-        let store = self.store();
-        let app = store
-            .list_agents(1_000, 0)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|a| {
-                tools::app_dev::served_dir(a)
-                    .is_some_and(|d| std::path::Path::new(d) == work.work_dir)
-            });
-        let ctx = self.tool_ctx();
-        let Some(app) = app else {
-            self.record_live(v, Why::new("live_failed"), json!({ "problem": "no app is served from these pages" }));
-            return Err(Why::new("live_failed"));
-        };
-        // The owner's open views load the new build too.
-        let reload = self
-            .harness
-            .tools
-            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.name }))
-            .await;
-        use tools::app_publish::LiveLoadError;
-        let loaded = tools::app_publish::live_load(self.harness.tools.browser().as_ref(), &app).await;
-        let (problem, why, seen) = match &loaded {
-            Err(LiveLoadError::NoBrowser(e)) => (Some("the bot has no browser to open the app in"), "live_unavailable", json!(e)),
-            Err(LiveLoadError::NotOpened(e)) => {
-                (tools::app_dev::live_problem(&work.work_dir, 0).or(Some("no view of the app could be opened")), "live_failed", json!(e))
-            }
-            Err(LiveLoadError::NoScript(e)) => (Some(tools::app_publish::NO_SCRIPT), "live_no_script", json!(e)),
-            Ok(failed) => (tools::app_dev::live_problem(&work.work_dir, failed.len()), "live_failed", json!(failed)),
-        };
-        let why = Why::new(if problem.is_none() { "live_ok" } else { why });
-        self.record_live(v, why.clone(), json!({ "problem": problem, "errors": seen, "reload": reload.content }));
-        if problem.is_none() { Ok(()) } else { Err(why) }
+    /// The app served from `work`'s pages, if one is.
+    fn app_of(&self, work: &Work) -> Option<db::models::Agent> {
+        self.store().list_agents(1_000, 0).unwrap_or_default().into_iter().find(|a| {
+            tools::app_dev::served_dir(a).is_some_and(|d| std::path::Path::new(d) == work.work_dir)
+        })
     }
 
-    fn record_live(&self, v: &db::Verification, outcome: Why, detail: serde_json::Value) {
-        let store = self.store();
-        let round = next_step(store, &v.id);
-        let _ = store.put_verification_round(&db::VerificationRound {
-            verification_id: v.id.clone(),
-            round,
-            kind: "live".into(),
-            outcome: outcome.text(),
-            detail,
-            started_at: Self::now(),
-            finished_at: Some(Self::now()),
-            ..Default::default()
-        });
+    /// An app's own check, run every round like any other check: its open
+    /// views reloaded, then its page loaded fresh on a phone and a desktop
+    /// through `app_reload(check: true)`, the one live check
+    /// ([`tools::app_publish::live_load`]). It passes only when every view
+    /// loaded with zero errors and drew something; what failed is its
+    /// output, which the builder fixes. `Err`: no browser to load it in, so
+    /// it can't run at all.
+    async fn live_check(&self, app: Option<&db::models::Agent>) -> Result<CheckRun, Why> {
+        let started = std::time::Instant::now();
+        let run = |passed: bool, output: &str| CheckRun {
+            label: LIVE_CHECK_LABEL.into(),
+            command: LIVE_CHECK_COMMAND.into(),
+            passed,
+            tail: checks::tail(output),
+            duration_ms: started.elapsed().as_millis() as u64,
+        };
+        let Some(app) = app else {
+            return Ok(run(false, "No app is served from these pages."));
+        };
+        let mut ctx = self.tool_ctx();
+        // Nobody answers a question in the middle of a check.
+        ctx.cannot_wait = true;
+        let result = self
+            .harness
+            .tools
+            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.name, "check": true }))
+            .await;
+        let checked = result.payload.as_ref().filter(|p| p["kind"] == tools::app_dev::LIVE_CHECK);
+        if checked.is_some_and(|p| p["unavailable"] == true) {
+            return Err(Why::new("live_unavailable"));
+        }
+        let passed = !result.is_error && checked.is_some_and(|p| p["passed"] == true);
+        Ok(run(passed, &result.content))
+    }
+}
+
+/// The live check's row among a round's checks.
+const LIVE_CHECK_LABEL: &str = "Live load on a phone and a desktop";
+/// How the builder runs the live check itself.
+const LIVE_CHECK_COMMAND: &str = "app_reload(check: true)";
+
+/// The checks an app declares beside its live load: the project in its
+/// app folder's `checks/` (its tests, run by the same rules as any
+/// project's, [`checks::detect`]), never inside the served `pages`.
+fn app_checks(app: &db::models::Agent, pages: &std::path::Path) -> Vec<checks::Check> {
+    match tools::app_history::app_folder(app).map(|f| f.join("checks")) {
+        Some(dir) if dir.is_dir() && !dir.starts_with(pages) => checks::detect(&dir, &[]),
+        _ => Vec::new(),
     }
 }
 

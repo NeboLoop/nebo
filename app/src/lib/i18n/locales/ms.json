@@ -4464,7 +4464,7 @@
 			"needs_decision": "Perlukan keputusan anda: {items}",
 			"stopped_by_owner": "Dihentikan oleh anda; isu terbuka: {open, plural, other {#}}",
 			"stalled": "Berhenti membuat kemajuan; isu terbuka: {open, plural, other {#}}",
-			"no_checks": "Tiada ujian atau binaan dapat dijalankan",
+			"no_checks": "Tiada apa yang membuktikan ia berfungsi: projek ini tiada binaan, semakan jenis atau ujian untuk dijalankan",
 			"landed_unreviewed": "Dimasukkan tanpa lulus semakan, atas pilihan anda",
 			"edits_in_way": "Belum dimasukkan: suntingan anda masih menghalang",
 			"kept_own_edits": "Tidak dimasukkan: anda kekalkan suntingan anda sendiri, dan perubahan ini menunggu dalam salinannya",

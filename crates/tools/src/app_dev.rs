@@ -282,11 +282,17 @@ pub fn misplaced_web_file_note(store: &db::Store, path: &Path) -> Option<String>
     })
 }
 
-/// The developer pack, on one store and the bot's WS broadcaster.
-pub fn tools(store: Arc<db::Store>, broadcaster: Option<Broadcaster>) -> Vec<Box<dyn DynTool>> {
+/// The developer pack, on one store, the bot's WS broadcaster and its
+/// browser (the live check of `app_reload`).
+pub fn tools(
+    store: Arc<db::Store>,
+    broadcaster: Option<Broadcaster>,
+    browser: Option<Arc<browser::Manager>>,
+) -> Vec<Box<dyn DynTool>> {
     let core = Arc::new(AppDev {
         store: store.clone(),
         broadcaster,
+        browser,
     });
     vec![
         Box::new(AppReloadTool(core.clone())),
@@ -298,6 +304,7 @@ pub fn tools(store: Arc<db::Store>, broadcaster: Option<Broadcaster>) -> Vec<Box
 struct AppDev {
     store: Arc<db::Store>,
     broadcaster: Option<Broadcaster>,
+    browser: Option<Arc<browser::Manager>>,
 }
 
 impl AppDev {
@@ -360,15 +367,24 @@ fn status_schema() -> Value {
     schema
 }
 
-/// `app_reload`'s input: the app, and `restore` to go back to a version.
+/// `app_reload`'s input: the app, `restore` to go back to a version, and
+/// `check` for the live check.
 fn reload_schema() -> Value {
     let mut schema = app_schema();
     schema["properties"]["restore"] = json!({
         "type": "string",
         "description": "A version id from app_status(history: true): puts the app's files back to that version, then reloads."
     });
+    schema["properties"]["check"] = json!({
+        "type": "boolean",
+        "description": "true: after reloading, load the page fresh on a phone and a desktop and fail on any console error, uncaught exception, unhandled rejection, failed request or blank page. The same live check that verifies app work."
+    });
     schema
 }
+
+/// The kind of the payload `app_reload(check: true)` returns: `{"kind",
+/// "passed", "unavailable" (no browser to load the page in), "errors"}`.
+pub const LIVE_CHECK: &str = "live_check";
 
 /// The version a call asks to restore, when it asks.
 fn restore_id(input: &Value) -> Option<&str> {
@@ -398,7 +414,10 @@ impl DynTool for AppReloadTool {
          Use it after changing an app's files; never rename files to get past a stale copy.\n\
          restore: \"<version id>\" first puts the app's page and source back to a saved version (app_status(history: true) lists \
          them), as a new version, so a restore can itself be undone. Use it when the owner asks to go back (\"put it back to how it \
-         was this morning\") and when a change made the app worse: restore the last good version instead of rewriting."
+         was this morning\") and when a change made the app worse: restore the last good version instead of rewriting.\n\
+         check: true then loads the page fresh on a phone and a desktop, in this bot's own browser, and fails with every console \
+         error, uncaught exception, unhandled rejection, failed request, or a page that drew nothing. It is the live check that \
+         verifies app work: run it after a change, and fix what it reports."
             .to_string()
     }
 
@@ -430,27 +449,84 @@ impl DynTool for AppReloadTool {
                 },
                 None => String::new(),
             };
-            let Some(broadcast) = self.0.broadcaster.as_ref() else {
-                if !restored.is_empty() {
-                    return ToolResult::ok(restored);
+            let check = input.get("check").and_then(|v| v.as_bool()).unwrap_or(false);
+            let reloaded = match self.0.broadcaster.as_ref() {
+                None if restored.is_empty() && !check => {
+                    return ToolResult::error("Reloading open views is not available on this bot.");
                 }
-                return ToolResult::error("Reloading open views is not available on this bot.");
-            };
-            if !has_open_view(&app.id) {
-                return ToolResult::ok(format!(
+                None => restored,
+                Some(_) if !has_open_view(&app.id) => format!(
                     "{restored}No view of {} is open right now, so nothing reloaded. It loads the build now in its \
                      folder the next time it is opened.",
                     app.name
-                ));
+                ),
+                Some(broadcast) => {
+                    broadcast(RELOAD_EVENT, json!({ "appId": app.id }));
+                    format!(
+                        "{restored}Reloaded every open view of {}: each loads the build now in its folder (its entry page is \
+                         never cached). Check it with app_console and app_screenshot before telling the owner it changed.",
+                        app.name
+                    )
+                }
+            };
+            if !check {
+                return ToolResult::ok(reloaded);
             }
-            broadcast(RELOAD_EVENT, json!({ "appId": app.id }));
-            ToolResult::ok(format!(
-                "{restored}Reloaded every open view of {}: each loads the build now in its folder (its entry page is \
-                 never cached). Check it with app_console and app_screenshot before telling the owner it changed.",
-                app.name
-            ))
+            let loaded = crate::app_publish::live_load(self.0.browser.as_ref(), &app).await;
+            live_check_result(&app, &reloaded, loaded)
         })
     }
+}
+
+/// What `app_reload(check: true)` returns for `app`'s live load: passed
+/// only when every view loaded with zero errors and the app's folder,
+/// entry page and every file it loads are there ([`live_problem`]); an
+/// error naming each problem otherwise. Its [`LIVE_CHECK`] payload says the
+/// same for a caller that branches on it.
+fn live_check_result(
+    app: &db::models::Agent,
+    reloaded: &str,
+    loaded: Result<Vec<String>, crate::app_publish::LiveLoadError>,
+) -> ToolResult {
+    use crate::app_publish::LiveLoadError;
+    let dir = Path::new(served_dir(app).unwrap_or_default());
+    let views = crate::app_publish::live_views(app)
+        .iter()
+        .map(|(name, (w, h))| format!("{} ({w}×{h})", name.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let (errors, unavailable): (Vec<String>, bool) = match loaded {
+        Err(LiveLoadError::NoBrowser(e)) => (vec![e], true),
+        Err(LiveLoadError::NotOpened(e)) => {
+            let mut errors = vec![e];
+            errors.extend(live_problem(dir, 0).map(str::to_string));
+            (errors, false)
+        }
+        Err(LiveLoadError::NoScript(_)) => (vec![crate::app_publish::NO_SCRIPT.to_string()], false),
+        Ok(seen) => {
+            let mut errors: Vec<String> = live_problem(dir, 0).map(str::to_string).into_iter().collect();
+            errors.extend(seen);
+            (errors, false)
+        }
+    };
+    let passed = errors.is_empty();
+    let head = if reloaded.is_empty() { String::new() } else { format!("{reloaded}\n\n") };
+    let payload = json!({ "kind": LIVE_CHECK, "passed": passed, "unavailable": unavailable, "errors": errors });
+    let result = if passed {
+        ToolResult::ok(format!(
+            "{head}Live check of {}: passed. It loaded on a {views} with no errors, and drew something.",
+            app.name
+        ))
+    } else if unavailable {
+        ToolResult::error(format!("{head}Live check of {}: it could not run. {}", app.name, errors.join(" ")))
+    } else {
+        ToolResult::error(format!(
+            "{head}Live check of {}: failed. Loaded on a {views}:\n- {}",
+            app.name,
+            errors.join("\n- ")
+        ))
+    };
+    result.with_payload(payload)
 }
 
 // ── app_status ─────────────────────────────────────────────────────
@@ -956,6 +1032,78 @@ mod tests {
         assert!(text.contains("- assets/index-C_-Z6QB_.js\n"), "{text}");
         assert!(text.contains("- /sdk/nebo.global.js (outside the app)"), "{text}");
         assert!(!text.contains("Not loaded by"), "{text}");
+    }
+
+    /// `app_reload(check: true)` passes only a page that loaded on a phone
+    /// and a desktop with zero errors and has every file it loads; each
+    /// error is named; no browser to load it in says it could not run.
+    #[test]
+    fn the_live_check_passes_only_a_clean_load_and_names_every_error() {
+        use crate::app_publish::LiveLoadError;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
+        app_row(&store, "app-1", "Puzzler", &ui);
+        let app = store.get_agent("app-1").unwrap().unwrap();
+
+        let clean = live_check_result(&app, "", Ok(vec![]));
+        assert!(!clean.is_error, "{}", clean.content);
+        assert!(clean.content.contains("phone (390×844) and desktop (1280×800)"), "{}", clean.content);
+        let payload = clean.payload.unwrap();
+        assert_eq!((payload["kind"].as_str(), payload["passed"].as_bool()), (Some(LIVE_CHECK), Some(true)));
+
+        let broken = live_check_result(
+            &app,
+            "Reloaded.",
+            Ok(vec!["Phone (390×844): Uncaught TypeError: x is undefined (/app.js:3)".into()]),
+        );
+        assert!(broken.is_error);
+        assert!(broken.content.starts_with("Reloaded.\n\n"), "{}", broken.content);
+        assert!(broken.content.contains("- Phone (390×844): Uncaught TypeError"), "{}", broken.content);
+        assert_eq!(broken.payload.unwrap()["passed"], false);
+
+        let blank = live_check_result(
+            &app,
+            "",
+            Ok(vec!["Desktop (1280×800): The page loaded but drew nothing: no text, picture or canvas is on screen.".into()]),
+        );
+        assert!(blank.is_error && blank.content.contains("drew nothing"), "{}", blank.content);
+
+        std::fs::write(ui.join("index.html"), "<script src=\"app.js\"></script>").unwrap();
+        let missing = live_check_result(&app, "", Ok(vec![]));
+        assert!(missing.is_error && missing.content.contains("a file the page loads is missing"), "{}", missing.content);
+
+        let no_script = live_check_result(&app, "", Err(LiveLoadError::NoScript("x".into())));
+        assert!(no_script.is_error && no_script.content.contains(crate::app_publish::NO_SCRIPT));
+        assert_eq!(no_script.payload.unwrap()["unavailable"], false, "a page that can be fixed");
+
+        let no_browser = live_check_result(&app, "", Err(LiveLoadError::NoBrowser("no browser".into())));
+        assert!(no_browser.is_error);
+        let payload = no_browser.payload.unwrap();
+        assert_eq!((payload["passed"].as_bool(), payload["unavailable"].as_bool()), (Some(false), Some(true)));
+    }
+
+    /// The check runs on a bot with no live views to reload: the tool
+    /// itself, with no broadcaster and no browser, says the check could not
+    /// run rather than refusing the call.
+    #[test]
+    fn a_reload_with_check_runs_the_check_without_open_views() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(store(tmp.path()));
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
+        app_row(&store, "app-1", "Puzzler", &ui);
+        let reload = tools(store, None, None).into_iter().find(|t| t.name() == APP_RELOAD).unwrap();
+        let ctx = ToolContext { session_key: "agent:app-1:web".into(), ..Default::default() };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let plain = rt.block_on(reload.execute_dyn(&ctx, json!({})));
+        assert!(plain.is_error && plain.payload.is_none(), "{}", plain.content);
+        let checked = rt.block_on(reload.execute_dyn(&ctx, json!({ "check": true })));
+        let payload = checked.payload.expect("the check's payload");
+        assert_eq!(payload["unavailable"], true, "{}", checked.content);
     }
 
     /// The code tool is up front for an app employee only with App

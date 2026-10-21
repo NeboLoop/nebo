@@ -193,18 +193,28 @@
     });
     return !!document.body && w > 0 && h > 0 && !errors && !drewSomething(w, h);
   }
-  function lookAtPage(again) {
+  // `done` runs once the look is over: after the second look when the
+  // page was blank at the first, so a blank page is named before it does.
+  function lookAtPage(again, done) {
     var w = window.innerWidth;
     var h = window.innerHeight;
-    if (!document.body || !w || !h) return;
+    if (!document.body || !w || !h) {
+      if (done) done();
+      return;
+    }
     if (blank()) {
       if (again) finding('The page loaded but drew nothing: no text, picture or canvas is on screen.');
-      else
+      else {
+        var later = done;
+        done = null;
         setTimeout(function () {
           try {
-            lookAtPage(true);
-          } catch (e) {}
+            lookAtPage(true, later);
+          } catch (e) {
+            if (later) later();
+          }
         }, 3000);
+      }
     }
     // A canvas drawn small and stretched over another canvas: it hides the
     // one under it (a canvas the pointer passes through is still painted).
@@ -231,17 +241,23 @@
         );
       }
     });
+    if (done) done();
   }
   var lookTimer = null;
   function lookSoon(ms) {
     clearTimeout(lookTimer);
     lookTimer = setTimeout(function () {
-      try {
-        lookAtPage();
-      } catch (e) {}
       // Whoever opened this view (the bot's live check) waits for this
-      // first look before it reads what the page reported.
-      window.__neboLooked = true;
+      // first look, and the second one a blank page gets, before it reads
+      // what the page reported.
+      var looked = function () {
+        window.__neboLooked = true;
+      };
+      try {
+        lookAtPage(false, looked);
+      } catch (e) {
+        looked();
+      }
     }, ms);
   }
   if (document.readyState === 'complete') lookSoon(2500);

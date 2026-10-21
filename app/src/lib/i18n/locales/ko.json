@@ -4464,7 +4464,7 @@
 			"needs_decision": "결정이 필요합니다: {items}",
 			"stopped_by_owner": "직접 중단함, 열린 문제: {open, plural, other {#개}}",
 			"stalled": "진전이 멈춤, 열린 문제: {open, plural, other {#개}}",
-			"no_checks": "테스트나 빌드를 실행할 수 없었습니다",
+			"no_checks": "작동한다는 것을 확인할 방법이 없었습니다: 프로젝트에 실행할 빌드, 타입 검사, 테스트가 없습니다",
 			"landed_unreviewed": "검토를 통과하지 않고 선택에 따라 반영했습니다",
 			"edits_in_way": "아직 반영 안 됨: 편집 내용이 여전히 방해가 됩니다",
 			"kept_own_edits": "반영 안 됨: 직접 한 편집을 유지했고, 변경은 사본에서 기다립니다",

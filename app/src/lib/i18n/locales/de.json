@@ -4464,7 +4464,7 @@
 			"needs_decision": "Braucht Ihre Entscheidung: {items}",
 			"stopped_by_owner": "Von dir gestoppt; offene Probleme: {open, plural, other {#}}",
 			"stalled": "Kein Fortschritt mehr; offene Probleme: {open, plural, other {#}}",
-			"no_checks": "Keine Tests oder Builds konnten laufen",
+			"no_checks": "Nichts hat gezeigt, dass es funktioniert: Das Projekt hat keinen Build, keine Typprüfung und keine Tests zum Ausführen",
 			"landed_unreviewed": "Ohne bestandene Prüfung übernommen, auf Ihren Wunsch",
 			"edits_in_way": "Noch nicht übernommen: Ihre Änderungen stehen noch im Weg",
 			"kept_own_edits": "Nicht übernommen: Sie haben Ihre eigenen Änderungen behalten, die Änderung wartet in ihrer Kopie",

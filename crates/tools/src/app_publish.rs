@@ -1430,27 +1430,60 @@ const DEVTOOLS_FLUSHED: &str = r#"(async()=>{if(window.__neboDevtoolsFlush)await
 
 /// The longest a live check waits after the load for the developer
 /// script's own look at the page (a page that drew nothing), which it
-/// takes 2.5 s after the load and says it has (`__neboLooked`).
+/// takes 2.5 s after the load (and again 3 s later when the page was blank
+/// then) and says it has (`__neboLooked`).
 const LOOK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The phone a live check loads an app on: the mobile app's view.
+const PHONE_VIEW: (u64, u64) = (390, 844);
+
+/// The desktop a live check loads an app on when the app declares no
+/// window of its own.
+const DESKTOP_VIEW: (u64, u64) = (1280, 800);
+
+/// The views a live check loads `app` in, by name: a phone, and a desktop
+/// at the app's own window size.
+pub(crate) fn live_views(app: &db::models::Agent) -> [(&'static str, (u64, u64)); 2] {
+    [("Phone", PHONE_VIEW), ("Desktop", viewport(app, &json!({}), DESKTOP_VIEW))]
+}
 
 /// The answer the page itself came with, when it was an error (`0`: none
 /// was read).
 const PAGE_STATUS: &str = r#"(()=>{const n=performance.getEntriesByType('navigation')[0];return String(n&&n.responseStatus||0);})()"#;
 
 /// An app's page as it is served now, loaded fresh in the bot's own
-/// headless browser for a live check: what went wrong in this view's load
-/// alone, read after its load event, through the one capture path, the
-/// app's developer script ([`crate::app_console`]): its errors, failed
-/// requests, blocked loads and worker errors, tagged with this view's id so
-/// no other open view's lines count. A page without the developer script
-/// can't be checked, and fails.
+/// headless browser for a live check, once in each of [`live_views`]
+/// (behind a pass, `/k/<pass>/apps/<id>/ui/`, the address the mobile app
+/// loads it through): what went wrong in each view's load alone, read after
+/// its load event and the developer script's look at the page, through the
+/// one capture path, the app's developer script ([`crate::app_console`]):
+/// its errors, uncaught exceptions, unhandled rejections, failed requests,
+/// blocked loads, worker errors and a page that drew nothing, tagged with
+/// the view's id so no other open view's lines count. Each line names its
+/// view. A page without the developer script can't be checked, and fails.
 pub async fn live_load(browser: Option<&Arc<browser::Manager>>, app: &db::models::Agent) -> Result<Vec<String>, LiveLoadError> {
     let executor = headless(browser, "open the app to check it live").map_err(LiveLoadError::NoBrowser)?;
     let page = page_path(app, &json!({})).map_err(LiveLoadError::NotOpened)?;
+    let mut failed = Vec::new();
+    for (name, size) in live_views(app) {
+        let seen = load_view(&executor, app, &page, size).await?;
+        failed.extend(seen.into_iter().map(|line| format!("{name} ({}×{}): {line}", size.0, size.1)));
+    }
+    Ok(failed)
+}
+
+/// One view of [`live_load`]: `page` loaded fresh at `size`, and what went
+/// wrong in that load.
+async fn load_view(
+    executor: &browser::ActionExecutor,
+    app: &db::models::Agent,
+    page: &str,
+    size: (u64, u64),
+) -> Result<Vec<String>, LiveLoadError> {
     let view_id = format!("live-{}", uuid::Uuid::new_v4().simple());
     let tag = format!("window.__neboViewId={};", serde_json::to_string(&view_id).unwrap_or_default());
     let mark = crate::app_console::mark();
-    let view = AppPage::open(&executor, app, &page, viewport(app, &json!({}), (390, 844)), &[&tag], Duration::from_secs(60))
+    let view = AppPage::open(executor, app, page, size, &[&tag], Duration::from_secs(60))
         .await
         .map_err(LiveLoadError::NotOpened)?;
     let checked = async {

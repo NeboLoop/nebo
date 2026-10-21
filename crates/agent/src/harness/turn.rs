@@ -10851,6 +10851,204 @@ mod tests {
         })
     }
 
+    /// An app's live check (`app_reload(check: true)`): each call answers
+    /// with the next of its results (`passed`, what it says), then passes;
+    /// `None` is a bot with no browser. Every call's input is kept.
+    struct LiveChecks {
+        results: Mutex<std::collections::VecDeque<Option<(bool, &'static str)>>>,
+        calls: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl tools::registry::DynTool for LiveChecks {
+        fn name(&self) -> &str {
+            tools::app_dev::APP_RELOAD
+        }
+        fn description(&self) -> String {
+            "reloads and checks an app".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"app": {"type": "string"}, "check": {"type": "boolean"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push(input);
+                let next = self.results.lock().unwrap().pop_front().unwrap_or(Some((true, "Live check: passed.")));
+                let (result, passed, unavailable) = match next {
+                    Some((true, text)) => (tools::ToolResult::ok(text), true, false),
+                    Some((false, text)) => (tools::ToolResult::error(text), false, false),
+                    None => (tools::ToolResult::error("This bot has no built-in browser."), false, true),
+                };
+                result.with_payload(serde_json::json!({
+                    "kind": tools::app_dev::LIVE_CHECK, "passed": passed, "unavailable": unavailable, "errors": []
+                }))
+            })
+        }
+    }
+
+    /// An app's folder with a `ui/` holding an entry page; and the path of
+    /// that page.
+    fn app_folder() -> (tempfile::TempDir, String) {
+        let folder = tempfile::tempdir().unwrap();
+        let ui = folder.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Score</h1>").unwrap();
+        let page = ui.join("index.html").to_string_lossy().into_owned();
+        (folder, page)
+    }
+
+    /// The owner's own app `ops` (the builder of [`KEY`]), served from
+    /// `folder`'s `ui/`; its live checks answer with `results`. Returns
+    /// every live check's input and every command check that ran.
+    async fn app_harness(
+        model: &Arc<Scripted>,
+        folder: &tempfile::TempDir,
+        results: Vec<Option<(bool, &'static str)>>,
+    ) -> (Harness, Arc<Mutex<Vec<serde_json::Value>>>, Arc<Mutex<Vec<String>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let live = LiveChecks { results: Mutex::new(results.into()), calls: calls.clone() };
+        let h = harness_with(model, vec![Box::new(FileWriter), Box::new(Checks(ran.clone())), Box::new(live)]).await;
+        let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+        h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+        let ui = folder.path().join("ui");
+        h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+        h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+        (h, calls, ran)
+    }
+
+    /// The owner asks the app `ops` itself.
+    fn owner_of_app(text: &str) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.agent_id = "ops".into();
+        req
+    }
+
+    const CLEAN_PAGE: &str = r#"{"findings": [], "verified_ok": [{"checked": "the score renders"}]}"#;
+
+    /// An app's own check is its live load, run every round like any other
+    /// check: a console error in it is a failed check the builder hears and
+    /// fixes in the same turn, and the next round's load passes: verified.
+    #[test]
+    fn an_apps_console_error_fails_its_live_check_and_the_builder_fixes_it() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><script>score.show()</script>"})),
+                    Step::Say("Done: the score shows."),
+                    // Round 1: correctness and what people see, both clean;
+                    // the live load fails.
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    // The builder fixes what the live load reported.
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p id=\"score\">0</p>"})),
+                    Step::Say("Fixed the live check: no script reads an undefined score."),
+                    // Round 2 reviews the fix; the live load passes.
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("The score shows; the live check caught a script error and I fixed it. Verified."),
+                ]);
+                let (h, calls, _) = app_harness(
+                    &model,
+                    &folder,
+                    vec![
+                        Some((false, "Live check of Scoreboard: failed.\n- Phone (390×844): Uncaught ReferenceError: score is not defined (/app.js:1)")),
+                        Some((true, "Live check of Scoreboard: passed.")),
+                    ],
+                )
+                .await;
+                run_turn(&h, owner_of_app("Show the score")).await;
+
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!(v.work_kind, "app_pages");
+                assert_eq!((v.state.as_str(), v.reason.as_str(), v.rounds), ("verified", "", 2), "{v:?}");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let kinds: Vec<&str> = rounds.iter().map(|r| r.kind.as_str()).collect();
+                assert_eq!(kinds, ["review", "review"], "the live load is a check of each round, not a step of its own");
+                let first: Vec<super::super::verify::checks::CheckRun> = serde_json::from_value(rounds[0].checks.clone()).unwrap();
+                assert_eq!(first.len(), 1);
+                assert_eq!(first[0].label, "Live load on a phone and a desktop");
+                assert!(!first[0].passed && first[0].tail.contains("score is not defined"), "{first:?}");
+                let second: Vec<super::super::verify::checks::CheckRun> = serde_json::from_value(rounds[1].checks.clone()).unwrap();
+                assert!(second[0].passed, "{second:?}");
+                // The builder heard the failed check, with its errors, as its
+                // next step in the same turn.
+                let heard = model.calls().iter().any(|c| {
+                    c.messages.iter().any(|m| m.content.contains("score is not defined") && m.content.contains("app_reload(check: true)"))
+                });
+                assert!(heard, "the builder was told what the live load reported");
+                let checked = calls.lock().unwrap().clone();
+                assert_eq!(checked.len(), 2, "one live load a round");
+                assert!(checked.iter().all(|c| c["check"] == true && c["app"] == "Scoreboard"), "{checked:?}");
+            })
+        })
+    }
+
+    /// A clean app (its live load passes) ends Verified in one round. The
+    /// checks its app folder's `checks/` declares run too, before the live
+    /// load; nothing in `ui/` is ever one.
+    #[test]
+    fn a_clean_app_ends_verified() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let checks = folder.path().join("checks");
+                std::fs::create_dir_all(&checks).unwrap();
+                std::fs::write(checks.join("Makefile"), "test:\n\tnode score.test.js\n").unwrap();
+                std::fs::write(folder.path().join("ui/Makefile"), "test:\n\tfalse\n").unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p>0</p>"})),
+                    Step::Say("Done."),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("The score shows. Verified."),
+                ]);
+                let (h, _, ran) = app_harness(&model, &folder, vec![Some((true, "Live check of Scoreboard: passed."))]).await;
+                run_turn(&h, owner_of_app("Show the score")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.rounds), ("verified", 1), "{v:?}");
+                assert!(v.message_id.is_some(), "the badge sits on the report");
+                assert_eq!(*ran.lock().unwrap(), [format!("make test in {}", checks.display())], "the app's checks, never ui/");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let labels: Vec<String> = rounds[0].checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap().to_string()).collect();
+                assert_eq!(labels, ["make test", "Live load on a phone and a desktop"]);
+                assert_eq!(rounds[0].detail["checksPlanned"], serde_json::json!(labels), "the sheet shows it planned, then run");
+            })
+        })
+    }
+
+    /// With no browser to load the app in, its live check can't run: the
+    /// work is not verified, and says why.
+    #[test]
+    fn an_app_with_no_browser_to_load_it_in_is_not_verified() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": page, "content": "<h1>Score</h1><p>0</p>"})),
+                    Step::Say("Done."),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("Reviewed, but it could not be checked live."),
+                ]);
+                let (h, _, _) = app_harness(&model, &folder, vec![None]).await;
+                run_turn(&h, owner_of_app("Show the score")).await;
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"live_unavailable"}"#));
+            })
+        })
+    }
+
     /// The owner's answer on the card, as the ask_owner tool returns it.
     struct Answers(&'static str);
 
