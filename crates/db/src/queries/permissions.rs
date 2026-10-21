@@ -787,7 +787,9 @@ impl Store {
             params![wait_id.to_string(), row.sentence, format!("wait:{wait_id}:deadline"), remind_at],
         )
         .map_err(db_err)?;
-        tx.commit().map_err(db_err)
+        tx.commit().map_err(db_err)?;
+        self.timers_changed();
+        Ok(())
     }
 
     pub fn get_permission_ask(&self, id: &str) -> Result<Option<PermissionAskRow>, NeboError> {

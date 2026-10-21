@@ -291,7 +291,8 @@ impl Harness {
                 unit: crate::phone_location::DistanceUnit::for_language(&language),
             }
         });
-        self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp(), office)
+        let zone = tools::owner_clock::OwnerZone::of(&self.store);
+        self.phone_locations.reading_for(agent_id, chrono::Utc::now().timestamp(), office, zone)
     }
 
     /// What a voice call is told about where it runs, from the same sources

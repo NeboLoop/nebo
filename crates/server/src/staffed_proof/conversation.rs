@@ -5305,3 +5305,62 @@ async fn each_run_of_a_playbook_is_a_fresh_project_and_wraps_up_on_its_own() {
         .count();
     assert_eq!(notices, 2, "one done notice per project");
 }
+
+/// A timer asked for in a conversation fires in it (2026-10-20: "in exactly
+/// 60 seconds get the next location and calculate my speed" ran in a thread
+/// of its own, and its answer was only in the Inbox). The scheduled turn
+/// reads the conversation it was asked in, its answer is the employee's next
+/// message there, the request it ran on is never shown as the owner's, the
+/// job's own thread stays empty, and the Inbox item opens that conversation
+/// at that answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timer_asked_for_in_a_conversation_answers_in_it() {
+    let nebo = session().await;
+    const KEY: &str = "agent:assistant:thread:timer-142";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if t.new_text().contains("OWNER-142 ") {
+            return Some(Step::say("First reading: 40.232353, -112.175299."));
+        }
+        // The turn has the conversation it was asked in: the first reading.
+        (t.new_text().contains("MARK-142 read the location again") && t.says("First reading: 40.232353"))
+            .then(|| Step::say("REPORT-142: 68 mph over 64 seconds."))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(KEY, "assistant", None, "OWNER-142 get my GPS now, and in 60 seconds again and work out my speed").await;
+    rig.until(20, "the owner is answered", || {
+        rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content.starts_with("First reading"))
+    })
+    .await;
+
+    let store = nebo.store();
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "").in_run(Some("run-142"), KEY);
+    let job = store
+        .create_cron_job(
+            "speed-142", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-142 read the location again and work out the speed"),
+            None, None, true, Some("assistant"), None, None, &made,
+        )
+        .unwrap();
+    let (ok, _, err) = crate::scheduler::execute_job(&nebo.state, &job, true).await;
+    assert!(ok, "{err:?}");
+
+    let thread = rig.thread(KEY);
+    let answer = thread.iter().rfind(|m| m.role == "assistant").expect("an answer");
+    assert_eq!(answer.content, "REPORT-142: 68 mph over 64 seconds.", "{thread:#?}");
+    let request = thread.iter().find(|m| m.content.contains("MARK-142")).expect("the request");
+    assert!(
+        request.metadata.as_deref().is_some_and(|m| m.contains("hiddenPrompt")),
+        "the request is the platform's, never shown as the owner's: {request:?}"
+    );
+    assert!(rig.thread("agent:assistant:cron:speed-142").is_empty(), "the job's own thread is not used");
+
+    let user = store.ensure_local_user_id().unwrap();
+    let item = store
+        .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+        .unwrap()
+        .into_iter()
+        .find(|n| n.id.starts_with(&format!("schedule:{}:", job.id)))
+        .expect("an Inbox item");
+    let chat = tools::owner_notify::link::conversation(store, KEY);
+    assert_eq!(item.action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)), "it opens the answer");
+    assert_eq!(item.body.as_deref(), Some("REPORT-142: 68 mph over 64 seconds."));
+}

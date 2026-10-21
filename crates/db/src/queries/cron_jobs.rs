@@ -133,6 +133,7 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         let id = conn.last_insert_rowid();
         drop(conn);
+        self.timers_changed();
         self.get_cron_job(id)?
             .ok_or_else(|| NeboError::Database("cron job vanished after insert".into()))
     }
@@ -176,6 +177,7 @@ impl Store {
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        self.timers_changed();
         Ok(())
     }
 
@@ -199,6 +201,7 @@ impl Store {
             params![id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        self.timers_changed();
         Ok(())
     }
 
@@ -209,6 +212,9 @@ impl Store {
             params![id, enabled as i64],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        if enabled {
+            self.timers_changed();
+        }
         Ok(())
     }
 
@@ -223,6 +229,9 @@ impl Store {
                 params![id, old, new],
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        if changed == 1 {
+            self.timers_changed();
+        }
         Ok(changed == 1)
     }
 
@@ -233,6 +242,7 @@ impl Store {
             params![name],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        self.timers_changed();
         Ok(())
     }
 

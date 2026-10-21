@@ -284,6 +284,12 @@ pub mod link {
         format!("/{agent_id}/threads/{}", urlencoding::encode(chat_id))
     }
 
+    /// One message in a conversation: the [`chat`], opened at message
+    /// `message_id` (`?message=`), where an item that points at a reply sits.
+    pub fn message(agent_id: &str, chat_id: &str, message_id: &str) -> String {
+        format!("{}?message={}", chat(agent_id, chat_id), urlencoding::encode(message_id))
+    }
+
     /// The conversation a session is holding now (the session key is its
     /// name), or "" when there is no such session.
     pub fn conversation(store: &db::Store, session_key: &str) -> String {
@@ -414,8 +420,11 @@ mod tests {
         let seen = std::sync::Mutex::new(Vec::new());
         let broadcast = |_: &str, payload: serde_json::Value| seen.lock().unwrap().push(payload);
         let place = link::run("emp", "r1");
+        let reply = link::message("ava", "c:1", "m-1");
         let cases = [
             (OwnerNotification { id: "wf-fail:r1", kind: "error", title: "t", body: None, action_url: Some(&place), agent_id: Some("emp"), loud: false, ..Default::default() }, "/emp/runs/r1"),
+            // A schedule's answer: the conversation it was asked in, at the reply.
+            (OwnerNotification { id: "schedule:3:1", kind: "info", title: "t", body: None, action_url: Some(&reply), agent_id: Some("ava"), loud: true, ..Default::default() }, "/ava/threads/c%3A1?message=m-1"),
             (OwnerNotification { id: "backup-failed:7", kind: "error", title: "t", body: None, action_url: None, agent_id: None, loud: true, ..Default::default() }, "/inbox?m=backup-failed%3A7"),
         ];
         for (n, want) in &cases {

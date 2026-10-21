@@ -289,6 +289,7 @@
   onopenruns={ctx.openRuns}
   composerPrefill={askPrefill}
   onprefilled={clearAsk}
+  focusMessageId={$page.url.searchParams.get('message') ?? ''}
   onback={ctx.openList}
   onsettings={ctx.openSettings}
   memoryMode={ctx.agent?.memoryMode ?? 'single'}

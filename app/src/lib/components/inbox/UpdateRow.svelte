@@ -12,6 +12,7 @@
   import { markAsRead } from '$lib/stores/notifications';
   import { addToast } from '$lib/stores/toast';
   import { formatRelative } from '$lib/time';
+  import { plainText } from '$lib/markdown';
   import { answerItem, cardKindOf, ruleIdOf, undoOf, type InboxItem } from '$lib/inbox/item';
 
   let {
@@ -62,7 +63,7 @@
       <span class="text-sm truncate {n.readAt ? 'font-medium' : 'font-semibold'}">{n.title}</span>
       <span class="text-xs text-base-content/50 font-mono shrink-0 ms-auto">{formatRelative(n.createdAt, 'short')}</span>
     </button>
-    {#if n.body}<p class="text-xs text-base-content/70 mt-0.5">{n.body}</p>{/if}
+    {#if n.body}<p class="text-xs text-base-content/70 mt-0.5">{plainText(n.body)}</p>{/if}
     {#if (n.actionUrl && n.linkLabel) || (handled && why && ruleId) || u || n.status === 'answered'}
       <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
         {#if n.actionUrl && n.linkLabel}

@@ -14,7 +14,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
+use tools::owner_clock::OwnerZone;
 
 /// How long a reading stays good after the phone took it.
 const READING_LIFETIME_SECS: i64 = 600;
@@ -117,9 +119,10 @@ impl PhoneLocations {
     }
 
     /// What `agent_id`'s turn is told at `now`: each good reading shared
-    /// with it, with the owner's distance from the [`Office`] when there is
-    /// one, or `None` when nothing is shared.
-    pub fn reading_for(&self, agent_id: &str, now: i64, office: Option<Office>) -> Option<SharedPosition> {
+    /// with it, stamped with the moment the phone took it on the owner's
+    /// clock (`zone`), with the owner's distance from the [`Office`] when
+    /// there is one, or `None` when nothing is shared.
+    pub fn reading_for(&self, agent_id: &str, now: i64, office: Option<Office>, zone: OwnerZone) -> Option<SharedPosition> {
         let agent_id = recipient(agent_id);
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         entries.retain(|_, (_, expires)| *expires > now);
@@ -134,10 +137,11 @@ impl PhoneLocations {
             .filter_map(|((_, device), r)| {
                 let (lat, lon, accuracy, taken_at) = (r.latitude?, r.longitude?, r.accuracy_metres?, r.taken_at?);
                 let mut line = format!(
-                    "The owner's phone is at {lat:.6}, {lon:.6}, accurate to about {accuracy:.0} m, read {} seconds ago. \
+                    "The owner's phone is at {lat:.6}, {lon:.6}, accurate to about {accuracy:.0} m, {}. \
+                     The time between two readings is the difference of their read times. \
                      This is a location reading, not a route or an arrival estimate: an ETA needs a destination and \
                      routing. Location access does not authorize contacting anyone.",
-                    (now - taken_at).max(0)
+                    read_at(taken_at, now, zone)
                 );
                 if let Some(office) = office {
                     line.push(' ');
@@ -242,6 +246,23 @@ pub struct SharedPosition {
     pub taken: String,
 }
 
+/// When a reading was taken, to the second, on the owner's clock, and how
+/// long before `now`: "read at 5:47:12 PM MDT on October 20, 2026 (1 second
+/// ago)". The row it is told in is kept, so the clock time is what stays
+/// true; the age is as of the step that told it.
+fn read_at(taken_at: i64, now: i64, zone: OwnerZone) -> String {
+    let age = (now - taken_at).max(0);
+    let ago = format!("{age} second{} ago", if age == 1 { "" } else { "s" });
+    let Some(at) = zone.timestamp_opt(taken_at, 0).single() else {
+        return format!("read {ago}");
+    };
+    let clock = match zone {
+        OwnerZone::Iana(_) => at.format("%-I:%M:%S %p %Z on %B %-d, %Y"),
+        OwnerZone::Machine => at.format("%-I:%M:%S %p (UTC%:z) on %B %-d, %Y"),
+    };
+    format!("read at {clock} ({ago})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,13 +280,31 @@ mod tests {
         }
     }
 
+    /// A reading tells the moment the phone took it, to the second, on the
+    /// owner's clock, and how long ago that was: two readings a minute and
+    /// some seconds apart are timed by their read times, never assumed.
+    #[test]
+    fn a_reading_carries_the_moment_it_was_taken_on_the_owners_clock() {
+        let l = PhoneLocations::default();
+        // 2026-10-20 23:47:12 UTC is 5:47:12 PM in Denver (MDT, UTC-6).
+        let taken = 1_792_540_032;
+        l.update(PhoneReading { taken_at: Some(taken), ..reading() }, taken).unwrap();
+        let denver = OwnerZone::parse(Some("America/Denver"));
+        let text = l.reading_for("dispatch", taken + 1, None, denver).unwrap().text;
+        assert!(text.contains("read at 5:47:12 PM MDT on October 20, 2026 (1 second ago)"), "{text}");
+        let later = l.reading_for("dispatch", taken + 64, None, denver).unwrap().text;
+        assert!(later.contains("read at 5:47:12 PM MDT on October 20, 2026 (64 seconds ago)"), "{later}");
+        let machine = l.reading_for("dispatch", taken, None, OwnerZone::Machine).unwrap().text;
+        assert!(machine.contains(" (UTC") && machine.contains("(0 seconds ago)"), "{machine}");
+    }
+
     #[test]
     fn shared_only_with_its_employees_revoked_and_expired() {
         let l = PhoneLocations::default();
         l.update(reading(), 1000).unwrap();
-        assert!(l.reading_for("other", 1001, None).is_none());
+        assert!(l.reading_for("other", 1001, None, OwnerZone::Machine).is_none());
         assert!(
-            l.reading_for("dispatch", 1001, None)
+            l.reading_for("dispatch", 1001, None, OwnerZone::Machine)
                 .unwrap()
                 .text
                 .contains("40.000000, -111.000000")
@@ -274,17 +313,17 @@ mod tests {
         revoked.agent_ids.clear();
         revoked.revision = 2;
         l.update(revoked, 1002).unwrap();
-        assert!(l.reading_for("dispatch", 1002, None).is_none());
+        assert!(l.reading_for("dispatch", 1002, None, OwnerZone::Machine).is_none());
         l.update(reading(), 1003).unwrap();
         assert!(
-            l.reading_for("dispatch", 1003, None).is_none(),
+            l.reading_for("dispatch", 1003, None, OwnerZone::Machine).is_none(),
             "an older update never shares again"
         );
         let mut newer = reading();
         newer.revision = 3;
         l.update(newer, 1004).unwrap();
-        assert!(l.reading_for("dispatch", 1004, None).is_some());
-        assert!(l.reading_for("dispatch", 1600, None).is_none(), "expired");
+        assert!(l.reading_for("dispatch", 1004, None, OwnerZone::Machine).is_some());
+        assert!(l.reading_for("dispatch", 1600, None, OwnerZone::Machine).is_none(), "expired");
     }
 
     #[test]
@@ -299,8 +338,8 @@ mod tests {
         replaced.revision = 2;
         replaced.agent_ids = vec!["other".into()];
         l.update(replaced, 1001).unwrap();
-        assert!(l.reading_for("dispatch", 1001, None).is_none());
-        assert!(l.reading_for("other", 1001, None).is_some());
+        assert!(l.reading_for("dispatch", 1001, None, OwnerZone::Machine).is_none());
+        assert!(l.reading_for("other", 1001, None, OwnerZone::Machine).is_some());
     }
 
     #[test]
@@ -309,7 +348,7 @@ mod tests {
         let mut primary = reading();
         primary.agent_ids = vec!["assistant".into()];
         l.update(primary, 1000).unwrap();
-        assert!(l.reading_for("", 1000, None).is_some());
+        assert!(l.reading_for("", 1000, None, OwnerZone::Machine).is_some());
     }
 
     /// The haversine distance against a known pair: JFK to LAX is 3,974 km
@@ -351,13 +390,13 @@ mod tests {
         let l = PhoneLocations::default();
         l.update(reading(), 1000).unwrap();
         let office = Office { latitude: 40.1, longitude: -111.0, unit: DistanceUnit::Miles };
-        let with = l.reading_for("dispatch", 1001, Some(office)).unwrap();
+        let with = l.reading_for("dispatch", 1001, Some(office), OwnerZone::Machine).unwrap();
         assert!(with.text.ends_with("The owner is about 6.9 miles from the office (straight line)."), "{}", with.text);
-        let without = l.reading_for("dispatch", 1001, None).unwrap();
+        let without = l.reading_for("dispatch", 1001, None, OwnerZone::Machine).unwrap();
         assert!(!without.text.contains("from the office"), "{}", without.text);
         assert_ne!(with.taken, without.taken);
-        let moved = l.reading_for("dispatch", 1001, Some(Office { latitude: 40.2, ..office })).unwrap();
+        let moved = l.reading_for("dispatch", 1001, Some(Office { latitude: 40.2, ..office }), OwnerZone::Machine).unwrap();
         assert_ne!(moved.taken, with.taken, "a moved office is told again");
-        assert!(l.reading_for("other", 1001, Some(office)).is_none(), "no reading shared, no distance");
+        assert!(l.reading_for("other", 1001, Some(office), OwnerZone::Machine).is_none(), "no reading shared, no distance");
     }
 }

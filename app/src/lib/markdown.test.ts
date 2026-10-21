@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMarkdown } from './markdown';
+import { parseMarkdown, plainText } from './markdown';
 
 describe('parseMarkdown', () => {
 	// A link in a reply points off the app. Same-tab navigation throws the
@@ -99,5 +99,34 @@ describe('parseMarkdown', () => {
 	it('keeps gfm and breaks enabled', () => {
 		expect(parseMarkdown('one\ntwo')).toContain('<br>');
 		expect(parseMarkdown('~~gone~~')).toContain('<del>');
+	});
+});
+
+describe('plainText', () => {
+	// Live 2026-10-20: the Inbox row for a timer read "**Two points:**".
+	it('reads a reply as its words, never its markup', () => {
+		const reply = [
+			'Here are the results:',
+			'',
+			'**Two points:**',
+			'- Point 1 (5:46 PM MDT): `40.232353, -112.175299`',
+			'- Point 2 (5:47 PM MDT): 40.235557, -112.198280',
+			'',
+			'## Speed',
+			'About *68 mph* — see [the map](https://example.com/map).'
+		].join('\n');
+		expect(plainText(reply)).toBe(
+			'Here are the results: Two points: Point 1 (5:46 PM MDT): 40.232353, -112.175299 Point 2 (5:47 PM MDT): 40.235557, -112.198280 Speed About 68 mph — see the map.'
+		);
+	});
+
+	it('leaves plain words as they are', () => {
+		expect(plainText('Ava went ahead under your rule, without asking you.')).toBe('Ava went ahead under your rule, without asking you.');
+		expect(plainText('')).toBe('');
+	});
+
+	it('keeps words joined where markup sat inside them', () => {
+		expect(plainText('re**book**ed and > quoted')).toBe('rebooked and > quoted');
+		expect(plainText('> a quote\n\n1. one\n2. two')).toBe('a quote one two');
 	});
 });

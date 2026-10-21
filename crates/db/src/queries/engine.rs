@@ -387,6 +387,9 @@ impl Store {
                 ],
             )
             .db_err("engine_enqueue_event")?;
+        if inserted == 1 && e.due_at.is_some() {
+            self.timers_changed();
+        }
         Ok(if inserted == 1 { Enqueued::Inserted(conn.last_insert_rowid()) } else { Enqueued::Duplicate })
     }
 
@@ -1318,6 +1321,9 @@ impl Store {
             .db_err("engine_declare_wait timer")?;
         }
         tx.commit().db_err("engine_declare_wait commit")?;
+        if w.deadline.is_some() {
+            self.timers_changed();
+        }
         Ok(wait_id)
     }
 

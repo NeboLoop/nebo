@@ -796,6 +796,12 @@
 	overflow-anchor: none;
 }
 
+/* The reply an Inbox item opened the conversation at (`?message=`): marked
+   with a quiet edge so the eye lands on it. */
+.chat-turn-focus {
+	@apply border-l-2 border-primary/60 pl-3;
+}
+
 /* Helpers still working after the turn that started them ended: one quiet
    line under the thread, never text in it. */
 .helper-status {

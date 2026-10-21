@@ -1,6 +1,8 @@
 //! The ONE loop for durable work (design of record: "One Engine for Durable
-//! Work", 2026-09-06). Every tick, in this order — earlier steps produce
-//! what later steps consume:
+//! Work", 2026-09-06). A tick runs when the earliest timer comes due (to the
+//! second), when a timer is made or moved sooner, and otherwise every
+//! `TICK` for work that has no due moment. Every tick, in this order —
+//! earlier steps produce what later steps consume:
 //!
 //! 1. claim deliverable events under a lease (timers that came due, signals,
 //!    approvals);
@@ -54,6 +56,8 @@ use db::{EngineEvent, EngineRun, NewEvent, Store};
 use tools::workflows::WorkflowManager;
 use workflow::cases::{needs_attention, parse_turn, settle_turn, start_child};
 
+/// The longest the loop sleeps: the pace for work with no due moment
+/// (signals, queued turns, leases running out). A timer never waits for it.
 const TICK: Duration = Duration::from_secs(5);
 const CLAIM_BATCH: i64 = 50;
 /// Delivered transient events live this long, matching the task TTL today.
@@ -2148,17 +2152,49 @@ pub fn suspend_for_shutdown(store: &Store) {
     }
 }
 
-/// The loop. Boot sweep first, then a tick every five seconds until a
-/// shutdown drain begins. From then on no schedule is armed and no event is
-/// claimed or delivered: whatever is due waits in the table for the next boot.
+/// How long the loop sleeps before its next tick: until the earliest timer
+/// is due (`due`, unix seconds), never longer than [`TICK`]. A timer already
+/// due and still pending is under a delivery lease; the tick that took it
+/// owns it, so it is not a reason to spin.
+fn until_next_tick(due: Option<i64>, now_ms: i64) -> Duration {
+    match due.map(|d| d.saturating_mul(1000) - now_ms) {
+        Some(ms) if ms > 0 => Duration::from_millis(ms as u64).min(TICK),
+        _ => TICK,
+    }
+}
+
+/// Sleep until the next tick: the earliest timer's due moment, a timer
+/// made or moved sooner (`wake`, rung by the store), or [`TICK`].
+async fn next_tick(store: &Store, wake: &tokio::sync::Notify) {
+    let due = store.engine_next_timer_due().unwrap_or_else(|e| {
+        warn!(error = %e, "engine: could not read the next timer; ticking at the usual pace");
+        None
+    });
+    let wait = until_next_tick(due, chrono::Utc::now().timestamp_millis());
+    tokio::select! {
+        _ = tokio::time::sleep(wait) => {}
+        _ = wake.notified() => {}
+    }
+}
+
+/// The loop. Boot sweep first, then a tick whenever a timer comes due, a
+/// timer is made or moved sooner, or [`TICK`] passes, until a shutdown drain
+/// begins. From then on no schedule is armed and no event is claimed or
+/// delivered: whatever is due waits in the table for the next boot.
 pub fn spawn(state: AppState) {
     let store: Arc<Store> = state.store.clone();
+    let wake = Arc::new(tokio::sync::Notify::new());
+    {
+        let wake = wake.clone();
+        store.on_timers_changed(move || wake.notify_one());
+    }
     tokio::spawn(async move {
         recover(&store);
         retire_finished_schedules(&store, now());
-        let mut interval = tokio::time::interval(TICK);
+        // The first tick runs at once.
+        wake.notify_one();
         loop {
-            interval.tick().await;
+            next_tick(&store, &wake).await;
             if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
                 info!("engine: draining — loop stopped");
                 return;
@@ -2713,6 +2749,50 @@ mod tests {
         // Weekdays-at-7 skips the weekend: Friday's run → Monday.
         assert_eq!(next_occurrence("0 0 7 * * Mon-Fri", local(2026, 8, 21, 7, 0, 30), OwnerZone::Machine).unwrap(), Some(local(2026, 8, 24, 7, 0, 0)));
         assert!(next_occurrence("not a cron", 0, OwnerZone::Machine).is_err());
+    }
+
+    /// A one-shot fires on its second. The loop sleeps until the earliest
+    /// timer is due, and a schedule made while it sleeps out a whole TICK
+    /// wakes it to arm the new timer: due two seconds after it was made, it
+    /// fires within a second of its moment (it was up to five late).
+    #[tokio::test]
+    async fn a_one_shot_fires_within_a_second_of_its_time() {
+        let s = Arc::new(store());
+        let wake = Arc::new(tokio::sync::Notify::new());
+        {
+            let wake = wake.clone();
+            s.on_timers_changed(move || wake.notify_one());
+        }
+        let looping = {
+            let (s, wake) = (s.clone(), wake.clone());
+            tokio::spawn(async move {
+                loop {
+                    next_tick(&s, &wake).await;
+                    if tick(&s, now(), &idle, &no_steer).fired > 0 {
+                        return chrono::Utc::now().timestamp_millis();
+                    }
+                }
+            })
+        };
+        // The loop is asleep with nothing scheduled.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let due = now() + 2;
+        let schedule = Local.timestamp_opt(due, 0).unwrap().format("%-S %-M %-H %-d %-m * %Y").to_string();
+        let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Owner, "");
+        s.create_cron_job("timer", &schedule, "", "agent", Some("Read the location again."), None, None, true, None, None, None, &made).unwrap();
+        let fired = tokio::time::timeout(Duration::from_secs(10), looping).await.expect("it fired").unwrap();
+        let late = fired - due * 1000;
+        assert!((0..1000).contains(&late), "fired {late} ms after its moment");
+    }
+
+    /// The loop's sleep: until the earliest timer, never past TICK, and a
+    /// timer already due (leased to the tick that took it) is no reason to spin.
+    #[test]
+    fn the_loop_sleeps_until_the_earliest_timer_and_never_past_its_tick() {
+        assert_eq!(until_next_tick(Some(10), 8_250), Duration::from_millis(1_750));
+        assert_eq!(until_next_tick(Some(100), 8_000), TICK);
+        assert_eq!(until_next_tick(Some(8), 8_250), TICK);
+        assert_eq!(until_next_tick(None, 8_000), TICK);
     }
 
     /// The owner's zone is the clock a schedule runs on: "09:00 daily" for
