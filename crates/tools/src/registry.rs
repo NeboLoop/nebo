@@ -90,6 +90,11 @@ pub struct ToolResult {
     /// `content`'s words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<types::OwnerNeed>,
+    /// On a terminal result: a decision only the owner can make, asked from
+    /// a helper. The turn ends and the question goes back to the
+    /// conversation that started the helper (`ask_owner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<types::OwnerQuestion>,
     /// The call was refused because running work holds the owner's balance,
     /// before anything in it was served: [`Registry::execute`] gives the
     /// call's slot back, waits as asked and runs it again. Set by the tool
@@ -1519,7 +1524,7 @@ impl Registry {
         let families = [
             crate::memory_tools::Memory::new(store.clone(), hybrid_searcher, memory_embedder).tools(),
             crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone(), teams.clone(), self.coworker_rail.clone()).tools(),
-            crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
+            crate::task_tools::Tasks::new(store.clone(), run_querier, orchestrator.clone()).tools(),
             crate::history_tools::History::new(store.clone()).tools(),
             vec![Box::new(crate::step_data::ReadStepDataTool::new(store.clone())) as Box<dyn DynTool>],
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
@@ -3077,8 +3082,19 @@ pub(crate) mod tests {
     /// "Want this every morning?" sat far from the brief it meant and was
     /// asked twice; ask_owner's `context` puts what he decides on above the
     /// question, and the card is the one place the question appears
-    /// (ask_owner 1,353, +373): 18,167.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_167;
+    /// (ask_owner 1,353, +373): 18,167. The owner, 2026-10-19: the
+    /// conversation and its helpers split every kind of work one way, so
+    /// delegate says what the conversation keeps, what a brief names, that a
+    /// helper's question comes back, with examples beyond code, and takes a
+    /// `report_limit` below the 30,000-character ceiling a report comes back
+    /// in full under (delegate 2,930, +170); ask_owner says a helper's
+    /// question ends its turn and goes to the conversation that started it
+    /// (ask_owner 1,477, +124): 18,461. 2026-10-20: the owner's decision on a
+    /// helper's question goes back in send_message's `answer`, the one
+    /// thing that settles it (send_message 1,527, +186; delegate +11):
+    /// 18,658. 2026-10-20: an answer names the question it settles
+    /// (send_message `question`, 1,646, +119): 18,777.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_777;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

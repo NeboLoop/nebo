@@ -13,6 +13,12 @@ fn query_i64(path: &Path, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap()
 }
 
+/// Whether a database has a table yet. A source from before the company
+/// tables existed holds none of their rows, which is the true count.
+fn has_table(path: &Path, table: &str) -> bool {
+    query_i64(path, &format!("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{table}'")) > 0
+}
+
 /// Whether a table has a column yet. The synthetic source starts at 0152,
 /// before the staffing columns exist, and a column that is not there holds
 /// nothing — which is the true count, not a swallowed error.
@@ -109,6 +115,14 @@ fn migrations_run_forward_on_a_real_database() {
         } else {
             0
         };
+        // The company's own rows a machine already holds (a policy, counted
+        // operations, assignments): migrating keeps them as they were and
+        // invents none. A table not there yet holds none.
+        let company_tables = ["company_policy", "operation_counters", "assignments"];
+        let company_before: Vec<i64> = company_tables
+            .iter()
+            .map(|t| if has_table(path, t) { query_i64(path, &format!("SELECT COUNT(*) FROM {t}")) } else { 0 })
+            .collect();
         assert!(agents_before > 0, "{label}: a database with employees on it");
 
         // The migrator: opening the store runs every pending migration.
@@ -143,10 +157,10 @@ fn migrations_run_forward_on_a_real_database() {
             .count() as i64;
         assert_eq!(locked_rows, locked_before, "{label}: the model reads back what the table holds");
         assert_eq!(reporting_rows, reporting_before, "{label}: the model reads back what the table holds");
-        // The new tables exist and are empty of anything invented.
-        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM company_policy"), 0, "{label}");
-        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM operation_counters"), 0, "{label}");
-        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM assignments"), 0, "{label}");
+        // The new tables exist and hold only what the machine already had.
+        for (table, before) in company_tables.iter().zip(&company_before) {
+            assert_eq!(query_i64(path, &format!("SELECT COUNT(*) FROM {table}")), *before, "{label}: {table} kept as it was");
+        }
         assert_eq!(query_i64(path, "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'context_section'"), 0, "{label}: 0156 dropped the column");
         assert_eq!(query_i64(path, "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name IN ('context_stamp', 'reports_to', 'department_locked')"), 3, "{label}");
         drop(store);

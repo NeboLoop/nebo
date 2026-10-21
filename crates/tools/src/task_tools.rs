@@ -1,7 +1,8 @@
 //! Work items and runs: `create_task`, `update_task`, `get_task`,
 //! `list_tasks` track the steps of a long job in this conversation;
 //! `assign_task` and `list_assignments` hand work to another employee as
-//! their own; `list_runs` shows the work running now.
+//! their own; `list_runs` shows the work running now, with every helper and
+//! research run this conversation started, at any depth.
 
 use std::sync::Arc;
 
@@ -24,11 +25,12 @@ const SKIPPED: &str = "skipped";
 pub struct Tasks {
     store: Arc<Store>,
     runs: RunQuerierHandle,
+    helpers: crate::OrchestratorHandle,
 }
 
 impl Tasks {
-    pub fn new(store: Arc<Store>, runs: RunQuerierHandle) -> Self {
-        Self { store, runs }
+    pub fn new(store: Arc<Store>, runs: RunQuerierHandle, helpers: crate::OrchestratorHandle) -> Self {
+        Self { store, runs, helpers }
     }
 
     pub fn tools(self) -> Vec<Box<dyn DynTool>> {
@@ -323,9 +325,21 @@ impl Tasks {
                 "The run registry is not ready. Retry once after 5 seconds; if it fails again, do not retry.",
             );
         };
+        // Everything this conversation started, at any depth: its helpers,
+        // theirs and their research runs. stop_task stops any of them with
+        // everything under it.
+        let started = match self.helpers.get() {
+            Some(orch) => orch.list_active(&ctx.session_key).await,
+            None => Vec::new(),
+        };
+        let started_lines: Vec<String> =
+            started.iter().map(|(id, description, status)| format!("- [{id}] {description} · {status}")).collect();
         let runs = querier.list_runs(&caller_entity(ctx)).await;
-        if runs.is_empty() {
+        if runs.is_empty() && started.is_empty() {
             return ToolResult::ok("No runs are active.");
+        }
+        if runs.is_empty() {
+            return ToolResult::ok(format!("Started from this conversation:\n{}", started_lines.join("\n")));
         }
         let lines: Vec<String> = runs
             .iter()
@@ -341,7 +355,11 @@ impl Tasks {
                 )
             })
             .collect();
-        ToolResult::ok(format!("{} active runs:\n{}", runs.len(), lines.join("\n")))
+        let mut out = format!("{} active runs:\n{}", runs.len(), lines.join("\n"));
+        if !started_lines.is_empty() {
+            out.push_str(&format!("\n\nStarted from this conversation:\n{}", started_lines.join("\n")));
+        }
+        ToolResult::ok(out)
     }
 }
 
@@ -413,7 +431,7 @@ impl DynTool for TaskTool {
                  - `done_means` says what finished looks like; `due` is a date."
                 .to_string(),
             TaskOp::Assignments => "Lists your open assignments, given and received. `all: true` includes closed ones.".to_string(),
-            TaskOp::Runs => "Lists the work running now: employee runs, their origin, tool calls and elapsed time. Stop one with stop_task.".to_string(),
+            TaskOp::Runs => "Lists the work running now: employee runs, their origin, tool calls and elapsed time, and every helper and research run this conversation started, at any depth. Stop one with stop_task: everything under it stops too.".to_string(),
         }
     }
 
@@ -558,7 +576,7 @@ mod tests {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let store = Arc::new(Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
-            let tools = Tasks::new(store.clone(), crate::run_querier::new_handle()).tools();
+            let tools = Tasks::new(store.clone(), crate::run_querier::new_handle(), crate::orchestrator::new_handle()).tools();
             Self {
                 tools,
                 store,

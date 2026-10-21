@@ -1159,6 +1159,14 @@ export interface OutcomeCount {
 	costMicrocents: number
 }
 
+export interface OwnerQuestion {
+	question: string
+	context?: string
+	options?: string[]
+	multi_select?: boolean
+	style?: string
+}
+
 export interface Pack {
 	id: string
 	name: string

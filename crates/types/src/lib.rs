@@ -18,4 +18,4 @@ pub mod strutil;
 pub mod timeutil;
 
 pub use error::NeboError;
-pub use owner_need::OwnerNeed;
+pub use owner_need::{OwnerNeed, OwnerQuestion};
