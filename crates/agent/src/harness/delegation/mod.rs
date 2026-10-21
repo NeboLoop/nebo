@@ -1881,7 +1881,7 @@ impl Helpers {
                          if it asked one) and land them once it has finished, or discard them."
                     ));
                 }
-                crate::worktree::git_notice(&self.store).await;
+                crate::worktree::git_notice(&self.store, std::path::Path::new("git")).await;
                 let mut iso = crate::worktree::reattach(held.iso).await.map_err(|e| format!("Helper {task_id}'s changes can't be landed: {e}"))?;
                 let message = landing_message(&description);
                 let (_, outcome) = crate::worktree::land_one(&mut iso, &message, retest, &landing).await;
@@ -2255,7 +2255,7 @@ async fn isolate(
     project: Option<std::path::PathBuf>,
 ) -> Result<crate::worktree::Isolation, String> {
     // Code work begins: the owner hears once if git can't do it.
-    crate::worktree::git_notice(store).await;
+    crate::worktree::git_notice(store, std::path::Path::new("git")).await;
     let workspace = match (project, parent.cwd.as_deref()) {
         (Some(project), _) => project,
         (None, Some(cwd)) => std::path::PathBuf::from(cwd),
