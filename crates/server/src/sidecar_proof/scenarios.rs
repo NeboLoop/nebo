@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use napp::supervisor::{RestartPolicy, SidecarState};
-use napp::test_sidecar;
+use napp::test_sidecar::{self, TestApp};
 
 use super::{World, quick};
 
@@ -13,7 +13,7 @@ use super::{World, quick};
 /// within seconds — no Nebo restart, no "isn't running".
 #[tokio::test]
 async fn a_killed_sidecar_serves_the_next_request_within_seconds() {
-    let w = World::new("sc-killed", quick(), |_| {}).await;
+    let w = World::new(TestApp::new("sc-killed"), quick(), |_| {}).await;
     assert_eq!(w.get("me").await.expect("served"), "GET me");
     let first = w.pid();
     test_sidecar::kill(first);
@@ -25,20 +25,20 @@ async fn a_killed_sidecar_serves_the_next_request_within_seconds() {
     w.lifecycle.shutdown().await;
 }
 
-/// The owner's report, "isn't running" until Nebo restarts: a process behind
-/// a leftover socket file that refuses every connection. The request that
-/// cannot reach it revives it through the supervisor and is answered —
-/// nothing keys on the socket file existing.
+/// The owner's report, "isn't running" until Nebo restarts: a live process
+/// that refuses every connection. The request that cannot reach it revives
+/// it through the supervisor and is answered.
 #[tokio::test]
-async fn a_stale_socket_and_a_dead_listener_are_served_by_relaunching() {
+async fn a_live_process_that_stopped_listening_is_served_by_relaunching() {
     // The probe far away, so it is the request that finds it.
     let policy = RestartPolicy { probe_every: Duration::from_secs(3600), ..quick() };
-    let w = World::new("sc-stale", policy, |app| app.set_mode("deaf")).await;
-    let first = match w.lifecycle.settled(Duration::from_secs(20)).await {
-        SidecarState::Running(l) => l.pid,
+    let w = World::new(TestApp::new("sc-stale"), policy, |app| app.set_mode("deaf")).await;
+    let deaf = match w.lifecycle.settled(Duration::from_secs(20)).await {
+        SidecarState::Running(l) => l,
         other => panic!("expected running, got {other:?}"),
     };
-    assert!(w.app.sock_path().exists(), "the socket file is there");
+    let first = deaf.pid;
+    assert!(tokio::net::TcpStream::connect(deaf.addr).await.is_err(), "the process is alive and refuses");
     w.app.set_mode("serve");
     assert_eq!(w.get("me").await.expect("served by the relaunched one"), "GET me");
     assert_ne!(w.pid(), first);
@@ -51,7 +51,7 @@ async fn a_stale_socket_and_a_dead_listener_are_served_by_relaunching() {
 /// again" brings it back once it is fixed.
 #[tokio::test]
 async fn a_crash_loop_ends_failed_with_its_reason() {
-    let w = World::new("sc-crashy", quick(), |app| app.set_mode("exit 3")).await;
+    let w = World::new(TestApp::new("sc-crashy"), quick(), |app| app.set_mode("exit 3")).await;
     w.until(20, |s| matches!(s, SidecarState::Failed { .. })).await;
     let unavailable = w.get("me").await.expect_err("not served while failed");
     let shown = unavailable.message("Crashy");
@@ -73,7 +73,7 @@ async fn a_crash_loop_ends_failed_with_its_reason() {
 /// is back.
 #[tokio::test]
 async fn a_boot_failure_recovers_when_the_program_appears() {
-    let w = World::new("sc-absent", quick(), |app| app.remove_binary()).await;
+    let w = World::new(TestApp::new("sc-absent"), quick(), |app| app.remove_binary()).await;
     let SidecarState::Failed { permanent, .. } = w.lifecycle.settled(Duration::from_secs(20)).await else {
         panic!("expected failed: {:?}", w.lifecycle.state());
     };
@@ -92,7 +92,7 @@ async fn a_boot_failure_recovers_when_the_program_appears() {
 /// the process is gone and nothing relaunches it.
 #[tokio::test]
 async fn a_clean_shutdown_is_not_a_crash() {
-    let w = World::new("sc-clean", quick(), |_| {}).await;
+    let w = World::new(TestApp::new("sc-clean"), quick(), |_| {}).await;
     assert_eq!(w.get("me").await.expect("served"), "GET me");
     let pid = w.pid();
     let mut events = w.hub.subscribe();
@@ -114,10 +114,56 @@ async fn a_clean_shutdown_is_not_a_crash() {
 /// `user/agents/` used to share. Its `sidecar.log` is there too.
 #[tokio::test]
 async fn each_app_keeps_its_data_in_its_own_folder() {
-    let w = World::new("sc-own-data", quick(), |_| {}).await;
+    let w = World::new(TestApp::new("sc-own-data"), quick(), |_| {}).await;
     assert_eq!(w.get("me").await.expect("served"), "GET me");
     let own = w.app.home.join("appdata/agents/sc-own-data");
     assert!(own.join("sidecar.log").is_file(), "the sidecar's log is in {}", own.display());
     assert!(!w.app.home.join("appdata/plugins/agents").exists(), "nothing in the old shared folder");
+    w.lifecycle.shutdown().await;
+}
+
+/// The bug that kept apps made on a Mac from starting: the sidecar listened
+/// on a socket file in the app's folder, and macOS caps a socket path at 103
+/// bytes. An app folder as deep as a real one (Media Studio's put its socket
+/// at 115) serves like any other, because nothing is placed in the folder.
+#[tokio::test]
+async fn a_long_app_folder_path_still_serves() {
+    let parent = std::path::Path::new("Library/Application Support/Nebo/user/agents/A long app name like the ones people pick");
+    let app = TestApp::at_depth("5d79d5b9-ee5d-4830-a9f1-948b1c215748", parent);
+    assert!(app.tool_dir.as_os_str().len() > 160, "{}", app.tool_dir.display());
+    let w = World::new(app, quick(), |_| {}).await;
+    assert_eq!(w.get("me").await.expect("served"), "GET me");
+    let SidecarState::Running(l) = w.lifecycle.state() else { panic!("expected running") };
+    assert!(l.addr.ip().is_loopback(), "listens on loopback only: {}", l.addr);
+    w.lifecycle.shutdown().await;
+}
+
+/// Nothing listens unauthenticated: a call to the sidecar's address that does
+/// not carry this launch's token, or carries another, is refused. Nebo's own
+/// calls carry it and are answered.
+#[tokio::test]
+async fn a_call_without_the_token_is_refused() {
+    let w = World::new(TestApp::new("sc-token"), quick(), |_| {}).await;
+    assert_eq!(w.get("me").await.expect("Nebo's call carries the token"), "GET me");
+    let SidecarState::Running(l) = w.lifecycle.state() else { panic!("expected running") };
+    let call = |bearer: Option<&str>| {
+        let addr = l.addr;
+        let bearer = bearer.map(str::to_string);
+        async move {
+            let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}")).unwrap().connect_lazy();
+            let mut client = proto::ui_service_client::UiServiceClient::new(channel);
+            let mut req = tonic::Request::new(proto::HttpRequest { method: "GET".into(), path: "me".into(), ..Default::default() });
+            if let Some(b) = bearer {
+                req.metadata_mut().insert("authorization", b.parse().unwrap());
+            }
+            client.handle_request(req).await
+        }
+    };
+    let none = call(None).await.expect_err("no token: refused");
+    assert_eq!(none.code(), tonic::Code::Unauthenticated, "{none:?}");
+    let wrong = call(Some("Bearer 00")).await.expect_err("another token: refused");
+    assert_eq!(wrong.code(), tonic::Code::Unauthenticated, "{wrong:?}");
+    let right = call(Some(&format!("Bearer {}", l.app_token))).await.expect("this launch's token");
+    assert_eq!(right.into_inner().status_code, 200);
     w.lifecycle.shutdown().await;
 }

@@ -6195,7 +6195,6 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
- "hyper-util",
  "json5 0.4.1",
  "jsonwebtoken",
  "libc",

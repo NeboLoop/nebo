@@ -4,6 +4,7 @@
 //! directory under a throwaway Nebo root. Nothing here touches the real data
 //! directory.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -31,7 +32,8 @@ pub fn binary() -> &'static Path {
 }
 
 /// One app with the fixture as its sidecar, in its own temp tree:
-/// `<root>/home` is the Nebo root, `<root>/agents/<id>` the app directory.
+/// `<root>/home` is the Nebo root, `<root>/agents/<id>` the app directory
+/// (or a deeper one, [`TestApp::at_depth`]).
 pub struct TestApp {
     _root: tempfile::TempDir,
     pub id: String,
@@ -41,9 +43,15 @@ pub struct TestApp {
 
 impl TestApp {
     pub fn new(id: &str) -> Self {
+        Self::at_depth(id, Path::new("agents"))
+    }
+
+    /// An app whose folder is `<root>/<parent>/<id>`: a long `parent` gives
+    /// the app a folder path as long as a real one can be.
+    pub fn at_depth(id: &str, parent: &Path) -> Self {
         let root = tempfile::tempdir().expect("temp root");
         let home = root.path().join("home");
-        let tool_dir = root.path().join("agents").join(id);
+        let tool_dir = root.path().join(parent).join(id);
         std::fs::create_dir_all(&home).expect("home");
         std::fs::create_dir_all(tool_dir.join("bin")).expect("app dir");
         std::fs::write(
@@ -82,10 +90,9 @@ impl TestApp {
         std::fs::write(self.tool_dir.join("fixture-mode"), mode).expect("fixture-mode");
     }
 
-    /// Relay every accepted connection to this socket.
-    pub fn set_upstream(&self, sock: &Path) {
-        std::fs::write(self.tool_dir.join("fixture-upstream"), sock.to_string_lossy().as_bytes())
-            .expect("fixture-upstream");
+    /// Relay every accepted connection to this address.
+    pub fn set_upstream(&self, addr: SocketAddr) {
+        std::fs::write(self.tool_dir.join("fixture-upstream"), addr.to_string()).expect("fixture-upstream");
     }
 
     /// How many times the program has started.
@@ -93,10 +100,6 @@ impl TestApp {
         std::fs::read_to_string(self.tool_dir.join("fixture-launches"))
             .map(|s| s.lines().count())
             .unwrap_or(0)
-    }
-
-    pub fn sock_path(&self) -> PathBuf {
-        self.tool_dir.join(format!("{}.sock", self.id))
     }
 }
 

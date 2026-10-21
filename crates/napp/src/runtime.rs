@@ -1,12 +1,24 @@
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::process::Command;
+use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use crate::NappError;
 use crate::manifest::Manifest;
 use crate::sandbox;
+
+/// The line a sidecar prints on its stdout once it is listening, followed by
+/// the loopback address it bound: `nebo-app-listening 127.0.0.1:54321`.
+///
+/// The transport, on every OS: the sidecar binds `127.0.0.1:0` (the OS picks
+/// a free port, so no other process can be waiting on it), serves gRPC there,
+/// and refuses every call that does not carry `authorization: Bearer
+/// <NEBO_APP_TOKEN>`. Nebo reads the address from this line, connects only to
+/// a loopback address, and sends the token on every call.
+pub const LISTENING: &str = "nebo-app-listening ";
 
 /// A running tool process. Owned by its [`crate::supervisor::Supervisor`],
 /// which is the only thing that launches, watches and restarts one.
@@ -14,12 +26,17 @@ pub struct Process {
     pub tool_id: String,
     pub manifest: Manifest,
     pub pid: u32,
-    pub sock_path: PathBuf,
+    /// The loopback address it serves on, as it announced ([`LISTENING`]).
+    pub addr: SocketAddr,
     pub binary_path: PathBuf,
     /// Where the process's stdout and stderr go (`$NEBO_DATA_DIR/sidecar.log`).
     pub log_path: PathBuf,
-    /// Per-launch auth token passed as NEBO_APP_TOKEN env var.
+    /// Per-launch token, passed as NEBO_APP_TOKEN: the sidecar authenticates
+    /// to Nebo's API with it, and Nebo authenticates to the sidecar with it.
     pub app_token: String,
+    /// `<tool dir>/<app id>.pid`, so a Nebo that died without stopping the
+    /// process can retire it at its next start ([`Runtime::cleanup_stale`]).
+    pid_file: PathBuf,
     binary_mtime: std::time::SystemTime,
     child: tokio::process::Child,
     /// The write end of the process's stdin, held apart from `child` for the
@@ -31,7 +48,7 @@ pub struct Process {
 impl Process {
     /// Get the gRPC endpoint for this tool.
     pub fn grpc_endpoint(&self) -> String {
-        format!("unix://{}", self.sock_path.display())
+        format!("http://{}", self.addr)
     }
 
     /// Check if the binary on disk has changed since launch.
@@ -92,12 +109,10 @@ impl Process {
         info!(tool = self.tool_id.as_str(), "tool stopped");
     }
 
-    /// Remove what the process leaves behind once it is gone: its socket (a
-    /// leftover socket file must never pass for a live sidecar), its pid file
+    /// Remove what the process leaves behind once it is gone: its pid file
     /// and its signal-handler registration.
     fn cleanup(&self) {
-        let _ = std::fs::remove_file(&self.sock_path);
-        let _ = std::fs::remove_file(self.sock_path.with_extension("pid"));
+        let _ = std::fs::remove_file(&self.pid_file);
         crate::child_guard::unregister_child(self.pid);
     }
 }
@@ -171,12 +186,6 @@ impl Runtime {
         // Validate binary
         sandbox::validate_binary(&binary, 500 * 1024 * 1024)?;
 
-        // Socket path
-        let sock_path = tool_dir.join(format!("{}.sock", manifest.id));
-
-        // Clean up stale socket
-        let _ = std::fs::remove_file(&sock_path);
-
         // Its own data directory in appdata/ (physically separated from code)
         let data_dir = &self.data_dir;
         std::fs::create_dir_all(data_dir)?;
@@ -187,7 +196,6 @@ impl Runtime {
             &manifest.name,
             &manifest.version,
             &tool_dir.to_string_lossy(),
-            &sock_path.to_string_lossy(),
             &data_dir.to_string_lossy(),
             api_port,
         );
@@ -220,17 +228,18 @@ impl Runtime {
         // this covers the kill -9 window kill_on_drop can't.
         cmd.stdin(std::process::Stdio::piped());
 
-        // Redirect stdout/stderr to dedicated log file in the data directory
+        // stderr goes to a dedicated log file in the data directory; stdout
+        // is read for the LISTENING line and copied to the same log.
         let log_path = data_dir.join("sidecar.log");
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log_path)
             .map_err(|e| NappError::Runtime(format!("open sidecar log: {}", e)))?;
-        let stderr_file = log_file
+        let stdout_log = log_file
             .try_clone()
             .map_err(|e| NappError::Runtime(format!("clone log fd: {}", e)))?;
-        cmd.stdout(std::process::Stdio::from(stderr_file));
+        cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::from(log_file));
 
         // Process group isolation on Unix
@@ -246,8 +255,8 @@ impl Runtime {
             }
         }
 
-        // Reap any pre-existing instance of this sidecar binary — orphans
-        // would hold the same Unix socket and produce silent failures.
+        // Reap any pre-existing instance of this sidecar binary — an orphan
+        // would keep serving an old launch's state beside the new one.
         crate::child_guard::reap_existing_for(&binary);
 
         let mut child = cmd.spawn().map_err(|e| {
@@ -272,101 +281,78 @@ impl Runtime {
         crate::child_guard::register_child(pid);
 
         // Write PID file
-        let pid_file = sock_path.with_extension("pid");
+        let pid_file = tool_dir.join(format!("{}.pid", manifest.id));
         let _ = std::fs::write(&pid_file, pid.to_string());
+
+        let (announce, announced) = oneshot::channel();
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(relay_stdout(stdout, tokio::fs::File::from_std(stdout_log), announce));
+        }
 
         let stdin = child.stdin.take();
         let mut process = Process {
             tool_id: manifest.id.clone(),
             manifest,
             pid,
-            sock_path,
+            // Known once the process announces it (below); never handed out before.
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             binary_path: binary,
             log_path,
             app_token,
+            pid_file,
             binary_mtime,
             child,
             _stdin: stdin,
         };
 
-        // Wait for the socket to appear — or for the process to die first,
-        // which is reported with its exit status instead of a bare timeout.
+        // Wait for the process to announce where it listens — or to die
+        // first, which is reported with its exit status instead of a bare
+        // timeout.
         let timeout = Duration::from_secs(process.manifest.effective_startup_timeout() as u64);
-        let sock_path = process.sock_path.clone();
-        let appeared = tokio::select! {
-            r = self.wait_for_socket(&sock_path, timeout) => r.map_err(|e| (e, true)),
-            why = process.exited() => Err((NappError::Runtime(format!("exited before it was ready: {why}")), false)),
+        let exited = |why: String| NappError::Runtime(format!("exited before it was ready: {why}"));
+        let announced = tokio::select! {
+            r = tokio::time::timeout(timeout, announced) => r,
+            why = process.exited() => return Err(exited(why)),
         };
-        if let Err((e, still_running)) = appeared {
-            if still_running {
+        let listening = match announced {
+            Ok(Ok(line)) => parse_listening(&line),
+            // Its stdout closed without the line: it is almost always exiting,
+            // and its exit status is the reason worth showing.
+            Ok(Err(_)) => match tokio::time::timeout(Duration::from_secs(2), process.exited()).await {
+                Ok(why) => return Err(exited(why)),
+                Err(_) => Err(NappError::Runtime(format!(
+                    "closed its output without printing \"{}<address>\"",
+                    LISTENING
+                ))),
+            },
+            Err(_) => Err(NappError::Runtime(format!(
+                "did not print \"{}<address>\" within {}s",
+                LISTENING,
+                timeout.as_secs()
+            ))),
+        };
+        match listening {
+            Ok(addr) => process.addr = addr,
+            Err(e) => {
                 process.stop().await;
+                return Err(e);
             }
-            return Err(e);
         }
-        let manifest = &process.manifest;
 
-        // Health check: verify the socket is connectable
-        if let Err(e) = self.health_check(&sock_path, Duration::from_secs(5)).await {
+        // Health check: verify the address accepts a connection. Best effort:
+        // a sidecar may initialize lazily, so a failure is only logged.
+        let health = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(process.addr)).await;
+        if !matches!(health, Ok(Ok(_))) {
             warn!(
-                tool = manifest.id.as_str(),
-                error = %e,
-                "health check failed after socket appeared (tool may use lazy init)"
+                tool = process.manifest.id.as_str(),
+                addr = %process.addr,
+                "health check failed after the sidecar announced its address (tool may use lazy init)"
             );
         }
 
-        // Set socket permissions
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
-        }
-
-        info!(tool = manifest.id.as_str(), pid, "tool launched");
+        info!(tool = process.manifest.id.as_str(), pid, addr = %process.addr, "tool launched");
 
         Ok(process)
-    }
-
-
-    /// Check that the socket is connectable (basic health check).
-    ///
-    /// This is a best-effort check — tools may implement lazy init, so a failure
-    /// here is logged as a warning but does not block launch.
-    #[cfg(unix)]
-    async fn health_check(&self, sock_path: &Path, timeout: Duration) -> Result<(), NappError> {
-        match tokio::time::timeout(timeout, tokio::net::UnixStream::connect(sock_path)).await {
-            Ok(Ok(_stream)) => Ok(()),
-            Ok(Err(e)) => Err(NappError::Runtime(format!("socket connect failed: {}", e))),
-            Err(_) => Err(NappError::Runtime(format!(
-                "socket connect timed out after {}s",
-                timeout.as_secs()
-            ))),
-        }
-    }
-
-    #[cfg(not(unix))]
-    async fn health_check(&self, _sock_path: &Path, _timeout: Duration) -> Result<(), NappError> {
-        // Unix sockets not available on Windows; skip health check
-        Ok(())
-    }
-
-    /// Wait for the Unix domain socket to appear.
-    async fn wait_for_socket(&self, sock_path: &Path, timeout: Duration) -> Result<(), NappError> {
-        let start = std::time::Instant::now();
-        let mut delay = Duration::from_millis(100);
-
-        while start.elapsed() < timeout {
-            if sock_path.exists() {
-                return Ok(());
-            }
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(1));
-        }
-
-        Err(NappError::Runtime(format!(
-            "socket {} not created within {}s",
-            sock_path.display(),
-            timeout.as_secs()
-        )))
     }
 
     /// Clean up stale processes from a previous run.
@@ -397,6 +383,51 @@ impl Runtime {
             }
             let _ = std::fs::remove_file(entry.path());
         }
+    }
+}
+
+/// The address in a sidecar's [`LISTENING`] line. Only a loopback address is
+/// accepted: a sidecar is never reachable from another computer.
+fn parse_listening(line: &str) -> Result<SocketAddr, NappError> {
+    let addr: SocketAddr = line
+        .parse()
+        .map_err(|e| NappError::Runtime(format!("announced \"{line}\", which is not an address: {e}")))?;
+    if !addr.ip().is_loopback() || addr.port() == 0 {
+        return Err(NappError::Runtime(format!(
+            "announced {addr}; a sidecar must listen on a loopback address (127.0.0.1)"
+        )));
+    }
+    Ok(addr)
+}
+
+/// Copy the sidecar's stdout into its log, line by line, and hand the address
+/// of the first [`LISTENING`] line to `announce`. Reads until the process
+/// closes its stdout, so a sidecar never blocks on a full pipe.
+async fn relay_stdout(
+    stdout: tokio::process::ChildStdout,
+    mut log: tokio::fs::File,
+    announce: oneshot::Sender<String>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut announce = Some(announce);
+    let mut reader = BufReader::new(stdout);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if let Some(addr) = String::from_utf8_lossy(&line).trim_end().strip_prefix(LISTENING) {
+            if let Some(tx) = announce.take() {
+                let _ = tx.send(addr.trim().to_string());
+            }
+        }
+        if !line.ends_with(b"\n") {
+            line.push(b'\n');
+        }
+        let _ = log.write_all(&line).await;
+        let _ = log.flush().await;
     }
 }
 
@@ -487,5 +518,52 @@ mod tests {
         let t1 = generate_token();
         let t2 = generate_token();
         assert_ne!(t1, t2);
+    }
+
+    /// No computer is ever exposed: an address another computer could reach
+    /// is refused, whatever the sidecar announces.
+    #[test]
+    fn only_a_loopback_address_is_accepted() {
+        assert_eq!(parse_listening("127.0.0.1:5000").unwrap(), "127.0.0.1:5000".parse().unwrap());
+        for line in ["0.0.0.0:5000", "192.168.1.20:5000", "[::]:5000", "127.0.0.1:0", "/tmp/app.sock"] {
+            assert!(parse_listening(line).is_err(), "{line} must be refused");
+        }
+    }
+}
+
+/// The fixture sidecar, launched for real.
+#[cfg(all(test, unix))]
+mod process_tests {
+    use super::*;
+    use crate::test_sidecar::{self, TestApp};
+
+    async fn launch(app: &TestApp) -> Process {
+        let data_dir = crate::app_data::data_dir(&app.home, crate::app_data::DataKind::App, &app.id).expect("app id");
+        Runtime::new(data_dir).launch(&app.tool_dir, 0).await.expect("launch")
+    }
+
+    /// Nebo holds the write end of the sidecar's stdin for the sidecar's
+    /// whole life. When it closes — Nebo gone by any means, SIGKILL included
+    /// — the sidecar exits on its own.
+    #[tokio::test]
+    async fn the_sidecar_exits_when_its_stdin_closes() {
+        let app = TestApp::new("stdin-eof");
+        let mut process = launch(&app).await;
+        assert!(tokio::net::TcpStream::connect(process.addr).await.is_ok(), "it serves");
+        drop(process._stdin.take());
+        let why = tokio::time::timeout(Duration::from_secs(10), process.exited()).await.expect("it exits on its own");
+        assert!(why.starts_with("exited with code 0"), "{why}");
+        assert!(tokio::net::TcpStream::connect(process.addr).await.is_err(), "nothing listens");
+    }
+
+    #[tokio::test]
+    async fn the_sidecar_exits_when_nebo_stops_it() {
+        let app = TestApp::new("stopped");
+        let mut process = launch(&app).await;
+        let (pid, addr) = (process.pid, process.addr);
+        process.stop().await;
+        assert!(!test_sidecar::exists(pid), "the process is gone");
+        assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "nothing listens");
+        assert!(!process.pid_file.exists(), "its pid file is removed");
     }
 }

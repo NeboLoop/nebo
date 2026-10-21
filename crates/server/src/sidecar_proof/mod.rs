@@ -4,6 +4,8 @@
 //! same `AppLifecycle` the proxy serves through, over a throwaway Nebo root.
 //! Requests go through `AppLifecycle::serve`, the proxy's own path, to a
 //! stand-in sidecar server in this process that the test sidecar relays to.
+//! The stand-in keeps the sidecar contract: it refuses every call that does
+//! not carry the launch's `NEBO_APP_TOKEN` as `authorization: Bearer`.
 //!
 //! Every scenario is listed as a fixture in `fixtures/app-sidecars/` and in
 //! `suites/app-sidecars.yaml`; `make test-sidecar-proof` runs the suite through
@@ -12,6 +14,7 @@
 
 #![allow(dead_code)]
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,20 +76,17 @@ pub struct World {
     pub app: TestApp,
     pub hub: Arc<ClientHub>,
     pub lifecycle: Arc<AppLifecycle>,
-    _upstream: tempfile::TempDir,
 }
 
 impl World {
-    /// `setup` prepares the app (its mode, its program) before supervision begins.
-    pub async fn new(id: &str, policy: RestartPolicy, setup: impl FnOnce(&TestApp)) -> Self {
-        let app = TestApp::new(id);
-        let upstream = tempfile::tempdir().expect("upstream dir");
-        let sock = upstream.path().join("upstream.sock");
-        serve_as_sidecar(&sock);
-        app.set_upstream(&sock);
+    /// Supervise `app`. `setup` prepares it (its mode, its program) before
+    /// supervision begins.
+    pub async fn new(app: TestApp, policy: RestartPolicy, setup: impl FnOnce(&TestApp)) -> Self {
+        app.set_upstream(serve_as_sidecar(app.tool_dir.join("fixture-token")).await);
         setup(&app);
         let hub = Arc::new(ClientHub::new());
-        let agent = db::models::Agent { id: id.to_string(), name: id.to_string(), is_app: Some(1), ..Default::default() };
+        let id = app.id.clone();
+        let agent = db::models::Agent { id: id.clone(), name: id, is_app: Some(1), ..Default::default() };
         let skills = app.home.join("skills");
         let lifecycle = AppLifecycle::start(
             &agent,
@@ -100,7 +100,7 @@ impl World {
         )
         .await
         .expect("a folder-name app id");
-        Self { app, hub, lifecycle: Arc::new(lifecycle), _upstream: upstream }
+        Self { app, hub, lifecycle: Arc::new(lifecycle) }
     }
 
     /// A GET through the proxy's path, answered by the stand-in server.
@@ -151,10 +151,14 @@ fn run_everything() -> Arc<dyn tools::PermissionGate> {
     Arc::new(RunEverything)
 }
 
-/// A stand-in sidecar server on `sock`: answers every request with
-/// "<method> <path>".
-fn serve_as_sidecar(sock: &PathBuf) {
-    struct Echo;
+/// A stand-in sidecar server on a loopback address of its own: answers every
+/// request with "<method> <path>", and refuses one whose bearer token is not
+/// the one the sidecar was launched with (read from `token_file`, which the
+/// test sidecar writes on each launch). Returns its address.
+async fn serve_as_sidecar(token_file: PathBuf) -> SocketAddr {
+    struct Echo {
+        token_file: PathBuf,
+    }
     #[tonic::async_trait]
     impl proto::ui_service_server::UiService for Echo {
         async fn health_check(
@@ -173,6 +177,11 @@ fn serve_as_sidecar(sock: &PathBuf) {
             &self,
             req: tonic::Request<proto::HttpRequest>,
         ) -> Result<tonic::Response<proto::HttpResponse>, tonic::Status> {
+            let token = std::fs::read_to_string(&self.token_file).unwrap_or_default();
+            let bearer = req.metadata().get("authorization").and_then(|v| v.to_str().ok());
+            if token.is_empty() || bearer != Some(format!("Bearer {token}").as_str()) {
+                return Err(tonic::Status::unauthenticated("no valid app token"));
+            }
             let r = req.into_inner();
             Ok(tonic::Response::new(proto::HttpResponse {
                 status_code: 200,
@@ -181,13 +190,15 @@ fn serve_as_sidecar(sock: &PathBuf) {
             }))
         }
     }
-    let listener = tokio::net::UnixListener::bind(sock).expect("bind the stand-in sidecar server");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stand-in sidecar server");
+    let addr = listener.local_addr().expect("its address");
     let incoming = futures::stream::unfold(listener, |l| async move {
         Some((l.accept().await.map(|(s, _)| s), l))
     });
     tokio::spawn(
         tonic::transport::Server::builder()
-            .add_service(proto::ui_service_server::UiServiceServer::new(Echo))
+            .add_service(proto::ui_service_server::UiServiceServer::new(Echo { token_file }))
             .serve_with_incoming(incoming),
     );
+    addr
 }

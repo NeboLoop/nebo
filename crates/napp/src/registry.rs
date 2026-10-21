@@ -525,7 +525,7 @@ impl Registry {
         let tools = self.tools.read().await;
         tools.get(tool_id).and_then(|t| {
             match t.process.as_ref()?.state() {
-                SidecarState::Running(l) => Some(format!("unix://{}", l.sock_path.display())),
+                SidecarState::Running(l) => Some(format!("http://{}", l.addr)),
                 _ => None,
             }
         })

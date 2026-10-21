@@ -25,39 +25,31 @@ use tools::sidecar_tool::{SidecarActionTool, SidecarCaller, SidecarResponse, Sid
 /// How long a request waits for a sidecar that is starting or restarting.
 pub(crate) const REQUEST_WAIT: Duration = Duration::from_secs(15);
 
-/// One `UIService.HandleRequest` call to the sidecar on `sock`. The one way
-/// Nebo talks to a sidecar: the proxy and the sidecar tools both call it.
-#[cfg(unix)]
+/// One `UIService.HandleRequest` call to the sidecar launched as `launched`:
+/// to its loopback address, carrying its per-launch token as
+/// `authorization: Bearer <token>`, without which the sidecar refuses the
+/// call. The one way Nebo talks to a sidecar: the proxy and the sidecar tools
+/// both call it.
 pub(crate) async fn handle_request(
-    sock: &Path,
+    launched: &Launched,
     req: proto::HttpRequest,
 ) -> Result<proto::HttpResponse, tonic::Status> {
-    let sock = sock.to_path_buf();
-    let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
-        .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
-            let sock = sock.clone();
-            async move {
-                tokio::net::UnixStream::connect(sock)
-                    .await
-                    .map(hyper_util::rt::TokioIo::new)
-            }
-        }));
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://{}", launched.addr))
+        .map_err(|e| tonic::Status::internal(format!("sidecar address {}: {e}", launched.addr)))?
+        .connect_lazy();
     let mut client = proto::ui_service_client::UiServiceClient::new(channel)
         .max_decoding_message_size(32 * 1024 * 1024);
+    let mut req = tonic::Request::new(req);
+    let bearer = format!("Bearer {}", launched.app_token)
+        .parse()
+        .map_err(|_| tonic::Status::internal("the sidecar's token is not a header value"))?;
+    req.metadata_mut().insert("authorization", bearer);
     client.handle_request(req).await.map(|r| r.into_inner())
-}
-
-#[cfg(not(unix))]
-pub(crate) async fn handle_request(
-    _sock: &Path,
-    _req: proto::HttpRequest,
-) -> Result<proto::HttpResponse, tonic::Status> {
-    Err(tonic::Status::unavailable("sidecars require Unix sockets"))
 }
 
 /// gRPC-based caller that routes through the sidecar's UIService.HandleRequest.
 struct GrpcSidecarCaller {
-    sock_path: PathBuf,
+    launched: Arc<Launched>,
 }
 
 impl SidecarCaller for GrpcSidecarCaller {
@@ -78,7 +70,7 @@ impl SidecarCaller for GrpcSidecarCaller {
             body: body.to_vec(),
         };
         Box::pin(async move {
-            match handle_request(&self.sock_path, req).await {
+            match handle_request(&self.launched, req).await {
                 Ok(inner) => Ok(SidecarResponse { status_code: inner.status_code, body: inner.body }),
                 Err(e) => Err(format!("gRPC call failed: {}", e)),
             }
@@ -223,7 +215,7 @@ impl AppLifecycle {
     /// safe to repeat (GET, HEAD) is sent again to the relaunched one.
     pub(crate) async fn serve(&self, req: proto::HttpRequest) -> Result<proto::HttpResponse, Unavailable> {
         let launched = self.ready(REQUEST_WAIT).await?;
-        match handle_request(&launched.sock_path, req.clone()).await {
+        match handle_request(&launched, req.clone()).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 warn!(agent = %self.agent_id, error = %e, "sidecar did not answer — reviving it");
@@ -235,7 +227,7 @@ impl AppLifecycle {
                 if !repeatable {
                     return Err(Unavailable { state: SidecarState::Running(again) });
                 }
-                handle_request(&again.sock_path, req).await.map_err(|e| {
+                handle_request(&again, req).await.map_err(|e| {
                     warn!(agent = %self.agent_id, error = %e, "sidecar did not answer after reviving");
                     Unavailable { state: SidecarState::Running(again.clone()) }
                 })
@@ -276,11 +268,11 @@ async fn follow(
             SidecarState::Running(launched) => {
                 launches += 1;
                 *latest.write().await = Some(launched.clone());
-                register_tools(&agent_id, &app, &tool_dir, &launched.sock_path, &registry).await;
+                register_tools(&agent_id, &app, &tool_dir, launched, &registry).await;
                 if launches == 1 {
                     hub.broadcast(
                         "app_started",
-                        serde_json::json!({ "agentId": agent_id, "sockPath": launched.sock_path }),
+                        serde_json::json!({ "agentId": agent_id, "addr": launched.addr }),
                     );
                 } else {
                     hub.broadcast(
@@ -308,17 +300,17 @@ async fn follow(
     }
 }
 
-/// Register the sidecar tools declared in agent.json against the socket.
+/// Register the sidecar tools declared in agent.json against the running sidecar.
 ///
 /// Follows the same filesystem-based pattern as skills and plugins — tool
 /// definitions live in agent.json, not behind an HTTP endpoint. Re-read on
 /// every launch, so a rebuilt app's changed tools take effect.
-async fn register_tools(agent_id: &str, app: &str, tool_dir: &Path, sock: &Path, registry: &tools::Registry) {
+async fn register_tools(agent_id: &str, app: &str, tool_dir: &Path, launched: &Arc<Launched>, registry: &tools::Registry) {
     registry.unregister_agent_tools(agent_id).await;
     let Some(defs) = read_tool_defs_from_config(tool_dir, agent_id) else {
         return;
     };
-    let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller { sock_path: sock.to_path_buf() });
+    let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller { launched: launched.clone() });
     let count = defs.len();
     for def in defs {
         registry

@@ -1,0 +1,9 @@
+id: a-live-process-that-stopped-listening-is-served-by-relaunching
+name: "A live process that stopped listening is served by relaunching"
+description: |
+  A live sidecar process that refuses every connection on its address. With
+  the periodic probe far away, the request that cannot reach it revives it
+  through the supervisor's own restart path and is answered.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_live_process_that_stopped_listening_is_served_by_relaunching
+conversation: []

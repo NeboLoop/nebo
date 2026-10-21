@@ -15,8 +15,10 @@ const _BLOCKED_ENV_VARS: &[&str] = &[
     "STRIPE_SECRET_KEY",
 ];
 
-/// System environment variables that are allowed through.
-const ALLOWED_SYSTEM_VARS: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ"];
+/// System environment variables that are allowed through. `SystemRoot` is
+/// Windows': without it a process cannot open a network socket (Winsock fails
+/// to load its providers), so a sidecar could never listen.
+const ALLOWED_SYSTEM_VARS: &[&str] = &["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "SystemRoot"];
 
 /// Build a sanitized environment for an app process.
 pub fn sanitize_env(
@@ -24,7 +26,6 @@ pub fn sanitize_env(
     app_name: &str,
     app_version: &str,
     app_dir: &str,
-    sock_path: &str,
     data_dir: &str,
     api_port: u16,
 ) -> Vec<(String, String)> {
@@ -35,7 +36,6 @@ pub fn sanitize_env(
     env.push(("NEBO_APP_NAME".into(), app_name.into()));
     env.push(("NEBO_APP_VERSION".into(), app_version.into()));
     env.push(("NEBO_APP_DIR".into(), app_dir.into()));
-    env.push(("NEBO_APP_SOCK".into(), sock_path.into()));
     // Per-artifact persistent data dir (non-versioned, slug-keyed). NEBO_APP_DIR
     // is the versioned code dir; NEBO_DATA_DIR is the one place to write a DB so
     // it survives updates. Single canonical name across apps, plugins, skills.
@@ -121,7 +121,6 @@ mod tests {
             "TestApp",
             "1.0",
             "/apps/app-1",
-            "/tmp/app.sock",
             "/apps/app-1/data",
             27895,
         );
@@ -136,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_env_includes_system() {
-        let env = sanitize_env("x", "X", "1", "/x", "/x.sock", "/x/data", 27895);
+        let env = sanitize_env("x", "X", "1", "/x", "/x/data", 27895);
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         // PATH should be included if set
         if std::env::var("PATH").is_ok() {
