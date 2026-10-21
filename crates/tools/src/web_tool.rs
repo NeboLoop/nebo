@@ -1911,7 +1911,7 @@ impl Kind {
             Kind::BrowserListTabs => "list open browser tabs",
             Kind::BrowserNewTab => "open a new browser tab",
             Kind::BrowserCloseTab => "close a browser tab",
-            Kind::BrowserLeaveOpen => "leave a page open for the owner to finish",
+            Kind::BrowserLeaveOpen => "leave a page open for the owner",
             Kind::BrowserConsole => "read browser console messages errors",
             Kind::BrowserNetwork => "read the page's network requests",
             Kind::BrowserUpload => "upload a file to a web page",
@@ -4499,7 +4499,7 @@ mod interface_tests {
             assert!(names.contains(&r.to), "{r:?}");
         }
         // Tools born after the split never had an old `web(...)` shape.
-        const NO_OLD_SHAPE: &[&str] = &["browser_expect"];
+        const NO_OLD_SHAPE: &[&str] = &["browser_expect", "browser_leave_open"];
         for name in names.iter().filter(|n| !NO_OLD_SHAPE.contains(n)) {
             assert!(web_rows.iter().any(|r| r.to == *name), "{name} has no old shape");
         }
