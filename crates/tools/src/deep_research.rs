@@ -1126,19 +1126,12 @@ async fn run_typed<T: for<'de> Deserialize<'de>>(
     task: StructuredTask,
     cancel: &CancellationToken,
 ) -> Result<T, String> {
-    // Close this sub-agent's tab/page as soon as it finishes (1:1 ownership) —
-    // on success, error, cancellation, or stall. Safe no-op if it opened no tab.
-    let tab_key = task.tab_key.clone();
+    // The sub-agent's turn closes the tabs it opened when it ends, however
+    // it ends (the harness's turn task).
     let activity = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let value = tokio::select! {
-        r = agent.run(task, Some(activity.clone())) => {
-            agent.close_tab(tab_key).await;
-            r?
-        }
-        _ = cancel.cancelled() => {
-            agent.close_tab(tab_key).await;
-            return Err("cancelled".into());
-        }
+        r = agent.run(task, Some(activity.clone())) => r?,
+        _ = cancel.cancelled() => return Err("cancelled".into()),
         // Inactivity bound: a stalled provider/tool call must not wedge the whole
         // run — but any activity resets the window, so legitimately long work is
         // never cut. Fires only after a full window with zero activity bumps.
@@ -1153,7 +1146,6 @@ async fn run_typed<T: for<'de> Deserialize<'de>>(
                 seen = now;
             }
         } => {
-            agent.close_tab(tab_key).await;
             return Err(format!(
                 "sub-agent stalled: no activity for {}s",
                 SUBAGENT_INACTIVITY_TIMEOUT.as_secs()

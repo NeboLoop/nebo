@@ -599,45 +599,54 @@ async fn run(
     tx: mpsc::Sender<StreamEvent>,
 ) {
     let session_key = req.session_key.clone();
-    let mut req = Some(req);
-    let mut taint = BTreeSet::new();
-    let mut exit = TurnExit::Answered;
-    let mut carried = 0;
-    let mut heard_through = None;
-    while let Some(next) = req.take() {
-        let (cx, mut st) = match prepare(&h, next, &session_id, progress.clone(), tx.clone()).await {
-            Ok(prepared) => prepared,
-            Err(e) => {
-                let _ = tx.send(StreamEvent::error(format!("Agent error: {e}"))).await;
-                exit = TurnExit::ProviderFailed(e);
-                break;
-            }
-        };
-        tools::app_history::begin_turn(&session_id, &asked(&cx.request.input));
-        keep_workspace(&h, &session_id).await;
-        exit = drive_turn(&cx, &mut st).await;
-        keep_workspace(&h, &session_id).await;
-        finish(&cx, &mut st, &exit).await;
-        tools::app_history::end_turn(&session_id, || last_reply(&h, &session_id)).await;
-        taint.extend(cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied());
+    let turns = async {
+        let mut req = Some(req);
+        let mut taint = BTreeSet::new();
+        let mut exit = TurnExit::Answered;
+        let mut carried = 0;
+        let mut heard_through = None;
+        while let Some(next) = req.take() {
+            let (cx, mut st) = match prepare(&h, next, &session_id, progress.clone(), tx.clone()).await {
+                Ok(prepared) => prepared,
+                Err(e) => {
+                    let _ = tx.send(StreamEvent::error(format!("Agent error: {e}"))).await;
+                    exit = TurnExit::ProviderFailed(e);
+                    break;
+                }
+            };
+            tools::app_history::begin_turn(&session_id, &asked(&cx.request.input));
+            keep_workspace(&h, &session_id).await;
+            exit = drive_turn(&cx, &mut st).await;
+            keep_workspace(&h, &session_id).await;
+            finish(&cx, &mut st, &exit).await;
+            tools::app_history::end_turn(&session_id, || last_reply(&h, &session_id)).await;
+            taint.extend(cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied());
 
-        // Input stored after the last step was not in any call. The slot
-        // closes first: input arriving from here on waits for it and starts
-        // its own turn, so everything before is visible now.
-        guard.close();
-        heard_through = st.seen.last().map(|m| m.id.clone());
-        if exit == TurnExit::Cancelled {
-            carried = conversation::carry_past_stop(&h.sessions, &h.store, &session_id, &st.seen);
-        } else if input_landed_after(&h, &session_id, st.seen.last().map(|m| m.id.as_str())) {
-            info!(session_id, "input arrived after the last step: the next turn hears it");
-            guard.reopen();
-            req = Some(follow_up(cx.request));
+            // Input stored after the last step was not in any call. The slot
+            // closes first: input arriving from here on waits for it and starts
+            // its own turn, so everything before is visible now.
+            guard.close();
+            heard_through = st.seen.last().map(|m| m.id.clone());
+            if exit == TurnExit::Cancelled {
+                carried = conversation::carry_past_stop(&h.sessions, &h.store, &session_id, &st.seen);
+            } else if input_landed_after(&h, &session_id, st.seen.last().map(|m| m.id.as_str())) {
+                info!(session_id, "input arrived after the last step: the next turn hears it");
+                guard.reopen();
+                req = Some(follow_up(cx.request));
+            }
         }
-    }
-    // However the run ended (answered, failed, stopped), the tabs it opened
-    // in the owner's browser close: a tab it left open for him stays. Before
-    // the slot frees, so the session's next turn never loses a tab to it.
+        (exit, taint, carried, heard_through)
+    };
+    let ended = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(turns)).await;
+    // However the run ended (answered, failed, stopped, or a panic), the tabs
+    // it opened in the owner's browser close: a tab it left open for him
+    // stays. Before the slot frees, so the session's next turn never loses a
+    // tab to it.
     h.tools.close_browser_session(&session_id).await;
+    let (exit, taint, carried, heard_through) = match ended {
+        Ok(ended) => ended,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
     // The slot is closing, so no row is written into this turn from here:
     // what the owner sent while it ran is in the thread now.
     let _ = tx
@@ -5249,6 +5258,51 @@ mod tests {
                 seen.iter().filter(|r| r.tool == "close_session_tabs").map(|r| r.session_id.clone()).collect();
             assert_eq!(closes, vec![Some(tab)], "{end}: the run's own tab closes, and only it");
         }
+    }
+
+    /// A run that panics still closes the tab it opened, before its
+    /// session frees.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_that_panics_still_closes_the_tab_it_opened() {
+        struct Boom;
+        impl tools::registry::DynTool for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            fn description(&self) -> String {
+                "fails hard".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move { panic!("the tool broke") })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(browser::Manager::new(Default::default(), dir.path().to_string_lossy().into_owned()));
+        let chrome = owners_chrome(&mgr).await;
+        // The script ends after the panicking call: the scripted model
+        // panics too if the turn asks it for another step.
+        let model = Scripted::new(vec![Step::Call("browse", serde_json::json!({})), Step::Call("boom", serde_json::json!({}))]);
+        let h = harness_with(&model, vec![Box::new(Browse(mgr.clone())), Box::new(Boom)]).await;
+        h.tools.set_browser(Some(mgr.clone()));
+        let mut handle = h.start_turn(owner("Check the site")).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        let seen = sent_to(&chrome).await;
+        let tab = seen.iter().find(|r| !r.is_command).and_then(|r| r.session_id.clone()).expect("the run opened a tab");
+        let closes: Vec<Option<String>> = seen.iter().filter(|r| r.tool == "close_session_tabs").map(|r| r.session_id.clone()).collect();
+        assert_eq!(closes, vec![Some(tab)], "the panicked run's tab closes");
     }
 
     /// A tab the run left open for the owner stays open when it ends.

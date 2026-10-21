@@ -2702,10 +2702,6 @@ const EXPECT_DEFAULT_WAIT_MS: u64 = 5_000;
 const EXPECT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl WebCore {
-    /// browser_expect: ask the page for the facts the step names, compare,
-    /// and poll until they match or the wait is over. A mismatch is a
-    /// terminal error: the run stops and the owner reads which step and what
-    /// differed, instead of the next step running on the wrong page.
     /// The session's tab in the owner's Chrome stays open when the work
     /// ends, for him to finish (`browser_leave_open`).
     async fn leave_open(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
@@ -2722,6 +2718,10 @@ impl WebCore {
         ))
     }
 
+    /// browser_expect: ask the page for the facts the step names, compare,
+    /// and poll until they match or the wait is over. A mismatch is a
+    /// terminal error: the run stops and the owner reads which step and what
+    /// differed, instead of the next step running on the wrong page.
     async fn handle_expect(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
         let step = str_field(input, "step").unwrap_or("").trim().to_string();
         let wait = std::time::Duration::from_millis(
@@ -4322,7 +4322,10 @@ mod interface_tests {
         while let Ok(r) = rx.try_recv() {
             sent.push((r.tool, r.session_id));
         }
-        assert_eq!(sent, vec![("hide_indicators".to_string(), nav.session_id.clone())]);
+        assert_eq!(
+            sent,
+            vec![("hide_indicators".to_string(), nav.session_id.clone()), ("leave_open".to_string(), nav.session_id.clone())]
+        );
         mgr.executor().unwrap().close_session("s1").await;
         assert!(rx.try_recv().is_err(), "the run's end never closes the tab it left for the owner");
         assert!(KINDS.iter().any(|k| *k == Kind::BrowserLeaveOpen && !k.batchable()));
