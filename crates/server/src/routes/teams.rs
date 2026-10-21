@@ -12,6 +12,9 @@ pub fn routes() -> Router<AppState> {
         .route("/handoffs", axum::routing::get(handlers::handoffs::list_handoffs))
         .route("/handoffs/{id}", axum::routing::get(handlers::handoffs::get_handoff))
         .route("/handoffs/{id}/stop", axum::routing::post(handlers::handoffs::stop_handoff))
+        // Verified code work: its badge and every round of its history.
+        .route("/verifications", axum::routing::get(handlers::verifications::list_verifications))
+        .route("/verifications/{id}", axum::routing::get(handlers::verifications::get_verification))
         .route(
             "/teams",
             axum::routing::get(handlers::teams::list_teams).post(handlers::teams::open_team),

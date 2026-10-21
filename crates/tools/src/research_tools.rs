@@ -394,6 +394,10 @@ mod tests {
         fn list_active(&self, _: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
         }
+        fn settle<'a>(&'a self, task_id: &'a str, land: bool, _ctx: &'a crate::ToolContext) -> Fut<'a, Result<String, String>> {
+            let task_id = task_id.to_string();
+            Box::pin(async move { Ok(format!("settled {task_id}: {}", if land { "landed" } else { "discarded" })) })
+        }
         fn recover(&self) -> Fut<'_, ()> {
             Box::pin(async {})
         }

@@ -1705,11 +1705,24 @@ fn unreached(why: Unreached, name: &str) -> String {
     }
 }
 
-/// The owner's newest message: the newest user message that is not a
-/// system reminder. Reminder rows are Nebo's context for Nebo's model (the
-/// harness writes them as user rows opening with `<system-reminder>`) and
-/// never reach another runtime.
+/// What a linked agent is sent: the review of its own code work when that
+/// is what came after its last answer (the verify loop's word, which is for
+/// the agent: fix these findings, resolve this, report), else the owner's
+/// newest message, the newest user message that is not a system reminder.
+/// Other reminder rows are Nebo's context for Nebo's model (the harness
+/// writes them as user rows opening with `<system-reminder>`) and never
+/// reach another runtime.
 fn owners_message(messages: &[Message]) -> Option<&str> {
+    for m in messages.iter().rev() {
+        if m.role == "assistant" {
+            break;
+        }
+        if m.role == "user"
+            && let Some(note) = review_note(&m.content)
+        {
+            return Some(note);
+        }
+    }
     messages
         .iter()
         .rev()
@@ -1717,6 +1730,17 @@ fn owners_message(messages: &[Message]) -> Option<&str> {
         .map(|m| m.content.trim())
         .find(|c| !c.starts_with("<system-reminder>"))
         .filter(|c| !c.is_empty())
+}
+
+/// A reminder row carrying a word for the agent itself (the review of its
+/// code work, `crate::REVIEW_NOTE`, or the goal it hasn't met yet,
+/// `crate::GOAL_NOTE`): its text, from the mark on, without the reminder's
+/// closing.
+fn review_note(row: &str) -> Option<&str> {
+    let at = [crate::REVIEW_NOTE, crate::GOAL_NOTE].iter().filter_map(|mark| row.find(mark)).min()?;
+    let text = &row[at..];
+    let end = text.find("\n\nThis is an automated system reminder").or_else(|| text.find("</system-reminder>")).unwrap_or(text.len());
+    Some(text[..end].trim())
 }
 
 /// `<bot>/<agent>`, both present.
@@ -2425,6 +2449,28 @@ mod tests {
         );
         assert_eq!(owners_message(&[say("user", reminder)]), None);
         assert_eq!(owners_message(&[say("user", "  ")]), None);
+        // The review of the agent's own code work is for the agent.
+        let review = format!(
+            "<system-reminder>\n{} Independent reviewers found 1 blocker.\n\nThis is an automated system reminder — do not mention it to the user.\n</system-reminder>",
+            crate::REVIEW_NOTE
+        );
+        let asked = say("user", "make total add b");
+        let done = say("assistant", "Done.");
+        assert_eq!(
+            owners_message(&[asked.clone(), done.clone(), say("user", &review)]),
+            Some(format!("{} Independent reviewers found 1 blocker.", crate::REVIEW_NOTE).as_str())
+        );
+        assert_eq!(owners_message(&[asked.clone(), say("user", &review), done.clone()]), Some("make total add b"), "only what came after its last answer");
+        // The goal check's word goes on with the agent's work: the owner's
+        // message it already answered is never sent again.
+        let goal = format!(
+            "<system-reminder>\n{} the tests still fail. Keep working toward: all tests pass.\n\nThis is an automated system reminder — do not mention it to the user.\n</system-reminder>",
+            crate::GOAL_NOTE
+        );
+        assert_eq!(
+            owners_message(&[asked, done, say("user", &goal)]),
+            Some(format!("{} the tests still fail. Keep working toward: all tests pass.", crate::GOAL_NOTE).as_str())
+        );
     }
 
     /// A reconnect catches a turn up from its session's record: the updates

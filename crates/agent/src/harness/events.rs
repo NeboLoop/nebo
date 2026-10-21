@@ -119,6 +119,9 @@ pub enum TurnEvent {
     /// A helper whose answer is read as data answered in the wrong shape:
     /// what's wrong with it.
     AnswerShape(String),
+    /// The verify loop's word to the builder after a round: the findings to
+    /// fix, a conflict to resolve, or what to report (`verify::engine`).
+    Verify(String),
     /// The owner asked for something to be saved, in this memory, and no
     /// `remember` call has succeeded since (`memory_save`).
     UnsavedMemory(super::memory_save::Scope),
@@ -252,6 +255,7 @@ pub const NAMES: &[&str] = &[
     "mid_turn_answered",
     "workflow_contract",
     "answer_shape",
+    "verify",
     "unsaved_memory",
     "unrun_command",
     "unfinished_message",
@@ -431,7 +435,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         ),
         TurnEvent::GoalCheck { reason, condition } => (
             "goal_check",
-            format!("The agreed goal isn't met yet: {}. Keep working toward: {}.", reason.trim(), condition.trim()),
+            format!("{} {}. Keep working toward: {}.", ai::GOAL_NOTE, reason.trim(), condition.trim()),
         ),
         TurnEvent::Usage(t) => ("usage", threshold_text(t)),
         TurnEvent::ToolsAvailable(d) => {
@@ -521,6 +525,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
         TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
+        TurnEvent::Verify(text) => ("verify", format!("{} {}", ai::REVIEW_NOTE, non_empty(text)?)),
         TurnEvent::UnsavedMemory(scope) => (
             "unsaved_memory",
             format!(
@@ -1385,6 +1390,7 @@ mod tests {
             TurnEvent::CutCall("write_file".into()),
             TurnEvent::WorkflowContract("call publish once".into()),
             TurnEvent::AnswerShape("no JSON object".into()),
+            TurnEvent::Verify("Independent reviewers found 1 blocker.".into()),
             TurnEvent::UnsavedMemory(crate::harness::memory_save::Scope::Private),
             TurnEvent::UnrunCommand,
             TurnEvent::UnfinishedMessage { tail: "if we Still images".into(), continues: false },

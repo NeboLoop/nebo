@@ -62,6 +62,8 @@
   import { ownKeyError } from '$lib/chat/ownKeyError';
   import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
+  import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
+  import { verifications, trackConversation, onMessage, inProgress } from '$lib/stores/verifications';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
   import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
   import { backgroundNotices, belongsTo } from '$lib/stores/background';
@@ -1474,6 +1476,10 @@
   let fullOutputs = $state<Record<string, string>>({});
   const outputChatId = $derived(threadId || sessionId);
   const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
+  // Verified code work: the badge on the reply that reported it.
+  $effect(() => {
+    if (chatSessionKey) void trackConversation(chatSessionKey);
+  });
   // Only the asks this conversation's own flow raised, inline at the bottom.
   const chatAsks = $derived(chatAsksOf($openAsks, $settledAsks, threadId));
   // The approvals this chat's own session raised, the same way.
@@ -2369,6 +2375,9 @@
               {/each}
             </div>
           {/if}
+          {#each segs.flatMap((sg) => (sg.id ? onMessage($verifications, sg.id) : [])) as v (v.id)}
+            <VerifiedBadge verification={v} />
+          {/each}
           <!-- Inline artifact cards for this message (populated by agent tool results) -->
           {#each artifacts.filter(a => segs.some((sg) => sg.id === a.messageId)) as artifact}
             {@const ArtIcon = artifactIcons[artifact.kind]}
@@ -2580,6 +2589,9 @@
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
     <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} />
+    {#each inProgress($verifications, chatSessionKey) as v (v.id)}
+      <VerifiedBadge verification={v} />
+    {/each}
     <ChatComposer
       {agentName}
       {agentId}

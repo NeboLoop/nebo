@@ -710,14 +710,14 @@ async fn a_draft_is_saved_and_shown_with_whats_missing() {
 #[test]
 fn a_screenshot_reports_the_console_errors_of_its_own_load() {
     let app = "app-shot-console-test";
-    crate::app_console::record(app, [("log", "an older run", "console", 1)]);
+    crate::app_console::record(app, [("log", "an older run", "console", 1, "")]);
     let mark = crate::app_console::recent(app, None, 1).last().map(|e| e.seq);
     crate::app_console::record(
         app,
         [
-            ("log", "ready", "console", 2),
-            ("error", "Failed to load module script: MIME type text/html (/assets/index-Ckm_4mnt.js)", "error", 3),
-            ("error", "GET /assets/index-Ckm_4mnt.js 404", "network", 4),
+            ("log", "ready", "console", 2, ""),
+            ("error", "Failed to load module script: MIME type text/html (/assets/index-Ckm_4mnt.js)", "error", 3, ""),
+            ("error", "GET /assets/index-Ckm_4mnt.js 404", "network", 4, ""),
         ],
     );
     let text = super::load_console(&crate::app_console::recent(app, mark, 200));
@@ -739,4 +739,16 @@ fn a_broken_picture_is_named_with_what_to_do() {
     // A font is a warning line, never a failure.
     assert_eq!(warning_lines(&[failed_fonts(&["Gone".to_string()])]), "\nWarning: these fonts didn't load, so the page draws with a fallback font: Gone.");
     assert_eq!(warning_lines(&[]), "");
+}
+
+/// Review round 4 Y2: a live check never passes by default: with no view of
+/// the app that can be opened, it fails.
+#[test]
+fn a_live_load_with_no_browser_to_open_a_view_fails() {
+    let (dir, store) = temp_store();
+    seed_app(&store, dir.path(), "app-live", "kart");
+    let app = store.get_agent("app-live").unwrap().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let got = rt.block_on(live_load(None, &app));
+    assert!(matches!(got, Err(LiveLoadError::NoBrowser(e)) if e.contains("no built-in browser")));
 }
