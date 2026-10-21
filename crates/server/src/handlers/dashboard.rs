@@ -536,6 +536,7 @@ mod tests {
             lane: "main".into(),
             parent_run_id: None,
             definition: None,
+            pending_questions: None,
             inputs: Some(r#"{"job_id":2101,"name":"hourly-calendar-check","manual":false}"#.into()),
             external_ref: Some("cron:2101".into()),
             current_wait_id: None,

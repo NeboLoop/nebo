@@ -184,7 +184,7 @@ pub(crate) fn turn_ended(
     heard_through: Option<&str>,
 ) {
     let out = state.store.open_asks(seat_session).unwrap_or(0);
-    let helping = state.helpers.list(Some(seat_session)).iter().any(|h| h.running);
+    let helping = state.helpers.list(Some(seat_session), false).iter().any(|h| h.running);
     if out > 0 || helping {
         return;
     }
@@ -239,21 +239,23 @@ fn hear(state: &AppState, asker_session: &str) {
     if let Err(e) = state.store.collect_seat(asker_session) {
         tracing::warn!(error = %e, asker = %asker_session, "addressing: collection not recorded");
     }
-    // An answer is delivered whole, capped the way a helper's result is:
-    // past the cap it is saved through the one spill path, in the asker's
-    // own results, and the notification carries its start and where it is.
+    // An answer is delivered whole up to the safety ceiling a helper's
+    // report has: past it, it is saved through the one spill path, in the
+    // asker's own results, and the notification says how the asker reads it
+    // back (a workflow step with read_step_data, any other with read_file).
     let spill_dir = state
         .harness
         .sessions()
         .resolve_session_id_by_key(asker_session)
         .map(|id| tools::result_shape::results_dir(&id))
         .unwrap_or_else(|_| tools::result_shape::results_dir(&asker_session.replace(':', "_")));
-    let updates: Vec<crate::wake::Update> = answers.iter().map(|a| update(state, a, &spill_dir)).collect();
+    let reader = tools::result_shape::Reader::of_session(asker_session);
+    let updates: Vec<crate::wake::Update> = answers.iter().map(|a| update(state, a, &spill_dir, reader)).collect();
     crate::wake::enqueue_all(state, asker_session, &updates);
 }
 
 /// One answer as the asker's notification reads it.
-fn update(state: &AppState, a: &Addressing, spill_dir: &std::path::Path) -> crate::wake::Update {
+fn update(state: &AppState, a: &Addressing, spill_dir: &std::path::Path, reader: tools::result_shape::Reader) -> crate::wake::Update {
     let name = state
         .store
         .get_agent(&a.agent_id)
@@ -274,19 +276,19 @@ fn update(state: &AppState, a: &Addressing, spill_dir: &std::path::Path) -> crat
     if !provenance.contains(&ProvenanceClass::Coworker) {
         provenance.push(ProvenanceClass::Coworker);
     }
-    let payload = answer_text(&who, &provenance, &a.answer, spill_dir);
+    let payload = answer_text(&who, &provenance, &a.answer, spill_dir, reader);
     crate::wake::Update { kind: ANSWER.to_string(), payload, provenance, handoff_depth: a.handoff_depth }
 }
 
-/// What the asker's model reads of one answer: whole, up to the cap a
-/// helper's result has — past it, saved through the one spill path and
-/// previewed — marked when it holds untrusted content. A notification is
+/// What the asker's model reads of one answer: whole, up to the safety
+/// ceiling a helper's report has — past it, saved through the one spill
+/// path and previewed — marked when it holds untrusted content. A notification is
 /// the model's, never shown to a person.
-fn answer_text(who: &str, provenance: &[ProvenanceClass], answer: &str, spill_dir: &std::path::Path) -> String {
+fn answer_text(who: &str, provenance: &[ProvenanceClass], answer: &str, spill_dir: &std::path::Path, reader: tools::result_shape::Reader) -> String {
     if answer.trim().is_empty() {
         return format!("{who} finished without an answer.");
     }
-    let body = agent::harness::delegation::collect::spill_if_long(answer, spill_dir);
+    let body = agent::harness::delegation::collect::spill_if_long(answer, spill_dir, agent::harness::delegation::collect::REPORT_LIMIT, reader);
     match types::labels::provenance_mark(provenance) {
         Some(mark) => format!("{who}:\n{mark}\n{body}"),
         None => format!("{who}:\n{body}"),
@@ -348,20 +350,30 @@ mod tests {
     /// and where the whole of it is — never a silent cut.
     #[test]
     fn an_answer_is_whole_or_saved() {
+        use tools::result_shape::Reader::{self, File, StepData};
         let dir = std::env::temp_dir().join(format!("nebo-answer-{}", uuid::Uuid::new_v4()));
         let icp = "The ideal customer is a two-agent brokerage. ".repeat(120);
         assert!(icp.chars().count() > 5000);
-        let read = answer_text("Business Brainstormer", &[], &icp, &dir);
+        let read = answer_text("Business Brainstormer", &[], &icp, &dir, File);
         assert_eq!(read, format!("Business Brainstormer:\n{icp}"));
-        let read = answer_text("Scout", &[ProvenanceClass::Coworker, ProvenanceClass::Web], "Rivals charge $40.", &dir);
+        let read = answer_text("Scout", &[ProvenanceClass::Coworker, ProvenanceClass::Web], "Rivals charge $40.", &dir, File);
         assert_eq!(read, "Scout:\n[Contains content from: web]\nRivals charge $40.");
-        let huge = "x".repeat(agent::harness::delegation::collect::RESULT_CAP + 1);
-        let read = answer_text("Business Brainstormer", &[], &huge, &dir);
+        let huge = "x".repeat(agent::harness::delegation::collect::REPORT_LIMIT + 1);
+        let read = answer_text("Business Brainstormer", &[], &huge, &dir, File);
         assert!(read.contains("Saved in full at:"), "{}", &read[..300.min(read.len())]);
         assert!(read.len() < huge.len());
         let saved = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
         assert_eq!(std::fs::read_to_string(saved).unwrap(), huge);
-        assert_eq!(answer_text("Clerk", &[], "  ", &dir), "Clerk finished without an answer.");
+        assert_eq!(answer_text("Clerk", &[], "  ", &dir, File), "Clerk finished without an answer.");
+        // An answer of up to 30,000 characters comes back whole; past it, a
+        // workflow step that asked is told to read the rest as step data.
+        let whole = "y".repeat(agent::harness::delegation::collect::REPORT_LIMIT);
+        assert_eq!(answer_text("Clerk", &[], &whole, &dir, File), format!("Clerk:\n{whole}"));
+        let read = answer_text("Clerk", &[], &huge, &dir, StepData);
+        assert!(read.contains("read_step_data") && !read.contains("read_file"), "{}", &read[..300.min(read.len())]);
+        assert_eq!(Reader::of_session("agent:clerk:workflow:run-1:fetch::0"), StepData);
+        assert_eq!(Reader::of_session("subagent:agent:clerk:workflow:run-1:fetch::0:h-1"), File, "a step's helper reads files");
+        assert_eq!(Reader::of_session("agent:clerk:web"), File);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

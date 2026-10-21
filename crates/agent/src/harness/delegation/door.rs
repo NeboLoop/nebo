@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tools::orchestrator::{FollowUp, SpawnRequest, SpawnResult, SubAgentOrchestrator};
 use tracing::{info, warn};
 
-use super::{Completion, CompletionStatus, HelperKind, HelperSpec, Helpers, Isolation, Launch, depth_of, launch_result, notify};
+use super::{Completion, CompletionStatus, HelperKind, HelperSpec, Helpers, Isolation, Launch, depth_of, launch_result, notify, split_helper_key};
 use crate::harness::{Delivery, Harness, SeatRequest, TurnInput, TurnMode, TurnRequest};
 
 type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -59,6 +59,7 @@ impl HelperDoor {
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
             speed: self.speed(&req.speed)?,
+            report_limit: (req.report_limit > 0).then_some(req.report_limit),
         })
     }
 
@@ -197,19 +198,19 @@ impl SubAgentOrchestrator for HelperDoor {
         Box::pin(async move { status })
     }
 
-    fn send(&self, task_id: &str, message: &str, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
+    fn send(&self, task_id: &str, message: &str, answer: Option<tools::orchestrator::Answer>, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
         let (task_id, message) = (task_id.to_string(), message.to_string());
         Box::pin(async move {
             let (task_id, message) = (task_id.as_str(), message.as_str());
             let turn = parent_turn(&parent);
             let running = self
                 .helpers
-                .list(Some(&turn.session_key))
+                .list(Some(&turn.session_key), false)
                 .iter()
                 .any(|h| h.task_id == task_id && h.running);
             let said = self
                 .helpers
-                .send(&turn, parent.seat.grant.as_deref(), &parent.seat.taint, task_id, message)
+                .send(&turn, parent.seat.grant.as_deref(), &parent.seat.taint, task_id, message, answer)
                 .await?;
             Ok(if running {
                 FollowUp::Delivered { task_id: task_id.to_string() }
@@ -228,9 +229,23 @@ impl SubAgentOrchestrator for HelperDoor {
     fn list_active(&self, caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
         let listed = self
             .helpers
-            .list(Some(caller))
+            .list(Some(caller), true)
             .into_iter()
-            .map(|h| (h.task_id, h.description, if h.running { "running" } else { "finished" }.to_string()))
+            .map(|h| {
+                // A nested one names the helper it works under.
+                let description = match split_helper_key(&h.parent_key) {
+                    Some((_, parent)) if h.parent_key != caller => format!("{} (under {parent})", h.description),
+                    _ => h.description,
+                };
+                let status = if h.running {
+                    "running"
+                } else if h.waiting {
+                    "waiting on work it started"
+                } else {
+                    "finished"
+                };
+                (h.task_id, description, status.to_string())
+            })
             .collect();
         Box::pin(async move { listed })
     }
@@ -287,7 +302,7 @@ mod tests {
         fn status(&self, _: &str, _: &str) -> Fut<'_, Result<String, String>> {
             Box::pin(async { Ok(String::new()) })
         }
-        fn send(&self, _: &str, _: &str, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
+        fn send(&self, _: &str, _: &str, _: Option<tools::orchestrator::Answer>, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
             self.0.0.lock().unwrap().push(parent);
             Box::pin(async { Ok(FollowUp::Continued(done())) })
         }
@@ -354,6 +369,7 @@ mod tests {
             isolation: None,
             skills: Vec::new(),
             speed: None,
+            report_limit: None,
         };
         child_request(&parent, "h1", &spec, None, TurnInput::None)
     }

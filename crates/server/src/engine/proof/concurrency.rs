@@ -562,6 +562,7 @@ fn background_child(marker: &str) -> tools::SpawnRequest {
         isolate: String::new(),
         workspace: String::new(),
         speed: String::new(),
+        report_limit: 0,
         seat: Default::default(),
     }
 }
@@ -615,7 +616,7 @@ async fn a_parents_message_reaches_its_running_sub_agent() {
 
     let web = vec![types::provenance::ProvenanceClass::Web];
     for words in ["Also cover pricing.", "And the edge cases."] {
-        let sent = orchestrator.send(&task, words, from_parent(web.clone())).await.expect("sent");
+        let sent = orchestrator.send(&task, words, None, from_parent(web.clone())).await.expect("sent");
         assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "a running child takes the message: {sent:?}");
     }
     assert_eq!(script.calls(), 1, "delivering does not start a second run beside the first");
@@ -645,7 +646,7 @@ async fn a_parents_message_reaches_its_running_sub_agent() {
     // Finished: a message continues it on its own session.
     wait_until_finished(&orchestrator, &task).await;
     script.answer(1);
-    let sent = orchestrator.send(&task, "One more thing.", from_parent(vec![])).await.expect("sent");
+    let sent = orchestrator.send(&task, "One more thing.", None, from_parent(vec![])).await.expect("sent");
     assert!(matches!(sent, tools::FollowUp::Continued(ref r) if r.success), "a finished child continues: {sent:?}");
     report_holding(&store, &task, "done").await;
     let follow_up = child_thread(&harness, &task).into_iter().find(|m| m.content == "One more thing.").expect("the follow-up input");
@@ -664,7 +665,7 @@ async fn a_message_that_lands_as_the_sub_agent_finishes_is_heard() {
     let task = orchestrator.spawn(background_child("MARKET-8")).await.expect("spawned").task_id;
     script.started(0).await;
 
-    let sent = orchestrator.send(&task, "Prices in euros, please.", from_parent(vec![])).await.expect("sent");
+    let sent = orchestrator.send(&task, "Prices in euros, please.", None, from_parent(vec![])).await.expect("sent");
     assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "{sent:?}");
     script.answer(2);
 
@@ -686,7 +687,7 @@ async fn a_sub_agent_with_a_message_waiting_can_still_be_cancelled() {
     let task = orchestrator.spawn(background_child("MARKET-9")).await.expect("spawned").task_id;
     script.started(0).await;
 
-    let sent = orchestrator.send(&task, "Stop at the summary.", from_parent(vec![])).await.expect("sent");
+    let sent = orchestrator.send(&task, "Stop at the summary.", None, from_parent(vec![])).await.expect("sent");
     assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "{sent:?}");
     orchestrator.cancel(&task, PARENT).await.expect("cancelled");
     wait_until_finished(&orchestrator, &task).await;

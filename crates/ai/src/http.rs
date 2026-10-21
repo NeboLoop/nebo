@@ -18,10 +18,51 @@ use std::time::Duration;
 /// A response's `Retry-After`, in seconds (the delta-seconds form; the
 /// HTTP-date form is not sent by any provider we call).
 pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-    headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse().ok())
+    types::balance::retry_after(headers.get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok())).map(|d| d.as_secs())
+}
+
+/// Send the request `build` makes (built fresh per attempt). With `waits`,
+/// a gateway refusal that says work already running holds the balance
+/// ([`crate::BALANCE_RESERVED`]) is waited out here, for a caller with no
+/// runner of its own, from the logical request's one
+/// [`crate::ReservedWaits`]: a caller that sends again for other reasons
+/// passes the same one, so its budget never starts over. The refused
+/// request was not served, so sending it again charges once. Without
+/// `waits` (the chat runner, the embedding gate: they wait without holding
+/// their slot) it is sent once. Any other answer, and a reserved one that
+/// is not waited out, is returned as it came for the caller to map
+/// ([`crate::ProviderError::BalanceReserved`]).
+pub async fn send(
+    build: impl Fn() -> reqwest::RequestBuilder,
+    mut waits: Option<&mut crate::ReservedWaits>,
+) -> reqwest::Result<reqwest::Response> {
+    loop {
+        let resp = build().send().await?;
+        let Some(waits) = waits.as_deref_mut() else {
+            return Ok(resp);
+        };
+        if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Ok(resp);
+        }
+        // Reading the body is the only way to tell; the response is put back
+        // together for the caller when it is not waited out.
+        let (status, version, headers) = (resp.status(), resp.version(), resp.headers().clone());
+        let body = resp.bytes().await?;
+        let wait = if crate::is_balance_reserved(status.as_u16(), &String::from_utf8_lossy(&body)) {
+            waits.next(retry_after_secs(&headers).map(Duration::from_secs))
+        } else {
+            None
+        };
+        let Some(wait) = wait else {
+            let mut back = ::http::Response::new(body);
+            *back.status_mut() = status;
+            *back.version_mut() = version;
+            *back.headers_mut() = headers;
+            return Ok(reqwest::Response::from(back));
+        };
+        tracing::info!(wait_ms = wait.as_millis() as u64, "balance held by running work; sending again after the wait");
+        tokio::time::sleep(wait).await;
+    }
 }
 
 /// HTTP client for streaming chat completions (Anthropic, OpenAI, Janus,
@@ -95,6 +136,77 @@ mod tests {
         });
         let _ = client.get(&url).send().await;
         seen.await.unwrap()
+    }
+
+    const RESERVED: &str = r#"{"error":{"code":"BALANCE_RESERVED","message":"balance reserved by running work","retryable":true}}"#;
+
+    /// A local server that answers its requests in turn from `script`
+    /// (status, body), the last answer repeating, each with `Retry-After: 0`.
+    /// Returns its URL and how many requests it has answered.
+    async fn scripted(script: Vec<(u16, &'static str)>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let (status, body) = script[n.min(script.len() - 1)];
+                let mut buf = vec![0u8; 8192];
+                let mut got = Vec::new();
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        (url, count)
+    }
+
+    /// Running work held the balance twice; the third send is served.
+    #[tokio::test]
+    async fn a_reserved_balance_is_waited_out_and_the_request_served() {
+        let (url, count) = scripted(vec![(429, RESERVED), (429, RESERVED), (200, r#"{"ok":true}"#)]).await;
+        let client = reqwest::Client::new();
+        let resp = super::send(|| client.post(&url).body("{}"), Some(&mut crate::ReservedWaits::default())).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), r#"{"ok":true}"#);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// Still held after every wait: the refusal comes back whole, after the
+    /// bounded number of sends, for the caller to map.
+    #[tokio::test]
+    async fn a_balance_held_past_the_waits_comes_back_as_it_was_sent() {
+        let (url, count) = scripted(vec![(429, RESERVED)]).await;
+        let client = reqwest::Client::new();
+        let resp = super::send(|| client.post(&url).body("{}"), Some(&mut crate::ReservedWaits::default())).await.unwrap();
+        assert_eq!(resp.status(), 429);
+        assert_eq!(super::retry_after_secs(resp.headers()), Some(0));
+        assert_eq!(resp.text().await.unwrap(), RESERVED);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1 + types::balance::RESERVED_RETRIES);
+    }
+
+    /// Any other 429, the out-of-balance one included, is not sent again
+    /// here and reaches the caller unchanged.
+    #[tokio::test]
+    async fn other_refusals_are_sent_once() {
+        const UNFUNDED: &str = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#;
+        let (url, count) = scripted(vec![(429, UNFUNDED)]).await;
+        let client = reqwest::Client::new();
+        let resp = super::send(|| client.post(&url).body("{}"), Some(&mut crate::ReservedWaits::default())).await.unwrap();
+        assert_eq!(resp.status(), 429);
+        assert_eq!(resp.text().await.unwrap(), UNFUNDED);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// Every call to Janus through these clients names this Nebo and its
