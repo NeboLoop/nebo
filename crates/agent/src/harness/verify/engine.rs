@@ -254,6 +254,28 @@ const STOP_HERE: &str = "Stop here";
 const KEEP_IN_COPY: &str = "Keep it in its copy";
 const LAND_AFTER_MINE: &str = "Land it after I commit mine";
 const KEEP_MINE: &str = "Keep mine, don't land it";
+const FIX_IT: &str = "Fix it";
+const LEAVE_IT: &str = "Leave it as it is";
+
+/// The choices a finding that is the owner's call offers him: the one its
+/// reviewer recommends first, then its others; a finding that named none
+/// offers fixing it or leaving it. A card is never just Skip: his own words
+/// answer it too, typed in the composer.
+fn decision_choices(d: &Finding) -> Vec<&str> {
+    let mut options: Vec<&str> = Vec::new();
+    if let Some(r) = d.recommended.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        options.push(r);
+    }
+    for o in d.options.iter().map(|o| o.trim()).filter(|o| !o.is_empty()) {
+        if !options.contains(&o) {
+            options.push(o);
+        }
+    }
+    if options.is_empty() {
+        options = vec![FIX_IT, LEAVE_IT];
+    }
+    options
+}
 
 /// Where one work's round left it.
 enum Step {
@@ -1044,15 +1066,7 @@ impl VerifyCheck {
                 asked.push(json!({ "finding": d, "answer": answer }));
                 continue;
             }
-            let mut options: Vec<&str> = Vec::new();
-            if let Some(r) = d.recommended.as_deref() {
-                options.push(r);
-            }
-            for o in &d.options {
-                if Some(o.as_str()) != d.recommended.as_deref() {
-                    options.push(o);
-                }
-            }
+            let options = decision_choices(d);
             let context = format!(
                 "{}\n\nWhy it matters: {}\n\nWhere: {}",
                 d.repro, d.impact, d.evidence
@@ -1668,5 +1682,38 @@ fn landing_message(spec: &str) -> String {
     match chars.next() {
         Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
         None => "Code changes made by an employee".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(recommended: Option<&str>, options: &[&str]) -> Finding {
+        serde_json::from_value(json!({
+            "severity": "major",
+            "kind": "decision",
+            "title": "Pin saves only to local store, not to the chat thread",
+            "evidence": "pin.js:12",
+            "repro": "",
+            "impact": "",
+            "fix": "",
+            "options": options,
+            "recommended": recommended,
+        }))
+        .unwrap()
+    }
+
+    /// The owner's card always has choices: live (build 152) a reviewer's
+    /// call that named none showed only Skip, and nothing to answer with.
+    #[test]
+    fn a_call_for_the_owner_always_offers_choices() {
+        assert_eq!(decision_choices(&call(None, &[])), [FIX_IT, LEAVE_IT]);
+        assert_eq!(decision_choices(&call(Some(" "), &["", " "])), [FIX_IT, LEAVE_IT], "blank choices are none");
+        assert_eq!(
+            decision_choices(&call(Some("Save to the thread"), &["Keep it local", "Save to the thread"])),
+            ["Save to the thread", "Keep it local"],
+            "the recommended one first, once"
+        );
     }
 }

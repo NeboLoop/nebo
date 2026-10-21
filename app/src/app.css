@@ -1485,6 +1485,18 @@
 .verify-sheet {
   @apply flex flex-col gap-3 text-xs;
 }
+.verify-question {
+  @apply flex flex-col gap-2 rounded-box bg-base-200 px-3 py-2.5;
+}
+.verify-question-text {
+  @apply m-0 text-sm font-medium text-base-content;
+}
+.verify-question-choices {
+  @apply flex flex-wrap gap-2;
+}
+.verify-question-more {
+  @apply flex items-center justify-between;
+}
 .verify-sheet-phase {
   @apply m-0 font-medium text-info;
 }

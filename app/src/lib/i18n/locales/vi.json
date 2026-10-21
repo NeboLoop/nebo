@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m} phút {s} giây"
-		}
+		},
+		"answering": "Đang trả lời: {question}",
+		"tellIt": "Bảo nó cần làm gì"
 	}
 }

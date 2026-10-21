@@ -25,6 +25,9 @@ import {
   elapsed,
   inProgress,
   lineWords,
+  loopQuestion,
+  openAskFor,
+  typedAnswers,
   onMessage,
   trackConversation,
   verifications,
@@ -174,5 +177,34 @@ describe("the badge", () => {
     expect(elapsed(view({ state: "checking" }), 160)).toBe(60);
     expect(duration(8, tr)).toBe("verify.round.time(seconds=8)");
     expect(duration(125, tr)).toBe("verify.time.minutes(m=2,s=5)");
+  });
+
+  describe("the loop's open question", () => {
+    const question = "Pin saves only to local store, not to the chat thread";
+    const waiting = view(
+      { state: "waiting" },
+      { id: "v-q", messageId: undefined, pendingAsk: { question, options: ["Fix it", "Leave it as it is"] } },
+    );
+    const messages = [
+      { type: "ask", requestId: "ask-1", prompt: question, response: "Fix it" },
+      { type: "user", content: "hi" },
+      { type: "ask", requestId: "ask-2", prompt: `${question}\n` },
+    ];
+
+    it("is the open ask a waiting verification holds", () => {
+      expect(openAskFor(messages, question)?.requestId).toBe("ask-2");
+      expect(loopQuestion(messages, { [waiting.id]: waiting }, "agent:dev:web")?.requestId).toBe("ask-2");
+      expect(loopQuestion(messages, { [waiting.id]: waiting }, "agent:other:web")).toBeNull();
+      const checking = view({ state: "checking" }, { id: "v-c", messageId: undefined, pendingAsk: { question } });
+      expect(loopQuestion(messages, { [checking.id]: checking }, "agent:dev:web")).toBeNull();
+    });
+
+    it("takes the owner's typed words as its answer, never as a message queued behind the work", () => {
+      const loop = loopQuestion(messages, { [waiting.id]: waiting }, "agent:dev:web");
+      expect(typedAnswers(loop, "Save it to the thread too", 0)).toBe("ask-2");
+      expect(typedAnswers(loop, "   ", 0)).toBeNull();
+      expect(typedAnswers(loop, "here is a file", 1)).toBeNull();
+      expect(typedAnswers(null, "hello", 0)).toBeNull();
+    });
   });
 });

@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m} min {s} saat"
-		}
+		},
+		"answering": "Menjawab: {question}",
+		"tellIt": "Beritahu apa yang perlu dibuat"
 	}
 }

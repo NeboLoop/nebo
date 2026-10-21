@@ -63,7 +63,8 @@
   import { callLine, callWords, resultLine, groupSummary, type CallName } from '$lib/chat/callLabel';
   import HandoffLine from '$lib/components/handoffs/HandoffLine.svelte';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
-  import { verifications, trackConversation, onMessage, inProgress } from '$lib/stores/verifications';
+  import { verifications, trackConversation, onMessage, inProgress, askOf, openAskFor, loopQuestion as loopQuestionOf, typedAnswers } from '$lib/stores/verifications';
+  import type { VerificationView } from '$lib/api/neboComponents';
   import { turnBlocks, turnText, noteText, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
   import BackgroundStatus from '$lib/components/chat/BackgroundStatus.svelte';
   import { backgroundNotices, belongsTo } from '$lib/stores/background';
@@ -1389,7 +1390,21 @@
   ) {
     autoScrollEnabled = true;
     showScrollButton = false;
+    // The verify loop's open question takes his words as its answer, never
+    // as a message queued behind the work.
+    const answers = typedAnswers(loopQuestion, text, files.length);
+    if (answers) {
+      onasksubmit?.(answers, text.trim());
+      return;
+    }
     (onsend as ((t: string, f: typeof files, ...r: unknown[]) => void) | undefined)?.(text, files, ...rest);
+  }
+
+  /** Answer the question verification `v` waits on: a choice, Skip, or his
+   *  own words. */
+  function answerVerification(v: VerificationView, value: string) {
+    const ask = openAskFor(messages, askOf(v)?.question);
+    if (ask?.type === 'ask') onasksubmit?.(ask.requestId, value);
   }
 
   // Dropzone state
@@ -1529,6 +1544,12 @@
   // A question waits on the owner's words: the composer is where he
   // answers it.
   const answering = $derived(isLoading && messages.some((m) => m.type === 'ask' && m.response == null && !m.cancelled && takesWords(m.widgets)));
+  /** The open question the verify loop waits on in this conversation: the
+   *  ask whose question a waiting verification holds. */
+  const loopQuestion = $derived.by(() => {
+    const m = loopQuestionOf(messages, $verifications, chatSessionKey);
+    return m?.type === 'ask' ? m : null;
+  });
   /** The working line's words: the running call's, else the turn's status. */
   const workingLine = $derived(runningCall ? [runningCall.label, runningCall.subject].filter(Boolean).join(' ') : activityStatus || $t('chat.working'));
 
@@ -2376,7 +2397,7 @@
             </div>
           {/if}
           {#each segs.flatMap((sg) => (sg.id ? onMessage($verifications, sg.id) : [])) as v (v.id)}
-            <VerifiedBadge verification={v} />
+            <VerifiedBadge verification={v} onanswer={answerVerification} />
           {/each}
           <!-- Inline artifact cards for this message (populated by agent tool results) -->
           {#each artifacts.filter(a => segs.some((sg) => sg.id === a.messageId)) as artifact}
@@ -2588,13 +2609,13 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
-    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} />
+    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} onanswer={answerVerification} />
     <ChatComposer
       {agentName}
       {agentId}
       {threadId}
       {sessionId}
-      placeholder={answering ? $t('chat.typeYourAnswer') : placeholder}
+      placeholder={loopQuestion ? $t('verify.answering', { values: { question: loopQuestion.prompt.trim() } }) : answering ? $t('chat.typeYourAnswer') : placeholder}
       {allAgents}
       onsend={handleSend}
       {onstop}

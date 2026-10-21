@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m} Min. {s} Sek."
-		}
+		},
+		"answering": "Antwort auf: {question}",
+		"tellIt": "Sag, was zu tun ist"
 	}
 }

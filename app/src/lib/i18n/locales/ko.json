@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m}분 {s}초"
-		}
+		},
+		"answering": "답변 중: {question}",
+		"tellIt": "할 일 알려주기"
 	}
 }

@@ -203,6 +203,55 @@ export function badgeWords(
   }
 }
 
+/** The question a verification waits on the owner for, with the choices
+ *  it offered; null when it waits on none. */
+export function askOf(v: VerificationView): { question: string; options: string[] } | null {
+  const ask = v.pendingAsk as { question?: unknown; options?: unknown } | null | undefined;
+  const question = typeof ask?.question === "string" ? ask.question.trim() : "";
+  if (!question) return null;
+  const options = Array.isArray(ask?.options) ? ask.options.filter((o): o is string => typeof o === "string") : [];
+  return { question, options };
+}
+
+/** Answers the question a verification waits on, with a choice, Skip or
+ *  the owner's own words, through the conversation's open question. */
+export type VerificationAnswer = (v: VerificationView, value: string) => void;
+
+/** A conversation message as far as its questions go. */
+type AskLike = { type: string; requestId?: string; prompt?: string; response?: string | null; cancelled?: boolean };
+
+/** The latest open question in `messages` asking `question`. */
+export function openAskFor<M extends AskLike>(messages: M[], question: string | undefined): M | null {
+  if (!question) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.type === "ask" && m.response == null && !m.cancelled && m.prompt?.trim() === question) return m;
+  }
+  return null;
+}
+
+/** The open question the verify loop waits on in conversation `sessionKey`:
+ *  the ask whose question one of its waiting verifications holds. */
+export function loopQuestion<M extends AskLike>(
+  messages: M[],
+  all: Record<string, VerificationView>,
+  sessionKey: string,
+): M | null {
+  for (const v of inProgress(all, sessionKey)) {
+    if (v.badge.state !== "waiting") continue;
+    const ask = openAskFor(messages, askOf(v)?.question);
+    if (ask) return ask;
+  }
+  return null;
+}
+
+/** Where the owner's typed words go: with the loop's question open, to it
+ *  as his answer (its request id), never queued behind the work; otherwise
+ *  null, a message like any other. A message with files is always one. */
+export function typedAnswers(loop: AskLike | null, text: string, files: number): string | null {
+  return loop?.requestId && !files && text.trim() ? loop.requestId : null;
+}
+
 /** The one line a verification is in the conversation, the size of a tool
  *  row: "Checking · round 2", then "Verified", "2 issues left", "Not
  *  verified" or "Waiting on you". Its detail is in the sheet it opens. */

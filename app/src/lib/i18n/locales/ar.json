@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m} د {s} ث"
-		}
+		},
+		"answering": "إجابة على: {question}",
+		"tellIt": "أخبره بما يفعل"
 	}
 }

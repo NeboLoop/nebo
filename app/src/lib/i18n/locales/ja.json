@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m}分{s}秒"
-		}
+		},
+		"answering": "回答中：{question}",
+		"tellIt": "どうするか伝える"
 	}
 }

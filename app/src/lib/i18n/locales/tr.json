@@ -4536,6 +4536,8 @@
 		},
 		"time": {
 			"minutes": "{m} dk {s} sn"
-		}
+		},
+		"answering": "Yanıtlanıyor: {question}",
+		"tellIt": "Ne yapacağını söyle"
 	}
 }
