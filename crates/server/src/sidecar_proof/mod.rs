@@ -3,9 +3,10 @@
 //! (`napp::test_sidecar`), killed, crashed, starved and removed — run by the
 //! same `AppLifecycle` the proxy serves through, over a throwaway Nebo root.
 //! Requests go through `AppLifecycle::serve`, the proxy's own path, to a
-//! stand-in sidecar server in this process that the test sidecar relays to.
-//! The stand-in keeps the sidecar contract: it refuses every call that does
-//! not carry the launch's `NEBO_APP_TOKEN` as `authorization: Bearer`.
+//! stand-in sidecar server in this process that the test sidecar relays to
+//! (`napp::test_sidecar`). The stand-in keeps the sidecar contract: it
+//! refuses every call that does not carry the launch's `NEBO_SIDECAR_TOKEN`
+//! as `authorization: Bearer`.
 //!
 //! Every scenario is listed as a fixture in `fixtures/app-sidecars/` and in
 //! `suites/app-sidecars.yaml`; `make test-sidecar-proof` runs the suite through
@@ -14,8 +15,7 @@
 
 #![allow(dead_code)]
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,7 +82,6 @@ impl World {
     /// Supervise `app`. `setup` prepares it (its mode, its program) before
     /// supervision begins.
     pub async fn new(app: TestApp, policy: RestartPolicy, setup: impl FnOnce(&TestApp)) -> Self {
-        app.set_upstream(serve_as_sidecar(app.tool_dir.join("fixture-token")).await);
         setup(&app);
         let hub = Arc::new(ClientHub::new());
         let id = app.id.clone();
@@ -149,56 +148,4 @@ fn run_everything() -> Arc<dyn tools::PermissionGate> {
         }
     }
     Arc::new(RunEverything)
-}
-
-/// A stand-in sidecar server on a loopback address of its own: answers every
-/// request with "<method> <path>", and refuses one whose bearer token is not
-/// the one the sidecar was launched with (read from `token_file`, which the
-/// test sidecar writes on each launch). Returns its address.
-async fn serve_as_sidecar(token_file: PathBuf) -> SocketAddr {
-    struct Echo {
-        token_file: PathBuf,
-    }
-    #[tonic::async_trait]
-    impl proto::ui_service_server::UiService for Echo {
-        async fn health_check(
-            &self,
-            _req: tonic::Request<proto::HealthCheckRequest>,
-        ) -> Result<tonic::Response<proto::HealthCheckResponse>, tonic::Status> {
-            Err(tonic::Status::unimplemented("not used"))
-        }
-        async fn configure(
-            &self,
-            _req: tonic::Request<proto::SettingsMap>,
-        ) -> Result<tonic::Response<proto::Empty>, tonic::Status> {
-            Err(tonic::Status::unimplemented("not used"))
-        }
-        async fn handle_request(
-            &self,
-            req: tonic::Request<proto::HttpRequest>,
-        ) -> Result<tonic::Response<proto::HttpResponse>, tonic::Status> {
-            let token = std::fs::read_to_string(&self.token_file).unwrap_or_default();
-            let bearer = req.metadata().get("authorization").and_then(|v| v.to_str().ok());
-            if token.is_empty() || bearer != Some(format!("Bearer {token}").as_str()) {
-                return Err(tonic::Status::unauthenticated("no valid app token"));
-            }
-            let r = req.into_inner();
-            Ok(tonic::Response::new(proto::HttpResponse {
-                status_code: 200,
-                headers: Default::default(),
-                body: format!("{} {}", r.method, r.path).into_bytes(),
-            }))
-        }
-    }
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stand-in sidecar server");
-    let addr = listener.local_addr().expect("its address");
-    let incoming = futures::stream::unfold(listener, |l| async move {
-        Some((l.accept().await.map(|(s, _)| s), l))
-    });
-    tokio::spawn(
-        tonic::transport::Server::builder()
-            .add_service(proto::ui_service_server::UiServiceServer::new(Echo { token_file }))
-            .serve_with_incoming(incoming),
-    );
-    addr
 }

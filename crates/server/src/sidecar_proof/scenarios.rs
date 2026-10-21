@@ -139,8 +139,9 @@ async fn a_long_app_folder_path_still_serves() {
 }
 
 /// Nothing listens unauthenticated: a call to the sidecar's address that does
-/// not carry this launch's token, or carries another, is refused. Nebo's own
-/// calls carry it and are answered.
+/// not carry this launch's sidecar token is refused — no token, another
+/// token, and the app's own NEBO_APP_TOKEN (the other direction's) alike.
+/// Nebo's own calls carry the sidecar token and are answered.
 #[tokio::test]
 async fn a_call_without_the_token_is_refused() {
     let w = World::new(TestApp::new("sc-token"), quick(), |_| {}).await;
@@ -163,7 +164,10 @@ async fn a_call_without_the_token_is_refused() {
     assert_eq!(none.code(), tonic::Code::Unauthenticated, "{none:?}");
     let wrong = call(Some("Bearer 00")).await.expect_err("another token: refused");
     assert_eq!(wrong.code(), tonic::Code::Unauthenticated, "{wrong:?}");
-    let right = call(Some(&format!("Bearer {}", l.app_token))).await.expect("this launch's token");
+    let outbound = call(Some(&format!("Bearer {}", l.app_token))).await.expect_err("the app token: refused");
+    assert_eq!(outbound.code(), tonic::Code::Unauthenticated, "{outbound:?}");
+    assert_ne!(l.app_token, l.sidecar_token, "one token per direction");
+    let right = call(Some(&format!("Bearer {}", l.sidecar_token))).await.expect("this launch's sidecar token");
     assert_eq!(right.into_inner().status_code, 200);
     w.lifecycle.shutdown().await;
 }

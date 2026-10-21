@@ -74,7 +74,7 @@ async fn validate_app_token(
     };
 
     let expected = lifecycle.app_token().await;
-    if expected.is_empty() || token != expected {
+    if expected.is_empty() || !crate::handlers::ws::constant_time_eq(token, &expected) {
         return Err((StatusCode::UNAUTHORIZED, "invalid app token").into_response());
     }
 

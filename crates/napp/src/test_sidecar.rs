@@ -3,6 +3,11 @@
 //! binary; scripts are refused at launch), installed into a throwaway app
 //! directory under a throwaway Nebo root. Nothing here touches the real data
 //! directory.
+//!
+//! The fixture relays every connection to a stand-in sidecar server each
+//! [`TestApp`] runs in this process ([`serve_as_sidecar`]): it answers
+//! `UIService` the way the SDKs do, refusing any call that does not carry the
+//! launch's `NEBO_SIDECAR_TOKEN`.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -61,6 +66,8 @@ impl TestApp {
         .expect("manifest");
         let app = Self { _root: root, id: id.to_string(), home, tool_dir };
         app.install_binary();
+        let upstream = serve_as_sidecar(app.tool_dir.join("fixture-token"));
+        std::fs::write(app.tool_dir.join("fixture-upstream"), upstream.to_string()).expect("fixture-upstream");
         app
     }
 
@@ -90,11 +97,6 @@ impl TestApp {
         std::fs::write(self.tool_dir.join("fixture-mode"), mode).expect("fixture-mode");
     }
 
-    /// Relay every accepted connection to this address.
-    pub fn set_upstream(&self, addr: SocketAddr) {
-        std::fs::write(self.tool_dir.join("fixture-upstream"), addr.to_string()).expect("fixture-upstream");
-    }
-
     /// How many times the program has started.
     pub fn launches(&self) -> usize {
         std::fs::read_to_string(self.tool_dir.join("fixture-launches"))
@@ -113,4 +115,74 @@ pub fn kill(pid: u32) {
 /// Whether a pid names a process (a zombie counts).
 pub fn exists(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// A stand-in sidecar server on a loopback address of its own, run on its own
+/// thread for the life of the test process: answers `HandleRequest` with
+/// "<method> <path>" and `HealthCheck` as healthy, and refuses every call
+/// whose bearer token is not the `NEBO_SIDECAR_TOKEN` the sidecar was launched
+/// with (read from `token_file`, which the fixture writes on each launch).
+fn serve_as_sidecar(token_file: PathBuf) -> SocketAddr {
+    use proto::ui_service_server::{UiService, UiServiceServer};
+
+    struct Echo {
+        token_file: PathBuf,
+    }
+
+    impl Echo {
+        fn check<T>(&self, req: &tonic::Request<T>) -> Result<(), tonic::Status> {
+            let token = std::fs::read_to_string(&self.token_file).unwrap_or_default();
+            let bearer = req.metadata().get("authorization").and_then(|v| v.to_str().ok());
+            if token.is_empty() || bearer != Some(format!("Bearer {token}").as_str()) {
+                return Err(tonic::Status::unauthenticated("no valid sidecar token"));
+            }
+            Ok(())
+        }
+    }
+
+    #[tonic::async_trait]
+    impl UiService for Echo {
+        async fn health_check(
+            &self,
+            req: tonic::Request<proto::HealthCheckRequest>,
+        ) -> Result<tonic::Response<proto::HealthCheckResponse>, tonic::Status> {
+            self.check(&req)?;
+            Ok(tonic::Response::new(proto::HealthCheckResponse { healthy: true, ..Default::default() }))
+        }
+        async fn configure(
+            &self,
+            req: tonic::Request<proto::SettingsMap>,
+        ) -> Result<tonic::Response<proto::Empty>, tonic::Status> {
+            self.check(&req)?;
+            Ok(tonic::Response::new(proto::Empty {}))
+        }
+        async fn handle_request(
+            &self,
+            req: tonic::Request<proto::HttpRequest>,
+        ) -> Result<tonic::Response<proto::HttpResponse>, tonic::Status> {
+            self.check(&req)?;
+            let r = req.into_inner();
+            Ok(tonic::Response::new(proto::HttpResponse {
+                status_code: 200,
+                headers: Default::default(),
+                body: format!("{} {}", r.method, r.path).into_bytes(),
+            }))
+        }
+    }
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stand-in sidecar server");
+    let addr = listener.local_addr().expect("its address");
+    listener.set_nonblocking(true).expect("nonblocking");
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
+            let incoming = futures::stream::unfold(listener, |l| async move { Some((l.accept().await.map(|(s, _)| s), l)) });
+            let _ = tonic::transport::Server::builder()
+                .add_service(UiServiceServer::new(Echo { token_file }))
+                .serve_with_incoming(incoming)
+                .await;
+        });
+    });
+    addr
 }

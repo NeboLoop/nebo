@@ -9,8 +9,8 @@
 //! - `fixture-upstream`: an address each accepted connection is relayed to,
 //!   so a test can answer the requests in-process.
 //! - `fixture-launches`: appended with this process's pid on every start.
-//! - `fixture-token`: written with the `NEBO_APP_TOKEN` this launch was given,
-//!   so the in-process server can refuse calls that do not carry it.
+//! - `fixture-token`: written with the `NEBO_SIDECAR_TOKEN` this launch was
+//!   given, so the in-process server can refuse calls that do not carry it.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -19,7 +19,7 @@ use std::{env, fs, thread};
 
 fn main() {
     let dir = PathBuf::from(env::var("NEBO_APP_DIR").expect("NEBO_APP_DIR"));
-    let token = env::var("NEBO_APP_TOKEN").expect("NEBO_APP_TOKEN");
+    let token = env::var("NEBO_SIDECAR_TOKEN").expect("NEBO_SIDECAR_TOKEN");
     let mode = fs::read_to_string(dir.join("fixture-mode")).unwrap_or_default();
     let mode = mode.trim().to_string();
     let mut launches = fs::OpenOptions::new()

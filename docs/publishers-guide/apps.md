@@ -635,7 +635,7 @@ nebo.fetch('/projects')
                               │
                               ├─ Connects to the address
                               │  the sidecar announced,
-                              │  sends its launch token
+                              │  sends its sidecar token
                               │
                               └──── gRPC HandleRequest ──►  UIService
                                     HttpRequest {              │
@@ -821,7 +821,7 @@ The SDKs (`nebo-sdk-rust`, `nebo-sdk-go`, `nebo-sdk-c`) do all of this in their 
 1. Bind TCP on `127.0.0.1:0` — loopback only, never `0.0.0.0`; port `0` so the system picks a free port.
 2. Serve the `UIService` gRPC service on it.
 3. Print one line on stdout once it is listening, and flush it: `nebo-app-listening 127.0.0.1:<port>`. Nebo reads it, accepts only a loopback address, and connects there.
-4. Refuse every call that does not carry `authorization: Bearer <NEBO_APP_TOKEN>` with `UNAUTHENTICATED`. Nebo sends it on every call; nothing else on the computer has it.
+4. Refuse every call that does not carry `authorization: Bearer <NEBO_SIDECAR_TOKEN>` with `UNAUTHENTICATED`, including a call carrying `NEBO_APP_TOKEN`. Nebo sends the sidecar token on every call; nothing else on the computer has it. Answer `UIService.HealthCheck` (with that token): it is Nebo's health probe.
 5. Exit when stdin closes. Nebo holds the other end for the sidecar's whole life, so this is how a sidecar notices Nebo is gone, however it went. Exit on SIGTERM too.
 
 Minimal Rust example, with the SDK:
@@ -829,7 +829,7 @@ Minimal Rust example, with the SDK:
 ```rust
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = nebo_sdk::NeboApp::new()?; // fails without NEBO_APP_TOKEN
+    let app = nebo_sdk::NeboApp::new()?; // fails without NEBO_SIDECAR_TOKEN
     let service = MyAppService::new(&app.env().data_dir);
     app.register_ui(service).run().await?;
     Ok(())
@@ -848,7 +848,8 @@ Your sidecar runs in a sandboxed environment. The injected variables are:
 | `NEBO_APP_DIR` | `<Nebo data dir>/user/agents/deal-tracker` | App root directory (versioned code dir — read-only in spirit; write to `NEBO_DATA_DIR`) |
 | `NEBO_DATA_DIR` | `<Nebo appdata>/agents/deal-tracker` | Writable data directory under Nebo's appdata, `appdata/agents/<app id>/` — the app's own, keyed by its id (separate from code — survives upgrades, reinstalls and renames of the app's folder). Always use the env var; never hardcode a path. |
 | `NEBO_API_URL` | `http://127.0.0.1:27895` | Local Nebo API base URL (the port is the running server's port, injected at launch) |
-| `NEBO_APP_TOKEN` | (per-launch token) | Per-launch secret: send it as `Authorization: Bearer <token>` to `NEBO_API_URL`. Nebo sends it to the sidecar on every call, and the sidecar refuses calls without it |
+| `NEBO_APP_TOKEN` | (per-launch token) | Outbound only: send it as `Authorization: Bearer <token>` to `NEBO_API_URL` to reach your app's own Nebo routes. Nebo never sends it to the sidecar |
+| `NEBO_SIDECAR_TOKEN` | (per-launch token) | Inbound only: Nebo sends it as `authorization: Bearer <token>` on every call to the sidecar, and the sidecar refuses calls without it. It opens nothing in Nebo, so a process that took over the sidecar's port and saw it gains nothing. The SDKs keep it out of your code |
 | `PATH` | system path | Allowlisted system var |
 | `HOME` | user home | Allowlisted system var |
 | `TMPDIR` | system temp dir | Allowlisted system var |
@@ -890,7 +891,7 @@ The sidecar must print `nebo-app-listening <address>` within the `startup_timeou
 One supervisor per sidecar starts, watches and restarts it — at boot, on the first request, on "Try again", and after every failure:
 
 - **Exit awaited** — the moment the process exits for any reason, Nebo logs its exit status (code or signal) with the last lines of `sidecar.log`, and restarts it.
-- **Address probed** — every 3 seconds Nebo connects to the sidecar's address; three failed probes in a row mean the process is no longer serving, and it is stopped and restarted. A request that cannot reach the sidecar triggers the same restart at once (and a GET/HEAD is sent again to the new process).
+- **Probed with its token** — every 3 seconds Nebo calls `UIService.HealthCheck` on the sidecar's address with the sidecar token (a sidecar with no UI service may answer `UNIMPLEMENTED`). A bare connection never counts: if the sidecar stopped listening and another process took its port, the probe fails. Three failed probes in a row mean the process is no longer serving, and it is stopped and restarted. A request that cannot reach the sidecar triggers the same restart at once (and a GET/HEAD is sent again to the new process).
 - **Backoff** — 1s, 2s, 4s, … capped at 60s. The count resets once a sidecar has served for a minute.
 - **Failed** — after 5 consecutive failures the sidecar is `failed`, with the reason. Nebo keeps retrying every 60s without the state flapping. A permanent cause — no program, one the system refuses to run, a damaged manifest — is `failed` at once, with "Reinstall" in the message.
 - **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process and runs the new one, re-registering tools from `agent.json`. This is not a crash — no backoff, no count. The change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch.
@@ -919,7 +920,7 @@ Nebo owns the full lifecycle of every sidecar. When Nebo shuts down (SIGTERM, Ct
 You do not need to manage sidecar lifetime yourself. Nebo handles:
 - **Auto-launch** — the first API request to a sidecar starts it if nothing has
 - **Restore on server restart** — every enabled app's sidecar is put under supervision when the server starts; a launch that fails at boot is retried, not forgotten
-- **Health checks** — exit awaited, address probed every 3 seconds
+- **Health checks** — exit awaited, a token-carrying health call every 3 seconds
 - **Crash recovery** — auto-restart with exponential backoff, `failed` with the reason after repeated failures
 - **Hot-reload** — restart on binary change (no backoff)
 - **Shutdown** — SIGTERM on Nebo exit, never counted as a crash
@@ -1011,7 +1012,7 @@ The LLM calls: `get_document(id: "doc-123")` → Nebo sends `GET /documents/doc-
 5. Tools are re-registered automatically when the sidecar restarts (crash recovery or binary hot-reload)
 6. On sidecar shutdown, all registered tools are unregistered
 
-Sidecar tools bypass the contextual tool filter — they are always included for their owning agent regardless of conversation context. Tool calls are routed to the sidecar through `GrpcSidecarCaller`, which translates tool invocations into gRPC `HandleRequest` calls to the sidecar's address, with its launch token.
+Sidecar tools bypass the contextual tool filter — they are always included for their owning agent regardless of conversation context. Tool calls are routed to the sidecar through `GrpcSidecarCaller`, which translates tool invocations into gRPC `HandleRequest` calls to the sidecar's address, with its sidecar token.
 
 **Tools are not enough on their own.** The LLM knows it *can* call `list_projects`, but it doesn't know *when* or *how* to use it effectively. That's what skills are for — see [Skills](#skills) below.
 

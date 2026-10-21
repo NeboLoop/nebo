@@ -3,8 +3,8 @@
 //! rebuilt on disk and a dead or silent process all go through it.
 //!
 //! Liveness is active. The child's exit is awaited on its own handle (never
-//! inferred from `kill(pid, 0)`, which a zombie still answers), and its
-//! address is probed on a timer, so a process that died, or stopped accepting
+//! inferred from `kill(pid, 0)`, which a zombie still answers), and it is
+//! probed on a timer with a call carrying its token, so a process that died, or stopped accepting
 //! connections, is noticed within seconds instead of on the next request.
 //!
 //! A failure is logged with its exit status and the last lines of the
@@ -70,10 +70,18 @@ pub struct Launched {
     pub pid: u32,
     /// The loopback address it serves on.
     pub addr: SocketAddr,
-    /// The per-launch token: the sidecar authenticates to Nebo's API with it,
-    /// and Nebo sends it on every call to the sidecar.
+    /// The per-launch token the sidecar authenticates to Nebo's API with.
     pub app_token: String,
+    /// The per-launch token Nebo sends on every call to the sidecar.
+    pub sidecar_token: String,
     pub manifest: Manifest,
+}
+
+impl Launched {
+    /// One `UIService.HandleRequest` call to this sidecar, with its token.
+    pub async fn handle_request(&self, req: proto::HttpRequest) -> Result<proto::HttpResponse, tonic::Status> {
+        crate::runtime::handle_request(self.addr, &self.sidecar_token, req).await
+    }
 }
 
 /// What a supervised sidecar is doing. Every change is published.
@@ -260,6 +268,7 @@ async fn supervise(
                     pid: process.pid,
                     addr: process.addr,
                     app_token: process.app_token.clone(),
+                    sidecar_token: process.sidecar_token.clone(),
                     manifest: process.manifest.clone(),
                 });
                 out.set(SidecarState::Running(launched));
@@ -370,12 +379,9 @@ async fn watch_process(
     }
 }
 
-/// Whether the sidecar accepts a connection on its address right now.
+/// Whether the sidecar answers a call carrying its token right now.
 async fn answers(process: &Process) -> bool {
-    matches!(
-        tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(process.addr)).await,
-        Ok(Ok(_))
-    )
+    crate::runtime::answers(process.addr, &process.sidecar_token).await
 }
 
 #[cfg(test)]
@@ -425,8 +431,10 @@ mod process_tests {
         }
     }
 
+    /// Whether it answers a call carrying its token, as the probe asks.
     async fn connects(state: &SidecarState) -> bool {
-        tokio::net::TcpStream::connect(running(state).addr).await.is_ok()
+        let l = running(state);
+        crate::runtime::answers(l.addr, &l.sidecar_token).await
     }
 
     /// Wait until the state satisfies `f`, or fail after `secs`.
@@ -478,6 +486,27 @@ mod process_tests {
         let now = sup.revive(Duration::from_secs(20)).await;
         assert_ne!(pid(&now), first);
         assert!(connects(&now).await);
+        sup.shutdown().await;
+    }
+
+    /// The sidecar stopped listening and another process took its port: the
+    /// port accepts connections, but nothing there answers with the launch's
+    /// token, so the probe takes the sidecar for dead and relaunches it. A
+    /// bare connection never passes for the sidecar.
+    #[tokio::test]
+    async fn an_imposter_on_its_port_is_not_taken_for_it() {
+        let app = TestApp::new("imposter");
+        app.set_mode("deaf");
+        let sup = start(&app, quick());
+        let deaf = sup.settled(Duration::from_secs(20)).await;
+        let first = running(&deaf);
+        let imposter = std::net::TcpListener::bind(first.addr).expect("take the sidecar's port");
+        app.set_mode("serve");
+        let again = until(&sup, 10, |s| matches!(s, SidecarState::Running(l) if l.pid != first.pid)).await;
+        assert!(tokio::net::TcpStream::connect(first.addr).await.is_ok(), "the imposter still accepts connections");
+        assert_ne!(running(&again).addr, first.addr);
+        assert!(connects(&again).await, "the relaunched one answers");
+        drop(imposter);
         sup.shutdown().await;
     }
 

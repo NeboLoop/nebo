@@ -16,9 +16,21 @@ use crate::sandbox;
 /// The transport, on every OS: the sidecar binds `127.0.0.1:0` (the OS picks
 /// a free port, so no other process can be waiting on it), serves gRPC there,
 /// and refuses every call that does not carry `authorization: Bearer
-/// <NEBO_APP_TOKEN>`. Nebo reads the address from this line, connects only to
-/// a loopback address, and sends the token on every call.
+/// <NEBO_SIDECAR_TOKEN>`. Nebo reads the address from this line, connects only
+/// to a loopback address, and sends that token on every call.
+///
+/// Two tokens, one direction each, both per launch: `NEBO_SIDECAR_TOKEN`
+/// opens the sidecar to Nebo, `NEBO_APP_TOKEN` opens the app's Nebo routes to
+/// the sidecar. Nebo never sends `NEBO_APP_TOKEN` anywhere, so a process that
+/// takes over a sidecar's port learns only a token that opens nothing in Nebo.
 pub const LISTENING: &str = "nebo-app-listening ";
+
+/// How long a health probe waits for the sidecar's answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The longest line of a sidecar's stdout Nebo holds at once; a longer one is
+/// logged in pieces of this size.
+const MAX_LINE: u64 = 64 * 1024;
 
 /// A running tool process. Owned by its [`crate::supervisor::Supervisor`],
 /// which is the only thing that launches, watches and restarts one.
@@ -32,8 +44,11 @@ pub struct Process {
     /// Where the process's stdout and stderr go (`$NEBO_DATA_DIR/sidecar.log`).
     pub log_path: PathBuf,
     /// Per-launch token, passed as NEBO_APP_TOKEN: the sidecar authenticates
-    /// to Nebo's API with it, and Nebo authenticates to the sidecar with it.
+    /// to Nebo's API with it. Only ever accepted by Nebo, never sent by it.
     pub app_token: String,
+    /// Per-launch token, passed as NEBO_SIDECAR_TOKEN: Nebo authenticates to
+    /// the sidecar with it on every call. It opens nothing in Nebo.
+    pub sidecar_token: String,
     /// `<tool dir>/<app id>.pid`, so a Nebo that died without stopping the
     /// process can retire it at its next start ([`Runtime::cleanup_stale`]).
     pid_file: PathBuf,
@@ -200,9 +215,11 @@ impl Runtime {
             api_port,
         );
 
-        // Per-launch auth token for API authentication
+        // Per-launch tokens, one for each direction.
         let app_token = generate_token();
         env.push(("NEBO_APP_TOKEN".into(), app_token.clone()));
+        let sidecar_token = generate_token();
+        env.push(("NEBO_SIDECAR_TOKEN".into(), sidecar_token.clone()));
 
         // Launch process
         let mut cmd = command::new::<Command>(&binary, command::Console::Hidden);
@@ -299,6 +316,7 @@ impl Runtime {
             binary_path: binary,
             log_path,
             app_token,
+            sidecar_token,
             pid_file,
             binary_mtime,
             child,
@@ -339,10 +357,10 @@ impl Runtime {
             }
         }
 
-        // Health check: verify the address accepts a connection. Best effort:
-        // a sidecar may initialize lazily, so a failure is only logged.
-        let health = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(process.addr)).await;
-        if !matches!(health, Ok(Ok(_))) {
+        // Health check: the same token-gated call the supervisor probes with.
+        // Best effort here: a sidecar may initialize lazily, so a failure is
+        // only logged; the supervisor's probes decide whether it is alive.
+        if !answers(process.addr, &process.sidecar_token).await {
             warn!(
                 tool = process.manifest.id.as_str(),
                 addr = %process.addr,
@@ -402,19 +420,20 @@ fn parse_listening(line: &str) -> Result<SocketAddr, NappError> {
 
 /// Copy the sidecar's stdout into its log, line by line, and hand the address
 /// of the first [`LISTENING`] line to `announce`. Reads until the process
-/// closes its stdout, so a sidecar never blocks on a full pipe.
+/// closes its stdout, so a sidecar never blocks on a full pipe, and holds at
+/// most [`MAX_LINE`] bytes of a line at once.
 async fn relay_stdout(
-    stdout: tokio::process::ChildStdout,
-    mut log: tokio::fs::File,
+    stdout: impl tokio::io::AsyncRead + Unpin,
+    mut log: impl tokio::io::AsyncWrite + Unpin,
     announce: oneshot::Sender<String>,
 ) {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let mut announce = Some(announce);
     let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
     loop {
         line.clear();
-        match reader.read_until(b'\n', &mut line).await {
+        match (&mut reader).take(MAX_LINE).read_until(b'\n', &mut line).await {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
@@ -428,6 +447,53 @@ async fn relay_stdout(
         }
         let _ = log.write_all(&line).await;
         let _ = log.flush().await;
+    }
+}
+
+/// The sidecar's UI service at `addr`, ready for calls.
+fn client(addr: SocketAddr) -> Result<proto::ui_service_client::UiServiceClient<tonic::transport::Channel>, tonic::Status> {
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+        .map_err(|e| tonic::Status::internal(format!("sidecar address {addr}: {e}")))?
+        .connect_lazy();
+    Ok(proto::ui_service_client::UiServiceClient::new(channel).max_decoding_message_size(32 * 1024 * 1024))
+}
+
+/// `msg` as a call carrying the launch's sidecar token.
+fn authorized<T>(sidecar_token: &str, msg: T) -> Result<tonic::Request<T>, tonic::Status> {
+    let mut req = tonic::Request::new(msg);
+    let bearer = format!("Bearer {sidecar_token}")
+        .parse()
+        .map_err(|_| tonic::Status::internal("the sidecar token is not a header value"))?;
+    req.metadata_mut().insert("authorization", bearer);
+    Ok(req)
+}
+
+/// One `UIService.HandleRequest` call to the sidecar at `addr`, carrying its
+/// sidecar token. The one way Nebo talks to a sidecar: the app proxy and the
+/// sidecar tools both come through it ([`crate::supervisor::Launched::handle_request`]).
+pub(crate) async fn handle_request(
+    addr: SocketAddr,
+    sidecar_token: &str,
+    req: proto::HttpRequest,
+) -> Result<proto::HttpResponse, tonic::Status> {
+    client(addr)?.handle_request(authorized(sidecar_token, req)?).await.map(|r| r.into_inner())
+}
+
+/// Whether the sidecar at `addr` answers a call carrying its token: the health
+/// probe, at launch and while it runs. A bare connection proves nothing — if
+/// the sidecar stopped listening, another process may hold its port. Answered
+/// means `UIService.HealthCheck` succeeded, or the server checked the token
+/// and has no UI service (`Unimplemented`). Anything else — nothing listening,
+/// not gRPC, a token refused — means the sidecar is not there.
+pub(crate) async fn answers(addr: SocketAddr, sidecar_token: &str) -> bool {
+    let probe = async {
+        let req = authorized(sidecar_token, proto::HealthCheckRequest {})?;
+        client(addr)?.health_check(req).await
+    };
+    match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(status)) => status.code() == tonic::Code::Unimplemented,
+        Err(_) => false,
     }
 }
 
@@ -518,6 +584,23 @@ mod tests {
         let t1 = generate_token();
         let t2 = generate_token();
         assert_ne!(t1, t2);
+    }
+
+    /// A sidecar that writes one endless line can't make Nebo hold it all:
+    /// it is logged in pieces of at most MAX_LINE, and the announce after it
+    /// still lands.
+    #[tokio::test]
+    async fn a_huge_line_is_logged_in_bounded_pieces() {
+        let huge = vec![b'x'; (MAX_LINE as usize) * 3 + 10];
+        let mut out = huge.clone();
+        out.extend_from_slice(b"\nnebo-app-listening 127.0.0.1:5000\n");
+        let mut log = Vec::new();
+        let (tx, rx) = oneshot::channel();
+        relay_stdout(&out[..], &mut log, tx).await;
+        assert_eq!(rx.await.unwrap(), "127.0.0.1:5000");
+        let pieces: Vec<&[u8]> = log.split(|b| *b == b'\n').filter(|p| !p.is_empty()).collect();
+        assert!(pieces.iter().all(|p| p.len() as u64 <= MAX_LINE), "every piece is bounded");
+        assert_eq!(pieces.iter().map(|p| p.len()).sum::<usize>(), huge.len() + "nebo-app-listening 127.0.0.1:5000".len());
     }
 
     /// No computer is ever exposed: an address another computer could reach

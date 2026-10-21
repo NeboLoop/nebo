@@ -25,28 +25,6 @@ use tools::sidecar_tool::{SidecarActionTool, SidecarCaller, SidecarResponse, Sid
 /// How long a request waits for a sidecar that is starting or restarting.
 pub(crate) const REQUEST_WAIT: Duration = Duration::from_secs(15);
 
-/// One `UIService.HandleRequest` call to the sidecar launched as `launched`:
-/// to its loopback address, carrying its per-launch token as
-/// `authorization: Bearer <token>`, without which the sidecar refuses the
-/// call. The one way Nebo talks to a sidecar: the proxy and the sidecar tools
-/// both call it.
-pub(crate) async fn handle_request(
-    launched: &Launched,
-    req: proto::HttpRequest,
-) -> Result<proto::HttpResponse, tonic::Status> {
-    let channel = tonic::transport::Endpoint::from_shared(format!("http://{}", launched.addr))
-        .map_err(|e| tonic::Status::internal(format!("sidecar address {}: {e}", launched.addr)))?
-        .connect_lazy();
-    let mut client = proto::ui_service_client::UiServiceClient::new(channel)
-        .max_decoding_message_size(32 * 1024 * 1024);
-    let mut req = tonic::Request::new(req);
-    let bearer = format!("Bearer {}", launched.app_token)
-        .parse()
-        .map_err(|_| tonic::Status::internal("the sidecar's token is not a header value"))?;
-    req.metadata_mut().insert("authorization", bearer);
-    client.handle_request(req).await.map(|r| r.into_inner())
-}
-
 /// gRPC-based caller that routes through the sidecar's UIService.HandleRequest.
 struct GrpcSidecarCaller {
     launched: Arc<Launched>,
@@ -70,7 +48,7 @@ impl SidecarCaller for GrpcSidecarCaller {
             body: body.to_vec(),
         };
         Box::pin(async move {
-            match handle_request(&self.launched, req).await {
+            match self.launched.handle_request(req).await {
                 Ok(inner) => Ok(SidecarResponse { status_code: inner.status_code, body: inner.body }),
                 Err(e) => Err(format!("gRPC call failed: {}", e)),
             }
@@ -215,7 +193,7 @@ impl AppLifecycle {
     /// safe to repeat (GET, HEAD) is sent again to the relaunched one.
     pub(crate) async fn serve(&self, req: proto::HttpRequest) -> Result<proto::HttpResponse, Unavailable> {
         let launched = self.ready(REQUEST_WAIT).await?;
-        match handle_request(&launched, req.clone()).await {
+        match launched.handle_request(req.clone()).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 warn!(agent = %self.agent_id, error = %e, "sidecar did not answer — reviving it");
@@ -227,7 +205,7 @@ impl AppLifecycle {
                 if !repeatable {
                     return Err(Unavailable { state: SidecarState::Running(again) });
                 }
-                handle_request(&again, req).await.map_err(|e| {
+                again.handle_request(req).await.map_err(|e| {
                     warn!(agent = %self.agent_id, error = %e, "sidecar did not answer after reviving");
                     Unavailable { state: SidecarState::Running(again.clone()) }
                 })

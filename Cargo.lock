@@ -6102,6 +6102,7 @@ dependencies = [
  "nebo-comm",
  "nebo-command",
  "nebo-config",
+ "nebo-proto",
  "nebo-tls",
  "nebo-types",
  "notify",
@@ -6118,6 +6119,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonic",
  "tracing",
  "uuid",
 ]
