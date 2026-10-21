@@ -41,6 +41,19 @@ mod slug_tests {
 }
 
 impl Store {
+    /// The name of the app whose pages are served from `path`: one row,
+    /// never the whole list.
+    pub fn app_name_by_ui_path(&self, path: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT name FROM agents WHERE is_app = 1 AND trim(app_ui_path) = trim(?1) LIMIT 1",
+            params![path],
+            |r| r.get(0),
+        )
+        .optional()
+        .db_err("app_name_by_ui_path")
+    }
+
     pub fn list_agents(&self, limit: i64, offset: i64) -> Result<Vec<Agent>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn

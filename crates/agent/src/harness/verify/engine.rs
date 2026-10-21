@@ -875,6 +875,10 @@ impl VerifyCheck {
         let _ = std::fs::remove_dir_all(&review_dir);
         if let Err(e) = work.shadow.export(head, &review_dir).await {
             tracing::warn!(verification = %v.id, error = %e, "the reviewers' copy could not be made");
+            // No reviewer could read it: each one failed, never "no issues".
+            for lens in lenses {
+                row.detail["reviewers"][lens.as_str()] = json!("failed");
+            }
             row.outcome = Why::new("review_incomplete").text();
             row.finished_at = Some(Self::now());
             let _ = store.put_verification_round(&row);
@@ -1627,8 +1631,6 @@ impl VerifyCheck {
     }
 }
 
-/// The rules a review read, as a hash kept on its step: a review is skipped
-/// on unchanged work only under the same rules.
 /// `items` (a JSON array) added to the end of the array `into`.
 fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     let mut all = into.as_array().cloned().unwrap_or_default();
@@ -1636,6 +1638,8 @@ fn append(into: &mut serde_json::Value, items: serde_json::Value) {
     *into = serde_json::Value::Array(all);
 }
 
+/// The rules a review read, as a hash kept on its step: a review is skipped
+/// on unchanged work only under the same rules.
 fn rules_hash(rules: &str) -> String {
     format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }

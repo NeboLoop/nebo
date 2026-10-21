@@ -60,11 +60,9 @@ fn phase(v: &db::Verification, rounds: &[db::VerificationRound]) -> &'static str
 /// name, any other folder by its own.
 fn project(store: &db::Store, v: &db::Verification) -> String {
     if v.work_kind == "app_pages"
-        && let Some(app) = store.list_agents(1_000, 0).unwrap_or_default().into_iter().find(|a| {
-            tools::app_dev::served_dir(a).is_some_and(|dir| std::path::Path::new(dir) == std::path::Path::new(&v.project_root))
-        })
+        && let Ok(Some(name)) = store.app_name_by_ui_path(&v.project_root)
     {
-        return app.name;
+        return name;
     }
     std::path::Path::new(&v.project_root)
         .file_name()
@@ -140,6 +138,12 @@ fn check_views(round: &db::VerificationRound) -> Vec<CheckView> {
 fn reviewer_views(round: &db::VerificationRound) -> Vec<ReviewerView> {
     let findings: Vec<&serde_json::Value> = round.findings.as_array().into_iter().flatten().collect();
     let failed: Vec<&str> = round.detail["failedReviewers"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).collect();
+    // A round that could not be reviewed at all (its reviewers' copy could
+    // not be made) names no reviewer that failed: every one of them did.
+    let none_reviewed = round.finished_at.is_some()
+        && round.detail["reviewers"].is_null()
+        && failed.is_empty()
+        && Why::read(&round.outcome).is_some_and(|w| w.code == "review_incomplete");
     round
         .lenses
         .as_array()
@@ -151,6 +155,7 @@ fn reviewer_views(round: &db::VerificationRound) -> Vec<ReviewerView> {
             let state = match round.detail["reviewers"][lens].as_str() {
                 Some(state) => state,
                 None if round.finished_at.is_none() => "waiting",
+                None if none_reviewed => "failed",
                 None if failed.iter().any(|f| f.starts_with(&format!("{lens}:"))) => "failed",
                 None if found > 0 => "found",
                 None => "clean",
@@ -505,4 +510,43 @@ mod tests {
         let states: Vec<&str> = v.history[0].reviewers.iter().map(|r| r.state.as_str()).collect();
         assert_eq!(states, ["clean", "found", "failed"]);
     }
+
+    /// A round that could not be reviewed at all (its reviewers' copy could
+    /// not be made) shows each reviewer as failed, never "no issues".
+    #[test]
+    fn a_round_nobody_could_review_shows_each_reviewer_failed() {
+        let s = store();
+        s.create_verification(&db::NewVerification { id: "v-none", session_key: "agent:dev:web", isolation: "none", ..Default::default() }, 1).unwrap();
+        s.put_verification_round(&db::VerificationRound {
+            verification_id: "v-none".into(),
+            round: 1,
+            kind: "review".into(),
+            lenses: serde_json::json!(["correctness", "security"]),
+            outcome: r#"{"code":"review_incomplete"}"#.into(),
+            started_at: 2,
+            finished_at: Some(3),
+            ..Default::default()
+        })
+        .unwrap();
+        let v = view(&s, s.get_verification("v-none").unwrap().unwrap());
+        let states: Vec<&str> = v.history[0].reviewers.iter().map(|r| r.state.as_str()).collect();
+        assert_eq!(states, ["failed", "failed"]);
+    }
+
+    /// An app's pages go by the app's name, found by the folder they are
+    /// served from.
+    #[test]
+    fn an_apps_pages_go_by_the_apps_name() {
+        let s = store();
+        s.create_agent("app-1", None, "Media Studio", "", "", "", None, None).unwrap();
+        s.set_agent_app_fields("app-1", true, Some("/agents/Media Studio/ui"), None, None).unwrap();
+        s.create_verification(
+            &db::NewVerification { id: "v-app", session_key: "agent:dev:web", work_kind: "app_pages", isolation: "none", project_root: "/agents/Media Studio/ui", ..Default::default() },
+            1,
+        )
+        .unwrap();
+        assert_eq!(view(&s, s.get_verification("v-app").unwrap().unwrap()).badge.project, "Media Studio");
+        assert_eq!(s.app_name_by_ui_path("/elsewhere").unwrap(), None);
+    }
 }
+
