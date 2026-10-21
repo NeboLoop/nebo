@@ -603,6 +603,10 @@ async fn run(
     tx: mpsc::Sender<StreamEvent>,
 ) {
     let session_key = req.session_key.clone();
+    // The verify loop of the turn running now, until its end settles it: a
+    // turn that panics never reaches `finish`, and its verifications are
+    // closed after the panic is caught, never left being checked.
+    let unsettled: std::sync::Mutex<Option<super::verify::engine::Verify>> = std::sync::Mutex::new(None);
     let turns = async {
         let mut req = Some(req);
         let mut taint = BTreeSet::new();
@@ -620,9 +624,11 @@ async fn run(
             };
             tools::app_history::begin_turn(&session_id, &asked(&cx.request.input));
             keep_workspace(&h, &session_id).await;
+            *unsettled.lock().unwrap_or_else(|p| p.into_inner()) = st.verify.clone();
             exit = drive_turn(&cx, &mut st).await;
             keep_workspace(&h, &session_id).await;
             finish(&cx, &mut st, &exit).await;
+            unsettled.lock().unwrap_or_else(|p| p.into_inner()).take();
             tools::app_history::end_turn(&session_id, || last_reply(&h, &session_id)).await;
             taint.extend(cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied());
 
@@ -651,7 +657,14 @@ async fn run(
     }
     let (exit, taint, carried, heard_through) = match ended {
         Ok(ended) => ended,
-        Err(panic) => std::panic::resume_unwind(panic),
+        Err(panic) => {
+            let verify = unsettled.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(verify) = verify {
+                use super::verify::engine::Closed;
+                close_verifications(&h, &verify, Closed::Ended(super::verify::Why::new("turn_ended"))).await;
+            }
+            std::panic::resume_unwind(panic)
+        }
     };
     // The slot is closing, so no row is written into this turn from here:
     // what the owner sent while it ran is in the thread now.
@@ -3273,6 +3286,14 @@ async fn settle_opening(st: &mut TurnState, wait: std::time::Duration) {
 
 /// After the turn: the interrupt record, the usage row, the context line and
 /// the background work.
+/// Close a turn's verifications as `why` says, and tell the apps: the one
+/// way a turn's end settles them, a panic's included.
+async fn close_verifications(h: &Harness, verify: &super::verify::engine::Verify, why: super::verify::engine::Closed) {
+    for id in verify.close(&h.store, why).await {
+        h.verification_changed(&id);
+    }
+}
+
 pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit) {
     let h = &cx.harness;
     fold_repeats_of_the_answer(cx, &mut st.folds).await;
@@ -3294,23 +3315,21 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         "turn ended"
     );
     usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
-    // A turn that ended before its checking did ends its verifications
-    // honestly; one waiting on the owner (an approval, a question) keeps
-    // them for the turn that goes on.
+    // Every turn end settles its verifications, here: one that ended before
+    // its checking did ends them honestly; one waiting on the owner (an
+    // approval, a question) keeps them for the turn that goes on. An answer
+    // that came without its end check (the owner's message ended the work, a
+    // reply with no words) leaves nothing marked as still being checked.
     if let Some(verify) = &st.verify {
         use super::verify::engine::Closed;
         let why = match exit {
-            TurnExit::Answered | TurnExit::Compacted => None,
-            TurnExit::AwaitingApproval | TurnExit::TerminalTool { .. } | TurnExit::OwnerQuestion => Some(Closed::Waiting),
-            TurnExit::Cancelled if !cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) => Some(Closed::Stopped),
-            TurnExit::MaxSteps { .. } => Some(Closed::Ended(super::verify::Why::new("step_limit"))),
-            _ => Some(Closed::Ended(super::verify::Why::new("turn_ended"))),
+            TurnExit::Answered | TurnExit::Compacted => Closed::Unchecked,
+            TurnExit::AwaitingApproval | TurnExit::TerminalTool { .. } | TurnExit::OwnerQuestion => Closed::Waiting,
+            TurnExit::Cancelled if !cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) => Closed::Stopped,
+            TurnExit::MaxSteps { .. } => Closed::Ended(super::verify::Why::new("step_limit")),
+            _ => Closed::Ended(super::verify::Why::new("turn_ended")),
         };
-        if let Some(why) = why {
-            for id in verify.close(&h.store, why).await {
-                h.verification_changed(&id);
-            }
-        }
+        close_verifications(h, verify, why).await;
     }
     // The badge of verified work sits on the reply that reported it.
     if let Some(verify) = &st.verify {
@@ -11433,6 +11452,85 @@ mod tests {
                 assert_eq!(exit_of(&events), "cancelled");
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!(v.state, "stopped", "{v:?}");
+            })
+        })
+    }
+
+    /// A turn that ends on an answer that never reached its end check (a
+    /// reply with no words; the owner's message ending the work answers the
+    /// same way) leaves nothing marked as being checked: before, the row
+    /// stayed "Checking" until the next turn or a restart.
+    #[test]
+    fn a_turn_that_ends_without_its_check_leaves_nothing_being_checked() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say(""),
+                ]);
+                let h = verifying_harness(&model).await;
+                let events = run_turn(&h, owner("Make total() add a and b")).await;
+                assert_eq!(exit_of(&events), "text_response");
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"turn_ended"}"#), "{v:?}");
+            })
+        })
+    }
+
+    /// A turn that panics mid-work never reaches its end, and its
+    /// verification is closed all the same, never left being checked.
+    #[test]
+    fn a_turn_that_panics_leaves_nothing_being_checked() {
+        struct Boom;
+        impl tools::registry::DynTool for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            fn description(&self) -> String {
+                "fails hard".into()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn should_defer(&self) -> bool {
+                false
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+                Box::pin(async move { panic!("the tool broke") })
+            }
+        }
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (_project, file) = small_project(true).await;
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Call("boom", serde_json::json!({})),
+                ]);
+                let h = harness_with(&model, vec![Box::new(FileWriter), Box::new(Checks(Arc::new(Mutex::new(Vec::new())))), Box::new(Boom)]).await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let mut handle = h.start_turn(owner("Make total() add a and b")).await.expect("start");
+                while handle.events.recv().await.is_some() {}
+                // The panic is re-raised on the run's task after the close.
+                for _ in 0..50 {
+                    let open = h.store.list_verifications(&db::VerificationQuery { live: true, ..Default::default() }).unwrap();
+                    if open.is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"turn_ended"}"#), "{v:?}");
             })
         })
     }

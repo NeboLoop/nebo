@@ -51,6 +51,12 @@ pub enum Closed {
     Stopped,
     /// Ended otherwise: not verified, with why.
     Ended(Why),
+    /// Answered without its end check (the owner's message ended the work,
+    /// a reply with no words, a compaction): what was still being checked is
+    /// not verified, the run having ended before its checking did; a question
+    /// waiting on the owner stays for the turn that goes on. After a normal
+    /// end check nothing is still being checked, and nothing changes.
+    Unchecked,
 }
 
 /// What one turn's verify loop keeps between its rounds.
@@ -202,6 +208,8 @@ impl Verify {
                 }
                 Closed::Stopped => ("stopped", String::new()),
                 Closed::Ended(w) => ("not_verified", w.text()),
+                Closed::Unchecked if v.state == "paused" => continue,
+                Closed::Unchecked => ("not_verified", Why::new("turn_ended").text()),
             };
             let _ = store.set_verification_pending_ask(&v.id, None);
             let _ = store.set_verification_state(&v.id, &state_of(&v, state, &reason), chrono::Utc::now().timestamp());
