@@ -1468,12 +1468,15 @@
 			"sortNewest": "החדשים ביותר",
 			"sortPrice": "מחיר",
 			"showing": "מציג {shown} מתוך {total}",
-			"price": "{input} / {output} למיליון טוקנים",
 			"added": "נוסף",
 			"selected": "{count} נבחרו",
 			"addN": "{count, plural, one {הוסף מודל אחד} other {הוסף # מודלים}}",
 			"empty": "אין מודלים תואמים.",
-			"loadFailed": "לא ניתן לטעון את הרשימה."
+			"loadFailed": "לא ניתן לטעון את הרשימה.",
+			"retry": "נסה שוב",
+			"errorKey": "לא ניתן להגיע אל {provider}: בדוק את המפתח",
+			"errorBusy": "{provider} ביקש להמתין. נסה שוב בעוד דקה.",
+			"errorUnreachable": "לא ניתן להגיע אל {provider}. נסה שוב."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "מפתח ה-API שלך של {provider} נדחה. בדוק אותו בהגדרות > ספקים.",
 		"keyUnusable": "מפתח ה-API שלך של {provider} לא יכול להריץ את המודל הזה. בדוק את המודל שלו בהגדרות > ספקים.",
 		"connectionSignIn": "התחבר ל-NeboAI כדי להשתמש במפתח הזה: המפתחות שלך פועלים דרך חשבון ה-NeboAI שלך."
+	},
+	"modelCard": {
+		"about": "אודות {model}",
+		"aboutNone": "בחרו מודל כדי לראות מהו",
+		"level": "מתאים לרמה",
+		"reasons": "חושב לפני שעונה",
+		"yes": "כן",
+		"no": "לא",
+		"abilities": "יכול",
+		"ability": {
+			"vision": "לראות תמונות",
+			"tools": "להשתמש בכלים",
+			"reasoning": "להסיק מסקנות",
+			"audio": "לשמוע שמע"
+		},
+		"unknown": "לא ידוע",
+		"context": "הקשר",
+		"maxOutput": "התשובה הארוכה ביותר",
+		"tokens": "{count} טוקנים",
+		"speed": "מהירות",
+		"speedValue": {
+			"fastest": "המהיר ביותר",
+			"fast": "מהיר",
+			"standard": "רגיל",
+			"slow": "איטי יותר"
+		},
+		"modelId": "מזהה מודל",
+		"pricing": "מחיר",
+		"noPrice": "לא צוין מחיר.",
+		"ownKeyPrice": "{fee} לבקשה; הספק שלכם מחייב על המודל",
+		"providerBills": "הספק שלכם מחייב על המודל",
+		"per1m": "{input} קלט · {output} פלט למיליון טוקנים",
+		"input": "קלט",
+		"output": "פלט",
+		"cacheRead": "קריאת מטמון",
+		"cacheWrite": "כתיבת מטמון",
+		"requestFee": "עמלה לבקשה",
+		"perMillion": "{price} למיליון טוקנים",
+		"perRequest": "{price} לבקשה",
+		"priceVersion": "מחירים נכון ל-{version}",
+		"fits": "מתאים ל-{level}",
+		"bandUpTo": "עד {tokens} טוקנים",
+		"bandAbove": "מעל {tokens} טוקנים"
 	},
 	"verify": {
 		"badge": {

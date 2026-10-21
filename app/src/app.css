@@ -1977,3 +1977,56 @@ button.connector-row {
 .code-tok-punct {
   @apply text-base-content/50;
 }
+
+/* ModelInfo — one model's card (Intelligence Packs, a connection's models,
+   Browse models): what it is, what it is good for, its abilities and price. */
+.model-info-backdrop {
+	@apply fixed inset-0 z-[60] flex items-center justify-center p-4;
+}
+.model-info-scrim {
+	@apply absolute inset-0 bg-base-content/40 cursor-default border-none;
+}
+.model-info {
+	@apply relative w-full max-w-md max-h-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-lg p-5 flex flex-col gap-4;
+}
+.model-info-head {
+	@apply flex items-start justify-between gap-3;
+}
+.model-info-name {
+	@apply text-base font-semibold truncate;
+}
+.model-info-sub {
+	@apply text-xs text-base-content/50;
+}
+.model-info-close {
+	@apply text-base-content/50 hover:text-base-content cursor-pointer bg-transparent border-none shrink-0;
+}
+.model-info-desc {
+	@apply text-sm text-base-content/80;
+}
+.model-info-facts {
+	@apply grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1.5 text-sm;
+}
+.model-info-facts dt {
+	@apply text-base-content/50;
+}
+.model-info-facts dd {
+	@apply min-w-0 break-words;
+}
+.model-info-price {
+	@apply flex flex-col gap-2 rounded-lg bg-base-200/50 p-3;
+}
+.model-info-price-title {
+	@apply text-xs font-semibold uppercase tracking-wider text-base-content/50;
+}
+.model-info-note {
+	@apply text-xs text-base-content/60;
+}
+/* Where a price band applies ("Up to 272K tokens"), over its rates. */
+.model-info-band {
+	@apply text-xs font-medium text-base-content/70;
+}
+/* The round "about this model" button beside a model picker or row. */
+.model-info-open {
+	@apply w-6 h-6 shrink-0 grid place-items-center rounded-full text-base-content/40 hover:text-primary cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-default;
+}

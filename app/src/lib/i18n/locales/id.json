@@ -1468,12 +1468,15 @@
 			"sortNewest": "Terbaru",
 			"sortPrice": "Harga",
 			"showing": "Menampilkan {shown} dari {total}",
-			"price": "{input} / {output} per M token",
 			"added": "Ditambahkan",
 			"selected": "{count} dipilih",
 			"addN": "{count, plural, one {Tambah # model} other {Tambah # model}}",
 			"empty": "Tidak ada model yang cocok.",
-			"loadFailed": "Tidak dapat memuat daftar."
+			"loadFailed": "Tidak dapat memuat daftar.",
+			"retry": "Coba lagi",
+			"errorKey": "Tidak dapat menghubungi {provider}: periksa kuncinya",
+			"errorBusy": "{provider} meminta menunggu. Coba lagi dalam satu menit.",
+			"errorUnreachable": "Tidak dapat menghubungi {provider}. Coba lagi."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "Kunci API {provider} Anda ditolak. Periksa di Pengaturan > Penyedia.",
 		"keyUnusable": "Kunci API {provider} Anda tidak dapat menjalankan model ini. Periksa modelnya di Pengaturan > Penyedia.",
 		"connectionSignIn": "Masuk ke NeboAI untuk memakai kunci ini: kunci milik Anda berjalan di akun NeboAI Anda."
+	},
+	"modelCard": {
+		"about": "Tentang {model}",
+		"aboutNone": "Pilih model untuk melihat apa itu",
+		"level": "Cocok untuk",
+		"reasons": "Berpikir sebelum menjawab",
+		"yes": "Ya",
+		"no": "Tidak",
+		"abilities": "Bisa",
+		"ability": {
+			"vision": "Melihat gambar",
+			"tools": "Memakai alat",
+			"reasoning": "Bernalar",
+			"audio": "Mendengar audio"
+		},
+		"unknown": "Tidak diketahui",
+		"context": "Konteks",
+		"maxOutput": "Jawaban terpanjang",
+		"tokens": "{count} token",
+		"speed": "Kecepatan",
+		"speedValue": {
+			"fastest": "Tercepat",
+			"fast": "Cepat",
+			"standard": "Standar",
+			"slow": "Lebih lambat"
+		},
+		"modelId": "ID model",
+		"pricing": "Harga",
+		"noPrice": "Tidak ada harga tercantum.",
+		"ownKeyPrice": "{fee} per permintaan; penyedia Anda menagih modelnya",
+		"providerBills": "Penyedia Anda menagih modelnya",
+		"per1m": "{input} masuk · {output} keluar per 1 jt token",
+		"input": "Masukan",
+		"output": "Keluaran",
+		"cacheRead": "Baca cache",
+		"cacheWrite": "Tulis cache",
+		"requestFee": "Biaya permintaan",
+		"perMillion": "{price} per 1 jt token",
+		"perRequest": "{price} per permintaan",
+		"priceVersion": "Harga per {version}",
+		"fits": "Cocok untuk {level}",
+		"bandUpTo": "Hingga {tokens} token",
+		"bandAbove": "Di atas {tokens} token"
 	},
 	"verify": {
 		"badge": {

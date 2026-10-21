@@ -1468,12 +1468,15 @@
 			"sortNewest": "Новые",
 			"sortPrice": "Цена",
 			"showing": "Показано {shown} из {total}",
-			"price": "{input} / {output} за М токенов",
 			"added": "Добавлено",
 			"selected": "Выбрано: {count}",
 			"addN": "{count, plural, one {Добавить # модель} few {Добавить # модели} many {Добавить # моделей} other {Добавить # модели}}",
 			"empty": "Нет подходящих моделей.",
-			"loadFailed": "Не удалось загрузить список."
+			"loadFailed": "Не удалось загрузить список.",
+			"retry": "Повторить",
+			"errorKey": "Не удалось связаться с {provider}: проверьте ключ",
+			"errorBusy": "{provider} просит подождать. Повторите через минуту.",
+			"errorUnreachable": "Не удалось связаться с {provider}. Повторите попытку."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "Ваш API-ключ {provider} отклонён. Проверьте его в разделе Настройки > Провайдеры.",
 		"keyUnusable": "Ваш API-ключ {provider} не может запускать эту модель. Проверьте модель в разделе Настройки > Провайдеры.",
 		"connectionSignIn": "Войдите в NeboAI, чтобы использовать этот ключ: ваши собственные ключи работают через ваш аккаунт NeboAI."
+	},
+	"modelCard": {
+		"about": "О модели {model}",
+		"aboutNone": "Выберите модель, чтобы узнать о ней",
+		"level": "Подходит для",
+		"reasons": "Думает перед ответом",
+		"yes": "Да",
+		"no": "Нет",
+		"abilities": "Умеет",
+		"ability": {
+			"vision": "Видеть изображения",
+			"tools": "Использовать инструменты",
+			"reasoning": "Рассуждать",
+			"audio": "Слышать аудио"
+		},
+		"unknown": "Неизвестно",
+		"context": "Контекст",
+		"maxOutput": "Самый длинный ответ",
+		"tokens": "{count} токенов",
+		"speed": "Скорость",
+		"speedValue": {
+			"fastest": "Самая быстрая",
+			"fast": "Быстрая",
+			"standard": "Обычная",
+			"slow": "Медленнее"
+		},
+		"modelId": "ID модели",
+		"pricing": "Цена",
+		"noPrice": "Цена не указана.",
+		"ownKeyPrice": "{fee} за запрос; модель оплачивается вашему провайдеру",
+		"providerBills": "Модель оплачивается вашему провайдеру",
+		"per1m": "{input} ввод · {output} вывод за 1 млн токенов",
+		"input": "Ввод",
+		"output": "Вывод",
+		"cacheRead": "Чтение кэша",
+		"cacheWrite": "Запись в кэш",
+		"requestFee": "Плата за запрос",
+		"perMillion": "{price} за 1 млн токенов",
+		"perRequest": "{price} за запрос",
+		"priceVersion": "Цены на {version}",
+		"fits": "Подходит для уровня {level}",
+		"bandUpTo": "До {tokens} токенов",
+		"bandAbove": "Свыше {tokens} токенов"
 	},
 	"verify": {
 		"badge": {

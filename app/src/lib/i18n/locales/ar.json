@@ -1468,12 +1468,15 @@
 			"sortNewest": "الأحدث",
 			"sortPrice": "السعر",
 			"showing": "عرض {shown} من {total}",
-			"price": "{input} / {output} لكل مليون رمز",
 			"added": "تمت الإضافة",
 			"selected": "تم اختيار {count}",
 			"addN": "{count, plural, one {أضف نموذجًا واحدًا} two {أضف نموذجين} few {أضف # نماذج} many {أضف # نموذجًا} other {أضف # نموذج}}",
 			"empty": "لا توجد نماذج مطابقة.",
-			"loadFailed": "تعذّر تحميل القائمة."
+			"loadFailed": "تعذّر تحميل القائمة.",
+			"retry": "حاول مرة أخرى",
+			"errorKey": "تعذّر الوصول إلى {provider}: تحقّق من المفتاح",
+			"errorBusy": "طلب {provider} الانتظار. حاول مرة أخرى بعد دقيقة.",
+			"errorUnreachable": "تعذّر الوصول إلى {provider}. حاول مرة أخرى."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "رُفض مفتاح API الخاص بك لدى {provider}. تحقق منه في الإعدادات > المزودون.",
 		"keyUnusable": "لا يمكن لمفتاح API الخاص بك لدى {provider} تشغيل هذا النموذج. تحقق من النموذج عليه في الإعدادات > المزودون.",
 		"connectionSignIn": "سجّل الدخول إلى NeboAI لاستخدام هذا المفتاح: مفاتيحك الخاصة تعمل على حسابك في NeboAI."
+	},
+	"modelCard": {
+		"about": "حول {model}",
+		"aboutNone": "اختر نموذجًا لترى ما هو",
+		"level": "يناسب",
+		"reasons": "يفكّر قبل الإجابة",
+		"yes": "نعم",
+		"no": "لا",
+		"abilities": "يستطيع",
+		"ability": {
+			"vision": "رؤية الصور",
+			"tools": "استخدام الأدوات",
+			"reasoning": "الاستدلال",
+			"audio": "سماع الصوت"
+		},
+		"unknown": "غير معروف",
+		"context": "السياق",
+		"maxOutput": "أطول إجابة",
+		"tokens": "{count} رمز",
+		"speed": "السرعة",
+		"speedValue": {
+			"fastest": "الأسرع",
+			"fast": "سريع",
+			"standard": "عادي",
+			"slow": "أبطأ"
+		},
+		"modelId": "معرّف النموذج",
+		"pricing": "السعر",
+		"noPrice": "لا يوجد سعر مُدرج.",
+		"ownKeyPrice": "{fee} لكل طلب؛ يحاسبك مزوّدك على النموذج",
+		"providerBills": "يحاسبك مزوّدك على النموذج",
+		"per1m": "{input} للإدخال · {output} للإخراج لكل مليون رمز",
+		"input": "الإدخال",
+		"output": "الإخراج",
+		"cacheRead": "قراءة الذاكرة المؤقتة",
+		"cacheWrite": "كتابة الذاكرة المؤقتة",
+		"requestFee": "رسوم الطلب",
+		"perMillion": "{price} لكل مليون رمز",
+		"perRequest": "{price} لكل طلب",
+		"priceVersion": "الأسعار بتاريخ {version}",
+		"fits": "يناسب {level}",
+		"bandUpTo": "حتى {tokens} رمز",
+		"bandAbove": "أكثر من {tokens} رمز"
 	},
 	"verify": {
 		"badge": {

@@ -1468,12 +1468,15 @@
 			"sortNewest": "最新",
 			"sortPrice": "价格",
 			"showing": "显示 {total} 个中的 {shown} 个",
-			"price": "每百万 token {input} / {output}",
 			"added": "已添加",
 			"selected": "已选 {count} 个",
 			"addN": "{count, plural, other {添加 # 个模型}}",
 			"empty": "没有匹配的模型。",
-			"loadFailed": "无法加载列表。"
+			"loadFailed": "无法加载列表。",
+			"retry": "重试",
+			"errorKey": "无法连接 {provider}：请检查密钥",
+			"errorBusy": "{provider} 要求稍候。请一分钟后重试。",
+			"errorUnreachable": "无法连接 {provider}。请重试。"
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "你的 {provider} API 密钥被拒绝。请在 设置 > 提供商 中检查。",
 		"keyUnusable": "你的 {provider} API 密钥无法运行此模型。请在 设置 > 提供商 中检查该密钥的模型。",
 		"connectionSignIn": "登录 NeboAI 才能使用此密钥：你自己的密钥在你的 NeboAI 账户上运行。"
+	},
+	"modelCard": {
+		"about": "关于 {model}",
+		"aboutNone": "选择一个模型以查看详情",
+		"level": "适合的级别",
+		"reasons": "回答前会思考",
+		"yes": "是",
+		"no": "否",
+		"abilities": "能力",
+		"ability": {
+			"vision": "看图片",
+			"tools": "使用工具",
+			"reasoning": "推理",
+			"audio": "听音频"
+		},
+		"unknown": "未知",
+		"context": "上下文",
+		"maxOutput": "最长回答",
+		"tokens": "{count} 个令牌",
+		"speed": "速度",
+		"speedValue": {
+			"fastest": "最快",
+			"fast": "快",
+			"standard": "标准",
+			"slow": "较慢"
+		},
+		"modelId": "模型 ID",
+		"pricing": "价格",
+		"noPrice": "未列出价格。",
+		"ownKeyPrice": "每次请求 {fee}；模型费用由你的服务商收取",
+		"providerBills": "模型费用由你的服务商收取",
+		"per1m": "每 100 万令牌 输入 {input} · 输出 {output}",
+		"input": "输入",
+		"output": "输出",
+		"cacheRead": "缓存读取",
+		"cacheWrite": "缓存写入",
+		"requestFee": "请求费",
+		"perMillion": "每 100 万令牌 {price}",
+		"perRequest": "每次请求 {price}",
+		"priceVersion": "截至 {version} 的价格",
+		"fits": "适合{level}",
+		"bandUpTo": "最多 {tokens} 个 token",
+		"bandAbove": "超过 {tokens} 个 token"
 	},
 	"verify": {
 		"badge": {

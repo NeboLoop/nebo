@@ -1468,12 +1468,15 @@
 			"sortNewest": "최신순",
 			"sortPrice": "가격",
 			"showing": "{total}개 중 {shown}개 표시",
-			"price": "{input} / {output} (M 토큰당)",
 			"added": "추가됨",
 			"selected": "{count}개 선택됨",
 			"addN": "{count, plural, one {#개 모델 추가} other {#개 모델 추가}}",
 			"empty": "일치하는 모델이 없습니다.",
-			"loadFailed": "목록을 불러올 수 없습니다."
+			"loadFailed": "목록을 불러올 수 없습니다.",
+			"retry": "다시 시도",
+			"errorKey": "{provider}에 연결할 수 없습니다: 키를 확인하세요",
+			"errorBusy": "{provider}에서 잠시 기다리라고 합니다. 1분 후 다시 시도하세요.",
+			"errorUnreachable": "{provider}에 연결할 수 없습니다. 다시 시도하세요."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "{provider} API 키가 거부되었습니다. 설정 > 제공업체에서 확인하세요.",
 		"keyUnusable": "{provider} API 키로 이 모델을 실행할 수 없습니다. 설정 > 제공업체에서 모델을 확인하세요.",
 		"connectionSignIn": "이 키를 사용하려면 NeboAI에 로그인하세요. 내 키는 NeboAI 계정으로 실행됩니다."
+	},
+	"modelCard": {
+		"about": "{model} 정보",
+		"aboutNone": "모델을 선택하면 자세히 볼 수 있습니다",
+		"level": "어울리는 수준",
+		"reasons": "답하기 전에 생각함",
+		"yes": "예",
+		"no": "아니요",
+		"abilities": "할 수 있는 일",
+		"ability": {
+			"vision": "이미지 보기",
+			"tools": "도구 사용",
+			"reasoning": "추론",
+			"audio": "오디오 듣기"
+		},
+		"unknown": "알 수 없음",
+		"context": "컨텍스트",
+		"maxOutput": "가장 긴 답변",
+		"tokens": "{count} 토큰",
+		"speed": "속도",
+		"speedValue": {
+			"fastest": "가장 빠름",
+			"fast": "빠름",
+			"standard": "보통",
+			"slow": "느림"
+		},
+		"modelId": "모델 ID",
+		"pricing": "가격",
+		"noPrice": "가격 정보가 없습니다.",
+		"ownKeyPrice": "요청당 {fee}, 모델 요금은 사용 중인 제공업체가 청구합니다",
+		"providerBills": "모델 요금은 사용 중인 제공업체가 청구합니다",
+		"per1m": "100만 토큰당 입력 {input} · 출력 {output}",
+		"input": "입력",
+		"output": "출력",
+		"cacheRead": "캐시 읽기",
+		"cacheWrite": "캐시 쓰기",
+		"requestFee": "요청 수수료",
+		"perMillion": "100만 토큰당 {price}",
+		"perRequest": "요청당 {price}",
+		"priceVersion": "{version} 기준 가격",
+		"fits": "{level}에 적합",
+		"bandUpTo": "{tokens} 토큰까지",
+		"bandAbove": "{tokens} 토큰 초과"
 	},
 	"verify": {
 		"badge": {

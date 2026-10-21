@@ -5,6 +5,7 @@
  * no copy here — the pages own both.
  */
 import type { CatalogModel, Pack, PackChoice } from '$lib/api/neboComponents';
+import { cardFit, cardPriceLine, type Translate } from './modelCard';
 import { EFFORTS, type Effort } from './speeds';
 
 /** The connection kinds Add provider offers, in the order it shows them. */
@@ -195,4 +196,46 @@ export function handBody(m: HandModel) {
 		(c): c is string => Boolean(c)
 	);
 	return { modelId: m.modelId, kind: m.kind, contextWindow: parseContext(m.contextWindow), capabilities };
+}
+
+// ── Model rows ──────────────────────────────────────────────────────
+
+/**
+ * A choice as a picker row reads: the model, the level it fits ("Fits
+ * Medium") and its price, led by its provider unless the row sits in a group
+ * that already names it (`grouped`, `choiceGroups`).
+ */
+export function choiceRowLabel(c: PackChoice, t: Translate, grouped = false): string {
+	return [grouped ? '' : choiceProviderLabel(c), c.name || c.card?.displayName || c.modelId, cardFit(c.card, t), cardPriceLine(c.card, t)]
+		.filter(Boolean)
+		.join(' · ');
+}
+
+/**
+ * Choices grouped as a picker shows them: the models Nebo AI serves by their
+ * family ("Nebo AI · Claude Sonnet"), everything else by its provider, each
+ * group where its first choice sits.
+ */
+export function choiceGroups(choices: PackChoice[]): { label: string; choices: PackChoice[] }[] {
+	const groups = new Map<string, PackChoice[]>();
+	for (const c of choices) {
+		const family = c.card?.family?.trim();
+		const label = family ? `${choiceProviderLabel(c)} · ${family}` : choiceProviderLabel(c);
+		const g = groups.get(label);
+		if (g) g.push(c);
+		else groups.set(label, [c]);
+	}
+	return [...groups.entries()].map(([label, choices]) => ({ label, choices }));
+}
+
+/** The words for a provider list that could not be read (`browse_connection_catalog`'s `error`). */
+export function catalogErrorKey(code: string): string {
+	switch (code) {
+		case 'key':
+			return 'settingsProviders.browse.errorKey';
+		case 'rate_limited':
+			return 'settingsProviders.browse.errorBusy';
+		default:
+			return 'settingsProviders.browse.errorUnreachable';
+	}
 }

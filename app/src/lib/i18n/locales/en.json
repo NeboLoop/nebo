@@ -1468,12 +1468,15 @@
 			"sortNewest": "Newest",
 			"sortPrice": "Price",
 			"showing": "Showing {shown} of {total}",
-			"price": "{input} / {output} per M tokens",
 			"added": "Added",
 			"selected": "{count} selected",
 			"addN": "{count, plural, one {Add # model} other {Add # models}}",
 			"empty": "No models match.",
-			"loadFailed": "Could not load the list."
+			"loadFailed": "Could not load the list.",
+			"retry": "Try again",
+			"errorKey": "Couldn't reach {provider}: check the key",
+			"errorBusy": "{provider} asked us to wait. Try again in a minute.",
+			"errorUnreachable": "Couldn't reach {provider}. Try again."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "Your {provider} API key was refused. Check it in Settings > Providers.",
 		"keyUnusable": "Your {provider} API key can't run this model. Check the model on it in Settings > Providers.",
 		"connectionSignIn": "Sign in to NeboAI to use this key: your own keys run on your NeboAI account."
+	},
+	"modelCard": {
+		"about": "About {model}",
+		"aboutNone": "Pick a model to see what it is",
+		"level": "Fits",
+		"reasons": "Thinks before answering",
+		"yes": "Yes",
+		"no": "No",
+		"abilities": "Can",
+		"ability": {
+			"vision": "See images",
+			"tools": "Use tools",
+			"reasoning": "Reason",
+			"audio": "Hear audio"
+		},
+		"unknown": "Not known",
+		"context": "Context",
+		"maxOutput": "Longest answer",
+		"tokens": "{count} tokens",
+		"speed": "Speed",
+		"speedValue": {
+			"fastest": "Fastest",
+			"fast": "Fast",
+			"standard": "Standard",
+			"slow": "Slower"
+		},
+		"modelId": "Model id",
+		"pricing": "Price",
+		"noPrice": "No price listed.",
+		"ownKeyPrice": "{fee} per request; your provider bills the model",
+		"providerBills": "Your provider bills the model",
+		"per1m": "{input} in · {output} out per 1M tokens",
+		"input": "Input",
+		"output": "Output",
+		"cacheRead": "Cache read",
+		"cacheWrite": "Cache write",
+		"requestFee": "Request fee",
+		"perMillion": "{price} per 1M tokens",
+		"perRequest": "{price} per request",
+		"priceVersion": "Prices as of {version}",
+		"fits": "Fits {level}",
+		"bandUpTo": "Up to {tokens} tokens",
+		"bandAbove": "Above {tokens} tokens"
 	},
 	"verify": {
 		"badge": {

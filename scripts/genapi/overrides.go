@@ -126,6 +126,7 @@ var typeOverrides = map[string]string{
 	"update_connection_model.model":         "ConnectionModel",
 	"browse_connection_catalog.models":      "CatalogModel[]",
 	"browse_connection_catalog.refreshedAt": "number | null",
+	"browse_connection_catalog.error":       "'key' | 'rate_limited' | 'unreachable' | null",
 
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
@@ -318,6 +319,10 @@ export interface RunDisplay {
 	name?: string
 	capabilities?: string[]
 	local: boolean
+	/** What the owner reads before picking it: what it is, what it is good for, its price. */
+	card?: ModelCard
+	/** One of the models Janus's catalog lists (not nebo-1 or a speed): chosen only by its full id. */
+	catalog?: boolean
 }`,
 
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {

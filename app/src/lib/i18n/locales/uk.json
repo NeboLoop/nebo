@@ -1468,12 +1468,15 @@
 			"sortNewest": "Найновіші",
 			"sortPrice": "Ціна",
 			"showing": "Показано {shown} з {total}",
-			"price": "{input} / {output} за М токенів",
 			"added": "Додано",
 			"selected": "Обрано: {count}",
 			"addN": "{count, plural, one {Додати # модель} few {Додати # моделі} many {Додати # моделей} other {Додати # моделі}}",
 			"empty": "Немає відповідних моделей.",
-			"loadFailed": "Не вдалося завантажити список."
+			"loadFailed": "Не вдалося завантажити список.",
+			"retry": "Спробувати ще",
+			"errorKey": "Не вдалося зв'язатися з {provider}: перевірте ключ",
+			"errorBusy": "{provider} просить зачекати. Спробуйте ще через хвилину.",
+			"errorUnreachable": "Не вдалося зв'язатися з {provider}. Спробуйте ще."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "Ваш API-ключ {provider} відхилено. Перевірте його в розділі Налаштування > Провайдери.",
 		"keyUnusable": "Ваш API-ключ {provider} не може запускати цю модель. Перевірте модель у розділі Налаштування > Провайдери.",
 		"connectionSignIn": "Увійдіть у NeboAI, щоб використовувати цей ключ: ваші власні ключі працюють через ваш обліковий запис NeboAI."
+	},
+	"modelCard": {
+		"about": "Про модель {model}",
+		"aboutNone": "Виберіть модель, щоб дізнатися про неї",
+		"level": "Підходить для",
+		"reasons": "Думає перед відповіддю",
+		"yes": "Так",
+		"no": "Ні",
+		"abilities": "Уміє",
+		"ability": {
+			"vision": "Бачити зображення",
+			"tools": "Використовувати інструменти",
+			"reasoning": "Міркувати",
+			"audio": "Чути аудіо"
+		},
+		"unknown": "Невідомо",
+		"context": "Контекст",
+		"maxOutput": "Найдовша відповідь",
+		"tokens": "{count} токенів",
+		"speed": "Швидкість",
+		"speedValue": {
+			"fastest": "Найшвидша",
+			"fast": "Швидка",
+			"standard": "Звичайна",
+			"slow": "Повільніша"
+		},
+		"modelId": "ID моделі",
+		"pricing": "Ціна",
+		"noPrice": "Ціну не вказано.",
+		"ownKeyPrice": "{fee} за запит; модель оплачується вашому провайдеру",
+		"providerBills": "Модель оплачується вашому провайдеру",
+		"per1m": "{input} вхід · {output} вихід за 1 млн токенів",
+		"input": "Вхід",
+		"output": "Вихід",
+		"cacheRead": "Читання кешу",
+		"cacheWrite": "Запис у кеш",
+		"requestFee": "Плата за запит",
+		"perMillion": "{price} за 1 млн токенів",
+		"perRequest": "{price} за запит",
+		"priceVersion": "Ціни на {version}",
+		"fits": "Підходить для рівня {level}",
+		"bandUpTo": "До {tokens} токенів",
+		"bandAbove": "Понад {tokens} токенів"
 	},
 	"verify": {
 		"badge": {

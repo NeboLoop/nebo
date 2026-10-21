@@ -1468,12 +1468,15 @@
 			"sortNewest": "Plus récents",
 			"sortPrice": "Prix",
 			"showing": "Affiche {shown} sur {total}",
-			"price": "{input} / {output} par million de tokens",
 			"added": "Ajouté",
 			"selected": "{count} sélectionnés",
 			"addN": "{count, plural, one {Ajouter # modèle} other {Ajouter # modèles}}",
 			"empty": "Aucun modèle ne correspond.",
-			"loadFailed": "Impossible de charger la liste."
+			"loadFailed": "Impossible de charger la liste.",
+			"retry": "Réessayer",
+			"errorKey": "Impossible de joindre {provider} : vérifiez la clé",
+			"errorBusy": "{provider} demande de patienter. Réessayez dans une minute.",
+			"errorUnreachable": "Impossible de joindre {provider}. Réessayez."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "Votre clé API {provider} a été refusée. Vérifiez-la dans Paramètres > Fournisseurs.",
 		"keyUnusable": "Votre clé API {provider} ne peut pas exécuter ce modèle. Vérifiez le modèle associé dans Paramètres > Fournisseurs.",
 		"connectionSignIn": "Connectez-vous à NeboAI pour utiliser cette clé : vos propres clés passent par votre compte NeboAI."
+	},
+	"modelCard": {
+		"about": "À propos de {model}",
+		"aboutNone": "Choisissez un modèle pour voir ce qu'il est",
+		"level": "Convient à",
+		"reasons": "Réfléchit avant de répondre",
+		"yes": "Oui",
+		"no": "Non",
+		"abilities": "Peut",
+		"ability": {
+			"vision": "Voir des images",
+			"tools": "Utiliser des outils",
+			"reasoning": "Raisonner",
+			"audio": "Entendre de l'audio"
+		},
+		"unknown": "Inconnu",
+		"context": "Contexte",
+		"maxOutput": "Réponse la plus longue",
+		"tokens": "{count} jetons",
+		"speed": "Vitesse",
+		"speedValue": {
+			"fastest": "Le plus rapide",
+			"fast": "Rapide",
+			"standard": "Standard",
+			"slow": "Plus lent"
+		},
+		"modelId": "ID du modèle",
+		"pricing": "Prix",
+		"noPrice": "Aucun prix indiqué.",
+		"ownKeyPrice": "{fee} par requête ; votre fournisseur vous facture le modèle",
+		"providerBills": "Votre fournisseur vous facture le modèle",
+		"per1m": "{input} en entrée · {output} en sortie par million de jetons",
+		"input": "Entrée",
+		"output": "Sortie",
+		"cacheRead": "Lecture du cache",
+		"cacheWrite": "Écriture du cache",
+		"requestFee": "Frais par requête",
+		"perMillion": "{price} par million de jetons",
+		"perRequest": "{price} par requête",
+		"priceVersion": "Prix au {version}",
+		"fits": "Adapté à {level}",
+		"bandUpTo": "Jusqu'à {tokens} jetons",
+		"bandAbove": "Au-delà de {tokens} jetons"
 	},
 	"verify": {
 		"badge": {

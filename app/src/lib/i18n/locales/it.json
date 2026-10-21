@@ -1468,12 +1468,15 @@
 			"sortNewest": "Più recenti",
 			"sortPrice": "Prezzo",
 			"showing": "Visualizzati {shown} di {total}",
-			"price": "{input} / {output} per M token",
 			"added": "Aggiunto",
 			"selected": "{count} selezionati",
 			"addN": "{count, plural, one {Aggiungi # modello} other {Aggiungi # modelli}}",
 			"empty": "Nessun modello corrisponde.",
-			"loadFailed": "Impossibile caricare l'elenco."
+			"loadFailed": "Impossibile caricare l'elenco.",
+			"retry": "Riprova",
+			"errorKey": "Impossibile raggiungere {provider}: controlla la chiave",
+			"errorBusy": "{provider} chiede di attendere. Riprova tra un minuto.",
+			"errorUnreachable": "Impossibile raggiungere {provider}. Riprova."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "La tua chiave API {provider} è stata rifiutata. Controllala in Impostazioni > Provider.",
 		"keyUnusable": "La tua chiave API {provider} non può eseguire questo modello. Controlla il modello in Impostazioni > Provider.",
 		"connectionSignIn": "Accedi a NeboAI per usare questa chiave: le tue chiavi funzionano con il tuo account NeboAI."
+	},
+	"modelCard": {
+		"about": "Informazioni su {model}",
+		"aboutNone": "Scegli un modello per vedere cos'è",
+		"level": "Adatto a",
+		"reasons": "Pensa prima di rispondere",
+		"yes": "Sì",
+		"no": "No",
+		"abilities": "Può",
+		"ability": {
+			"vision": "Vedere immagini",
+			"tools": "Usare strumenti",
+			"reasoning": "Ragionare",
+			"audio": "Sentire audio"
+		},
+		"unknown": "Non noto",
+		"context": "Contesto",
+		"maxOutput": "Risposta più lunga",
+		"tokens": "{count} token",
+		"speed": "Velocità",
+		"speedValue": {
+			"fastest": "La più veloce",
+			"fast": "Veloce",
+			"standard": "Standard",
+			"slow": "Più lenta"
+		},
+		"modelId": "ID modello",
+		"pricing": "Prezzo",
+		"noPrice": "Nessun prezzo indicato.",
+		"ownKeyPrice": "{fee} per richiesta; il tuo provider ti addebita il modello",
+		"providerBills": "Il tuo provider ti addebita il modello",
+		"per1m": "{input} in entrata · {output} in uscita per 1 milione di token",
+		"input": "Input",
+		"output": "Output",
+		"cacheRead": "Lettura cache",
+		"cacheWrite": "Scrittura cache",
+		"requestFee": "Costo per richiesta",
+		"perMillion": "{price} per 1 milione di token",
+		"perRequest": "{price} per richiesta",
+		"priceVersion": "Prezzi al {version}",
+		"fits": "Adatto a {level}",
+		"bandUpTo": "Fino a {tokens} token",
+		"bandAbove": "Oltre {tokens} token"
 	},
 	"verify": {
 		"badge": {

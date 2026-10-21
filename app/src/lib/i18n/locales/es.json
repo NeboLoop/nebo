@@ -1468,12 +1468,15 @@
 			"sortNewest": "Más reciente",
 			"sortPrice": "Precio",
 			"showing": "Mostrando {shown} de {total}",
-			"price": "{input} / {output} por M de tokens",
 			"added": "Añadido",
 			"selected": "{count} seleccionados",
 			"addN": "{count, plural, one {Añadir # modelo} other {Añadir # modelos}}",
 			"empty": "Ningún modelo coincide.",
-			"loadFailed": "No se pudo cargar la lista."
+			"loadFailed": "No se pudo cargar la lista.",
+			"retry": "Reintentar",
+			"errorKey": "No se pudo conectar con {provider}: revisa la clave",
+			"errorBusy": "{provider} pidió esperar. Vuelve a intentarlo en un minuto.",
+			"errorUnreachable": "No se pudo conectar con {provider}. Vuelve a intentarlo."
 		}
 	},
 	"onboardingImport": {
@@ -4352,6 +4355,49 @@
 		"keyRejected": "Tu clave API de {provider} fue rechazada. Revísala en Configuración > Proveedores.",
 		"keyUnusable": "Tu clave API de {provider} no puede usar este modelo. Revisa el modelo en Configuración > Proveedores.",
 		"connectionSignIn": "Inicia sesión en NeboAI para usar esta clave: tus propias claves funcionan con tu cuenta de NeboAI."
+	},
+	"modelCard": {
+		"about": "Acerca de {model}",
+		"aboutNone": "Elige un modelo para ver qué es",
+		"level": "Encaja en",
+		"reasons": "Piensa antes de responder",
+		"yes": "Sí",
+		"no": "No",
+		"abilities": "Puede",
+		"ability": {
+			"vision": "Ver imágenes",
+			"tools": "Usar herramientas",
+			"reasoning": "Razonar",
+			"audio": "Oír audio"
+		},
+		"unknown": "Desconocido",
+		"context": "Contexto",
+		"maxOutput": "Respuesta más larga",
+		"tokens": "{count} tokens",
+		"speed": "Velocidad",
+		"speedValue": {
+			"fastest": "La más rápida",
+			"fast": "Rápida",
+			"standard": "Estándar",
+			"slow": "Más lenta"
+		},
+		"modelId": "ID del modelo",
+		"pricing": "Precio",
+		"noPrice": "No hay precio publicado.",
+		"ownKeyPrice": "{fee} por solicitud; tu proveedor te cobra el modelo",
+		"providerBills": "Tu proveedor te cobra el modelo",
+		"per1m": "{input} entrada · {output} salida por 1 M de tokens",
+		"input": "Entrada",
+		"output": "Salida",
+		"cacheRead": "Lectura de caché",
+		"cacheWrite": "Escritura de caché",
+		"requestFee": "Tarifa por solicitud",
+		"perMillion": "{price} por 1 M de tokens",
+		"perRequest": "{price} por solicitud",
+		"priceVersion": "Precios a fecha {version}",
+		"fits": "Para {level}",
+		"bandUpTo": "Hasta {tokens} tokens",
+		"bandAbove": "Más de {tokens} tokens"
 	},
 	"verify": {
 		"badge": {
