@@ -230,7 +230,7 @@ async fn call_tool(
     let mut started = None;
     if let Some(verify) = verify {
         let changes = tools.target(name, &arguments).await.is_some_and(|t| !t.read_only);
-        match verify.route(store, &mut arguments, &mut ctx.cwd, changes).await {
+        match verify.route(store, name, &mut arguments, &mut ctx.cwd, changes).await {
             Ok(routed) => started = routed.started,
             Err(e) => {
                 return tools::ToolResult::error(format!("{e}. Nothing was changed: code work happens only in its own copy."));

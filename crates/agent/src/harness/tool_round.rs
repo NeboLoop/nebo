@@ -1229,7 +1229,7 @@ async fn run_call(
         && let Some(verify) = cx.verify
     {
         let changes = target.as_ref().is_some_and(|t| !t.read_only);
-        match verify.route(scope.sessions.store(), &mut tc.input, &mut ctx.cwd, changes).await {
+        match verify.route(scope.sessions.store(), &tc.name, &mut tc.input, &mut ctx.cwd, changes).await {
             Ok(routed) => {
                 if routed.rewrote {
                     target = tools.target(&tc.name, &tc.input).await;

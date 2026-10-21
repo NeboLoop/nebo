@@ -49,6 +49,33 @@
     return url.indexOf(location.origin) === 0 ? url.slice(location.origin.length) : url;
   }
 
+  // Whether a failed load is the app's own: its own origin (a relative
+  // address, a data: or blob: it made, inline code), or Nebo's app routes on
+  // the bot that serves it. Another site's failure (analytics, a CDN, no
+  // network) is noted, never counted as the app's error.
+  var neboOrigin = (function () {
+    try {
+      return new URL(api, location.href).origin;
+    } catch (e) {
+      return location.origin;
+    }
+  })();
+  function ours(url) {
+    var u;
+    try {
+      u = new URL(String(url || ''), location.href);
+    } catch (e) {
+      return true;
+    }
+    if (u.protocol === 'data:' || u.protocol === 'blob:' || u.origin === location.origin) return true;
+    return u.origin === neboOrigin && /\/(api\/v1\/apps|apps|ws\/app)\//.test(u.pathname);
+  }
+  // A failure: the app's own is an error; another site's is a note.
+  function failed(url, message, source) {
+    if (ours(url)) push('error', message, source);
+    else push('warn', message + " (another site's, not counted)", source);
+  }
+
   function push(level, message, source) {
     if (busy) return;
     busy = true;
@@ -127,7 +154,7 @@
   function onError(ev) {
     var t = ev.target;
     if (t && t !== window && t.nodeType === 1) {
-      push('error', 'Failed to load ' + short(t.src || t.href || t.tagName), 'resource');
+      failed(t.src || t.href || '', 'Failed to load ' + short(t.src || t.href || t.tagName), 'resource');
       return;
     }
     var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
@@ -142,9 +169,10 @@
   // A script, style or fetch the page's security policy blocked fails with
   // no error event of its own.
   function onViolation(ev) {
-    push(
-      'error',
-      'Blocked by the page\'s security policy (' + ev.violatedDirective + '): ' + short(ev.blockedURI || 'inline code'),
+    var blocked = ev.blockedURI || '';
+    failed(
+      /^(inline|eval|wasm-eval|trusted-types-)/.test(blocked) ? '' : blocked,
+      'Blocked by the page\'s security policy (' + ev.violatedDirective + '): ' + short(blocked || 'inline code'),
       'security'
     );
   }
@@ -183,8 +211,8 @@
   function name(e) {
     return '<' + e.tagName.toLowerCase() + (e.id ? ' id="' + e.id + '"' : '') + '>';
   }
-  // Blank with no error, and still blank a few seconds on (an app waiting
-  // on its first fetch draws late).
+  // Blank with no error, and still blank once its requests have settled (an
+  // app waiting on its first fetch draws late).
   function blank() {
     var w = window.innerWidth;
     var h = window.innerHeight;
@@ -194,7 +222,8 @@
     return !!document.body && w > 0 && h > 0 && !errors && !drewSomething(w, h);
   }
   // `done` runs once the look is over: after the second look when the
-  // page was blank at the first, so a blank page is named before it does.
+  // page was blank at the first (taken once the page's requests have
+  // settled), so a blank page is named before it does.
   function lookAtPage(again, done) {
     var w = window.innerWidth;
     var h = window.innerHeight;
@@ -207,13 +236,13 @@
       else {
         var later = done;
         done = null;
-        setTimeout(function () {
+        whenSettled(function () {
           try {
             lookAtPage(true, later);
           } catch (e) {
             if (later) later();
           }
-        }, 3000);
+        });
       }
     }
     // A canvas drawn small and stretched over another canvas: it hides the
@@ -242,6 +271,28 @@
       }
     });
     if (done) done();
+  }
+  // The page's requests in flight (its fetches and XHRs, not this script's
+  // own), and when the last one ended.
+  var pending = 0;
+  var lastBusy = Date.now();
+  function started() {
+    pending++;
+    lastBusy = Date.now();
+  }
+  function ended() {
+    pending = Math.max(0, pending - 1);
+    lastBusy = Date.now();
+  }
+  // `cb` once no request of the page has been in flight for a second, and
+  // at least a second from now; 10 s at most (a page that polls).
+  function whenSettled(cb) {
+    var from = Date.now();
+    (function wait() {
+      var now = Date.now();
+      if ((pending === 0 && now - lastBusy >= 1000 && now - from >= 1000) || now - from >= 10000) cb();
+      else setTimeout(wait, 200);
+    })();
   }
   var lookTimer = null;
   function lookSoon(ms) {
@@ -284,7 +335,7 @@
 
   function netFail(method, url, status, text) {
     var what = status ? status + (text ? ' ' + text : '') : 'network error' + (text ? ': ' + text : '');
-    push('error', method + ' ' + short(url) + ' → ' + what, 'network');
+    failed(url, method + ' ' + short(url) + ' → ' + what, 'network');
   }
 
   if (origFetch) {
@@ -293,12 +344,15 @@
       var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
       var p = origFetch(input, init);
       if (String(url).indexOf(devlogUrl) === 0) return p;
+      started();
       return p.then(
         function (r) {
+          ended();
           if (r.status >= 400) netFail(method, url, r.status, r.statusText);
           return r;
         },
         function (err) {
+          ended();
           if (!(err && err.name === 'AbortError')) netFail(method, url, 0, err && err.message ? err.message : String(err));
           throw err;
         }
@@ -317,10 +371,12 @@
       var x = this;
       var d = x.__nebo;
       if (d) {
+        started();
         x.addEventListener('abort', function () {
           d.aborted = true;
         });
         x.addEventListener('loadend', function () {
+          ended();
           if (d.aborted) return;
           if (x.status >= 400) netFail(d.m, d.u, x.status, x.statusText);
           else if (x.status === 0) netFail(d.m, d.u, 0, '');

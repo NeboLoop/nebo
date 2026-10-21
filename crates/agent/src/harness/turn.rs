@@ -10880,13 +10880,18 @@ mod tests {
             Box::pin(async move {
                 self.calls.lock().unwrap().push(input);
                 let next = self.results.lock().unwrap().pop_front().unwrap_or(Some((true, "Live check: passed.")));
-                let (result, passed, unavailable) = match next {
-                    Some((true, text)) => (tools::ToolResult::ok(text), true, false),
-                    Some((false, text)) => (tools::ToolResult::error(text), false, false),
-                    None => (tools::ToolResult::error("This bot has no built-in browser."), false, true),
+                let (result, passed, could_not_run, errors) = match next {
+                    Some((true, text)) => (tools::ToolResult::ok(text), true, None, vec![]),
+                    Some((false, text)) => (tools::ToolResult::error(text), false, None, vec![text]),
+                    None => (
+                        tools::ToolResult::error("This bot has no built-in browser."),
+                        false,
+                        Some(tools::app_dev::LIVE_NO_BROWSER),
+                        vec![],
+                    ),
                 };
                 result.with_payload(serde_json::json!({
-                    "kind": tools::app_dev::LIVE_CHECK, "passed": passed, "unavailable": unavailable, "errors": []
+                    "kind": tools::app_dev::LIVE_CHECK, "passed": passed, "couldNotRun": could_not_run, "errors": errors, "notes": []
                 }))
             })
         }
@@ -10987,7 +10992,7 @@ mod tests {
                 assert!(heard, "the builder was told what the live load reported");
                 let checked = calls.lock().unwrap().clone();
                 assert_eq!(checked.len(), 2, "one live load a round");
-                assert!(checked.iter().all(|c| c["check"] == true && c["app"] == "Scoreboard"), "{checked:?}");
+                assert!(checked.iter().all(|c| c["check"] == true && c["app"] == "ops"), "{checked:?}");
             })
         })
     }
@@ -11045,6 +11050,96 @@ mod tests {
                 run_turn(&h, owner_of_app("Show the score")).await;
                 let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
                 assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"live_unavailable"}"#));
+            })
+        })
+    }
+
+    /// A command that deploys a build into an app's pages: `make deploy`,
+    /// writing the page it was given.
+    struct Deployer(std::path::PathBuf);
+
+    impl tools::registry::DynTool for Deployer {
+        fn name(&self) -> &str {
+            "deploy_command"
+        }
+        fn description(&self) -> String {
+            "runs a deploy".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                std::fs::write(&self.0, "<h1>Score</h1><p id=\"score\">0</p><script src=\"app.js\"></script>").unwrap();
+                std::fs::write(self.0.with_file_name("app.js"), "document.title = 'Score';").unwrap();
+                tools::ToolResult::ok("deployed")
+            })
+        }
+    }
+
+    /// An app built in a source project of its own: its build is deployed
+    /// into its pages by a command. The deploy's live load is one of the
+    /// project work's checks, so the work is Verified only when the deployed
+    /// page loads clean, and the builder hears that when it deploys.
+    #[test]
+    fn a_deploy_into_an_apps_pages_is_checked_live_with_the_project() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (folder, page) = app_folder();
+                let project = tempfile::tempdir().unwrap();
+                let repo = project.path().to_path_buf();
+                for args in [vec!["init", "-q", "-b", "main"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+                    crate::worktree::git(&repo, &args).await.unwrap();
+                }
+                std::fs::write(repo.join("Makefile"), "test:\n\tnode score.test.js\n").unwrap();
+                std::fs::write(repo.join("score.js"), "export const score = () => null;\n").unwrap();
+                crate::worktree::git(&repo, &["add", "-A"]).await.unwrap();
+                crate::worktree::git(&repo, &["commit", "-q", "-m", "base"]).await.unwrap();
+                let file = repo.join("score.js").to_string_lossy().into_owned();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "export const score = () => 0;\n"})),
+                    Step::Call("deploy_command", serde_json::json!({"command": "make deploy"})),
+                    Step::Say("Done: the score shows."),
+                    Step::Say(CLEAN_PAGE),
+                    Step::Say("The score shows; its deploy loaded clean. Verified."),
+                ]);
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let ran = Arc::new(Mutex::new(Vec::new()));
+                let live = LiveChecks { results: Mutex::new(vec![Some((true, "Live check of Scoreboard: passed."))].into()), calls: calls.clone() };
+                let h = harness_with(
+                    &model,
+                    vec![Box::new(FileWriter), Box::new(Checks(ran.clone())), Box::new(Deployer(page.into())), Box::new(live)],
+                )
+                .await;
+                let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                h.bind(crate::harness::Outlets { helpers: Some(helpers), ..Default::default() });
+                let ui = folder.path().join("ui");
+                h.store.create_agent("ops", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+                h.store.set_agent_app_fields("ops", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                run_turn(&h, owner_of_app("Show the score")).await;
+
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.work_kind.as_str(), v.state.as_str()), ("isolated", "verified"), "{v:?}");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                let labels: Vec<String> = rounds[0].checks.as_array().unwrap().iter().map(|c| c["label"].as_str().unwrap().to_string()).collect();
+                assert_eq!(labels, ["make test", "Live load of Scoreboard on a phone and a desktop"]);
+                assert_eq!(rounds[0].detail["checksPlanned"], serde_json::json!(labels));
+                assert_eq!(rounds[0].checks[1]["command"], r#"app_reload(app: "ops", check: true)"#);
+                let checked = calls.lock().unwrap().clone();
+                assert_eq!(checked, [serde_json::json!({"app": "ops", "check": true})]);
+                let heard = model.calls().iter().any(|c| c.messages.iter().any(|m| m.content.contains("deployed into the pages of Scoreboard")));
+                assert!(heard, "the builder heard its deploy is checked live");
             })
         })
     }

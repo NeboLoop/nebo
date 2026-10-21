@@ -1430,9 +1430,10 @@ const DEVTOOLS_FLUSHED: &str = r#"(async()=>{if(window.__neboDevtoolsFlush)await
 
 /// The longest a live check waits after the load for the developer
 /// script's own look at the page (a page that drew nothing), which it
-/// takes 2.5 s after the load (and again 3 s later when the page was blank
-/// then) and says it has (`__neboLooked`).
-const LOOK_TIMEOUT: Duration = Duration::from_secs(10);
+/// takes 2.5 s after the load (and, when the page was blank then, again
+/// once its requests have settled, 10 s on at most) and says it has
+/// (`__neboLooked`).
+const LOOK_TIMEOUT: Duration = Duration::from_secs(16);
 
 /// The phone a live check loads an app on: the mobile app's view.
 const PHONE_VIEW: (u64, u64) = (390, 844);
@@ -1459,17 +1460,24 @@ const PAGE_STATUS: &str = r#"(()=>{const n=performance.getEntriesByType('navigat
 /// one capture path, the app's developer script ([`crate::app_console`]):
 /// its errors, uncaught exceptions, unhandled rejections, failed requests,
 /// blocked loads, worker errors and a page that drew nothing, tagged with
-/// the view's id so no other open view's lines count. Each line names its
-/// view. A page without the developer script can't be checked, and fails.
-pub async fn live_load(browser: Option<&Arc<browser::Manager>>, app: &db::models::Agent) -> Result<Vec<String>, LiveLoadError> {
+/// the view's id so no other open view's lines count. A failure from
+/// another site (analytics, a CDN, no network) is a note, never an error.
+/// Each line names its view. A page without the developer script can't be
+/// checked ([`LiveLoadError::NoScript`]).
+pub async fn live_load(
+    browser: Option<&Arc<browser::Manager>>,
+    app: &db::models::Agent,
+) -> Result<crate::app_console::ViewLines, LiveLoadError> {
     let executor = headless(browser, "open the app to check it live").map_err(LiveLoadError::NoBrowser)?;
     let page = page_path(app, &json!({})).map_err(LiveLoadError::NotOpened)?;
-    let mut failed = Vec::new();
+    let mut seen = crate::app_console::ViewLines::default();
     for (name, size) in live_views(app) {
-        let seen = load_view(&executor, app, &page, size).await?;
-        failed.extend(seen.into_iter().map(|line| format!("{name} ({}×{}): {line}", size.0, size.1)));
+        let view = load_view(&executor, app, &page, size).await?;
+        let named = |line: String| format!("{name} ({}×{}): {line}", size.0, size.1);
+        seen.errors.extend(view.errors.into_iter().map(named));
+        seen.notes.extend(view.notes.into_iter().map(named));
     }
-    Ok(failed)
+    Ok(seen)
 }
 
 /// One view of [`live_load`]: `page` loaded fresh at `size`, and what went
@@ -1479,7 +1487,7 @@ async fn load_view(
     app: &db::models::Agent,
     page: &str,
     size: (u64, u64),
-) -> Result<Vec<String>, LiveLoadError> {
+) -> Result<crate::app_console::ViewLines, LiveLoadError> {
     let view_id = format!("live-{}", uuid::Uuid::new_v4().simple());
     let tag = format!("window.__neboViewId={};", serde_json::to_string(&view_id).unwrap_or_default());
     let mark = crate::app_console::mark();
@@ -1508,9 +1516,9 @@ async fn load_view(
     }
     .await;
     view.close().await;
-    let mut failed = checked?;
-    failed.extend(crate::app_console::view_errors(&app.id, mark, &view_id));
-    Ok(failed)
+    let mut seen = crate::app_console::view_lines(&app.id, mark, &view_id);
+    seen.errors.splice(0..0, checked?);
+    Ok(seen)
 }
 
 /// An app's page open in the bot's own headless browser, for a pack tool

@@ -17,6 +17,14 @@
 //! A work is recorded (its verification row) when it starts, with its copy's
 //! whole state, so a later turn of the same conversation resumes it exactly
 //! where it was ([`TurnWork::load`]).
+//!
+//! An app built in a source project of its own (a repository whose build
+//! is copied into the app's pages by a deploy script) changes its pages
+//! with no call naming them. A deploy is seen where it happens: a command
+//! that changed an app's pages while it ran, a linked coding agent's turn
+//! that changed them, or an `app_reload` after one. Those apps are the
+//! turn's deploys ([`TurnWork::deployed_pages`]); their live check is one
+//! of the checks of the turn's other code work (`verify::engine`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -175,6 +183,75 @@ pub struct TurnWork {
     /// A new app's pages a call is about to write (`writes_app_pages`): the
     /// work starts once the call has made the app.
     pending_app: Arc<std::sync::Mutex<Option<String>>>,
+    /// Deploys into apps' pages this turn.
+    deploys: Arc<std::sync::Mutex<Deploys>>,
+}
+
+/// Deploys into apps' pages: the pages being watched, and the ones a deploy
+/// changed.
+#[derive(Default)]
+struct Deploys {
+    /// The pages as they were before the command running now.
+    call: Vec<(PathBuf, u64)>,
+    /// The pages as they were when a linked coding agent's turn began (its
+    /// own commands are never Nebo's calls).
+    turn: Vec<(PathBuf, u64)>,
+    /// The pages a deploy changed.
+    pages: std::collections::BTreeSet<PathBuf>,
+}
+
+/// What an app's pages hold, cheaply: each file's path, size and time it
+/// was written, hashed (50,000 files at most). Equal before and after: no
+/// deploy wrote them.
+fn pages_fingerprint(dir: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    let mut stack = vec![dir.to_path_buf()];
+    let mut files = 0usize;
+    while let Some(d) = stack.pop() {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&d).into_iter().flatten().flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_dir() {
+                stack.push(e.path());
+                continue;
+            }
+            files += 1;
+            if files > 50_000 {
+                return hash.finish();
+            }
+            e.path().hash(&mut hash);
+            meta.len().hash(&mut hash);
+            meta.modified().ok().hash(&mut hash);
+        }
+    }
+    hash.finish()
+}
+
+/// Each of `pages` with its fingerprint now.
+async fn watch(pages: Vec<PathBuf>) -> Vec<(PathBuf, u64)> {
+    if pages.is_empty() {
+        return Vec::new();
+    }
+    tokio::task::spawn_blocking(move || pages.into_iter().map(|p| {
+        let f = pages_fingerprint(&p);
+        (p, f)
+    }).collect())
+    .await
+    .unwrap_or_default()
+}
+
+/// The pages of `watched` written since it was taken.
+async fn written(watched: Vec<(PathBuf, u64)>) -> Vec<PathBuf> {
+    if watched.is_empty() {
+        return Vec::new();
+    }
+    tokio::task::spawn_blocking(move || {
+        watched.into_iter().filter(|(p, before)| pages_fingerprint(p) != *before).map(|(p, _)| p).collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// What routing a call did.
@@ -269,6 +346,12 @@ impl TurnWork {
         {
             *turn.folder.lock().await = Some((root, base));
         }
+        // A linked coding agent deploys with its own commands: the apps'
+        // pages as the turn found them, compared when it ends.
+        if linked {
+            let pages = app_pages_of(who.store, who.agent_id);
+            turn.deploys.lock().unwrap_or_else(|p| p.into_inner()).turn = watch(pages).await;
+        }
         // A helper working in its own copy: its work is that copy.
         if let Some(copy) = cwd.and_then(|c| match project::code_folder(Path::new(c), &[]) {
             Some(Folder::Copy(copy)) => Some(copy),
@@ -281,13 +364,16 @@ impl TurnWork {
         turn
     }
 
-    /// Point a call at the copies: every path in its input inside a project
-    /// this turn works on in a copy is rewritten to the copy, and so is the
-    /// call's working directory. A call that changes something (`changes`)
-    /// in a code folder not yet worked on first starts the work there: a
-    /// copy of a project, or the app's pages where they are.
+    /// Point a call of `tool` at the copies: every path in its input inside
+    /// a project this turn works on in a copy is rewritten to the copy, and
+    /// so is the call's working directory. A call that changes something
+    /// (`changes`) in a code folder not yet worked on first starts the work
+    /// there: a copy of a project, or the app's pages where they are. A
+    /// command's apps' pages are watched for a deploy while it runs
+    /// ([`TurnWork::after_call`]); an `app_reload` is one.
     pub async fn route(
         &self,
+        tool: &str,
         input: &mut serde_json::Value,
         cwd: &mut Option<String>,
         changes: bool,
@@ -296,6 +382,16 @@ impl TurnWork {
         let mut works = self.works.lock().await;
         let mut routed = Routed::default();
         let app_pages = app_pages_of(who.store, who.agent_id);
+        if changes && input.get("command").is_some_and(|c| c.is_string()) {
+            let watched = watch(app_pages.clone()).await;
+            self.deploys.lock().unwrap_or_else(|p| p.into_inner()).call = watched;
+        }
+        if tool == tools::app_dev::APP_RELOAD
+            && let Some(dir) = reloaded_pages(who, input)
+            && app_pages.contains(&dir)
+        {
+            self.deploys.lock().unwrap_or_else(|p| p.into_inner()).pages.insert(dir);
+        }
         if changes && super::writes_app_pages(input) {
             match existing_app(who.store, input)
                 .and_then(|a| tools::app_dev::served_dir(&a).map(PathBuf::from))
@@ -379,15 +475,20 @@ impl TurnWork {
     }
 
     /// A turn in which the linked agent ran no tools of its own: what
-    /// changed in its folder meanwhile is not its work.
+    /// changed in its folder, or in apps' pages, meanwhile is not its work.
     pub async fn drop_folder(&self) {
         self.folder.lock().await.take();
+        self.deploys.lock().unwrap_or_else(|p| p.into_inner()).turn.clear();
     }
 
     /// A linked coding agent's turn changed its project: its work starts
     /// now, from the project as the turn found it. A turn that changed
     /// nothing records nothing.
     pub async fn start_folder_if_changed(&self, who: &Starting<'_>) {
+        // Apps' pages its own commands deployed to.
+        let watched = std::mem::take(&mut self.deploys.lock().unwrap_or_else(|p| p.into_inner()).turn);
+        let deployed = written(watched).await;
+        self.deploys.lock().unwrap_or_else(|p| p.into_inner()).pages.extend(deployed);
         let Some((root, base)) = self.folder.lock().await.take() else { return };
         let Ok(shadow) = Shadow::open(&Work::shadow_dir("", WorkKind::Folder, &root), &root).await else { return };
         if shadow.snapshot().await.is_ok_and(|now| now == base) {
@@ -399,9 +500,49 @@ impl TurnWork {
         }
     }
 
-    /// After a call ran: a new app it made starts its pages' work, from
-    /// nothing (every page is the change).
+    /// After a call ran: an app's pages a command wrote are a deploy (the
+    /// builder hears that their live check joins its checks), and a new app
+    /// it made starts its pages' work, from nothing (every page is the
+    /// change).
     pub async fn after_call(&self, who: &Starting<'_>) -> Option<String> {
+        let watched = std::mem::take(&mut self.deploys.lock().unwrap_or_else(|p| p.into_inner()).call);
+        let deployed = written(watched).await;
+        let mut notes: Vec<String> = Vec::new();
+        if !deployed.is_empty() {
+            let works = self.works.lock().await;
+            let names: Vec<String> = deployed
+                .iter()
+                .filter(|d| !works.iter().any(|w| w.kind == WorkKind::AppPages && &w.work_dir == *d))
+                .filter_map(|d| app_served_from(who.store, d))
+                .map(|a| format!("{} (`app_reload(app: \"{}\", check: true)`)", a.name, a.id))
+                .collect();
+            if !names.is_empty() {
+                notes.push(format!(
+                    "This command deployed into the pages of {}: their live load on a phone and a desktop is one of the \
+                     checks of your work now. Run it yourself after each deploy, and fix what it reports.",
+                    names.join(", ")
+                ));
+            }
+            drop(works);
+            self.deploys.lock().unwrap_or_else(|p| p.into_inner()).pages.extend(deployed);
+        }
+        notes.extend(self.after_new_app(who).await);
+        (!notes.is_empty()).then(|| notes.join("\n\n"))
+    }
+
+    /// The pages of apps a deploy changed this turn, except those being
+    /// worked on as an app's own pages (their live check is their own).
+    pub async fn deployed_pages(&self) -> Vec<PathBuf> {
+        let pages = self.deploys.lock().unwrap_or_else(|p| p.into_inner()).pages.clone();
+        let works = self.works.lock().await;
+        pages
+            .into_iter()
+            .filter(|d| !works.iter().any(|w| w.kind == WorkKind::AppPages && &w.work_dir == d))
+            .collect()
+    }
+
+    /// A new app a call made starts its pages' work.
+    async fn after_new_app(&self, who: &Starting<'_>) -> Option<String> {
         let name = self
             .pending_app
             .lock()
@@ -620,6 +761,23 @@ fn app_pages_of(store: &db::Store, agent_id: &str) -> Vec<PathBuf> {
         .filter(|a| a.is_app.unwrap_or(0) != 0 && tools::app_dev::may_work_on(store, agent_id, a))
         .filter_map(|a| tools::app_dev::served_dir(&a).map(PathBuf::from))
         .collect()
+}
+
+/// The app served from `pages`, if one is.
+pub fn app_served_from(store: &db::Store, pages: &Path) -> Option<db::models::Agent> {
+    store
+        .list_agents(1_000, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|a| tools::app_dev::served_dir(a).is_some_and(|d| Path::new(d) == pages))
+}
+
+/// The pages of the app an `app_reload` call names (its `app`, else the
+/// caller itself).
+fn reloaded_pages(who: &Starting<'_>, input: &serde_json::Value) -> Option<PathBuf> {
+    let label = input["app"].as_str().map(str::trim).filter(|l| !l.is_empty()).unwrap_or(who.agent_id);
+    let app = tools::team::resolve_agent(who.store, label)?;
+    tools::app_dev::served_dir(&app).map(PathBuf::from)
 }
 
 /// The app an employee call names (`id`, else `name`), if it exists.
@@ -883,16 +1041,16 @@ mod tests {
 
                 // A read changes nothing: no copy.
                 let mut read = json!({"path": project.join("src/app.ts").to_string_lossy()});
-                let r = work.route(&mut read, &mut None, false, &who).await.unwrap();
+                let r = work.route("edit_file", &mut read, &mut None, false, &who).await.unwrap();
                 assert!(!r.rewrote && r.started.is_none() && work.is_empty().await);
 
                 // A letter beside the project is not code.
                 let mut letter = json!({"path": projects.path().join("letter.txt").to_string_lossy(), "content": "Dear"});
-                let r = work.route(&mut letter, &mut None, true, &who).await.unwrap();
+                let r = work.route("edit_file", &mut letter, &mut None, true, &who).await.unwrap();
                 assert!(r.started.is_none() && work.is_empty().await);
 
                 let mut write = json!({"path": project.join("src/app.ts").to_string_lossy(), "content": "export const a = 2;\n"});
-                let r = work.route(&mut write, &mut None, true, &who).await.unwrap();
+                let r = work.route("edit_file", &mut write, &mut None, true, &who).await.unwrap();
                 let note = r.started.expect("the work started");
                 assert!(note.contains("your own working copy") && note.contains("Never touch the owner's working copy"), "{note}");
                 let works = work.snapshot().await;
@@ -908,7 +1066,7 @@ mod tests {
 
                 // Later calls on the project go to the copy too; no second copy.
                 let mut again = json!({"command": format!("cd {} && npm test", project.display())});
-                let r = work.route(&mut again, &mut None, true, &who).await.unwrap();
+                let r = work.route("edit_file", &mut again, &mut None, true, &who).await.unwrap();
                 assert!(r.rewrote && r.started.is_none());
                 assert_eq!(again["command"], format!("cd {} && npm test", copy.display()));
                 assert_eq!(work.snapshot().await.len(), 1);
@@ -968,6 +1126,46 @@ mod tests {
                 for kept in ["v-live", "v-new", "v-orphan"] {
                     assert!(Work::home(kept).exists(), "{kept} is kept");
                 }
+            })
+        })
+    }
+
+    /// An app built in a source project of its own: a command that wrote
+    /// its pages while it ran is a deploy, the builder hears its live check
+    /// joins its checks, and the app's pages are the turn's deploys. A
+    /// command that wrote nothing there deploys nothing; an `app_reload` of
+    /// the app counts as one.
+    #[test]
+    fn a_command_that_writes_an_apps_pages_is_a_deploy() {
+        crate::test_home::with_home(|home| {
+            rt().block_on(async {
+                let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+                let folder = tempfile::tempdir().unwrap();
+                let ui = folder.path().join("ui");
+                std::fs::create_dir_all(&ui).unwrap();
+                std::fs::write(ui.join("index.html"), "<h1>One</h1>").unwrap();
+                store.create_agent("dev", Some("user"), "Scoreboard", "", "---\nname: Scoreboard\n---\n", "{}", None, None).unwrap();
+                store.set_agent_app_fields("dev", true, Some(&ui.to_string_lossy()), None, None).unwrap();
+                let who = who(&store);
+
+                let work = TurnWork::default();
+                let mut idle = json!({"command": "echo hi"});
+                work.route("shell", &mut idle, &mut None, true, &who).await.unwrap();
+                assert_eq!(work.after_call(&who).await, None, "nothing written: no deploy");
+                assert!(work.deployed_pages().await.is_empty());
+
+                let mut deploy = json!({"command": "pnpm build && cp -r dist/* ../ui/"});
+                work.route("shell", &mut deploy, &mut None, true, &who).await.unwrap();
+                std::fs::write(ui.join("index.html"), "<h1>Two, a longer page</h1>").unwrap();
+                std::fs::write(ui.join("app.js"), "console.log(1)").unwrap();
+                let note = work.after_call(&who).await.expect("the builder hears of the deploy");
+                assert!(note.contains("deployed into the pages of Scoreboard") && note.contains(r#"app_reload(app: "dev", check: true)"#), "{note}");
+                assert_eq!(work.deployed_pages().await, vec![ui.clone()]);
+
+                let reloaded = TurnWork::default();
+                let mut reload = json!({});
+                reloaded.route(tools::app_dev::APP_RELOAD, &mut reload, &mut None, false, &who).await.unwrap();
+                assert_eq!(reloaded.deployed_pages().await, vec![ui.clone()], "an app_reload after a deploy is one");
             })
         })
     }

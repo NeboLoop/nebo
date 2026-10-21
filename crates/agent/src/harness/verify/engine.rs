@@ -168,17 +168,18 @@ impl Verify {
         self.shared().tool_ctx = Some(ctx);
     }
 
-    /// Point a call at the turn's copies, starting work where it first
-    /// changes a code folder (`TurnWork::route`).
+    /// Point a call of `tool` at the turn's copies, starting work where it
+    /// first changes a code folder (`TurnWork::route`).
     pub async fn route(
         &self,
         store: &db::Store,
+        tool: &str,
         input: &mut serde_json::Value,
         cwd: &mut Option<String>,
         changes: bool,
     ) -> Result<super::work::Routed, String> {
         self.work
-            .route(input, cwd, changes, &self.builder.starting(store))
+            .route(tool, input, cwd, changes, &self.builder.starting(store))
             .await
     }
 
@@ -884,20 +885,30 @@ impl VerifyCheck {
         };
         // The plain-code step: the project's own build and tests, within
         // the build folders' disk cap. An app's own check is its live load,
-        // after the checks its `checks/` folder declares. The round's record
-        // says, as it goes, which checks it runs and what each came to, then
-        // each reviewer's result as it arrives: the owner watches the round,
-        // not a spinner.
+        // after the checks its `checks/` folder declares; the apps a deploy
+        // of this turn's changed have theirs among any other work's checks
+        // (`TurnWork::deployed_pages`). The round's record says, as it goes,
+        // which checks it runs and what each came to, then each reviewer's
+        // result as it arrives: the owner watches the round, not a spinner.
         super::work::cap_builds();
-        let app = (work.kind == WorkKind::AppPages).then(|| self.app_of(work)).flatten();
-        let checks = match work.kind {
-            WorkKind::AppPages => app.as_ref().map(|a| app_checks(a, &work.work_dir)).unwrap_or_default(),
-            _ => checks::detect(&work.work_dir, &whole.paths()),
+        let (checks, lives): (Vec<checks::Check>, Vec<Live>) = match work.kind {
+            WorkKind::AppPages => {
+                let app = self.app_of(work);
+                let checks = app.as_ref().map(|a| app_checks(a, &work.work_dir)).unwrap_or_default();
+                (checks, vec![Live::own(app)])
+            }
+            _ => {
+                let deployed = self.verify.work.deployed_pages().await;
+                let lives = deployed
+                    .iter()
+                    .filter_map(|pages| super::work::app_served_from(&store, pages))
+                    .map(Live::deployed)
+                    .collect();
+                (checks::detect(&work.work_dir, &whole.paths()), lives)
+            }
         };
-        let mut planned: Vec<&str> = checks.iter().map(|c| c.label.as_str()).collect();
-        if work.kind == WorkKind::AppPages {
-            planned.push(LIVE_CHECK_LABEL);
-        }
+        let mut planned: Vec<String> = checks.iter().map(|c| c.label.clone()).collect();
+        planned.extend(lives.iter().map(|l| l.label.clone()));
         row.detail = json!({ "whole": whole.stat(), "checksPlanned": planned });
         self.record_round(&row);
         let mut ctx = self.tool_ctx();
@@ -915,11 +926,14 @@ impl VerifyCheck {
                 break;
             }
         }
-        // No browser to load the app in: its live check can't run, and the
-        // work can't be verified.
+        // A live check that could not run (no browser to load the app in,
+        // or a page without the check script): the work can't be verified.
         let mut live_unavailable = None;
-        if work.kind == WorkKind::AppPages && !self.cancel.is_cancelled() {
-            match self.live_check(app.as_ref()).await {
+        for live in &lives {
+            if self.cancel.is_cancelled() {
+                break;
+            }
+            match self.live_check(live).await {
                 Ok(run) => {
                     runs.push(run);
                     row.checks = json!(runs);
@@ -927,10 +941,10 @@ impl VerifyCheck {
                 }
                 Err(why) => {
                     // Never shown as running: it isn't one of the checks.
-                    planned.pop();
+                    planned.retain(|p| p != &live.label);
                     row.detail["checksPlanned"] = json!(planned);
                     self.record_round(&row);
-                    live_unavailable = Some(why);
+                    live_unavailable.get_or_insert(why);
                 }
             }
         }
@@ -1047,7 +1061,7 @@ impl VerifyCheck {
             .map(|p| p.id.clone())
             .collect();
         let deferred = findings::accepted_deferrals(&prior_open, &priors);
-        let checks_failed = runs.iter().filter(|r| !r.passed).count();
+        let checks_failed: usize = runs.iter().map(CheckRun::problems).sum();
         let blocking_now = findings::blocking(&open) + checks_failed;
 
         let mut calls: Vec<Finding> = Vec::new();
@@ -1635,24 +1649,26 @@ impl VerifyCheck {
         })
     }
 
-    /// An app's own check, run every round like any other check: its open
-    /// views reloaded, then its page loaded fresh on a phone and a desktop
-    /// through `app_reload(check: true)`, the one live check
+    /// An app's live check, run every round like any other check: its page
+    /// loaded fresh on a phone and a desktop, in a view of its own, through
+    /// `app_reload(check: true)`, the one live check
     /// ([`tools::app_publish::live_load`]). It passes only when every view
-    /// loaded with zero errors and drew something; what failed is its
-    /// output, which the builder fixes. `Err`: no browser to load it in, so
-    /// it can't run at all.
-    async fn live_check(&self, app: Option<&db::models::Agent>) -> Result<CheckRun, Why> {
+    /// loaded with zero errors of the app's own and drew something; what
+    /// failed is its output, which the builder fixes, each error one open
+    /// problem. `Err`: it could not run at all (no browser to load it in, or
+    /// a page without the check script).
+    async fn live_check(&self, live: &Live) -> Result<CheckRun, Why> {
         let started = std::time::Instant::now();
-        let run = |passed: bool, output: &str| CheckRun {
-            label: LIVE_CHECK_LABEL.into(),
-            command: LIVE_CHECK_COMMAND.into(),
+        let run = |passed: bool, output: &str, errors: Vec<String>| CheckRun {
+            label: live.label.clone(),
+            command: live.command.clone(),
             passed,
             tail: checks::tail(output),
             duration_ms: started.elapsed().as_millis() as u64,
+            errors,
         };
-        let Some(app) = app else {
-            return Ok(run(false, "No app is served from these pages."));
+        let Some(app) = live.app.as_ref() else {
+            return Ok(run(false, "No app is served from these pages.", Vec::new()));
         };
         let mut ctx = self.tool_ctx();
         // Nobody answers a question in the middle of a check.
@@ -1660,14 +1676,46 @@ impl VerifyCheck {
         let result = self
             .harness
             .tools
-            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.name, "check": true }))
+            .execute(&ctx, tools::app_dev::APP_RELOAD, json!({ "app": app.id, "check": true }))
             .await;
         let checked = result.payload.as_ref().filter(|p| p["kind"] == tools::app_dev::LIVE_CHECK);
-        if checked.is_some_and(|p| p["unavailable"] == true) {
-            return Err(Why::new("live_unavailable"));
+        match checked.and_then(|p| p["couldNotRun"].as_str()) {
+            Some(tools::app_dev::LIVE_NO_BROWSER) => return Err(Why::new("live_unavailable")),
+            Some(_) => return Err(Why::new("live_no_script")),
+            None => {}
         }
         let passed = !result.is_error && checked.is_some_and(|p| p["passed"] == true);
-        Ok(run(passed, &result.content))
+        let errors = checked
+            .and_then(|p| p["errors"].as_array())
+            .map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        Ok(run(passed, &result.content, errors))
+    }
+}
+
+/// One app's live check in a round: the app being worked on (`None`: no
+/// app is served from its pages), or one a deploy of the turn changed.
+struct Live {
+    app: Option<db::models::Agent>,
+    /// Its row among the round's checks.
+    label: String,
+    /// How the builder runs it itself.
+    command: String,
+}
+
+impl Live {
+    /// The live check of the app whose pages are the work.
+    fn own(app: Option<db::models::Agent>) -> Self {
+        Live { app, label: LIVE_CHECK_LABEL.into(), command: LIVE_CHECK_COMMAND.into() }
+    }
+
+    /// The live check of an app a deploy changed: it names the app.
+    fn deployed(app: db::models::Agent) -> Self {
+        Live {
+            label: format!("Live load of {} on a phone and a desktop", app.name),
+            command: format!("app_reload(app: \"{}\", check: true)", app.id),
+            app: Some(app),
+        }
     }
 }
 

@@ -377,13 +377,15 @@ fn reload_schema() -> Value {
     });
     schema["properties"]["check"] = json!({
         "type": "boolean",
-        "description": "true: after reloading, load the page fresh on a phone and a desktop and fail on any console error, uncaught exception, unhandled rejection, failed request or blank page. The same live check that verifies app work."
+        "description": "true: instead of reloading the open views, load the page fresh on a phone and a desktop in a view of its own and fail on any console error, uncaught exception, unhandled rejection, failed request of the app's own or blank page. The same live check that verifies app work."
     });
     schema
 }
 
 /// The kind of the payload `app_reload(check: true)` returns: `{"kind",
-/// "passed", "unavailable" (no browser to load the page in), "errors"}`.
+/// "passed", "couldNotRun" (null, [`LIVE_NO_BROWSER`] or
+/// [`LIVE_NO_SCRIPT`]), "errors", "notes" (failures from other sites, not
+/// counted)}`.
 pub const LIVE_CHECK: &str = "live_check";
 
 /// The version a call asks to restore, when it asks.
@@ -415,9 +417,10 @@ impl DynTool for AppReloadTool {
          restore: \"<version id>\" first puts the app's page and source back to a saved version (app_status(history: true) lists \
          them), as a new version, so a restore can itself be undone. Use it when the owner asks to go back (\"put it back to how it \
          was this morning\") and when a change made the app worse: restore the last good version instead of rewriting.\n\
-         check: true then loads the page fresh on a phone and a desktop, in this bot's own browser, and fails with every console \
-         error, uncaught exception, unhandled rejection, failed request, or a page that drew nothing. It is the live check that \
-         verifies app work: run it after a change, and fix what it reports."
+         check: true instead loads the page fresh on a phone and a desktop, in a view of its own in this bot's browser (the open \
+         views are not reloaded), and fails with every console error, uncaught exception, unhandled rejection, failed request of \
+         the app's own, or a page that drew nothing; another site's failures are listed, not counted. It is the live check that \
+         verifies app work: run it after a change or a deploy, and fix what it reports."
             .to_string()
     }
 
@@ -449,44 +452,54 @@ impl DynTool for AppReloadTool {
                 },
                 None => String::new(),
             };
-            let check = input.get("check").and_then(|v| v.as_bool()).unwrap_or(false);
-            let reloaded = match self.0.broadcaster.as_ref() {
-                None if restored.is_empty() && !check => {
-                    return ToolResult::error("Reloading open views is not available on this bot.");
+            // The check loads the page in a view of its own and never
+            // reloads the owner's open views: a failing build stays off his
+            // screens.
+            if input.get("check").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let loaded = crate::app_publish::live_load(self.0.browser.as_ref(), &app).await;
+                return live_check_result(&app, &restored, loaded);
+            }
+            let Some(broadcast) = self.0.broadcaster.as_ref() else {
+                if !restored.is_empty() {
+                    return ToolResult::ok(restored);
                 }
-                None => restored,
-                Some(_) if !has_open_view(&app.id) => format!(
+                return ToolResult::error("Reloading open views is not available on this bot.");
+            };
+            if !has_open_view(&app.id) {
+                return ToolResult::ok(format!(
                     "{restored}No view of {} is open right now, so nothing reloaded. It loads the build now in its \
                      folder the next time it is opened.",
                     app.name
-                ),
-                Some(broadcast) => {
-                    broadcast(RELOAD_EVENT, json!({ "appId": app.id }));
-                    format!(
-                        "{restored}Reloaded every open view of {}: each loads the build now in its folder (its entry page is \
-                         never cached). Check it with app_console and app_screenshot before telling the owner it changed.",
-                        app.name
-                    )
-                }
-            };
-            if !check {
-                return ToolResult::ok(reloaded);
+                ));
             }
-            let loaded = crate::app_publish::live_load(self.0.browser.as_ref(), &app).await;
-            live_check_result(&app, &reloaded, loaded)
+            broadcast(RELOAD_EVENT, json!({ "appId": app.id }));
+            ToolResult::ok(format!(
+                "{restored}Reloaded every open view of {}: each loads the build now in its folder (its entry page is \
+                 never cached). Check it with app_console and app_screenshot before telling the owner it changed.",
+                app.name
+            ))
         })
     }
 }
 
+/// Why `app_reload(check: true)` could not run its check at all, in its
+/// payload's `couldNotRun`: the bot has no browser to load the page in.
+pub const LIVE_NO_BROWSER: &str = "no_browser";
+/// ... or the page loaded without the developer script that reports what
+/// it does ([`crate::app_publish::NO_SCRIPT`]).
+pub const LIVE_NO_SCRIPT: &str = "no_script";
+
 /// What `app_reload(check: true)` returns for `app`'s live load: passed
 /// only when every view loaded with zero errors and the app's folder,
 /// entry page and every file it loads are there ([`live_problem`]); an
-/// error naming each problem otherwise. Its [`LIVE_CHECK`] payload says the
-/// same for a caller that branches on it.
+/// error naming each problem otherwise. Failures from other sites are
+/// listed as notes and never fail it. A check that could not run says why
+/// (`couldNotRun`): it neither passed nor failed. Its [`LIVE_CHECK`]
+/// payload says the same for a caller that branches on it.
 fn live_check_result(
     app: &db::models::Agent,
-    reloaded: &str,
-    loaded: Result<Vec<String>, crate::app_publish::LiveLoadError>,
+    restored: &str,
+    loaded: Result<crate::app_console::ViewLines, crate::app_publish::LiveLoadError>,
 ) -> ToolResult {
     use crate::app_publish::LiveLoadError;
     let dir = Path::new(served_dir(app).unwrap_or_default());
@@ -495,33 +508,38 @@ fn live_check_result(
         .map(|(name, (w, h))| format!("{} ({w}×{h})", name.to_lowercase()))
         .collect::<Vec<_>>()
         .join(" and ");
-    let (errors, unavailable): (Vec<String>, bool) = match loaded {
-        Err(LiveLoadError::NoBrowser(e)) => (vec![e], true),
-        Err(LiveLoadError::NotOpened(e)) => {
-            let mut errors = vec![e];
-            errors.extend(live_problem(dir, 0).map(str::to_string));
-            (errors, false)
-        }
-        Err(LiveLoadError::NoScript(_)) => (vec![crate::app_publish::NO_SCRIPT.to_string()], false),
-        Ok(seen) => {
-            let mut errors: Vec<String> = live_problem(dir, 0).map(str::to_string).into_iter().collect();
-            errors.extend(seen);
-            (errors, false)
-        }
+    let head = if restored.is_empty() { String::new() } else { format!("{restored}\n\n") };
+    let not_run = |why: &str, said: String| {
+        ToolResult::error(format!("{head}Live check of {}: it could not run. {said}", app.name)).with_payload(json!({
+            "kind": LIVE_CHECK, "passed": false, "couldNotRun": why, "errors": [], "notes": []
+        }))
+    };
+    let seen = match loaded {
+        Err(LiveLoadError::NoBrowser(e)) => return not_run(LIVE_NO_BROWSER, e),
+        Err(LiveLoadError::NoScript(_)) => return not_run(LIVE_NO_SCRIPT, format!("{}.", crate::app_publish::NO_SCRIPT)),
+        Err(LiveLoadError::NotOpened(e)) => crate::app_console::ViewLines { errors: vec![e], notes: Vec::new() },
+        Ok(seen) => seen,
+    };
+    let mut errors: Vec<String> = live_problem(dir, 0).map(str::to_string).into_iter().collect();
+    errors.extend(seen.errors);
+    let notes = if seen.notes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nNot counted (failures from other sites, never the app's own):\n- {}",
+            seen.notes.join("\n- ")
+        )
     };
     let passed = errors.is_empty();
-    let head = if reloaded.is_empty() { String::new() } else { format!("{reloaded}\n\n") };
-    let payload = json!({ "kind": LIVE_CHECK, "passed": passed, "unavailable": unavailable, "errors": errors });
+    let payload = json!({ "kind": LIVE_CHECK, "passed": passed, "couldNotRun": null, "errors": errors, "notes": seen.notes });
     let result = if passed {
         ToolResult::ok(format!(
-            "{head}Live check of {}: passed. It loaded on a {views} with no errors, and drew something.",
+            "{head}Live check of {}: passed. It loaded on a {views} with no errors, and drew something.{notes}",
             app.name
         ))
-    } else if unavailable {
-        ToolResult::error(format!("{head}Live check of {}: it could not run. {}", app.name, errors.join(" ")))
     } else {
         ToolResult::error(format!(
-            "{head}Live check of {}: failed. Loaded on a {views}:\n- {}",
+            "{head}Live check of {}: failed. Loaded on a {views}:\n- {}{notes}",
             app.name,
             errors.join("\n- ")
         ))
@@ -1036,9 +1054,12 @@ mod tests {
 
     /// `app_reload(check: true)` passes only a page that loaded on a phone
     /// and a desktop with zero errors and has every file it loads; each
-    /// error is named; no browser to load it in says it could not run.
+    /// error is named; another site's failures are notes that never fail
+    /// it; no browser, or a page without the check script, says it could
+    /// not run, never that it failed.
     #[test]
     fn the_live_check_passes_only_a_clean_load_and_names_every_error() {
+        use crate::app_console::ViewLines;
         use crate::app_publish::LiveLoadError;
         let tmp = tempfile::tempdir().unwrap();
         let store = store(tmp.path());
@@ -1047,42 +1068,62 @@ mod tests {
         std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
         app_row(&store, "app-1", "Puzzler", &ui);
         let app = store.get_agent("app-1").unwrap().unwrap();
+        let lines = |errors: &[&str], notes: &[&str]| -> Result<ViewLines, LiveLoadError> {
+            Ok(ViewLines {
+                errors: errors.iter().map(|e| e.to_string()).collect(),
+                notes: notes.iter().map(|e| e.to_string()).collect(),
+            })
+        };
 
-        let clean = live_check_result(&app, "", Ok(vec![]));
+        let clean = live_check_result(&app, "", lines(&[], &[]));
         assert!(!clean.is_error, "{}", clean.content);
         assert!(clean.content.contains("phone (390×844) and desktop (1280×800)"), "{}", clean.content);
         let payload = clean.payload.unwrap();
         assert_eq!((payload["kind"].as_str(), payload["passed"].as_bool()), (Some(LIVE_CHECK), Some(true)));
+        assert!(payload["couldNotRun"].is_null());
 
         let broken = live_check_result(
             &app,
-            "Reloaded.",
-            Ok(vec!["Phone (390×844): Uncaught TypeError: x is undefined (/app.js:3)".into()]),
+            "Restored.",
+            lines(&["Phone (390×844): Uncaught TypeError: x is undefined (/app.js:3)"], &[]),
         );
         assert!(broken.is_error);
-        assert!(broken.content.starts_with("Reloaded.\n\n"), "{}", broken.content);
+        assert!(broken.content.starts_with("Restored.\n\n"), "{}", broken.content);
         assert!(broken.content.contains("- Phone (390×844): Uncaught TypeError"), "{}", broken.content);
-        assert_eq!(broken.payload.unwrap()["passed"], false);
+        let payload = broken.payload.unwrap();
+        assert_eq!(payload["passed"], false);
+        assert_eq!(payload["errors"].as_array().unwrap().len(), 1, "each error, counted one by one");
 
         let blank = live_check_result(
             &app,
             "",
-            Ok(vec!["Desktop (1280×800): The page loaded but drew nothing: no text, picture or canvas is on screen.".into()]),
+            lines(&["Desktop (1280×800): The page loaded but drew nothing: no text, picture or canvas is on screen."], &[]),
         );
         assert!(blank.is_error && blank.content.contains("drew nothing"), "{}", blank.content);
 
+        // Analytics that failed (offline, blocked) is another site's: listed, never counted.
+        let noisy = live_check_result(
+            &app,
+            "",
+            lines(&[], &["Phone (390×844): POST https://stats.example/hit → network error (another site's, not counted)"]),
+        );
+        assert!(!noisy.is_error, "{}", noisy.content);
+        assert!(noisy.content.contains("Not counted") && noisy.content.contains("stats.example"), "{}", noisy.content);
+        assert_eq!(noisy.payload.unwrap()["notes"].as_array().unwrap().len(), 1);
+
         std::fs::write(ui.join("index.html"), "<script src=\"app.js\"></script>").unwrap();
-        let missing = live_check_result(&app, "", Ok(vec![]));
+        let missing = live_check_result(&app, "", lines(&[], &[]));
         assert!(missing.is_error && missing.content.contains("a file the page loads is missing"), "{}", missing.content);
 
-        let no_script = live_check_result(&app, "", Err(LiveLoadError::NoScript("x".into())));
-        assert!(no_script.is_error && no_script.content.contains(crate::app_publish::NO_SCRIPT));
-        assert_eq!(no_script.payload.unwrap()["unavailable"], false, "a page that can be fixed");
-
-        let no_browser = live_check_result(&app, "", Err(LiveLoadError::NoBrowser("no browser".into())));
-        assert!(no_browser.is_error);
-        let payload = no_browser.payload.unwrap();
-        assert_eq!((payload["passed"].as_bool(), payload["unavailable"].as_bool()), (Some(false), Some(true)));
+        for (loaded, why) in [
+            (LiveLoadError::NoScript("x".into()), LIVE_NO_SCRIPT),
+            (LiveLoadError::NoBrowser("no browser".into()), LIVE_NO_BROWSER),
+        ] {
+            let not_run = live_check_result(&app, "", Err(loaded));
+            assert!(not_run.is_error && not_run.content.contains("it could not run"), "{}", not_run.content);
+            let payload = not_run.payload.unwrap();
+            assert_eq!((payload["passed"].as_bool(), payload["couldNotRun"].as_str()), (Some(false), Some(why)));
+        }
     }
 
     /// The check runs on a bot with no live views to reload: the tool
@@ -1103,7 +1144,37 @@ mod tests {
         assert!(plain.is_error && plain.payload.is_none(), "{}", plain.content);
         let checked = rt.block_on(reload.execute_dyn(&ctx, json!({ "check": true })));
         let payload = checked.payload.expect("the check's payload");
-        assert_eq!(payload["unavailable"], true, "{}", checked.content);
+        assert_eq!(payload["couldNotRun"], LIVE_NO_BROWSER, "{}", checked.content);
+    }
+
+    /// Review 2026-10-21: the check loads the app in a view of its own; the
+    /// owner's open windows are never reloaded by it (a failing build stays
+    /// off his screens). A plain reload still reaches them.
+    #[test]
+    fn the_check_never_reloads_the_owners_open_views() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(store(tmp.path()));
+        let ui = tmp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("index.html"), "<h1>Hi</h1>").unwrap();
+        let id = format!("app-{}", uuid::Uuid::new_v4().simple());
+        app_row(&store, &id, "Puzzler", &ui);
+        let sent: Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+        let heard = sent.clone();
+        let broadcaster: Broadcaster = Arc::new(move |event: &str, data: Value| {
+            assert_eq!(event, RELOAD_EVENT);
+            heard.lock().unwrap().push(data);
+        });
+        let reload = tools(store, Some(broadcaster), None).into_iter().find(|t| t.name() == APP_RELOAD).unwrap();
+        let ctx = ToolContext { session_key: format!("agent:{id}:web"), ..Default::default() };
+        let _window = view_opened(&id);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let checked = rt.block_on(reload.execute_dyn(&ctx, json!({ "check": true })));
+        assert!(checked.payload.is_some(), "{}", checked.content);
+        assert!(sent.lock().unwrap().is_empty(), "the check reloaded the owner's window");
+        let reloaded = rt.block_on(reload.execute_dyn(&ctx, json!({})));
+        assert!(!reloaded.is_error && reloaded.content.contains("Reloaded every open view"), "{}", reloaded.content);
+        assert_eq!(*sent.lock().unwrap(), [json!({ "appId": id })]);
     }
 
     /// The code tool is up front for an app employee only with App

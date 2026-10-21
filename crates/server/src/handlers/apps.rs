@@ -2549,7 +2549,7 @@ mod developer_mode_tests {
         let mark = tools::app_console::mark();
         assert_eq!(keep_devlog(&id, body.to_string().as_bytes()), Ok(3));
         // The view a line came from is kept with it.
-        assert_eq!(tools::app_console::view_errors(&id, mark, "live-7"), ["GET /track.json \u{2192} 404 Not Found"]);
+        assert_eq!(tools::app_console::view_lines(&id, mark, "live-7").errors, ["GET /track.json \u{2192} 404 Not Found"]);
         assert_eq!(keep_devlog(&id, b"not json"), Err(StatusCode::BAD_REQUEST));
         assert_eq!(tools::app_console::error_count(&id), 2);
 

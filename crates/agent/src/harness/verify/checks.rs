@@ -110,6 +110,18 @@ pub struct CheckRun {
     /// The last lines of its output.
     pub tail: String,
     pub duration_ms: u64,
+    /// Each problem a failed check names one by one (the live check's
+    /// errors); empty for a build or tests, whose tail says what failed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+}
+
+impl CheckRun {
+    /// The open problems this run counts toward the loop's progress: each
+    /// error it names, else one for a failed check; none when it passed.
+    pub fn problems(&self) -> usize {
+        if self.passed { 0 } else { self.errors.len().max(1) }
+    }
 }
 
 /// The most of a check's output a round keeps.
@@ -167,6 +179,7 @@ pub async fn run(tools: &tools::Registry, ctx: &tools::ToolContext, checks: &[Ch
             passed,
             tail: tail(&text),
             duration_ms: started.elapsed().as_millis() as u64,
+            errors: Vec::new(),
         });
     }
     out
