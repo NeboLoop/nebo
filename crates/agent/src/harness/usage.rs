@@ -95,16 +95,19 @@ pub(crate) fn record_run_usage(
 }
 
 /// What one loop's turns cost, in microcents — the ONE pricing rule for the
-/// ledger and the owner's limit. The provider's own figure when it reported
-/// one (Janus prices the model it actually routed to); otherwise the local
-/// price table, which for a routed alias such as nebo-1 knows nothing and
-/// yields 0.
+/// ledger and the owner's limit. On Nebo AI (`janus/…`), Janus's own figure
+/// when it reported one (it prices the model it actually routed to);
+/// otherwise the local price table, which for a routed alias such as nebo-1
+/// knows nothing and yields 0. On the owner's own key, what his provider
+/// bills him (the price table) plus what Janus charged for carrying it (the
+/// platform fee it reports).
 fn turn_cost_microcents(selector: &ModelSelector, model_name: &str, state: &RunState) -> i64 {
-    if state.cost_microdollars > 0 {
-        // microdollars → microcents
-        return state.cost_microdollars * 100;
+    // microdollars → microcents
+    let charged = state.cost_microdollars * 100;
+    if charged > 0 && crate::selector::parse_model_id(model_name).0 == "janus" {
+        return charged;
     }
-    selector
+    let listed = selector
         .get_model_info(model_name)
         .map(|info| {
             db::cost_microcents(
@@ -117,7 +120,8 @@ fn turn_cost_microcents(selector: &ModelSelector, model_name: &str, state: &RunS
                 info.cached_input_price,
             )
         })
-        .unwrap_or(0)
+        .unwrap_or(0);
+    charged + listed
 }
 
 /// What this run has cost so far: every turn already recorded against its
@@ -192,6 +196,33 @@ mod tests {
                 cache_write: 10
             }
         );
+    }
+
+    /// On the owner's own key a turn costs what his provider bills him plus
+    /// the platform fee Janus reports; on Nebo AI, Janus's figure alone.
+    #[test]
+    fn an_own_key_turn_costs_its_list_price_plus_the_fee_janus_reports() {
+        let selector = ModelSelector::new(crate::selector::ModelRoutingConfig::default());
+        let model = |id: &str| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 200_000,
+            input_price: 1.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: vec![],
+            kind: vec![],
+            preferred: false,
+            active: true,
+        };
+        selector.inject_provider_models("anthropic", vec![model("claude-x")]);
+        selector.inject_provider_models("janus", vec![model("nebo-1-pro")]);
+        let state = RunState { total_input_tokens: 1_000_000, cost_microdollars: 150, ..Default::default() };
+        // $1 for a million tokens = 10^8 microcents; the 150 µ$ fee = 15,000.
+        assert_eq!(turn_cost_microcents(&selector, "anthropic@p1/claude-x", &state), 100_000_000 + 15_000);
+        assert_eq!(turn_cost_microcents(&selector, "janus/nebo-1-pro", &state), 15_000);
+        let unreported = RunState { total_input_tokens: 1_000_000, ..Default::default() };
+        assert_eq!(turn_cost_microcents(&selector, "anthropic@p1/claude-x", &unreported), 100_000_000);
     }
 
     // classify_run feeds a money table: a wrong run_id joins someone's cost

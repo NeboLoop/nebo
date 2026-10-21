@@ -16,6 +16,7 @@
  */
 import * as api from '$lib/api/nebo';
 import type { LevelEffort, PackChoice, PackLevels } from '$lib/api/neboComponents';
+import { cardPriceLine } from './modelCard';
 
 /** The Effort ladder, lowest first (`types::packs::Effort`). */
 export const EFFORTS = ['instant', 'low', 'medium', 'high', 'max'] as const;
@@ -217,7 +218,9 @@ export function levelSubtitle(
 	const value = pack.levels?.[row]?.trim();
 	if (!value) return { text: `${t(`modelPick.levelDesc.${row}`)} · ${t('modelPick.fromNeboAi')}`, muted: true };
 	const effort = pack.levelEffort?.[row];
-	const line = runsOnLine(value, choices);
+	// The model's price beside it: Nebo AI's retail per 1M, or the request fee on the owner's own key.
+	const price = cardPriceLine(choices.find((c) => c.value === value)?.card, t);
+	const line = [runsOnLine(value, choices), price].filter(Boolean).join(' · ');
 	return {
 		text: effort
 			? `${line} · ${t('settingsPacks.withEffort', { values: { effort: t(`settingsPacks.level.${effort}`).toLocaleLowerCase() } })}`

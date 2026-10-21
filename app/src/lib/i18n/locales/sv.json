@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Valfri OpenAI-kompatibel URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Valfri SystemOne-kompatibel URL (beslutsmodeller: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Lägg till en modell med dess id",
 		"addModelByIdPlaceholder": "t.ex. claude-opus-5",
 		"addModel": "Lägg till modell",
-		"addModelHint": "Förmågor kommer från Nebos standardinställningar för kända modellfamiljer.",
 		"editProvider": "Redigera leverantör",
 		"nameHint": "Namnge varje nyckel, så att en företagsnyckel och en personlig nyckel är lätta att skilja åt.",
 		"baseUrlRequired": "Bas-URL krävs",
@@ -1467,12 +1468,15 @@
 			"sortNewest": "Nyast",
 			"sortPrice": "Pris",
 			"showing": "Visar {shown} av {total}",
-			"price": "{input} / {output} per M token",
 			"added": "Tillagd",
 			"selected": "{count} valda",
 			"addN": "{count, plural, one {Lägg till # modell} other {Lägg till # modeller}}",
 			"empty": "Inga modeller matchar.",
-			"loadFailed": "Kunde inte läsa in listan."
+			"loadFailed": "Kunde inte läsa in listan.",
+			"retry": "Försök igen",
+			"errorKey": "Kunde inte nå {provider}: kontrollera nyckeln",
+			"errorBusy": "{provider} ber dig vänta. Försök igen om en minut.",
+			"errorUnreachable": "Kunde inte nå {provider}. Försök igen."
 		}
 	},
 	"onboardingImport": {
@@ -4019,7 +4023,6 @@
 		"botDefaultHint": "Gäller nästa meddelande. Ingen omstart.",
 		"defaultSaveFailed": "Kunde inte ändra standardvalet.",
 		"badgeDefault": "Standard",
-		"badgeJanus": "Går via Nebo AI",
 		"readOnly": "Endast läsbehörighet",
 		"colLevel": "Nivå",
 		"colRunsOn": "Körs på",
@@ -4047,7 +4050,6 @@
 		"decisionsNone": "Nebos inbyggda säkra standardval (ingen beslutsmodell)",
 		"decisionsDefaultOption": "Nebo AI · Jev (standard)",
 		"withEffort": "Ansträngning: {effort}",
-		"localNoJanus": "Kan inte gå via Nebo AI: dess modell körs på den här datorn.",
 		"removeConfirm": "Ta bort {name}? En medarbetare som fortfarande använder det körs på Nebo AI och informeras om det.",
 		"loadFailed": "Kunde inte läsa in paketen.",
 		"saveFailed": "Kunde inte spara paketet.",
@@ -4065,10 +4067,7 @@
 		"laneHelpers": "Hjälpare",
 		"laneBuild": "Bygga",
 		"laneWorkflow": "Arbetsflöden",
-		"laneByWork": "Valt utifrån arbetet",
-		"routeJanus": "Dirigera via Nebo AI",
-		"routeJanusHint": "Nebo AI väljer nivån för varje steg bland det här paketets modeller för att sänka din räkning. Dina nycklar skickas med varje begäran och sparas aldrig. Dirigeringsavgift: {fee}.",
-		"routeJanusLocal": "Modeller på den här datorn (Ollama, Claude Code, Codex) körs alltid direkt. Röst dirigeras aldrig."
+		"laneByWork": "Valt utifrån arbetet"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo körs bara medan appen är öppen. Slå på Nebo under Inloggningsobjekt för att det ska fortsätta efter att du avslutat.",
@@ -4350,6 +4349,55 @@
 		"taskReorder": "Beställde 40 enheter från Lumen",
 		"taskVideo": "Publicerade tisdagens video",
 		"taskInvoices": "Skickade 3 fakturapåminnelser"
+	},
+	"ownKey": {
+		"signedOut": "Logga in på NeboAI för att använda din egen {provider}-nyckel.",
+		"keyRejected": "Din {provider}-API-nyckel nekades. Kontrollera den under Inställningar > Leverantörer.",
+		"keyUnusable": "Din {provider}-API-nyckel kan inte köra den här modellen. Kontrollera modellen under Inställningar > Leverantörer.",
+		"connectionSignIn": "Logga in på NeboAI för att använda den här nyckeln: dina egna nycklar körs på ditt NeboAI-konto."
+	},
+	"modelCard": {
+		"about": "Om {model}",
+		"aboutNone": "Välj en modell för att se vad den är",
+		"level": "Passar",
+		"reasons": "Tänker innan den svarar",
+		"yes": "Ja",
+		"no": "Nej",
+		"abilities": "Kan",
+		"ability": {
+			"vision": "Se bilder",
+			"tools": "Använda verktyg",
+			"reasoning": "Resonera",
+			"audio": "Höra ljud"
+		},
+		"unknown": "Okänt",
+		"context": "Kontext",
+		"maxOutput": "Längsta svar",
+		"tokens": "{count} tokens",
+		"speed": "Hastighet",
+		"speedValue": {
+			"fastest": "Snabbast",
+			"fast": "Snabb",
+			"standard": "Standard",
+			"slow": "Långsammare"
+		},
+		"modelId": "Modell-id",
+		"pricing": "Pris",
+		"noPrice": "Inget pris angivet.",
+		"ownKeyPrice": "{fee} per förfrågan; din leverantör fakturerar modellen",
+		"providerBills": "Din leverantör fakturerar modellen",
+		"per1m": "{input} in · {output} ut per 1 milj. tokens",
+		"input": "Indata",
+		"output": "Utdata",
+		"cacheRead": "Cacheläsning",
+		"cacheWrite": "Cacheskrivning",
+		"requestFee": "Avgift per förfrågan",
+		"perMillion": "{price} per 1 milj. tokens",
+		"perRequest": "{price} per förfrågan",
+		"priceVersion": "Priser per {version}",
+		"fits": "Passar för {level}",
+		"bandUpTo": "Upp till {tokens} token",
+		"bandAbove": "Över {tokens} token"
 	},
 	"verify": {
 		"badge": {

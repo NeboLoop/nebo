@@ -961,6 +961,9 @@ pub struct ProviderModel {
     /// A synced Janus speed's place on its ladder (lowest = fastest);
     /// None for every other row.
     pub rank: Option<i64>,
+    /// The model's card as JSON (what the owner reads before picking it):
+    /// written for Janus's listed models, None for every other row.
+    pub card: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

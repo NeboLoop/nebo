@@ -29,12 +29,30 @@ pub(crate) async fn reload_providers(
 }
 
 /// GET /api/v1/providers
+///
+/// Beside the profiles, how each is reached (`routes`, by profile id), the
+/// way a turn reaches it: `janus` (a key for a provider Nebo knows by name,
+/// through Janus, which needs a NeboAI sign-in: `signInRequired` when there
+/// is none) or `direct` (a URL the owner entered, Ollama, a key-less
+/// connection). The page shows a connection chat would refuse as one, never
+/// as healthy.
 pub async fn list_providers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
         .list_auth_profiles()
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "profiles": profiles })))
+    let signed_in = !auth::neboai_token(&state.store).unwrap_or_default().is_empty();
+    let routes: serde_json::Map<String, serde_json::Value> = profiles
+        .iter()
+        .map(|p| {
+            let route = match auth::credential::own_key(p) {
+                Some(_) => serde_json::json!({ "via": "janus", "signInRequired": !signed_in }),
+                None => serde_json::json!({ "via": "direct", "signInRequired": false }),
+            };
+            (p.id.clone(), route)
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "profiles": profiles, "routes": routes })))
 }
 
 /// POST /api/v1/providers
@@ -218,47 +236,29 @@ pub async fn test_provider(
     // the key, is the check.
     if model.is_empty() && profile.provider == "openai_compatible" {
         let (success, message) = match super::connections::fetch_catalog(&profile).await {
-            Some(list) => (true, format!("Connection successful — the server lists {} models", list.len())),
-            None => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
+            Ok(Some(list)) => (true, format!("Connection successful — the server lists {} models", list.len())),
+            Ok(None) | Err(_) => (false, "The server didn't answer with its models. Check the base URL and the key.".to_string()),
         };
         return Ok(Json(serde_json::json!({ "success": success, "provider": profile.provider, "message": message })));
     }
     let test_result: Result<String, String> = match profile.provider.as_str() {
-        "anthropic" => {
-            let provider = ai::AnthropicProvider::new(api_key.clone(), model);
-            test_provider_connection(&provider).await
-        }
-        "openai" => {
-            let provider = ai::OpenAIProvider::new(api_key.clone(), model);
-            test_provider_connection(&provider).await
-        }
-        "deepseek" => {
-            let base_url = profile
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.deepseek.com/v1".into());
-            let provider =
-                ai::OpenAIProvider::with_base_url(api_key.clone(), model, base_url);
-            test_provider_connection(&provider).await
-        }
-        "google" => {
-            let provider = ai::GeminiProvider::new(api_key.clone(), model);
-            test_provider_connection(&provider).await
-        }
-        // The OpenAI format at OpenRouter's fixed URL, or at the owner's.
-        "openrouter" | "openai_compatible" => {
-            let base_url = if profile.provider == "openrouter" {
-                Some("https://openrouter.ai/api/v1".to_string())
-            } else {
-                profile.base_url.clone().filter(|u| !u.trim().is_empty())
-            };
-            match base_url {
-                Some(url) => {
-                    let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
-                    provider.set_provider_id(&profile.provider);
+        // The same client a turn uses: a built-in key through Janus, a URL
+        // the owner entered direct.
+        kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "xai" | "openai_compatible") => {
+            match auth::credential::own_key(&profile) {
+                Some(own) => {
+                    let provider = crate::janus_chat_provider(&state.store, &state.config, kind, model, Some(own));
                     test_provider_connection(&provider).await
                 }
-                None => Err("This provider needs its base URL.".to_string()),
+                None => match auth::credential::owner_url(&profile) {
+                    Some(url) => {
+                        let mut provider = ai::OpenAIProvider::with_base_url(api_key.clone(), model, url);
+                        provider.set_provider_id(kind);
+                        test_provider_connection(&provider).await
+                    }
+                    None if kind == "openai_compatible" => Err("This provider needs its base URL.".to_string()),
+                    None => Err("This connection has no key. Add the provider's API key.".to_string()),
+                },
             }
         }
         "ollama" => {
@@ -270,17 +270,7 @@ pub async fn test_provider(
             test_provider_connection(&provider).await
         }
         "neboai" => {
-            let janus_url = &state.config.neboai.janus_url;
-            let bot_id = config::read_bot_id().unwrap_or_default();
-            let mut provider = ai::OpenAIProvider::with_base_url(
-                crate::janus_api_key(state.store.clone()),
-                model,
-                format!("{}/v1", janus_url),
-            );
-            provider.set_provider_id("janus");
-            if !bot_id.is_empty() {
-                provider.set_bot_id(bot_id);
-            }
+            let provider = crate::janus_chat_provider(&state.store, &state.config, "janus", model, None);
             test_provider_connection(&provider).await
         }
         _ => Err(format!("Unknown provider type: {}", profile.provider)),
@@ -397,6 +387,9 @@ fn picker_models(
             "preferred": m.preferred.unwrap_or(0) == 1,
             "isActive": m.is_active.unwrap_or(0) == 1,
             "rank": m.rank,
+            // A model Janus's catalog lists (not nebo-1 or a speed): pickers
+            // of speeds and routes leave it out.
+            "catalog": super::connections::is_catalog_row(m),
         });
 
         // Add pricing if available
@@ -765,6 +758,7 @@ mod picker_tests {
             model_kind: "chat".into(),
             source: "catalog".into(),
             rank: None,
+            card: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -851,8 +845,6 @@ pub struct PackBody {
     #[serde(default = "fallback_on")]
     pub fallback: bool,
     #[serde(default)]
-    pub route_through_janus: bool,
-    #[serde(default)]
     pub lanes: types::packs::PackLanes,
     #[serde(default)]
     pub level_effort: types::packs::LevelEffort,
@@ -885,7 +877,6 @@ fn pack_of(id: String, body: PackBody) -> Result<types::packs::Pack, types::Nebo
         levels,
         fallback: body.fallback,
         built_in: false,
-        route_through_janus: body.route_through_janus,
         lanes: body.lanes,
         level_effort: body.level_effort,
     })
@@ -935,6 +926,7 @@ fn kind_label(kind: &str) -> &str {
         "google" => "Google",
         "openrouter" => "OpenRouter",
         "deepseek" => "DeepSeek",
+        "xai" => "xAI",
         "openai_compatible" => "OpenAI-compatible",
         "systemone_compatible" => "SystemOne-compatible",
         other => other,
@@ -948,52 +940,8 @@ fn kind_label(kind: &str) -> &str {
 /// xAI's realtime protocol (`Harness::call_voice`): Nebo AI's Voice first,
 /// then each xAI connection's realtime models.
 pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    use types::packs::{NEBO_AI_VOICE, XAI_VOICE_MODEL, is_xai_connection, is_xai_voice_model};
-    let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
-        serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
-    };
-    let mut chat = Vec::new();
-    let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
-    let nebo_voice = NEBO_AI_VOICE.split_once('/').map_or(NEBO_AI_VOICE, |(_, m)| m);
-    let mut voice = vec![choice(NEBO_AI_VOICE.into(), "Nebo AI", "", nebo_voice, &[], false)];
-    for m in state.store.list_active_provider_models("janus").unwrap_or_default() {
-        let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
-        if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
-            // A Nebo AI speed reads by the levels it serves ("High and Max"),
-            // never by its internal id.
-            let mut c = choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &[], false);
-            if !m.display_name.is_empty() && m.display_name != m.model_id {
-                c["name"] = serde_json::Value::String(m.display_name.clone());
-            }
-            chat.push(c);
-        }
-    }
+    let (mut chat, decision, voice) = store_choices(&state.store);
     let catalog = config::ModelsConfig::load();
-    for p in state.store.list_auth_profiles().unwrap_or_default() {
-        if p.is_active.unwrap_or(0) == 0 || matches!(p.provider.as_str(), "neboai" | "ollama") {
-            continue;
-        }
-        let key = super::connections::connection_key(&p);
-        let models: Vec<_> = super::connections::connection_models(&state.store, &p).into_iter().filter(|m| m.is_active).collect();
-        if is_xai_connection(&p.provider, p.base_url.as_deref()) {
-            let mut names = vec![XAI_VOICE_MODEL];
-            for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
-                if !names.contains(&m) {
-                    names.push(m);
-                }
-            }
-            for m in names {
-                voice.push(choice(format!("{key}/{m}"), kind_label(&p.provider), &p.name, m, &[], false));
-            }
-        }
-        for m in models {
-            let c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
-            if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
-        }
-    }
-    for m in state.store.list_active_provider_models("ollama").unwrap_or_default() {
-        chat.push(choice(format!("ollama/{}", m.model_id), "Ollama", "", &m.model_id, &[], true));
-    }
     let clis = config::detect_all_clis();
     for cp in catalog.cli_providers.iter().filter(|c| c.is_active()) {
         let installed = match cp.command.as_str() {
@@ -1004,10 +952,76 @@ pub async fn list_pack_choices(State(state): State<AppState>) -> HandlerResult<s
         };
         // The tool runs its own default model: Nebo names none.
         if installed {
-            chat.push(choice(format!("{}/", cp.id), &cp.display_name, "", "", &[], true));
+            chat.push(serde_json::json!({ "value": format!("{}/", cp.id), "provider": cp.display_name, "connection": "", "modelId": "", "capabilities": [], "local": true }));
         }
     }
     Ok(Json(serde_json::json!({ "chat": chat, "decision": decision, "voice": voice })))
+}
+
+/// The pack choices the store holds (chat, decision, voice): Nebo AI's
+/// speeds and the models it serves, each with its card; each connection's
+/// models with theirs; Ollama's. The agents on this computer are the
+/// handler's to add.
+pub(crate) fn store_choices(store: &db::Store) -> (Vec<serde_json::Value>, Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    use types::packs::{NEBO_AI_VOICE, XAI_VOICE_MODEL, is_xai_connection, is_xai_voice_model};
+    let choice = |value: String, provider: &str, connection: &str, model: &str, caps: &[String], local: bool| {
+        serde_json::json!({ "value": value, "provider": provider, "connection": connection, "modelId": model, "capabilities": caps, "local": local })
+    };
+    let mut chat = Vec::new();
+    let mut decision = vec![choice("janus/jev-latest".into(), "Nebo AI", "", "jev-latest", &[], false)];
+    let nebo_voice = NEBO_AI_VOICE.split_once('/').map_or(NEBO_AI_VOICE, |(_, m)| m);
+    let mut voice = vec![choice(NEBO_AI_VOICE.into(), "Nebo AI", "", nebo_voice, &[], false)];
+    for m in store.list_active_provider_models("janus").unwrap_or_default() {
+        let caps: Vec<String> = m.capabilities.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+        if agent::selector::is_chat_model(&m.model_id, &caps, &[]) {
+            // A Nebo AI speed reads by the levels it serves ("High and Max"),
+            // never by its internal id. A model Nebo AI serves carries its
+            // card (abilities, what it is good for, its retail price), and
+            // its abilities decide the slots it may fill (Vision).
+            let card = super::connections::card_of_row(&m);
+            let abilities = card.as_ref().map(|c| c.abilities.list()).unwrap_or_default();
+            let mut c = choice(format!("janus/{}", m.model_id), "Nebo AI", "", &m.model_id, &abilities, false);
+            if !m.display_name.is_empty() && m.display_name != m.model_id {
+                c["name"] = serde_json::Value::String(m.display_name.clone());
+            }
+            if let Some(card) = card {
+                c["card"] = serde_json::to_value(card).unwrap_or_default();
+            }
+            if super::connections::is_catalog_row(&m) {
+                c["catalog"] = serde_json::Value::Bool(true);
+            }
+            chat.push(c);
+        }
+    }
+    for p in store.list_auth_profiles().unwrap_or_default() {
+        if p.is_active.unwrap_or(0) == 0 || matches!(p.provider.as_str(), "neboai" | "ollama") {
+            continue;
+        }
+        let key = super::connections::connection_key(&p);
+        let models: Vec<_> = super::connections::connection_models(store, &p).into_iter().filter(|m| m.is_active).collect();
+        if is_xai_connection(&p.provider) {
+            let mut names = vec![XAI_VOICE_MODEL];
+            for m in models.iter().map(|m| m.model_id.as_str()).filter(|m| is_xai_voice_model(m)) {
+                if !names.contains(&m) {
+                    names.push(m);
+                }
+            }
+            for m in names {
+                voice.push(choice(format!("{key}/{m}"), kind_label(&p.provider), &p.name, m, &[], false));
+            }
+        }
+        let via_janus = auth::credential::own_key(&p).is_some();
+        for m in models {
+            let m = super::connections::carded(store, m, via_janus);
+            let mut c = choice(format!("{key}/{}", m.model_id), kind_label(&p.provider), &p.name, &m.model_id, &m.capabilities, false);
+            c["card"] = serde_json::to_value(&m.card).unwrap_or_default();
+            if m.kind == "decision" { decision.push(c) } else { chat.push(c) }
+        }
+    }
+    for m in store.list_active_provider_models("ollama").unwrap_or_default() {
+        chat.push(choice(format!("ollama/{}", m.model_id), "Ollama", "", &m.model_id, &[], true));
+    }
+    (chat, decision, voice)
 }
 
 /// POST /api/v1/intelligence-packs — make a pack.
@@ -1078,7 +1092,6 @@ mod pack_tests {
             name: name.into(),
             levels: PackLevels { medium: Some(medium.into()), auto: Some("janus/nebo-1".into()), ..Default::default() },
             fallback: true,
-            route_through_janus: false,
             lanes: Default::default(),
             level_effort: Default::default(),
         }
@@ -1142,49 +1155,126 @@ mod key_egress_tests {
 }
 
 /// Provider keys are stored encrypted and opened only where a client that
-/// presents them is built: the provider still sends the key the owner typed.
+/// presents them is built: the provider still sends the key the owner typed —
+/// through Janus for a provider Nebo knows by name, direct to a URL he
+/// entered.
 #[cfg(test)]
 mod key_at_rest_tests {
     use std::sync::Arc;
 
     const SENTINEL: &str = "sk-SENTINEL-at-rest-provider-0000";
 
-    #[tokio::test]
-    async fn a_provider_built_from_an_encrypted_key_sends_the_key() {
+    /// A loopback stub that answers every request 401 and keeps each one.
+    async fn stub() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        auth::credential::init(mcp::crypto::Encryptor::generate());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let seen = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 16384];
-            let mut got = Vec::new();
-            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = sock.read(&mut buf).await.unwrap();
-                if n == 0 {
-                    break;
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 16384];
+                let mut got = Vec::new();
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
                 }
-                got.extend_from_slice(&buf[..n]);
+                log.lock().unwrap().push(String::from_utf8_lossy(&got).to_string());
+                let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
             }
-            let _ = sock.write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
-            String::from_utf8_lossy(&got).to_string()
         });
+        (base, seen)
+    }
 
+    /// One header's value in a request head, by its lowercase name.
+    fn header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            (k.trim().eq_ignore_ascii_case(name)).then(|| v.trim().to_string())
+        })
+    }
+
+    #[tokio::test]
+    async fn a_built_in_key_rides_to_janus_and_an_owner_url_gets_it_direct() {
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let (janus, janus_seen) = stub().await;
+        let (own, own_seen) = stub().await;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
         let sealed = auth::credential::encrypt(SENTINEL).unwrap();
-        store
-            .create_auth_profile("d", "Mine", "deepseek", &sealed, Some("deepseek-chat"), Some(&base_url), 0, 1, None, None)
-            .unwrap();
-        assert!(!store.get_auth_profile("d").unwrap().unwrap().api_key.contains(SENTINEL));
+        store.create_auth_profile("nebo", "NeboAI", "neboai", "nebo-token", None, None, 0, 1, Some("token"), None).unwrap();
+        for kind in ["anthropic", "openai", "google", "deepseek", "openrouter", "xai"] {
+            store.create_auth_profile(kind, "Mine", kind, &sealed, Some("m-1"), None, 0, 1, None, None).unwrap();
+        }
+        // URLs the owner entered, public-looking or not, are his own
+        // endpoints (the stub stands in for each).
+        for (id, kind) in [
+            ("groq", "openai_compatible"),
+            ("typed-xai", "xai"),
+            ("lab", "openai_compatible"),
+            ("my-claude", "anthropic"),
+            ("my-gemini", "google"),
+        ] {
+            store.create_auth_profile(id, id, kind, &sealed, Some("m-2"), Some(&format!("{own}/v1")), 0, 1, None, None).unwrap();
+        }
+        assert!(!store.get_auth_profile("anthropic").unwrap().unwrap().api_key.contains(SENTINEL));
 
-        let providers = crate::build_providers(&store, &config::Config::default(), None, None);
-        let deepseek = providers.iter().find(|p| p.id() == "deepseek").expect("the deepseek provider is built");
-        let _ = super::test_provider_connection(deepseek.as_ref()).await;
-        let request = seen.await.unwrap();
-        assert!(
-            request.to_ascii_lowercase().contains(&format!("authorization: bearer {}", SENTINEL.to_ascii_lowercase())),
-            "the provider did not send the key the owner typed: {request}"
-        );
+        let mut cfg = config::Config::default();
+        cfg.neboai.janus_url = janus.clone();
+        let providers = crate::build_providers(&store, &cfg, None, None);
+        for id in [
+            "anthropic@anthropic", "openai@openai", "google@google", "deepseek@deepseek", "openrouter@openrouter", "xai@xai",
+            "openai_compatible@groq", "xai@typed-xai", "openai_compatible@lab", "anthropic@my-claude", "google@my-gemini",
+        ] {
+            let p = providers.iter().find(|p| p.id() == id).unwrap_or_else(|| panic!("{id} is built"));
+            let _ = super::test_provider_connection(p.as_ref()).await;
+        }
+
+        let to_janus = janus_seen.lock().unwrap().clone();
+        let mut kinds = Vec::new();
+        for request in &to_janus {
+            assert!(request.starts_with("POST /v1/chat/completions "), "not Janus's chat door");
+            assert_eq!(header(request, "x-provider-api-key").as_deref(), Some(SENTINEL), "the key the owner typed rides along");
+            assert!(header(request, "authorization").is_some_and(|a| !a.contains(SENTINEL)), "his key is never the Janus bearer");
+            assert!(header(request, "x-provider-base-url").is_none(), "no URL of his is ever sent to Janus");
+            kinds.push(header(request, "x-provider").unwrap());
+        }
+        kinds.sort();
+        assert_eq!(kinds, ["anthropic", "deepseek", "google", "openai", "openrouter", "xai"], "every built-in key, and only those");
+
+        let direct = own_seen.lock().unwrap().clone();
+        assert_eq!(direct.len(), 5, "every URL he entered is reached direct, whatever its kind");
+        for request in &direct {
+            assert_eq!(header(request, "authorization").as_deref(), Some(format!("Bearer {SENTINEL}").as_str()));
+            assert!(header(request, "x-provider").is_none() && header(request, "x-provider-api-key").is_none());
+        }
     }
+
+    /// A URL the owner entered is a choice for a pack whatever its kind:
+    /// chat reaches it direct, so the packs offer it.
+    #[test]
+    fn an_owner_url_of_any_kind_is_offered() {
+        auth::credential::init(mcp::crypto::Encryptor::generate());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        let sealed = auth::credential::encrypt(SENTINEL).unwrap();
+        for kind in ["anthropic", "google"] {
+            store.create_auth_profile(kind, &format!("Gateway {kind}"), kind, &sealed, Some("m-1"), Some("https://gateway.example/v1"), 0, 1, None, None).unwrap();
+            let p = store.get_auth_profile(kind).unwrap().unwrap();
+            let key = super::super::connections::connection_key(&p);
+            store
+                .create_provider_model(&format!("{key}-m1"), &key, "m-1", "m-1", 1, 0, None, None, None, Some(r#"["tools"]"#), Some(r#"["chat"]"#), 0, None)
+                .unwrap();
+        }
+        let (chat, _, _) = super::store_choices(&store);
+        for kind in ["anthropic", "google"] {
+            let name = format!("Gateway {kind}");
+            assert!(chat.iter().any(|c| c["connection"] == name.as_str()), "{kind} offered to a pack: {chat:?}");
+        }
+    }
+
 }

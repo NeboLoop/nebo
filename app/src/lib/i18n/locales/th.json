@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "URL ที่ใช้ร่วมกับ OpenAI ได้ (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "URL ที่ใช้ร่วมกับ SystemOne ได้ (โมเดลสำหรับการตัดสินใจ: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "เพิ่มโมเดลโดยใช้ id",
 		"addModelByIdPlaceholder": "เช่น claude-opus-5",
 		"addModel": "เพิ่มโมเดล",
-		"addModelHint": "ความสามารถมาจากค่าเริ่มต้นของ Nebo สำหรับตระกูลโมเดลที่รู้จัก",
 		"editProvider": "แก้ไขผู้ให้บริการ",
 		"nameHint": "ตั้งชื่อแต่ละคีย์ เพื่อให้แยกคีย์ของบริษัทกับคีย์ส่วนตัวได้ง่าย",
 		"baseUrlRequired": "ต้องระบุ URL หลัก",
@@ -1467,12 +1468,15 @@
 			"sortNewest": "ใหม่ล่าสุด",
 			"sortPrice": "ราคา",
 			"showing": "แสดง {shown} จาก {total}",
-			"price": "{input} / {output} ต่อ 1 ล้านโทเค็น",
 			"added": "เพิ่มแล้ว",
 			"selected": "เลือก {count} รายการ",
 			"addN": "{count, plural, one {เพิ่ม # โมเดล} other {เพิ่ม # โมเดล}}",
 			"empty": "ไม่มีโมเดลที่ตรงกัน",
-			"loadFailed": "ไม่สามารถโหลดรายการได้"
+			"loadFailed": "ไม่สามารถโหลดรายการได้",
+			"retry": "ลองอีกครั้ง",
+			"errorKey": "ติดต่อ {provider} ไม่ได้: ตรวจสอบคีย์",
+			"errorBusy": "{provider} ขอให้รอ ลองอีกครั้งในอีกหนึ่งนาที",
+			"errorUnreachable": "ติดต่อ {provider} ไม่ได้ ลองอีกครั้ง"
 		}
 	},
 	"onboardingImport": {
@@ -4019,7 +4023,6 @@
 		"botDefaultHint": "มีผลกับข้อความถัดไป ไม่ต้องรีสตาร์ท",
 		"defaultSaveFailed": "ไม่สามารถเปลี่ยนค่าเริ่มต้นได้",
 		"badgeDefault": "ค่าเริ่มต้น",
-		"badgeJanus": "ส่งผ่าน Nebo AI",
 		"readOnly": "อ่านอย่างเดียว",
 		"colLevel": "ระดับ",
 		"colRunsOn": "ทำงานบน",
@@ -4047,7 +4050,6 @@
 		"decisionsNone": "ค่าเริ่มต้นที่ปลอดภัยในตัวของ Nebo (ไม่มีโมเดลสำหรับการตัดสินใจ)",
 		"decisionsDefaultOption": "Nebo AI · Jev (ค่าเริ่มต้น)",
 		"withEffort": "ความพยายาม {effort}",
-		"localNoJanus": "ส่งผ่าน Nebo AI ไม่ได้: โมเดลนี้ทำงานบนคอมพิวเตอร์เครื่องนี้",
 		"removeConfirm": "ลบ {name}? พนักงานที่ยังใช้แพ็กนี้จะทำงานบน Nebo AI และจะได้รับแจ้งเช่นนั้น",
 		"loadFailed": "ไม่สามารถโหลดแพ็กได้",
 		"saveFailed": "ไม่สามารถบันทึกแพ็กได้",
@@ -4065,10 +4067,7 @@
 		"laneHelpers": "ผู้ช่วย",
 		"laneBuild": "การสร้าง",
 		"laneWorkflow": "เวิร์กโฟลว์",
-		"laneByWork": "เลือกตามลักษณะงาน",
-		"routeJanus": "ส่งผ่าน Nebo AI",
-		"routeJanusHint": "Nebo AI เลือกระดับในแต่ละขั้นตอนจากโมเดลของแพ็กนี้เพื่อลดค่าใช้จ่ายของคุณ คีย์ของคุณจะถูกส่งไปกับทุกคำขอและจะไม่ถูกจัดเก็บ ค่าธรรมเนียมการส่งผ่าน: {fee}",
-		"routeJanusLocal": "โมเดลบนคอมพิวเตอร์เครื่องนี้ (Ollama, Claude Code, Codex) จะทำงานตรงเสมอ เสียงจะไม่ถูกส่งผ่านเลย"
+		"laneByWork": "เลือกตามลักษณะงาน"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo ทำงานเฉพาะขณะที่แอปเปิดอยู่ หากต้องการให้ทำงานต่อหลังปิดแอป ให้เปิด Nebo ในรายการเข้าสู่ระบบ",
@@ -4350,6 +4349,55 @@
 		"taskReorder": "สั่งซื้อเพิ่ม 40 ชิ้นจาก Lumen",
 		"taskVideo": "โพสต์วิดีโอของวันอังคารแล้ว",
 		"taskInvoices": "ส่งการแจ้งเตือนใบแจ้งหนี้ 3 รายการแล้ว"
+	},
+	"ownKey": {
+		"signedOut": "ลงชื่อเข้าใช้ NeboAI เพื่อใช้คีย์ {provider} ของคุณเอง",
+		"keyRejected": "คีย์ API ของ {provider} ของคุณถูกปฏิเสธ ตรวจสอบได้ที่ การตั้งค่า > ผู้ให้บริการ",
+		"keyUnusable": "คีย์ API ของ {provider} ของคุณใช้งานโมเดลนี้ไม่ได้ ตรวจสอบโมเดลได้ที่ การตั้งค่า > ผู้ให้บริการ",
+		"connectionSignIn": "ลงชื่อเข้าใช้ NeboAI เพื่อใช้คีย์นี้: คีย์ของคุณเองทำงานบนบัญชี NeboAI ของคุณ"
+	},
+	"modelCard": {
+		"about": "เกี่ยวกับ {model}",
+		"aboutNone": "เลือกโมเดลเพื่อดูว่าคืออะไร",
+		"level": "เหมาะกับระดับ",
+		"reasons": "คิดก่อนตอบ",
+		"yes": "ใช่",
+		"no": "ไม่",
+		"abilities": "ทำได้",
+		"ability": {
+			"vision": "ดูรูปภาพ",
+			"tools": "ใช้เครื่องมือ",
+			"reasoning": "ใช้เหตุผล",
+			"audio": "ฟังเสียง"
+		},
+		"unknown": "ไม่ทราบ",
+		"context": "บริบท",
+		"maxOutput": "คำตอบที่ยาวที่สุด",
+		"tokens": "{count} โทเคน",
+		"speed": "ความเร็ว",
+		"speedValue": {
+			"fastest": "เร็วที่สุด",
+			"fast": "เร็ว",
+			"standard": "มาตรฐาน",
+			"slow": "ช้ากว่า"
+		},
+		"modelId": "รหัสโมเดล",
+		"pricing": "ราคา",
+		"noPrice": "ไม่มีราคาระบุ",
+		"ownKeyPrice": "{fee} ต่อคำขอ; ผู้ให้บริการของคุณเรียกเก็บค่าโมเดล",
+		"providerBills": "ผู้ให้บริการของคุณเรียกเก็บค่าโมเดล",
+		"per1m": "ขาเข้า {input} · ขาออก {output} ต่อ 1 ล้านโทเคน",
+		"input": "ขาเข้า",
+		"output": "ขาออก",
+		"cacheRead": "อ่านแคช",
+		"cacheWrite": "เขียนแคช",
+		"requestFee": "ค่าธรรมเนียมต่อคำขอ",
+		"perMillion": "{price} ต่อ 1 ล้านโทเคน",
+		"perRequest": "{price} ต่อคำขอ",
+		"priceVersion": "ราคา ณ {version}",
+		"fits": "เหมาะกับ {level}",
+		"bandUpTo": "ไม่เกิน {tokens} โทเค็น",
+		"bandAbove": "มากกว่า {tokens} โทเค็น"
 	},
 	"verify": {
 		"badge": {

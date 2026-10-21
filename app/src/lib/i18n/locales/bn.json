@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "কোনো OpenAI-compatible URL (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "কোনো SystemOne-compatible URL (সিদ্ধান্ত মডেল: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "id দিয়ে একটি মডেল যুক্ত করুন",
 		"addModelByIdPlaceholder": "যেমন claude-opus-5",
 		"addModel": "মডেল যুক্ত করুন",
-		"addModelHint": "ক্ষমতাগুলো পরিচিত মডেল পরিবারের জন্য Nebo-র ডিফল্ট থেকে আসে।",
 		"editProvider": "প্রদানকারী সম্পাদনা করুন",
 		"nameHint": "প্রতিটি key-এর নাম দিন, যাতে কোম্পানির key এবং ব্যক্তিগত key সহজে আলাদা করা যায়।",
 		"baseUrlRequired": "বেস URL আবশ্যক",
@@ -1467,12 +1468,15 @@
 			"sortNewest": "সবচেয়ে নতুন",
 			"sortPrice": "দাম",
 			"showing": "{total}-এর মধ্যে {shown} দেখানো হচ্ছে",
-			"price": "প্রতি M টোকেনে {input} / {output}",
 			"added": "যুক্ত হয়েছে",
 			"selected": "{count}টি নির্বাচিত",
 			"addN": "{count, plural, one {#টি মডেল যুক্ত করুন} other {#টি মডেল যুক্ত করুন}}",
 			"empty": "কোনো মডেল মেলে না।",
-			"loadFailed": "তালিকা লোড করা যায়নি।"
+			"loadFailed": "তালিকা লোড করা যায়নি।",
+			"retry": "আবার চেষ্টা করুন",
+			"errorKey": "{provider}-এ পৌঁছানো যায়নি: কীটি যাচাই করুন",
+			"errorBusy": "{provider} অপেক্ষা করতে বলেছে। এক মিনিট পরে আবার চেষ্টা করুন।",
+			"errorUnreachable": "{provider}-এ পৌঁছানো যায়নি। আবার চেষ্টা করুন।"
 		}
 	},
 	"onboardingImport": {
@@ -4019,7 +4023,6 @@
 		"botDefaultHint": "পরবর্তী বার্তায় প্রযোজ্য। কোনো রিস্টার্ট নেই।",
 		"defaultSaveFailed": "ডিফল্ট পরিবর্তন করা যায়নি।",
 		"badgeDefault": "ডিফল্ট",
-		"badgeJanus": "Nebo AI-এর মাধ্যমে চলে",
 		"readOnly": "শুধু পড়ার জন্য",
 		"colLevel": "স্তর",
 		"colRunsOn": "যেখানে চলে",
@@ -4047,7 +4050,6 @@
 		"decisionsNone": "Nebo-র বিল্ট-ইন নিরাপদ ডিফল্ট (কোনো সিদ্ধান্ত মডেল নেই)",
 		"decisionsDefaultOption": "Nebo AI · Jev (ডিফল্ট)",
 		"withEffort": "{effort} প্রচেষ্টা",
-		"localNoJanus": "Nebo AI-এর মাধ্যমে চালানো যায় না: এর মডেল এই কম্পিউটারে চলে।",
 		"removeConfirm": "{name} সরাবেন? যে কর্মী এখনও এটি ব্যবহার করছে সে Nebo AI-এ চলবে, এবং তাকে জানানো হবে।",
 		"loadFailed": "প্যাক লোড করা যায়নি।",
 		"saveFailed": "প্যাক সংরক্ষণ করা যায়নি।",
@@ -4065,10 +4067,7 @@
 		"laneHelpers": "সহায়ক",
 		"laneBuild": "তৈরি",
 		"laneWorkflow": "ওয়ার্কফ্লো",
-		"laneByWork": "কাজ অনুযায়ী বেছে নেওয়া",
-		"routeJanus": "Nebo AI-এর মাধ্যমে রুট করুন",
-		"routeJanusHint": "আপনার বিল কমাতে Nebo AI এই প্যাকের মডেলগুলোর মধ্যে প্রতিটি পদক্ষেপের জন্য স্তর বেছে নেয়। আপনার key প্রতিটি রিকোয়েস্টের সাথে যায় এবং কখনো সংরক্ষিত হয় না। রাউটিং ফি: {fee}।",
-		"routeJanusLocal": "এই কম্পিউটারের মডেলগুলো (Ollama, Claude Code, Codex) সবসময় সরাসরি চলে। ভয়েস কখনো রুট হয় না।"
+		"laneByWork": "কাজ অনুযায়ী বেছে নেওয়া"
 	},
 	"loginItemsBanner": {
 		"text": "অ্যাপ খোলা থাকলেই কেবল Nebo চলে। বন্ধ করার পরেও এটি চালু রাখতে, লগইন আইটেমে Nebo চালু করুন।",
@@ -4350,6 +4349,55 @@
 		"taskReorder": "Lumen থেকে ৪০ ইউনিট আবার অর্ডার করা হয়েছে",
 		"taskVideo": "মঙ্গলবারের ভিডিও পোস্ট করা হয়েছে",
 		"taskInvoices": "৩টি ইনভয়েস রিমাইন্ডার পাঠানো হয়েছে"
+	},
+	"ownKey": {
+		"signedOut": "নিজের {provider} কী ব্যবহার করতে NeboAI-তে সাইন ইন করুন।",
+		"keyRejected": "আপনার {provider} API কী প্রত্যাখ্যাত হয়েছে। সেটিংস > প্রদানকারী-এ এটি দেখুন।",
+		"keyUnusable": "আপনার {provider} API কী এই মডেলটি চালাতে পারে না। সেটিংস > প্রদানকারী-এ এর মডেলটি দেখুন।",
+		"connectionSignIn": "এই কী ব্যবহার করতে NeboAI-তে সাইন ইন করুন: আপনার নিজের কী আপনার NeboAI অ্যাকাউন্টে চলে।"
+	},
+	"modelCard": {
+		"about": "{model} সম্পর্কে",
+		"aboutNone": "এটি কী তা দেখতে একটি মডেল বেছে নিন",
+		"level": "যে স্তরের জন্য উপযুক্ত",
+		"reasons": "উত্তর দেওয়ার আগে ভাবে",
+		"yes": "হ্যাঁ",
+		"no": "না",
+		"abilities": "পারে",
+		"ability": {
+			"vision": "ছবি দেখা",
+			"tools": "টুল ব্যবহার করা",
+			"reasoning": "যুক্তি দেওয়া",
+			"audio": "অডিও শোনা"
+		},
+		"unknown": "জানা নেই",
+		"context": "প্রসঙ্গ",
+		"maxOutput": "দীর্ঘতম উত্তর",
+		"tokens": "{count} টোকেন",
+		"speed": "গতি",
+		"speedValue": {
+			"fastest": "সবচেয়ে দ্রুত",
+			"fast": "দ্রুত",
+			"standard": "সাধারণ",
+			"slow": "ধীর"
+		},
+		"modelId": "মডেল আইডি",
+		"pricing": "দাম",
+		"noPrice": "কোনো দাম দেওয়া নেই।",
+		"ownKeyPrice": "প্রতি অনুরোধে {fee}; মডেলের বিল আপনার প্রদানকারী করে",
+		"providerBills": "মডেলের বিল আপনার প্রদানকারী করে",
+		"per1m": "প্রতি ১০ লক্ষ টোকেনে {input} ইনপুট · {output} আউটপুট",
+		"input": "ইনপুট",
+		"output": "আউটপুট",
+		"cacheRead": "ক্যাশ পড়া",
+		"cacheWrite": "ক্যাশ লেখা",
+		"requestFee": "অনুরোধ ফি",
+		"perMillion": "প্রতি ১০ লক্ষ টোকেনে {price}",
+		"perRequest": "প্রতি অনুরোধে {price}",
+		"priceVersion": "{version} অনুযায়ী দাম",
+		"fits": "{level}-এর জন্য উপযুক্ত",
+		"bandUpTo": "{tokens} টোকেন পর্যন্ত",
+		"bandAbove": "{tokens} টোকেনের বেশি"
 	},
 	"verify": {
 		"badge": {

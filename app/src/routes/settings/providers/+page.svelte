@@ -14,26 +14,35 @@
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Terminal from 'lucide-svelte/icons/terminal';
   import X from 'lucide-svelte/icons/x';
+  import Info from 'lucide-svelte/icons/info';
+  import ModelInfo from '$lib/components/settings/ModelInfo.svelte';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Alert from '$lib/components/ui/Alert.svelte';
-  import type { AuthProfile, CatalogModel, ConnectionModel } from '$lib/api/neboComponents';
+  import type { AuthProfile, CatalogModel, ConnectionModel, ConnectionRoute, ModelCard } from '$lib/api/neboComponents';
+  import { ownKeyError } from '$lib/chat/ownKeyError';
   import {
     CONNECTION_KINDS,
+    blankHand,
+    catalogErrorKey,
     filterCatalog,
     groupByFamily,
+    handBody,
     isOwnConnection,
     needsBaseUrl,
-    parseContext,
     shortContext,
     shortUrl,
+    type HandModel,
   } from '$lib/models/connections';
+  import { cardFit, cardPriceLine } from '$lib/models/modelCard';
 
   // --- state ---
   let loading = $state(true);
   let error = $state('');
   let providers = $state<AuthProfile[]>([]);
+  /** How a turn reaches each connection, by id: a built-in key through NeboAI (needs a sign-in), or direct to a URL he entered. */
+  let routes = $state<Record<string, ConnectionRoute>>({});
   let models = $state<Record<string, any[]>>({});
   let cliProviders = $state<any[]>([]);
   let janusStatus = $state<any>(null);
@@ -105,6 +114,17 @@
     return providerOptions.find(p => p.value === kind)?.label || kind;
   }
 
+  /** A test's answer in the owner's language when it is about his own connection. */
+  function worded(message: string): string {
+    const own = ownKeyError(message);
+    return own ? $t(own.key, { values: { provider: own.provider } }) : message;
+  }
+
+  /** Why chat would refuse this connection right now, in his language; '' when it would not. */
+  function refusal(conn: AuthProfile): string {
+    return routes[conn.id]?.signInRequired ? $t('ownKey.connectionSignIn') : '';
+  }
+
   /** The line under a connection's name: its kind (when the name doesn't say it) and its URL. */
   function connectionDetail(p: AuthProfile): string {
     const parts: string[] = [];
@@ -141,6 +161,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listProviders();
       providers = resp.profiles || [];
+      routes = resp.routes || {};
     } catch (err: any) {
       error = err?.message || $t('settingsProviders.loadFailed');
     } finally { loading = false; }
@@ -192,7 +213,7 @@
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.testProvider(id);
-      testResult = { id, success: resp.success, message: resp.message };
+      testResult = { id, success: resp.success, message: worded(resp.message) };
     } catch (err: any) {
       testResult = { id, success: false, message: err?.message || $t('settingsMcp.testFailed') };
     } finally { testingId = null; }
@@ -244,7 +265,8 @@
     addingModelFor = id;
     try {
       const api = await import('$lib/api/nebo');
-      await api.addConnectionModel(id, { modelId });
+      // The same abilities a model added in Add provider starts with.
+      await api.addConnectionModel(id, handBody(blankHand(modelId)));
       newModelId[id] = '';
       await loadConnectionModels(id);
     } catch (err: any) {
@@ -288,8 +310,6 @@
   }
 
   // --- Add / Edit provider ---
-  type HandModel = { kind: string; modelId: string; contextWindow: string; vision: boolean; tools: boolean; thinking: boolean };
-  const blankHand = (): HandModel => ({ kind: 'chat', modelId: '', contextWindow: '', vision: true, tools: true, thinking: false });
 
   let showForm = $state(false);
   /** The connection being edited; '' when adding. */
@@ -325,11 +345,6 @@
     if (!hand.modelId.trim()) return;
     queued = [...queued, { ...hand, modelId: hand.modelId.trim() }];
     hand = blankHand();
-  }
-
-  function handBody(m: HandModel) {
-    const capabilities = [m.vision && 'vision', m.tools && 'tools', m.thinking && 'thinking'].filter(Boolean);
-    return { modelId: m.modelId, kind: m.kind, contextWindow: parseContext(m.contextWindow), capabilities };
   }
 
   async function saveProvider() {
@@ -408,6 +423,8 @@
       b.models = resp.models ?? [];
       b.total = resp.total ?? b.models.length;
       b.refreshedAt = resp.refreshedAt;
+      // The provider's list could not be read: why, in the owner's words, with Try again.
+      if (resp.error) b.error = $t(catalogErrorKey(resp.error), { values: { provider: b.profile.name } });
     } catch (err: any) {
       b.error = err?.message || $t('settingsProviders.browse.loadFailed');
     } finally { b.loading = false; }
@@ -450,11 +467,13 @@
     } finally { b.adding = false; }
   }
 
-  function price(m: CatalogModel): string {
-    if (!m.pricing) return '';
-    const usd = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 3 })}`;
-    return $t('settingsProviders.browse.price', { values: { input: usd(m.pricing.input), output: usd(m.pricing.output) } });
+  /** A model row's level and price ("Medium · $0.00015 per request; your provider bills the model"). */
+  function cardLine(card: ModelCard | undefined): string {
+    return [cardFit(card, $t), cardPriceLine(card, $t)].filter(Boolean).join(' · ');
   }
+
+  // The model whose card is open, and the connection it is on.
+  let info = $state<{ card?: ModelCard; modelId: string; provider: string } | null>(null);
 
   function refreshedLabel(at?: number): string {
     if (!at) return '';
@@ -601,7 +620,7 @@
                 aria-expanded={isOpen}
               >
                 {#if isOpen}<ChevronDown class="w-3.5 h-3.5 text-base-content/50 shrink-0" />{:else}<ChevronRight class="w-3.5 h-3.5 text-base-content/50 shrink-0" />{/if}
-                <span class="w-2 h-2 rounded-full shrink-0 {testResult?.id === conn.id && !testResult.success ? 'bg-error' : conn.isActive ? 'bg-success' : 'bg-warning'}"></span>
+                <span class="w-2 h-2 rounded-full shrink-0 {(testResult?.id === conn.id && !testResult.success) || (conn.isActive && refusal(conn)) ? 'bg-error' : conn.isActive ? 'bg-success' : 'bg-warning'}"></span>
                 <span class="text-sm font-medium truncate">{conn.name}</span>
                 {#if connectionDetail(conn)}
                   <span class="text-xs text-base-content/50 font-mono truncate">{connectionDetail(conn)}</span>
@@ -641,6 +660,12 @@
               </div>
             </div>
 
+            {#if refusal(conn)}
+              <div class="px-4 pb-3 -mt-1">
+                <Alert type="warning">{refusal(conn)}</Alert>
+              </div>
+            {/if}
+
             {#if isOpen}
               <div class="px-4 pb-4 flex flex-col gap-3">
                 {#if connModelsError[conn.id]}
@@ -672,11 +697,22 @@
                           {#if model.source === 'added'}
                             <span class="badge badge-outline badge-xs">{$t('settingsProviders.tagAddedByHand')}</span>
                           {/if}
+                          {#if cardLine(model.card)}
+                            <span class="text-xs text-base-content/50 basis-full truncate">{cardLine(model.card)}</span>
+                          {/if}
                         </div>
                         <div class="flex items-center gap-3 shrink-0">
                           {#if model.contextWindow}
                             <span class="text-xs text-base-content/50 font-mono">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow.toLocaleString() } })}</span>
                           {/if}
+                          <button
+                            type="button"
+                            class="model-info-open"
+                            onclick={() => (info = { card: model.card, modelId: model.modelId, provider: conn.name })}
+                            aria-label={$t('modelCard.about', { values: { model: model.modelId } })}
+                          >
+                            <Info class="w-3.5 h-3.5" />
+                          </button>
                           {#if model.source !== 'catalog'}
                             <button
                               type="button"
@@ -719,7 +755,6 @@
                     {#if addingModelFor === conn.id}<Spinner size={14} />{:else}{$t('settingsProviders.addModel')}{/if}
                   </button>
                 </form>
-                <p class="text-xs text-base-content/40">{$t('settingsProviders.addModelHint')}</p>
               </div>
             {/if}
           </div>
@@ -905,7 +940,12 @@
 
       <div class="px-5 py-3 overflow-y-auto flex-1 min-h-0 flex flex-col gap-4">
         {#if browse.error}
-          <Alert type="error">{browse.error}</Alert>
+          <Alert type="error">
+            <div class="flex items-center justify-between gap-3">
+              <span>{browse.error}</span>
+              <button type="button" class="btn btn-ghost btn-xs" onclick={fetchCatalog} disabled={browse.loading}>{$t('settingsProviders.browse.retry')}</button>
+            </div>
+          </Alert>
         {/if}
         {#if browse.loading}
           <div class="flex justify-center py-8"><Spinner size={18} /></div>
@@ -929,8 +969,16 @@
                   />
                   <span class="flex flex-col min-w-0 flex-1">
                     <span class="text-sm truncate">{m.displayName}</span>
-                    <span class="text-xs text-base-content/50 font-mono truncate">{m.modelId}{#if price(m)}{' · '}{price(m)}{/if}</span>
+                    <span class="text-xs text-base-content/50 font-mono truncate">{m.modelId}{#if cardLine(m.card)}{' · '}{cardLine(m.card)}{/if}</span>
                   </span>
+                  <button
+                    type="button"
+                    class="model-info-open"
+                    onclick={(e) => { e.preventDefault(); info = { card: m.card, modelId: m.modelId, provider: browse?.profile.name ?? '' }; }}
+                    aria-label={$t('modelCard.about', { values: { model: m.displayName } })}
+                  >
+                    <Info class="w-3.5 h-3.5" />
+                  </button>
                   {#if m.added}
                     <span class="badge badge-ghost badge-xs shrink-0">{$t('settingsProviders.browse.added')}</span>
                   {/if}
@@ -954,4 +1002,8 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if info}
+  <ModelInfo card={info.card} modelId={info.modelId} provider={info.provider} onclose={() => (info = null)} />
 {/if}

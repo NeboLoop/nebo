@@ -396,7 +396,7 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     let Some(token) = auth::neboai_token(store) else {
         return Ok(0);
     };
-    let url = format!("{}/v1/models", cfg.neboai.janus_url);
+    let url = janus_models_url(&cfg.neboai.janus_url);
     let resp = tls::http_client()
         .user_agent(types::constants::USER_AGENT)
         .build()
@@ -415,6 +415,14 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     store_janus_listing(store, listing)
 }
 
+/// Janus's model listing, with the catalog: `?catalog=1` asks for the models
+/// Nebo AI serves, with their cards and retail prices, beside nebo-1 and the
+/// speeds. Janus lists them only when asked, so a Nebo that predates the
+/// catalog never stores them.
+fn janus_models_url(janus_url: &str) -> String {
+    format!("{}/v1/models?catalog=1", janus_url.trim_end_matches('/'))
+}
+
 #[derive(serde::Deserialize)]
 struct JanusEntry {
     id: String,
@@ -431,6 +439,120 @@ struct JanusEntry {
     /// A listing without it is still in ladder order: its position stands in.
     #[serde(default)]
     rank: Option<i64>,
+    // A model Nebo AI serves (the registry's customer fields): its card.
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    maker: String,
+    #[serde(default)]
+    tier: String,
+    #[serde(default)]
+    reasons: bool,
+    #[serde(default)]
+    abilities: Option<JanusAbilities>,
+    #[serde(default)]
+    max_output: Option<i64>,
+    #[serde(default)]
+    speed: String,
+    #[serde(default)]
+    pricing: Option<JanusPricing>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JanusAbilities {
+    vision: bool,
+    tools: bool,
+    reasoning: bool,
+    audio: bool,
+}
+
+/// Retail prices as Janus lists them: USD decimal strings per 1M tokens,
+/// and the request fee per request, from the price book in effect.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JanusPricing {
+    version: String,
+    currency: String,
+    input_per_1m: Option<String>,
+    output_per_1m: Option<String>,
+    cache_read_per_1m: Option<String>,
+    cache_write_per_1m: Option<String>,
+    request_fee: Option<String>,
+    /// Every price band, ascending (the flat fields are the first); absent
+    /// from a Janus that lists one flat price.
+    bands: Vec<JanusBand>,
+}
+
+/// One price band as Janus lists it.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JanusBand {
+    up_to_context: Option<i64>,
+    input_per_1m: Option<String>,
+    output_per_1m: Option<String>,
+    cache_read_per_1m: Option<String>,
+    cache_write_per_1m: Option<String>,
+}
+
+impl JanusEntry {
+    /// The model's card, for a model Nebo AI serves at a price; None for a
+    /// speed (a speed has no price of its own: the model that serves it does).
+    /// Every field but the price may be missing.
+    fn card(&self, name: &str) -> Option<handlers::connections::ModelCard> {
+        use handlers::connections::{CardAbilities, CardPricing, ModelCard};
+        self.pricing.as_ref()?;
+        let a = self.abilities.as_ref();
+        Some(ModelCard {
+            display_name: name.to_string(),
+            family: self.family.clone(),
+            maker: self.maker.clone(),
+            description: self.description.clone(),
+            tier: self.tier.clone(),
+            reasons: self.reasons,
+            abilities: CardAbilities {
+                vision: a.is_some_and(|a| a.vision),
+                tools: a.is_some_and(|a| a.tools),
+                reasoning: a.is_some_and(|a| a.reasoning),
+                audio: a.is_some_and(|a| a.audio),
+            },
+            context_window: self.context_window.filter(|&w| w > 0),
+            max_output: self.max_output.filter(|&w| w > 0),
+            speed: self.speed.clone(),
+            pricing: self.pricing.as_ref().map(|p| CardPricing {
+                version: p.version.clone(),
+                currency: if p.currency.is_empty() { "USD".into() } else { p.currency.clone() },
+                input_per1m: p.input_per_1m.clone(),
+                output_per1m: p.output_per_1m.clone(),
+                cache_read_per1m: p.cache_read_per_1m.clone(),
+                cache_write_per1m: p.cache_write_per_1m.clone(),
+                request_fee: p.request_fee.clone(),
+                provider_bills: false,
+                bands: if p.bands.is_empty() {
+                    vec![handlers::connections::CardBand {
+                        up_to_context: None,
+                        input_per1m: p.input_per_1m.clone(),
+                        output_per1m: p.output_per_1m.clone(),
+                        cache_read_per1m: p.cache_read_per_1m.clone(),
+                        cache_write_per1m: p.cache_write_per_1m.clone(),
+                    }]
+                } else {
+                    p.bands
+                        .iter()
+                        .map(|b| handlers::connections::CardBand {
+                            up_to_context: b.up_to_context.filter(|&n| n > 0),
+                            input_per1m: b.input_per_1m.clone(),
+                            output_per1m: b.output_per_1m.clone(),
+                            cache_read_per1m: b.cache_read_per_1m.clone(),
+                            cache_write_per1m: b.cache_write_per_1m.clone(),
+                        })
+                        .collect()
+                },
+            }),
+        })
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -444,26 +566,40 @@ struct JanusListing {
 fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize, String> {
     let mut listed: Vec<String> = Vec::new();
     for (pos, m) in listing.data.into_iter().filter(|m| m.owned_by == "neboai").enumerate() {
-        let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
+        let name = [&m.display_name, &m.name].into_iter().find(|n| !n.is_empty()).unwrap_or(&m.id).clone();
+        let card = m.card(&name);
+        // A described model's abilities are its own; a speed reads, sees and
+        // calls tools whatever serves it.
+        let caps = match &card {
+            Some(c) => {
+                let mut caps = c.abilities.list();
+                caps.push("streaming".into());
+                serde_json::to_string(&caps).unwrap_or_default()
+            }
+            None => r#"["vision","tools","streaming","code","reasoning"]"#.to_string(),
+        };
+        let price = |v: &Option<String>| v.as_deref().and_then(|p| p.parse::<f64>().ok());
+        let (input, output) = m.pricing.as_ref().map_or((None, None), |p| (price(&p.input_per_1m), price(&p.output_per_1m)));
+        let id = format!("janus/{}", m.id);
         store
             .upsert_provider_model(
-                &format!("janus/{}", m.id),
+                &id,
                 "janus",
                 &m.id,
                 &name,
                 (!m.description.is_empty()).then_some(m.description.as_str()),
                 m.context_window.filter(|&w| w > 0),
-                None,
-                None,
-                Some(r#"["vision","tools","streaming","code","reasoning"]"#),
+                input,
+                output,
+                Some(&caps),
                 None,
                 None,
                 true,
             )
             .map_err(|e| e.to_string())?;
-        store
-            .set_provider_model_rank(&format!("janus/{}", m.id), m.rank.unwrap_or(pos as i64))
-            .map_err(|e| e.to_string())?;
+        store.set_provider_model_rank(&id, m.rank.unwrap_or(pos as i64)).map_err(|e| e.to_string())?;
+        let card = card.and_then(|c| serde_json::to_string(&c).ok());
+        store.set_provider_model_card(&id, card.as_deref()).map_err(|e| e.to_string())?;
         listed.push(m.id);
     }
     for row in store.list_provider_models("janus").map_err(|e| e.to_string())? {
@@ -534,7 +670,15 @@ fn db_model_infos(store: &db::Store, provider: &str) -> Vec<agent::selector::Mod
                 }
                 caps
             },
-            kind: m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default(),
+            kind: {
+                let mut kind: Vec<String> = m.kind.as_ref().and_then(|k| serde_json::from_str(k).ok()).unwrap_or_default();
+                // A model from Janus's catalog (it has a card) is chosen by
+                // its full id only, never by a loose name.
+                if handlers::connections::is_catalog_row(m) {
+                    kind.push(agent::fuzzy::EXPLICIT_ONLY.to_string());
+                }
+                kind
+            },
             preferred: false,
             active: true,
         })
@@ -566,10 +710,25 @@ fn build_embedding_provider(
             continue;
         }
         match profile.provider.as_str() {
+            // The owner's own OpenAI key embeds through Janus, which calls
+            // OpenAI on it and charges the platform fee.
             "openai" => {
-                let ep = ai::OpenAIEmbeddingProvider::new(auth::credential::profile_key(profile));
+                let Some(own) = auth::credential::own_key(profile) else { continue };
+                // Through Janus, on his NeboAI account: signed out, the
+                // next option (Ollama) embeds instead.
+                if auth::neboai_token(store).unwrap_or_default().is_empty() {
+                    continue;
+                }
+                let token = store.clone();
+                let mut headers: Vec<(String, String)> = own.headers().into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+                headers.push(("X-Bot-ID".into(), config::read_bot_id().unwrap_or_default()));
+                let ep = ai::OpenAIEmbeddingProvider::with_base_url(
+                    ai::ApiKey::live(move || auth::neboai_token(&token).unwrap_or_default()),
+                    format!("{}/v1", cfg.neboai.janus_url),
+                )
+                .with_headers(headers);
                 let cached = ai::CachedEmbeddingProvider::new(Box::new(ep), store.clone());
-                info!("embedding provider: OpenAI text-embedding-3-small (cached)");
+                info!("embedding provider: OpenAI text-embedding-3-small on the owner's key, through Janus (cached)");
                 return Some(Arc::new(cached));
             }
             "ollama" => {
@@ -766,6 +925,40 @@ pub fn decision_endpoint(store: &db::Store, model: &str) -> Option<ai::DecideEnd
     })
 }
 
+/// A chat client on Janus: Nebo AI (`own_key` None, id `janus`, its models
+/// on Nebo's keys) or one of the owner's own paid connections (`own_key`
+/// Some, id the connection's kind, so routing and the selector see the same
+/// provider as before): his key rides every request, Janus calls his
+/// provider on it and charges the platform fee. The ONE construction of a
+/// Janus chat client; `build_providers` and the provider test both use it.
+pub(crate) fn janus_chat_provider(
+    store: &Arc<db::Store>,
+    cfg: &Config,
+    id: &str,
+    model: String,
+    own_key: Option<types::own_key::OwnKey>,
+) -> ai::OpenAIProvider {
+    // His key goes through Janus on his NeboAI account and no other: with
+    // no NeboAI token there is no bearer, and the provider says to sign in.
+    let bearer = match own_key {
+        None => janus_api_key(store.clone()),
+        Some(_) => {
+            let store = store.clone();
+            ai::ApiKey::live(move || auth::neboai_token(&store).unwrap_or_default())
+        }
+    };
+    let mut p = ai::OpenAIProvider::with_base_url(bearer, model, format!("{}/v1", cfg.neboai.janus_url));
+    p.set_provider_id(id);
+    let bot_id = config::read_bot_id().unwrap_or_default();
+    if !bot_id.is_empty() {
+        p.set_bot_id(bot_id);
+    }
+    if let Some(own) = own_key {
+        p.set_own_key(own);
+    }
+    p
+}
+
 pub fn build_providers(
     store: &Arc<db::Store>,
     cfg: &Config,
@@ -787,63 +980,40 @@ pub fn build_providers(
             continue;
         }
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
-            "anthropic" => {
-                Some(Arc::new(ai::AnthropicProvider::new(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                )))
-            }
-            "openai" => {
-                Some(Arc::new(ai::OpenAIProvider::new(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                )))
-            }
-            "deepseek" => {
-                let mut p = ai::OpenAIProvider::with_base_url(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                    profile
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
-                );
-                p.set_provider_id("deepseek");
-                Some(Arc::new(p))
-            }
-            "google" => {
-                Some(Arc::new(ai::GeminiProvider::new(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                )))
-            }
-            // OpenRouter speaks the OpenAI format at its own fixed URL.
-            "openrouter" => {
-                let mut p = ai::OpenAIProvider::with_base_url(
-                    auth::credential::profile_key(profile),
-                    profile.model.clone().unwrap_or_default(),
-                    "https://openrouter.ai/api/v1".into(),
-                );
-                p.set_provider_id("openrouter");
-                Some(Arc::new(p))
-            }
-            // Any OpenAI-compatible URL (Groq, Together, DeepSeek, xAI,
-            // Mistral, Azure, LM Studio, vLLM…): the owner's base URL.
-            "openai_compatible" => match profile.base_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
-                Some(url) => {
-                    let mut p = ai::OpenAIProvider::with_base_url(
-                        auth::credential::profile_key(profile),
+            // A key for a provider Nebo knows by name reaches it through
+            // Janus (`auth::credential::own_key`), which charges the platform
+            // fee; a connection at a URL the owner entered is reached direct
+            // at that URL, in the OpenAI format.
+            kind @ ("anthropic" | "openai" | "deepseek" | "google" | "openrouter" | "xai" | "openai_compatible") => {
+                match auth::credential::own_key(profile) {
+                    Some(own) => Some(Arc::new(janus_chat_provider(
+                        store,
+                        cfg,
+                        kind,
                         profile.model.clone().unwrap_or_default(),
-                        url.to_string(),
-                    );
-                    p.set_provider_id("openai_compatible");
-                    Some(Arc::new(p))
+                        Some(own),
+                    ))),
+                    None => match auth::credential::owner_url(profile) {
+                        Some(url) => {
+                            let mut p = ai::OpenAIProvider::with_base_url(
+                                auth::credential::profile_key(profile),
+                                profile.model.clone().unwrap_or_default(),
+                                url,
+                            );
+                            p.set_provider_id(kind);
+                            Some(Arc::new(p))
+                        }
+                        None if kind == "openai_compatible" => {
+                            warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");
+                            None
+                        }
+                        None => {
+                            warn!(profile_id = %profile.id, provider = %kind, "provider has no key, skipping");
+                            None
+                        }
+                    },
                 }
-                None => {
-                    warn!(profile_id = %profile.id, "OpenAI-compatible provider has no base URL, skipping");
-                    None
-                }
-            },
+            }
             // Decision models (Jev and other SystemOne-compatible ones) are
             // not chat providers: the decide client reaches them.
             "systemone_compatible" => None,
@@ -889,25 +1059,9 @@ pub fn build_providers(
                         None
                     } else {
                         // Janus URL comes from config (NeboAI.JanusURL), NOT auth_profile base_url
-                        let janus_url = &cfg.neboai.janus_url;
                         let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
-                        let bot_id = config::read_bot_id().unwrap_or_default();
-                        info!(
-                            model = %model,
-                            janus_url = %janus_url,
-                            bot_id = %bot_id,
-                            "loaded Janus provider via NeboAI"
-                        );
-                        let mut p = ai::OpenAIProvider::with_base_url(
-                            janus_api_key(store.clone()),
-                            model,
-                            format!("{}/v1", janus_url),
-                        );
-                        p.set_provider_id("janus");
-                        if !bot_id.is_empty() {
-                            p.set_bot_id(bot_id);
-                        }
-                        Some(Arc::new(p))
+                        info!(model = %model, janus_url = %cfg.neboai.janus_url, "loaded Janus provider via NeboAI");
+                        Some(Arc::new(janus_chat_provider(store, cfg, "janus", model, None)))
                     }
                 } else {
                     info!(
@@ -4394,6 +4548,133 @@ mod janus_sync_tests {
         assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
     }
 
+    /// A Janus listing as it lists a model Nebo AI serves beside a speed.
+    fn listing_with_a_model() -> JanusListing {
+        serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Auto", "context_window": 200000,
+             "abilities": {"vision": false, "tools": false, "reasoning": false, "audio": false}},
+            {"id": "claude-sonnet-5", "object": "model", "owned_by": "neboai", "display_name": "Claude Sonnet 5",
+             "family": "Claude Sonnet", "maker": "Anthropic", "description": "Everyday work with tools and images.",
+             "tier": "medium", "reasons": true,
+             "abilities": {"vision": true, "tools": true, "reasoning": true, "audio": false},
+             "context_window": 1000000, "max_output": 128000, "speed": "fast",
+             "pricing": {"version": "2026-10-19.9", "currency": "USD", "input_per_1m": "3", "output_per_1m": "15",
+                         "cache_read_per_1m": "0.3", "cache_write_per_1m": "3.75", "request_fee": "0.00015"}},
+            {"id": "gpt-6-luna", "owned_by": "neboai", "display_name": "GPT-6 Luna",
+             "abilities": {"vision": false, "tools": true, "reasoning": false, "audio": false},
+             "pricing": {"version": "2026-10-19.9", "input_per_1m": "0.75", "output_per_1m": "4.5", "request_fee": "0.00015"}}
+        ]}))
+        .unwrap()
+    }
+
+    /// A model Nebo AI serves is stored with its card (what it is, what it
+    /// is good for, its retail price), its own abilities and its per-1M
+    /// prices; a speed has no card and keeps the speeds' abilities.
+    #[test]
+    fn a_listed_model_is_stored_with_its_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        assert_eq!(store_janus_listing(&store, listing_with_a_model()).unwrap(), 3);
+        let row = |id: &str| store.list_provider_models("janus").unwrap().into_iter().find(|m| m.model_id == id).unwrap();
+        let sonnet = row("claude-sonnet-5");
+        assert_eq!(sonnet.display_name, "Claude Sonnet 5");
+        assert_eq!((sonnet.input_price, sonnet.output_price), (Some(3.0), Some(15.0)));
+        let caps: Vec<String> = serde_json::from_str(sonnet.capabilities.as_deref().unwrap()).unwrap();
+        assert_eq!(caps, ["vision", "tools", "thinking", "streaming"]);
+        let card = crate::handlers::connections::card_of_row(&sonnet).unwrap();
+        assert_eq!(card.maker, "Anthropic");
+        assert_eq!(card.tier, "medium");
+        assert_eq!(card.max_output, Some(128_000));
+        let price = card.pricing.unwrap();
+        assert_eq!((price.input_per1m.as_deref(), price.cache_write_per1m.as_deref()), (Some("3"), Some("3.75")));
+        assert_eq!(price.request_fee.as_deref(), Some("0.00015"));
+        assert!(!price.provider_bills);
+        assert!(row("nebo-1").card.is_none(), "a speed has no card");
+        let speed: Vec<String> = serde_json::from_str(row("nebo-1").capabilities.as_deref().unwrap()).unwrap();
+        assert!(speed.contains(&"vision".to_string()), "a speed keeps the speeds' abilities");
+        let luna: Vec<String> = serde_json::from_str(row("gpt-6-luna").capabilities.as_deref().unwrap()).unwrap();
+        assert!(!luna.contains(&"vision".to_string()), "a model's own abilities, not the speeds'");
+    }
+
+    /// The sync asks Janus for the catalog; without it Janus lists only nebo-1
+    /// and the speeds.
+    #[test]
+    fn the_sync_asks_for_the_catalog() {
+        assert_eq!(super::janus_models_url("https://janus.example/"), "https://janus.example/v1/models?catalog=1");
+        assert_eq!(super::janus_models_url("https://janus.example"), "https://janus.example/v1/models?catalog=1");
+    }
+
+    /// A model priced by its input size keeps every band, ascending, with
+    /// its top; a listing with one flat price reads as one open band.
+    #[test]
+    fn a_tiered_price_keeps_every_band() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let listing: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "gpt-6.1-sol", "owned_by": "neboai", "display_name": "GPT-6.1 Sol",
+             "pricing": {"version": "v", "input_per_1m": "2.5", "output_per_1m": "15", "request_fee": "0.00015",
+                         "bands": [
+                            {"up_to_context": 272000, "input_per_1m": "2.5", "output_per_1m": "15", "cache_read_per_1m": "0.25"},
+                            {"input_per_1m": "5", "output_per_1m": "22.5", "cache_read_per_1m": "0.5"}]}},
+            {"id": "claude-sonnet-5", "owned_by": "neboai",
+             "pricing": {"version": "v", "input_per_1m": "3", "output_per_1m": "15", "request_fee": "0.00015"}}
+        ]}))
+        .unwrap();
+        store_janus_listing(&store, listing).unwrap();
+        let card = |id: &str| {
+            let row = store.list_provider_models("janus").unwrap().into_iter().find(|m| m.model_id == id).unwrap();
+            crate::handlers::connections::card_of_row(&row).unwrap().pricing.unwrap()
+        };
+        let sol = card("gpt-6.1-sol");
+        assert_eq!(sol.bands.len(), 2);
+        assert_eq!(sol.bands[0].up_to_context, Some(272_000));
+        assert_eq!(sol.bands[1].up_to_context, None, "the open top band");
+        assert_eq!(sol.bands[1].input_per1m.as_deref(), Some("5"));
+        let flat = card("claude-sonnet-5");
+        assert_eq!(flat.bands.len(), 1);
+        assert_eq!((flat.bands[0].up_to_context, flat.bands[0].output_per1m.as_deref()), (None, Some("15")));
+    }
+
+    /// The pack choices offer each model Nebo AI serves for every level
+    /// with its card, its abilities deciding the Vision slot; the owner's
+    /// own-key model reads Janus's card for the same model at the request
+    /// fee alone (his provider bills the model); a model on a URL he entered
+    /// goes direct and costs Nebo nothing.
+    #[test]
+    fn pack_choices_carry_cards_and_prices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        store_janus_listing(&store, listing_with_a_model()).unwrap();
+        store.create_auth_profile("a", "Company", "anthropic", "sk-ant", None, None, 0, 1, None, None).unwrap();
+        let a = store.get_auth_profile("a").unwrap().unwrap();
+        store.put_connection_model(&crate::handlers::connections::connection_key(&a), "claude-sonnet-5", "claude-sonnet-5", "chat", None, "[]", "added", true).unwrap();
+        store.create_auth_profile("c", "Lab", "openai_compatible", "sk-lab", None, Some("https://lab.example/v1"), 0, 1, None, None).unwrap();
+        let c = store.get_auth_profile("c").unwrap().unwrap();
+        store.put_connection_model(&crate::handlers::connections::connection_key(&c), "lab-1", "Lab 1", "chat", Some(32_000), r#"["tools"]"#, "added", true).unwrap();
+
+        let (chat, _, _) = crate::handlers::provider::store_choices(&store);
+        let find = |v: &str| chat.iter().find(|c| c["value"] == v).unwrap_or_else(|| panic!("{v} in {chat:?}"));
+        let nebo = find("janus/claude-sonnet-5");
+        assert_eq!(nebo["provider"], "Nebo AI");
+        assert_eq!(nebo["capabilities"], serde_json::json!(["vision", "tools", "thinking"]), "Vision may name it");
+        assert_eq!(nebo["card"]["family"], "Claude Sonnet");
+        assert_eq!(nebo["card"]["pricing"]["inputPer1m"], "3");
+        assert_eq!(nebo["card"]["pricing"]["providerBills"], false);
+        assert_eq!(find("janus/gpt-6-luna")["capabilities"], serde_json::json!(["tools"]));
+        assert!(find("janus/nebo-1").get("card").is_none());
+
+        let own = chat.iter().find(|c| c["provider"] == "Anthropic").unwrap();
+        assert_eq!(own["card"]["description"], "Everyday work with tools and images.", "Janus's word on the same model");
+        assert_eq!(own["card"]["pricing"]["requestFee"], "0.00015");
+        assert_eq!(own["card"]["pricing"]["providerBills"], true);
+        assert!(own["card"]["pricing"]["inputPer1m"].is_null(), "no retail price: his provider bills the model");
+
+        let direct = chat.iter().find(|c| c["provider"] == "OpenAI-compatible").unwrap();
+        assert!(direct["card"]["pricing"]["requestFee"].is_null(), "a URL he entered: direct, no fee");
+        assert_eq!(direct["card"]["contextWindow"], 32_000);
+        assert_eq!(direct["card"]["abilities"]["tools"], true);
+    }
+
     /// The speeds list by their rank on the ladder, never by name (which
     /// would read High and Max, Instant and Low, Medium), whether Janus sends
     /// the rank or only its order.
@@ -7311,38 +7592,29 @@ fn extract_message_text(content: &str) -> String {
 }
 
 
-/// Where to send audio for transcription: `(api_key, base_url, model)`.
-///
-/// An explicit OpenAI-compatible key wins; otherwise the Janus gateway the user
-/// already bills through, which speaks the same `/audio/transcriptions` shape.
-pub(crate) fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
+/// Where to send audio for transcription: always Janus, on the owner's own
+/// OpenAI key when he has one (Janus calls OpenAI on it and charges the
+/// platform fee), else on his NeboAI account. `None`: no NeboAI account,
+/// so nothing can carry the audio.
+pub(crate) fn transcription_endpoint(state: &state::AppState) -> Option<ai::transcribe::Endpoint> {
     const DEFAULT_STT_MODEL: &str = "whisper-1";
 
     let profiles = state.store.list_auth_profiles().ok()?;
     let active = || profiles.iter().filter(|p| p.is_active.unwrap_or(0) == 1);
 
-    if let Some((p, key)) = active()
-        .filter(|p| p.provider == "openai")
-        .map(|p| (p, auth::credential::profile_key(p)))
-        .find(|(_, key)| !key.is_empty())
-    {
-        return Some((
-            key,
-            p.base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
-            DEFAULT_STT_MODEL.to_string(),
-        ));
-    }
-
-    if !active().any(|p| p.provider == "neboai") {
-        return None;
-    }
-    Some((
-        janus_api_key(state.store.clone()).current(),
-        format!("{}/v1", state.config.neboai.janus_url),
-        DEFAULT_STT_MODEL.to_string(),
-    ))
+    let own_key = active().filter(|p| p.provider == "openai").find_map(auth::credential::own_key);
+    let bearer = match own_key {
+        Some(_) => auth::neboai_token(&state.store)?,
+        None if active().any(|p| p.provider == "neboai") => janus_api_key(state.store.clone()).current(),
+        None => return None,
+    };
+    Some(ai::transcribe::Endpoint {
+        bearer,
+        base_url: format!("{}/v1", state.config.neboai.janus_url),
+        model: DEFAULT_STT_MODEL.to_string(),
+        bot_id: config::read_bot_id().filter(|b| !b.is_empty()),
+        own_key,
+    })
 }
 
 /// The note for a sound an attachment carries: its transcript, or why there
@@ -7352,8 +7624,8 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
     use crate::attachments::{note, Kind};
     let audio = |body: &str| note(Kind::Audio, filename, size, body);
     match transcription_endpoint(state) {
-        Some((key, base_url, model)) => {
-            match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &key, &base_url, &model, named, bytes).await {
+        Some(endpoint) => {
+            match ai::transcribe::transcribe(&ai::RequestTrace::new("transcribe"), &endpoint, named, bytes).await {
                 Ok(heard) if heard.text.is_empty() => audio(
                     "transcribed, but no speech was found in it. Say so rather than \
                      guessing at its contents.",
@@ -7370,7 +7642,7 @@ async fn transcript_note(state: &state::AppState, filename: &str, size: u64, nam
         }
         None => audio(
             "no transcription provider is configured, so its contents are unknown. Tell \
-             the user to add an OpenAI key or sign in to NeboAI.",
+             the user to sign in to NeboAI.",
         ),
     }
 }
@@ -7718,6 +7990,7 @@ mod decision_endpoint_tests {
             .unwrap();
         save_pack(&store, "mine", Some("systemone_compatible@p1/jev-latest"));
         let ep = decision_endpoint(&store, "pack/mine").expect("the owner's endpoint");
+        // An owner-entered URL is reached direct, never through Janus.
         assert_eq!(ep.base_url, "https://api.typesafe.ai");
         assert_eq!(ep.key, "owner-key");
         assert_eq!(ep.model, "jev-latest");
@@ -7753,5 +8026,55 @@ mod decision_endpoint_tests {
         for id in ["off", "missing", "kind", "nomodel"] {
             assert!(decision_endpoint(&store, &format!("pack/{id}")).is_none(), "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod own_key_embedding_tests {
+    use std::sync::Arc;
+
+    /// The owner's own OpenAI key embeds through Janus: his key and its
+    /// provider ride beside the NeboAI token, never to OpenAI direct.
+    #[tokio::test]
+    async fn an_own_openai_key_embeds_through_janus() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let janus = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let body = r#"{"data":[{"index":0,"embedding":[0.5]}]}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store.create_auth_profile("nebo", "NeboAI", "neboai", "nebo-token", None, None, 0, 1, Some("token"), None).unwrap();
+        store.create_auth_profile("o", "Mine", "openai", "sk-own-embed", None, None, 0, 1, None, None).unwrap();
+        let mut cfg = config::Config::default();
+        cfg.neboai.janus_url = janus;
+        let ep = super::build_embedding_provider(&store, &cfg).expect("an embedding provider");
+        let _ = ep.embed(&["hello".to_string()]).await;
+        let request = server.await.unwrap();
+        let lower = request.to_ascii_lowercase();
+        assert!(lower.starts_with("post /v1/embeddings "), "not Janus's embeddings door");
+        assert!(lower.contains("x-provider-api-key: sk-own-embed"), "the owner's key rides along");
+        assert!(lower.contains("x-provider: openai"));
+        assert!(!lower.contains("authorization: bearer sk-own-embed"), "his key is never the Janus bearer");
+        assert!(request.contains(r#""model":"text-embedding-3-small""#));
+    }
+
+    /// Signed out of NeboAI, his own OpenAI key cannot embed (Janus carries
+    /// it on his account): the next option, Ollama, embeds instead.
+    #[test]
+    fn signed_out_an_own_openai_key_falls_through_to_ollama() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store.create_auth_profile("o", "Mine", "openai", "sk-own-embed", None, None, 0, 1, None, None).unwrap();
+        store.create_auth_profile("l", "Local", "ollama", "", None, Some("http://localhost:11434"), 1, 1, None, None).unwrap();
+        let ep = super::build_embedding_provider(&store, &config::Config::default()).expect("an embedding provider");
+        assert_eq!(ep.id(), "ollama");
     }
 }

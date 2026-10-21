@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Toute URL compatible OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Toute URL compatible SystemOne (modèles de décision : Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Ajouter un modèle par son id",
 		"addModelByIdPlaceholder": "ex. claude-opus-5",
 		"addModel": "Ajouter un modèle",
-		"addModelHint": "Les capacités viennent des valeurs par défaut de Nebo pour les familles de modèles connues.",
 		"editProvider": "Modifier le fournisseur",
 		"nameHint": "Nommez chaque clé pour distinguer facilement une clé d'entreprise d'une clé personnelle.",
 		"baseUrlRequired": "L'URL de base est obligatoire",
@@ -1467,12 +1468,15 @@
 			"sortNewest": "Plus récents",
 			"sortPrice": "Prix",
 			"showing": "Affiche {shown} sur {total}",
-			"price": "{input} / {output} par million de tokens",
 			"added": "Ajouté",
 			"selected": "{count} sélectionnés",
 			"addN": "{count, plural, one {Ajouter # modèle} other {Ajouter # modèles}}",
 			"empty": "Aucun modèle ne correspond.",
-			"loadFailed": "Impossible de charger la liste."
+			"loadFailed": "Impossible de charger la liste.",
+			"retry": "Réessayer",
+			"errorKey": "Impossible de joindre {provider} : vérifiez la clé",
+			"errorBusy": "{provider} demande de patienter. Réessayez dans une minute.",
+			"errorUnreachable": "Impossible de joindre {provider}. Réessayez."
 		}
 	},
 	"onboardingImport": {
@@ -4019,7 +4023,6 @@
 		"botDefaultHint": "S'applique au prochain message. Pas de redémarrage.",
 		"defaultSaveFailed": "Impossible de changer la valeur par défaut.",
 		"badgeDefault": "Par défaut",
-		"badgeJanus": "Passe par Nebo AI",
 		"readOnly": "Lecture seule",
 		"colLevel": "Niveau",
 		"colRunsOn": "Tourne sur",
@@ -4047,7 +4050,6 @@
 		"decisionsNone": "Les valeurs par défaut sûres intégrées de Nebo (aucun modèle de décision)",
 		"decisionsDefaultOption": "Nebo AI · Jev (par défaut)",
 		"withEffort": "Effort {effort}",
-		"localNoJanus": "Ne peut pas passer par Nebo AI : son modèle tourne sur cet ordinateur.",
 		"removeConfirm": "Retirer {name} ? Un employé encore sur ce pack tournera sur Nebo AI, et en sera informé.",
 		"loadFailed": "Impossible de charger les packs.",
 		"saveFailed": "Impossible d'enregistrer le pack.",
@@ -4065,10 +4067,7 @@
 		"laneHelpers": "Assistants",
 		"laneBuild": "Création",
 		"laneWorkflow": "Workflows",
-		"laneByWork": "Choisi selon la tâche",
-		"routeJanus": "Passer par Nebo AI",
-		"routeJanusHint": "Nebo AI choisit le niveau à chaque étape parmi les modèles de ce pack pour réduire votre facture. Vos clés accompagnent chaque requête et ne sont jamais stockées. Frais de routage : {fee}.",
-		"routeJanusLocal": "Les modèles sur cet ordinateur (Ollama, Claude Code, Codex) tournent toujours en direct. La voix ne passe jamais par ce routage."
+		"laneByWork": "Choisi selon la tâche"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo ne fonctionne que lorsque l'app est ouverte. Pour qu'il continue après la fermeture, activez Nebo dans Ouverture.",
@@ -4350,6 +4349,55 @@
 		"taskReorder": "40 unités recommandées chez Lumen",
 		"taskVideo": "Vidéo de mardi publiée",
 		"taskInvoices": "3 relances de facture envoyées"
+	},
+	"ownKey": {
+		"signedOut": "Connectez-vous à NeboAI pour utiliser votre propre clé {provider}.",
+		"keyRejected": "Votre clé API {provider} a été refusée. Vérifiez-la dans Paramètres > Fournisseurs.",
+		"keyUnusable": "Votre clé API {provider} ne peut pas exécuter ce modèle. Vérifiez le modèle associé dans Paramètres > Fournisseurs.",
+		"connectionSignIn": "Connectez-vous à NeboAI pour utiliser cette clé : vos propres clés passent par votre compte NeboAI."
+	},
+	"modelCard": {
+		"about": "À propos de {model}",
+		"aboutNone": "Choisissez un modèle pour voir ce qu'il est",
+		"level": "Convient à",
+		"reasons": "Réfléchit avant de répondre",
+		"yes": "Oui",
+		"no": "Non",
+		"abilities": "Peut",
+		"ability": {
+			"vision": "Voir des images",
+			"tools": "Utiliser des outils",
+			"reasoning": "Raisonner",
+			"audio": "Entendre de l'audio"
+		},
+		"unknown": "Inconnu",
+		"context": "Contexte",
+		"maxOutput": "Réponse la plus longue",
+		"tokens": "{count} jetons",
+		"speed": "Vitesse",
+		"speedValue": {
+			"fastest": "Le plus rapide",
+			"fast": "Rapide",
+			"standard": "Standard",
+			"slow": "Plus lent"
+		},
+		"modelId": "ID du modèle",
+		"pricing": "Prix",
+		"noPrice": "Aucun prix indiqué.",
+		"ownKeyPrice": "{fee} par requête ; votre fournisseur vous facture le modèle",
+		"providerBills": "Votre fournisseur vous facture le modèle",
+		"per1m": "{input} en entrée · {output} en sortie par million de jetons",
+		"input": "Entrée",
+		"output": "Sortie",
+		"cacheRead": "Lecture du cache",
+		"cacheWrite": "Écriture du cache",
+		"requestFee": "Frais par requête",
+		"perMillion": "{price} par million de jetons",
+		"perRequest": "{price} par requête",
+		"priceVersion": "Prix au {version}",
+		"fits": "Adapté à {level}",
+		"bandUpTo": "Jusqu'à {tokens} jetons",
+		"bandAbove": "Au-delà de {tokens} jetons"
 	},
 	"verify": {
 		"badge": {

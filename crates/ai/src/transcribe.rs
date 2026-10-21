@@ -50,6 +50,18 @@ pub struct Segment {
     pub text: String,
 }
 
+/// Where a transcription goes: Janus's `/v1` root, its bearer (the NeboAI
+/// token) and the model, with the owner's own key when it is his that pays.
+#[derive(Clone)]
+pub struct Endpoint {
+    pub bearer: String,
+    pub base_url: String,
+    pub model: String,
+    /// Janus attribution (`X-Bot-ID`).
+    pub bot_id: Option<String>,
+    pub own_key: Option<::types::own_key::OwnKey>,
+}
+
 /// Transcribe an audio file: the spoken text, with its segments' times.
 ///
 /// An empty transcript (no text, no segments) — silence is a real answer, and
@@ -60,9 +72,7 @@ pub struct Segment {
 /// "Продолжение следует...", "시청해주셔서 감사합니다!" and the like.
 pub async fn transcribe(
     trace: &RequestTrace,
-    api_key: &str,
-    base_url: &str,
-    model: &str,
+    endpoint: &Endpoint,
     filename: &str,
     bytes: Vec<u8>,
 ) -> Result<Transcript, ProviderError> {
@@ -78,19 +88,31 @@ pub async fn transcribe(
     let form = || {
         let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_string());
         reqwest::multipart::Form::new()
-            .text("model", model.to_string())
+            .text("model", endpoint.model.clone())
             .text("response_format", "verbose_json")
             .part("file", part)
     };
 
-    let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
+    let url = format!("{}/audio/transcriptions", endpoint.base_url.trim_end_matches('/'));
     let client = tls::http_client()
         .user_agent(types::constants::USER_AGENT)
         .build()
         .map_err(|e| ProviderError::Request(e.to_string()))?;
     let mut waits = crate::ReservedWaits::default();
     let response = crate::http::send(
-        || client.post(&url).bearer_auth(api_key).headers(trace.headers()).multipart(form()),
+        || {
+            let mut req = client
+                .post(&url)
+                .bearer_auth(&endpoint.bearer)
+                .headers(trace.headers());
+            if let Some(bot_id) = &endpoint.bot_id {
+                req = req.header("X-Bot-ID", bot_id);
+            }
+            for (name, value) in endpoint.own_key.iter().flat_map(|k| k.headers()) {
+                req = req.header(name, value);
+            }
+            req.multipart(form())
+        },
         Some(&mut waits),
     )
     .await
@@ -259,6 +281,38 @@ fn invented(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The owner's own OpenAI key goes to Janus's transcription door beside
+    /// his NeboAI token, with the bot it is for.
+    #[tokio::test]
+    async fn an_own_key_transcription_goes_to_janus_with_its_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let n = sock.read(&mut buf).await.unwrap();
+            let body = r#"{"text":"hello there","segments":[]}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase()
+        });
+        let endpoint = Endpoint {
+            bearer: "nebo-token".into(),
+            base_url,
+            model: "whisper-1".into(),
+            bot_id: Some("bot-1".into()),
+            own_key: Some(::types::own_key::OwnKey { provider: "openai".into(), key: "sk-own".into() }),
+        };
+        let heard = transcribe(&RequestTrace::new("transcribe"), &endpoint, "a.wav", b"RIFF....".to_vec()).await.unwrap();
+        assert_eq!(heard.text, "hello there");
+        let head = server.await.unwrap();
+        assert!(head.starts_with("post /v1/audio/transcriptions "), "{head}");
+        for want in ["authorization: bearer nebo-token", "x-provider-api-key: sk-own", "x-provider: openai", "x-bot-id: bot-1", "x-purpose: transcribe"] {
+            assert!(head.contains(want), "{want} missing: {head}");
+        }
+    }
 
     /// The four clips of 2026-10-08, transcribed as text: each is a line a
     /// transcriber invents, so each is no speech.

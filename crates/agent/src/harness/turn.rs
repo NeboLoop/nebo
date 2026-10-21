@@ -922,7 +922,7 @@ fn voice_model(h: Resolver<'_>, chosen: &str) -> Result<CallVoice, VoiceRefusal>
         None => h.store.get_best_auth_profile(connection).ok().flatten(),
     };
     match profile {
-        Some(p) if !is_xai_connection(&p.provider, p.base_url.as_deref()) => Err(VoiceRefusal::Unsupported),
+        Some(p) if !is_xai_connection(&p.provider) => Err(VoiceRefusal::Unsupported),
         Some(p) if p.is_active.unwrap_or(0) != 0 => Ok(CallVoice::Own { profile: p, model: model.to_string() }),
         _ if pack.fallback => {
             warn!(pack = %pack.name, slot, "the pack's Voice connection is gone or off: the call speaks with Nebo AI's Voice");
@@ -2208,7 +2208,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             stream_error,
             mut block_order,
             provider,
-            thinking,
+            mut thinking,
             thinking_model,
             text_call,
         } = reply;
@@ -2224,6 +2224,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.owner_heard = Some(latest.clone());
         }
         st.last_provider = Some(provider.clone());
+        // The reply as it came, for its thinking to replay as written
+        // (`ai::as_received`) whatever the hook or the cuts below store.
+        let received = text.clone();
         let text = post_receive(cx, text, tool_calls.len()).await;
         if stream_error.is_some() {
             // Calls that arrived on a broken stream are not run or stored.
@@ -2264,6 +2267,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             None => {}
         }
         let heard_through = st.seen.last().map(|m| m.id.as_str());
+        ai::as_received(&mut thinking, &received, &tool_calls);
         save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model), heard_through).await;
         // A stream error the call did not retry has been shown to the owner
         // once, and the call's ladder decided it is final: the step ends
@@ -3929,13 +3933,15 @@ mod tests {
     }
 
     /// A call speaks through its pack's Voice model: Nebo AI's is Janus's
-    /// relay alias; an xAI realtime model on the owner's xAI connection is
-    /// used with that connection; anything else is refused, never swapped.
+    /// relay alias; an xAI realtime model on the owner's built-in xAI key is
+    /// used with that key (through Janus); anything else, a URL he entered
+    /// included, is refused, never swapped.
     #[tokio::test]
     async fn a_call_speaks_through_the_packs_voice_model() {
         use types::packs::{Pack, PackLevels};
         let h = harness_selecting(&Scripted::new(vec![]), vec![], pack_selector()).await;
-        h.store.create_auth_profile("xk", "Grok", "openai_compatible", "key", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
+        h.store.create_auth_profile("xk", "Grok", "xai", "key", None, None, 0, 1, None, None).unwrap();
+        h.store.create_auth_profile("xt", "Grok typed", "openai_compatible", "key", None, Some("https://api.x.ai/v1"), 0, 1, None, None).unwrap();
         h.store.create_auth_profile("xoff", "Grok off", "xai", "key", None, None, 0, 0, None, None).unwrap();
         h.store.create_auth_profile("oa", "OpenAI", "openai", "key", None, None, 0, 1, None, None).unwrap();
         let save = |id: &str, voice: Option<&str>, fallback: bool| {
@@ -3950,7 +3956,8 @@ mod tests {
                 })
                 .unwrap()
         };
-        save("own", Some("openai_compatible@xk/grok-voice-latest"), false);
+        save("own", Some("xai@xk/grok-voice-latest"), false);
+        save("typed", Some("openai_compatible@xt/grok-voice-latest"), false);
         save("empty", None, false);
         save("chat", Some("anthropic/claude-x"), true);
         save("other", Some("openai@oa/gpt-realtime-2"), true);
@@ -3974,6 +3981,7 @@ mod tests {
         assert_eq!(v("pack/chat").unwrap_err(), VoiceRefusal::Unsupported, "a chat model doesn't speak realtime");
         assert_eq!(v("pack/other").unwrap_err(), VoiceRefusal::Unsupported, "another realtime protocol: refused, not swapped");
         assert_eq!(v("pack/notxai").unwrap_err(), VoiceRefusal::Unsupported, "an xAI model name on another provider");
+        assert_eq!(v("pack/typed").unwrap_err(), VoiceRefusal::Unsupported, "a URL he entered is his own endpoint, not xAI's");
         assert_eq!(v("pack/off").unwrap_err(), VoiceRefusal::Unreachable, "connection off, set not to fall back");
         assert_eq!(janus(v("pack/offfalls")).as_deref(), Some("nebo-1-voice"), "connection off, the pack falls back");
         // An employee's own pack wins over the bot's default.
@@ -4001,7 +4009,6 @@ mod tests {
                 },
                 fallback: true,
                 built_in: false,
-                route_through_janus: false,
                 lanes: PackLanes { heartbeat: Some(types::packs::Effort::Instant), ..Default::default() },
                 level_effort: LevelEffort { medium: Some(ProviderEffort::High), ..Default::default() },
             })
@@ -4017,8 +4024,8 @@ mod tests {
         let empty = turn_model(h.resolver(), "pack/l/max", None).unwrap();
         assert_eq!(
             (empty.model.as_str(), empty.effort, empty.notice),
-            ("janus/nebo-1-pro", Some(ProviderEffort::High), None),
-            "an empty level runs on Nebo AI's Max at Nebo AI's effort for it"
+            ("janus/nebo-1-pro", Some(ProviderEffort::Max), None),
+            "an empty level runs on Nebo AI's Max at Nebo AI's effort for it (the model's top)"
         );
         assert_eq!(turn_model(h.resolver(), "pack/nebo-ai", Some(Lane::Heartbeat)).unwrap().effort, None, "Auto: no effort of ours");
     }
@@ -4171,7 +4178,6 @@ mod tests {
                 levels: PackLevels { low: Some("scripted/fast".into()), max: Some("scripted/strong".into()), ..Default::default() },
                 fallback: false,
                 built_in: false,
-                route_through_janus: false,
                 lanes: PackLanes { build: Some(Effort::Max), ..Default::default() },
                 level_effort: LevelEffort::default(),
             })
@@ -4199,7 +4205,6 @@ mod tests {
             levels: PackLevels { low: Some("scripted/fast".into()), high: Some("scripted/strong".into()), ..Default::default() },
             fallback: false,
             built_in: false,
-            route_through_janus: false,
             lanes: PackLanes { build, ..Default::default() },
             level_effort: LevelEffort { high: Some(ProviderEffort::High), ..Default::default() },
         };
@@ -4253,7 +4258,6 @@ mod tests {
                 levels: PackLevels { low: Some("scripted/fast".into()), high: Some("scripted/strong".into()), ..Default::default() },
                 fallback: false,
                 built_in: false,
-                route_through_janus: false,
                 lanes: PackLanes { build: Some(Effort::High), ..Default::default() },
                 level_effort: LevelEffort::default(),
             })

@@ -19,7 +19,7 @@ import type { UploadedAttachment } from '$lib/types/attachment';
 import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
-import { parseMessages, lastRunError } from '$lib/chat/history';
+import { parseMessages, lastRunError, epochMs } from '$lib/chat/history';
 import { endsRun } from '$lib/chat/runEnd';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
@@ -110,13 +110,15 @@ export interface TeamPost {
   text: string;
 }
 
+/** `at` on an owner's message or a reply: when it was said or written (epoch
+ *  ms), which places a spoken row that is kept after the fact. */
 export type ChatMessage =
-  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost; fromColleague?: string }
+  | { type: 'user'; content: string; time?: string; at?: number; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost; fromColleague?: string }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
   /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
    *  prose or a note in the turn's work; `segment`: its index in the turn. */
-  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
+  | { type: 'assistant'; content: string; time?: string; at?: number; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
   /** The error a run ended on: it stays in the thread where it happened.
    *  `reason`: its typed stop (`NOT_SIGNED_IN`), which the thread words. */
   | { type: 'runError'; content: string; time?: string; id?: string; reason?: string }
@@ -313,7 +315,7 @@ export function createChatController(config: ChatControllerConfig) {
   function addOwnerMessage(msg: Extract<ChatMessage, { type: 'user' }>) {
     flushPending();
     for (const aid of Object.keys(replyId)) finalizeReply(aid);
-    messages = [...messages, msg];
+    messages = [...messages, { ...msg, at: msg.at ?? Date.now() }];
   }
 
   /** Open a fresh streaming reply bubble for `aid` and return its index. */
@@ -325,6 +327,7 @@ export function createChatController(config: ChatControllerConfig) {
       type: 'assistant',
       content: '',
       time: '',
+      at: Date.now(),
       streaming: true,
       ...(delegateAgent ? { delegateAgentId: delegateAgent.id, delegateAgentName: delegateAgent.name } : {}),
     };
@@ -464,10 +467,9 @@ export function createChatController(config: ChatControllerConfig) {
     let idx = replyIndex(aid);
     if (idx === -1 && (attachments.length || workItems.length)) idx = startReply(aid);
     // No reply bubble here means the run's text never streamed to this
-    // pane — voice runs stream to the voice socket, coworker and workflow
-    // turns to nobody — yet its rows are persisted: reload the transcript.
-    // Without this, a voice conversation only appeared after a hard refresh
-    // (2026-09-15).
+    // pane — coworker and workflow turns stream to nobody — yet its rows are
+    // persisted: reload the transcript. Without this, such a conversation
+    // only appeared after a hard refresh (2026-09-15).
     // A call still showing as running when the run is over never ran: the
     // work stopped before it (the owner's message ended the turn), and the
     // thread keeps neither the call nor the fold it put on the words before
@@ -846,6 +848,43 @@ export function createChatController(config: ChatControllerConfig) {
     addOwnerMessage({ id: row.id, type: 'user' as const, content: row.content, time: formatTime(row.createdAt) });
   }
 
+  // A spoken turn of a call in this conversation, kept as a row and announced
+  // once (`voice_message`): it lands by its id, where it was said. A reply is
+  // kept when its turn closes, after the work it led into has streamed in,
+  // so it goes before the rows written after it was said. What the employee
+  // writes while the call runs streams in as a typed turn's work does.
+  function handleVoiceMessage(data: any) {
+    if (!historyTarget || data?.chatId !== historyTarget || !data.id) return;
+    const content = typeof data.content === 'string' ? data.content : '';
+    if (!content.trim() || messages.some((m) => 'id' in m && m.id === data.id)) return;
+    const at = typeof data.createdAt === 'number' ? epochMs(data.createdAt) : Date.now();
+    const time = formatTime(at);
+    flushPending();
+    let i = spokenPlace(at);
+    // The owner speaking now, as when he types, closes the reply open above.
+    if (data.role === 'user' && i === messages.length) {
+      for (const aid of Object.keys(replyId)) finalizeReply(aid);
+      i = messages.length;
+    }
+    const row: ChatMessage =
+      data.role === 'user'
+        ? { id: data.id, type: 'user' as const, content, time, at }
+        : { id: data.id, type: 'assistant' as const, content, time, at };
+    messages = [...messages.slice(0, i), row, ...messages.slice(i)];
+  }
+
+  /** Where a row said at `at` goes: after every row said or written no later. */
+  function spokenPlace(at: number): number {
+    let i = messages.length;
+    while (i > 0) {
+      const m = messages[i - 1];
+      const before = m.type === 'user' || m.type === 'assistant' ? m.at : undefined;
+      if (before == null || before <= at) break;
+      i--;
+    }
+    return i;
+  }
+
   // A step of the running work took in the owner's messages queued behind it
   // (from this window or any other): they are part of the conversation now.
   function handleTakenIn(data: any) {
@@ -915,6 +954,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_created', handleChatCreated));
   unsubs.push(ws.on('chat_user_message', handleUserMessage));
   unsubs.push(ws.on('chat_taken_in', handleTakenIn));
+  unsubs.push(ws.on('voice_message', handleVoiceMessage));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
   unsubs.push(onServer('text_verdict', handleTextVerdict));

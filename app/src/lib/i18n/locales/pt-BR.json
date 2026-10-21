@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "Qualquer URL compatível com OpenAI (Groq, Together, DeepSeek, xAI, Mistral…)",
 			"systemone_compatible": "Qualquer URL compatível com SystemOne (modelos de decisão: Jev, Clef…)"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "Adicionar um modelo pelo id",
 		"addModelByIdPlaceholder": "ex.: claude-opus-5",
 		"addModel": "Adicionar modelo",
-		"addModelHint": "As capacidades vêm dos padrões da Nebo para famílias de modelos conhecidas.",
 		"editProvider": "Editar provedor",
 		"nameHint": "Nomeie cada chave, para que uma chave da empresa e uma chave pessoal sejam fáceis de diferenciar.",
 		"baseUrlRequired": "A URL base é obrigatória",
@@ -1467,12 +1468,15 @@
 			"sortNewest": "Mais recentes",
 			"sortPrice": "Preço",
 			"showing": "Mostrando {shown} de {total}",
-			"price": "{input} / {output} por M tokens",
 			"added": "Adicionado",
 			"selected": "{count} selecionados",
 			"addN": "{count, plural, one {Adicionar # modelo} other {Adicionar # modelos}}",
 			"empty": "Nenhum modelo corresponde.",
-			"loadFailed": "Não foi possível carregar a lista."
+			"loadFailed": "Não foi possível carregar a lista.",
+			"retry": "Tentar novamente",
+			"errorKey": "Não foi possível acessar {provider}: verifique a chave",
+			"errorBusy": "{provider} pediu para aguardar. Tente novamente em um minuto.",
+			"errorUnreachable": "Não foi possível acessar {provider}. Tente novamente."
 		}
 	},
 	"onboardingImport": {
@@ -4019,7 +4023,6 @@
 		"botDefaultHint": "Aplica-se à próxima mensagem. Sem reiniciar.",
 		"defaultSaveFailed": "Não foi possível alterar o padrão.",
 		"badgeDefault": "Padrão",
-		"badgeJanus": "Passa pelo Nebo AI",
 		"readOnly": "Somente leitura",
 		"colLevel": "Nível",
 		"colRunsOn": "Roda em",
@@ -4047,7 +4050,6 @@
 		"decisionsNone": "Padrões seguros integrados da Nebo (sem modelo de decisão)",
 		"decisionsDefaultOption": "Nebo AI · Jev (padrão)",
 		"withEffort": "Esforço: {effort}",
-		"localNoJanus": "Não é possível passar pelo Nebo AI: o modelo dele roda neste computador.",
 		"removeConfirm": "Remover {name}? Um funcionário que ainda estiver nele passa a rodar na Nebo AI, e é avisado disso.",
 		"loadFailed": "Não foi possível carregar os pacotes.",
 		"saveFailed": "Não foi possível salvar o pacote.",
@@ -4065,10 +4067,7 @@
 		"laneHelpers": "Auxiliares",
 		"laneBuild": "Criação",
 		"laneWorkflow": "Fluxos de trabalho",
-		"laneByWork": "Escolhido pelo trabalho",
-		"routeJanus": "Rotear pelo Nebo AI",
-		"routeJanusHint": "O Nebo AI escolhe o nível em cada etapa entre os modelos deste pacote para reduzir sua conta. Suas chaves vão com cada requisição e nunca são armazenadas. Taxa de roteamento: {fee}.",
-		"routeJanusLocal": "Modelos neste computador (Ollama, Claude Code, Codex) sempre rodam diretamente. A voz nunca é roteada."
+		"laneByWork": "Escolhido pelo trabalho"
 	},
 	"loginItemsBanner": {
 		"text": "O Nebo só funciona enquanto o app está aberto. Para que continue trabalhando depois de fechar, ative o Nebo em Itens de Início.",
@@ -4350,6 +4349,55 @@
 		"taskReorder": "Repôs 40 unidades da Lumen",
 		"taskVideo": "Publicou o vídeo de terça",
 		"taskInvoices": "Enviou 3 lembretes de fatura"
+	},
+	"ownKey": {
+		"signedOut": "Entre no NeboAI para usar sua própria chave da {provider}.",
+		"keyRejected": "Sua chave de API da {provider} foi recusada. Verifique-a em Configurações > Provedores.",
+		"keyUnusable": "Sua chave de API da {provider} não pode executar este modelo. Verifique o modelo em Configurações > Provedores.",
+		"connectionSignIn": "Entre no NeboAI para usar esta chave: suas próprias chaves funcionam na sua conta NeboAI."
+	},
+	"modelCard": {
+		"about": "Sobre {model}",
+		"aboutNone": "Escolha um modelo para ver o que ele é",
+		"level": "Combina com",
+		"reasons": "Pensa antes de responder",
+		"yes": "Sim",
+		"no": "Não",
+		"abilities": "Pode",
+		"ability": {
+			"vision": "Ver imagens",
+			"tools": "Usar ferramentas",
+			"reasoning": "Raciocinar",
+			"audio": "Ouvir áudio"
+		},
+		"unknown": "Desconhecido",
+		"context": "Contexto",
+		"maxOutput": "Resposta mais longa",
+		"tokens": "{count} tokens",
+		"speed": "Velocidade",
+		"speedValue": {
+			"fastest": "A mais rápida",
+			"fast": "Rápida",
+			"standard": "Padrão",
+			"slow": "Mais lenta"
+		},
+		"modelId": "ID do modelo",
+		"pricing": "Preço",
+		"noPrice": "Nenhum preço informado.",
+		"ownKeyPrice": "{fee} por solicitação; seu provedor cobra o modelo",
+		"providerBills": "Seu provedor cobra o modelo",
+		"per1m": "{input} entrada · {output} saída por 1 M de tokens",
+		"input": "Entrada",
+		"output": "Saída",
+		"cacheRead": "Leitura de cache",
+		"cacheWrite": "Gravação de cache",
+		"requestFee": "Taxa por solicitação",
+		"perMillion": "{price} por 1 M de tokens",
+		"perRequest": "{price} por solicitação",
+		"priceVersion": "Preços de {version}",
+		"fits": "Indicado para {level}",
+		"bandUpTo": "Até {tokens} tokens",
+		"bandAbove": "Acima de {tokens} tokens"
 	},
 	"verify": {
 		"badge": {

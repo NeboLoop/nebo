@@ -14,16 +14,15 @@
   import Plus from 'lucide-svelte/icons/plus';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import X from 'lucide-svelte/icons/x';
+  import Info from 'lucide-svelte/icons/info';
+  import ModelInfo from '$lib/components/settings/ModelInfo.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Alert from '$lib/components/ui/Alert.svelte';
   import * as api from '$lib/api/nebo';
   import type { LevelEffort, Pack, PackChoice, PackLanes, PackLevels } from '$lib/api/neboComponents';
   import { EFFORTS, type Effort } from '$lib/models/speeds';
-  import { choiceProviderLabel, isDefaultPack, levelRows, packUsesLocal, runsOn } from '$lib/models/connections';
-
-  // PLACEHOLDER — the Janus routing fee is not decided yet. Replace with the
-  // real fee (from Janus or pricing) before Route through Janus ships.
-  const ROUTING_FEE_PLACEHOLDER = '[FEE]';
+  import { choiceGroups, choiceProviderLabel, choiceRowLabel, isDefaultPack, levelRows, runsOn } from '$lib/models/connections';
+  import { cardPriceLine } from '$lib/models/modelCard';
 
   const LANES = ['heartbeat', 'scheduled', 'communication', 'helpers', 'build', 'workflow'] as const;
   type Lane = (typeof LANES)[number];
@@ -41,7 +40,7 @@
     build: 'settingsPacks.laneBuild',
     workflow: 'settingsPacks.laneWorkflow',
   };
-  const PROVIDER_EFFORTS = ['low', 'medium', 'high'] as const;
+  const PROVIDER_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
 
   let loading = $state(true);
   let error = $state('');
@@ -57,7 +56,7 @@
   // The editor: null when closed; id '' for a new pack.
   let editing = $state<{
     id: string; name: string; levels: PackLevels; fallback: boolean;
-    routeThroughJanus: boolean; lanes: PackLanes; levelEffort: LevelEffort;
+    lanes: PackLanes; levelEffort: LevelEffort;
   } | null>(null);
   let saving = $state(false);
   let editError = $state('');
@@ -76,9 +75,16 @@
     return $t(`settingsPacks.level.${level}`);
   }
 
-  function choiceLabel(c: PackChoice): string {
-    return `${choiceProviderLabel(c)} · ${c.name || c.modelId}`;
+  function choiceLabel(c: PackChoice, grouped = false): string {
+    return choiceRowLabel(c, $t, grouped);
   }
+
+  // The model whose card is open (what it is, what it is good for, its price).
+  let info = $state<PackChoice | null>(null);
+  function openInfo(value: string | undefined) {
+    info = (value && allChoices.find((c) => c.value === value)) || null;
+  }
+  const choiceOf = (value: string | undefined) => (value ? allChoices.find((c) => c.value === value) : undefined);
 
   async function load() {
     loading = true;
@@ -127,9 +133,9 @@
     editing = pack
       ? {
           id: pack.id, name: pack.name, levels: { ...pack.levels }, fallback: pack.fallback,
-          routeThroughJanus: !!pack.routeThroughJanus, lanes: { ...(pack.lanes ?? {}) }, levelEffort: { ...(pack.levelEffort ?? {}) },
+          lanes: { ...(pack.lanes ?? {}) }, levelEffort: { ...(pack.levelEffort ?? {}) },
         }
-      : { id: '', name: '', levels: {}, fallback: true, routeThroughJanus: false, lanes: {}, levelEffort: {} };
+      : { id: '', name: '', levels: {}, fallback: true, lanes: {}, levelEffort: {} };
   }
 
   /** Drop empty values: absent means "nearest level" / "chosen by the work" / "provider default". */
@@ -142,10 +148,6 @@
     return out as T;
   }
 
-  const editorUsesLocal = $derived(
-    !!editing && Object.values(editing.levels).some((v) => !!v && !!allChoices.find((c) => c.value === v)?.local),
-  );
-
   async function save() {
     if (!editing) return;
     if (!editing.name.trim()) { editError = $t('settingsPacks.nameRequired'); return; }
@@ -155,7 +157,6 @@
       name: editing.name.trim(),
       levels: compact(editing.levels),
       fallback: editing.fallback,
-      routeThroughJanus: editing.routeThroughJanus,
       lanes: compact(editing.lanes),
       levelEffort: compact(editing.levelEffort),
     };
@@ -184,12 +185,31 @@
   onMount(load);
 </script>
 
+{#snippet infoButton(value: string | undefined)}
+  {@const c = choiceOf(value)}
+  <button
+    type="button"
+    class="model-info-open"
+    disabled={!c}
+    onclick={() => openInfo(value)}
+    aria-label={c ? $t('modelCard.about', { values: { model: c.name || c.modelId } }) : $t('modelCard.aboutNone')}
+  >
+    <Info class="w-3.5 h-3.5" />
+  </button>
+{/snippet}
+
 {#snippet runsOnCell(value: string | undefined, empty: string, effort?: string)}
   {@const on = runsOn(value, allChoices)}
   {#if on}
+    <span class="flex items-center gap-1.5 min-w-0">
     <span class="flex flex-col items-end text-end min-w-0">
       <span class="text-sm">{on.label}{#if effort}{' · '}{$t('settingsPacks.withEffort', { values: { effort: $t(`settingsPacks.level.${effort}`) } })}{/if}</span>
       <span class="text-xs text-base-content/50 font-mono truncate max-w-full">{on.model}</span>
+      {#if cardPriceLine(choiceOf(value)?.card, $t)}
+        <span class="text-xs text-base-content/50 truncate max-w-full">{cardPriceLine(choiceOf(value)?.card, $t)}</span>
+      {/if}
+    </span>
+    {#if choiceOf(value)}{@render infoButton(value)}{/if}
     </span>
   {:else}
     <span class="text-xs text-base-content/50 text-end">{empty}</span>
@@ -264,9 +284,6 @@
                 {#if isDefaultPack(defaultValue, pack.id)}
                   <span class="badge badge-primary badge-sm">{$t('settingsPacks.badgeDefault')}</span>
                 {/if}
-                {#if pack.routeThroughJanus}
-                  <span class="badge badge-info badge-outline badge-sm">{$t('settingsPacks.badgeJanus')}</span>
-                {/if}
                 {#if !pack.builtIn && !pack.fallback}
                   <span class="badge badge-warning badge-outline badge-sm">{$t('settingsPacks.neverNeboAi')}</span>
                 {/if}
@@ -314,9 +331,6 @@
                 {@render runsOnCell(pack.levels.decisions, pack.fallback || pack.builtIn ? $t('settingsPacks.decisionsDefault') : $t('settingsPacks.decisionsNone'))}
               </div>
             </div>
-            {#if !pack.builtIn && packUsesLocal(pack, allChoices)}
-              <p class="text-xs text-base-content/50 mt-2">{$t('settingsPacks.localNoJanus')}</p>
-            {/if}
           </div>
         {/each}
       </div>
@@ -346,18 +360,23 @@
             <h4 class="text-sm font-semibold">{$t('settingsPacks.effortLevels')}</h4>
             <p class="text-xs text-base-content/50">{$t('settingsPacks.effortLevelsHint')}</p>
           </div>
-          <div class="grid grid-cols-[5rem_1fr_7rem] gap-2 items-center">
+          <div class="grid grid-cols-[5rem_1fr_auto_7rem] gap-2 items-center">
             <span class="text-xs font-medium text-base-content/50">{$t('settingsPacks.colLevel')}</span>
-            <span class="text-xs font-medium text-base-content/50">{$t('settingsPacks.colModel')}</span>
+            <span class="text-xs font-medium text-base-content/50 col-span-2">{$t('settingsPacks.colModel')}</span>
             <span class="text-xs font-medium text-base-content/50">{$t('settingsPacks.colProviderEffort')}</span>
             {#each EFFORTS as level}
               <label class="text-sm" for="lv-{level}">{levelLabel(level)}</label>
               <select id="lv-{level}" bind:value={editing.levels[level]} class="select select-bordered select-sm w-full min-w-0">
                 <option value={undefined}>{$t('settingsPacks.emptyLevel')}</option>
-                {#each chatChoices as c (c.value)}
-                  <option value={c.value}>{choiceLabel(c)}</option>
+                {#each choiceGroups(chatChoices) as g (g.label)}
+                  <optgroup label={g.label}>
+                    {#each g.choices as c (c.value)}
+                      <option value={c.value}>{choiceLabel(c, true)}</option>
+                    {/each}
+                  </optgroup>
                 {/each}
               </select>
+              {@render infoButton(editing.levels[level])}
               <select
                 bind:value={editing.levelEffort[level]}
                 class="select select-bordered select-sm w-full"
@@ -378,14 +397,19 @@
             <h4 class="text-sm font-semibold">{$t('settingsPacks.capabilities')}</h4>
             <p class="text-xs text-base-content/50">{$t('settingsPacks.capabilitiesHint')}</p>
           </div>
-          <div class="grid grid-cols-[5rem_1fr] gap-2 items-center">
+          <div class="grid grid-cols-[5rem_1fr_auto] gap-2 items-center">
             <label class="text-sm" for="cap-vision">{$t('settingsPacks.vision')}</label>
             <select id="cap-vision" bind:value={editing.levels.vision} class="select select-bordered select-sm w-full min-w-0">
               <option value={undefined}>{$t('settingsPacks.visionDefault')}</option>
-              {#each visionChoices as c (c.value)}
-                <option value={c.value}>{choiceLabel(c)}</option>
+              {#each choiceGroups(visionChoices) as g (g.label)}
+                <optgroup label={g.label}>
+                  {#each g.choices as c (c.value)}
+                    <option value={c.value}>{choiceLabel(c, true)}</option>
+                  {/each}
+                </optgroup>
               {/each}
             </select>
+            {@render infoButton(editing.levels.vision)}
             <label class="text-sm" for="cap-voice">{$t('settingsPacks.voice')}</label>
             <select id="cap-voice" bind:value={editing.levels.voice} class="select select-bordered select-sm w-full min-w-0">
               <option value={undefined}>{$t('settingsPacks.voiceDefault')}</option>
@@ -393,6 +417,7 @@
                 <option value={c.value}>{choiceLabel(c)}</option>
               {/each}
             </select>
+            {@render infoButton(editing.levels.voice)}
             <label class="text-sm" for="cap-decisions">{$t('settingsPacks.decisions')}</label>
             <select id="cap-decisions" bind:value={editing.levels.decisions} class="select select-bordered select-sm w-full min-w-0">
               <option value={undefined}>{$t('settingsPacks.decisionsDefaultOption')}</option>
@@ -400,6 +425,7 @@
                 <option value={c.value}>{choiceLabel(c)}</option>
               {/each}
             </select>
+            {@render infoButton(editing.levels.decisions)}
           </div>
         </section>
 
@@ -435,16 +461,8 @@
           </div>
         </section>
 
-        <!-- Routing and fallback -->
+        <!-- Fallback -->
         <section class="flex flex-col gap-4">
-          <label class="flex items-start justify-between gap-4 cursor-pointer">
-            <span class="flex flex-col gap-1">
-              <span class="text-sm font-medium">{$t('settingsPacks.routeJanus')}</span>
-              <span class="text-xs text-base-content/50">{$t('settingsPacks.routeJanusHint', { values: { fee: ROUTING_FEE_PLACEHOLDER } })}</span>
-              <span class="text-xs {editorUsesLocal ? 'text-warning' : 'text-base-content/40'}">{$t('settingsPacks.routeJanusLocal')}</span>
-            </span>
-            <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 mt-0.5" bind:checked={editing.routeThroughJanus} />
-          </label>
           <label class="flex items-start justify-between gap-4 cursor-pointer">
             <span class="flex flex-col gap-1">
               <span class="text-sm font-medium">{$t('settingsPacks.fallback')}</span>
@@ -466,4 +484,8 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if info}
+  <ModelInfo card={info.card} modelId={info.modelId} provider={choiceProviderLabel(info)} onclose={() => (info = null)} />
 {/if}

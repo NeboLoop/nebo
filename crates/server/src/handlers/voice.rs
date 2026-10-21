@@ -104,17 +104,12 @@ pub async fn conversation_ws_handler(
 }
 
 /// Resolve the dictation leg for `path` (`/v1/stt`; a voice call's leg is
-/// its pack's Voice, [`realtime_leg`]) — the same direct-vs-Janus split as text
-/// providers: a user-owned xAI key dials api.x.ai directly (no Janus, no
-/// metering — their key); otherwise the NeboAI account rides Janus's metered
-/// relay with the user's Janus JWT.
-fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String)> {
-    if let Ok(Some(profile)) = state.store.get_best_auth_profile("xai")
-        && let key = auth::credential::profile_key(&profile)
-        && !key.is_empty()
-    {
-        return Some((format!("wss://api.x.ai{path}"), key));
-    }
+/// its pack's Voice, [`realtime_leg`]): always Janus's metered relay on the
+/// owner's NeboAI token, carrying his own xAI key when he has one (Janus
+/// dials xAI on it and charges the platform fee). `(endpoint, bearer, own
+/// key)`; `None` with no NeboAI account.
+fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String, Option<types::own_key::OwnKey>)> {
+    let own_key = state.store.get_best_auth_profile("xai").ok().flatten().as_ref().and_then(auth::credential::own_key);
     let token = crate::codes::neboai_token(state)?;
     let url = state
         .config
@@ -122,7 +117,7 @@ fn resolve_realtime_leg(state: &AppState, path: &str) -> Option<(String, String)
         .janus_url
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
-    Some((format!("{}{path}", url.trim_end_matches('/')), token))
+    Some((format!("{}{path}", url.trim_end_matches('/')), token, own_key))
 }
 
 /// Dictation from the phone app: `/ws/voice/dictation`.
@@ -167,8 +162,8 @@ pub async fn dictation_ws_handler(
 
 async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: DictationQuery) {
     use voice::dictation::{DictationConfig, DictationEvent, DictationInput};
-    let Some((endpoint, bearer)) = resolve_realtime_leg(&state, "/v1/stt") else {
-        let msg = DictationEvent::Error("dictation needs a NeboAI account or an xAI API key".into()).to_json();
+    let Some((endpoint, bearer, own_key)) = resolve_realtime_leg(&state, "/v1/stt") else {
+        let msg = DictationEvent::Error("Dictation needs a NeboAI account. Sign in to NeboAI and try again.".into()).to_json();
         let _ = socket.send(Message::Text(msg.to_string().into())).await;
         let _ = socket.send(Message::Close(None)).await;
         return;
@@ -177,6 +172,7 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
         endpoint,
         bearer,
         bot_id: config::read_bot_id(),
+        own_key,
         sample_rate: q.sample_rate.filter(|r| (8_000..=48_000).contains(r)).unwrap_or(voice::dictation::DEFAULT_SAMPLE_RATE),
         language: q.language,
         keyterms: voice_keyterms(&state.store),
@@ -231,15 +227,13 @@ async fn handle_dictation_ws(mut socket: WebSocket, state: AppState, q: Dictatio
     info!("dictation ended");
 }
 
-/// xAI's realtime endpoint, which an owner's own xAI connection dials.
-const XAI_REALTIME_URL: &str = "wss://api.x.ai/v1/realtime";
-
-/// A call's realtime upstream leg: where it dials, the model it asks for
-/// and its bearer.
+/// A call's realtime upstream leg: where it dials, the model it asks for,
+/// its bearer, and the owner's own key when it is his that pays.
 struct RealtimeLeg {
     endpoint: String,
     model: String,
     bearer: String,
+    own_key: Option<types::own_key::OwnKey>,
 }
 
 /// Why a call has no realtime leg.
@@ -247,28 +241,29 @@ struct RealtimeLeg {
 enum LegRefusal {
     /// The pack's Voice model can't take the call (`Harness::call_voice`).
     Voice(agent::harness::turn::VoiceRefusal),
-    /// Nebo AI's Voice, and this bot has no NeboAI account to ride Janus on.
+    /// No NeboAI account to ride Janus on (every call does, on Nebo AI's
+    /// Voice or the owner's own key).
     NoAccount,
 }
 
 /// The realtime leg of a call with `agent_id` (empty: the bot's default),
 /// from its intelligence pack's Voice model (`Harness::call_voice`), the
-/// one place a call's model is chosen. Nebo AI's Voice rides Janus's
-/// metered relay with the owner's NeboAI token, asking it for the relay
-/// alias; an xAI realtime model on the owner's own xAI connection dials xAI
-/// direct with that connection's key (no Janus, no metering).
+/// one place a call's model is chosen. Every call rides Janus's metered
+/// relay with the owner's NeboAI token: Nebo AI's Voice asks it for the
+/// relay alias; an xAI realtime model on the owner's own xAI connection
+/// carries that connection's key, and Janus dials xAI on it and charges the
+/// platform fee.
 fn realtime_leg(state: &AppState, agent_id: &str) -> Result<RealtimeLeg, LegRefusal> {
     use agent::harness::turn::CallVoice;
-    match state.harness.call_voice(agent_id).map_err(LegRefusal::Voice)? {
-        CallVoice::Janus(model) => {
-            let bearer = crate::codes::neboai_token(state).ok_or(LegRefusal::NoAccount)?;
-            Ok(RealtimeLeg { endpoint: janus_realtime_url(&state.config.neboai.janus_url), model, bearer })
-        }
-        CallVoice::Own { profile, model } => Ok(RealtimeLeg {
-            endpoint: XAI_REALTIME_URL.into(),
-            model,
-            bearer: auth::credential::profile_key(&profile),
-        }),
+    let voice = state.harness.call_voice(agent_id).map_err(LegRefusal::Voice)?;
+    let bearer = crate::codes::neboai_token(state).ok_or(LegRefusal::NoAccount)?;
+    let endpoint = janus_realtime_url(&state.config.neboai.janus_url);
+    match voice {
+        CallVoice::Janus(model) => Ok(RealtimeLeg { endpoint, model, bearer, own_key: None }),
+        CallVoice::Own { profile, model } => match auth::credential::own_key(&profile) {
+            Some(own_key) => Ok(RealtimeLeg { endpoint, model, bearer, own_key: Some(own_key) }),
+            None => Err(LegRefusal::Voice(agent::harness::turn::VoiceRefusal::Unreachable)),
+        },
     }
 }
 
@@ -311,7 +306,7 @@ fn leg_refusal_words(refusal: &LegRefusal) -> (Option<&'static str>, &'static st
             Some("voice_model_unreachable"),
             "This pack's voice model isn't connected. Connect it again, or pick another voice model in the pack.",
         ),
-        LegRefusal::NoAccount => (None, "Voice needs a NeboAI account, or a pack whose voice model uses your own key."),
+        LegRefusal::NoAccount => (None, "Voice needs a NeboAI account. Sign in to NeboAI and try again."),
     }
 }
 
@@ -350,6 +345,7 @@ pub async fn voice_sample(
         endpoint: leg.endpoint,
         model: leg.model,
         bearer: leg.bearer,
+        own_key: leg.own_key,
         voice: voice_id.clone(),
         tools: vec![],
         instructions: "You are demonstrating this voice for a short preview. \
@@ -914,7 +910,11 @@ pub(crate) async fn run_delegated_task(
             ));
             spoken_rx.await.unwrap_or_else(|_| Some(VOICE_RUN_VANISHED.to_string()))
         }
-        Err(e) => Some(format!("The task failed: {e}")),
+        Err(e) => {
+            warn!(error = %e, session_key, "voice task could not start");
+            voice_run_failed(state, session_key, &agent_id, &run_handle, &e.to_string()).await;
+            Some(format!("The task failed: {e}"))
+        }
     };
     let joined = text.is_none();
     let mut reply = DelegatedReply { text: text.unwrap_or_default(), told: Vec::new(), joined: false };
@@ -985,12 +985,28 @@ async fn drain_voice_run(
     let mut last_notice = String::new();
     let mut control_stop: Option<(String, String)> = None;
     let mut last_event = tokio::time::Instant::now();
-    // The run's steps reach the open thread as a typed chat's do (the same
-    // tool_start / tool_result the chat pipeline sends), so the owner sees
-    // the work while the call waits for its reply.
+    // The run reaches the open thread as a typed chat's does (the same
+    // chat_stream / thinking / text_verdict / tool_start / tool_result the
+    // chat pipeline sends, on the same identity), so every client shows the
+    // employee's written work while the call waits for its reply.
     let turn_id = uuid::Uuid::new_v4().to_string();
+    let identity = serde_json::json!({ "session_id": session_key, "agentId": agent_id, "turn_id": turn_id });
+    let with_identity = |fields: serde_json::Value| {
+        let mut payload = identity.clone();
+        if let (Some(p), serde_json::Value::Object(f)) = (payload.as_object_mut(), fields) {
+            p.extend(f);
+        }
+        payload
+    };
     // The run's files, kept on the reply and sent with `chat_complete`.
     let mut artifacts: Vec<String> = Vec::new();
+    // Its text, coalesced as a typed chat's is.
+    let mut reply_stream = crate::chat_dispatch::ReplyStream::new();
+    let stream_text = |chunk: Option<String>| {
+        if let Some(chunk) = chunk {
+            state.hub.broadcast("chat_stream", with_identity(serde_json::json!({ "content": chunk })));
+        }
+    };
     loop {
         let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting, agent::guardrails::RUN_IDLE_LIMIT).await {
             agent::guardrails::Next::Event(e) => e,
@@ -1011,7 +1027,25 @@ async fn drain_voice_run(
         last_event = tokio::time::Instant::now();
         run_handle.touch();
         match event.event_type {
-            ai::StreamEventType::Text => out.push_str(&event.text),
+            ai::StreamEventType::Text => {
+                out.push_str(&event.text);
+                reply_stream.push(&event.text);
+                stream_text(reply_stream.due());
+            }
+            ai::StreamEventType::Thinking => {
+                state.hub.broadcast("thinking", with_identity(serde_json::json!({ "content": event.text })));
+            }
+            ai::StreamEventType::TextVerdict => {
+                // The segment's text reaches the clients before its verdict.
+                stream_text(reply_stream.flush());
+                state.hub.broadcast(
+                    "text_verdict",
+                    with_identity(serde_json::json!({
+                        "segment": event.payload.as_ref().and_then(|p| p.get("segment")).cloned(),
+                        "fold": event.text,
+                    })),
+                );
+            }
             ai::StreamEventType::ControlNotice => {
                 control_stop = Some(control_stop_of(&event));
                 last_notice = event.text;
@@ -1023,6 +1057,8 @@ async fn drain_voice_run(
                 }
             }
             ai::StreamEventType::ToolCall => {
+                // The text before a step shows before the step does.
+                stream_text(reply_stream.flush());
                 if let Some(tc) = event.tool_call.as_ref() {
                     run_handle.show_call(&tc.name, &tc.input);
                     // What the employee said before this step is its update
@@ -1038,20 +1074,18 @@ async fn drain_voice_run(
                     }
                     state.hub.broadcast(
                         "tool_start",
-                        serde_json::json!({
-                            "session_id": session_key,
-                            "agentId": agent_id,
-                            "turn_id": turn_id,
+                        with_identity(serde_json::json!({
                             "tool_id": tc.id,
                             "tool": tc.name,
                             "input": tc.input,
                             "call": tools::humanize::call(&tc.name, &tc.input),
-                        }),
+                        })),
                     );
                 }
             }
             ai::StreamEventType::ToolResult => {
                 step_done_on_call(&state.live_calls, &session_key);
+                reply_stream.step_done();
                 let (tool_id, tool_name) = event
                     .tool_call
                     .as_ref()
@@ -1061,10 +1095,7 @@ async fn drain_voice_run(
                 let files = owner_artifact_urls(&state.tools, &event).await;
                 state.hub.broadcast(
                     "tool_result",
-                    serde_json::json!({
-                        "session_id": session_key,
-                        "agentId": agent_id,
-                        "turn_id": turn_id,
+                    with_identity(serde_json::json!({
                         "tool_id": tool_id,
                         "tool_name": tool_name,
                         "result": event.text,
@@ -1072,7 +1103,7 @@ async fn drain_voice_run(
                         "call": call,
                         "payload": event.payload,
                         "files": &files,
-                    }),
+                    })),
                 );
                 // A file the run hands the owner (share_file, a capture, a
                 // document it made) reaches every client as a typed chat's does.
@@ -1085,6 +1116,7 @@ async fn drain_voice_run(
             _ => {}
         }
     }
+    stream_text(reply_stream.flush());
     if let Some(tx) = spoken.take() {
         // Input that joined the turn already running here says nothing: that
         // turn's answer covers it (`None`).
@@ -1106,12 +1138,29 @@ async fn drain_voice_run(
         &state,
         &run_handle,
         TurnEnd {
-            payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
+            payload: identity,
             artifacts: &artifacts,
             control_stop: control_stop.as_ref(),
         },
     )
     .await;
+}
+
+/// A delegated run that could not start ends as a typed chat's does: the
+/// error reaches every client (`chat_error`), stays in the conversation as
+/// its run-error row, and the turn finishes (`chat_complete`). The call
+/// hears it too; the thread never loses it.
+async fn voice_run_failed(state: &AppState, session_key: &str, agent_id: &str, run_handle: &RunHandle, error: &str) {
+    let identity = serde_json::json!({
+        "session_id": session_key,
+        "agentId": agent_id,
+        "turn_id": uuid::Uuid::new_v4().to_string(),
+    });
+    let mut payload = identity.clone();
+    payload["error"] = serde_json::json!(error);
+    state.hub.broadcast("chat_error", payload);
+    crate::chat_dispatch::record_run_error(&state.harness, session_key, error, None);
+    finish_turn(state, run_handle, TurnEnd { payload: identity, artifacts: &[], control_stop: None }).await;
 }
 
 /// The spoken reply when a run ends: its text, else its typed status line
@@ -1619,9 +1668,11 @@ fn voice_cancel_line(cancelled: bool, before: Option<&agent::harness::session_ga
 /// What a voice turn writes to the thread, decided in one place. The owner's
 /// speech is one user row, written when the utterance ends
 /// (`TranscriptionEnd`), so it holds the finished transcript. The realtime
-/// model's own speech is one assistant row per turn, and none at all when a
-/// delegated run answered the turn: the run's reply is the row, and "On it"
-/// plus a spoken paraphrase of that reply were the duplicates in the thread.
+/// model's own speech is one assistant row per turn: what it said before the
+/// turn was handed to a delegated run. What it says after the hand-off
+/// retells the run's reply, which the thread already has in writing, so it
+/// is not kept (a spoken paraphrase of that reply was the duplicate in the
+/// thread); nothing said before it is lost.
 ///
 /// The model can start answering before the utterance ends (xAI's finished
 /// transcript lands after the reply starts). That speech, and any delegation
@@ -1652,12 +1703,21 @@ struct TurnLedger {
     /// The speech and delegation answering the utterance in progress, held
     /// until its user row is written.
     early: TurnSpeech,
+    /// The last turn id handed out.
+    turns: u64,
 }
 
 #[derive(Default)]
 struct TurnSpeech {
+    /// What the model said that the turn keeps: everything before it was
+    /// delegated.
     text: String,
+    /// Handed to a delegated run, or retelling a reply the thread has: what
+    /// the model says from here on is not kept.
     delegated: bool,
+    /// The turn's id on the client's wire (`response_text`,
+    /// `response_not_kept`); 0 until the turn is first named.
+    id: u64,
     /// When the model started saying it (unix seconds; 0 before it has).
     /// Its row is written when the turn closes, at the owner's next
     /// utterance, so it carries this time: stamped then, a question showed
@@ -1693,13 +1753,37 @@ impl TurnLedger {
         }
     }
 
-    /// The model's spoken words, joined into the turn they answer.
-    fn speech(&mut self, delta: &str) {
+    /// The model's spoken words, joined into the turn they answer (kept
+    /// only before the turn was delegated). Returns that turn's id.
+    fn speech(&mut self, delta: &str) -> u64 {
+        let id = self.speaking_turn();
         let turn = if self.answering { &mut self.early } else { &mut self.turn };
-        if turn.at == 0 {
-            turn.at = chrono::Utc::now().timestamp();
+        if !turn.delegated {
+            if turn.at == 0 {
+                turn.at = chrono::Utc::now().timestamp();
+            }
+            join_transcript(&mut turn.text, delta);
         }
-        join_transcript(&mut turn.text, delta);
+        id
+    }
+
+    /// The id of the turn the model's next words join.
+    fn speaking_turn(&mut self) -> u64 {
+        let turn = if self.answering { &mut self.early } else { &mut self.turn };
+        Self::named(&mut self.turns, turn)
+    }
+
+    /// The id of the turn of the last user row.
+    fn current_turn(&mut self) -> u64 {
+        Self::named(&mut self.turns, &mut self.turn)
+    }
+
+    fn named(turns: &mut u64, turn: &mut TurnSpeech) -> u64 {
+        if turn.id == 0 {
+            *turns += 1;
+            turn.id = *turns;
+        }
+        turn.id
     }
 
     /// The model called `nebo`; `delegating` when the run's reply is the
@@ -1780,7 +1864,7 @@ impl TurnLedger {
 
     fn close_assistant(&mut self) -> Vec<Row> {
         let turn = std::mem::take(&mut self.turn);
-        if turn.delegated || turn.text.trim().is_empty() {
+        if turn.text.trim().is_empty() {
             return Vec::new();
         }
         vec![Row::Assistant(turn.text.trim().to_string(), turn.at)]
@@ -1792,6 +1876,17 @@ impl TurnLedger {
         rows.extend(self.close_assistant());
         rows
     }
+}
+
+/// The client's word that what the model says from now on in turn `turn`
+/// (the id its `response_text` frames carry) is not kept as a row
+/// ([`TurnLedger`]): a delegated run's written reply answers it, or it
+/// retells a reply the conversation already has. A client showing the
+/// call's live speech in the conversation leaves that speech out, so the
+/// answer appears once, in writing; what the turn said before it is kept,
+/// and every other turn's speech is untouched.
+fn response_not_kept(turn: u64) -> serde_json::Value {
+    serde_json::json!({ "type": "response_not_kept", "turn": turn })
 }
 
 /// Where a session's rows go: the thread (created on the first row), the
@@ -1811,7 +1906,7 @@ struct TurnSink {
 }
 
 impl TurnSink {
-    async fn write(&mut self, state: &AppState, socket: &mut WebSocket, rows: Vec<Row>) {
+    fn write(&mut self, state: &AppState, line: &ClientLine, rows: Vec<Row>) {
         for row in rows {
             let (role, text, at) = match &row {
                 Row::User(t) => ("user", t.as_str(), None),
@@ -1838,7 +1933,7 @@ impl TurnSink {
                 if !self.chat_bound_announced {
                     self.chat_bound_announced = true;
                     let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
-                    if socket.send(Message::Text(bound.to_string().into())).await.is_err() {
+                    if !line.send(Message::Text(bound.to_string().into())) {
                         warn!(chat = %cid, "chat_bound frame not delivered");
                     }
                 }
@@ -2439,18 +2534,13 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         endpoint: leg.endpoint,
         model: leg.model,
         bearer: leg.bearer,
+        own_key: leg.own_key,
         bot_id: q.agent_id.clone(),
         tools: voice_tools(declare_transfer, telephony, &tree_intents),
         instructions,
         replace,
         keyterms,
-        // Telephony carries the carrier's own μ-law end to end — nothing
-        // transcodes between the phone and the model.
-        audio_format: if telephony {
-            voice::realtime::AudioFormat::G711Ulaw
-        } else {
-            voice::realtime::AudioFormat::Pcm24k
-        },
+        audio_format: voice::realtime::AudioFormat::for_call(telephony),
         ..Default::default()
     };
     // Per-agent voice: each employee sounds like themselves (Identity tab).
@@ -2622,7 +2712,9 @@ fn persist_voice_turn(state: &AppState, chat_id: &str, role: &str, content: &str
         None,
         at,
     ) {
-        Ok(_) => {
+        Ok(row) => {
+            // `createdAt` (unix seconds) is when it was said, which a reply
+            // written at the turn's close precedes: clients place the row by it.
             state.hub.broadcast(
                 "voice_message",
                 serde_json::json!({
@@ -2630,6 +2722,7 @@ fn persist_voice_turn(state: &AppState, chat_id: &str, role: &str, content: &str
                     "chatId": chat_id,
                     "role": role,
                     "content": content,
+                    "createdAt": row.created_at,
                 }),
             );
         }
@@ -2722,7 +2815,7 @@ fn client_frame(text: &str) -> ClientFrame {
 /// store keeps working. New downstream frames: `conversation_id` (resumption
 /// handle) rides alongside the existing set.
 async fn handle_conversation_session(
-    mut socket: WebSocket,
+    socket: WebSocket,
     state: AppState,
     q: ConversationQuery,
     team: Option<db::Team>,
@@ -2735,6 +2828,11 @@ async fn handle_conversation_session(
 
     let chat_id = q.chat_id.filter(|c| !c.is_empty());
     let call_started = std::time::Instant::now();
+    // Everything for the client goes out through the call's line, in order
+    // and with the reply's audio paced; the loop below only ever reads the
+    // socket, so a client that stops draining can never hold it up.
+    let (ws_out, mut ws_in) = futures::StreamExt::split(socket);
+    let line = ClientLine::open(ws_out, voice::realtime::AudioFormat::for_call(q.telephony.is_some()));
     // What the employee said the call came to (`end_call` / `transfer_call`).
     let mut call_summary = String::new();
     // Phone calls get a deterministic caller-ID title ("Call from (801)
@@ -2859,7 +2957,7 @@ async fn handle_conversation_session(
     {
         sink.chat_bound_announced = true;
         let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
-        if socket.send(Message::Text(bound.to_string().into())).await.is_err() {
+        if !line.send(Message::Text(bound.to_string().into())) {
             return;
         }
     }
@@ -3006,6 +3104,9 @@ async fn handle_conversation_session(
                     ConversationEvent::SessionInitialized =>
                         Some(serde_json::json!({"type": "session_initialized"})),
                     ConversationEvent::TranscriptionStart => {
+                        // The owner's voice wins: the reply's audio not yet
+                        // sent goes, as the client drops what it holds.
+                        line.cut();
                         unseen_speech = false;
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
@@ -3020,7 +3121,7 @@ async fn handle_conversation_session(
                     // waited for it.
                     ConversationEvent::TranscriptionEnd => {
                         let rows = ledger.user_final();
-                        sink.write(&state, &mut socket, rows).await;
+                        sink.write(&state, &line, rows);
                         for (call_id, name, arguments) in held_runs.drain(..) {
                             spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
                         }
@@ -3033,8 +3134,8 @@ async fn handle_conversation_session(
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
                     // The model's speech stays open until the turn closes (next
-                    // utterance or session end): only then is it known whether
-                    // a delegated run answered, which makes it noise.
+                    // utterance or session end): its row is what it said
+                    // before any hand-off, written then.
                     ConversationEvent::PlaybackEnd => {
                         responding = false;
                         quiet_since = tokio::time::Instant::now();
@@ -3048,8 +3149,8 @@ async fn handle_conversation_session(
                         Some(serde_json::json!({"type": "playback_end"}))
                     }
                     ConversationEvent::ResponseText(text) => {
-                        ledger.speech(&text);
-                        (!unseen_speech).then(|| serde_json::json!({"type": "response_text", "text": text}))
+                        let turn = ledger.speech(&text);
+                        (!unseen_speech).then(|| serde_json::json!({"type": "response_text", "text": text, "turn": turn}))
                     }
                     ConversationEvent::ConversationId(id) =>
                         Some(serde_json::json!({"type": "conversation_id", "id": id})),
@@ -3059,7 +3160,7 @@ async fn handle_conversation_session(
                     // the balance: the same words as a refused connect.
                     ConversationEvent::BalanceReserved => Some(connect_failure_words(&voice::VoiceError::BalanceReserved)),
                     ConversationEvent::AudioChunk(data) => {
-                        if socket.send(Message::Binary(data.to_vec().into())).await.is_err() {
+                        if !line.audio(data) {
                             break;
                         }
                         None
@@ -3106,13 +3207,11 @@ async fn handle_conversation_session(
                                     true,
                                 ))
                                 .await;
-                            let _ = socket
-                                .send(Message::Text(
-                                    serde_json::json!({"type": "end_call", "summary": summary})
-                                        .to_string()
-                                        .into(),
-                                ))
-                                .await;
+                            let _ = line.send(Message::Text(
+                                serde_json::json!({"type": "end_call", "summary": summary})
+                                    .to_string()
+                                    .into(),
+                            ));
                             continue;
                         }
                         if name == "status" && caller_ctx.is_none() {
@@ -3214,15 +3313,11 @@ async fn handle_conversation_session(
                                     true,
                                 ))
                                 .await;
-                            if socket
-                                .send(Message::Text(
-                                    serde_json::json!({"type": "transfer_call", "summary": summary})
-                                        .to_string()
-                                        .into(),
-                                ))
-                                .await
-                                .is_err()
-                            {
+                            if !line.send(Message::Text(
+                                serde_json::json!({"type": "transfer_call", "summary": summary})
+                                    .to_string()
+                                    .into(),
+                            )) {
                                 break;
                             }
                             continue;
@@ -3231,16 +3326,17 @@ async fn handle_conversation_session(
                         // In a team thread the run's rows land in the lead's
                         // seat, not the thread, so the lead's spoken reply
                         // stays: it IS the team's record of the answer.
-                        if name == "nebo" && ledger.call(team.is_none()) {
+                        let delegating = name == "nebo" && team.is_none();
+                        if name == "nebo" && ledger.call(delegating) {
                             held_runs.push((call_id, name, arguments));
                         } else {
                             spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
                         }
-                        None
+                        delegating.then(|| response_not_kept(ledger.speaking_turn()))
                     }
                 };
                 if let Some(frame) = frame
-                    && socket.send(Message::Text(frame.to_string().into())).await.is_err()
+                    && !line.send(Message::Text(frame.to_string().into()))
                 {
                     break;
                 }
@@ -3314,7 +3410,7 @@ async fn handle_conversation_session(
             }
 
             // Messages from the WebSocket client -> upstream
-            ws_msg = socket.recv() => {
+            ws_msg = futures::StreamExt::next(&mut ws_in) => {
                 client_heard = tokio::time::Instant::now();
                 match ws_msg {
                     Some(Ok(Message::Binary(data))) => {
@@ -3329,6 +3425,7 @@ async fn handle_conversation_session(
                         ClientFrame::KeepAlive => {}
                         ClientFrame::Interrupt { played_ms } => {
                             info!(?played_ms, "conversation interrupt received");
+                            line.cut();
                             if rt_tx.send(RealtimeCommand::Interrupt { played_ms }).await.is_err() {
                                 break;
                             }
@@ -3414,7 +3511,10 @@ async fn handle_conversation_session(
             }
             if !say.is_empty() {
                 let rows = ledger.relayed();
-                sink.write(&state, &mut socket, rows).await;
+                sink.write(&state, &line, rows);
+                if !line.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())) {
+                    break;
+                }
                 if rt_tx.send(RealtimeCommand::Text(say)).await.is_err() {
                     break;
                 }
@@ -3427,7 +3527,8 @@ async fn handle_conversation_session(
     // Session over (hangup / barge-out / error): flush any half-finished turn
     // so the transcript in the chat never loses the last exchange.
     let rows = ledger.flush();
-    sink.write(&state, &mut socket, rows).await;
+    sink.write(&state, &line, rows);
+    line.close().await;
     // A run the owner asked for still runs when the call ends first.
     for (call_id, name, arguments) in held_runs.drain(..) {
         spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
@@ -3474,6 +3575,154 @@ fn post_call_item(state: &AppState, agent_id: &str, chat_id: &str, title: &str, 
 /// the call is taken as abandoned and closed (the voice service's own idle
 /// backstop is the same five minutes).
 const VOICE_CLIENT_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How far the reply's audio runs ahead of real time on its way to the
+/// client: enough to ride out the network's jitter, and no more. The model
+/// makes a long reply much faster than it plays; sent all at once, a minute
+/// of audio sat in the tunnel ahead of everything else on the line, the
+/// phone's ping waited behind it past its deadline, and the phone dropped a
+/// call that was working (live 2026-10-21, a long text read aloud: a new
+/// line every 16 s).
+const CLIENT_AUDIO_LEAD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How long a call that has ended waits for its last frames to reach the
+/// client before its line is let go.
+const CLIENT_LINE_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One frame waiting on the call's line. Audio carries how long it plays.
+enum Outbound {
+    Frame(Message),
+    Audio(Message, std::time::Duration),
+    /// The reply was cut: its audio still waiting is dropped.
+    Cut,
+}
+
+/// A call's way to its client. Every frame goes out through one queue, in
+/// the order it was given, and the reply's audio leaves at the pace it
+/// plays (a [`CLIENT_AUDIO_LEAD`] ahead). A task of its own does the
+/// sending, so the call's loop never waits on a client: it always hears the
+/// client's close, and its silence backstop always runs (a send that hung
+/// on a phone gone held calls open with their realtime legs, 2026-10-21).
+struct ClientLine {
+    tx: Option<mpsc::UnboundedSender<Outbound>>,
+    task: tokio::task::JoinHandle<()>,
+    bytes_per_ms: usize,
+}
+
+impl ClientLine {
+    fn open<S>(sink: S, format: voice::realtime::AudioFormat) -> Self
+    where
+        S: futures::Sink<Message> + Unpin + Send + 'static,
+    {
+        let (tx, rx) = mpsc::unbounded_channel();
+        ClientLine {
+            tx: Some(tx),
+            task: tokio::spawn(write_client_line(sink, rx)),
+            bytes_per_ms: format.bytes_per_ms(),
+        }
+    }
+
+    /// Queue a frame. False once the line is gone.
+    fn send(&self, frame: Message) -> bool {
+        self.queue(Outbound::Frame(frame))
+    }
+
+    /// Queue reply audio, paced. False once the line is gone.
+    fn audio(&self, pcm: axum::body::Bytes) -> bool {
+        let plays = std::time::Duration::from_micros((pcm.len() * 1000 / self.bytes_per_ms) as u64);
+        self.queue(Outbound::Audio(Message::Binary(pcm), plays))
+    }
+
+    /// The reply was cut (the owner talked over it): what of its audio has
+    /// not gone out yet never does.
+    fn cut(&self) {
+        self.queue(Outbound::Cut);
+    }
+
+    fn queue(&self, out: Outbound) -> bool {
+        self.tx.as_ref().is_some_and(|tx| tx.send(out).is_ok())
+    }
+
+    /// The call is over: what is queued goes out (audio aside), for at most
+    /// [`CLIENT_LINE_DRAIN`], and the line closes.
+    async fn close(mut self) {
+        self.tx = None;
+        let _ = tokio::time::timeout(CLIENT_LINE_DRAIN, &mut self.task).await;
+    }
+}
+
+impl Drop for ClientLine {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The sending side of a [`ClientLine`]. A cut reaches the audio queued
+/// before it, never audio queued after.
+async fn write_client_line<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<Outbound>)
+where
+    S: futures::Sink<Message> + Unpin + Send,
+{
+    use futures::SinkExt;
+    use tokio::time::Instant;
+
+    let mut queue: std::collections::VecDeque<Outbound> = std::collections::VecDeque::new();
+    // When the audio sent so far finishes playing at the client.
+    let mut played_to = Instant::now();
+    let mut open = true;
+    let take = |queue: &mut std::collections::VecDeque<Outbound>, played_to: &mut Instant, out: Outbound| match out {
+        Outbound::Cut => {
+            queue.retain(|o| !matches!(o, Outbound::Audio(..)));
+            *played_to = Instant::now();
+        }
+        out => queue.push_back(out),
+    };
+    loop {
+        while let Ok(out) = rx.try_recv() {
+            take(&mut queue, &mut played_to, out);
+        }
+        if !open {
+            // The call is over: nobody is listening to the rest of a reply.
+            queue.retain(|o| !matches!(o, Outbound::Audio(..)));
+        }
+        let due = match queue.front() {
+            None if open => {
+                match rx.recv().await {
+                    Some(out) => take(&mut queue, &mut played_to, out),
+                    None => open = false,
+                }
+                continue;
+            }
+            None => break,
+            Some(Outbound::Audio(..)) => played_to.checked_sub(CLIENT_AUDIO_LEAD),
+            Some(_) => None,
+        };
+        if let Some(due) = due
+            && due > Instant::now()
+        {
+            tokio::select! {
+                out = rx.recv(), if open => match out {
+                    Some(out) => take(&mut queue, &mut played_to, out),
+                    None => open = false,
+                },
+                _ = tokio::time::sleep_until(due) => {}
+            }
+            continue;
+        }
+        let frame = match queue.pop_front() {
+            Some(Outbound::Audio(frame, plays)) => {
+                played_to = played_to.max(Instant::now()) + plays;
+                frame
+            }
+            Some(Outbound::Frame(frame)) => frame,
+            Some(Outbound::Cut) | None => continue,
+        };
+        if sink.send(frame).await.is_err() {
+            return;
+        }
+    }
+    let _ = sink.close().await;
+}
 
 /// Character cap for the persona body in a realtime session. The realtime
 /// context is for identity + operating rules — bulk knowledge stays behind
@@ -3755,35 +4004,39 @@ mod voice_prompt_tests {
     /// The decision table: one user row per utterance, the model's own
     /// speech kept only for turns it answered itself.
     #[test]
-    fn ledger_writes_one_row_per_utterance_and_drops_delegated_filler() {
+    fn ledger_keeps_what_was_said_before_a_hand_off_and_not_the_retelling() {
         let mut l = TurnLedger::default();
         // Turn 1: a plain answer.
         l.utterance_started();
         l.words("hi there");
         assert_eq!(shape(&l.user_final()), ["user:hi there"]);
         l.reply_started();
-        l.speech("Hello.");
+        let hello = l.speech("Hello.");
         // Turn 2: "On it" spoken, then the nebo call, then the run's relay.
         l.utterance_started();
         l.words("make the repo");
         assert_eq!(shape(&l.user_final()), ["assistant:Hello.", "user:make the repo"]);
         l.reply_started();
-        l.speech("On it.");
+        let on_it = l.speech("On it.");
+        assert_ne!(on_it, hello, "each turn has its own id");
         assert!(!l.call(true), "the user row is already written: the run starts now");
+        assert_eq!(l.speaking_turn(), on_it, "the hand-off names the turn it is in");
         l.reply_started();
-        l.speech(" Done, the repo exists.");
-        // Turn 3 closes turn 2 without its filler.
+        assert_eq!(l.speech(" Done, the repo exists."), on_it);
+        // Turn 3 closes turn 2 with what it said before the hand-off only.
         l.utterance_started();
         l.words("thanks");
-        assert_eq!(shape(&l.user_final()), ["user:thanks"]);
+        assert_eq!(shape(&l.user_final()), ["assistant:On it.", "user:thanks"]);
         l.speech("Any time.");
         assert_eq!(shape(&l.flush()), ["assistant:Any time."]);
         assert!(l.flush().is_empty());
-        // A call with no utterance in progress marks the current turn.
+        // A call with no utterance in progress hands off the current turn:
+        // the options said before it stay, every word of them.
         l.reply_started();
-        l.speech("Here they are.");
+        l.speech("Flights 3 and 4 leave at noon. 4.");
         assert!(!l.call(true));
-        assert!(l.flush().is_empty());
+        l.speech(" Booked flight 4.");
+        assert_eq!(shape(&l.flush()), ["assistant:Flights 3 and 4 leave at noon. 4."]);
     }
 
     /// A reply's row is written at the owner's next utterance but carries
@@ -3823,10 +4076,14 @@ mod voice_prompt_tests {
         l.words("ask the coder how far it is");
         assert_eq!(shape(&l.user_final()), ["user:ask the coder how far it is"]);
         l.reply_started();
-        l.speech("I asked it.");
+        let asked = l.speech("I asked it.");
         assert_eq!(shape(&l.relayed()), ["assistant:I asked it."]);
+        // The retelling is a turn of its own: naming it never names the
+        // reply that was kept.
+        let retold = l.current_turn();
+        assert_ne!(retold, asked);
         l.reply_started();
-        l.speech("The coder says three files are left.");
+        assert_eq!(l.speech("The coder says three files are left."), retold);
         assert!(l.flush().is_empty(), "the retelling is not a row");
     }
 
@@ -3924,9 +4181,10 @@ mod voice_prompt_tests {
             shape(&l.user_final()),
             ["assistant:Hello.", "user:what I want is just a list"]
         );
-        // "On it." belonged to the delegated turn: dropped.
+        // "On it." was said before the hand-off: the delegated turn keeps
+        // it, after the user row; the relay of the run's answer is not kept.
         l.speech(" Here is the list.");
-        assert!(l.flush().is_empty());
+        assert_eq!(shape(&l.flush()), ["assistant:On it."]);
 
         // Undelegated: the early reply is this turn's assistant row.
         l.utterance_started();
@@ -3941,7 +4199,7 @@ mod voice_prompt_tests {
 
     /// A reply that only calls `nebo`, before any audio and before the
     /// utterance ends: the run waits for the user row, and the model's
-    /// relay of the run's answer is the delegated turn's filler.
+    /// relay of the run's answer is not kept (the run's reply is the row).
     #[test]
     fn ledger_holds_a_silent_tool_reply_until_the_user_row() {
         let mut l = TurnLedger::default();
@@ -4185,6 +4443,162 @@ mod voice_prompt_tests {
                 break;
             }
         }
+    }
+
+    /// The run's written work reaches the conversation as a typed chat's
+    /// does: its text as `chat_stream` (coalesced, a paragraph break after a
+    /// step), its steps, and the end as `chat_complete`, all on the session,
+    /// the employee and one turn id, so every open client shows the reply
+    /// while the call speaks it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_streams_the_written_reply_to_the_conversation() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(super::drain_voice_run(
+            state.clone(),
+            key.clone(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+        tx.send(ai::StreamEvent::text("Looking it up.")).await.unwrap();
+        let search = ai::ToolCall {
+            id: "t1".into(),
+            name: "web".into(),
+            input: serde_json::json!({ "action": "search", "query": "flights" }),
+        };
+        tx.send(ai::StreamEvent::tool_call(search.clone())).await.unwrap();
+        tx.send(ai::StreamEvent {
+            event_type: ai::StreamEventType::ToolResult,
+            tool_call: Some(search),
+            ..ai::StreamEvent::text("3 flights")
+        })
+        .await
+        .unwrap();
+        tx.send(ai::StreamEvent::text("Three flights ")).await.unwrap();
+        tx.send(ai::StreamEvent::text("leave tomorrow.")).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert_eq!(spoken_rx.await.unwrap().as_deref(), Some("Three flights leave tomorrow."));
+
+        let mut seen: Vec<(String, serde_json::Value)> = Vec::new();
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await.unwrap().unwrap();
+            if e.payload["session_id"] != key.as_str() {
+                continue;
+            }
+            let end = e.event_type == "chat_complete";
+            seen.push((e.event_type.clone(), e.payload.clone()));
+            if end {
+                break;
+            }
+        }
+        // Text is coalesced, so a stretch of it may be one frame or a few;
+        // its place among the steps is fixed.
+        let mut kinds: Vec<&str> = seen.iter().map(|(k, _)| k.as_str()).collect();
+        kinds.dedup();
+        assert_eq!(kinds, ["chat_stream", "tool_start", "tool_result", "chat_stream", "chat_complete"], "{seen:?}");
+        let streamed: String = seen
+            .iter()
+            .filter(|(k, _)| k == "chat_stream")
+            .filter_map(|(_, p)| p["content"].as_str())
+            .collect();
+        assert_eq!(streamed, "Looking it up.\n\nThree flights leave tomorrow.", "a paragraph break after the step");
+        let turn = seen[0].1["turn_id"].as_str().expect("a turn id").to_string();
+        assert!(!turn.is_empty());
+        for (kind, payload) in &seen {
+            assert_eq!(payload["agentId"], "a", "{kind}: {payload}");
+            assert_eq!(payload["turn_id"], turn.as_str(), "{kind} names the one turn: {payload}");
+        }
+    }
+
+    /// A burst of tiny pieces is a few frames, as in a typed chat: one
+    /// frame per piece overflowed a slow client's broadcast queue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_coalesces_a_burst_of_text() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(512);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        // The whole burst is queued before the drain starts reading it.
+        for _ in 0..300 {
+            tx.send(ai::StreamEvent::text("a")).await.unwrap();
+        }
+        drop(tx);
+        super::drain_voice_run(
+            state.clone(),
+            key.clone(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        )
+        .await;
+        assert_eq!(spoken_rx.await.unwrap().map(|s| s.len()), Some(300));
+        let mut frames = 0;
+        let mut text = String::new();
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await.unwrap().unwrap();
+            if e.payload["session_id"] != key.as_str() {
+                continue;
+            }
+            if e.event_type == "chat_complete" {
+                break;
+            }
+            if e.event_type == "chat_stream" {
+                frames += 1;
+                text.push_str(e.payload["content"].as_str().unwrap());
+            }
+        }
+        assert_eq!(text.len(), 300, "every piece arrives");
+        assert!(frames < 30, "{frames} frames for 300 pieces");
+    }
+
+    /// A task that cannot start ends as a failed typed run does: the error
+    /// reaches every client, stays in the conversation as its error row, and
+    /// the turn finishes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_voice_task_that_cannot_start_stays_in_the_thread() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let session = state.harness.sessions().get_or_create(&key, "").unwrap();
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        super::voice_run_failed(&state, &key, "a", &run_handle, "no model is set up").await;
+
+        let mut seen = Vec::new();
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await.unwrap().unwrap();
+            if e.payload["session_id"] != key.as_str() {
+                continue;
+            }
+            let end = e.event_type == "chat_complete";
+            seen.push((e.event_type.clone(), e.payload.clone()));
+            if end {
+                break;
+            }
+        }
+        assert_eq!(seen.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["chat_error", "chat_complete"]);
+        assert_eq!(seen[0].1["error"], "no model is set up");
+        assert_eq!(seen[0].1["agentId"], "a");
+        assert_eq!(seen[0].1["turn_id"], seen[1].1["turn_id"], "one turn");
+        let rows = state.harness.sessions().get_messages(&session.id).unwrap();
+        let last = rows.last().expect("the error row");
+        assert_eq!((last.role.as_str(), last.content.as_str()), ("system", "no model is set up"));
+        let meta: serde_json::Value = serde_json::from_str(last.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta[crate::chat_dispatch::RUN_ERROR_KEY], true);
     }
 
     /// On a call the employee is heard while it works: what it says before a
@@ -4551,5 +4965,170 @@ mod voice_prompt_tests {
         assert_eq!(l.since_reply(), "はい", "before its transcript is final");
         l.user_final();
         assert_eq!(l.since_reply(), "はい");
+    }
+}
+
+#[cfg(test)]
+mod client_line_tests {
+    use super::{CLIENT_AUDIO_LEAD, ClientLine};
+    use axum::extract::WebSocketUpgrade;
+    use axum::extract::ws::Message;
+    use futures::{SinkExt, StreamExt};
+    use std::time::{Duration, Instant};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    /// 100 ms of 24 kHz PCM16, its first byte the chunk's number.
+    const CHUNK: usize = 4800;
+
+    fn chunk(n: usize) -> axum::body::Bytes {
+        let mut pcm = vec![0u8; CHUNK];
+        pcm[0] = n as u8;
+        pcm.into()
+    }
+
+    /// A call's client side as the session runs it: `chunks` × 100 ms of
+    /// reply audio queued at once (the burst the model sends), then `end`.
+    /// The loop only reads, as the session's does: `cut` cuts the reply,
+    /// and the client's close is reported with when it was heard.
+    async fn serve(chunks: usize) -> (String, tokio::sync::oneshot::Receiver<Instant>) {
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let closed_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(closed_tx)));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let closed_tx = closed_tx.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let (out, mut incoming) = socket.split();
+                        let line = ClientLine::open(out, voice::realtime::AudioFormat::Pcm24k);
+                        for n in 0..chunks {
+                            assert!(line.audio(chunk(n)));
+                        }
+                        line.send(Message::Text("end".into()));
+                        while let Some(msg) = incoming.next().await {
+                            match msg {
+                                Ok(Message::Text(t)) if t.as_str() == "cut" => {
+                                    line.cut();
+                                    line.send(Message::Text("cut_done".into()));
+                                }
+                                Ok(Message::Close(_)) | Err(_) => break,
+                                Ok(_) => {}
+                            }
+                        }
+                        if let Some(tx) = closed_tx.lock().unwrap().take() {
+                            let _ = tx.send(Instant::now());
+                        }
+                        line.close().await;
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("ws://{addr}/"), closed_rx)
+    }
+
+    /// A long reply the model sends in one burst reaches the client at the
+    /// pace it plays, a lead ahead, every byte in order, and the frame
+    /// queued after it after it.
+    #[tokio::test]
+    async fn a_burst_of_reply_audio_reaches_the_client_paced() {
+        let (url, _) = serve(30).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let start = Instant::now();
+        let mut audio = Vec::new();
+        let mut early = 0;
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                WsMessage::Binary(b) => {
+                    assert_eq!(b.len(), CHUNK);
+                    if start.elapsed() < Duration::from_millis(200) {
+                        early += 1;
+                    }
+                    audio.push(b[0] as usize);
+                }
+                WsMessage::Text(t) => {
+                    assert_eq!(t.as_str(), "end");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let took = start.elapsed();
+        assert_eq!(audio, (0..30).collect::<Vec<_>>(), "every chunk, in order");
+        let lead_chunks = (CLIENT_AUDIO_LEAD.as_millis() / 100) as usize;
+        assert!(early <= lead_chunks + 2, "only the lead goes at once, not the burst: {early}");
+        let plays = Duration::from_millis(3000);
+        assert!(took >= plays - CLIENT_AUDIO_LEAD - Duration::from_millis(150), "paced: {took:?}");
+        assert!(took < plays + Duration::from_millis(500), "at the pace it plays, no slower: {took:?}");
+    }
+
+    /// Under a minute of queued reply the phone's ping is answered at once,
+    /// and its close is heard at once: the line never holds the call.
+    #[tokio::test]
+    async fn a_ping_is_answered_and_a_close_heard_during_a_burst() {
+        let (url, closed) = serve(600).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let mut audio = 0;
+        while audio < 3 {
+            if let WsMessage::Binary(_) = ws.next().await.unwrap().unwrap() {
+                audio += 1;
+            }
+        }
+        let pinged = Instant::now();
+        ws.send(WsMessage::Ping(b"are you there".to_vec().into())).await.unwrap();
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                WsMessage::Pong(p) => {
+                    assert_eq!(&p[..], b"are you there");
+                    break;
+                }
+                WsMessage::Binary(_) => audio += 1,
+                _ => {}
+            }
+        }
+        assert!(pinged.elapsed() < Duration::from_secs(1), "pong took {:?}", pinged.elapsed());
+
+        let closing = Instant::now();
+        ws.send(WsMessage::Close(None)).await.unwrap();
+        let heard = tokio::time::timeout(Duration::from_secs(1), closed)
+            .await
+            .expect("the close is heard within a second")
+            .unwrap();
+        assert!(heard.duration_since(closing) < Duration::from_secs(1));
+        assert!(audio < 100, "the burst was never sent at once: {audio} chunks");
+    }
+
+    /// The owner talks over the reply: its audio not yet sent never is,
+    /// frames queued before the cut still go, in order, and nothing of the
+    /// cut reply follows.
+    #[tokio::test]
+    async fn a_cut_drops_the_reply_audio_still_queued() {
+        let (url, _) = serve(100).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let mut before = 0;
+        while before < 2 {
+            if let WsMessage::Binary(_) = ws.next().await.unwrap().unwrap() {
+                before += 1;
+            }
+        }
+        let cut_at = Instant::now();
+        ws.send(WsMessage::Text("cut".into())).await.unwrap();
+        let mut seen = Vec::new();
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                WsMessage::Binary(_) => seen.push("audio"),
+                WsMessage::Text(t) if t.as_str() == "end" => seen.push("end"),
+                WsMessage::Text(t) if t.as_str() == "cut_done" => break,
+                _ => {}
+            }
+        }
+        assert!(cut_at.elapsed() < Duration::from_millis(500), "the cut is at once: {:?}", cut_at.elapsed());
+        assert_eq!(seen.last(), Some(&"end"), "the frame queued before the cut still goes: {seen:?}");
+        let after = seen.iter().filter(|s| **s == "audio").count();
+        assert!(before + after < 10, "the rest of the reply is dropped: {} chunks", before + after);
+        let tail = tokio::time::timeout(Duration::from_millis(600), ws.next()).await;
+        assert!(tail.is_err(), "nothing of the cut reply follows: {tail:?}");
     }
 }

@@ -1415,6 +1415,8 @@
 			"openai": "OpenAI",
 			"google": "Google",
 			"openrouter": "OpenRouter",
+			"deepseek": "DeepSeek",
+			"xai": "xAI",
 			"openai_compatible": "OpenAI互換の任意のURL（Groq、Together、DeepSeek、xAI、Mistral…）",
 			"systemone_compatible": "SystemOne互換の任意のURL（判断モデル: Jev、Clef…）"
 		},
@@ -1438,7 +1440,6 @@
 		"addModelById": "idでモデルを追加",
 		"addModelByIdPlaceholder": "例: claude-opus-5",
 		"addModel": "モデルを追加",
-		"addModelHint": "能力は、既知のモデルファミリーに対するNeboのデフォルトから決まります。",
 		"editProvider": "プロバイダーを編集",
 		"nameHint": "会社用のキーと個人用のキーを区別しやすくするため、各キーに名前を付けてください。",
 		"baseUrlRequired": "ベースURLは必須です",
@@ -1467,12 +1468,15 @@
 			"sortNewest": "新しい順",
 			"sortPrice": "価格",
 			"showing": "{total}件中{shown}件を表示",
-			"price": "{input} / {output}（Mトークンあたり）",
 			"added": "追加済み",
 			"selected": "{count}件選択中",
 			"addN": "{count, plural, one {#個のモデルを追加} other {#個のモデルを追加}}",
 			"empty": "一致するモデルはありません。",
-			"loadFailed": "リストを読み込めませんでした。"
+			"loadFailed": "リストを読み込めませんでした。",
+			"retry": "再試行",
+			"errorKey": "{provider}に接続できません：キーを確認してください",
+			"errorBusy": "{provider}から待機を求められました。1分後に再試行してください。",
+			"errorUnreachable": "{provider}に接続できません。再試行してください。"
 		}
 	},
 	"onboardingImport": {
@@ -4019,7 +4023,6 @@
 		"botDefaultHint": "次のメッセージから適用されます。再起動は不要です。",
 		"defaultSaveFailed": "デフォルトを変更できませんでした。",
 		"badgeDefault": "デフォルト",
-		"badgeJanus": "Nebo AI経由",
 		"readOnly": "読み取り専用",
 		"colLevel": "レベル",
 		"colRunsOn": "動作先",
@@ -4047,7 +4050,6 @@
 		"decisionsNone": "Neboの組み込みの安全なデフォルト（判断モデルなし）",
 		"decisionsDefaultOption": "Nebo AI · Jev（デフォルト）",
 		"withEffort": "{effort}の労力",
-		"localNoJanus": "Nebo AI経由にはできません: そのモデルはこのコンピューター上で動作します。",
 		"removeConfirm": "{name} を削除しますか？まだ使用している社員はNebo AIで動作し、その旨が伝えられます。",
 		"loadFailed": "パックを読み込めませんでした。",
 		"saveFailed": "パックを保存できませんでした。",
@@ -4065,10 +4067,7 @@
 		"laneHelpers": "ヘルパー",
 		"laneBuild": "作成",
 		"laneWorkflow": "ワークフロー",
-		"laneByWork": "作業内容で選択",
-		"routeJanus": "Nebo AI経由にする",
-		"routeJanusHint": "Nebo AIは、料金を抑えるためにこのパックのモデル間で各ステップのレベルを選びます。あなたのキーは各リクエストとともに送られ、保存されることはありません。ルーティング料金: {fee}。",
-		"routeJanusLocal": "このコンピューター上のモデル（Ollama、Claude Code、Codex）は常に直接動作します。ボイスはルーティングされません。"
+		"laneByWork": "作業内容で選択"
 	},
 	"loginItemsBanner": {
 		"text": "Nebo はアプリが開いている間だけ動作します。終了後も動かし続けるには、ログイン項目で Nebo をオンにしてください。",
@@ -4350,6 +4349,55 @@
 		"taskReorder": "Lumenに40個を再注文しました",
 		"taskVideo": "火曜日の動画を投稿しました",
 		"taskInvoices": "請求書のリマインダーを3件送りました"
+	},
+	"ownKey": {
+		"signedOut": "自分の {provider} キーを使うには NeboAI にサインインしてください。",
+		"keyRejected": "{provider} の API キーが拒否されました。設定 > プロバイダー で確認してください。",
+		"keyUnusable": "{provider} の API キーではこのモデルを実行できません。設定 > プロバイダー でモデルを確認してください。",
+		"connectionSignIn": "このキーを使うには NeboAI にサインインしてください。自分のキーは NeboAI アカウントで動作します。"
+	},
+	"modelCard": {
+		"about": "{model} について",
+		"aboutNone": "モデルを選ぶと詳細が表示されます",
+		"level": "向いているレベル",
+		"reasons": "答える前に考える",
+		"yes": "はい",
+		"no": "いいえ",
+		"abilities": "できること",
+		"ability": {
+			"vision": "画像を見る",
+			"tools": "ツールを使う",
+			"reasoning": "推論する",
+			"audio": "音声を聞く"
+		},
+		"unknown": "不明",
+		"context": "コンテキスト",
+		"maxOutput": "最長の回答",
+		"tokens": "{count} トークン",
+		"speed": "速度",
+		"speedValue": {
+			"fastest": "最速",
+			"fast": "速い",
+			"standard": "標準",
+			"slow": "遅め"
+		},
+		"modelId": "モデル ID",
+		"pricing": "料金",
+		"noPrice": "料金の記載はありません。",
+		"ownKeyPrice": "1 リクエストあたり {fee}。モデル料金はプロバイダーから請求されます",
+		"providerBills": "モデル料金はプロバイダーから請求されます",
+		"per1m": "100 万トークンあたり 入力 {input} · 出力 {output}",
+		"input": "入力",
+		"output": "出力",
+		"cacheRead": "キャッシュ読み取り",
+		"cacheWrite": "キャッシュ書き込み",
+		"requestFee": "リクエスト料金",
+		"perMillion": "100 万トークンあたり {price}",
+		"perRequest": "1 リクエストあたり {price}",
+		"priceVersion": "{version} 時点の料金",
+		"fits": "{level}向け",
+		"bandUpTo": "{tokens}トークンまで",
+		"bandAbove": "{tokens}トークン超"
 	},
 	"verify": {
 		"badge": {

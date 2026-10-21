@@ -88,7 +88,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Nebo
 
-Nebo is **the operating system for AI employees** — it turns the user's computer into an AI workforce. Pre-built employees are hired from the NeboAI marketplace in one click and run locally with persistent memory, coordinating as a team. Never call it an "assistant" or "companion" — the frame is employees / workforce / hire ("pre-built," never "pre-trained"). It targets non-technical professionals (realtors, lawyers, consultants). Platform-agnostic: macOS, Windows, Linux.
+Nebo is **the operating system for AI employees** — it turns the user's computer into an AI workforce. Pre-built employees are hired from the NeboAI marketplace in one click and run locally with persistent memory, coordinating as a team. Never call it a "companion" — the frame is employees / workforce / hire ("assistant" is fine) ("pre-built," never "pre-trained"). It targets non-technical professionals (realtors, lawyers, consultants). Platform-agnostic: macOS, Windows, Linux.
 
 ## Tech Stack
 
@@ -224,6 +224,18 @@ Deep-dive reference docs live in `nebo-sme/` of the private NeboLoop/docs repo
 - `PLUGIN_SYSTEM.md` — plugin registry, verification, sandbox
 - `APPS.md` — app platform, capabilities, lifecycle
 - `RELEASE.md` — release pipeline and runners
+
+## Active PRDs
+
+Product plans in flight live in `nebo-prd/` of the private NeboLoop/docs repo
+(cloned at `~/workspaces/neboai/docs`). Read the PRD before working on its area:
+- `nebo-media-finishing-prd-2026-10-20.md` — Nebo Media: audio matching and voice finishing, speed and storage, effects, color, and the ranked "what else" list (Creator team appendix, later)
+- `meetings-plugin-prd-2026-10-20.md` — Meetings plugin: an employee joins Google Meet, Zoom and Teams (dial-in first), plus conference calls
+- `verified-loops-and-gates.md` — the Verified code loop
+- `intune-managed-app-prd-2026-10-21.md` - Nebo for Intune: Microsoft sign-in, a separate "for Intune" mobile app with the Intune App SDK, desktop MDM packages and managed settings
+- `financials-cost-coverage-prd-2026-10-21.md` - Every cost on Financials: every vendor that bills us, new cost feeds, bank rules, and a cost-against-billed alarm
+- `nebo-media-ad-pipeline-prd-2026-10-21.md` - Nebo Media pro parity, UGC and the ad pipeline: one cast with consent, owned voices, lip sync and talking heads, brief to delivery pack, disclosure
+- `nebo-media-studio-app-prd-2026-10-21.md` - Media Studio, the Nebo Media app you talk to: one chat per project, fast-scrubbing player with versions, pin and say, look-only timeline, cast panel, versions grid, export, and fast footage from the iPhone (proxy first, direct transfers with no inbound ports)
 
 ## Release
 

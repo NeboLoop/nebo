@@ -370,6 +370,33 @@ export interface BotNameResponse {
 	renameUrl: string
 }
 
+export interface CardAbilities {
+	vision: boolean
+	tools: boolean
+	reasoning: boolean
+	audio: boolean
+}
+
+export interface CardBand {
+	upToContext?: number
+	inputPer1m?: string
+	outputPer1m?: string
+	cacheReadPer1m?: string
+	cacheWritePer1m?: string
+}
+
+export interface CardPricing {
+	version: string
+	currency: string
+	inputPer1m?: string
+	outputPer1m?: string
+	cacheReadPer1m?: string
+	cacheWritePer1m?: string
+	requestFee?: string
+	providerBills: boolean
+	bands: CardBand[]
+}
+
 export interface CaseDetail {
 	case: CaseSummary
 	turns: CaseTurn[]
@@ -447,6 +474,7 @@ export interface CatalogModel {
 	pricing?: Pricing
 	created?: number
 	added: boolean
+	card?: ModelCard
 }
 
 export interface CellView {
@@ -549,6 +577,7 @@ export interface ConnectionModel {
 	capabilities: string[]
 	source: string
 	isActive: boolean
+	card?: ModelCard
 }
 
 export interface ConnectorTool {
@@ -1091,6 +1120,20 @@ export interface MessageResponse {
 	message: string
 }
 
+export interface ModelCard {
+	displayName: string
+	family: string
+	maker: string
+	description: string
+	tier: string
+	reasons: boolean
+	abilities: CardAbilities
+	contextWindow?: number
+	maxOutput?: number
+	speed: string
+	pricing?: CardPricing
+}
+
 export interface MoneyAmounts {
 	perActionCents?: number
 	perDayCents?: number
@@ -1190,7 +1233,6 @@ export interface Pack {
 	levels: PackLevels
 	fallback: boolean
 	builtIn: boolean
-	routeThroughJanus?: boolean
 	lanes?: PackLanes
 	levelEffort?: LevelEffort
 }
@@ -1449,6 +1491,7 @@ export interface ProviderModel {
 	modelKind: string
 	source: string
 	rank?: number
+	card?: string
 	createdAt: number
 	updatedAt: number
 }
@@ -1994,7 +2037,7 @@ export type Effort = 'instant' | 'low' | 'medium' | 'high' | 'max'
 
 export type Mode = 'automatic' | 'ask' | 'plan' | 'full_access'
 
-export type ProviderEffort = 'low' | 'medium' | 'high'
+export type ProviderEffort = 'low' | 'medium' | 'high' | 'max'
 
 export type RosterKind = 'employee' | 'team'
 
@@ -2060,6 +2103,7 @@ export interface BrowseConnectionCatalogResponse {
 	total: number
 	refreshedAt: number | null
 	models: CatalogModel[]
+	error: 'key' | 'rate_limited' | 'unreachable' | null
 }
 
 export interface BrowseResponse {
@@ -2651,6 +2695,7 @@ export interface ListProjectsResponse {
 
 export interface ListProvidersResponse {
 	profiles: AuthProfile[]
+	routes: Record<string, ConnectionRoute>
 }
 
 export interface ListRegistryResponse {
@@ -3441,6 +3486,11 @@ export interface CommanderNode {
 	parentId?: string
 }
 
+export interface ConnectionRoute {
+	via: 'janus' | 'direct'
+	signInRequired: boolean
+}
+
 export interface EnrichedChat {
 	id: string
 	name: string
@@ -3575,6 +3625,10 @@ export interface PackChoice {
 	name?: string
 	capabilities?: string[]
 	local: boolean
+	/** What the owner reads before picking it: what it is, what it is good for, its price. */
+	card?: ModelCard
+	/** One of the models Janus's catalog lists (not nebo-1 or a speed): chosen only by its full id. */
+	catalog?: boolean
 }
 
 export interface RunDisplayFact {

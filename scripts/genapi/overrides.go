@@ -29,6 +29,9 @@ var typeOverrides = map[string]string{
 	"pin_chat.pinnedAt":          "number | null",
 	"edit_team.team":        "Team",
 
+	// ── Providers: how a turn reaches each connection ──
+	"list_providers.routes": "Record<string, ConnectionRoute>",
+
 	// ── Active agents ──
 	"get_active_agents.agents": "ActiveAgent[]",
 
@@ -123,6 +126,7 @@ var typeOverrides = map[string]string{
 	"update_connection_model.model":         "ConnectionModel",
 	"browse_connection_catalog.models":      "CatalogModel[]",
 	"browse_connection_catalog.refreshedAt": "number | null",
+	"browse_connection_catalog.error":       "'key' | 'rate_limited' | 'unreachable' | null",
 
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
@@ -133,6 +137,11 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	// How a turn reaches a connection (handlers/provider.rs connection_route).
+	"ConnectionRoute": `export interface ConnectionRoute {
+	via: 'janus' | 'direct'
+	signInRequired: boolean
+}`,
 	// A file as it travels (comm::wire::Attachment), in an upload's status
 	// (handlers/uploads.rs UploadStatus).
 	"Attachment": `export interface Attachment {
@@ -310,6 +319,10 @@ export interface RunDisplay {
 	name?: string
 	capabilities?: string[]
 	local: boolean
+	/** What the owner reads before picking it: what it is, what it is good for, its price. */
+	card?: ModelCard
+	/** One of the models Janus's catalog lists (not nebo-1 or a speed): chosen only by its full id. */
+	catalog?: boolean
 }`,
 
 	"LinkedComputerEntry": `export interface LinkedComputerEntry {
