@@ -137,12 +137,14 @@ const callEndedMessage = () => get(t)('voice.callEndedStartAgain');
 
 /**
  * A call the server refused before it started, by the code it sent: the
- * pack's voice model can't take calls. Worded in the owner's language; the
- * server's English line is for clients without these words.
+ * pack's voice model can't take calls, or running work holds the balance.
+ * Worded in the owner's language; the server's English line is for clients
+ * without these words.
  */
 const REFUSALS: Record<string, string> = {
 	voice_model_unsupported: 'voice.voiceModelUnsupported',
-	voice_model_unreachable: 'voice.voiceModelUnreachable'
+	voice_model_unreachable: 'voice.voiceModelUnreachable',
+	balance_reserved: 'chat.balanceBusy'
 };
 const refusalMessage = (code: unknown) =>
 	typeof code === 'string' && REFUSALS[code] ? get(t)(REFUSALS[code]) : null;

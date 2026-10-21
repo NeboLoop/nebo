@@ -106,18 +106,35 @@ pub fn render_ask_outcome(ask_id: &str, sentence: &str, outcome: &AskOutcome<'_>
 }
 
 /// Write `text` into session `session_key` as a notification row: the
-/// session's next step loads it with the rest of its conversation.
+/// session's next step loads it with the rest of its conversation. A
+/// `quiet` row (a stopped helper's late report) is read with the rest of
+/// the conversation but never runs a turn of its own ([`is_quiet_row`]).
 pub fn append_row(
     sessions: &SessionManager,
     session_key: &str,
     text: &str,
     taint: &[types::provenance::ProvenanceClass],
+    quiet: bool,
 ) -> Result<(), String> {
     let id = sessions.resolve_session_id_by_key(session_key).map_err(|e| e.to_string())?;
+    let mut meta = row_metadata(taint);
+    if quiet && let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&meta) {
+        v["quiet"] = serde_json::json!(true);
+        meta = v.to_string();
+    }
     sessions
-        .append_message(&id, "user", text, None, None, Some(&row_metadata(taint)))
+        .append_message(&id, "user", text, None, None, Some(&meta))
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// A notification row that never runs a turn of its own ([`append_row`]).
+pub fn is_quiet_row(msg: &db::models::ChatMessage) -> bool {
+    msg.metadata
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("quiet").and_then(|b| b.as_bool()))
+        == Some(true)
 }
 
 /// The untrusted content a notification row carries.

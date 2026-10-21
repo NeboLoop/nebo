@@ -220,8 +220,8 @@ impl SubAgentOrchestrator for HelperDoor {
         Box::pin(async move { status })
     }
 
-    fn send(&self, task_id: &str, message: &str, answer: Option<&str>, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
-        let (task_id, message, answer) = (task_id.to_string(), message.to_string(), answer.map(str::to_string));
+    fn send(&self, task_id: &str, message: &str, answer: Option<tools::orchestrator::Answer>, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
+        let (task_id, message) = (task_id.to_string(), message.to_string());
         Box::pin(async move {
             let (task_id, message) = (task_id.as_str(), message.as_str());
             let turn = parent_turn(&parent);
@@ -232,7 +232,7 @@ impl SubAgentOrchestrator for HelperDoor {
                 .any(|h| h.task_id == task_id && h.running);
             let said = self
                 .helpers
-                .send(&turn, parent.seat.grant.as_deref(), &parent.seat.taint, task_id, message, answer.as_deref())
+                .send(&turn, parent.seat.grant.as_deref(), &parent.seat.taint, task_id, message, answer)
                 .await?;
             Ok(if running {
                 FollowUp::Delivered { task_id: task_id.to_string() }
@@ -390,7 +390,7 @@ mod tests {
         fn status(&self, _: &str, _: &str) -> Fut<'_, Result<String, String>> {
             Box::pin(async { Ok(String::new()) })
         }
-        fn send(&self, _: &str, _: &str, _: Option<&str>, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
+        fn send(&self, _: &str, _: &str, _: Option<tools::orchestrator::Answer>, parent: SpawnRequest) -> Fut<'_, Result<FollowUp, String>> {
             self.0.0.lock().unwrap().push(parent);
             Box::pin(async { Ok(FollowUp::Continued(done())) })
         }

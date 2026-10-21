@@ -346,6 +346,8 @@ impl RunToolScope<'_> {
             ask_channels: ask_channels.cloned(),
             parked: Default::default(),
             waiting: progress.map(|p| p.waiting.clone()).unwrap_or_default(),
+            // Given per call, when it takes its slot in the tool pool.
+            slot: None,
             channel: channel_ctx.cloned(),
             platform: platform.map(str::to_string),
             model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
@@ -701,7 +703,7 @@ pub(crate) async fn run_tool_round(
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
-        summary_tool_results.push(ToolResult { payload: None, need: None, question: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
+        summary_tool_results.push(ToolResult { payload: None, need: None, question: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None, more_files: Vec::new(),
@@ -1307,7 +1309,10 @@ async fn run_call(
         };
     }
 
-    let _permit = concurrency.acquire_tool_permit().await;
+    // The call's slot in the tool pool, held for the call; it is given back
+    // while the call waits out a held balance (`tools::Registry::execute`).
+    let slot = concurrency.acquire_tool_slot().await;
+    ctx.slot = Some(slot.clone());
     let input_str = ::types::redact::redact(&tc.input.to_string());
     // Inputs and results carry the owner's data (email bodies, documents):
     // the default log records that a tool ran, the content only at debug.

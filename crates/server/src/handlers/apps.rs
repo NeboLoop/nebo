@@ -1318,18 +1318,20 @@ pub async fn janus_decide(
 }
 
 /// The decision itself, once the app is admitted: 400 for a malformed
-/// request (ours or Janus's), 429 when nothing on the account can pay or
-/// decisions are throttled, 503 without NeboAI, 502 only when the service
+/// request (ours or Janus's), 429 when nothing on the account can pay,
+/// running work holds the balance, or decisions are throttled, 503 without NeboAI, 502 only when the service
 /// itself fails.
 async fn decide_for_app(client: Option<&ai::DecideClient>, app_id: &str, body: &serde_json::Value) -> Response {
     let trace = ai::RequestTrace { agent_id: app_id.to_string(), ..ai::RequestTrace::new("app_decide") };
-    match tools::decide_tool::decide(client, &trace, body).await {
+    match tools::decide_tool::decide(client, &trace, body, Some(&mut ai::ReservedWaits::default())).await {
         Ok(out) => axum::Json(out).into_response(),
         Err(e) => {
             let status = match e {
                 tools::decide_tool::DecideError::Invalid(_) => StatusCode::BAD_REQUEST,
                 tools::decide_tool::DecideError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-                tools::decide_tool::DecideError::Unfunded | tools::decide_tool::DecideError::Busy => {
+                tools::decide_tool::DecideError::Unfunded
+                | tools::decide_tool::DecideError::Busy
+                | tools::decide_tool::DecideError::Reserved(_) => {
                     StatusCode::TOO_MANY_REQUESTS
                 }
                 tools::decide_tool::DecideError::Failed(_) => StatusCode::BAD_GATEWAY,
@@ -1760,6 +1762,7 @@ async fn start_janus_stream(
         cancel_token: Some(CancellationToken::new()),
         trace: ai::RequestTrace::new("app_llm"),
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,
