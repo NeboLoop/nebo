@@ -65,6 +65,32 @@ pub(crate) fn note(kind: Kind, filename: &str, size: u64, body: &str) -> String 
     )
 }
 
+/// The one shape of every note in a stored message — the desktop's stripper,
+/// verbatim (`ATTACHMENT_NOTE_RE` in app/src/lib/types/attachment.ts; mobile
+/// mirrors it in `chat_parse.dart`). If this constant and that regex ever
+/// disagree, a note shows up raw in a bubble. The third alternative matches
+/// notes stored before this module existed.
+const NOTE_RE: &str = r"\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]";
+
+/// `text` with each attachment note cut to what it names: the kind, the
+/// file and its size ("[Attached: deck.pdf (3.1 MB)]"). The path, the
+/// instructions and any transcript the note carries are left out. What a
+/// voice call is given of a message: the owner's own words, and a short
+/// reference to each file, never the file.
+pub(crate) fn references(text: &str) -> String {
+    static NOTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(NOTE_RE).unwrap());
+    NOTE.replace_all(text, |m: &regex::Captures| {
+        let note = &m[0];
+        let open = note.find('[').unwrap_or(0);
+        if note[open..].starts_with("[The audio file") {
+            return String::new();
+        }
+        let named = note.find(" — ").unwrap_or(note.len() - 1);
+        format!("{}]", &note[..named])
+    })
+    .into_owned()
+}
+
 /// The note carrying a sound's transcript. The transcript rides INSIDE the
 /// note, so the model reads it on this turn and every later one while the
 /// clients strip it with the rest of the note — after the note it showed in
@@ -164,12 +190,6 @@ pub(crate) fn announce(
 mod tests {
     use super::*;
 
-    /// The desktop's stripper, verbatim — `ATTACHMENT_NOTE_RE` in
-    /// app/src/lib/types/attachment.ts; mobile mirrors it in `chat_parse.dart`. If this
-    /// constant and that regex ever disagree, a note shows up raw in a bubble.
-    /// The third alternative matches notes stored before this module existed.
-    const NOTE_RE: &str = r"\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]";
-
     /// Every note this constructor can emit is strippable by the one reader —
     /// including one whose filename and body carry a `]` of their own.
     #[test]
@@ -202,6 +222,23 @@ mod tests {
         );
         assert!(stored.contains("I feel a friend in you\nBecause you're mine"), "model must read the transcript: {stored}");
         assert_eq!(re.replace_all(&stored, "").trim(), "what can we do with this?");
+    }
+
+    /// A message's notes are cut to the file each names: a transcript, a
+    /// path and the instructions to the employee are never kept.
+    #[test]
+    fn references_keep_only_what_each_note_names() {
+        let stored = format!(
+            "read my post{}{}{}",
+            note(Kind::File, "manual.pdf", 52_000_000, "saved at /tmp/u/manual.pdf. Its contents are not included above"),
+            note(Kind::File, "photo.jpg", 1_300_000, "an image, shown above — saved at /tmp/u/photo.jpg"),
+            transcript("memo.m4a", 30_000, "every word of the memo"),
+        );
+        assert_eq!(
+            references(&stored),
+            "read my post\n[Attached: manual.pdf (49.6 MB)]\n[Attached: photo.jpg (1.2 MB)]\n[Audio: memo.m4a (29 KB)]"
+        );
+        assert_eq!(references("no files here"), "no files here");
     }
 
     /// Sizes read the way they always did: KB under a megabyte, MB above.

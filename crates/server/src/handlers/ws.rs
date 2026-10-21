@@ -1794,6 +1794,11 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         let names = attachments.iter().map(|a| a.filename.clone()).collect();
         super::voice::shared_on_call(&state.live_calls, &session_key, names);
     }
+    // What the owner types while on a call in this conversation: the call
+    // holds it whole, as he wrote it.
+    if !hidden {
+        super::voice::typed_on_call(&state.live_calls, &session_key, &prompt);
+    }
 
     // `/goal`: set, show or clear the agreed goal. Setting one starts work
     // on it now: its kickoff runs as a hidden prompt through the same path as
