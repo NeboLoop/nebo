@@ -1980,7 +1980,7 @@ impl Kind {
             Kind::BrowserNewTab => "Opens a URL in a new browser tab.\n\
                 - Only when you need two pages at once; browser_open changes the current tab."
                 .to_string(),
-            Kind::BrowserCloseTab => "Closes a browser tab: the one `tab_id` names (from browser_list_tabs), or this conversation's tab.\n\
+            Kind::BrowserCloseTab => "Closes this conversation's tab, or one `tab_id` names that you opened with browser_new_tab. The owner's own tabs never close.\n\
                 - Close tabs you opened once you're done with them."
                 .to_string(),
             Kind::BrowserLeaveOpen => "Leaves this conversation's tab open in the owner's Chrome for him to finish, such as a form waiting for his approval or payment. Every other tab you open closes when the work ends.\n\
@@ -2137,7 +2137,7 @@ impl Kind {
             Kind::BrowserCloseTab => json!({
                 "type": "object",
                 "properties": {
-                    "tab_id": {"type": "integer", "description": "The tab to close, from browser_list_tabs. Default: this conversation's tab."}
+                    "tab_id": {"type": "integer", "description": "A tab you opened with browser_new_tab. Default: this conversation's tab."}
                 }
             }),
             Kind::BrowserLeaveOpen => json!({
