@@ -180,7 +180,7 @@ impl Research {
             })
         });
         let req = SpawnRequest {
-            description: format!("research: {}", short_question(&query)),
+            description: format!("research: {}", crate::humanize::cap_words(&query, crate::humanize::DESCRIPTION_CAP)),
             prompt: query,
             wait: false,
             ..SpawnRequest::child_of(ctx)
@@ -190,15 +190,6 @@ impl Research {
             Ok(r) => ToolResult::ok(r.output).with_payload(json!({ "kind": "research_run", "task_id": r.task_id })),
             Err(e) => ToolResult::error(format!("Couldn't start the research: {e}")),
         }
-    }
-}
-
-/// A question cut for the owner's activity line.
-fn short_question(q: &str) -> String {
-    if q.chars().count() > 60 {
-        format!("{}…", q.chars().take(60).collect::<String>())
-    } else {
-        q.to_string()
     }
 }
 

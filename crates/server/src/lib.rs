@@ -630,30 +630,73 @@ pub(crate) fn janus_api_key(store: Arc<db::Store>) -> ai::ApiKey {
 /// honors the rotated-token cache), so a rotation or a login after boot needs
 /// no rebuild. Janus rejects a bare bot id as a bearer.
 /// A helper's progress on the owner's screen: `subagent_start`,
-/// `subagent_progress` and `subagent_complete`, addressed to the session
-/// that started it. Never text in anyone's conversation.
+/// `subagent_progress` and `subagent_complete`, each with the helper's
+/// `title`, and `subagent_titles` when a helper starting or ending retitles
+/// its siblings (`titles`: [{task_id, title}]), addressed to the session
+/// that started them. Never text in anyone's conversation.
 fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delegation::HelperEvent) {
-    let name = match ev.event.event_type {
-        ai::StreamEventType::SubagentStart => "subagent_start",
-        ai::StreamEventType::SubagentProgress => "subagent_progress",
-        ai::StreamEventType::SubagentComplete => "subagent_complete",
-        _ => return,
-    };
+    if let Some((name, payload)) = helper_message(ev) {
+        hub.broadcast(name, payload);
+    }
+}
+
+/// The app's message for a helper event: its name and payload.
+fn helper_message(ev: agent::harness::delegation::HelperEvent) -> Option<(&'static str, serde_json::Value)> {
+    use agent::harness::delegation::HelperUpdate;
     let mut payload = serde_json::json!({
         "session_id": ev.parent_session_key,
         "agentId": types::keyparser::extract_agent_id(&ev.parent_session_key),
     });
-    for (k, v) in ev.event.widgets.iter().flat_map(|w| w.as_object()).flatten() {
+    let event = match ev.update {
+        HelperUpdate::Titles(titles) => {
+            payload["titles"] = titles.into_iter().map(|(task_id, title)| serde_json::json!({ "task_id": task_id, "title": title })).collect();
+            return Some(("subagent_titles", payload));
+        }
+        HelperUpdate::Step(event) => event,
+    };
+    let name = match event.event_type {
+        ai::StreamEventType::SubagentStart => "subagent_start",
+        ai::StreamEventType::SubagentProgress => "subagent_progress",
+        ai::StreamEventType::SubagentComplete => "subagent_complete",
+        _ => return None,
+    };
+    for (k, v) in event.widgets.iter().flat_map(|w| w.as_object()).flatten() {
         payload[k] = v.clone();
     }
     // A research run's panel snapshot: the app's research card, found by
     // the run's task id.
-    if let Some(snapshot) = ev.event.payload.as_ref().filter(|p| p["kind"] == "research_progress") {
+    if let Some(snapshot) = event.payload.as_ref().filter(|p| p["kind"] == "research_progress") {
         payload["data"] = snapshot.clone();
-        hub.broadcast("research_progress", payload);
-        return;
+        return Some(("research_progress", payload));
     }
-    hub.broadcast(name, payload);
+    Some((name, payload))
+}
+
+#[cfg(test)]
+mod helper_message_tests {
+    use super::helper_message;
+    use agent::harness::delegation::{HelperEvent, HelperUpdate};
+
+    /// A start carries the title the helper registry gave it; a titles
+    /// event retitles every listed sibling at once, under the session that
+    /// started them; anything else a helper emits is no message.
+    #[test]
+    fn helper_events_carry_their_titles() {
+        let mut start = ai::StreamEvent::subagent_start("h-1", "research: rents");
+        start.widgets.as_mut().unwrap()["title"] = "research: …Phoenix rents?".into();
+        let ev = |update| HelperEvent { parent_session_key: "agent:analyst:web".into(), update };
+        let (name, payload) = helper_message(ev(HelperUpdate::Step(start))).unwrap();
+        assert_eq!((name, payload["title"].as_str(), payload["task_id"].as_str()), ("subagent_start", Some("research: …Phoenix rents?"), Some("h-1")));
+        assert_eq!(payload["agentId"], "analyst");
+
+        let titles = vec![("h-1".to_string(), "research: …Phoenix rents?".to_string()), ("h-2".to_string(), "research: …Tucson rents?".to_string())];
+        let (name, payload) = helper_message(ev(HelperUpdate::Titles(titles))).unwrap();
+        assert_eq!(name, "subagent_titles");
+        assert_eq!(payload["session_id"], "agent:analyst:web");
+        assert_eq!(payload["titles"], serde_json::json!([{"task_id": "h-1", "title": "research: …Phoenix rents?"}, {"task_id": "h-2", "title": "research: …Tucson rents?"}]));
+
+        assert!(helper_message(ev(HelperUpdate::Step(ai::StreamEvent::text("x")))).is_none());
+    }
 }
 
 /// The decide client. Each call's decisions follow the intelligence pack of

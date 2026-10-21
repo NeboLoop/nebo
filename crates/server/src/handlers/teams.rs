@@ -416,7 +416,7 @@ async fn working(state: &AppState, team: &db::Team, project: Option<&db::Project
                 "kind": "helper",
                 "agentId": member_id,
                 "member": name,
-                "title": helper.description,
+                "title": helper.title,
                 "taskId": helper.task_id,
                 "call": helper.call,
                 "activity": helper.activity,

@@ -7,6 +7,7 @@
 import type { TeamWorkEntry } from '$lib/api/neboComponents';
 import { endsRun } from '$lib/chat/runEnd';
 import { isCallName, type CallName } from '$lib/chat/callLabel';
+import { titlesOf } from '$lib/chat/helpers';
 import { projectKey, teamKey } from '$lib/chat/sessionKey';
 
 export type WorkEntry = TeamWorkEntry;
@@ -38,7 +39,8 @@ interface EventData {
 	session_id?: unknown;
 	call?: unknown;
 	task_id?: unknown;
-	description?: unknown;
+	title?: unknown;
+	titles?: unknown;
 	current_operation?: unknown;
 	teamId?: unknown;
 	projectId?: unknown;
@@ -124,9 +126,11 @@ export function applyWorkEvent(
 			// A step is a call; background work says its own line.
 			const call = type === 'subagent_progress' ? callOf(data.call) : null;
 			const activity = type === 'subagent_progress' ? text(data.current_operation) : '';
+			// Every start and step carries its title as it stands.
+			const title = text(data.title);
 			if (known) {
 				const moved = call ? { call, activity: '' } : activity ? { call: null, activity } : {};
-				return list.map((e) => (e === known ? { ...e, ...moved } : e));
+				return list.map((e) => (e === known ? { ...e, ...moved, ...(title ? { title } : {}) } : e));
 			}
 			return [
 				...list,
@@ -134,7 +138,7 @@ export function applyWorkEvent(
 					kind: 'helper',
 					agentId,
 					member: nameOf(agentId),
-					title: text(data.description) || nameOf(agentId),
+					title: title || nameOf(agentId),
 					taskId,
 					call,
 					activity,
@@ -146,6 +150,12 @@ export function applyWorkEvent(
 		case 'subagent_complete': {
 			const taskId = text(data.task_id);
 			return taskId ? without((e) => !(e.kind === 'helper' && e.taskId === taskId)) : list;
+		}
+		case 'subagent_titles': {
+			// A member's helpers retitled at once as one started or ended.
+			if (!seatMember(data.session_id, thread)) return list;
+			const titles = titlesOf(data);
+			return list.map((e) => (e.kind === 'helper' && titles.has(e.taskId) ? { ...e, title: titles.get(e.taskId)! } : e));
 		}
 		case 'agent_progress': {
 			// The periodic snapshot of every running turn: a member's seat
@@ -180,5 +190,6 @@ export const WORK_EVENTS = [
 	'subagent_start',
 	'subagent_progress',
 	'subagent_complete',
+	'subagent_titles',
 	'agent_progress',
 ] as const;
