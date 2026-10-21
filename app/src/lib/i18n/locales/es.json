@@ -4430,17 +4430,17 @@
 				"other": "Paso"
 			},
 			"time": "{seconds} s",
-			"lenses": "Revisores: {lenses}",
 			"findings": "Encontrado: {blockers} bloqueantes, {majors} importantes, {minors} menores",
 			"fixed": "Corregido desde la ronda anterior: {count}",
 			"held": "Comprobado y correcto",
-			"checks": "Pruebas:",
-			"noChecks": "No se pudo ejecutar ninguna compilación ni prueba."
+			"noChecks": "No se pudo ejecutar ninguna compilación ni prueba.",
+			"since": "Cambios desde la última ronda",
+			"reviewers": "Revisores",
+			"projectChecks": "Las pruebas propias del proyecto"
 		},
 		"rounds": {
 			"heading": "Revisiones de código"
 		},
-		"total": "Costo de los revisores: {cost}",
 		"severity": {
 			"blocker": "Bloqueante",
 			"major": "Importante",
@@ -4501,6 +4501,41 @@
 			"helper": "Está en la copia de su ayudante hasta que la conversación que lo inició lo integre.",
 			"folder": "Se hizo en el mismo lugar, en la carpeta en la que se trabajó.",
 			"nothing": "No había nada que integrar."
+		},
+		"line": {
+			"round": "ronda {n}",
+			"issuesLeft": "{count, plural, one {queda # problema} other {quedan # problemas}}"
+		},
+		"phase": {
+			"working": "Escribiendo el cambio. La revisión empieza cuando termine.",
+			"checks": "Ejecutando las pruebas propias del proyecto.",
+			"reviewers": "Los revisores están leyendo el cambio.",
+			"fixing": "Corrigiendo lo que encontraron los revisores. La siguiente ronda revisa las correcciones.",
+			"landing": "Integrando el cambio en el proyecto.",
+			"live": "Comprobándolo en vivo."
+		},
+		"sheet": {
+			"elapsed": "{project} · {time} hasta ahora",
+			"took": "{project} · tardó {time}",
+			"changed": "Qué se está revisando",
+			"files": "{count, plural, one {# archivo} other {# archivos}} en {project}",
+			"open": "Aún abiertos"
+		},
+		"reviewer": {
+			"waiting": "espera las pruebas",
+			"running": "leyendo ahora",
+			"clean": "sin problemas",
+			"found": "{count, plural, one {encontró # problema} other {encontró # problemas}}",
+			"failed": "no pudo terminar"
+		},
+		"check": {
+			"waiting": "en espera",
+			"running": "en curso",
+			"passed": "pasó",
+			"failed": "falló"
+		},
+		"time": {
+			"minutes": "{m} min {s} s"
 		}
 	}
 }

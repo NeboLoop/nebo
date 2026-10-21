@@ -37,6 +37,52 @@ pub struct Badge {
     /// copy, landed by the conversation that started it), `folder` (made in
     /// place: a coding agent's own folder) or `nothing` (nothing to land).
     pub place: String,
+    /// What the loop is doing now: `working` (the change is still being
+    /// written), `checks` (the project's own checks run), `reviewers` (the
+    /// reviewers read it), `fixing` (the builder fixes what they found),
+    /// `landing` (catching up and landing), `live` (checking it live),
+    /// `waiting` (on the owner) or `done`.
+    pub phase: String,
+    /// The review round it is on, or last had (0 before the first).
+    pub round: usize,
+    /// The project, by the name the owner knows it: an app's name, else
+    /// its folder's.
+    pub project: String,
+}
+
+/// How one file changed, as the app shows it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileView {
+    pub path: String,
+    /// `added` | `modified` | `deleted` | `renamed`
+    pub status: String,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// One reviewer of a round, as the app shows it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewerView {
+    pub lens: String,
+    /// `waiting` (the checks run first) | `running` | `clean` | `found` |
+    /// `failed` (it could not finish)
+    pub state: String,
+    /// What it found so far.
+    pub findings: usize,
+}
+
+/// One of the project's own checks in a round, as the app shows it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckView {
+    pub label: String,
+    /// `waiting` | `running` | `passed` | `failed`
+    pub state: String,
+    pub duration_ms: u64,
+    /// The last lines of its output, when it failed.
+    pub tail: String,
 }
 
 /// One step of a verification's history, as the app shows it.
@@ -47,8 +93,13 @@ pub struct RoundView {
     pub round: db::VerificationRound,
     /// What the step came to: a code the app words.
     pub result: Option<types::Why>,
-    /// What its reviewers cost, from the run ledger (microcents).
-    pub cost_microcents: i64,
+    /// What this step reviewed: the whole change in round 1, what changed
+    /// since the last round after it.
+    pub files: Vec<FileView>,
+    /// Each reviewer, with its state and what it found so far.
+    pub reviewers: Vec<ReviewerView>,
+    /// Each of the project's own checks, with its state.
+    pub check_runs: Vec<CheckView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,8 +112,8 @@ pub struct VerificationView {
     pub badge: Badge,
     /// Every step of its history, in order.
     pub history: Vec<RoundView>,
-    /// What every reviewer cost, from the run ledger (microcents).
-    pub cost_microcents: i64,
+    /// The whole change being checked, file by file.
+    pub changed: Vec<FileView>,
 }
 
 #[derive(Debug, Deserialize)]

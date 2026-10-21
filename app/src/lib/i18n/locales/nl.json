@@ -4430,17 +4430,17 @@
 				"other": "Stap"
 			},
 			"time": "{seconds} s",
-			"lenses": "Reviewers: {lenses}",
 			"findings": "Gevonden: {blockers} blokkerend, {majors} groot, {minors} klein",
 			"fixed": "Opgelost sinds de vorige ronde: {count}",
 			"held": "Gecontroleerd en in orde",
-			"checks": "Controles:",
-			"noChecks": "Er kon geen build of test draaien."
+			"noChecks": "Er kon geen build of test draaien.",
+			"since": "Veranderd sinds de vorige ronde",
+			"reviewers": "Reviewers",
+			"projectChecks": "De eigen controles van het project"
 		},
 		"rounds": {
 			"heading": "Codecontroles"
 		},
-		"total": "Kosten van de reviewers: {cost}",
 		"severity": {
 			"blocker": "Blokkerend",
 			"major": "Groot",
@@ -4501,6 +4501,41 @@
 			"helper": "Ze staat in de kopie van haar helper tot het gesprek dat hem startte haar doorvoert.",
 			"folder": "Ze is ter plekke gemaakt, in de map waaraan gewerkt werd.",
 			"nothing": "Er was niets door te voeren."
+		},
+		"line": {
+			"round": "ronde {n}",
+			"issuesLeft": "{count, plural, one {nog # probleem} other {nog # problemen}}"
+		},
+		"phase": {
+			"working": "De wijziging wordt geschreven. De controle begint als die klaar is.",
+			"checks": "De eigen controles van het project draaien.",
+			"reviewers": "Reviewers lezen de wijziging.",
+			"fixing": "Wat de reviewers vonden, wordt opgelost. De volgende ronde controleert de oplossingen.",
+			"landing": "De wijziging gaat het project in.",
+			"live": "Wordt live gecontroleerd."
+		},
+		"sheet": {
+			"elapsed": "{project} · tot nu toe {time}",
+			"took": "{project} · duurde {time}",
+			"changed": "Wat er gecontroleerd wordt",
+			"files": "{count, plural, one {# bestand} other {# bestanden}} in {project}",
+			"open": "Nog open"
+		},
+		"reviewer": {
+			"waiting": "wacht op de controles",
+			"running": "leest nu",
+			"clean": "geen problemen",
+			"found": "{count, plural, one {vond # probleem} other {vond # problemen}}",
+			"failed": "kon niet afronden"
+		},
+		"check": {
+			"waiting": "wacht",
+			"running": "draait nu",
+			"passed": "geslaagd",
+			"failed": "mislukt"
+		},
+		"time": {
+			"minutes": "{m} min {s} s"
 		}
 	}
 }

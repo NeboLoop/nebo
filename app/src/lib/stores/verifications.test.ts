@@ -21,8 +21,10 @@ vi.mock("$lib/api/nebo", () => ({
 
 import {
   badgeWords,
-  cost,
+  duration,
+  elapsed,
   inProgress,
+  lineWords,
   onMessage,
   trackConversation,
   verifications,
@@ -45,8 +47,12 @@ function view(
     sessionKey: "agent:dev:web",
     messageId: "m-1",
     history: [],
-    costMicrocents: 0,
+    changed: [],
+    createdAt: 100,
     badge: {
+      phase: "done",
+      round: 2,
+      project: "shop",
       state: "verified",
       reviewers: 3,
       lenses: ["correctness", "billing"],
@@ -152,9 +158,21 @@ describe("the badge", () => {
     );
   });
 
-  it("reads a cost in dollars", () => {
-    expect(cost(0)).toBe("$0");
-    expect(cost(50_000)).toBe("<$0.01");
-    expect(cost(123_000_000)).toBe("$1.23");
+  it("is one line: the round while it is checked, then how it ended", () => {
+    expect(lineWords(view({ state: "checking" }), tr)).toBe("verify.badge.checking · verify.line.round(n=2)");
+    expect(lineWords(view({ state: "checking", round: 0 }), tr)).toBe("verify.badge.checking");
+    expect(lineWords(view({}), tr)).toBe("verify.badge.verified");
+    expect(lineWords(view({ state: "waiting" }), tr)).toBe("verify.badge.waiting");
+    expect(lineWords(view({ state: "not_verified", openBlockers: 1, openMinors: 1 }), tr)).toBe(
+      "verify.line.issuesLeft(count=2)",
+    );
+    expect(lineWords(view({ state: "not_verified" }), tr)).toBe("verify.badge.notVerified");
+  });
+
+  it("says how long it has taken, ticking while it runs", () => {
+    expect(elapsed(view({}, { finishedAt: 250 }), 999)).toBe(150);
+    expect(elapsed(view({ state: "checking" }), 160)).toBe(60);
+    expect(duration(8, tr)).toBe("verify.round.time(seconds=8)");
+    expect(duration(125, tr)).toBe("verify.time.minutes(m=2,s=5)");
   });
 });

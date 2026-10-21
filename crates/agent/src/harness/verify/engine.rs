@@ -575,6 +575,12 @@ impl VerifyCheck {
         RoundEnd::Finished
     }
 
+    /// Write a round's record as it stands and tell the apps.
+    fn record_round(&self, row: &db::VerificationRound) {
+        let _ = self.store().put_verification_round(row);
+        self.harness.verification_changed(&row.verification_id);
+    }
+
     /// Finish a verification: its state and why written (a code the apps
     /// word), its copy kept or landed as the caller left it.
     fn finish(&self, v: &db::Verification, state: &str, why: Option<Why>) {
@@ -831,21 +837,29 @@ impl VerifyCheck {
             started_at: started,
             ..Default::default()
         };
-        let _ = store.put_verification_round(&row);
-
         // The plain-code step: the project's own build and tests, within
-        // the build folders' disk cap.
+        // the build folders' disk cap. The round's record says, as it goes,
+        // which checks it runs and what each came to, then each reviewer's
+        // result as it arrives: the owner watches the round, not a spinner.
         super::work::cap_builds();
         let checks = checks::detect(&work.work_dir, &whole.paths());
+        row.detail = json!({
+            "whole": whole.stat(),
+            "checksPlanned": checks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+        });
+        self.record_round(&row);
         let mut ctx = self.tool_ctx();
         ctx.cwd = Some(work.work_dir.to_string_lossy().into_owned());
-        let runs = checks::run(
-            &self.harness.tools,
-            &ctx,
-            &checks,
-            &checks::build_cache(&work.project_root),
-        )
-        .await;
+        let build = checks::build_cache(&work.project_root);
+        let mut runs: Vec<CheckRun> = Vec::with_capacity(checks.len());
+        for check in &checks {
+            runs.extend(checks::run(&self.harness.tools, &ctx, std::slice::from_ref(check), &build).await);
+            row.checks = json!(runs);
+            self.record_round(&row);
+            if self.cancel.is_cancelled() {
+                break;
+            }
+        }
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
         }
@@ -887,8 +901,29 @@ impl VerifyCheck {
             check_files: &review::check_files(&reviewed.paths()),
             rules: &rules,
         };
+        let mut reviewers = serde_json::Map::new();
+        for lens in lenses {
+            reviewers.insert(lens.as_str().into(), json!("running"));
+        }
+        row.detail["reviewers"] = json!(reviewers);
+        self.record_round(&row);
+        let live = Mutex::new(row.clone());
+        let heard = |r: &LensReview| {
+            let mut live = live.lock().unwrap_or_else(|p| p.into_inner());
+            let state = match &r.review {
+                Ok(review) => {
+                    append(&mut live.findings, json!(review.findings));
+                    append(&mut live.verified_ok, json!(review.verified_ok));
+                    if review.findings.is_empty() { "clean" } else { "found" }
+                }
+                Err(_) => "failed",
+            };
+            live.detail["reviewers"][r.lens.as_str()] = json!(state);
+            self.record_round(&live);
+        };
         let reviews: Vec<LensReview> =
-            review::run_round(&self.helpers, &self.parent(), &input).await;
+            review::run_round(&self.helpers, &self.parent(), &input, &heard).await;
+        row = live.into_inner().unwrap_or_else(|p| p.into_inner());
         let _ = std::fs::remove_dir_all(&review_dir);
         if self.cancel.is_cancelled() {
             return self.stopped(v, &mut row);
@@ -978,8 +1013,14 @@ impl VerifyCheck {
         row.prior = json!(priors);
         row.checks = json!(runs);
         row.fixed = json!(fixed);
-        row.detail =
-            json!({ "openBlocking": progress_count, "nested": nested, "failedReviewers": failed, "rulesHash": rules_hash(&rules) });
+        for (key, value) in [
+            ("openBlocking", json!(progress_count)),
+            ("nested", json!(nested)),
+            ("failedReviewers", json!(failed)),
+            ("rulesHash", json!(rules_hash(&rules))),
+        ] {
+            row.detail[key] = value;
+        }
         row.outcome = if !failed.is_empty() {
             Why::new("review_incomplete")
         } else if blocking_now == 0 {
@@ -1588,6 +1629,13 @@ impl VerifyCheck {
 
 /// The rules a review read, as a hash kept on its step: a review is skipped
 /// on unchanged work only under the same rules.
+/// `items` (a JSON array) added to the end of the array `into`.
+fn append(into: &mut serde_json::Value, items: serde_json::Value) {
+    let mut all = into.as_array().cloned().unwrap_or_default();
+    all.extend(items.as_array().cloned().unwrap_or_default());
+    *into = serde_json::Value::Array(all);
+}
+
 fn rules_hash(rules: &str) -> String {
     format!("{:016x}", tools::checkpoint::fingerprint(rules.as_bytes()))
 }

@@ -1,43 +1,111 @@
 <!--
-  VerifiedBadge — the badge on code work: Verified, Not verified, Checking or
-  Waiting on you, with the one sentence that says what the record holds
-  (never more). Opening it shows every round of its history.
+  VerifiedBadge — code work in the conversation: one line, the size of a tool
+  row ("Checking · round 2 ›", then "Verified ›" or "2 issues left ›"). While
+  it is checked it sits on the status line above the composer, beside the
+  running tasks (`statusLine`); finished, on the reply that reported it. Its
+  detail lives in the sheet it opens: what is being checked, what the loop is
+  doing now, every round with each reviewer and each of the project's checks
+  as they go, how long it has taken, and how it ended.
 -->
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import type { VerificationView } from '$lib/api/neboComponents';
-  import { badgeWords } from '$lib/stores/verifications';
+  import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
+  import { badgeWords, duration, elapsed, lineWords, phaseWords, whyWords, type Why } from '$lib/stores/verifications';
   import VerificationHistory from './VerificationHistory.svelte';
 
-  let { verification }: { verification: VerificationView } = $props();
+  let { verification, statusLine = false }: { verification: VerificationView; statusLine?: boolean } = $props();
 
   let open = $state(false);
+  let now = $state(Math.floor(Date.now() / 1000));
+  const live = $derived(verification.badge.state === 'checking' || verification.badge.state === 'waiting');
   const words = $derived(badgeWords(verification, $t));
-  const detailId = $derived(`verify-detail-${verification.id}`);
+  const line = $derived(lineWords(verification, $t));
+  const phase = $derived(phaseWords(verification, $t));
+  const took = $derived(duration(elapsed(verification, now), $t));
+
+  type Finding = { id: string; severity: string; title: string; evidence: string };
+  const stillOpen = $derived(
+    verification.badge.state === 'verified' ? [] : (Array.isArray(verification.open) ? (verification.open as Finding[]) : []),
+  );
+  const added = $derived(verification.changed.reduce((n, f) => n + f.added, 0));
+  const removed = $derived(verification.changed.reduce((n, f) => n + f.removed, 0));
+
+  // The time so far ticks while the sheet is open on work still going.
+  let tick: ReturnType<typeof setInterval> | null = null;
+  $effect(() => {
+    if (open && live && !tick) {
+      now = Math.floor(Date.now() / 1000);
+      tick = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
+    }
+    if ((!open || !live) && tick) {
+      clearInterval(tick);
+      tick = null;
+    }
+  });
+  onDestroy(() => tick && clearInterval(tick));
 </script>
 
-<div class="verify-badge-wrap">
-  <button
-    type="button"
-    class="verify-badge verify-badge-{verification.badge.state}"
-    title={words.detail}
-    aria-expanded={open}
-    aria-controls={detailId}
-    onclick={() => (open = !open)}
-  >
-    {#if verification.badge.state === 'verified'}
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
-    {:else if verification.badge.state === 'not_verified'}
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    {:else}
-      <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>
+<button
+  type="button"
+  class={statusLine ? 'bg-status-tasks verify-line-status' : `verify-line verify-line-${verification.badge.state}`}
+  aria-haspopup="dialog"
+  title={$t('verify.badge.openHint')}
+  onclick={() => {
+    now = Math.floor(Date.now() / 1000);
+    open = true;
+  }}
+>
+  <span class="verify-line-text {live ? 'activity-live' : ''}">{line}</span>
+  <span class="verify-line-chevron">&rsaquo;</span>
+</button>
+
+<ShelfModal
+  {open}
+  title={words.label}
+  subtitle={$t(live ? 'verify.sheet.elapsed' : 'verify.sheet.took', { values: { project: verification.badge.project, time: took } })}
+  onclose={() => (open = false)}
+>
+  <div class="verify-sheet">
+    {#if phase}<p class="verify-sheet-phase">{phase}</p>{/if}
+    <p class="verify-badge-sentence">{words.detail}</p>
+    {#if verification.badge.landed}
+      <p class="verify-sheet-outcome">{whyWords({ code: 'landed', args: { commit: verification.badge.landed.slice(0, 10) } } as Why, $t)}</p>
     {/if}
-    <span>{words.label}</span>
-  </button>
-  {#if open}
-    <div class="verify-badge-detail" id={detailId}>
-      <p class="verify-badge-sentence">{words.detail}</p>
-      <VerificationHistory {verification} />
-    </div>
-  {/if}
-</div>
+
+    {#if verification.changed.length}
+      <section class="verify-sheet-section">
+        <h3 class="verify-sheet-heading">{$t('verify.sheet.changed')}</h3>
+        <div class="verify-sheet-sub">
+          {$t('verify.sheet.files', { values: { count: verification.changed.length, project: verification.badge.project } })}
+          <span class="verify-file-added">+{added}</span> <span class="verify-file-removed">−{removed}</span>
+        </div>
+        <ul class="verify-files">
+          {#each verification.changed as f (f.path)}
+            <li class="verify-file">
+              <span class="verify-file-path">{f.path}</span>
+              <span class="verify-file-added">+{f.added}</span>
+              <span class="verify-file-removed">−{f.removed}</span>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    <VerificationHistory {verification} />
+
+    {#if stillOpen.length}
+      <section class="verify-sheet-section">
+        <h3 class="verify-sheet-heading">{$t('verify.sheet.open')}</h3>
+        {#each stillOpen as f (f.id)}
+          <div class="verify-finding verify-finding-{f.severity}">
+            <span class="verify-finding-severity">{$t(['blocker', 'major', 'minor'].includes(f.severity) ? `verify.severity.${f.severity}` : 'verify.severity.other')}</span>
+            <span class="verify-finding-title">{f.title}</span>
+            {#if f.evidence?.trim()}<span class="verify-finding-where">{f.evidence}</span>{/if}
+          </div>
+        {/each}
+      </section>
+    {/if}
+  </div>
+</ShelfModal>

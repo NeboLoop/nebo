@@ -310,6 +310,9 @@ export interface Badge {
 	reason?: Why
 	landed: string
 	place: string
+	phase: string
+	round: number
+	project: string
 }
 
 export interface BillingPriceInfo {
@@ -567,6 +570,13 @@ export interface ChatStreamResponse {
 	type: string
 	content?: string
 	toolCall?: unknown
+}
+
+export interface CheckView {
+	label: string
+	state: string
+	durationMs: number
+	tail: string
 }
 
 export interface ConnectionModel {
@@ -830,6 +840,13 @@ export interface FileHistoryEntry {
 	reason: string
 	chatId?: string
 	capturedAt: number
+}
+
+export interface FileView {
+	path: string
+	status: string
+	added: number
+	removed: number
 }
 
 export interface HandleAvailableResponse {
@@ -1518,6 +1535,12 @@ export interface Report extends Context {
 	suppressed?: number
 }
 
+export interface ReviewerView {
+	lens: string
+	state: string
+	findings: number
+}
+
 export interface RosterItem {
 	kind: RosterKind
 	id: string
@@ -1542,7 +1565,9 @@ export interface RosterTeam extends Team {
 
 export interface RoundView extends VerificationRound {
 	result?: Why
-	costMicrocents: number
+	files: FileView[]
+	reviewers: ReviewerView[]
+	checkRuns: CheckView[]
 }
 
 export interface RuleCandidate extends RuleWords {
@@ -1901,7 +1926,7 @@ export interface VerificationView extends Verification {
 	agentName: string
 	badge: Badge
 	history: RoundView[]
-	costMicrocents: number
+	changed: FileView[]
 }
 
 export interface View {

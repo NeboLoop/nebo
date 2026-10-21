@@ -74,10 +74,13 @@ pub fn node(verification_id: &str, round: u32, lens: Lens) -> String {
 }
 
 /// Run one round: a reviewer per lens, all at once, for the turn `parent`.
+/// `done` hears each reviewer's result the moment it finishes, so the round's
+/// record shows it while the others still run.
 pub async fn run_round(
     helpers: &Arc<Helpers>,
     parent: &Parent<'_>,
     input: &RoundInput<'_>,
+    done: &(dyn Fn(&LensReview) + Sync),
 ) -> Vec<LensReview> {
     let asks = input.lenses.iter().map(|&lens| {
         let ask = Ask {
@@ -110,11 +113,13 @@ pub async fn run_round(
                 true => Err("it found nothing and named nothing it checked".to_string()),
                 false => Ok(r),
             });
-            LensReview {
+            let reviewed = LensReview {
                 lens,
                 review: review.map(|r| numbered(r, input.round, lens)),
                 session_key: answered.session_key,
-            }
+            };
+            done(&reviewed);
+            reviewed
         }
     });
     futures::future::join_all(asks).await

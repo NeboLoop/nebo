@@ -4430,17 +4430,17 @@
 				"other": "Langkah"
 			},
 			"time": "{seconds} saat",
-			"lenses": "Penyemak: {lenses}",
 			"findings": "Ditemui: {blockers} penghalang, {majors} besar, {minors} kecil",
 			"fixed": "Dibaiki sejak pusingan sebelumnya: {count}",
 			"held": "Disemak dan baik",
-			"checks": "Semakan:",
-			"noChecks": "Tiada binaan atau ujian yang dapat dijalankan."
+			"noChecks": "Tiada binaan atau ujian yang dapat dijalankan.",
+			"since": "Berubah sejak pusingan lepas",
+			"reviewers": "Penyemak",
+			"projectChecks": "Semakan projek sendiri"
 		},
 		"rounds": {
 			"heading": "Semakan kod"
 		},
-		"total": "Kos penyemak: {cost}",
 		"severity": {
 			"blocker": "Penghalang",
 			"major": "Besar",
@@ -4501,6 +4501,41 @@
 			"helper": "Ia dalam salinan pembantunya sehingga perbualan yang memulakannya memasukkannya.",
 			"folder": "Ia dibuat di tempat, dalam folder yang diusahakan.",
 			"nothing": "Tiada apa untuk dimasukkan."
+		},
+		"line": {
+			"round": "pusingan {n}",
+			"issuesLeft": "{count, plural, other {# isu lagi}}"
+		},
+		"phase": {
+			"working": "Menulis perubahan. Semakan bermula apabila siap.",
+			"checks": "Menjalankan semakan projek sendiri.",
+			"reviewers": "Penyemak sedang membaca perubahan.",
+			"fixing": "Membaiki apa yang ditemui penyemak. Pusingan seterusnya menyemak pembaikan itu.",
+			"landing": "Memasukkan perubahan ke dalam projek.",
+			"live": "Menyemaknya secara langsung."
+		},
+		"sheet": {
+			"elapsed": "{project} · {time} setakat ini",
+			"took": "{project} · mengambil {time}",
+			"changed": "Apa yang sedang disemak",
+			"files": "{count, plural, other {# fail}} dalam {project}",
+			"open": "Masih terbuka"
+		},
+		"reviewer": {
+			"waiting": "menunggu semakan",
+			"running": "sedang membaca",
+			"clean": "tiada isu",
+			"found": "{count, plural, other {menemui # isu}}",
+			"failed": "tidak dapat selesai"
+		},
+		"check": {
+			"waiting": "menunggu",
+			"running": "sedang berjalan",
+			"passed": "lulus",
+			"failed": "gagal"
+		},
+		"time": {
+			"minutes": "{m} min {s} saat"
 		}
 	}
 }

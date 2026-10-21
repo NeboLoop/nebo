@@ -4430,17 +4430,17 @@
 				"other": "Steg"
 			},
 			"time": "{seconds} s",
-			"lenses": "Granskare: {lenses}",
 			"findings": "Hittat: {blockers} blockerande, {majors} större, {minors} mindre",
 			"fixed": "Åtgärdat sedan förra omgången: {count}",
 			"held": "Kontrollerat och höll",
-			"checks": "Kontroller:",
-			"noChecks": "Ingen bygg eller test kunde köras."
+			"noChecks": "Ingen bygg eller test kunde köras.",
+			"since": "Ändrat sedan förra omgången",
+			"reviewers": "Granskare",
+			"projectChecks": "Projektets egna kontroller"
 		},
 		"rounds": {
 			"heading": "Kodkontroller"
 		},
-		"total": "Granskarnas kostnad: {cost}",
 		"severity": {
 			"blocker": "Blockerande",
 			"major": "Större",
@@ -4501,6 +4501,41 @@
 			"helper": "Den finns i hjälparens kopia tills samtalet som startade den för in den.",
 			"folder": "Den gjordes på plats, i mappen som arbetet gällde.",
 			"nothing": "Det fanns inget att föra in."
+		},
+		"line": {
+			"round": "omgång {n}",
+			"issuesLeft": "{count, plural, one {# problem kvar} other {# problem kvar}}"
+		},
+		"phase": {
+			"working": "Ändringen skrivs. Kontrollen börjar när den är klar.",
+			"checks": "Projektets egna kontroller körs.",
+			"reviewers": "Granskarna läser ändringen.",
+			"fixing": "Det granskarna hittade åtgärdas. Nästa omgång kontrollerar åtgärderna.",
+			"landing": "Ändringen läggs in i projektet.",
+			"live": "Kontrolleras live."
+		},
+		"sheet": {
+			"elapsed": "{project} · {time} hittills",
+			"took": "{project} · tog {time}",
+			"changed": "Det som kontrolleras",
+			"files": "{count, plural, one {# fil} other {# filer}} i {project}",
+			"open": "Fortfarande öppet"
+		},
+		"reviewer": {
+			"waiting": "väntar på kontrollerna",
+			"running": "läser nu",
+			"clean": "inga problem",
+			"found": "{count, plural, one {hittade # problem} other {hittade # problem}}",
+			"failed": "kunde inte bli klar"
+		},
+		"check": {
+			"waiting": "väntar",
+			"running": "körs nu",
+			"passed": "godkänd",
+			"failed": "misslyckades"
+		},
+		"time": {
+			"minutes": "{m} min {s} s"
 		}
 	}
 }
