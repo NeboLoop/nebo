@@ -766,7 +766,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let wake_session_key = config.session_key.clone();
     let harness = state.harness.clone();
     let janus_usage = state.janus_usage.clone();
-    let cleanup_tools = state.tools.clone();
     // Each call's owner-facing labels and media flag come from its tool's spec.
     let spec_tools = state.tools.clone();
     let plugin_store = state.plugin_store.clone();
@@ -1888,17 +1887,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }
         }
 
-        // Clean up browser tabs for this session.
-        // The extension tracks tabs by session UUID, not session_key, so resolve it.
-        let browser_session_id = harness
-            .store()
-            .get_session_by_name(&sid)
-            .ok()
-            .flatten()
-            .map(|s| s.id);
-        let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
-        cleanup_tools.close_browser_session(cleanup_id).await;
-
         // A turn the owner stopped takes the schedules it made with it.
         crate::background::turn_ended(&wake_state, &_run_handle, &cancel_token);
         // RunHandle unregisters from RunRegistry on drop (including panics)
@@ -1983,7 +1971,6 @@ pub async fn run_chat_events(
     config: ChatConfig,
 ) -> Result<mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
     let harness = state.harness.clone();
-    let cleanup_tools = state.tools.clone();
     let end_state = state.clone();
 
     remember_input(state, &config);
@@ -2052,14 +2039,6 @@ pub async fn run_chat_events(
             }
         }
 
-        let browser_session_id = harness
-            .store()
-            .get_session_by_name(&sid)
-            .ok()
-            .flatten()
-            .map(|s| s.id);
-        let cleanup_id = browser_session_id.as_deref().unwrap_or(&sid);
-        cleanup_tools.close_browser_session(cleanup_id).await;
         // A turn the owner stopped takes the schedules it made with it.
         crate::background::turn_ended(&end_state, &_run_handle, &cancel_token);
         drop(_run_handle);

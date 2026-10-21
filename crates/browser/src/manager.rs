@@ -96,12 +96,14 @@ impl Manager {
                 })
             })
         };
+        // The keys of the tabs Nebo has open in the owner's Chrome.
+        let tabs_file = PathBuf::from(&data_dir).join("data").join("browser-tabs.json");
         Self {
             config,
             data_dir,
             browsers: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
-            bridge: Arc::new(ExtensionBridge::new()),
+            bridge: Arc::new(ExtensionBridge::new(Some(tabs_file))),
             cdp,
             own_pages,
         }
