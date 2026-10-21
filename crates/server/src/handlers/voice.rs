@@ -1906,7 +1906,7 @@ struct TurnSink {
 }
 
 impl TurnSink {
-    async fn write(&mut self, state: &AppState, socket: &mut WebSocket, rows: Vec<Row>) {
+    fn write(&mut self, state: &AppState, line: &ClientLine, rows: Vec<Row>) {
         for row in rows {
             let (role, text, at) = match &row {
                 Row::User(t) => ("user", t.as_str(), None),
@@ -1933,7 +1933,7 @@ impl TurnSink {
                 if !self.chat_bound_announced {
                     self.chat_bound_announced = true;
                     let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
-                    if socket.send(Message::Text(bound.to_string().into())).await.is_err() {
+                    if !line.send(Message::Text(bound.to_string().into())) {
                         warn!(chat = %cid, "chat_bound frame not delivered");
                     }
                 }
@@ -2540,13 +2540,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         instructions,
         replace,
         keyterms,
-        // Telephony carries the carrier's own μ-law end to end — nothing
-        // transcodes between the phone and the model.
-        audio_format: if telephony {
-            voice::realtime::AudioFormat::G711Ulaw
-        } else {
-            voice::realtime::AudioFormat::Pcm24k
-        },
+        audio_format: voice::realtime::AudioFormat::for_call(telephony),
         ..Default::default()
     };
     // Per-agent voice: each employee sounds like themselves (Identity tab).
@@ -2821,7 +2815,7 @@ fn client_frame(text: &str) -> ClientFrame {
 /// store keeps working. New downstream frames: `conversation_id` (resumption
 /// handle) rides alongside the existing set.
 async fn handle_conversation_session(
-    mut socket: WebSocket,
+    socket: WebSocket,
     state: AppState,
     q: ConversationQuery,
     team: Option<db::Team>,
@@ -2834,6 +2828,11 @@ async fn handle_conversation_session(
 
     let chat_id = q.chat_id.filter(|c| !c.is_empty());
     let call_started = std::time::Instant::now();
+    // Everything for the client goes out through the call's line, in order
+    // and with the reply's audio paced; the loop below only ever reads the
+    // socket, so a client that stops draining can never hold it up.
+    let (ws_out, mut ws_in) = futures::StreamExt::split(socket);
+    let line = ClientLine::open(ws_out, voice::realtime::AudioFormat::for_call(q.telephony.is_some()));
     // What the employee said the call came to (`end_call` / `transfer_call`).
     let mut call_summary = String::new();
     // Phone calls get a deterministic caller-ID title ("Call from (801)
@@ -2958,7 +2957,7 @@ async fn handle_conversation_session(
     {
         sink.chat_bound_announced = true;
         let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
-        if socket.send(Message::Text(bound.to_string().into())).await.is_err() {
+        if !line.send(Message::Text(bound.to_string().into())) {
             return;
         }
     }
@@ -3105,6 +3104,9 @@ async fn handle_conversation_session(
                     ConversationEvent::SessionInitialized =>
                         Some(serde_json::json!({"type": "session_initialized"})),
                     ConversationEvent::TranscriptionStart => {
+                        // The owner's voice wins: the reply's audio not yet
+                        // sent goes, as the client drops what it holds.
+                        line.cut();
                         unseen_speech = false;
                         ledger.utterance_started();
                         Some(serde_json::json!({"type": "transcription_start"}))
@@ -3119,7 +3121,7 @@ async fn handle_conversation_session(
                     // waited for it.
                     ConversationEvent::TranscriptionEnd => {
                         let rows = ledger.user_final();
-                        sink.write(&state, &mut socket, rows).await;
+                        sink.write(&state, &line, rows);
                         for (call_id, name, arguments) in held_runs.drain(..) {
                             spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
                         }
@@ -3158,7 +3160,7 @@ async fn handle_conversation_session(
                     // the balance: the same words as a refused connect.
                     ConversationEvent::BalanceReserved => Some(connect_failure_words(&voice::VoiceError::BalanceReserved)),
                     ConversationEvent::AudioChunk(data) => {
-                        if socket.send(Message::Binary(data.to_vec().into())).await.is_err() {
+                        if !line.audio(data) {
                             break;
                         }
                         None
@@ -3205,13 +3207,11 @@ async fn handle_conversation_session(
                                     true,
                                 ))
                                 .await;
-                            let _ = socket
-                                .send(Message::Text(
-                                    serde_json::json!({"type": "end_call", "summary": summary})
-                                        .to_string()
-                                        .into(),
-                                ))
-                                .await;
+                            let _ = line.send(Message::Text(
+                                serde_json::json!({"type": "end_call", "summary": summary})
+                                    .to_string()
+                                    .into(),
+                            ));
                             continue;
                         }
                         if name == "status" && caller_ctx.is_none() {
@@ -3313,15 +3313,11 @@ async fn handle_conversation_session(
                                     true,
                                 ))
                                 .await;
-                            if socket
-                                .send(Message::Text(
-                                    serde_json::json!({"type": "transfer_call", "summary": summary})
-                                        .to_string()
-                                        .into(),
-                                ))
-                                .await
-                                .is_err()
-                            {
+                            if !line.send(Message::Text(
+                                serde_json::json!({"type": "transfer_call", "summary": summary})
+                                    .to_string()
+                                    .into(),
+                            )) {
                                 break;
                             }
                             continue;
@@ -3340,7 +3336,7 @@ async fn handle_conversation_session(
                     }
                 };
                 if let Some(frame) = frame
-                    && socket.send(Message::Text(frame.to_string().into())).await.is_err()
+                    && !line.send(Message::Text(frame.to_string().into()))
                 {
                     break;
                 }
@@ -3414,7 +3410,7 @@ async fn handle_conversation_session(
             }
 
             // Messages from the WebSocket client -> upstream
-            ws_msg = socket.recv() => {
+            ws_msg = futures::StreamExt::next(&mut ws_in) => {
                 client_heard = tokio::time::Instant::now();
                 match ws_msg {
                     Some(Ok(Message::Binary(data))) => {
@@ -3429,6 +3425,7 @@ async fn handle_conversation_session(
                         ClientFrame::KeepAlive => {}
                         ClientFrame::Interrupt { played_ms } => {
                             info!(?played_ms, "conversation interrupt received");
+                            line.cut();
                             if rt_tx.send(RealtimeCommand::Interrupt { played_ms }).await.is_err() {
                                 break;
                             }
@@ -3514,8 +3511,8 @@ async fn handle_conversation_session(
             }
             if !say.is_empty() {
                 let rows = ledger.relayed();
-                sink.write(&state, &mut socket, rows).await;
-                if socket.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())).await.is_err() {
+                sink.write(&state, &line, rows);
+                if !line.send(Message::Text(response_not_kept(ledger.current_turn()).to_string().into())) {
                     break;
                 }
                 if rt_tx.send(RealtimeCommand::Text(say)).await.is_err() {
@@ -3530,7 +3527,8 @@ async fn handle_conversation_session(
     // Session over (hangup / barge-out / error): flush any half-finished turn
     // so the transcript in the chat never loses the last exchange.
     let rows = ledger.flush();
-    sink.write(&state, &mut socket, rows).await;
+    sink.write(&state, &line, rows);
+    line.close().await;
     // A run the owner asked for still runs when the call ends first.
     for (call_id, name, arguments) in held_runs.drain(..) {
         spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
@@ -3577,6 +3575,154 @@ fn post_call_item(state: &AppState, agent_id: &str, chat_id: &str, title: &str, 
 /// the call is taken as abandoned and closed (the voice service's own idle
 /// backstop is the same five minutes).
 const VOICE_CLIENT_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How far the reply's audio runs ahead of real time on its way to the
+/// client: enough to ride out the network's jitter, and no more. The model
+/// makes a long reply much faster than it plays; sent all at once, a minute
+/// of audio sat in the tunnel ahead of everything else on the line, the
+/// phone's ping waited behind it past its deadline, and the phone dropped a
+/// call that was working (live 2026-10-21, a long text read aloud: a new
+/// line every 16 s).
+const CLIENT_AUDIO_LEAD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How long a call that has ended waits for its last frames to reach the
+/// client before its line is let go.
+const CLIENT_LINE_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One frame waiting on the call's line. Audio carries how long it plays.
+enum Outbound {
+    Frame(Message),
+    Audio(Message, std::time::Duration),
+    /// The reply was cut: its audio still waiting is dropped.
+    Cut,
+}
+
+/// A call's way to its client. Every frame goes out through one queue, in
+/// the order it was given, and the reply's audio leaves at the pace it
+/// plays (a [`CLIENT_AUDIO_LEAD`] ahead). A task of its own does the
+/// sending, so the call's loop never waits on a client: it always hears the
+/// client's close, and its silence backstop always runs (a send that hung
+/// on a phone gone held calls open with their realtime legs, 2026-10-21).
+struct ClientLine {
+    tx: Option<mpsc::UnboundedSender<Outbound>>,
+    task: tokio::task::JoinHandle<()>,
+    bytes_per_ms: usize,
+}
+
+impl ClientLine {
+    fn open<S>(sink: S, format: voice::realtime::AudioFormat) -> Self
+    where
+        S: futures::Sink<Message> + Unpin + Send + 'static,
+    {
+        let (tx, rx) = mpsc::unbounded_channel();
+        ClientLine {
+            tx: Some(tx),
+            task: tokio::spawn(write_client_line(sink, rx)),
+            bytes_per_ms: format.bytes_per_ms(),
+        }
+    }
+
+    /// Queue a frame. False once the line is gone.
+    fn send(&self, frame: Message) -> bool {
+        self.queue(Outbound::Frame(frame))
+    }
+
+    /// Queue reply audio, paced. False once the line is gone.
+    fn audio(&self, pcm: axum::body::Bytes) -> bool {
+        let plays = std::time::Duration::from_micros((pcm.len() * 1000 / self.bytes_per_ms) as u64);
+        self.queue(Outbound::Audio(Message::Binary(pcm), plays))
+    }
+
+    /// The reply was cut (the owner talked over it): what of its audio has
+    /// not gone out yet never does.
+    fn cut(&self) {
+        self.queue(Outbound::Cut);
+    }
+
+    fn queue(&self, out: Outbound) -> bool {
+        self.tx.as_ref().is_some_and(|tx| tx.send(out).is_ok())
+    }
+
+    /// The call is over: what is queued goes out (audio aside), for at most
+    /// [`CLIENT_LINE_DRAIN`], and the line closes.
+    async fn close(mut self) {
+        self.tx = None;
+        let _ = tokio::time::timeout(CLIENT_LINE_DRAIN, &mut self.task).await;
+    }
+}
+
+impl Drop for ClientLine {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The sending side of a [`ClientLine`]. A cut reaches the audio queued
+/// before it, never audio queued after.
+async fn write_client_line<S>(mut sink: S, mut rx: mpsc::UnboundedReceiver<Outbound>)
+where
+    S: futures::Sink<Message> + Unpin + Send,
+{
+    use futures::SinkExt;
+    use tokio::time::Instant;
+
+    let mut queue: std::collections::VecDeque<Outbound> = std::collections::VecDeque::new();
+    // When the audio sent so far finishes playing at the client.
+    let mut played_to = Instant::now();
+    let mut open = true;
+    let take = |queue: &mut std::collections::VecDeque<Outbound>, played_to: &mut Instant, out: Outbound| match out {
+        Outbound::Cut => {
+            queue.retain(|o| !matches!(o, Outbound::Audio(..)));
+            *played_to = Instant::now();
+        }
+        out => queue.push_back(out),
+    };
+    loop {
+        while let Ok(out) = rx.try_recv() {
+            take(&mut queue, &mut played_to, out);
+        }
+        if !open {
+            // The call is over: nobody is listening to the rest of a reply.
+            queue.retain(|o| !matches!(o, Outbound::Audio(..)));
+        }
+        let due = match queue.front() {
+            None if open => {
+                match rx.recv().await {
+                    Some(out) => take(&mut queue, &mut played_to, out),
+                    None => open = false,
+                }
+                continue;
+            }
+            None => break,
+            Some(Outbound::Audio(..)) => played_to.checked_sub(CLIENT_AUDIO_LEAD),
+            Some(_) => None,
+        };
+        if let Some(due) = due
+            && due > Instant::now()
+        {
+            tokio::select! {
+                out = rx.recv(), if open => match out {
+                    Some(out) => take(&mut queue, &mut played_to, out),
+                    None => open = false,
+                },
+                _ = tokio::time::sleep_until(due) => {}
+            }
+            continue;
+        }
+        let frame = match queue.pop_front() {
+            Some(Outbound::Audio(frame, plays)) => {
+                played_to = played_to.max(Instant::now()) + plays;
+                frame
+            }
+            Some(Outbound::Frame(frame)) => frame,
+            Some(Outbound::Cut) | None => continue,
+        };
+        if sink.send(frame).await.is_err() {
+            return;
+        }
+    }
+    let _ = sink.close().await;
+}
 
 /// Character cap for the persona body in a realtime session. The realtime
 /// context is for identity + operating rules — bulk knowledge stays behind
@@ -4819,5 +4965,170 @@ mod voice_prompt_tests {
         assert_eq!(l.since_reply(), "はい", "before its transcript is final");
         l.user_final();
         assert_eq!(l.since_reply(), "はい");
+    }
+}
+
+#[cfg(test)]
+mod client_line_tests {
+    use super::{CLIENT_AUDIO_LEAD, ClientLine};
+    use axum::extract::WebSocketUpgrade;
+    use axum::extract::ws::Message;
+    use futures::{SinkExt, StreamExt};
+    use std::time::{Duration, Instant};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    /// 100 ms of 24 kHz PCM16, its first byte the chunk's number.
+    const CHUNK: usize = 4800;
+
+    fn chunk(n: usize) -> axum::body::Bytes {
+        let mut pcm = vec![0u8; CHUNK];
+        pcm[0] = n as u8;
+        pcm.into()
+    }
+
+    /// A call's client side as the session runs it: `chunks` × 100 ms of
+    /// reply audio queued at once (the burst the model sends), then `end`.
+    /// The loop only reads, as the session's does: `cut` cuts the reply,
+    /// and the client's close is reported with when it was heard.
+    async fn serve(chunks: usize) -> (String, tokio::sync::oneshot::Receiver<Instant>) {
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let closed_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(closed_tx)));
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let closed_tx = closed_tx.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let (out, mut incoming) = socket.split();
+                        let line = ClientLine::open(out, voice::realtime::AudioFormat::Pcm24k);
+                        for n in 0..chunks {
+                            assert!(line.audio(chunk(n)));
+                        }
+                        line.send(Message::Text("end".into()));
+                        while let Some(msg) = incoming.next().await {
+                            match msg {
+                                Ok(Message::Text(t)) if t.as_str() == "cut" => {
+                                    line.cut();
+                                    line.send(Message::Text("cut_done".into()));
+                                }
+                                Ok(Message::Close(_)) | Err(_) => break,
+                                Ok(_) => {}
+                            }
+                        }
+                        if let Some(tx) = closed_tx.lock().unwrap().take() {
+                            let _ = tx.send(Instant::now());
+                        }
+                        line.close().await;
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("ws://{addr}/"), closed_rx)
+    }
+
+    /// A long reply the model sends in one burst reaches the client at the
+    /// pace it plays, a lead ahead, every byte in order, and the frame
+    /// queued after it after it.
+    #[tokio::test]
+    async fn a_burst_of_reply_audio_reaches_the_client_paced() {
+        let (url, _) = serve(30).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let start = Instant::now();
+        let mut audio = Vec::new();
+        let mut early = 0;
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                WsMessage::Binary(b) => {
+                    assert_eq!(b.len(), CHUNK);
+                    if start.elapsed() < Duration::from_millis(200) {
+                        early += 1;
+                    }
+                    audio.push(b[0] as usize);
+                }
+                WsMessage::Text(t) => {
+                    assert_eq!(t.as_str(), "end");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let took = start.elapsed();
+        assert_eq!(audio, (0..30).collect::<Vec<_>>(), "every chunk, in order");
+        let lead_chunks = (CLIENT_AUDIO_LEAD.as_millis() / 100) as usize;
+        assert!(early <= lead_chunks + 2, "only the lead goes at once, not the burst: {early}");
+        let plays = Duration::from_millis(3000);
+        assert!(took >= plays - CLIENT_AUDIO_LEAD - Duration::from_millis(150), "paced: {took:?}");
+        assert!(took < plays + Duration::from_millis(500), "at the pace it plays, no slower: {took:?}");
+    }
+
+    /// Under a minute of queued reply the phone's ping is answered at once,
+    /// and its close is heard at once: the line never holds the call.
+    #[tokio::test]
+    async fn a_ping_is_answered_and_a_close_heard_during_a_burst() {
+        let (url, closed) = serve(600).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let mut audio = 0;
+        while audio < 3 {
+            if let WsMessage::Binary(_) = ws.next().await.unwrap().unwrap() {
+                audio += 1;
+            }
+        }
+        let pinged = Instant::now();
+        ws.send(WsMessage::Ping(b"are you there".to_vec().into())).await.unwrap();
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                WsMessage::Pong(p) => {
+                    assert_eq!(&p[..], b"are you there");
+                    break;
+                }
+                WsMessage::Binary(_) => audio += 1,
+                _ => {}
+            }
+        }
+        assert!(pinged.elapsed() < Duration::from_secs(1), "pong took {:?}", pinged.elapsed());
+
+        let closing = Instant::now();
+        ws.send(WsMessage::Close(None)).await.unwrap();
+        let heard = tokio::time::timeout(Duration::from_secs(1), closed)
+            .await
+            .expect("the close is heard within a second")
+            .unwrap();
+        assert!(heard.duration_since(closing) < Duration::from_secs(1));
+        assert!(audio < 100, "the burst was never sent at once: {audio} chunks");
+    }
+
+    /// The owner talks over the reply: its audio not yet sent never is,
+    /// frames queued before the cut still go, in order, and nothing of the
+    /// cut reply follows.
+    #[tokio::test]
+    async fn a_cut_drops_the_reply_audio_still_queued() {
+        let (url, _) = serve(100).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let mut before = 0;
+        while before < 2 {
+            if let WsMessage::Binary(_) = ws.next().await.unwrap().unwrap() {
+                before += 1;
+            }
+        }
+        let cut_at = Instant::now();
+        ws.send(WsMessage::Text("cut".into())).await.unwrap();
+        let mut seen = Vec::new();
+        loop {
+            match ws.next().await.unwrap().unwrap() {
+                WsMessage::Binary(_) => seen.push("audio"),
+                WsMessage::Text(t) if t.as_str() == "end" => seen.push("end"),
+                WsMessage::Text(t) if t.as_str() == "cut_done" => break,
+                _ => {}
+            }
+        }
+        assert!(cut_at.elapsed() < Duration::from_millis(500), "the cut is at once: {:?}", cut_at.elapsed());
+        assert_eq!(seen.last(), Some(&"end"), "the frame queued before the cut still goes: {seen:?}");
+        let after = seen.iter().filter(|s| **s == "audio").count();
+        assert!(before + after < 10, "the rest of the reply is dropped: {} chunks", before + after);
+        let tail = tokio::time::timeout(Duration::from_millis(600), ws.next()).await;
+        assert!(tail.is_err(), "nothing of the cut reply follows: {tail:?}");
     }
 }
