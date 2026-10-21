@@ -1061,6 +1061,9 @@
 
   // Scroll state
   let messagesContainer = $state<HTMLDivElement | null>(null);
+  /** The floating area's height (its fade, the goal and notices, the
+   *  composer): the room the scroller leaves at its end. */
+  let floatHeight = $state(0);
   let messagesContent = $state<HTMLDivElement | null>(null);
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
@@ -1811,13 +1814,17 @@
   {/if}
 
 
+  <!-- The conversation fills the column; the composer floats over its end
+       (chat-floating), the messages fading out behind it. Its measured
+       height is the room the scroller leaves at its end. -->
+  <div class="chat-stage" style:--chat-float="{floatHeight}px">
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
-    <div class="flex-1 flex items-center justify-center p-6">
+    <div class="flex-1 flex items-center justify-center p-6 chat-under-float">
       <span class="loading loading-spinner loading-md text-base-content/70"></span>
     </div>
   {:else if !hasMessages && emptyTitle}
-    <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
+    <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6 chat-under-float">
       {#if emptyIcon}
         <div class="w-12 h-12 rounded-box flex items-center justify-center font-mono text-xl font-semibold bg-primary text-primary-content">{emptyIcon}</div>
         <div class="text-base font-semibold">{emptyTitle}</div>
@@ -1833,7 +1840,7 @@
   <div class="flex-1 relative min-h-0">
     <!-- Scroll to bottom button -->
     {#if showScrollButton}
-      <div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
+      <div class="chat-scroll-button">
         <button
           type="button"
           onclick={scrollToBottom}
@@ -1844,7 +1851,7 @@
         </button>
       </div>
     {/if}
-  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="chat-scroller h-full overflow-y-auto p-[18px_24px]">
+  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="chat-scroller h-full overflow-y-auto">
   <div bind:this={messagesContent} class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
     {#if isLoadingMore}
       <div class="flex justify-center py-3">
@@ -2486,6 +2493,12 @@
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
       </div>
     {/if}
+    <!-- The last row, after the newest message: the turn's working line,
+         the running tasks and the code work being checked. It scrolls with
+         the messages. -->
+    {#if !readOnly}
+      <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} onanswer={answerVerification} />
+    {/if}
   </div>
   <!-- Reserved room for the streaming reply — see turnSpacerHeight. Outside the
        observed content wrapper so spacer changes don't re-fire the observer. -->
@@ -2496,6 +2509,7 @@
   </div>
   {/if}
 
+  <div class="chat-floating" bind:clientHeight={floatHeight}>
   <!-- Agreed goal: what the work continues toward until a check confirms it -->
   {#if goal}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
@@ -2608,7 +2622,6 @@
   <!-- Composer — sits on the home-indicator edge on phones. -->
   {#if !readOnly}
   <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
-    <BackgroundStatus sessionKey={chatSessionKey} {isLoading} activityStatus={runningCall ? workingLine : activityStatus} {turnStartedAt} checking={inProgress($verifications, chatSessionKey)} onanswer={answerVerification} />
     <ChatComposer
       {agentName}
       {agentId}
@@ -2627,6 +2640,8 @@
     />
   </div>
   {/if}
+  </div>
+  </div>
 </div>
 
 <!-- Resize handle + Creations panel -->

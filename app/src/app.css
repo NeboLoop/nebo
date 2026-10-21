@@ -794,6 +794,28 @@
    and the two adjustments together jumped the view a page past the reader. */
 .chat-scroller {
 	overflow-anchor: none;
+	/* Room at the end for what floats over it (chat-floating). */
+	padding: 18px 24px calc(18px + var(--chat-float, 0px));
+}
+
+/* The conversation fills the column; the composer floats over its end, the
+   messages fading out behind it in the column's own color. */
+.chat-stage {
+	@apply relative flex min-h-0 flex-1 flex-col;
+}
+.chat-floating {
+	@apply absolute inset-x-0 bottom-0 z-10 bg-base-100;
+}
+.chat-floating::before {
+	content: '';
+	@apply pointer-events-none absolute inset-x-0 bottom-full h-6 bg-gradient-to-b from-transparent to-base-100;
+}
+.chat-under-float {
+	padding-bottom: calc(1.5rem + var(--chat-float, 0px));
+}
+.chat-scroll-button {
+	@apply absolute left-1/2 z-20 -translate-x-1/2;
+	bottom: calc(1rem + var(--chat-float, 0px));
 }
 
 /* Helpers still working after the turn that started them ended: one quiet
@@ -1253,8 +1275,8 @@
   --bg-thinking-dim: 0.75;
 }
 .bg-status {
-  /* In line with the composer card under it (ChatComposer's px-6). */
-  @apply relative px-7 -mb-2;
+  /* The conversation's last line, under the newest message. */
+  @apply relative mt-2;
 }
 .bg-status-row {
   @apply flex items-center min-w-0 h-6 overflow-hidden whitespace-nowrap text-xs text-base-content/60 tabular-nums;

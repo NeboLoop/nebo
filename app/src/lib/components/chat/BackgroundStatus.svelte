@@ -1,5 +1,6 @@
 <!--
-  The one line above the composer: shown while the turn works or any of the
+  The last line of the conversation, after the newest message (it scrolls
+  with the messages): shown while the turn works or any of the
   work this conversation launched runs, after the turn ends too. A mark, the
   turn's time, the conversation's running tasks (a button that opens them), its
   code work being checked (each a button that opens its sheet), and what the
@@ -15,6 +16,7 @@
   import BackgroundTranscript from '$lib/components/background/BackgroundTranscript.svelte';
   import type { BackgroundTask } from '$lib/api/neboComponents';
   import { widthFade } from '$lib/components/background/widthFade';
+  import { slide } from 'svelte/transition';
   import type { VerificationView } from '$lib/api/neboComponents';
   import type { VerificationAnswer } from '$lib/stores/verifications';
   import VerifiedBadge from '$lib/components/verify/VerifiedBadge.svelte';
@@ -104,7 +106,9 @@
 <svelte:window onkeydown={onKey} />
 
 {#if shown}
-  <div class="bg-status">
+  <!-- Comes and goes smoothly: at the end of the conversation, the list
+       anchored to the bottom moves with it, never in a jump. -->
+  <div class="bg-status" transition:slide={{ duration: 200 }}>
     {#if open && count > 0}
       <button type="button" class="bg-status-backdrop" aria-label={$t('common.close')} onclick={() => (open = false)}></button>
       <div class="bg-status-popover">
