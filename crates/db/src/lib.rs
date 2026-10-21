@@ -19,6 +19,7 @@ pub use queries::{Assignment, NewAssignment};
 pub use queries::{cron_ref, is_one_shot};
 pub use queries::{conversation_task_list, run_task_list};
 pub use queries::{HANDOFF_ASK_CAP, HANDOFF_LIVE, HANDOFF_RESULT_CAP, Handoff, HandoffQuery, NewHandoff};
+pub use queries::{NewVerification, VERIFICATION_LIVE, Verification, VerificationQuery, VerificationRound, VerificationState};
 pub use queries::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
 pub use queries::WorkflowAuditRow;
 pub use queries::{PermissionActivityFilter, PermissionActivityRow, PermissionAskRow, PermissionSpend, ask_wait_key};

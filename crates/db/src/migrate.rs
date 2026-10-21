@@ -76,6 +76,16 @@ pub fn run_migrations_to(conn: &Connection, max_version: i64) -> Result<(), Nebo
     // Get all migration files sorted by name
     let mut migration_files = iter_files();
     migration_files.sort();
+    // Two files with one number: only the first would ever apply, and the
+    // other would be skipped on every database for good. Refuse before
+    // anything changes.
+    let shared = shared_versions(&migration_files);
+    if !shared.is_empty() {
+        return Err(NeboError::Migration(format!(
+            "migration numbers used by more than one file: {}; renumber the newer file",
+            shared.iter().map(|(v, files)| format!("{v} ({})", files.join(", "))).collect::<Vec<_>>().join("; ")
+        )));
+    }
 
     // A versioned copy of the database before anything changes, taken by
     // SQLite itself (consistent, online). Rollback is the previous binary
@@ -224,6 +234,17 @@ fn migration_slug(filename: &str) -> Option<&str> {
     filename.split_once('_').map(|(_, slug)| slug)
 }
 
+/// The migration numbers more than one file uses, with those files.
+fn shared_versions(files: &[String]) -> Vec<(i64, Vec<String>)> {
+    let mut by_version: std::collections::BTreeMap<i64, Vec<String>> = std::collections::BTreeMap::new();
+    for f in files {
+        if let Some(v) = extract_version(f) {
+            by_version.entry(v).or_default().push(f.clone());
+        }
+    }
+    by_version.into_iter().filter(|(_, files)| files.len() > 1).collect()
+}
+
 /// Extract the version number from a migration filename.
 /// "0001_initial_schema.sql" -> Some(1)
 fn extract_version(filename: &str) -> Option<i64> {
@@ -298,6 +319,16 @@ mod tests {
                 panic!("migration name is used twice: {prev} and {f} — name the newer one for what it does");
             }
         }
+    }
+
+    /// The migrator itself refuses a number two files share, so a collision
+    /// from branches merged apart fails the first boot of the build loudly
+    /// instead of skipping a file's schema on every database.
+    #[test]
+    fn the_migrator_refuses_a_number_two_files_share() {
+        let files = vec!["0248_packs.sql".to_string(), "0248_verifications.sql".to_string(), "0249_x.sql".to_string()];
+        assert_eq!(shared_versions(&files), vec![(248, vec!["0248_packs.sql".to_string(), "0248_verifications.sql".to_string()])]);
+        assert!(shared_versions(&iter_files()).is_empty(), "the embedded migrations each have their own number");
     }
 
     #[test]

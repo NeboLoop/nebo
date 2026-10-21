@@ -59,6 +59,15 @@ pub fn spawn(
             Err(e) => warn!(error = %e, "hand-offs left running by the last process not swept"),
         }
 
+        // Code work being verified when the last process ended can't finish
+        // on its own: it is recorded stopped (its copy kept), and its open
+        // steps are closed. A paused one keeps waiting on the owner.
+        match state.store.stop_orphaned_verifications(booted, chrono::Utc::now().timestamp()) {
+            Ok(0) => {}
+            Ok(n) => info!(count = n, "verifications left running by the last process recorded stopped"),
+            Err(e) => warn!(error = %e, "verifications left running by the last process not swept"),
+        }
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
