@@ -582,6 +582,10 @@ async fn read_queued_pictures(h: Harness, req: TurnRequest, row_id: String) {
     }
 }
 
+/// How long a run's end waits to close the tabs it opened: a browser that
+/// stopped answering never holds the session.
+const BROWSER_CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The admitted turn's task: prepare, drive, finish; then, while input
 /// arrived after the last step, the next turn on the same slot. A turn the
 /// owner stopped runs nothing more on it: its stream has ended. What he sent
@@ -642,7 +646,9 @@ async fn run(
     // it opened in the owner's browser close: a tab it left open for him
     // stays. Before the slot frees, so the session's next turn never loses a
     // tab to it.
-    h.tools.close_browser_session(&session_id).await;
+    if tokio::time::timeout(BROWSER_CLOSE_WAIT, h.tools.close_browser_session(&session_id)).await.is_err() {
+        warn!(session_id, "closing the run's browser tabs took too long; the session goes on");
+    }
     let (exit, taint, carried, heard_through) = match ended {
         Ok(ended) => ended,
         Err(panic) => std::panic::resume_unwind(panic),
