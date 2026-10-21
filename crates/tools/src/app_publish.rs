@@ -1428,9 +1428,10 @@ pub const NO_SCRIPT: &str = "the app's page didn't load the check script: its en
 /// Waits for every batch the developer script has on its way to land.
 const DEVTOOLS_FLUSHED: &str = r#"(async()=>{if(window.__neboDevtoolsFlush)await window.__neboDevtoolsFlush();return 'flushed';})()"#;
 
-/// How long after its load a page is watched: the developer script looks
-/// at the page 2.5 s after it loads (a page that drew nothing).
-const WATCHED_AFTER_LOAD: Duration = Duration::from_secs(3);
+/// The longest a live check waits after the load for the developer
+/// script's own look at the page (a page that drew nothing), which it
+/// takes 2.5 s after the load and says it has (`__neboLooked`).
+const LOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The answer the page itself came with, when it was an error (`0`: none
 /// was read).
@@ -1461,7 +1462,13 @@ pub async fn live_load(browser: Option<&Arc<browser::Manager>>, app: &db::models
         }
         // What goes wrong after the load (the script's look at the page
         // included), then every batch on its way, before anything is read.
-        tokio::time::sleep(WATCHED_AFTER_LOAD).await;
+        let waited = std::time::Instant::now();
+        while view.eval("String(!!window.__neboLooked)").await.map_err(LiveLoadError::NotOpened)? != "true" {
+            if waited.elapsed() > LOOK_TIMEOUT {
+                return Ok(vec!["The page never finished its own check after it loaded.".to_string()]);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         let status: u16 = view.eval(PAGE_STATUS).await.map_err(LiveLoadError::NotOpened)?.parse().unwrap_or(0);
         view.eval(DEVTOOLS_FLUSHED).await.map_err(LiveLoadError::NotOpened)?;
         Ok((status >= 400).then(|| format!("The page answered {status}.")).into_iter().collect())
