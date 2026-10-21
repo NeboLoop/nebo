@@ -44,6 +44,7 @@ use crate::harness::{Harness, SeatRequest};
 use crate::worktree::{self, MergeOutcome};
 
 /// How a turn that ended before its checking did leaves its verifications.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Closed {
     /// Waiting on the owner: paused, for the turn that goes on.
     Waiting,

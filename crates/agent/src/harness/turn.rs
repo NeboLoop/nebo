@@ -242,6 +242,9 @@ pub struct TurnState {
     /// for a turn that never verifies (a reviewer, an explore or plan
     /// helper, a fork) or with no helper registry to review with.
     pub(crate) verify: Option<super::verify::engine::Verify>,
+    /// How the owner's own message ended the work, when it did: how its
+    /// verifications are settled (`closing`).
+    pub(crate) owner_ended: Option<OwnerEnded>,
 }
 
 /// What the tool round keeps from one round to the next within a turn.
@@ -1061,12 +1064,12 @@ fn last_reply(h: &Harness, session_id: &str) -> String {
 /// ends it, `OwnerIntent::ends_work`): an agreed goal still worked toward
 /// pauses, so nothing (a check, a check-in, a woken turn) starts the work
 /// again, and his next message does not resume it; he asks for it back. The goal line tells him,
-/// and a row tells the model.
-fn pause_goal_for_the_owner(cx: &TurnContext) {
+/// and a row tells the model. True when a goal was paused.
+fn pause_goal_for_the_owner(cx: &TurnContext) -> bool {
     let h = &cx.harness;
     let goals = goal::GoalStore::new(&h.sessions, &cx.session_id);
     let Ok(Some(worked)) = goals.active() else {
-        return;
+        return false;
     };
     match goals.record_check(goal::GoalStatus::Paused(goal::Pause::Stopped), None, false) {
         Ok(Some(paused)) => {
@@ -1074,10 +1077,10 @@ fn pause_goal_for_the_owner(cx: &TurnContext) {
                 observer.status(&paused);
             }
         }
-        Ok(None) => return,
+        Ok(None) => return false,
         Err(e) => {
             warn!(session_id = %cx.session_id, error = %e, "the goal could not be paused");
-            return;
+            return false;
         }
     }
     let mut row = reminders::Reminders::default();
@@ -1086,6 +1089,7 @@ fn pause_goal_for_the_owner(cx: &TurnContext) {
         warn!(session_id = %cx.session_id, error = %e, "could not tell the model the goal is paused");
     }
     info!(session_id = %cx.session_id, "the owner ended the work: the goal is paused");
+    true
 }
 
 /// Whether a mid-turn or notification row landed after `heard_through`,
@@ -1451,6 +1455,7 @@ pub(crate) async fn prepare(
         folds: text_fold::TurnFolds::default(),
         reporting: false,
         verify,
+        owner_ended: None,
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
@@ -2384,7 +2389,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if reply_in_words && !text.trim().is_empty() {
             let intent = st.owner_intent.take().map_or(OwnerIntent::Undecided, |(_, intent)| intent);
             info!(session_id = sid, intent = intent.as_str(), "the owner's message ends the work: the turn ends on the answer");
-            pause_goal_for_the_owner(cx);
+            st.owner_ended = Some(if pause_goal_for_the_owner(cx) { OwnerEnded::GoalPaused } else { OwnerEnded::Stopped });
             return TurnExit::Answered;
         }
         // The step that heard a message joining the work answered it in
@@ -3284,8 +3289,6 @@ async fn settle_opening(st: &mut TurnState, wait: std::time::Duration) {
 
 // ── Finish ───────────────────────────────────────────────────────────────
 
-/// After the turn: the interrupt record, the usage row, the context line and
-/// the background work.
 /// Close a turn's verifications as `why` says, and tell the apps: the one
 /// way a turn's end settles them, a panic's included.
 async fn close_verifications(h: &Harness, verify: &super::verify::engine::Verify, why: super::verify::engine::Closed) {
@@ -3294,6 +3297,34 @@ async fn close_verifications(h: &Harness, verify: &super::verify::engine::Verify
     }
 }
 
+/// How the owner's own message ended a turn's work (`reply_in_words`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum OwnerEnded {
+    /// He typed a stop: the same as the Stop button.
+    Stopped,
+    /// His message paused the goal the work was for: the work waits on him.
+    GoalPaused,
+}
+
+/// How a turn's end leaves its verifications: the one mapping `finish`
+/// settles every exit by.
+fn closing(exit: &TurnExit, stalled: bool, owner_ended: Option<OwnerEnded>) -> super::verify::engine::Closed {
+    use super::verify::engine::Closed;
+    match exit {
+        // The owner's message ended the work: a typed stop is a stop; one
+        // that paused his goal leaves the work waiting on him.
+        TurnExit::Answered if owner_ended == Some(OwnerEnded::Stopped) => Closed::Stopped,
+        TurnExit::Answered if owner_ended == Some(OwnerEnded::GoalPaused) => Closed::Waiting,
+        TurnExit::Answered | TurnExit::Compacted => Closed::Unchecked,
+        TurnExit::AwaitingApproval | TurnExit::TerminalTool { .. } | TurnExit::OwnerQuestion => Closed::Waiting,
+        TurnExit::Cancelled if !stalled => Closed::Stopped,
+        TurnExit::MaxSteps { .. } => Closed::Ended(super::verify::Why::new("step_limit")),
+        _ => Closed::Ended(super::verify::Why::new("turn_ended")),
+    }
+}
+
+/// After the turn: the interrupt record, the usage row, the context line and
+/// the background work.
 pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit) {
     let h = &cx.harness;
     fold_repeats_of_the_answer(cx, &mut st.folds).await;
@@ -3321,15 +3352,8 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     // that came without its end check (the owner's message ended the work, a
     // reply with no words) leaves nothing marked as still being checked.
     if let Some(verify) = &st.verify {
-        use super::verify::engine::Closed;
-        let why = match exit {
-            TurnExit::Answered | TurnExit::Compacted => Closed::Unchecked,
-            TurnExit::AwaitingApproval | TurnExit::TerminalTool { .. } | TurnExit::OwnerQuestion => Closed::Waiting,
-            TurnExit::Cancelled if !cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) => Closed::Stopped,
-            TurnExit::MaxSteps { .. } => Closed::Ended(super::verify::Why::new("step_limit")),
-            _ => Closed::Ended(super::verify::Why::new("turn_ended")),
-        };
-        close_verifications(h, verify, why).await;
+        let stalled = cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst);
+        close_verifications(h, verify, closing(exit, stalled, st.owner_ended)).await;
     }
     // The badge of verified work sits on the reply that reported it.
     if let Some(verify) = &st.verify {
@@ -11454,6 +11478,24 @@ mod tests {
                 assert_eq!(v.state, "stopped", "{v:?}");
             })
         })
+    }
+
+    /// The owner's own message ending the work settles its verifications
+    /// the way his intent says: a typed stop is the Stop button's stop; one
+    /// that paused the goal he set leaves the work waiting on him, paused,
+    /// never closed as not verified.
+    #[test]
+    fn the_owners_message_settles_its_verifications_as_he_meant() {
+        use super::super::verify::engine::Closed;
+        assert_eq!(closing(&TurnExit::Answered, false, Some(OwnerEnded::Stopped)), Closed::Stopped);
+        assert_eq!(closing(&TurnExit::Cancelled, false, None), Closed::Stopped, "the same as the Stop button");
+        assert_eq!(closing(&TurnExit::Answered, false, Some(OwnerEnded::GoalPaused)), Closed::Waiting);
+        assert_eq!(closing(&TurnExit::AwaitingApproval, false, None), Closed::Waiting, "like any wait on him");
+        // Without his message: an answer that skipped its check, as before.
+        assert_eq!(closing(&TurnExit::Answered, false, None), Closed::Unchecked);
+        assert_eq!(closing(&TurnExit::Compacted, false, None), Closed::Unchecked);
+        assert_eq!(closing(&TurnExit::MaxSteps { steps: 3 }, false, None), Closed::Ended(super::super::verify::Why::new("step_limit")));
+        assert_eq!(closing(&TurnExit::Cancelled, true, None), Closed::Ended(super::super::verify::Why::new("turn_ended")), "a stalled run is no stop of his");
     }
 
     /// A turn that ends on an answer that never reached its end check (a
