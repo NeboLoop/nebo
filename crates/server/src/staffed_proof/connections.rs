@@ -564,7 +564,7 @@ async fn an_open_approval_outlives_its_turn_and_reaches_a_client_that_connects_l
     crate::chat_dispatch::finish_turn(
         &nebo.state,
         &run,
-        crate::chat_dispatch::TurnEnd { payload: json!({ "session_id": SESSION }), artifacts: &[], control_stop: None },
+        crate::chat_dispatch::TurnEnd { payload: json!({ "session_id": SESSION }), artifacts: &[], control_stop: None, done: None },
     )
     .await;
     drop(run);

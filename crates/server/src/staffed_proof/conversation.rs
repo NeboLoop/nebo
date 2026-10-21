@@ -5427,16 +5427,19 @@ async fn a_timer_due_while_its_conversation_is_busy_is_answered_by_the_running_t
 }
 
 /// A timer fire cut off by a restart after its request was already written
-/// into the owner's conversation is queued again by the boot sweep. It never
-/// runs again: the request is not asked twice. The conversation answers the
-/// request the dead turn left, and the Inbox points at that answer once,
+/// into the owner's conversation, mid-answer, is queued again by the boot
+/// sweep. It never runs again: the request is not asked twice. The
+/// conversation answers the request the dead turn left (its half-said first
+/// line is not the answer), and the Inbox points at that answer once,
 /// however many passes or restarts follow.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
     let nebo = session().await;
     const KEY: &str = "agent:assistant:thread:timer-144";
     let rules: Vec<Rule> = vec![Box::new(|t| {
-        if t.new_text().contains("MARK-144 check the oven") {
+        // The turn that answers reads the request where it sits, before the
+        // dead turn's half-said line.
+        if t.says("MARK-144 check the oven") && !t.says("REPORT-144") {
             return Some(Step::say("REPORT-144: the oven is at 350."));
         }
         t.new_text().contains("OWNER-144 ").then(|| Step::say("Timer set."))
@@ -5481,6 +5484,9 @@ async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
             Some(r#"{"isMeta":true,"hiddenPrompt":true}"#),
         )
         .unwrap();
+    // The dead turn had said a first line before its tool call: that is
+    // not the answer.
+    sessions.append_message(&session_id, "assistant", "Let me check the oven…", None, None, None).unwrap();
 
     // The restart: the boot sweep queues the cut-off fire again.
     let t = chrono::Utc::now().timestamp();
@@ -5510,10 +5516,70 @@ async fn a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once() {
     let chat = tools::owner_notify::link::conversation(store, KEY);
     assert_eq!(items()[0].action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)));
 
-    // Another restart, and more passes: nothing is asked or pointed at again.
+    // Another restart, and another turn's end: nothing is asked or pointed
+    // at again.
     crate::scheduler::follow_up_after_restart(&nebo.state, i64::MAX).await;
-    crate::scheduler::settle_follow_ups(&nebo.state).await;
+    crate::scheduler::turn_ended(&nebo.state, KEY, true).await;
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
     assert_eq!(items().len(), 1, "pointed at once");
     assert_eq!(rig.thread(KEY).iter().filter(|m| m.content.starts_with("REPORT-144")).count(), 1, "answered once");
+}
+
+/// A timer that joined a busy turn the owner then stops: the stopped turn's
+/// end closes its follow-up unanswered. No Inbox item points at the
+/// half-said reply, nothing later in the conversation is taken for the
+/// answer, and a restart never asks the stopped timer again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timer_whose_turn_the_owner_stops_is_closed_and_never_asked_again() {
+    let nebo = session().await;
+    const KEY: &str = "agent:assistant:thread:timer-145";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if t.new_text().contains("OWNER-145 first") {
+            return Some(Step::say("Noted."));
+        }
+        if t.new_text().contains("OWNER-145 later") {
+            return Some(Step::say("Sunny."));
+        }
+        t.new_text().contains("OWNER-145 long").then(|| Step::held("g145", "Let me check the oven…"))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(KEY, "assistant", None, "OWNER-145 first, set a timer").await;
+    rig.until(20, "the owner is answered", || rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content == "Noted.")).await;
+    let store = nebo.store();
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "")
+        .in_run(Some("run-145"), KEY)
+        .asked_in_chat(&tools::owner_notify::link::conversation(store, KEY));
+    let job = store
+        .create_cron_job("oven-145", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-145 check the oven"), None, None, true, Some("assistant"), None, None, &made)
+        .unwrap();
+
+    rig.owner_writes(KEY, "assistant", None, "OWNER-145 long job please").await;
+    rig.until(20, "the long turn is running", || rig.busy(KEY)).await;
+    let (ok, _, err) = tokio::time::timeout(std::time::Duration::from_secs(20), crate::scheduler::execute_job(&nebo.state, &job, true))
+        .await
+        .expect("the fire ends while the turn it joined is held");
+    assert!(ok, "{err:?}");
+    assert_eq!(store.open_schedule_follow_ups(Some(KEY)).unwrap().len(), 1, "its follow-up waits for the turn");
+
+    // The owner stops the turn.
+    assert!(nebo.state.run_registry.cancel_by_session(KEY).await);
+    rig.until(30, "the stopped turn's end closes the follow-up", || store.open_schedule_follow_ups(Some(KEY)).unwrap().is_empty()).await;
+    rig.until(20, "the turn is over", || !rig.busy(KEY)).await;
+
+    // The owner goes on; a restart follows.
+    rig.owner_writes(KEY, "assistant", None, "OWNER-145 later, what's the weather?").await;
+    rig.until(20, "the owner is answered", || rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content == "Sunny.")).await;
+    crate::scheduler::follow_up_after_restart(&nebo.state, i64::MAX).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let user = store.ensure_local_user_id().unwrap();
+    let items: Vec<_> = store
+        .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.id.starts_with(&format!("schedule:{}:", job.id)))
+        .collect();
+    assert!(items.is_empty(), "no pointer for a stopped timer: {items:#?}");
+    let thread = rig.thread(KEY);
+    assert_eq!(thread.iter().filter(|m| m.content.contains("MARK-145")).count(), 1, "never asked again: {thread:#?}");
 }

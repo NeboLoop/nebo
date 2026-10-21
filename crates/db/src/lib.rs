@@ -17,6 +17,7 @@ pub use queries::{AUTOMATION_KEY, ConversationQuery, Conversations, is_automatio
 pub use queries::InboundMailRow;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::{cron_ref, is_one_shot};
+pub use queries::{NewScheduleFollowUp, ScheduleFollowUp};
 pub use queries::{conversation_task_list, run_task_list};
 pub use queries::{HANDOFF_ASK_CAP, HANDOFF_LIVE, HANDOFF_RESULT_CAP, Handoff, HandoffQuery, NewHandoff};
 pub use queries::{NewVerification, VERIFICATION_LIVE, Verification, VerificationQuery, VerificationRound, VerificationState};

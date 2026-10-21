@@ -998,6 +998,8 @@ async fn drain_voice_run(
     // follows.
     let mut last_notice = String::new();
     let mut control_stop: Option<(String, String)> = None;
+    // The reason on the run's Done event.
+    let mut done: Option<String> = None;
     let mut last_event = tokio::time::Instant::now();
     // The run reaches the open thread as a typed chat's does (the same
     // chat_stream / thinking / text_verdict / tool_start / tool_result the
@@ -1127,6 +1129,7 @@ async fn drain_voice_run(
                     }
                 }
             }
+            ai::StreamEventType::Done => done = event.stop_reason.clone(),
             _ => {}
         }
     }
@@ -1155,6 +1158,7 @@ async fn drain_voice_run(
             payload: identity,
             artifacts: &artifacts,
             control_stop: control_stop.as_ref(),
+            done: done.as_deref(),
         },
     )
     .await;
@@ -1174,7 +1178,7 @@ async fn voice_run_failed(state: &AppState, session_key: &str, agent_id: &str, r
     payload["error"] = serde_json::json!(error);
     state.hub.broadcast("chat_error", payload);
     crate::chat_dispatch::record_run_error(&state.harness, session_key, error, None);
-    finish_turn(state, run_handle, TurnEnd { payload: identity, artifacts: &[], control_stop: None }).await;
+    finish_turn(state, run_handle, TurnEnd { payload: identity, artifacts: &[], control_stop: None, done: None }).await;
 }
 
 /// The spoken reply when a run ends: its text, else its typed status line

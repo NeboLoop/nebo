@@ -739,6 +739,33 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The reply to message `request_id` in its conversation: the last
+    /// assistant message with words after it and before the owner's next
+    /// message (a user row that is not Nebo's own, `isMeta`). None when
+    /// there is none.
+    pub fn reply_before_owner_speaks(&self, request_id: &str) -> Result<Option<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "WITH req AS (SELECT chat_id, created_at, rowid AS rid FROM chat_messages WHERE id = ?1),
+             owner_next AS (
+                 SELECT o.created_at, o.rowid AS rid FROM chat_messages o, req
+                 WHERE o.chat_id = req.chat_id AND o.role = 'user'
+                   AND COALESCE(json_extract(o.metadata, '$.isMeta'), 0) NOT IN (1, 'true')
+                   AND (o.created_at, o.rowid) > (req.created_at, req.rid)
+                 ORDER BY o.created_at, o.rowid LIMIT 1
+             )
+             SELECT m.* FROM chat_messages m, req
+             WHERE m.chat_id = req.chat_id AND m.role = 'assistant' AND trim(m.content) <> ''
+               AND (m.created_at, m.rowid) > (req.created_at, req.rid)
+               AND NOT EXISTS (SELECT 1 FROM owner_next WHERE (owner_next.created_at, owner_next.rid) < (m.created_at, m.rowid))
+             ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1",
+            params![request_id],
+            row_to_chat_message,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The title a chat has until it is named.
     pub const DEFAULT_CHAT_TITLE: &'static str = "New Chat";
 

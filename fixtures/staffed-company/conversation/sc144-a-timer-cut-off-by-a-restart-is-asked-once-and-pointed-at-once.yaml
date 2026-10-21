@@ -1,7 +1,7 @@
 id: sc144-a-timer-cut-off-by-a-restart-is-asked-once-and-pointed-at-once
 name: "SC144 — A timer cut off by a restart is asked once and pointed at once"
 description: |
-  A one-shot fire cut off by a restart after its request reached the owner's conversation is queued again by the boot sweep; it does not run again, the conversation answers the request the dead turn left, and the Inbox points at that answer exactly once.
+  A one-shot fire cut off by a restart after its request reached the owner's conversation, mid-answer, is queued again by the boot sweep; it does not run again, the conversation answers the request the dead turn left (its half-said first line is not the answer), and the Inbox points at that answer exactly once.
 target_component: staffed-company
 proof: staffed_proof::conversation::a_timer_cut_off_by_a_restart_is_asked_once_and_pointed_at_once
 conversation: []

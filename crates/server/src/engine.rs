@@ -1264,7 +1264,6 @@ async fn drive(state: &AppState) {
     }
 
     settle_held_sends(store, &state.permission_asks);
-    crate::scheduler::settle_follow_ups(state).await;
     resume_asks(store, &state.permission_asks, &state.tools, t);
     finish_temporary_work(state).await;
     finish_project_runs(state).await;

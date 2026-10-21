@@ -389,6 +389,9 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
             // The conversation was busy: the request joined the turn running
             // there, which answers it in that conversation itself.
             let mut joined = false;
+            // How the turn ended: its Done event's reason, or its error.
+            let mut done: Option<String> = None;
+            let mut failed: Option<String> = None;
             while let Some(event) = rx.recv().await {
                 run_handle.touch();
                 if event.stop_reason.as_deref() == Some(agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN) {
@@ -408,37 +411,47 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
                         );
                     }
                     ai::StreamEventType::Error => {
-                        let err = event.error.unwrap_or_default();
-                        return (false, full_text, Some(err));
+                        failed = Some(event.error.unwrap_or_default());
+                        break;
                     }
-                    ai::StreamEventType::Done => break,
+                    ai::StreamEventType::Done => {
+                        done = event.stop_reason;
+                        break;
+                    }
                     _ => {}
                 }
             }
             if joined {
-                // The turn running there answers it. This fire is done: the
-                // pointer to the answer is the follow-up's, sent when the
-                // answer lands.
+                // The turn running there answers it, and its end settles the
+                // follow-up. This fire is done.
                 info!(job = job.name.as_str(), session = %session_key, "scheduler: the conversation was busy; its running turn answers the schedule");
                 drop(run_handle);
-                if !hand_over(state, &session_key, job, started, false).await {
+                if !hand_over(state, &session_key, job, started, HandOver::Joined).await {
                     warn!(job = job.name.as_str(), session = %session_key, "scheduler: the request that joined the running turn was not found in its conversation");
                 }
                 return (true, full_text, None);
             }
             if origin.is_some() {
-                // The open view of the conversation finalizes the answer it
-                // streamed, as it does any turn's.
-                let payload = serde_json::json!({ "session_id": session_key, "agentId": agent_id.unwrap_or_default() });
-                crate::chat_dispatch::finish_turn(state, &run_handle, crate::chat_dispatch::TurnEnd { payload, artifacts: &[], control_stop: None }).await;
-            }
-            drop(run_handle);
-            if origin.is_some() {
-                if !hand_over(state, &session_key, job, started, false).await {
+                if !hand_over(state, &session_key, job, started, HandOver::OwnTurn).await {
                     warn!(job = job.name.as_str(), session = %session_key, "scheduler: the schedule's request was not found in its conversation");
                 }
-            } else if deliver {
-                deliver_reply(&state.store, &state.hub, &state.config.neboai.api_url, job, started, &reply, None);
+                // The open view of the conversation finalizes the answer it
+                // streamed, as it does any turn's, and the turn's end
+                // settles the follow-up.
+                let payload = serde_json::json!({ "session_id": session_key, "agentId": agent_id.unwrap_or_default() });
+                crate::chat_dispatch::finish_turn(
+                    state,
+                    &run_handle,
+                    crate::chat_dispatch::TurnEnd { payload, artifacts: &[], control_stop: None, done: done.as_deref() },
+                )
+                .await;
+            }
+            drop(run_handle);
+            if let Some(err) = failed {
+                return (false, full_text, Some(err));
+            }
+            if origin.is_none() && deliver {
+                deliver_reply(&state.store, &state.hub, &state.config.neboai.api_url, job, started, &reply);
             }
             (true, full_text, None)
         }
@@ -499,24 +512,11 @@ fn earlier_context(store: &Store, chat_id: &str) -> String {
         .join("\n")
 }
 
-/// Where a one-shot answered in the conversation it was asked in: that
-/// conversation, and the employee's message in it.
-pub(crate) struct Answered {
-    pub chat_id: String,
-    pub message_id: String,
-    /// The owner is in the app, looking at it: the answer reaches him there.
-    pub watching: bool,
-}
-
 /// How the request a one-shot writes into the owner's conversation begins
 /// ([`scheduled_turn`]): how the request is found there.
 fn request_marker(job: &CronJob) -> String {
     format!("The schedule \"{}\"", job.name)
 }
-
-/// The key of the follow-up that points the owner at the answer to request
-/// row `request_id` (`engine_effects.idem_key`).
-const FOLLOW_UP: &str = "schedule-answer:";
 
 /// The request a fire of `job` wrote into a conversation of the owner's
 /// session `session_key` at or after `since`.
@@ -524,62 +524,247 @@ fn request_in(store: &Store, session_key: &str, job: &CronJob, since: i64) -> Op
     store.last_hidden_prompt_in_session(session_key, &request_marker(job), since).ok().flatten()
 }
 
-/// The employee's answer to `request` in its conversation: its last message
-/// with words in the first reply after the request, which ends at the
-/// owner's next message. What the owner wrote before any reply is answered
-/// with it, by the turn that takes both in. None until a reply has words.
-fn answer_to(store: &Store, request: &db::models::ChatMessage) -> Option<db::models::ChatMessage> {
-    let rows = store.get_chat_messages(&request.chat_id).ok()?;
-    let asked = rows.iter().position(|m| m.id == request.id)?;
-    let after = &rows[asked + 1..];
-    let first_reply = after.iter().position(|m| m.role == "assistant")?;
-    after[first_reply..]
-        .iter()
-        .take_while(|m| !(m.role == "user" && conversation_said_by_owner(m)))
-        .filter(|m| m.role == "assistant" && !m.content.trim().is_empty())
-        .last()
-        .cloned()
+/// The follow-up that points the owner at the answer to `request`, a fire of
+/// `job` in session `session_key` (`schedule_follow_ups`). It carries the
+/// schedule's name and employee, so the pointer goes out even when the
+/// schedule is deleted before the answer. Kept once per request.
+fn keep_follow_up(store: &Store, session_key: &str, job: &CronJob, request: &db::models::ChatMessage) -> Result<db::ScheduleFollowUp, types::NeboError> {
+    store.keep_schedule_follow_up(&db::NewScheduleFollowUp {
+        request_id: &request.id,
+        session_key,
+        chat_id: &request.chat_id,
+        job_id: job.id,
+        job_name: &job.name,
+        agent_id: job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID),
+        asked_at: request.created_at,
+    })
 }
 
-/// A row the owner wrote, not one the platform or a notification wrote.
-fn conversation_said_by_owner(m: &db::models::ChatMessage) -> bool {
-    !m.metadata.as_deref().is_some_and(|meta| meta.contains("\"isMeta\":true"))
+/// Which turn takes in the request a fire handed over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandOver {
+    /// The fire's own turn, which has just ended: its end settles the
+    /// follow-up (`chat_dispatch::finish_turn`).
+    OwnTurn,
+    /// The turn already running in the conversation: its end settles it.
+    Joined,
+    /// A turn of the last process, which ended with it: the conversation is
+    /// asked to answer it, once ([`ask_again`]).
+    AfterRestart,
 }
 
 /// A fire of `job` wrote its request into the owner's conversation on
-/// `session_key` (at or after `since`): the answer is that conversation's
-/// from here, and the fire is done. The Inbox pointer and push to the answer
-/// are a follow-up kept in the effects ledger, keyed to the request row, so
-/// it is sent once, when the answer lands, whatever restarts come between
-/// ([`settle_follow_ups`]). Settled at once when the answer is already
-/// there. `after_restart`: the turn that took the request in ended with the
-/// last process; when nothing answered it, the conversation is asked to
-/// answer it again, once ([`ask_again`]). False when no such request is
-/// there.
-pub(crate) async fn hand_over(state: &AppState, session_key: &str, job: &CronJob, since: i64, after_restart: bool) -> bool {
+/// `session_key` (at or after `since`): from here the answer is that
+/// conversation's, and the fire is done. The Inbox pointer to the answer is
+/// a follow-up row ([`keep_follow_up`]), settled once when the turn that
+/// takes the request in ends ([`turn_ended`]); nothing waits in memory.
+/// False when no such request is there.
+pub(crate) async fn hand_over(state: &AppState, session_key: &str, job: &CronJob, since: i64, how: HandOver) -> bool {
     let Some(request) = request_in(&state.store, session_key, job, since) else {
         return false;
     };
     let follow_up = match keep_follow_up(&state.store, session_key, job, &request) {
-        Ok(Some(e)) => e,
-        Ok(None) => return true,
+        Ok(f) => f,
         Err(e) => {
             warn!(job = job.name.as_str(), error = %e, "scheduler: the follow-up to the schedule's answer was not kept");
             return true;
         }
     };
-    if follow_up.state == "pending" && !state.harness.is_session_busy(session_key) && !settle_follow_up(state, &follow_up).await && after_restart {
-        ask_again(state, &follow_up);
+    match how {
+        HandOver::OwnTurn => {}
+        // The turn it joined ended before the follow-up was kept: its end
+        // found nothing to settle, so it is settled here, by what that turn
+        // left.
+        HandOver::Joined if !state.harness.is_session_busy(session_key) => settle(state, &follow_up, true).await,
+        HandOver::Joined => {}
+        HandOver::AfterRestart => ask_again(state, &follow_up),
     }
     true
 }
 
-/// The follow-up that points the owner at the answer to `request`, kept
-/// once per request: a second call returns the same row.
-fn keep_follow_up(store: &Store, session_key: &str, job: &CronJob, request: &db::models::ChatMessage) -> Result<Option<db::EngineEffect>, types::NeboError> {
-    let key = format!("{FOLLOW_UP}{}", request.id);
-    let id = store.engine_effect_pending(session_key, "messaging", &key, "inbox", &job.id.to_string(), "owner")?;
-    store.engine_get_effect(id)
+/// A turn on `session_key` ended (`chat_dispatch::finish_turn`): every open
+/// follow-up there is settled. `answered`: the turn ended with its answer
+/// (not stopped, failed, or waiting on the owner). Only then is its final
+/// reply the answer; otherwise, or when the owner wrote before it replied,
+/// the follow-up is closed unanswered.
+pub(crate) async fn turn_ended(state: &AppState, session_key: &str, answered: bool) {
+    for f in state.store.open_schedule_follow_ups(Some(session_key)).unwrap_or_default() {
+        settle(state, &f, answered).await;
+    }
+}
+
+/// Boot: the follow-ups the last process left open (kept before `booted`).
+/// A pending one's request was taken in by a turn that ended with that
+/// process: the conversation is asked to answer it. One that was already
+/// asked again before `booted` and is still open died the same way twice:
+/// it is closed unanswered, never asked a third time.
+pub(crate) async fn follow_up_after_restart(state: &AppState, booted: i64) {
+    for f in state.store.open_schedule_follow_ups(None).unwrap_or_default().into_iter().filter(|f| f.created_at < booted) {
+        match f.asked_again_at {
+            None => ask_again(state, &f),
+            Some(at) if at < booted => settle(state, &f, false).await,
+            Some(_) => {}
+        }
+    }
+}
+
+/// The turn that took a schedule's request in ended with the last process
+/// before it answered (or mid-answer: a reply cut off before its tool call
+/// is not an answer). The conversation answers what it holds, as any
+/// stopped thread does (`wake::answer_thread`), and that turn's end settles
+/// the follow-up. Once per follow-up: only the call that marks it asked
+/// again asks.
+fn ask_again(state: &AppState, f: &db::ScheduleFollowUp) {
+    match state.store.ask_schedule_follow_up_again(&f.request_id, now_secs()) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            warn!(request = %f.request_id, error = %e, "scheduler: could not record asking again; not asked");
+            return;
+        }
+    }
+    info!(session = %f.session_key, job = f.job_name.as_str(), "scheduler: a schedule's request was left unanswered by the last process; its conversation answers it");
+    let state = state.clone();
+    let session_key = f.session_key.clone();
+    tokio::spawn(async move { crate::wake::answer_thread(&state, &session_key, 0, Vec::new()).await });
+}
+
+async fn settle(state: &AppState, f: &db::ScheduleFollowUp, answered: bool) {
+    let watching = state.presence.get("_global").await == Some(agent::proactive::Presence::Focused);
+    settle_with(&state.store, &state.hub, &state.config.neboai.api_url, f, answered, watching);
+}
+
+/// Settle follow-up `f` once: when its turn `answered`, point the owner at
+/// that turn's reply to the request ([`db::Store::reply_before_owner_speaks`]);
+/// otherwise close it unanswered. The row is claimed first, so only one
+/// caller ever posts.
+fn settle_with(store: &Store, hub: &crate::handlers::ws::ClientHub, api_url: &str, f: &db::ScheduleFollowUp, answered: bool, watching: bool) {
+    let answer = if answered { store.reply_before_owner_speaks(&f.request_id).ok().flatten() } else { None };
+    match store.settle_schedule_follow_up(&f.request_id, answer.as_ref().map(|m| m.id.as_str()), now_secs()) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            warn!(request = %f.request_id, error = %e, "scheduler: could not settle a schedule's follow-up");
+            return;
+        }
+    }
+    let Some(answer) = answer else {
+        info!(job = f.job_name.as_str(), session = %f.session_key, "scheduler: the schedule's request was not answered; no pointer");
+        return;
+    };
+    post_reply(
+        store,
+        hub,
+        api_url,
+        &Reply {
+            job_id: f.job_id,
+            title: &f.job_name,
+            agent_id: &f.agent_id,
+            started: f.asked_at,
+            text: &answer.content,
+            place: tools::owner_notify::link::chat(&f.agent_id, &f.chat_id),
+            link: tools::owner_notify::link::message(&f.agent_id, &f.chat_id, &answer.id),
+            in_conversation: Some((&f.chat_id, watching)),
+        },
+    );
+}
+
+/// Whether a prompt job's replies reach the owner through [`deliver_reply`]:
+/// a one-shot (a timer, a reminder) does — it is the answer to what the
+/// owner asked for. A repeating one never does, wherever it was made. The
+/// desktop's "completed" line would only repeat it.
+fn delivers_reply(job: &CronJob) -> bool {
+    job.task_type == "agent" && db::is_one_shot(&job.schedule)
+}
+
+/// A one-shot prompt job's run ended with `reply` in the job's own thread:
+/// the system, not the model, brings it to the owner, so a timer or a "tell
+/// me when" never depends on the model choosing to send it. Once per run
+/// (`started` is when it began), it lands in his Inbox, loud, and opens that
+/// thread ([`post_reply`]). A one-shot asked for in a conversation answers
+/// there instead, and its follow-up points at the answer ([`settle_with`]).
+///
+/// A repeating job is background work and its reply goes nowhere: never a
+/// report per fire (2026-10-18: an hourly calendar check said "nothing
+/// actionable" into his chat at 4 PM). Its fire is a run in the Workforce;
+/// what it has for the owner it posts to his Inbox itself
+/// (`push_notification`), and a fire with nothing for him posts nowhere.
+pub(crate) fn deliver_reply(store: &Store, hub: &crate::handlers::ws::ClientHub, api_url: &str, job: &CronJob, started: i64, reply: &str) {
+    if !delivers_reply(job) {
+        return;
+    }
+    let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID);
+    let place = tools::owner_notify::link::session_chat(store, agent_id, &job_session_key(job));
+    post_reply(
+        store,
+        hub,
+        api_url,
+        &Reply { job_id: job.id, title: &job.name, agent_id, started, text: reply, link: place.clone(), place, in_conversation: None },
+    );
+}
+
+/// A schedule's reply, as its Inbox item carries it.
+struct Reply<'a> {
+    job_id: i64,
+    /// The schedule's name.
+    title: &'a str,
+    agent_id: &'a str,
+    /// When the run began, or its request was written: items since then
+    /// are this run's.
+    started: i64,
+    text: &'a str,
+    /// The conversation the reply is in: an item the run posted itself
+    /// points there (`push_notification`, `message_owner`), and so does
+    /// this one. Another item of the same employee's, about other work, is
+    /// not it.
+    place: String,
+    /// Where the item opens.
+    link: String,
+    /// Answered in the owner's own conversation (its chat id), and whether
+    /// he is watching the app.
+    in_conversation: Option<(&'a str, bool)>,
+}
+
+/// Bring the owner a schedule's reply: one Inbox item and the phone's copy,
+/// unless the run already put one there itself. In his own conversation the
+/// item is a pointer to the answer (owner, 2026-10-20): loud (a popup, and a
+/// push that sounds on his phone) unless he is watching the app, when the
+/// Inbox row arrives quietly and the phone's push is passive, listed without
+/// a sound or a banner. In the job's own thread it is always loud.
+fn post_reply(store: &Store, hub: &crate::handlers::ws::ClientHub, api_url: &str, r: &Reply<'_>) {
+    let text = r.text.trim();
+    if text.is_empty() {
+        return;
+    }
+    let user = store.ensure_local_user_id().unwrap_or_default();
+    let posted_itself = store
+        .list_user_notifications(&user, db::models::InboxView::All, Some(r.agent_id), 20, 0)
+        .unwrap_or_default()
+        .iter()
+        .any(|n| n.created_at >= r.started && n.action_url.as_deref().is_some_and(|url| url.starts_with(&r.place)));
+    if posted_itself {
+        info!(job = r.title, "scheduler: the run already posted to the Inbox; no second item");
+        return;
+    }
+    let id = format!("schedule:{}:{}", r.job_id, r.started);
+    let n = tools::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "info",
+        title: r.title,
+        body: Some(crate::truncate_str(text, 500)),
+        action_url: Some(&r.link),
+        agent_id: Some(r.agent_id),
+        loud: r.in_conversation.is_none_or(|(_, watching)| !watching),
+        link_label: Some("Chat"),
+        ..Default::default()
+    };
+    tools::owner_notify::emit(store, Some(&|ev, payload| hub.broadcast(ev, payload)), &n);
+    let extra = match r.in_conversation {
+        Some((chat_id, true)) => serde_json::json!({ "chatId": chat_id, "interruptionLevel": "passive" }),
+        Some((chat_id, false)) => serde_json::json!({ "chatId": chat_id }),
+        None => serde_json::json!({}),
+    };
+    crate::codes::push_inbox_via(store, api_url, n.hub_item(extra));
 }
 
 /// Why a queued fire of a prompt job does not run, when it doesn't.
@@ -608,178 +793,10 @@ pub(crate) async fn fire_settled(state: &AppState, job: &CronJob, queued_at: i64
     }
     let asked_in_chat = job.created_in_chat.as_deref().is_some_and(|c| !c.is_empty());
     let session_key = job.created_in.as_deref().filter(|k| !k.is_empty())?;
-    if delivers_reply(job) && asked_in_chat && hand_over(state, session_key, job, queued_at, true).await {
+    if delivers_reply(job) && asked_in_chat && hand_over(state, session_key, job, queued_at, HandOver::AfterRestart).await {
         return Some(FireSettled::HandedOver);
     }
     None
-}
-
-/// Engine pass: every follow-up whose conversation has no turn running is
-/// settled once its answer has landed.
-pub(crate) async fn settle_follow_ups(state: &AppState) {
-    for e in pending_follow_ups(&state.store) {
-        if !state.harness.is_session_busy(&e.run_id) {
-            settle_follow_up(state, &e).await;
-        }
-    }
-}
-
-/// Boot: the follow-ups the last process left (kept before `booted`). Each
-/// whose answer landed is settled; one whose request no turn answered (the
-/// turn that took it in ended with that process) has its conversation asked
-/// to answer it.
-pub(crate) async fn follow_up_after_restart(state: &AppState, booted: i64) {
-    for e in pending_follow_ups(&state.store).into_iter().filter(|e| e.created_at < booted) {
-        if !state.harness.is_session_busy(&e.run_id) && !settle_follow_up(state, &e).await {
-            ask_again(state, &e);
-        }
-    }
-}
-
-fn pending_follow_ups(store: &Store) -> Vec<db::EngineEffect> {
-    store.engine_pending_effects().unwrap_or_default().into_iter().filter(|e| e.idem_key.starts_with(FOLLOW_UP)).collect()
-}
-
-/// The turn that took a schedule's request in ended with the last process
-/// before it answered: the conversation answers what it holds, as any
-/// stopped thread does (`wake::answer_thread`). Once per follow-up: the
-/// ledger row records it.
-fn ask_again(state: &AppState, e: &db::EngineEffect) {
-    if e.result.is_some() {
-        return;
-    }
-    if let Err(err) = state.store.engine_effect_held(e.id, "asked again: the turn that took the request in ended with the last process") {
-        warn!(follow_up = e.id, error = %err, "scheduler: could not record asking again; not asked");
-        return;
-    }
-    info!(session = %e.run_id, follow_up = e.id, "scheduler: a schedule's request was left unanswered by the last process; its conversation answers it");
-    let state = state.clone();
-    let session_key = e.run_id.clone();
-    tokio::spawn(async move { crate::wake::answer_thread(&state, &session_key, 0, Vec::new()).await });
-}
-
-async fn settle_follow_up(state: &AppState, e: &db::EngineEffect) -> bool {
-    let watching = state.presence.get("_global").await == Some(agent::proactive::Presence::Focused);
-    settle_follow_up_with(&state.store, &state.hub, &state.config.neboai.api_url, e, watching)
-}
-
-/// Point the owner at the answer follow-up `e` waits for, when it has
-/// landed ([`deliver_reply`]), and close the follow-up. True when it is
-/// closed: pointed, or its schedule or its conversation is gone.
-fn settle_follow_up_with(store: &Store, hub: &crate::handlers::ws::ClientHub, api_url: &str, e: &db::EngineEffect, watching: bool) -> bool {
-    // One settler at a time: the scheduler's own fire and the engine pass
-    // may reach the same follow-up together.
-    static SETTLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = SETTLING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !matches!(store.engine_get_effect(e.id), Ok(Some(now)) if now.state == "pending") {
-        return true;
-    }
-    let job = e.provider_key.parse::<i64>().ok().and_then(|id| store.get_cron_job(id).ok().flatten());
-    let request = e.idem_key.strip_prefix(FOLLOW_UP).and_then(|id| store.get_chat_message(id).ok().flatten());
-    let (Some(job), Some(request)) = (job, request) else {
-        if let Err(err) = store.engine_effect_failed(e.id, "its schedule or its conversation was removed", now_secs()) {
-            warn!(follow_up = e.id, error = %err, "scheduler: could not close a follow-up with nothing to point at");
-        }
-        return true;
-    };
-    let Some(answer) = answer_to(store, &request) else {
-        return false;
-    };
-    let answered = Answered { chat_id: request.chat_id.clone(), message_id: answer.id.clone(), watching };
-    deliver_reply(store, hub, api_url, &job, request.created_at, &answer.content, Some(&answered));
-    if let Err(err) = store.engine_effect_completed(e.id, Some(&answer.id), Some("the owner was pointed at the answer"), now_secs()) {
-        warn!(follow_up = e.id, error = %err, "scheduler: the owner was pointed at the answer, but the follow-up was not closed");
-    }
-    true
-}
-
-/// Whether a prompt job's replies reach the owner through [`deliver_reply`]:
-/// a one-shot (a timer, a reminder) does — it is the answer to what the
-/// owner asked for. A repeating one never does, wherever it was made. The
-/// desktop's "completed" line would only repeat it.
-fn delivers_reply(job: &CronJob) -> bool {
-    job.task_type == "agent" && db::is_one_shot(&job.schedule)
-}
-
-/// A one-shot prompt job's run ended with `reply`: the system, not the
-/// model, brings it to the owner, so a timer or a "tell me when" never
-/// depends on the model choosing to send it. Once per run (`started` is
-/// when it began, or, asked for in a conversation, when its request was
-/// written there), it lands in his Inbox — unless the run already put it
-/// there itself (`push_notification`, `message_owner`).
-///
-/// Asked for in a conversation, the run answered there (`answered`): the
-/// employee's message in that conversation IS the answer, and the item is
-/// its pointer, opening that conversation at that message (owner,
-/// 2026-10-20). It is loud (a popup, and a push that sounds on his phone)
-/// unless he is watching the app: then the Inbox row arrives quietly and the
-/// phone's push is passive, listed without a sound or a banner. Made
-/// anywhere else, the run answered in the job's own thread: the item opens
-/// that thread, and is always loud.
-///
-/// A repeating job is background work and its reply goes nowhere: never a
-/// report per fire (2026-10-18: an hourly calendar check said "nothing
-/// actionable" into his chat at 4 PM). Its fire is a run in the Workforce;
-/// what it has for the owner it posts to his Inbox itself
-/// (`push_notification`), and a fire with nothing for him posts nowhere.
-pub(crate) fn deliver_reply(
-    store: &Store,
-    hub: &crate::handlers::ws::ClientHub,
-    api_url: &str,
-    job: &CronJob,
-    started: i64,
-    reply: &str,
-    answered: Option<&Answered>,
-) {
-    let reply = reply.trim();
-    if reply.is_empty() || !delivers_reply(job) {
-        return;
-    }
-    let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID);
-    // The conversation the run answered in: an item the run posted itself
-    // points there (`push_notification`, `message_owner`), and so does this
-    // one. Another item of the same employee's, about other work, is not it.
-    let place = match answered {
-        Some(a) => tools::owner_notify::link::chat(agent_id, &a.chat_id),
-        None => tools::owner_notify::link::session_chat(store, agent_id, &job_session_key(job)),
-    };
-    let user = store.ensure_local_user_id().unwrap_or_default();
-    let posted_itself = store
-        .list_user_notifications(&user, db::models::InboxView::All, Some(agent_id), 20, 0)
-        .unwrap_or_default()
-        .iter()
-        .any(|n| n.created_at >= started && n.action_url.as_deref().is_some_and(|url| url.starts_with(&place)));
-    if posted_itself {
-        info!(job = job.name.as_str(), "scheduler: the run already posted to the Inbox; no second item");
-        return;
-    }
-    let id = format!("schedule:{}:{started}", job.id);
-    let link = match answered {
-        Some(a) => tools::owner_notify::link::message(agent_id, &a.chat_id, &a.message_id),
-        None => place,
-    };
-    let body = crate::truncate_str(reply, 500);
-    let n = tools::owner_notify::OwnerNotification {
-        id: &id,
-        kind: "info",
-        title: &job.name,
-        body: Some(body),
-        action_url: Some(&link),
-        agent_id: Some(agent_id),
-        loud: answered.is_none_or(|a| !a.watching),
-        link_label: Some("Chat"),
-        ..Default::default()
-    };
-    tools::owner_notify::emit(store, Some(&|ev, payload| hub.broadcast(ev, payload)), &n);
-    // The phone's copy: the chat it opens, and, while the owner is watching
-    // the answer arrive, a push that waits in his notifications without
-    // sounding.
-    let extra = match answered {
-        Some(a) if a.watching => serde_json::json!({ "chatId": a.chat_id, "interruptionLevel": "passive" }),
-        Some(a) => serde_json::json!({ "chatId": a.chat_id }),
-        None => serde_json::json!({}),
-    };
-    crate::codes::push_inbox_via(store, api_url, n.hub_item(extra));
 }
 
 /// The one thread every fire of a prompt job runs in: the employee's, when
@@ -1225,10 +1242,23 @@ mod tests {
     }
 
     /// The fire that wrote `request` hands it over: the follow-up it keeps.
-    fn handed_over(store: &Store, job: &CronJob, request: &db::models::ChatMessage) -> db::EngineEffect {
+    fn handed_over(store: &Store, job: &CronJob, request: &db::models::ChatMessage) -> db::ScheduleFollowUp {
         let found = request_in(store, "agent:ava:thread:X", job, request.created_at).expect("the request is found where it was written");
         assert_eq!(found.id, request.id);
-        keep_follow_up(store, "agent:ava:thread:X", job, &found).unwrap().unwrap()
+        keep_follow_up(store, "agent:ava:thread:X", job, &found).unwrap()
+    }
+
+    fn state_of(store: &Store, f: &db::ScheduleFollowUp) -> db::ScheduleFollowUp {
+        store.keep_schedule_follow_up(&db::NewScheduleFollowUp {
+            request_id: &f.request_id,
+            session_key: &f.session_key,
+            chat_id: &f.chat_id,
+            job_id: f.job_id,
+            job_name: &f.job_name,
+            agent_id: &f.agent_id,
+            asked_at: f.asked_at,
+        })
+        .unwrap()
     }
 
     fn heard(rx: &mut tokio::sync::broadcast::Receiver<crate::handlers::ws::HubEvent>) -> Vec<String> {
@@ -1239,10 +1269,11 @@ mod tests {
         events
     }
 
-    /// A timer asked for in chat X runs in X and answers there: the Inbox
-    /// item points at that answer (X, at its message), loud when the owner
-    /// is away and quiet while he watches. It is never a second copy of the
-    /// answer in X. Settling the same follow-up again changes nothing.
+    /// A timer asked for in chat X runs in X and answers there: once the
+    /// turn ends with its answer, the Inbox item points at the turn's final
+    /// reply (X, at its message), loud when the owner is away and quiet
+    /// while he watches. It is never a second copy of the answer in X.
+    /// Settling the same follow-up again changes nothing.
     #[tokio::test]
     async fn a_one_shot_from_a_chat_answers_in_it_and_its_inbox_item_opens_the_answer() {
         let (_d, store, job) = delivery_rig(true, true);
@@ -1251,74 +1282,100 @@ mod tests {
         let hub = crate::handlers::ws::ClientHub::new();
         let mut rx = hub.subscribe();
         let request = ask_in_x(&store);
+        reply_in_x(&store, "Let me check.");
         reply_in_x(&store, "");
         let message = reply_in_x(&store, "  Ding! Your one-minute timer just went off.  ");
         let follow_up = handed_over(&store, &job, &request);
-        assert!(settle_follow_up_with(&store, &hub, "", &follow_up, false));
+        settle_with(&store, &hub, "", &follow_up, true, false);
 
-        assert_eq!(said(&store, "X"), ["", "  Ding! Your one-minute timer just went off.  "], "the answer is in X once");
         let items = inbox(&store);
         assert_eq!(items.len(), 1, "{items:#?}");
         assert_eq!(items[0].title, "one-minute-timer");
         assert_eq!(items[0].body.as_deref(), Some("Ding! Your one-minute timer just went off."));
         assert_eq!(items[0].agent_id.as_deref(), Some("ava"));
         assert_eq!(items[0].link_label.as_deref(), Some("Chat"));
-        assert_eq!(items[0].action_url.as_deref(), Some(format!("/ava/threads/X?message={message}").as_str()), "it opens the answer");
+        assert_eq!(items[0].action_url.as_deref(), Some(format!("/ava/threads/X?message={message}").as_str()), "it opens the final reply");
         let events = heard(&mut rx);
         assert!(events.iter().any(|e| e == "notification"), "away, a timer going off is loud: {events:?}");
-        assert_eq!(store.engine_get_effect(follow_up.id).unwrap().unwrap().state, "completed");
+        let settled = state_of(&store, &follow_up);
+        assert_eq!((settled.state.as_str(), settled.answer_id.as_deref()), ("pointed", Some(message.as_str())));
 
-        assert!(settle_follow_up_with(&store, &hub, "", &follow_up, false));
-        assert_eq!(handed_over(&store, &job, &request).id, follow_up.id, "one follow-up per request");
-        assert!(settle_follow_up_with(&store, &hub, "", &handed_over(&store, &job, &request), false));
+        settle_with(&store, &hub, "", &follow_up, true, false);
+        assert_eq!(handed_over(&store, &job, &request), settled, "one follow-up per request");
         assert_eq!(inbox(&store).len(), 1, "once per request");
         assert!(heard(&mut rx).is_empty(), "nothing is said twice");
+        assert!(store.open_schedule_follow_ups(None).unwrap().is_empty());
 
         // Watching: the same item, waiting quietly.
         let (_d, store, job) = delivery_rig(true, true);
         let mut rx = hub.subscribe();
         let request = ask_in_x(&store);
         reply_in_x(&store, "Ding!");
-        assert!(settle_follow_up_with(&store, &hub, "", &handed_over(&store, &job, &request), true));
+        settle_with(&store, &hub, "", &handed_over(&store, &job, &request), true, true);
         assert_eq!(inbox(&store).len(), 1);
         let events = heard(&mut rx);
         assert!(events.iter().any(|e| e == "notification_created") && !events.iter().any(|e| e == "notification"), "{events:?}");
     }
 
-    /// The request joined a turn that then ended with the process (a
-    /// restart, or a turn that took its time): the follow-up waits, durably,
-    /// and the pointer goes out once when the answer lands, however many
-    /// times it is looked at, and only to the answer. What the owner wrote
-    /// before any reply is answered with the request.
+    /// The turn that took the request in ended without its answer: the owner
+    /// stopped it, or it failed (its end is not `text_response`), even with
+    /// words said before (a reply cut off before its tool call). Or the owner
+    /// wrote before it replied, and its reply came after his words. Each
+    /// closes the follow-up unanswered, with no pointer, and nothing later
+    /// in the conversation is ever taken for the answer.
     #[tokio::test]
-    async fn the_pointer_waits_for_the_answer_and_goes_out_once() {
-        let (_d, store, job) = delivery_rig(true, true);
+    async fn a_turn_that_ends_without_the_answer_closes_the_follow_up() {
         let hub = crate::handlers::ws::ClientHub::new();
-        let request = ask_in_x(&store);
-        let follow_up = handed_over(&store, &job, &request);
-        assert!(!settle_follow_up_with(&store, &hub, "", &follow_up, false), "nothing answered yet");
-        store.create_chat_message("x-owner", "X", "user", "Also, what's the weather?", None).unwrap();
-        assert!(!settle_follow_up_with(&store, &hub, "", &follow_up, false), "the owner's words are not the answer");
-        assert!(inbox(&store).is_empty());
-        assert_eq!(pending_follow_ups(&store).len(), 1, "it waits in the ledger, through any restart");
-
-        let answer = reply_in_x(&store, "68 mph. And it's sunny.");
-        store.create_chat_message("x-owner-2", "X", "user", "Thanks", None).unwrap();
-        reply_in_x(&store, "Any time.");
-        for _ in 0..3 {
-            assert!(settle_follow_up_with(&store, &hub, "", &store.engine_get_effect(follow_up.id).unwrap().unwrap(), false));
+        for what in ["stopped", "failed"] {
+            let (_d, store, job) = delivery_rig(true, true);
+            let request = ask_in_x(&store);
+            reply_in_x(&store, "Let me check the oven…");
+            let follow_up = handed_over(&store, &job, &request);
+            settle_with(&store, &hub, "", &follow_up, false, false);
+            assert_eq!(state_of(&store, &follow_up).state, "unanswered", "{what}");
+            assert!(inbox(&store).is_empty(), "{what}: no pointer to a half-said reply");
+            // A later reply, about other work, is never taken for it.
+            store.create_chat_message("x-owner", "X", "user", "Something else: what's the weather?", None).unwrap();
+            reply_in_x(&store, "Sunny.");
+            settle_with(&store, &hub, "", &follow_up, true, false);
+            assert!(inbox(&store).is_empty(), "{what}: settled once");
+            assert!(store.open_schedule_follow_ups(None).unwrap().is_empty(), "{what}");
         }
-        let items = inbox(&store);
-        assert_eq!(items.len(), 1, "{items:#?}");
-        assert_eq!(items[0].action_url.as_deref(), Some(format!("/ava/threads/X?message={answer}").as_str()), "the reply to the request, not a later one");
-        assert!(pending_follow_ups(&store).is_empty());
 
-        // Its schedule removed: nothing to point at, and it is closed.
+        // The owner wrote before any reply: the reply after his words is his.
+        let (_d, store, job) = delivery_rig(true, true);
+        let request = ask_in_x(&store);
+        store.create_chat_message("x-owner", "X", "user", "Also, what's the weather?", None).unwrap();
+        reply_in_x(&store, "68 mph. And it's sunny.");
+        assert!(store.reply_before_owner_speaks(&request.id).unwrap().is_none());
+        let follow_up = handed_over(&store, &job, &request);
+        settle_with(&store, &hub, "", &follow_up, true, false);
+        assert_eq!(state_of(&store, &follow_up).state, "unanswered");
+        assert!(inbox(&store).is_empty());
+
+        // Nothing replied at all.
         let (_d, store, job) = delivery_rig(true, true);
         let follow_up = handed_over(&store, &job, &ask_in_x(&store));
+        settle_with(&store, &hub, "", &follow_up, true, false);
+        assert_eq!(state_of(&store, &follow_up).state, "unanswered");
+    }
+
+    /// The schedule was deleted after its request went in and before the
+    /// answer: the follow-up carries its name and employee, so the pointer
+    /// still goes out.
+    #[tokio::test]
+    async fn a_schedule_deleted_before_its_answer_still_points_at_it() {
+        let hub = crate::handlers::ws::ClientHub::new();
+        let (_d, store, job) = delivery_rig(true, true);
+        let request = ask_in_x(&store);
+        let follow_up = handed_over(&store, &job, &request);
         store.delete_cron_job_by_name("one-minute-timer").unwrap();
-        assert!(settle_follow_up_with(&store, &hub, "", &follow_up, false));
-        assert!(pending_follow_ups(&store).is_empty() && inbox(&store).is_empty());
+        let answer = reply_in_x(&store, "Ding!");
+        settle_with(&store, &hub, "", &follow_up, true, false);
+        let items = inbox(&store);
+        assert_eq!(items.len(), 1, "{items:#?}");
+        assert_eq!(items[0].title, "one-minute-timer");
+        assert_eq!(items[0].action_url.as_deref(), Some(format!("/ava/threads/X?message={answer}").as_str()));
     }
 
     /// A fire is queued again by the boot sweep once a restart cut it off.
@@ -1392,7 +1449,7 @@ mod tests {
             &tools::owner_notify::OwnerNotification { id: "other", kind: "info", title: "Report", body: Some("sent"), action_url: Some("/ava/threads/Z"), agent_id: Some("ava"), ..Default::default() },
         );
         reply_in_x(&store, "Ding!");
-        assert!(settle_follow_up_with(&store, &hub, "", &handed_over(&store, &job, &request), false));
+        settle_with(&store, &hub, "", &handed_over(&store, &job, &request), true, false);
         assert_eq!(inbox(&store).len(), 2, "the run's own Inbox item is the only one about it");
         let (_d, store, job) = delivery_rig(true, true);
         let request = ask_in_x(&store);
@@ -1402,7 +1459,7 @@ mod tests {
             &tools::owner_notify::OwnerNotification { id: "other", kind: "info", title: "Report", body: Some("sent"), action_url: Some("/ava/threads/Z"), agent_id: Some("ava"), ..Default::default() },
         );
         reply_in_x(&store, "Ding!");
-        assert!(settle_follow_up_with(&store, &hub, "", &handed_over(&store, &job, &request), false));
+        settle_with(&store, &hub, "", &handed_over(&store, &job, &request), true, false);
         assert!(inbox(&store).iter().any(|n| n.id.starts_with("schedule:")), "an unrelated item never stands in for the timer's");
     }
 
@@ -1421,7 +1478,7 @@ mod tests {
         store.create_chat_for_session("agent:ava:cron:one-minute-timer", "agent:ava:cron:one-minute-timer", "Timer", None).unwrap();
         assert!(delivers_reply(&job));
         assert!(origin_chat(&store, &job).is_none(), "made outside a conversation, it runs in its own thread");
-        deliver_reply(&store, &hub, "", &job, now_secs(), "Ding!", None);
+        deliver_reply(&store, &hub, "", &job, now_secs(), "Ding!");
         assert!(said(&store, "X").is_empty());
         let items = inbox(&store);
         assert_eq!(items.len(), 1);
@@ -1430,17 +1487,17 @@ mod tests {
         let (_d, store, job) = delivery_rig(false, true);
         assert!(!delivers_reply(&job));
         assert!(origin_chat(&store, &job).is_none(), "a repeating job never runs in the owner's chat");
-        deliver_reply(&store, &hub, "", &job, now_secs(), "It's 4 PM Sunday, nothing actionable to act on right now.", None);
+        deliver_reply(&store, &hub, "", &job, now_secs(), "It's 4 PM Sunday, nothing actionable to act on right now.");
         assert!(said(&store, "X").is_empty(), "the chat it was made in hears nothing per fire");
         assert!(inbox(&store).is_empty(), "no Inbox item per repeating fire");
 
         let (_d, store, job) = delivery_rig(false, false);
         assert!(!delivers_reply(&job));
-        deliver_reply(&store, &hub, "", &job, now_secs(), "Nothing changed.", None);
+        deliver_reply(&store, &hub, "", &job, now_secs(), "Nothing changed.");
         assert!(said(&store, "X").is_empty() && inbox(&store).is_empty());
 
         let (_d, store, job) = delivery_rig(true, true);
-        deliver_reply(&store, &hub, "", &job, now_secs(), "   ", None);
+        deliver_reply(&store, &hub, "", &job, now_secs(), "   ");
         assert!(said(&store, "X").is_empty() && inbox(&store).is_empty());
     }
 
