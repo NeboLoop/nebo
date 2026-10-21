@@ -2752,9 +2752,11 @@ mod tests {
     }
 
     /// A one-shot fires on its second. The loop sleeps until the earliest
-    /// timer is due, and a schedule made while it sleeps out a whole TICK
+    /// timer can fire, and a schedule made while it sleeps out a whole TICK
     /// wakes it to arm the new timer: due two seconds after it was made, it
-    /// fires within a second of its moment (it was up to five late).
+    /// fires within a second of its moment (it was up to five late) — even
+    /// with an overdue timer held under a delivery lease, which can fire
+    /// only when its lease runs out and so never sets the pace.
     #[tokio::test]
     async fn a_one_shot_fires_within_a_second_of_its_time() {
         let s = Arc::new(store());
@@ -2763,6 +2765,10 @@ mod tests {
             let wake = wake.clone();
             s.on_timers_changed(move || wake.notify_one());
         }
+        // A timer whose delivery was taken and not finished: overdue, leased.
+        s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "wait", target_id: "424242", idem_key: "stuck", due_at: Some(now() - 10), ..Default::default() })
+            .unwrap();
+        assert_eq!(s.engine_claim_events(now(), 10).unwrap().0.len(), 1);
         let looping = {
             let (s, wake) = (s.clone(), wake.clone());
             tokio::spawn(async move {

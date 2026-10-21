@@ -440,6 +440,9 @@ pub struct CronJob {
     pub created_by_run: Option<String>,
     /// The conversation (session key) it was made in, when it was.
     pub created_in: Option<String>,
+    /// The owner's own conversation (chat id) it was asked for in, when an
+    /// employee made it in one: where a one-shot's answer goes.
+    pub created_in_chat: Option<String>,
     /// Why it exists, in a few words.
     pub reason: String,
 }
@@ -487,19 +490,29 @@ pub struct ScheduleProvenance {
     pub created_by: ScheduleCreator,
     pub run_id: Option<String>,
     pub session_key: Option<String>,
+    /// The owner's own conversation (chat id) it was asked for in.
+    pub chat_id: Option<String>,
     pub reason: String,
 }
 
 impl ScheduleProvenance {
     /// Made by `created_by` for `reason`, outside any run.
     pub fn new(created_by: ScheduleCreator, reason: impl Into<String>) -> Self {
-        Self { created_by, run_id: None, session_key: None, reason: reason.into() }
+        Self { created_by, run_id: None, session_key: None, chat_id: None, reason: reason.into() }
     }
 
     /// Made by the run `run_id` in the conversation `session_key`.
     pub fn in_run(mut self, run_id: Option<&str>, session_key: &str) -> Self {
         self.run_id = run_id.filter(|r| !r.is_empty()).map(str::to_string);
         self.session_key = Some(session_key).filter(|k| !k.is_empty()).map(str::to_string);
+        self
+    }
+
+    /// Asked for in the owner's own conversation `chat_id` (not a helper's,
+    /// a colleague's, a call's or an outside app's run): a one-shot answers
+    /// there when it fires.
+    pub fn asked_in_chat(mut self, chat_id: &str) -> Self {
+        self.chat_id = Some(chat_id).filter(|c| !c.is_empty()).map(str::to_string);
         self
     }
 }

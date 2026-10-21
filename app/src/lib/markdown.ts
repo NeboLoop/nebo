@@ -206,22 +206,29 @@ const BLOCK_CONTAINERS = new Set(['blockquote', 'list_item']);
 
 /** Markdown as the plain words it reads as, on one line: no asterisks,
  *  hashes, backticks or link syntax. For a preview (an Inbox row) where the
- *  rendered markdown would be too much and the raw markup unreadable. */
-export function plainText(src: string): string {
+ *  rendered markdown would be too much and the raw markup unreadable.
+ *  `first` keeps only its first line: a one-line receipt or a list row. */
+export function plainText(src: string, { first = false }: { first?: boolean } = {}): string {
 	if (!src) return '';
+	// Blocks, list items and table rows are lines of their own; with `first`
+	// only the first is kept, else they run on, a space apart.
+	const between = first ? '\n' : ' ';
 	const words = (tokens: Token[], sep: string): string =>
 		tokens
 			.map((t): string => {
-				if (t.type === 'list') return (t as Tokens.List).items.map((i) => words(i.tokens, ' ')).join(' ');
+				if (t.type === 'list') return (t as Tokens.List).items.map((i) => words(i.tokens, between)).join(between);
 				if (t.type === 'table') {
 					const table = t as Tokens.Table;
-					return [table.header, ...table.rows].map((row) => row.map((c) => words(c.tokens, '')).join(' ')).join(' ');
+					return [table.header, ...table.rows].map((row) => row.map((c) => words(c.tokens, '')).join(' ')).join(between);
 				}
-				if (t.type === 'space' || t.type === 'hr' || t.type === 'html') return ' ';
-				if (BLOCK_CONTAINERS.has(t.type) && 'tokens' in t && t.tokens) return words(t.tokens, ' ');
+				if (t.type === 'space' || t.type === 'hr' || t.type === 'html') return between;
+				if (t.type === 'br') return '\n';
+				if (BLOCK_CONTAINERS.has(t.type) && 'tokens' in t && t.tokens) return words(t.tokens, between);
 				if ('tokens' in t && t.tokens?.length) return words(t.tokens, '');
 				return 'text' in t && typeof t.text === 'string' ? t.text : '';
 			})
 			.join(sep);
-	return words(marked.lexer(src), ' ').replace(/\s+/g, ' ').trim();
+	const said = words(marked.lexer(src), between);
+	const line = (s: string) => s.replace(/\s+/g, ' ').trim();
+	return first ? (said.split('\n').map(line).find(Boolean) ?? '') : line(said);
 }

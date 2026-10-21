@@ -421,6 +421,7 @@ fn scheduled(agent: &str, name: &str, command: String) -> db::models::CronJob {
         created_by: "owner".to_string(),
         created_by_run: None,
         created_in: None,
+        created_in_chat: None,
         reason: String::new(),
     }
 }

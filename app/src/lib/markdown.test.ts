@@ -125,6 +125,14 @@ describe('plainText', () => {
 		expect(plainText('')).toBe('');
 	});
 
+	it('keeps only the first line when asked', () => {
+		expect(plainText('\n## **Both scripts** saved.\nNext line', { first: true })).toBe('Both scripts saved.');
+		expect(plainText('Script Writer: hero 30s\nDone when: both scripts saved', { first: true })).toBe('Script Writer: hero 30s');
+		expect(plainText('- [the map](https://x.test) first\n- second', { first: true })).toBe('the map first');
+		expect(plainText('', { first: true })).toBe('');
+		expect(plainText('one line\nthen another')).toBe('one line then another');
+	});
+
 	it('keeps words joined where markup sat inside them', () => {
 		expect(plainText('re**book**ed and > quoted')).toBe('rebooked and > quoted');
 		expect(plainText('> a quote\n\n1. one\n2. two')).toBe('a quote one two');

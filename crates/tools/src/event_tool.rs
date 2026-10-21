@@ -281,6 +281,27 @@ fn creator(door: &types::permissions::Door) -> db::models::ScheduleCreator {
     }
 }
 
+/// The owner's own conversation with the employee a schedule is being made
+/// in, as its chat id, or "" when it is made anywhere else: a helper's run,
+/// a colleague's or a team's thread, a call, an outside app over MCP, a
+/// workflow or a scheduled turn. Only the owner's own typed conversation in
+/// the app (`agent:<id>:thread:<chat>`, `agent:<id>:web`) is where a timer's
+/// answer can go back to: a helper's session is gone when the timer fires,
+/// and a call has ended.
+fn asked_in_chat(store: &db::Store, ctx: &ToolContext) -> String {
+    if ctx.door != types::permissions::Door::Chat
+        || types::keyparser::conversation_of(&ctx.session_key) != Some(types::keyparser::Conversation::Owner)
+    {
+        return String::new();
+    }
+    let in_app = types::keyparser::chat_id_from_thread_key(&ctx.session_key).is_some()
+        || types::keyparser::parse_session_key(&ctx.session_key).channel == "web";
+    if !in_app {
+        return String::new();
+    }
+    crate::owner_notify::link::conversation(store, &ctx.session_key)
+}
+
 fn not_found(name: &str) -> ToolResult {
     ToolResult::error(format!("No schedule named '{name}'. list_schedules shows the names."))
 }
@@ -353,7 +374,8 @@ impl ScheduleTool {
             channel_ctx_json.as_deref(),
             overlap,
             &db::models::ScheduleProvenance::new(creator(&ctx.door), str_field(input, "reason"))
-                .in_run(ctx.run_id.as_deref(), &ctx.session_key),
+                .in_run(ctx.run_id.as_deref(), &ctx.session_key)
+                .asked_in_chat(&asked_in_chat(&self.store, ctx)),
         ) {
             Ok(job) => ToolResult::ok(format!(
                 "Created schedule '{}' (id={}): {} ({}){}",
@@ -527,6 +549,44 @@ mod tests {
 
     fn tool(store: &Arc<Store>, name: &str) -> ScheduleTool {
         tools(store.clone()).into_iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// A schedule remembers the owner's conversation it was asked for in
+    /// only when that is the owner's own typed conversation with the
+    /// employee in the app. A helper's run, a colleague's or a team's
+    /// thread, a call, an outside app, a workflow and a scheduled turn
+    /// record none: their one-shots answer in the Inbox.
+    #[test]
+    fn only_the_owners_own_conversation_is_where_a_timer_answers() {
+        use types::permissions::Door;
+        let (store, _dir) = store();
+        let thread = "agent:ava:thread:X";
+        store.create_session("s-x", Some(thread), None, None, None).unwrap();
+        store.create_chat_for_session("X", thread, "Timers", None).unwrap();
+        store.set_session_active_chat_id("s-x", "X").unwrap();
+        let at = |key: &str, door: Door| {
+            let mut ctx = ToolContext::new(crate::Origin::User);
+            ctx.session_key = key.into();
+            ctx.door = door;
+            asked_in_chat(&store, &ctx)
+        };
+        assert_eq!(at(thread, Door::Chat), "X", "the owner's own chat");
+        for (what, key, door) in [
+            ("a helper's run", "subagent:agent:ava:thread:X:h1", Door::Helper),
+            ("a helper started in the owner's chat", thread, Door::Helper),
+            ("a colleague's thread", "agent:ava:coworker:bob", Door::Coworker { from: "bob".into() }),
+            ("a team seat", "agent:ava:coworker:team:t1", Door::Chat),
+            ("a call in the owner's chat", thread, Door::Voice),
+            ("an outside app", "mcp", Door::Mcp),
+            ("a workflow step", "agent:ava:workflow:r1:a1::1", Door::Workflow),
+            ("a scheduled turn", "agent:ava:cron:nightly", Door::Schedule),
+            ("a loop conversation", "agent:ava:loop:dm:c1", Door::Chat),
+        ] {
+            assert_eq!(at(key, door), "", "{what}");
+        }
+        // A conversation that was deleted is no place to answer.
+        store.delete_chat("X").unwrap();
+        assert_eq!(at(thread, Door::Chat), "", "a deleted conversation");
     }
 
     #[test]

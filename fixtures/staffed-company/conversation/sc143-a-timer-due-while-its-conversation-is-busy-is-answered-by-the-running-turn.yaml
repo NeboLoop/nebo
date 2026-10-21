@@ -1,0 +1,7 @@
+id: sc143-a-timer-due-while-its-conversation-is-busy-is-answered-by-the-running-turn
+name: "SC143 — A timer due while its conversation is busy is answered by the running turn"
+description: |
+  A one-shot that comes due while the owner's conversation has a turn running joins that turn, which answers it in the conversation; the Inbox still points at that answer, by the same rule as a timer that ran a turn of its own.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_timer_due_while_its_conversation_is_busy_is_answered_by_the_running_turn
+conversation: []

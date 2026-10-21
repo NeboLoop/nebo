@@ -5333,7 +5333,10 @@ async fn a_timer_asked_for_in_a_conversation_answers_in_it() {
     .await;
 
     let store = nebo.store();
-    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "").in_run(Some("run-142"), KEY);
+    let asked_in = tools::owner_notify::link::conversation(store, KEY);
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "")
+        .in_run(Some("run-142"), KEY)
+        .asked_in_chat(&asked_in);
     let job = store
         .create_cron_job(
             "speed-142", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-142 read the location again and work out the speed"),
@@ -5363,4 +5366,55 @@ async fn a_timer_asked_for_in_a_conversation_answers_in_it() {
     let chat = tools::owner_notify::link::conversation(store, KEY);
     assert_eq!(item.action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)), "it opens the answer");
     assert_eq!(item.body.as_deref(), Some("REPORT-142: 68 mph over 64 seconds."));
+}
+
+/// A timer that comes due while its conversation is busy joins the turn
+/// running there, which answers it; the Inbox still points the owner at
+/// that answer, by the same rule as a timer that ran a turn of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timer_due_while_its_conversation_is_busy_is_answered_by_the_running_turn() {
+    let nebo = session().await;
+    const KEY: &str = "agent:assistant:thread:timer-143";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if t.new_text().contains("MARK-143 check the oven") {
+            return Some(Step::say("REPORT-143: the oven is at 350."));
+        }
+        if t.new_text().contains("OWNER-143 first") {
+            return Some(Step::say("Noted."));
+        }
+        t.new_text().contains("OWNER-143 long").then(|| Step::held("g143", "Still on the long job."))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(KEY, "assistant", None, "OWNER-143 first, set a timer").await;
+    rig.until(20, "the owner is answered", || rig.thread(KEY).iter().any(|m| m.role == "assistant" && m.content == "Noted.")).await;
+    let store = nebo.store();
+    let made = db::models::ScheduleProvenance::new(db::models::ScheduleCreator::Chat, "")
+        .in_run(Some("run-143"), KEY)
+        .asked_in_chat(&tools::owner_notify::link::conversation(store, KEY));
+    let job = store
+        .create_cron_job("oven-143", "0 0 9 1 1 * 2099", "", "agent", Some("MARK-143 check the oven"), None, None, true, Some("assistant"), None, None, &made)
+        .unwrap();
+
+    rig.owner_writes(KEY, "assistant", None, "OWNER-143 long job please").await;
+    rig.until(20, "the long turn is running", || rig.busy(KEY)).await;
+    let state = nebo.state.clone();
+    let fired = tokio::spawn(async move { crate::scheduler::execute_job(&state, &job, true).await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    rig.company.open("g143");
+    let (ok, _, err) = tokio::time::timeout(std::time::Duration::from_secs(60), fired).await.expect("the fire ends").unwrap();
+    assert!(ok, "{err:?}");
+
+    let thread = rig.thread(KEY);
+    let answer = thread.iter().rfind(|m| m.role == "assistant").expect("an answer");
+    assert_eq!(answer.content, "REPORT-143: the oven is at 350.", "{thread:#?}");
+    let user = store.ensure_local_user_id().unwrap();
+    let job_id = store.get_cron_job_by_name("oven-143").unwrap().unwrap().id;
+    let item = store
+        .list_user_notifications(&user, db::models::InboxView::All, Some("assistant"), 50, 0)
+        .unwrap()
+        .into_iter()
+        .find(|n| n.id.starts_with(&format!("schedule:{job_id}:")))
+        .expect("the Inbox points at the answer");
+    let chat = tools::owner_notify::link::conversation(store, KEY);
+    assert_eq!(item.action_url, Some(format!("/assistant/threads/{chat}?message={}", answer.id)));
 }

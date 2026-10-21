@@ -179,10 +179,12 @@ async fn execute_shell(state: &AppState, job: &CronJob) -> (bool, String, Option
 /// The turn a scheduled job runs: the job's message, with its standing
 /// instructions after it, run by its employee under the employee's own
 /// grant (scheduling grants nothing new). In the job's own thread it is
-/// written as the owner scheduled it. In the conversation it was asked for
-/// in (`in_conversation`) it is a prompt the platform writes, which the
-/// owner never sees as something he said: what he sees is the employee's
-/// answer.
+/// written as the owner scheduled it. In the owner's conversation it was
+/// asked for in (`in_conversation`) it is a prompt the platform writes,
+/// which the owner never sees as something he said: what he sees is the
+/// employee's answer. `in_conversation` carries what was said where it was
+/// asked when the session has since moved on to a new conversation, so the
+/// answer still makes sense there ("" when it has not).
 fn scheduled_turn(
     job: &CronJob,
     session_key: &str,
@@ -190,7 +192,7 @@ fn scheduled_turn(
     channel: &str,
     channel_ctx: Option<tools::ChannelContext>,
     cancel: tokio_util::sync::CancellationToken,
-    in_conversation: bool,
+    in_conversation: Option<&str>,
 ) -> agent::TurnRequest {
     use agent::harness::{Delivery, SeatRequest, TurnInput, TurnMode};
 
@@ -199,17 +201,25 @@ fn scheduled_turn(
         Some(instructions) => format!("{prompt}\n\n{instructions}"),
         None => prompt.to_string(),
     };
-    let input = if in_conversation {
-        TurnInput::Platform {
+    let input = match in_conversation {
+        Some("") => TurnInput::Platform {
             text: format!(
-                "The schedule \"{}\" set in this conversation is due now. Do what it asks, then answer the owner here, \
+                "{} set in this conversation is due now. Do what it asks, then answer the owner here, \
                  in this conversation: your reply is what he reads, and he is told it is here, so don't also send \
                  it to his Inbox.\n\n{text}",
-                job.name
+                request_marker(job)
             ),
-        }
-    } else {
-        TurnInput::Owner { text, images: Vec::new(), attachments: Vec::new(), message_id: None }
+        },
+        Some(earlier) => TurnInput::Platform {
+            text: format!(
+                "{} the owner asked for in an earlier conversation with you is due now. That \
+                 conversation ended with:\n\n{earlier}\n\nDo what the schedule asks, then answer the owner here, in \
+                 this conversation: your reply is what he reads, and he is told it is here, so don't also send it to \
+                 his Inbox.\n\n{text}",
+                request_marker(job)
+            ),
+        },
+        None => TurnInput::Owner { text, images: Vec::new(), attachments: Vec::new(), message_id: None },
     };
     agent::TurnRequest {
         session_key: session_key.to_string(),
@@ -339,11 +349,12 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
     // and the answer was only in the Inbox). Every other prompt job runs in
     // its own thread, on a fresh conversation each fire. A run-now answers
     // whoever asked for it, in the job's thread.
-    let origin = if deliver { origin_session(&state.store, job) } else { None };
-    let session_key = origin.clone().unwrap_or_else(|| job_session_key(job));
+    let origin = if deliver { origin_chat(&state.store, job) } else { None };
+    let session_key = origin.as_ref().map(|o| o.session_key.clone()).unwrap_or_else(|| job_session_key(job));
     if origin.is_none() {
         start_fresh(state, job, &session_key);
     }
+    let earlier = origin.as_ref().map(|o| o.moved_from.as_deref().map(|chat| earlier_context(&state.store, chat)).unwrap_or_default());
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
     // Register in the global RunRegistry so cron runs are visible and cancellable
@@ -361,8 +372,10 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
         .await;
 
     let _watch = ScheduleWatch::start(state.store.clone(), job.id, cancel_token.clone());
-    let req = scheduled_turn(job, &session_key, agent_id.unwrap_or_default(), "cron", None, cancel_token, origin.is_some());
+    let req = scheduled_turn(job, &session_key, agent_id.unwrap_or_default(), "cron", None, cancel_token, earlier.as_deref());
     let started = now_secs();
+    // Heard before the turn starts, so a running turn's end is never missed.
+    let mut hub_events = state.hub.subscribe();
 
     match state.harness.start_turn(req).await {
         Ok(handle) => {
@@ -400,18 +413,49 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
                 }
             }
             if joined {
+                // The turn running there answers it: when that turn ends,
+                // its answer is delivered by the same rule as one of our own.
                 info!(job = job.name.as_str(), session = %session_key, "scheduler: the conversation was busy; its running turn answers the schedule");
                 drop(run_handle);
+                // A turn that ends without having heard it hands it to the
+                // next; each end is checked for the answer.
+                let ended = tokio::time::timeout(JOINED_ANSWER_WAIT, async {
+                    loop {
+                        match hub_events.recv().await {
+                            Ok(e) if e.event_type == "chat_complete" && e.payload["session_id"] == session_key.as_str() => {
+                                let watching = state.presence.get("_global").await == Some(agent::proactive::Presence::Focused);
+                                if let Some(answered) = answered_in(&state.store, &session_key, job, watching).filter(|a| a.message_id.is_some()) {
+                                    return Some(answered);
+                                }
+                            }
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                        }
+                    }
+                })
+                .await;
+                match ended {
+                    Ok(Some(answered)) => {
+                        let said = answered.text.clone().unwrap_or_default();
+                        deliver_reply(&state.store, &state.hub, &state.config.neboai.api_url, job, started, &said, Some(&answered));
+                    }
+                    _ => warn!(job = job.name.as_str(), session = %session_key, "scheduler: nothing answered the schedule in time; no Inbox pointer"),
+                }
                 return (true, full_text, None);
             }
-            // The open view of the conversation finalizes the answer it
-            // streamed, as it does any turn's.
-            let payload = serde_json::json!({ "session_id": session_key, "agentId": agent_id.unwrap_or_default() });
-            crate::chat_dispatch::finish_turn(state, &run_handle, crate::chat_dispatch::TurnEnd { payload, artifacts: &[], control_stop: None }).await;
+            if origin.is_some() {
+                // The open view of the conversation finalizes the answer it
+                // streamed, as it does any turn's.
+                let payload = serde_json::json!({ "session_id": session_key, "agentId": agent_id.unwrap_or_default() });
+                crate::chat_dispatch::finish_turn(state, &run_handle, crate::chat_dispatch::TurnEnd { payload, artifacts: &[], control_stop: None }).await;
+            }
             drop(run_handle);
             if deliver {
                 let watching = state.presence.get("_global").await == Some(agent::proactive::Presence::Focused);
-                let answered = origin.as_deref().and_then(|key| answered_in(&state.store, key, started, watching));
+                let answered = match &origin {
+                    Some(o) => answered_in(&state.store, &o.session_key, job, watching),
+                    None => None,
+                };
                 deliver_reply(&state.store, &state.hub, &state.config.neboai.api_url, job, started, &reply, answered.as_ref());
             }
             (true, full_text, None)
@@ -424,17 +468,56 @@ async fn execute_agent(state: &AppState, job: &CronJob, deliver: bool) -> (bool,
     }
 }
 
-/// The conversation a one-shot prompt schedule was asked for in, as its
-/// session key (the schedule records it when it is made, `created_in`):
-/// where it runs and answers. None for a repeating job, one made outside a
-/// conversation (by the owner's API, a workflow, another schedule), or one
-/// whose conversation is gone.
-fn origin_session(store: &Store, job: &CronJob) -> Option<String> {
-    if !delivers_reply(job) || job.created_by != db::models::ScheduleCreator::Chat.as_str() {
+/// How long a schedule that joined a turn already running in its
+/// conversation waits for that turn to end before it gives up pointing the
+/// owner at the answer.
+const JOINED_ANSWER_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// The owner's conversation a one-shot answers in.
+struct OriginChat {
+    /// The session it runs on: the one it was asked for in.
+    session_key: String,
+    /// The conversation it was asked in, when that session has since moved
+    /// on to a new one (the owner started a new chat in it): what was said
+    /// there rides with the request.
+    moved_from: Option<String>,
+}
+
+/// Where a one-shot prompt schedule answers: the owner's own conversation it
+/// was asked for in (recorded when it was made, `created_in_chat`). None
+/// for a repeating job; for one made anywhere else (a helper, a colleague,
+/// a call, an outside app, a workflow, the owner's settings); and for one
+/// whose conversation the owner deleted, or whose session is gone: those
+/// answer in the job's own thread and the Inbox.
+fn origin_chat(store: &Store, job: &CronJob) -> Option<OriginChat> {
+    if !delivers_reply(job) {
         return None;
     }
+    let asked_in = job.created_in_chat.as_deref().filter(|c| !c.is_empty())?;
     let session_key = job.created_in.as_deref().filter(|k| !k.is_empty())?;
-    (!tools::owner_notify::link::conversation(store, session_key).is_empty()).then(|| session_key.to_string())
+    if !matches!(store.get_chat(asked_in), Ok(Some(_))) {
+        return None;
+    }
+    let now_in = tools::owner_notify::link::conversation(store, session_key);
+    if now_in.is_empty() {
+        return None;
+    }
+    Some(OriginChat { session_key: session_key.to_string(), moved_from: (now_in != asked_in).then(|| asked_in.to_string()) })
+}
+
+/// The end of conversation `chat_id`, as the request carries it into the
+/// one its session moved on to: its last messages, each clipped.
+fn earlier_context(store: &Store, chat_id: &str) -> String {
+    store
+        .get_recent_chat_messages(chat_id, 12)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| {
+            let who = if m.role == "assistant" { "You" } else { "Owner" };
+            format!("{who}: {}", crate::truncate_str(m.content.trim(), 600))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Where a one-shot's run answered in the conversation it was asked in:
@@ -442,24 +525,50 @@ fn origin_session(store: &Store, job: &CronJob) -> Option<String> {
 pub(crate) struct Answered {
     pub chat_id: String,
     pub message_id: Option<String>,
+    /// What that message says.
+    pub text: Option<String>,
     /// The owner is in the app, looking at it: the answer reaches him there.
     pub watching: bool,
 }
 
-/// The conversation session `session_key` holds, and the employee's last
-/// message in it, when it was written at or after `started`.
-fn answered_in(store: &Store, session_key: &str, started: i64, watching: bool) -> Option<Answered> {
+/// How the request a one-shot writes into the owner's conversation begins
+/// ([`scheduled_turn`]): how its answer is found after it.
+fn request_marker(job: &CronJob) -> String {
+    format!("The schedule \"{}\"", job.name)
+}
+
+/// The conversation session `session_key` holds, and the employee's answer
+/// to `job` in it: its last message after the job's latest request there,
+/// before anything the owner wrote next. No message when nothing has
+/// answered the request yet.
+fn answered_in(store: &Store, session_key: &str, job: &CronJob, watching: bool) -> Option<Answered> {
     let chat_id = tools::owner_notify::link::conversation(store, session_key);
     if chat_id.is_empty() {
         return None;
     }
-    let message_id = store
-        .get_recent_chat_messages(&chat_id, 1)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|m| m.role == "assistant" && m.created_at >= started)
-        .map(|m| m.id);
-    Some(Answered { chat_id, message_id, watching })
+    let rows = store.get_chat_messages(&chat_id).unwrap_or_default();
+    let marker = request_marker(job);
+    let answer = rows
+        .iter()
+        .rposition(|m| m.role == "user" && m.content.starts_with(&marker))
+        .and_then(|asked| {
+            rows[asked + 1..]
+                .iter()
+                .take_while(|m| !(m.role == "user" && conversation_said_by_owner(m)))
+                .filter(|m| m.role == "assistant" && !m.content.trim().is_empty())
+                .last()
+        });
+    Some(Answered {
+        chat_id,
+        message_id: answer.map(|m| m.id.clone()),
+        text: answer.map(|m| m.content.clone()),
+        watching,
+    })
+}
+
+/// A row the owner wrote, not one the platform or a notification wrote.
+fn conversation_said_by_owner(m: &db::models::ChatMessage) -> bool {
+    !m.metadata.as_deref().is_some_and(|meta| meta.contains("\"isMeta\":true"))
 }
 
 /// Whether a prompt job's replies reach the owner through [`deliver_reply`]:
@@ -479,8 +588,9 @@ fn delivers_reply(job: &CronJob) -> bool {
 /// Asked for in a conversation, the run answered there (`answered`): the
 /// employee's message in that conversation IS the answer, and the item is
 /// its pointer, opening that conversation at that message (owner,
-/// 2026-10-20). It is loud (a popup, and his phone through the hub copy)
-/// unless he is watching the app, and then it waits quietly in the Inbox. Made
+/// 2026-10-20). It is loud (a popup, and a push that sounds on his phone)
+/// unless he is watching the app: then the Inbox row arrives quietly and the
+/// phone's push is passive, listed without a sound or a banner. Made
 /// anywhere else, the run answered in the job's own thread: the item opens
 /// that thread, and is always loud.
 ///
@@ -503,23 +613,27 @@ pub(crate) fn deliver_reply(
         return;
     }
     let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty()).unwrap_or(tools::team_tool::PRIMARY_AGENT_ID);
+    // The conversation the run answered in: an item the run posted itself
+    // points there (`push_notification`, `message_owner`), and so does this
+    // one. Another item of the same employee's, about other work, is not it.
+    let place = match answered {
+        Some(a) => tools::owner_notify::link::chat(agent_id, &a.chat_id),
+        None => tools::owner_notify::link::session_chat(store, agent_id, &job_session_key(job)),
+    };
     let user = store.ensure_local_user_id().unwrap_or_default();
     let posted_itself = store
         .list_user_notifications(&user, db::models::InboxView::All, Some(agent_id), 20, 0)
         .unwrap_or_default()
         .iter()
-        .any(|n| n.created_at >= started);
+        .any(|n| n.created_at >= started && n.action_url.as_deref().is_some_and(|url| url.starts_with(&place)));
     if posted_itself {
         info!(job = job.name.as_str(), "scheduler: the run already posted to the Inbox; no second item");
         return;
     }
     let id = format!("schedule:{}:{started}", job.id);
-    let link = match answered {
-        Some(a) => match a.message_id.as_deref() {
-            Some(message_id) => tools::owner_notify::link::message(agent_id, &a.chat_id, message_id),
-            None => tools::owner_notify::link::chat(agent_id, &a.chat_id),
-        },
-        None => tools::owner_notify::link::session_chat(store, agent_id, &job_session_key(job)),
+    let link = match answered.and_then(|a| a.message_id.as_deref().map(|m| (a, m))) {
+        Some((a, message_id)) => tools::owner_notify::link::message(agent_id, &a.chat_id, message_id),
+        None => place,
     };
     let body = crate::truncate_str(reply, 500);
     let n = tools::owner_notify::OwnerNotification {
@@ -613,7 +727,7 @@ async fn execute_agent_channel_bound(
         .await;
 
     let _watch = ScheduleWatch::start(state.store.clone(), job.id, cancel_token.clone());
-    let req = scheduled_turn(job, &session_key, agent_id, &saved.kind, Some(channel_ctx.clone()), cancel_token, false);
+    let req = scheduled_turn(job, &session_key, agent_id, &saved.kind, Some(channel_ctx.clone()), cancel_token, None);
 
     let mut full_text = String::new();
     match state.harness.start_turn(req).await {
@@ -957,7 +1071,7 @@ mod tests {
         store.set_session_active_chat_id("s-x", "X").unwrap();
         let schedule = if one_shot { "0 18 8 16 10 * 2099" } else { "0 * * * *" };
         let by = if from_chat {
-            ScheduleProvenance::new(ScheduleCreator::Chat, "").in_run(Some("run-1"), key)
+            ScheduleProvenance::new(ScheduleCreator::Chat, "").in_run(Some("run-1"), key).asked_in_chat("X")
         } else {
             ScheduleProvenance::new(ScheduleCreator::Owner, "")
         };
@@ -976,8 +1090,11 @@ mod tests {
         store.list_user_notifications(&user, db::models::InboxView::All, None, 50, 0).unwrap()
     }
 
-    /// The employee's answer, as the turn that ran in conversation X wrote it.
+    /// The schedule's request and the employee's answer, as the turn that
+    /// ran in conversation X wrote them.
     fn answer_in_x(store: &Store, text: &str) -> String {
+        let asked = format!("{} set in this conversation is due now.", request_marker(&store.get_cron_job_by_name("one-minute-timer").unwrap().unwrap()));
+        store.create_chat_message("x-asked", "X", "user", &asked, Some(r#"{"isMeta":true,"hiddenPrompt":true}"#)).unwrap();
         store.create_chat_message("x-reply", "X", "assistant", text, None).unwrap().id
     }
 
@@ -996,12 +1113,13 @@ mod tests {
     #[tokio::test]
     async fn a_one_shot_from_a_chat_answers_in_it_and_its_inbox_item_opens_the_answer() {
         let (_d, store, job) = delivery_rig(true, true);
-        assert_eq!(origin_session(&store, &job).as_deref(), Some("agent:ava:thread:X"), "it runs where it was asked");
+        let origin = origin_chat(&store, &job).expect("it runs where it was asked");
+        assert_eq!((origin.session_key.as_str(), origin.moved_from.as_deref()), ("agent:ava:thread:X", None));
         let hub = crate::handlers::ws::ClientHub::new();
         let mut rx = hub.subscribe();
         let started = now_secs();
         let message = answer_in_x(&store, "Ding! Your one-minute timer just went off.");
-        let away = answered_in(&store, "agent:ava:thread:X", started, false).unwrap();
+        let away = answered_in(&store, "agent:ava:thread:X", &job, false).unwrap();
         assert_eq!((away.chat_id.as_str(), away.message_id.as_deref()), ("X", Some(message.as_str())));
         deliver_reply(&store, &hub, "", &job, started, "  Ding! Your one-minute timer just went off.  ", Some(&away));
 
@@ -1024,11 +1142,44 @@ mod tests {
         let mut rx = hub.subscribe();
         let started = now_secs();
         answer_in_x(&store, "Ding!");
-        let watching = answered_in(&store, "agent:ava:thread:X", started, true).unwrap();
+        let watching = answered_in(&store, "agent:ava:thread:X", &job, true).unwrap();
         deliver_reply(&store, &hub, "", &job, started, "Ding!", Some(&watching));
         assert_eq!(inbox(&store).len(), 1);
         let events = heard(&mut rx);
         assert!(events.iter().any(|e| e == "notification_created") && !events.iter().any(|e| e == "notification"), "{events:?}");
+    }
+
+    /// The owner deleted the conversation a timer was asked in: it answers in
+    /// its own thread and the Inbox, and nothing is written into a chat. The
+    /// owner started a new conversation in the same session instead: it
+    /// answers in the new one, carrying the end of the one it was asked in.
+    #[tokio::test]
+    async fn a_deleted_conversation_gets_the_inbox_and_a_moved_on_one_gets_the_earlier_words() {
+        let (_d, store, job) = delivery_rig(true, true);
+        store.create_chat_message("x-1", "X", "user", "Get my GPS now, and again in 60 seconds.", None).unwrap();
+        store.create_chat_message("x-2", "X", "assistant", "First reading: 40.232353, -112.175299 at 5:46:05 PM.", None).unwrap();
+        store.create_chat_for_session("Y", "agent:ava:thread:X", "New chat", None).unwrap();
+        store.set_session_active_chat_id("s-x", "Y").unwrap();
+        let moved = origin_chat(&store, &job).expect("the session is still the owner's");
+        assert_eq!(moved.moved_from.as_deref(), Some("X"));
+        let earlier = earlier_context(&store, "X");
+        assert_eq!(earlier, "Owner: Get my GPS now, and again in 60 seconds.\nYou: First reading: 40.232353, -112.175299 at 5:46:05 PM.");
+        let text = turn_text(&job, Some(&earlier));
+        assert!(text.contains("an earlier conversation") && text.contains("First reading: 40.232353") && text.contains("Notify the owner"), "{text}");
+
+        let (_d, store, job) = delivery_rig(true, true);
+        store.delete_chat("X").unwrap();
+        assert!(origin_chat(&store, &job).is_none(), "a deleted conversation is never written into");
+        assert!(tools::owner_notify::link::conversation(&store, "agent:ava:thread:X").is_empty(), "a deleted conversation is gone");
+    }
+
+    /// The text a scheduled turn's request carries.
+    fn turn_text(job: &CronJob, in_conversation: Option<&str>) -> String {
+        let req = scheduled_turn(job, "agent:ava:thread:X", "ava", "cron", None, tokio_util::sync::CancellationToken::new(), in_conversation);
+        match req.input {
+            agent::harness::TurnInput::Platform { text } | agent::harness::TurnInput::Owner { text, .. } => text,
+            _ => panic!("a scheduled turn is a request"),
+        }
     }
 
     /// The run already posted to the Inbox itself (push_notification or
@@ -1041,12 +1192,28 @@ mod tests {
         tools::owner_notify::emit(
             &store,
             None,
-            &tools::owner_notify::OwnerNotification { id: "own", kind: "info", title: "Timer", body: Some("up"), agent_id: Some("ava"), ..Default::default() },
+            &tools::owner_notify::OwnerNotification { id: "own", kind: "info", title: "Timer", body: Some("up"), action_url: Some("/ava/threads/X"), agent_id: Some("ava"), ..Default::default() },
+        );
+        // Another item of the same employee's, about other work, is not it.
+        tools::owner_notify::emit(
+            &store,
+            None,
+            &tools::owner_notify::OwnerNotification { id: "other", kind: "info", title: "Report", body: Some("sent"), action_url: Some("/ava/threads/Z"), agent_id: Some("ava"), ..Default::default() },
         );
         answer_in_x(&store, "Ding!");
-        let answered = answered_in(&store, "agent:ava:thread:X", started, false);
+        let answered = answered_in(&store, "agent:ava:thread:X", &job, false);
         deliver_reply(&store, &hub, "", &job, started, "Ding!", answered.as_ref());
-        assert_eq!(inbox(&store).len(), 1, "the run's own Inbox item is the only one");
+        assert_eq!(inbox(&store).len(), 2, "the run's own Inbox item is the only one about it");
+        let (_d, store, job) = delivery_rig(true, true);
+        let started = now_secs();
+        tools::owner_notify::emit(
+            &store,
+            None,
+            &tools::owner_notify::OwnerNotification { id: "other", kind: "info", title: "Report", body: Some("sent"), action_url: Some("/ava/threads/Z"), agent_id: Some("ava"), ..Default::default() },
+        );
+        answer_in_x(&store, "Ding!");
+        deliver_reply(&store, &hub, "", &job, started, "Ding!", answered_in(&store, "agent:ava:thread:X", &job, false).as_ref());
+        assert!(inbox(&store).iter().any(|n| n.id.starts_with("schedule:")), "an unrelated item never stands in for the timer's");
     }
 
     /// Made outside a conversation, a one-shot runs in its own thread,
@@ -1061,8 +1228,9 @@ mod tests {
 
         let (_d, store, job) = delivery_rig(true, false);
         store.create_session("s-c", Some("agent:ava:cron:one-minute-timer"), None, None, None).unwrap();
+        store.create_chat_for_session("agent:ava:cron:one-minute-timer", "agent:ava:cron:one-minute-timer", "Timer", None).unwrap();
         assert!(delivers_reply(&job));
-        assert_eq!(origin_session(&store, &job), None, "made outside a conversation, it runs in its own thread");
+        assert!(origin_chat(&store, &job).is_none(), "made outside a conversation, it runs in its own thread");
         deliver_reply(&store, &hub, "", &job, now_secs(), "Ding!", None);
         assert!(said(&store, "X").is_empty());
         let items = inbox(&store);
@@ -1071,7 +1239,7 @@ mod tests {
 
         let (_d, store, job) = delivery_rig(false, true);
         assert!(!delivers_reply(&job));
-        assert_eq!(origin_session(&store, &job), None, "a repeating job never runs in the owner's chat");
+        assert!(origin_chat(&store, &job).is_none(), "a repeating job never runs in the owner's chat");
         deliver_reply(&store, &hub, "", &job, now_secs(), "It's 4 PM Sunday, nothing actionable to act on right now.", None);
         assert!(said(&store, "X").is_empty(), "the chat it was made in hears nothing per fire");
         assert!(inbox(&store).is_empty(), "no Inbox item per repeating fire");

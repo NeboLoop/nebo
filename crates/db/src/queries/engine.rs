@@ -614,15 +614,20 @@ impl Store {
         Ok(rows)
     }
 
-    /// When the next durable timer fires: the earliest undelivered timer's
-    /// due moment (unix seconds), or `None` when nothing is scheduled. This
-    /// is the bot's next wake — what a committed BotState tells the hub.
+    /// When the next durable timer can fire: the earliest moment an
+    /// undelivered timer can be claimed (unix seconds) — its due moment, or
+    /// the second after its delivery lease runs out when one holds it (a
+    /// deferred or failing delivery) — or `None` when nothing is scheduled.
+    /// A timer past its delivery attempts is never claimed again and is left
+    /// out. This is the bot's next wake: the engine sleeps until it, and a
+    /// committed BotState tells the hub.
     pub fn engine_next_timer_due(&self) -> Result<Option<i64>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT MIN(due_at) FROM engine_events
-             WHERE kind = 'timer' AND delivered_at IS NULL AND due_at IS NOT NULL",
-            [],
+            "SELECT MIN(MAX(due_at, COALESCE(lease_until + 1, due_at))) FROM engine_events
+             WHERE kind = 'timer' AND delivered_at IS NULL AND due_at IS NOT NULL
+               AND target_type != 'session' AND attempts < ?1",
+            params![EVENT_MAX_ATTEMPTS],
             |r| r.get::<_, Option<i64>>(0),
         )
         .db_err("engine_next_timer_due")
@@ -1961,6 +1966,16 @@ mod tests {
         assert_eq!(s.engine_next_timer_due().unwrap(), Some(2_000));
         s.engine_complete_event(early, 2_001).unwrap();
         assert_eq!(s.engine_next_timer_due().unwrap(), Some(5_000), "a delivered timer no longer wakes the bot");
+
+        // An overdue timer whose delivery was taken and not finished (leased:
+        // deferred, or failing) wakes nothing until its lease runs out, and
+        // never hides a timer due before then.
+        s.engine_enqueue_event(&timer("t-stuck", 1_000)).unwrap();
+        let (claimed, _) = s.engine_claim_events(1_000, 10).unwrap();
+        assert!(claimed.iter().any(|e| e.idem_key == "t-stuck"), "{claimed:?}");
+        assert_eq!(s.engine_next_timer_due().unwrap(), Some(1_000 + EVENT_LEASE_SECS + 1), "claimable again after its lease");
+        s.engine_enqueue_event(&timer("t-soon", 1_010)).unwrap();
+        assert_eq!(s.engine_next_timer_due().unwrap(), Some(1_010), "a timer due sooner is not held behind it");
     }
 
     #[test]

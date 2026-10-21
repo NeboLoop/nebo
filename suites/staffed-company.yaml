@@ -120,3 +120,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc140-each-run-of-a-playbook-is-a-fresh-project-and-wraps-up-on-its-own.yaml
   - ../fixtures/staffed-company/conversation/sc141-a-file-a-team-member-hands-over-rides-its-team-post.yaml
   - ../fixtures/staffed-company/conversation/sc142-a-timer-asked-for-in-a-conversation-answers-in-it.yaml
+  - ../fixtures/staffed-company/conversation/sc143-a-timer-due-while-its-conversation-is-busy-is-answered-by-the-running-turn.yaml

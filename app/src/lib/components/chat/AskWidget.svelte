@@ -199,7 +199,7 @@
 	// The prompt is agent/harness-authored text (e.g. the deep-research plan)
 	// and uses markdown like every other agent message — render it, don't show
 	// raw ** markers. Same marked pipeline as the chat transcript.
-	import { parseMarkdown } from '$lib/markdown';
+	import { parseMarkdown, plainText } from '$lib/markdown';
 	const promptHtml = $derived(parseMarkdown(prompt));
 	const contextHtml = $derived(widgets?.[0]?.context ? parseMarkdown(widgets[0].context) : '');
 
@@ -211,12 +211,7 @@
 
 	const answered = $derived(response != null);
 	/** The question on one line, for the receipt: its first line, markdown marks dropped. */
-	const question = $derived(
-		(prompt ?? '')
-			.split('\n')
-			.map((l) => l.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`#>]/g, '').trim())
-			.find(Boolean) ?? ''
-	);
+	const question = $derived(plainText(prompt ?? '', { first: true }));
 	/** What the owner chose, as the receipt marks it: the options picked, and any answer typed in his own words. */
 	const chosen = $derived(answered && response !== SKIP_VALUE && !response?.startsWith(FAILED_PREFIX) ? (response ?? '').split(', ') : []);
 	const typedAnswers = $derived(options.length > 0 ? chosen.filter((c) => !options.some((o) => o.label === c)) : []);
