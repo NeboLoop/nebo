@@ -15,6 +15,7 @@ pub mod files;
 pub mod uploads;
 pub mod goal;
 pub mod handoffs;
+pub mod verifications;
 pub mod import;
 pub mod integrations;
 pub mod mcp_server;

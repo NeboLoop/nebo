@@ -213,10 +213,8 @@ impl Helpers {
 }
 
 impl Helpers {
-    /// Land or discard an isolated helper's changes. Until its work is
-    /// verified, landing in the owner's files is the owner's own decision:
-    /// they are asked, on a card, and a run nobody is watching holds the
-    /// changes for them.
+    /// Land or discard an isolated helper's changes (the helper door
+    /// decides when the owner must say yes first).
     async fn settle_changes(&self, to: &str, changes: &str, ctx: &ToolContext) -> ToolResult {
         let land = match changes {
             "land" => true,
@@ -234,32 +232,6 @@ impl Helpers {
             Ok(o) => o,
             Err(e) => return ToolResult::error(e),
         };
-        if land {
-            let question = format!(
-                "Helper {to}'s changes are ready in its own copy and haven't been verified. Land them in your files?"
-            );
-            let widgets = json!([{ "type": "options", "multiSelect": false, "options": ["Land them", "Keep them in the copy", "Discard them"] }]);
-            match ctx.ask_user(&question, widgets).await.as_deref() {
-                Some("Land them") => {}
-                Some("Discard them") => {
-                    return match orch.settle(to, false, ctx).await {
-                        Ok(text) => ToolResult::ok(format!("The owner chose to discard them. {text}")),
-                        Err(e) => ToolResult::error(e),
-                    };
-                }
-                Some(_) => {
-                    return ToolResult::ok(format!(
-                        "The owner kept helper {to}'s changes in its copy: nothing landed. Land or discard them later."
-                    ));
-                }
-                None => {
-                    return ToolResult::error(format!(
-                        "Nobody is here to say yes, and unverified changes land in the owner's files only at their word: \
-                         helper {to}'s changes are held in its copy for them. Tell the owner they are ready."
-                    ));
-                }
-            }
-        }
         match orch.settle(to, land, ctx).await {
             Ok(text) => ToolResult::ok(text),
             Err(e) => ToolResult::error(e),

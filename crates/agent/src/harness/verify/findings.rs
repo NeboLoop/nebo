@@ -90,6 +90,16 @@ impl Finding {
     }
 }
 
+impl Finding {
+    /// Whether `other` is the same call for the owner as this decision,
+    /// whichever reviewer raised it: most of the same words in its title, or
+    /// the same evidence.
+    pub fn same_call(&self, other: &Finding) -> bool {
+        overlap(&words(&self.title), &words(&other.title)) >= 0.6
+            || (!fingerprint(&self.evidence).is_empty() && fingerprint(&self.evidence) == fingerprint(&other.evidence))
+    }
+}
+
 /// How far a finding's lines may move between rounds and still be the same.
 pub const LINE_SLACK: u32 = 10;
 
@@ -254,29 +264,88 @@ pub fn answer_schema() -> serde_json::Value {
 }
 
 /// The findings still open after a round: the round's new findings, plus
-/// every earlier one its reviewers did not judge fixed or deferred. A new
-/// finding that is an open one again is not counted twice.
+/// every earlier one its reviewers did not judge fixed, or (a minor only)
+/// deferred with a reason they accept. A blocker or a major stays open until
+/// a reviewer judges it fixed against the code, or the owner decides it: a
+/// deferral never closes one. A new finding that is an open one again is
+/// not counted twice.
 pub fn open_after(
     earlier_open: &[Finding],
     review_prior: &[Prior],
     new: &[Finding],
 ) -> Vec<Finding> {
-    let closed: BTreeSet<&str> = review_prior
-        .iter()
-        .filter(|p| matches!(p.state, PriorState::Fixed | PriorState::Deferred))
-        .map(|p| p.id.as_str())
-        .collect();
     let mut open: Vec<Finding> = earlier_open
         .iter()
-        .filter(|f| !closed.contains(f.id.as_str()))
+        .filter(|f| !closes(review_prior, f))
         .cloned()
         .collect();
     for f in new {
-        if !open.iter().any(|o| o.same_as(f)) {
-            open.push(f.clone());
+        match open.iter_mut().find(|o| o.same_as(f)) {
+            // The same spot found again at a graver severity: the graver
+            // one stands, under the id the builder and the owner already
+            // know it by. A match never lowers a severity.
+            Some(o) if f.severity < o.severity => {
+                let id = std::mem::take(&mut o.id);
+                *o = Finding { id, ..f.clone() };
+            }
+            Some(_) => {}
+            None => open.push(f.clone()),
         }
     }
     open
+}
+
+/// Whether a reviewer's word on `f` closes it: fixed, or a minor deferred.
+fn closes(review_prior: &[Prior], f: &Finding) -> bool {
+    review_prior.iter().any(|p| {
+        p.id == f.id && (p.state == PriorState::Fixed || (p.state == PriorState::Deferred && f.severity == Severity::Minor))
+    })
+}
+
+/// The deferrals a round accepts: minors only. A deferred blocker or major
+/// is still open ([`open_after`]).
+pub fn accepted_deferrals(earlier_open: &[Finding], review_prior: &[Prior]) -> Vec<Prior> {
+    review_prior
+        .iter()
+        .filter(|p| {
+            p.state == PriorState::Deferred && earlier_open.iter().any(|f| f.id == p.id && f.severity == Severity::Minor)
+        })
+        .cloned()
+        .collect()
+}
+
+/// What the builder claims it did about one open finding: read from the
+/// line of its reply that names the finding, never its free text. The
+/// reviewers get it as untrusted data to check against the code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Claim {
+    pub id: String,
+    /// `fixed`, `deferred` or `disputed`.
+    pub status: String,
+    /// The builder's words on that line, cut to [`CLAIM_CHARS`].
+    pub claim: String,
+}
+
+/// The most of one claim a reviewer reads.
+pub const CLAIM_CHARS: usize = 240;
+
+/// The builder's claims about `open` findings, one per finding it names on
+/// a line of its reply with one of the words fixed, deferred or disputed
+/// (the line format its brief asks for: `<id>: fixed: what changed`). A
+/// line naming no open finding, or no status, is not a claim.
+pub fn claims(reply: &str, open: &[Finding]) -> Vec<Claim> {
+    let mut out: Vec<Claim> = Vec::new();
+    for line in reply.lines() {
+        let lower = line.to_lowercase();
+        let Some(f) = open.iter().find(|f| !f.id.is_empty() && line.contains(f.id.as_str())) else { continue };
+        let Some(status) = ["disputed", "deferred", "fixed"].into_iter().find(|w| lower.contains(w)) else { continue };
+        if out.iter().any(|c| c.id == f.id) {
+            continue;
+        }
+        let words: String = line.replace(f.id.as_str(), "").trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '-' || c == '*').chars().take(CLAIM_CHARS).collect();
+        out.push(Claim { id: f.id.clone(), status: status.to_string(), claim: words });
+    }
+    out
 }
 
 /// How many open findings block (blockers and majors).
@@ -372,6 +441,46 @@ mod tests {
         let ids: Vec<&str> = open.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(ids, ["r1-c", "r2-x"]);
         assert_eq!(blocking(&open), 2);
+    }
+
+    /// Review round 3 B1: a blocker found at the same spot as a minor is
+    /// never dropped as that minor again: the graver severity stands,
+    /// whichever came first.
+    #[test]
+    fn a_match_never_lowers_a_severity() {
+        let minor = finding("r1-a", Severity::Minor, "total.py:1", "Rename the total variable");
+        let blocker = finding("r1-b", Severity::Blocker, "total.py:1", "The total ignores b");
+        for (earlier, new) in [(vec![], vec![minor.clone(), blocker.clone()]), (vec![minor.clone()], vec![blocker.clone()])] {
+            let open = open_after(&earlier, &[], &new);
+            assert_eq!(blocking(&open), 1, "{open:?}");
+            assert!(open.iter().any(|f| f.severity == Severity::Blocker && f.title == "The total ignores b"));
+        }
+        let open = open_after(&[blocker.clone()], &[], &[minor.clone()]);
+        assert_eq!(open[0].severity, Severity::Blocker, "never downgraded");
+        // Review round 4: the graver finding keeps the id it was known by.
+        let open = open_after(&[minor], &[], &[blocker]);
+        assert_eq!((open[0].id.as_str(), open[0].severity), ("r1-a", Severity::Blocker));
+    }
+
+    /// Review 2026-10-20: a blocker the builder deferred, and a reviewer
+    /// accepted as deferred, landed as Verified with the bug. A deferral
+    /// closes a minor only; a blocker or major stays open until it is fixed
+    /// or the owner decides.
+    #[test]
+    fn a_deferral_never_closes_a_blocker_or_a_major() {
+        let earlier = vec![
+            finding("r1-a", Severity::Blocker, "a.rs:1", "wrong total"),
+            finding("r1-b", Severity::Major, "b.rs:1", "race"),
+            finding("r1-c", Severity::Minor, "c.rs:1", "naming"),
+        ];
+        let prior: Vec<Prior> = ["r1-a", "r1-b", "r1-c"]
+            .into_iter()
+            .map(|id| Prior { id: id.into(), state: PriorState::Deferred, note: "later".into() })
+            .collect();
+        let open = open_after(&earlier, &prior, &[]);
+        assert_eq!(open.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["r1-a", "r1-b"]);
+        assert_eq!(blocking(&open), 2, "still blocking: not verified");
+        assert_eq!(accepted_deferrals(&earlier, &prior).iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["r1-c"]);
     }
 
     #[test]

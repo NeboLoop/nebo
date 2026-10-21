@@ -18,7 +18,8 @@
 //!   and never a file it tracks, even one an ignore pattern matches.
 //! - In a folder that is no repository: its own `.gitignore` when it has
 //!   one; otherwise the usual build output and installed packages
-//!   ([`EXCLUDED`]).
+//!   ([`EXCLUDED`]). The same rule decides what a landing leaves out
+//!   ([`crate::worktree::ls_folder`]): one definition of build output.
 //! - Anywhere: an untracked file over [`BIG_FILE_BYTES`] (a video, a
 //!   dataset, a disk image) is not hashed.
 //!
@@ -31,24 +32,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::worktree::{git, git_bytes};
-
-/// Left out of a snapshot of a folder that is no repository and has no
-/// `.gitignore` of its own: installed packages, build output and caches,
-/// rebuilt from their sources.
-pub const EXCLUDED: &[&str] = &[
-    "node_modules/",
-    "target/",
-    "dist/",
-    "build/",
-    ".svelte-kit/",
-    ".next/",
-    "__pycache__/",
-    ".venv/",
-    "venv/",
-    ".dart_tool/",
-    ".DS_Store",
-];
+use crate::worktree::{EXCLUDED, git, git_bytes};
 
 /// An untracked file larger than this is not hashed into a snapshot.
 pub const BIG_FILE_BYTES: u64 = 50 * 1024 * 1024;
@@ -176,6 +160,19 @@ impl Shadow {
                 format!("{}\n", objects.display()),
             )
             .map_err(|e| format!("write alternates: {e}"))?;
+            // The snapshot names files as the repository itself does: its
+            // own `core.precomposeunicode` (off when unset), never the value
+            // `git init` writes on a Mac.
+            let own = git(work_tree, &["config", "--bool", "core.precomposeunicode"]).await.unwrap_or_else(|_| "false".into());
+            git(git_dir, &["--git-dir", &dir, "config", "core.precomposeunicode", own.trim()])
+                .await
+                .map_err(|e| format!("git config: {e}"))?;
+        } else {
+            // A folder that is no repository is read with its names exactly
+            // as the disk holds them, as its copy and its landing read them.
+            git(git_dir, &["--git-dir", &dir, "config", "core.precomposeunicode", "false"])
+                .await
+                .map_err(|e| format!("git config: {e}"))?;
         }
         Ok(shadow)
     }
@@ -241,19 +238,10 @@ impl Shadow {
         Ok(Snapshot(tree.trim().to_string()))
     }
 
-    /// `git ls-files` over the folder: read by its repository when it is
-    /// in one, else by the shadow (which reads the folder's own
-    /// `.gitignore`). A folder with neither leaves out [`EXCLUDED`].
+    /// `git ls-files` over the folder ([`crate::worktree::ls_folder`]):
+    /// read by its repository when it is in one, else through the shadow.
     async fn ls(&self, in_repo: bool, args: &[&str]) -> Result<Vec<u8>, String> {
-        if in_repo {
-            return git_bytes(&self.work_tree, args).await;
-        }
-        let mut all: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        if !self.work_tree.join(".gitignore").is_file() {
-            all.extend(EXCLUDED.iter().map(|p| format!("--exclude={p}")));
-        }
-        let all: Vec<&str> = all.iter().map(String::as_str).collect();
-        self.run_bytes(&all).await
+        crate::worktree::ls_folder(&self.work_tree, (!in_repo).then_some(self.git_dir.as_path()), args).await
     }
 
     /// What a snapshot leaves out, as exclude pathspecs.
@@ -385,6 +373,79 @@ impl Shadow {
             patch,
             patch_cut,
         })
+    }
+
+    /// Write `snapshot` out as a folder of its own at `dest` (made new): a
+    /// copy of exactly what was snapshotted, for reading and building, that
+    /// shares nothing with the folder it was taken from.
+    pub async fn export(&self, snapshot: &Snapshot, dest: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
+        let tar = dest.with_extension("tar");
+        let out = format!("--output={}", tar.display());
+        self.run(&["archive", "--format=tar", &out, &snapshot.0])
+            .await
+            .map_err(|e| format!("export (archive): {e}"))?;
+        let mut cmd = command::new::<tokio::process::Command>("tar", command::Console::Hidden);
+        cmd.arg("-xf").arg(&tar).arg("-C").arg(dest).stdin(std::process::Stdio::null()).kill_on_drop(true);
+        let done = cmd.output().await.map_err(|e| format!("export (tar): {e}"));
+        let _ = std::fs::remove_file(&tar);
+        let done = done?;
+        if !done.status.success() {
+            return Err(format!("export (tar): {}", String::from_utf8_lossy(&done.stderr).trim()));
+        }
+        Ok(())
+    }
+
+    /// What the folder holds at each of `paths`, as a landing compares it
+    /// ([`crate::worktree::content_id`]), when each still holds what
+    /// `snapshot` recorded. Each path is read off the disk once; those bytes
+    /// are hashed the snapshot's way (with the shadow's own settings) and
+    /// compared with the snapshot's blob, and hashed the landing's way for
+    /// what is kept, so nothing can change in between and no second
+    /// snapshot is taken. `Err` when a path no longer holds what was
+    /// snapshotted.
+    pub async fn contents(&self, snapshot: &Snapshot, paths: &[String]) -> Result<crate::worktree::Reviewed, String> {
+        let mut recorded: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if !paths.is_empty() {
+            let mut args = vec!["--literal-pathspecs", "ls-tree", "-r", "-z", "--full-tree", snapshot.0.as_str(), "--"];
+            args.extend(paths.iter().map(String::as_str));
+            let listed = self.run_bytes(&args).await.map_err(|e| format!("ls-tree: {e}"))?;
+            for entry in nul_split(&listed) {
+                // `<mode> <type> <object>\t<path>`
+                if let Some((meta, path)) = entry.split_once('\t')
+                    && let Some(object) = meta.split(' ').nth(2)
+                {
+                    recorded.insert(path.to_string(), object.to_string());
+                }
+            }
+        }
+        let shadow_hash = self.with_dirs(&[]);
+        let shadow_hash: Vec<&str> = shadow_hash.iter().map(String::as_str).collect();
+        let mut out = crate::worktree::Reviewed::new();
+        for p in paths {
+            let what = crate::worktree::read_disk(&self.work_tree, p).await;
+            let now = crate::worktree::object_id(&self.work_tree, &shadow_hash, p, &what)
+                .await
+                .map_err(|_| format!("{p} could not be read"))?;
+            if now.as_ref() != recorded.get(p) {
+                return Err(format!("{p} changed after it was snapshotted"));
+            }
+            let id = crate::worktree::object_id(&self.work_tree, crate::worktree::SNAPSHOT_HASH, p, &what)
+                .await
+                .map_err(|_| format!("{p} could not be read"))?;
+            out.insert(p.clone(), id);
+        }
+        Ok(out)
+    }
+
+    /// The text of the regular file `rel` as `snapshot` holds it; `None`
+    /// for a link, a folder or nothing there.
+    pub async fn read(&self, snapshot: &Snapshot, rel: &str) -> Option<String> {
+        let entry = self.run(&["--literal-pathspecs", "ls-tree", &snapshot.0, "--", rel]).await.ok()?;
+        if !entry.starts_with("100") {
+            return None;
+        }
+        self.run(&["cat-file", "-p", &format!("{}:{rel}", snapshot.0)]).await.ok()
     }
 
     /// Remove the shadow repository (the folder itself is untouched).
@@ -729,4 +790,190 @@ mod tests {
             })
         })
     }
+
+    /// Review round 4: what a review saw is compared by content when the
+    /// change lands, so a snapshot's record of each path is exactly what a
+    /// landing reads off the disk ([`crate::worktree::content_id`]), in a
+    /// repository and in a folder that is none, line endings and links
+    /// included; a path with nothing there is `None`.
+    #[test]
+    fn a_snapshot_records_each_path_as_a_landing_reads_it() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                for in_repo in [true, false] {
+                    let folder = tempfile::tempdir().unwrap();
+                    let shadows = tempfile::tempdir().unwrap();
+                    if in_repo {
+                        repo(folder.path()).await;
+                        std::fs::write(folder.path().join("keep.txt"), "k\n").unwrap();
+                        commit_all(folder.path()).await;
+                    }
+                    std::fs::create_dir_all(folder.path().join("scripts/build")).unwrap();
+                    std::fs::write(folder.path().join("scripts/build/run.sh"), "echo hi\r\n").unwrap();
+                    std::fs::write(folder.path().join("a b.txt"), "spaced\n").unwrap();
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink("a b.txt", folder.path().join("link")).unwrap();
+                    let shadow = Shadow::open(&shadows.path().join("s.git"), folder.path()).await.unwrap();
+                    let snap = shadow.snapshot().await.unwrap();
+                    let mut paths = vec!["a b.txt".to_string(), "gone.txt".to_string()];
+                    if in_repo {
+                        // A folder that is no repository leaves build folders out.
+                        paths.push("scripts/build/run.sh".into());
+                    }
+                    #[cfg(unix)]
+                    paths.push("link".into());
+                    let seen = shadow.contents(&snap, &paths).await.unwrap();
+                    for p in &paths {
+                        let on_disk = crate::worktree::content_id(folder.path(), p).await.unwrap();
+                        assert_eq!(seen.get(p), Some(&on_disk), "{p} (in a repository: {in_repo})");
+                    }
+                    assert_eq!(seen["gone.txt"], None);
+                }
+            })
+        })
+    }
+
+    /// Review round 5: a folder that is no repository but carries a
+    /// `.gitattributes` (an unpacked download) with CRLF text: what the
+    /// review saw is what lands, never a false "needs review".
+    #[test]
+    fn a_copy_with_gitattributes_and_crlf_lands_what_was_reviewed() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let shadows = tempfile::tempdir().unwrap();
+                std::fs::write(folder.path().join(".gitattributes"), "* text=auto\n").unwrap();
+                std::fs::write(folder.path().join("a.txt"), "a\n").unwrap();
+                let c = crate::worktree::create_copy(folder.path(), "sa-crlf").unwrap();
+                let shadow = Shadow::open(&shadows.path().join("s.git"), &c.path).await.unwrap();
+                std::fs::write(c.path.join("b.txt"), "x\r\ny\r\n").unwrap();
+                let snap = shadow.snapshot().await.unwrap();
+                let seen = shadow.contents(&snap, &["b.txt".to_string()]).await.unwrap();
+                let landing = crate::worktree::Landing { only: Some(seen), ..Default::default() };
+                let mut isos = [crate::worktree::Isolation::Copy(c)];
+                let out = crate::worktree::merge_all(&mut isos, "m", None, &landing).await;
+                assert!(matches!(&out[0].1, crate::worktree::MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+            })
+        })
+    }
+
+    /// Review round 5: a repository whose own config defines a clean filter
+    /// (git-crypt, a local git-lfs install): a snapshot records each path as
+    /// a landing reads it.
+    #[test]
+    fn a_repository_local_clean_filter_reads_alike() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let shadows = tempfile::tempdir().unwrap();
+                repo(folder.path()).await;
+                git(folder.path(), &["config", "filter.up.clean", "tr a-z A-Z"]).await.unwrap();
+                git(folder.path(), &["config", "filter.up.smudge", "cat"]).await.unwrap();
+                std::fs::write(folder.path().join(".gitattributes"), "*.txt filter=up\n").unwrap();
+                commit_all(folder.path()).await;
+                std::fs::write(folder.path().join("b.txt"), "secret\n").unwrap();
+                let shadow = Shadow::open(&shadows.path().join("s.git"), folder.path()).await.unwrap();
+                let snap = shadow.snapshot().await.unwrap();
+                let seen = shadow.contents(&snap, &["b.txt".to_string()]).await.unwrap();
+                assert_eq!(seen["b.txt"], crate::worktree::content_id(folder.path(), "b.txt").await.unwrap());
+            })
+        })
+    }
+
+    /// Review round 6: names git would quote or rewrite (decomposed
+    /// accents as macOS writes them, a quote, a backslash, a tab, a newline,
+    /// a leading dash, glob characters) go from a review of a copy to its
+    /// landing whole: the snapshot names them as the copy does.
+    #[test]
+    fn names_git_would_quote_or_rewrite_go_from_review_to_landing() {
+        crate::test_home::with_home(|_| {
+            rt().block_on(async {
+                let folder = tempfile::tempdir().unwrap();
+                let shadows = tempfile::tempdir().unwrap();
+                std::fs::write(folder.path().join("a.txt"), "a\n").unwrap();
+                let c = crate::worktree::create_copy(folder.path(), "sa-r6-shadow").unwrap();
+                let shadow = Shadow::open(&shadows.path().join("s.git"), &c.path).await.unwrap();
+                let base = shadow.snapshot().await.unwrap();
+                let names = ["cafe\u{301}.txt", "a\"b.txt", "back\\slash.txt", "tab\there.txt", "new\nline.txt", "-dash.txt", "routes/[id]/p.txt"];
+                for n in names {
+                    let p = c.path.join(n);
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(p, format!("{n}\n")).unwrap();
+                }
+                let snap = shadow.snapshot().await.unwrap();
+                let paths = shadow.diff(&base, &snap).await.unwrap().paths();
+                let mut sorted = paths.clone();
+                sorted.sort();
+                let mut want: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+                want.sort();
+                assert_eq!(sorted, want, "the snapshot names them as the copy does");
+                let seen = shadow.contents(&snap, &paths).await.unwrap();
+                let landing = crate::worktree::Landing { only: Some(seen), ..Default::default() };
+                let mut isos = [crate::worktree::Isolation::Copy(c)];
+                let out = crate::worktree::merge_all(&mut isos, "m", None, &landing).await;
+                assert!(matches!(&out[0].1, crate::worktree::MergeOutcome::Merged { .. }), "{:?}", out[0].1);
+                for n in names {
+                    assert!(folder.path().join(n).exists(), "{n:?}");
+                }
+            })
+        })
+    }
+
+
+    /// A review of a git worktree with decomposed (NFD) names, landed, under
+    /// the repository's own precompose setting (on: macOS's default; off:
+    /// cloned or set so): what it says happened.
+    async fn nfd_names_reviewed_and_landed_in_a_repository(precompose: &str) -> String {
+        let r = tempfile::tempdir().unwrap();
+        let shadows = tempfile::tempdir().unwrap();
+        repo(r.path()).await;
+        git(r.path(), &["config", "core.precomposeunicode", precompose]).await.unwrap();
+        std::fs::write(r.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(r.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(r.path().join("cafe\u{301}-tracked.txt"), "t0\n").unwrap();
+        commit_all(r.path()).await;
+        // The owner's own ignored NFD file, never to be deleted.
+        std::fs::write(r.path().join("cafe\u{301}.log"), "secret\n").unwrap();
+        let iso = crate::worktree::create(r.path(), "sa-nfd").await.unwrap();
+        let wt = iso.path().to_path_buf();
+        let shadow = Shadow::open(&shadows.path().join("s.git"), &wt).await.unwrap();
+        let base = shadow.snapshot().await.unwrap();
+        std::fs::write(wt.join("cafe\u{301}-new.txt"), "n\n").unwrap();
+        std::fs::write(wt.join("cafe\u{301}-tracked.txt"), "t1\n").unwrap();
+        std::fs::write(wt.join("cafe\u{301}-built.log"), "build\n").unwrap();
+        let snap = shadow.snapshot().await.unwrap();
+        let paths = shadow.diff(&base, &snap).await.unwrap().paths();
+        let seen = match shadow.contents(&snap, &paths).await {
+            Ok(s) => s,
+            Err(e) => return format!("contents: {e}; paths={paths:?}"),
+        };
+        let landing = crate::worktree::Landing { only: Some(seen), ..Default::default() };
+        let mut isos = [iso];
+        let out = crate::worktree::merge_all(&mut isos, "m", None, &landing).await;
+        let names: Vec<String> = std::fs::read_dir(r.path()).unwrap().map(|e| format!("{:?}", e.unwrap().file_name())).collect();
+        format!(
+            "precompose={precompose} paths={paths:?} outcome={:?} log_kept={} new_landed={} tracked={:?} dir={names:?}",
+            out[0].1,
+            r.path().join("cafe\u{301}.log").exists(),
+            r.path().join("cafe\u{301}-new.txt").exists(),
+            std::fs::read_to_string(r.path().join("cafe\u{301}-tracked.txt")).ok(),
+        )
+    }
+
+    #[test]
+    fn nfd_names_land_in_a_repository_with_precompose_on() {
+        crate::test_home::with_home(|_| rt().block_on(async {
+            let got = nfd_names_reviewed_and_landed_in_a_repository("true").await;
+            assert!(got.contains("Merged") && got.contains("log_kept=true") && got.contains("new_landed=true") && got.contains("t1"), "{got}");
+        }))
+    }
+
+    #[test]
+    fn nfd_names_land_in_a_repository_with_precompose_off() {
+        crate::test_home::with_home(|_| rt().block_on(async {
+            let got = nfd_names_reviewed_and_landed_in_a_repository("false").await;
+            assert!(got.contains("Merged") && got.contains("log_kept=true") && got.contains("new_landed=true") && got.contains("t1"), "{got}");
+        }))
+    }
+
 }

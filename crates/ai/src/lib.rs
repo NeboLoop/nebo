@@ -18,3 +18,14 @@ pub use providers::{
     OllamaProvider, OpenAIProvider, Relay, connection_id,
 };
 pub use types::*;
+
+/// How the verify loop's word to a builder begins: the review of its code
+/// work. A linked coding agent is sent it (it is for the agent), when it is
+/// what came after the agent's last answer.
+pub const REVIEW_NOTE: &str = "Review of your code work:";
+
+/// How the goal check's word to an agent whose goal isn't met yet begins. A
+/// linked coding agent is sent it like the review of its code work: it is
+/// for the agent, and the owner's message it already answered is never
+/// sent again.
+pub const GOAL_NOTE: &str = "The agreed goal isn't met yet:";

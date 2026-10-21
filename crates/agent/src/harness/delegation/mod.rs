@@ -4533,6 +4533,41 @@ mod tests {
         })
     }
 
+    /// Review round 2 M5: a helper whose answer is read as data (the verify
+    /// loop's reviewer) carries the run's taint: what the builder's turn
+    /// read, its reviewer is held to as well.
+    #[tokio::test]
+    async fn an_asked_helper_carries_its_parents_taint() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:dev:web");
+        let parent = Parent {
+            session_key: "agent:dev:web",
+            seat: &owner.seat,
+            grant: None,
+            run_taint: &[ProvenanceClass::Web],
+            cancel: owner.cancel.clone(),
+            platform: None,
+        };
+        let ask = Ask {
+            node: "verify-v-1-r1-correctness".into(),
+            description: "Reviewing: correctness".into(),
+            kind: HelperKind::Review,
+            prompt: "Review it.".into(),
+            schema: serde_json::json!({"type": "object"}),
+            tools: None,
+            fence: Vec::new(),
+            shown: false,
+        };
+        let helpers = rig.helpers.clone();
+        let (_, taint) = tokio::join!(helpers.answer(&parent, ask, None), async {
+            let reviewer = rig.next_turn().await;
+            let taint = reviewer.request.seat.seed_taint.clone();
+            reviewer.answer("{}").await;
+            taint
+        });
+        assert!(taint.contains(&ProvenanceClass::Web), "{taint:?}");
+    }
+
     fn target(key: &str, read_only: bool) -> Target {
         Target {
             tool: key.into(),

@@ -20,6 +20,7 @@ mod default_artifacts;
 pub mod entity_config;
 pub mod handlers;
 pub mod handoff;
+pub mod verification;
 mod hub_sync;
 mod engine;
 mod heartbeat;
@@ -2951,6 +2952,12 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     let state = state.clone();
                     Box::pin(async move { background::note_for(&state, &agent_id, &session_key).await })
                 })
+            }),
+            // Code work is verified by reviewers that are helpers of the turn.
+            helpers: Some(state.helpers.clone()),
+            verification_changed: Some({
+                let state = state.clone();
+                Arc::new(move |id: &str| verification::broadcast(&state, id))
             }),
         });
         // `suggest_goal` reaches the agreed goal through the harness.

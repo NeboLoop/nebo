@@ -21,6 +21,9 @@
     CFG.socket ||
     (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + prefix + '/ws/app/' + encodeURIComponent(appId);
   var devlogUrl = api + '/devlog';
+  // The view this page is: set by whoever opened it to tell its lines apart
+  // from every other open view's (the bot's live check), else none.
+  var VIEW = String(window.__neboViewId || '');
   var KEEP = 300;
   var logs = [];
   var queue = [];
@@ -50,7 +53,7 @@
     if (busy) return;
     busy = true;
     try {
-      var e = { level: level, message: String(message).slice(0, 2000), source: source, time: Date.now() };
+      var e = { level: level, message: String(message).slice(0, 2000), source: source, time: Date.now(), view: VIEW };
       logs.push(e);
       if (logs.length > KEEP) logs.shift();
       if (level === 'error') unseen++;
@@ -73,14 +76,27 @@
     if (!queue.length || !origFetch) return;
     var body = JSON.stringify({ entries: queue.splice(0, queue.length) });
     try {
-      origFetch(devlogUrl, {
+      var sent = origFetch(devlogUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: body,
         credentials: 'same-origin'
       }).catch(function () {});
+      inflight.push(sent);
+      sent.then(function () {
+        inflight.splice(inflight.indexOf(sent), 1);
+      });
     } catch (e) {}
   }
+  // Batches on their way to the bot.
+  var inflight = [];
+  // Whoever opened this view (the bot's live check) reads its lines only
+  // once every one has reached the bot: what is queued goes now, and this
+  // settles when every batch on its way has landed.
+  window.__neboDevtoolsFlush = function () {
+    flush();
+    return Promise.all(inflight.slice());
+  };
 
   function onPageHide() {
     if (!queue.length) return;
@@ -223,6 +239,9 @@
       try {
         lookAtPage();
       } catch (e) {}
+      // Whoever opened this view (the bot's live check) waits for this
+      // first look before it reads what the page reported.
+      window.__neboLooked = true;
     }, ms);
   }
   if (document.readyState === 'complete') lookSoon(2500);
@@ -292,6 +311,26 @@
         });
       }
       return xsend.apply(this, arguments);
+    };
+  }
+
+  // A worker's uncaught error reaches the page as an error event on the
+  // worker; it goes in the same log. (Its own console stays in the worker:
+  // reading it would mean running the worker from another script, which
+  // changes where its relative imports load from.)
+  // A subclass of it (`class X extends Worker`) still works: it is a class
+  // of its own over the browser's Worker.
+  if (typeof window.Worker === 'function') {
+    var NativeWorker = window.Worker;
+    var onWorkerError = function (ev) {
+      var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
+      push('error', 'Worker: ' + (ev.message || 'Error') + where, 'worker');
+    };
+    window.Worker = class Worker extends NativeWorker {
+      constructor(url, opts) {
+        super(url, opts);
+        this.addEventListener('error', onWorkerError);
+      }
     };
   }
 
