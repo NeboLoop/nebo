@@ -464,10 +464,9 @@ export function createChatController(config: ChatControllerConfig) {
     let idx = replyIndex(aid);
     if (idx === -1 && (attachments.length || workItems.length)) idx = startReply(aid);
     // No reply bubble here means the run's text never streamed to this
-    // pane — voice runs stream to the voice socket, coworker and workflow
-    // turns to nobody — yet its rows are persisted: reload the transcript.
-    // Without this, a voice conversation only appeared after a hard refresh
-    // (2026-09-15).
+    // pane — coworker and workflow turns stream to nobody — yet its rows are
+    // persisted: reload the transcript. Without this, such a conversation
+    // only appeared after a hard refresh (2026-09-15).
     // A call still showing as running when the run is over never ran: the
     // work stopped before it (the owner's message ended the turn), and the
     // thread keeps neither the call nor the fold it put on the words before
@@ -846,6 +845,18 @@ export function createChatController(config: ChatControllerConfig) {
     addOwnerMessage({ id: row.id, type: 'user' as const, content: row.content, time: formatTime(row.createdAt) });
   }
 
+  // A spoken turn of a call in this conversation, kept as a row and announced
+  // once (`voice_message`): it lands by its id. What the employee writes
+  // while the call runs streams in as a typed turn's work does.
+  function handleVoiceMessage(data: any) {
+    if (!historyTarget || data?.chatId !== historyTarget || !data.id) return;
+    const content = typeof data.content === 'string' ? data.content : '';
+    if (!content.trim() || messages.some((m) => 'id' in m && m.id === data.id)) return;
+    const time = formatTime(Date.now());
+    if (data.role === 'user') addOwnerMessage({ id: data.id, type: 'user' as const, content, time });
+    else messages = [...messages, { id: data.id, type: 'assistant' as const, content, time }];
+  }
+
   // A step of the running work took in the owner's messages queued behind it
   // (from this window or any other): they are part of the conversation now.
   function handleTakenIn(data: any) {
@@ -915,6 +926,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_created', handleChatCreated));
   unsubs.push(ws.on('chat_user_message', handleUserMessage));
   unsubs.push(ws.on('chat_taken_in', handleTakenIn));
+  unsubs.push(ws.on('voice_message', handleVoiceMessage));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
   unsubs.push(onServer('text_verdict', handleTextVerdict));

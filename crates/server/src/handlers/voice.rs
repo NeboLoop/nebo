@@ -981,10 +981,19 @@ async fn drain_voice_run(
     let mut last_notice = String::new();
     let mut control_stop: Option<(String, String)> = None;
     let mut last_event = tokio::time::Instant::now();
-    // The run's steps reach the open thread as a typed chat's do (the same
-    // tool_start / tool_result the chat pipeline sends), so the owner sees
-    // the work while the call waits for its reply.
+    // The run reaches the open thread as a typed chat's does (the same
+    // chat_stream / thinking / text_verdict / tool_start / tool_result the
+    // chat pipeline sends, on the same identity), so every client shows the
+    // employee's written work while the call waits for its reply.
     let turn_id = uuid::Uuid::new_v4().to_string();
+    let identity = serde_json::json!({ "session_id": session_key, "agentId": agent_id, "turn_id": turn_id });
+    let with_identity = |fields: serde_json::Value| {
+        let mut payload = identity.clone();
+        if let (Some(p), serde_json::Value::Object(f)) = (payload.as_object_mut(), fields) {
+            p.extend(f);
+        }
+        payload
+    };
     // The run's files, kept on the reply and sent with `chat_complete`.
     let mut artifacts: Vec<String> = Vec::new();
     loop {
@@ -1007,7 +1016,22 @@ async fn drain_voice_run(
         last_event = tokio::time::Instant::now();
         run_handle.touch();
         match event.event_type {
-            ai::StreamEventType::Text => out.push_str(&event.text),
+            ai::StreamEventType::Text => {
+                out.push_str(&event.text);
+                state.hub.broadcast("chat_stream", with_identity(serde_json::json!({ "content": event.text })));
+            }
+            ai::StreamEventType::Thinking => {
+                state.hub.broadcast("thinking", with_identity(serde_json::json!({ "content": event.text })));
+            }
+            ai::StreamEventType::TextVerdict => {
+                state.hub.broadcast(
+                    "text_verdict",
+                    with_identity(serde_json::json!({
+                        "segment": event.payload.as_ref().and_then(|p| p.get("segment")).cloned(),
+                        "fold": event.text,
+                    })),
+                );
+            }
             ai::StreamEventType::ControlNotice => {
                 control_stop = Some(control_stop_of(&event));
                 last_notice = event.text;
@@ -1034,15 +1058,12 @@ async fn drain_voice_run(
                     }
                     state.hub.broadcast(
                         "tool_start",
-                        serde_json::json!({
-                            "session_id": session_key,
-                            "agentId": agent_id,
-                            "turn_id": turn_id,
+                        with_identity(serde_json::json!({
                             "tool_id": tc.id,
                             "tool": tc.name,
                             "input": tc.input,
                             "call": tools::humanize::call(&tc.name, &tc.input),
-                        }),
+                        })),
                     );
                 }
             }
@@ -1057,10 +1078,7 @@ async fn drain_voice_run(
                 let files = owner_artifact_urls(&state.tools, &event).await;
                 state.hub.broadcast(
                     "tool_result",
-                    serde_json::json!({
-                        "session_id": session_key,
-                        "agentId": agent_id,
-                        "turn_id": turn_id,
+                    with_identity(serde_json::json!({
                         "tool_id": tool_id,
                         "tool_name": tool_name,
                         "result": event.text,
@@ -1068,7 +1086,7 @@ async fn drain_voice_run(
                         "call": call,
                         "payload": event.payload,
                         "files": &files,
-                    }),
+                    })),
                 );
                 // A file the run hands the owner (share_file, a capture, a
                 // document it made) reaches every client as a typed chat's does.
@@ -1102,7 +1120,7 @@ async fn drain_voice_run(
         &state,
         &run_handle,
         TurnEnd {
-            payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
+            payload: identity,
             artifacts: &artifacts,
             control_stop: control_stop.as_ref(),
         },
@@ -1788,6 +1806,16 @@ impl TurnLedger {
         rows.extend(self.close_assistant());
         rows
     }
+}
+
+/// The client's word that the model's speech in the turn under way is not
+/// kept as a row ([`TurnLedger`]): a delegated run's written reply answers
+/// it, or it retells a reply the conversation already has. A client showing
+/// the call's live speech in the conversation shows that turn's speech no
+/// longer, so the answer appears once, in writing; speech the thread did
+/// keep before it still lands as its own row.
+fn response_not_kept() -> serde_json::Value {
+    serde_json::json!({ "type": "response_not_kept" })
 }
 
 /// Where a session's rows go: the thread (created on the first row), the
@@ -3228,12 +3256,13 @@ async fn handle_conversation_session(
                         // In a team thread the run's rows land in the lead's
                         // seat, not the thread, so the lead's spoken reply
                         // stays: it IS the team's record of the answer.
-                        if name == "nebo" && ledger.call(team.is_none()) {
+                        let delegating = name == "nebo" && team.is_none();
+                        if name == "nebo" && ledger.call(delegating) {
                             held_runs.push((call_id, name, arguments));
                         } else {
                             spawn_tool(call_id, name, arguments, ledger.said.clone(), ledger.spoke_at);
                         }
-                        None
+                        delegating.then(response_not_kept)
                     }
                 };
                 if let Some(frame) = frame
@@ -3412,6 +3441,9 @@ async fn handle_conversation_session(
             if !say.is_empty() {
                 let rows = ledger.relayed();
                 sink.write(&state, &mut socket, rows).await;
+                if socket.send(Message::Text(response_not_kept().to_string().into())).await.is_err() {
+                    break;
+                }
                 if rt_tx.send(RealtimeCommand::Text(say)).await.is_err() {
                     break;
                 }
@@ -4181,6 +4213,80 @@ mod voice_prompt_tests {
             if e.event_type == "chat_complete" && e.payload["session_id"] == key.as_str() {
                 break;
             }
+        }
+    }
+
+    /// The run's written work reaches the conversation as a typed chat's
+    /// does: each piece of text as `chat_stream`, its steps, and the end as
+    /// `chat_complete`, all on the session, the employee and one turn id, so
+    /// every open client shows the reply while the call speaks it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn drain_voice_run_streams_the_written_reply_to_the_conversation() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let key = format!("agent:a:thread:{}", uuid::Uuid::new_v4());
+        let mut events = state.hub.subscribe();
+        let run_handle = register(&state, &key).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(super::drain_voice_run(
+            state.clone(),
+            key.clone(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+        tx.send(ai::StreamEvent::text("Looking it up. ")).await.unwrap();
+        let search = ai::ToolCall {
+            id: "t1".into(),
+            name: "web".into(),
+            input: serde_json::json!({ "action": "search", "query": "flights" }),
+        };
+        tx.send(ai::StreamEvent::tool_call(search.clone())).await.unwrap();
+        tx.send(ai::StreamEvent {
+            event_type: ai::StreamEventType::ToolResult,
+            tool_call: Some(search),
+            ..ai::StreamEvent::text("3 flights")
+        })
+        .await
+        .unwrap();
+        tx.send(ai::StreamEvent::text("Three flights ")).await.unwrap();
+        tx.send(ai::StreamEvent::text("leave tomorrow.")).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert_eq!(spoken_rx.await.unwrap().as_deref(), Some("Three flights leave tomorrow."));
+
+        let mut seen: Vec<(String, serde_json::Value)> = Vec::new();
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await.unwrap().unwrap();
+            if e.payload["session_id"] != key.as_str() {
+                continue;
+            }
+            let end = e.event_type == "chat_complete";
+            seen.push((e.event_type.clone(), e.payload.clone()));
+            if end {
+                break;
+            }
+        }
+        let kinds: Vec<&str> = seen.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["chat_stream", "tool_start", "tool_result", "chat_stream", "chat_stream", "chat_complete"],
+            "{seen:?}"
+        );
+        let streamed: String = seen
+            .iter()
+            .filter(|(k, _)| k == "chat_stream")
+            .filter_map(|(_, p)| p["content"].as_str())
+            .collect();
+        assert_eq!(streamed, "Looking it up. Three flights leave tomorrow.");
+        let turn = seen[0].1["turn_id"].as_str().expect("a turn id").to_string();
+        assert!(!turn.is_empty());
+        for (kind, payload) in &seen {
+            assert_eq!(payload["agentId"], "a", "{kind}: {payload}");
+            assert_eq!(payload["turn_id"], turn.as_str(), "{kind} names the one turn: {payload}");
         }
     }
 
