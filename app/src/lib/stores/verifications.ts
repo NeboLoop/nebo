@@ -97,7 +97,7 @@ type Tr = (
 const WHYS = new Set([
   "needs_answer", "unreadable", "spend_limit", "review_incomplete", "needs_decision",
   "stopped_by_owner", "stalled", "no_checks", "landed_unreviewed", "edits_in_way",
-  "kept_own_edits", "live_failed", "live_unavailable", "live_ok", "review_clean", "review_blocking",
+  "kept_own_edits", "live_failed", "live_unavailable", "live_no_script", "live_ok", "review_clean", "review_blocking",
   "up_to_date", "caught_up", "conflicts", "landed", "nothing_to_land", "owner_edits",
   "busy_no_branch", "busy_branch", "busy_in_progress", "hook_failed", "retest_failed",
   "not_attempted", "land_failed", "step_limit", "turn_ended", "restarted",

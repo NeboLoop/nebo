@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Non integrato: hai tenuto le tue modifiche, e la modifica attende nella sua copia",
 			"live_failed": "Il controllo dal vivo non è riuscito",
 			"live_unavailable": "Non controllato dal vivo: il bot non ha un browser in cui aprire l'app",
+			"live_no_script": "Non controllato dal vivo: la pagina dell'app non ha caricato lo script di controllo (la pagina d'ingresso non è testo UTF-8, l'app non è una delle tue o la pagina è andata a un altro indirizzo)",
 			"live_ok": "La pagina si è ricaricata e funziona",
 			"review_clean": "Nessun problema bloccante o grave",
 			"review_blocking": "Problemi bloccanti: {count, plural, other {#}}",

@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Não integrado: você manteve suas próprias edições, e a mudança espera na cópia dela",
 			"live_failed": "A verificação ao vivo falhou",
 			"live_unavailable": "Não verificado ao vivo: o bot não tem um navegador para abrir o app",
+			"live_no_script": "Não verificado ao vivo: a página do app não carregou o script de verificação (a página de entrada não é texto UTF-8, o app não é seu ou a página foi para outro endereço)",
 			"live_ok": "A página recarregou e está funcionando",
 			"review_clean": "Nenhum problema bloqueante ou grave",
 			"review_blocking": "Problemas bloqueantes: {count, plural, other {#}}",

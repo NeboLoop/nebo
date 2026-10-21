@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Nie wdrożone: zachowałeś własne zmiany, a ta zmiana czeka w swojej kopii",
 			"live_failed": "Sprawdzenie na żywo nie powiodło się",
 			"live_unavailable": "Nie sprawdzono na żywo: bot nie ma przeglądarki, w której mógłby otworzyć aplikację",
+			"live_no_script": "Nie sprawdzono na żywo: strona aplikacji nie wczytała skryptu sprawdzającego (jej strona startowa nie jest tekstem UTF-8, aplikacja nie jest Twoja albo strona przeszła pod inny adres)",
 			"live_ok": "Strona przeładowała się i działa",
 			"review_clean": "Brak blokujących lub poważnych problemów",
 			"review_blocking": "Problemy blokujące: {count, plural, other {#}}",

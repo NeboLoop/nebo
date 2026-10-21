@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Aktarılmadı: kendi düzenlemelerinizi tuttunuz, değişiklik kendi kopyasında bekliyor",
 			"live_failed": "Canlı kontrol başarısız oldu",
 			"live_unavailable": "Canlı kontrol edilmedi: botun uygulamayı açacak bir tarayıcısı yok",
+			"live_no_script": "Canlı kontrol edilmedi: uygulamanın sayfası kontrol betiğini yüklemedi (giriş sayfası UTF-8 metin değil, uygulama sizin değil ya da sayfa başka bir adrese gitti)",
 			"live_ok": "Sayfa yeniden yüklendi ve çalışıyor",
 			"review_clean": "Engelleyici veya büyük sorun yok",
 			"review_blocking": "Engelleyici sorunlar: {count, plural, other {#}}",

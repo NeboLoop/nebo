@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Nicht übernommen: Sie haben Ihre eigenen Änderungen behalten, die Änderung wartet in ihrer Kopie",
 			"live_failed": "Die Live-Prüfung ist fehlgeschlagen",
 			"live_unavailable": "Nicht live geprüft: Der Bot hat keinen Browser, um die App zu öffnen",
+			"live_no_script": "Nicht live geprüft: Die Seite der App hat das Prüfskript nicht geladen (ihre Startseite ist kein UTF-8-Text, die App ist nicht Ihre eigene oder die Seite ist zu einer anderen Adresse gewechselt)",
 			"live_ok": "Die Seite wurde neu geladen und ist in Ordnung",
 			"review_clean": "Keine blockierenden oder größeren Probleme",
 			"review_blocking": "Blockierende Probleme: {count, plural, other {#}}",

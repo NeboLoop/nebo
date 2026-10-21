@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Inte infört: du behöll dina egna ändringar, och ändringen väntar i sin kopia",
 			"live_failed": "Livekontrollen misslyckades",
 			"live_unavailable": "Inte kontrollerad live: boten har ingen webbläsare att öppna appen i",
+			"live_no_script": "Inte kontrollerad live: appens sida laddade inte kontrollskriptet (startsidan är inte UTF-8-text, appen är inte din egen eller sidan gick till en annan adress)",
 			"live_ok": "Sidan laddades om och fungerar",
 			"review_clean": "Inga blockerande eller större problem",
 			"review_blocking": "Blockerande problem: {count, plural, other {#}}",

@@ -4421,6 +4421,7 @@
 			"kept_own_edits": "Niet doorgevoerd: je hebt je eigen wijzigingen gehouden, en de wijziging wacht in haar kopie",
 			"live_failed": "De live-controle is mislukt",
 			"live_unavailable": "Niet live gecontroleerd: de bot heeft geen browser om de app in te openen",
+			"live_no_script": "Niet live gecontroleerd: de pagina van de app laadde het controlescript niet (de startpagina is geen UTF-8-tekst, de app is niet van jou, of de pagina ging naar een ander adres)",
 			"live_ok": "De pagina is herladen en werkt",
 			"review_clean": "Geen blokkerende of grote problemen",
 			"review_blocking": "Blokkerende problemen: {count, plural, other {#}}",
