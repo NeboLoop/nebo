@@ -1417,7 +1417,20 @@ pub enum LiveLoadError {
     NoBrowser(String),
     /// A view could not be opened or read.
     NotOpened(String),
+    /// The page loaded without the developer script that reports what it
+    /// does, so it can't be checked: why, in the owner's words.
+    NoScript(String),
 }
+
+/// Why a page can load without the developer script.
+pub const NO_SCRIPT: &str = "the app's page didn't load the check script: its entry page isn't UTF-8 text, the app isn't one of your own, or the page went to another address";
+
+/// Waits for every batch the developer script has on its way to land.
+const DEVTOOLS_FLUSHED: &str = r#"(async()=>{if(window.__neboDevtoolsFlush)await window.__neboDevtoolsFlush();return 'flushed';})()"#;
+
+/// How long after its load a page is watched: the developer script looks
+/// at the page 2.5 s after it loads (a page that drew nothing).
+const WATCHED_AFTER_LOAD: Duration = Duration::from_secs(3);
 
 /// The answer the page itself came with, when it was an error (`0`: none
 /// was read).
@@ -1440,21 +1453,22 @@ pub async fn live_load(browser: Option<&Arc<browser::Manager>>, app: &db::models
         .await
         .map_err(LiveLoadError::NotOpened)?;
     let checked = async {
-        if view.eval(PAGE_LOADED).await? != "complete" {
+        if view.eval(PAGE_LOADED).await.map_err(LiveLoadError::NotOpened)? != "complete" {
             return Ok(vec!["The page did not finish loading.".to_string()]);
         }
-        if view.eval("String(!!window.__neboDevtools)").await? != "true" {
-            return Err("the page has no developer script to report what it does".to_string());
+        if view.eval("String(!!window.__neboDevtools)").await.map_err(LiveLoadError::NotOpened)? != "true" {
+            return Err(LiveLoadError::NoScript(NO_SCRIPT.into()));
         }
-        // What went wrong right after the load, and the script's last batch
-        // (sent every 400 ms), arrive before they are read.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        let status: u16 = view.eval(PAGE_STATUS).await?.parse().unwrap_or(0);
+        // What goes wrong after the load (the script's look at the page
+        // included), then every batch on its way, before anything is read.
+        tokio::time::sleep(WATCHED_AFTER_LOAD).await;
+        let status: u16 = view.eval(PAGE_STATUS).await.map_err(LiveLoadError::NotOpened)?.parse().unwrap_or(0);
+        view.eval(DEVTOOLS_FLUSHED).await.map_err(LiveLoadError::NotOpened)?;
         Ok((status >= 400).then(|| format!("The page answered {status}.")).into_iter().collect())
     }
     .await;
     view.close().await;
-    let mut failed = checked.map_err(LiveLoadError::NotOpened)?;
+    let mut failed = checked?;
     failed.extend(crate::app_console::view_errors(&app.id, mark, &view_id));
     Ok(failed)
 }

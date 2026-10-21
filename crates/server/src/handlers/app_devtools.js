@@ -76,14 +76,27 @@
     if (!queue.length || !origFetch) return;
     var body = JSON.stringify({ entries: queue.splice(0, queue.length) });
     try {
-      origFetch(devlogUrl, {
+      var sent = origFetch(devlogUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: body,
         credentials: 'same-origin'
       }).catch(function () {});
+      inflight.push(sent);
+      sent.then(function () {
+        inflight.splice(inflight.indexOf(sent), 1);
+      });
     } catch (e) {}
   }
+  // Batches on their way to the bot.
+  var inflight = [];
+  // Whoever opened this view (the bot's live check) reads its lines only
+  // once every one has reached the bot: what is queued goes now, and this
+  // settles when every batch on its way has landed.
+  window.__neboDevtoolsFlush = function () {
+    flush();
+    return Promise.all(inflight.slice());
+  };
 
   function onPageHide() {
     if (!queue.length) return;
@@ -302,18 +315,20 @@
   // worker; it goes in the same log. (Its own console stays in the worker:
   // reading it would mean running the worker from another script, which
   // changes where its relative imports load from.)
+  // A subclass of it (`class X extends Worker`) still works: it is a class
+  // of its own over the browser's Worker.
   if (typeof window.Worker === 'function') {
     var NativeWorker = window.Worker;
-    var NeboWorker = function (url, opts) {
-      var w = new NativeWorker(url, opts);
-      w.addEventListener('error', function (ev) {
-        var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
-        push('error', 'Worker: ' + (ev.message || 'Error') + where, 'worker');
-      });
-      return w;
+    var onWorkerError = function (ev) {
+      var where = ev.filename ? ' (' + short(ev.filename) + ':' + ev.lineno + ':' + ev.colno + ')' : '';
+      push('error', 'Worker: ' + (ev.message || 'Error') + where, 'worker');
     };
-    NeboWorker.prototype = NativeWorker.prototype;
-    window.Worker = NeboWorker;
+    window.Worker = class Worker extends NativeWorker {
+      constructor(url, opts) {
+        super(url, opts);
+        this.addEventListener('error', onWorkerError);
+      }
+    };
   }
 
   // app_reload: the employee asked every open view of this app to reload.

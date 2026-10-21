@@ -78,6 +78,7 @@ pub fn english(why: &Why) -> String {
         "edits_in_way" => "not landed yet: the owner's edits are still in the way".into(),
         "kept_own_edits" => "not landed: the owner kept their own edits; the change waits in its copy".into(),
         "live_failed" => "the live check failed".into(),
+        "live_no_script" => "it could not be checked live: the app's page didn't load the check script (its entry page isn't UTF-8 text, the app isn't one of the owner's own, or the page went to another address)".into(),
         "live_unavailable" => "it could not be checked live: the bot has no browser to open the app in".into(),
         "live_ok" => "the page reloaded and checked out".into(),
         "review_clean" => "no blocking or major issues".into(),

@@ -40,7 +40,22 @@ pub struct Entry {
 struct Rings {
     next: u64,
     apps: HashMap<String, VecDeque<Entry>>,
+    /// Each named view's errors, `(seq, message)`, kept apart from the
+    /// ring: a live check reads its view's errors whatever else was logged
+    /// meanwhile. The newest [`VIEWS_KEPT`] views, [`VIEW_ERRORS`] each.
+    views: HashMap<String, Vec<(u64, String)>>,
+    view_order: VecDeque<String>,
 }
+
+/// One app's view, as its kept errors are found.
+fn view_key(app_id: &str, view: &str) -> String {
+    format!("{app_id}\u{0}{view}")
+}
+
+/// Views whose errors are kept apart, oldest out first.
+const VIEWS_KEPT: usize = 32;
+/// Errors kept per view.
+const VIEW_ERRORS: usize = 50;
 
 fn rings() -> &'static Mutex<Rings> {
     static RINGS: OnceLock<Mutex<Rings>> = OnceLock::new();
@@ -85,6 +100,21 @@ pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a 
     }
     rings.next = seq;
     let count = added.len();
+    for e in added.iter().filter(|e| e.level == "error" && !e.view.is_empty()) {
+        let key = view_key(app_id, &e.view);
+        if !rings.views.contains_key(&key) {
+            rings.view_order.push_back(key.clone());
+            if rings.view_order.len() > VIEWS_KEPT
+                && let Some(old) = rings.view_order.pop_front()
+            {
+                rings.views.remove(&old);
+            }
+        }
+        let errors = rings.views.entry(key).or_default();
+        if errors.len() < VIEW_ERRORS {
+            errors.push((e.seq, e.message.clone()));
+        }
+    }
     let ring = rings.apps.entry(app_id.to_string()).or_default();
     for e in added {
         if ring.len() == RING_CAPACITY {
@@ -111,13 +141,11 @@ pub fn mark() -> u64 {
     rings().lock().unwrap_or_else(|e| e.into_inner()).next
 }
 
-/// The errors view `view` of the app sent after `since` ([`mark`]).
+/// The errors view `view` of the app sent after `since` ([`mark`]),
+/// whatever else was logged meanwhile.
 pub fn view_errors(app_id: &str, since: u64, view: &str) -> Vec<String> {
-    recent(app_id, Some(since), RING_CAPACITY)
-        .into_iter()
-        .filter(|e| e.level == "error" && e.view == view)
-        .map(|e| e.message)
-        .collect()
+    let rings = rings().lock().unwrap_or_else(|e| e.into_inner());
+    rings.views.get(&view_key(app_id, view)).map(|v| v.iter().filter(|(seq, _)| *seq > since).map(|(_, m)| m.clone()).collect()).unwrap_or_default()
 }
 
 /// How many errors the app's ring holds.
@@ -326,4 +354,18 @@ mod tests {
         assert!(text.ends_with(&format!("since: {}", entries[0].seq)), "{text}");
         assert!(render("Racer", &[], Some(7)).contains("nothing new since #7"));
     }
+
+    /// r7v: a live view's boot error, then per-frame logs (a game, its own
+    /// view plus the owner's views reloaded at the same time): the ring of
+    /// 500 drops the error before the check reads it.
+    #[test]
+    fn r7v_a_live_views_error_survives_log_spam() {
+        let id = app();
+        let mark = mark();
+        record(&id, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
+        let frames: Vec<String> = (0..RING_CAPACITY).map(|i| format!("frame {i}")).collect();
+        record(&id, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
+        assert_eq!(view_errors(&id, mark, "live-x"), ["Uncaught TypeError: boot failed"]);
+    }
+
 }
