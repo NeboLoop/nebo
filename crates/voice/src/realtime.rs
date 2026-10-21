@@ -525,12 +525,14 @@ async fn drive_socket(
     }
     // A reply that was owed when the line dropped is asked for again: the
     // new session has the question in the call so far.
-    if std::mem::take(&mut memory.reanswer)
-        && let Err(e) = sink
+    if std::mem::take(&mut memory.reanswer) {
+        state.pending_creates += 1;
+        if let Err(e) = sink
             .send(Message::Text(json!({ "type": "response.create" }).to_string().into()))
             .await
-    {
-        return Ended::Lost(format!("realtime send failed: {e}"));
+        {
+            return Ended::Lost(format!("realtime send failed: {e}"));
+        }
     }
     // What the handler sent while the line was being dialled goes out now.
     for cmd in std::mem::take(deferred) {
@@ -578,6 +580,11 @@ async fn drive_socket(
                         memory.observe(&text);
                         if handle_server_event(&text, event_tx, state).await.is_err() {
                             return Ended::Done;
+                        }
+                        if std::mem::take(&mut state.cancel_now)
+                            && let Err(e) = sink.send(Message::Text(json!({ "type": "response.cancel" }).to_string().into())).await
+                        {
+                            return Ended::Lost(format!("realtime send failed: {e}"));
                         }
                     }
                     Some(Ok(Message::Close(frame))) => {
@@ -633,7 +640,7 @@ where
             sink.send(Message::Text(item.to_string().into())).await?;
             if respond {
                 state.asked += 1;
-                state.create_pending = true;
+                state.pending_creates += 1;
                 sink.send(Message::Text(
                     json!({ "type": "response.create" }).to_string().into(),
                 ))
@@ -686,13 +693,15 @@ where
                 let _ = event_tx.send(response_done(state)).await;
                 return Ok(true);
             }
-            state.say_pending = true;
-            state.create_pending = true;
-            sink.send(Message::Text(say_frame(&text).to_string().into())).await?;
+            state.says += 1;
+            let id = format!("say-{}", state.says);
+            state.say_pending = Some(id.clone());
+            state.pending_creates += 1;
+            sink.send(Message::Text(say_frame(&text, &id).to_string().into())).await?;
         }
         RealtimeCommand::ToolOutputsDone => {
             state.asked += 1;
-            state.create_pending = true;
+            state.pending_creates += 1;
             sink.send(Message::Text(
                 json!({ "type": "response.create" }).to_string().into(),
             ))
@@ -708,13 +717,14 @@ where
 
 /// Where the call's responses stand ([`ConversationEvent::ResponseDone`]).
 fn response_done(state: &SessionState) -> ConversationEvent {
-    ConversationEvent::ResponseDone { asked: state.asked, open: state.response_active || state.create_pending }
+    ConversationEvent::ResponseDone { asked: state.asked, open: state.response_active || state.pending_creates > 0 }
 }
 
 /// The frame that speaks `text` verbatim (see [`RealtimeCommand::Say`]).
-fn say_frame(text: &str) -> Value {
+fn say_frame(text: &str, event_id: &str) -> Value {
     json!({
         "type": "conversation.item.create",
+        "event_id": event_id,
         "item": {
             "type": "force_message",
             "role": "assistant",
@@ -748,10 +758,15 @@ async fn settle_lost_socket(
     *state = SessionState {
         initialized: state.initialized,
         asked: state.asked,
+        says: state.says,
         ..Default::default()
     };
-    // Whatever was in flight went with the line.
-    event_tx.send(response_done(state)).await.map_err(|_| ())?;
+    // Whatever was in flight went with the line; a reply that was owed is
+    // asked for again on the next one, so it is still open.
+    event_tx
+        .send(ConversationEvent::ResponseDone { asked: state.asked, open: memory.reanswer })
+        .await
+        .map_err(|_| ())?;
     Ok(())
 }
 
@@ -943,12 +958,23 @@ struct SessionState {
     /// `SessionInitialized` has been sent.
     initialized: bool,
     /// Responses the handler's commands asked for, all call long (a dropped
-    /// line keeps the count), and whether the newest is not begun yet.
+    /// line keeps the count).
     asked: u64,
-    create_pending: bool,
-    /// A [`RealtimeCommand::Say`] went out and its response has not started:
-    /// an `error` now is its refusal, not the call's.
-    say_pending: bool,
+    /// Responses asked for on this line (the handler's, and a re-answer
+    /// after a redial) that the provider has not begun yet.
+    pending_creates: u32,
+    /// The owner cut the reply short before the provider began the one
+    /// asked for: it is cancelled as it begins, its audio never played.
+    cancel_on_create: bool,
+    /// Set when a begun response must be cancelled now; the socket loop
+    /// sends the cancel (the event handler has no way upstream).
+    cancel_now: bool,
+    /// A [`RealtimeCommand::Say`] went out and its response has not started,
+    /// with the `event_id` its frame carried: an `error` about that event is
+    /// its refusal, not the call's.
+    say_pending: Option<String>,
+    /// How many `Say` frames have gone out, for their event ids.
+    says: u64,
     /// The provider refused a `Say`: no more are sent this call.
     say_refused: bool,
     /// A model response is in flight (response.created seen, no response.done
@@ -1089,6 +1115,9 @@ fn interrupt_frames(
         state.response_active = false;
         state.discard_audio = true;
         frames.push(json!({ "type": "response.cancel" }));
+    } else if state.pending_creates > 0 {
+        // Cut short before the provider began it: cancelled as it begins.
+        state.cancel_on_create = true;
     }
     if let Some(item) = state.heard_item.take() {
         let forwarded_ms = (item.bytes / format.bytes_per_ms()) as u64;
@@ -1105,6 +1134,22 @@ fn interrupt_frames(
         }
     }
     frames
+}
+
+/// Whether `error` refuses the `Say` waiting on its response (its frame's
+/// `event_id` is `pending`): the error names that event, or names none and
+/// is about the item it asked for. Any other error is the call's, even
+/// while a `Say` waits.
+fn say_refusal(error: &Value, pending: Option<&str>) -> bool {
+    let Some(pending) = pending else { return false };
+    match error.pointer("/error/event_id").and_then(|v| v.as_str()) {
+        Some(id) => id == pending,
+        None => {
+            let about = |k: &str| error.pointer(k).and_then(|v| v.as_str()).unwrap_or_default().to_lowercase();
+            let (message, param) = (about("/error/message"), about("/error/param"));
+            message.contains("force_message") || message.contains("item type") || param.starts_with("item")
+        }
+    }
 }
 
 /// Translate one xAI server event into `ConversationEvent`s. Returns Err when
@@ -1215,10 +1260,17 @@ async fn handle_server_event(
         // speech and drops it, silent, when they go on. Playback starts with
         // the response's first audio (`reply_audio`).
         "response.created" => {
-            state.say_pending = false;
-            state.create_pending = false;
+            state.say_pending = None;
+            state.pending_creates = state.pending_creates.saturating_sub(1);
             state.response_active = true;
             state.discard_audio = false;
+            if std::mem::take(&mut state.cancel_on_create) {
+                // The owner cut it short before it began: none of it plays,
+                // and its `response.done` still ends it.
+                state.response_active = false;
+                state.discard_audio = true;
+                state.cancel_now = true;
+            }
             state.pending_item = None;
             if state.utterance != Utterance::Closed {
                 state.answering = Some(
@@ -1299,11 +1351,12 @@ async fn handle_server_event(
             // the client tear the whole call down on every tail barge-in.
             if msg.contains("Cancellation failed") {
                 warn!(frame = %::types::redact::redact(text), "benign realtime cancel race (ignored)");
-            } else if std::mem::take(&mut state.say_pending) {
+            } else if say_refusal(&ev, state.say_pending.as_deref()) {
                 // Words said on the session's behalf were refused. The call
                 // is fine; it just stops saying them.
+                state.say_pending = None;
                 state.say_refused = true;
-                state.create_pending = false;
+                state.pending_creates = state.pending_creates.saturating_sub(1);
                 warn!(frame = %::types::redact::redact(text), "realtime refused a spoken update; no more this call");
                 send(ConversationEvent::SayRefused).await?;
                 send(response_done(state)).await?;
@@ -2224,12 +2277,24 @@ mod tests {
         drop(tx);
     }
 
-    /// Every response's end is told, silent or cancelled, with how many the
-    /// handler asked for: a tap before the provider begins a reply sends no
-    /// cancel (the reply still plays), and only its `response.done` frees
-    /// the line; a reply cancelled once begun ends the same way.
+    /// The `ResponseDone`s a call's events carry, as (asked, open).
+    async fn ends_until(rx: &mut mpsc::Receiver<ConversationEvent>, n: usize, events: &mut Vec<ConversationEvent>) -> Vec<(u64, bool)> {
+        let mut ends = Vec::new();
+        while ends.len() < n {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.expect("no response end").unwrap();
+            if let ConversationEvent::ResponseDone { asked, open } = e {
+                ends.push((asked, open));
+            }
+            events.push(e);
+        }
+        ends
+    }
+
+    /// A tap before the provider begins the reply asked for cancels it as it
+    /// begins: none of its audio plays, and its `response.done` still ends
+    /// it, the line free. A reply tapped once begun is cancelled at once.
     #[tokio::test]
-    async fn every_response_end_is_told_with_the_count_asked() {
+    async fn a_tap_before_a_reply_begins_cancels_it_as_it_begins() {
         let (l, cfg) = listener().await;
         let server = tokio::spawn(async move {
             let mut ws = accept(&l).await;
@@ -2237,49 +2302,117 @@ mod tests {
             say(&mut ws, json!({"type": "session.created"})).await;
             let mut sent = Vec::new();
             for _ in 0..3 {
-                sent.push(next_json(&mut ws).await);
+                sent.push(next_json(&mut ws).await); // item, create, marker
             }
-            // The reply the tap came before: begun, then over, silent.
             say(&mut ws, json!({"type": "response.created", "response": {"id": "r1"}})).await;
-            say(&mut ws, json!({"type": "response.done", "response": {"id": "r1"}})).await;
-            // A second reply, cancelled once begun.
+            sent.push(next_json(&mut ws).await); // the cancel, as it begins
+            ws.send(WsMessage::Binary(vec![0u8; 480].into())).await.unwrap();
+            say(&mut ws, json!({"type": "response.done", "response": {"id": "r1", "status": "cancelled"}})).await;
             for _ in 0..2 {
-                sent.push(next_json(&mut ws).await);
+                sent.push(next_json(&mut ws).await); // item, create
             }
             say(&mut ws, json!({"type": "response.created", "response": {"id": "r2"}})).await;
-            sent.push(next_json(&mut ws).await);
+            sent.push(next_json(&mut ws).await); // the cancel of a begun reply
             say(&mut ws, json!({"type": "response.done", "response": {"id": "r2", "status": "cancelled"}})).await;
             (sent, ws, l)
         });
         let (tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
         tx.send(RealtimeCommand::Text { text: "first".into(), respond: true }).await.unwrap();
         tx.send(RealtimeCommand::Interrupt { played_ms: None }).await.unwrap();
         tx.send(RealtimeCommand::Text { text: "marker".into(), respond: false }).await.unwrap();
-        let mut ends = Vec::new();
-        while ends.is_empty() {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
-                ConversationEvent::ResponseDone { asked, open } => ends.push((asked, open)),
-                _ => {}
-            }
-        }
-        assert_eq!(ends, [(1, false)], "a silent reply's end was not told as the line free");
+        assert_eq!(ends_until(&mut rx, 1, &mut events).await, [(1, false)]);
+        assert!(
+            !events.iter().any(|e| matches!(e, ConversationEvent::PlaybackStart | ConversationEvent::AudioChunk(_))),
+            "a reply tapped before it began played: {events:?}"
+        );
         tx.send(RealtimeCommand::Text { text: "second".into(), respond: true }).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         tx.send(RealtimeCommand::Interrupt { played_ms: None }).await.unwrap();
-        while ends.len() < 2 {
-            if let ConversationEvent::ResponseDone { asked, open } =
-                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.unwrap().unwrap()
-            {
-                ends.push((asked, open));
-            }
-        }
-        assert_eq!(ends[1], (2, false), "a cancelled reply's end was not told");
+        assert_eq!(ends_until(&mut rx, 1, &mut events).await, [(2, false)]);
         let (sent, _ws, _l) = tokio::time::timeout(std::time::Duration::from_secs(5), server).await.unwrap().unwrap();
         assert_eq!(sent[1]["type"], "response.create");
-        assert_eq!(sent[2]["item"]["content"][0]["text"], "marker", "a tap before the reply began cancelled it: {}", sent[2]);
-        assert_eq!(sent[4]["type"], "response.create");
-        assert_eq!(sent[5]["type"], "response.cancel", "a begun reply was not cancelled: {}", sent[5]);
+        assert_eq!(sent[2]["item"]["content"][0]["text"], "marker", "the tap sent something before the reply began: {}", sent[2]);
+        assert_eq!(sent[3]["type"], "response.cancel", "a reply tapped before it began was not cancelled: {}", sent[3]);
+        assert_eq!(sent[5]["type"], "response.create");
+        assert_eq!(sent[6]["type"], "response.cancel", "a begun reply was not cancelled: {}", sent[6]);
         drop(tx);
+    }
+
+    /// Two replies asked for before either begins: the first one's end says
+    /// one is still to come, the second's frees the line.
+    #[tokio::test]
+    async fn every_reply_asked_for_is_open_until_it_ends() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut ws = accept(&l).await;
+            next_json(&mut ws).await; // session.update
+            say(&mut ws, json!({"type": "session.created"})).await;
+            for _ in 0..3 {
+                next_json(&mut ws).await; // item, create, create
+            }
+            for id in ["r1", "r2"] {
+                say(&mut ws, json!({"type": "response.created", "response": {"id": id}})).await;
+                say(&mut ws, json!({"type": "response.done", "response": {"id": id}})).await;
+            }
+            (ws, l)
+        });
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        tx.send(RealtimeCommand::Text { text: "one".into(), respond: true }).await.unwrap();
+        tx.send(RealtimeCommand::ToolOutputsDone).await.unwrap();
+        let mut events = Vec::new();
+        assert_eq!(ends_until(&mut rx, 2, &mut events).await, [(2, true), (2, false)]);
+        let _ = server.await;
+        drop(tx);
+    }
+
+    /// A reply under way when the line drops is still open: the dropped
+    /// line's report says so, and the new line's re-answer ends it.
+    #[tokio::test]
+    async fn a_reply_asked_again_after_a_redial_stays_open_until_it_ends() {
+        let (l, cfg) = listener().await;
+        let server = tokio::spawn(async move {
+            let mut first = accept(&l).await;
+            next_json(&mut first).await; // session.update
+            say(&mut first, json!({"type": "session.created"})).await;
+            say(&mut first, json!({"type": "response.created", "response": {"id": "r1"}})).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(first);
+            let mut second = accept(&l).await;
+            next_json(&mut second).await; // session.update
+            let again = next_json(&mut second).await;
+            say(&mut second, json!({"type": "response.created", "response": {"id": "r2"}})).await;
+            say(&mut second, json!({"type": "response.done", "response": {"id": "r2"}})).await;
+            (again, second, l)
+        });
+        let (tx, mut rx) = connect(cfg).await.unwrap();
+        let mut events = Vec::new();
+        assert_eq!(ends_until(&mut rx, 2, &mut events).await, [(0, true), (0, false)], "{events:?}");
+        let (again, _ws, _l) = tokio::time::timeout(std::time::Duration::from_secs(10), server).await.unwrap().unwrap();
+        assert_eq!(again["type"], "response.create");
+        drop(tx);
+    }
+
+    /// Only an error about the `Say` waiting is its refusal: one naming its
+    /// event, or naming none and about the item it asked for. Anything else
+    /// (a held balance) is the call's error, even while a `Say` waits.
+    #[tokio::test]
+    async fn only_an_error_about_the_say_is_its_refusal() {
+        let error = |v: Value| json!({"type": "error", "error": v});
+        let pending = Some("say-3");
+        assert!(say_refusal(&error(json!({"message": "bad", "event_id": "say-3"})), pending));
+        assert!(!say_refusal(&error(json!({"message": "bad", "event_id": "evt-9"})), pending));
+        assert!(say_refusal(&error(json!({"message": "unknown item type"})), pending));
+        assert!(!say_refusal(&error(json!({"message": "insufficient balance"})), pending));
+        assert!(!say_refusal(&error(json!({"message": "unknown item type", "event_id": "say-3"})), None));
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut state = SessionState { initialized: true, say_pending: Some("say-1".into()), ..Default::default() };
+        handle_server_event(r#"{"type":"error","error":{"message":"insufficient balance"}}"#, &tx, &mut state)
+            .await
+            .unwrap();
+        assert!(matches!(rx.recv().await, Some(ConversationEvent::Error(m)) if m == CALL_ENDED));
+        assert!(!state.say_refused && state.say_pending.is_some(), "a balance error was taken for the refusal");
     }
 
     /// Typed words held for later go up whole as one item with no

@@ -3366,6 +3366,8 @@ async fn handle_conversation_session(
     // is asked for over it.
     let mut responding = false;
     let mut asked: u64 = 0;
+    // What the client typed into the call (`text_input`), waiting for the line.
+    let mut typed_in: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     // The owner's message being read aloud, part after part.
     let mut reading = ReadAloud::default();
     // The provider refused words said as they are: no reading this call.
@@ -3894,17 +3896,9 @@ async fn handle_conversation_session(
                         // The client's hello; the agent is already bound from
                         // the query string.
                         ClientFrame::Start => {}
-                        ClientFrame::TextInput(t) => {
-                            if let Some(t) = t {
-                                // Its response carries any held answer.
-                                answer_after_reading = false;
-                                if rt_tx.send(RealtimeCommand::Text { text: t, respond: true }).await.is_err() {
-                                    break;
-                                }
-                                asked += 1;
-                                responding = true;
-                            }
-                        }
+                        // Typed words wait for the line like anything else
+                        // that asks for a reply.
+                        ClientFrame::TextInput(t) => typed_in.extend(t),
                         // The client's goodbye, sent before it closes: the call
                         // is over, exactly as on a Close frame.
                         ClientFrame::Stop => {
@@ -3947,6 +3941,7 @@ async fn handle_conversation_session(
                 break;
             }
             asked += 1;
+            responding = true;
             step_said = line;
             narrating = Some(tokio::time::Instant::now());
             quiet_since = tokio::time::Instant::now();
@@ -3964,6 +3959,18 @@ async fn handle_conversation_session(
             && let Some(part) = reading.next(line.queued_audio())
         {
             if rt_tx.send(RealtimeCommand::Say(part)).await.is_err() {
+                break;
+            }
+            asked += 1;
+            responding = true;
+        }
+
+        // What the client typed is answered once the line is free: no reply
+        // owed or playing and no step being said.
+        if !responding && narrating.is_none() && let Some(text) = typed_in.pop_front() {
+            // Its reply carries any held answer.
+            answer_after_reading = false;
+            if rt_tx.send(RealtimeCommand::Text { text, respond: true }).await.is_err() {
                 break;
             }
             asked += 1;
@@ -3994,7 +4001,14 @@ async fn handle_conversation_session(
         // the owner is not speaking, no reply is owed or playing, and no
         // tool is out. The thread already has it as a row; the model's
         // retelling writes none.
-        if !to_say.is_empty() && !responding && !reading.active() && pending_tools == 0 && held_runs.is_empty() && !ledger.open {
+        if !to_say.is_empty()
+            && !responding
+            && narrating.is_none()
+            && !reading.active()
+            && pending_tools == 0
+            && held_runs.is_empty()
+            && !ledger.open
+        {
             // An ask answered or dropped while it waited here is not said.
             let waiting: std::collections::HashSet<String> =
                 super::asks::waiting(&state, None).await.into_iter().map(|w| w.card.id).collect();
@@ -4842,6 +4856,13 @@ mod voice_prompt_tests {
                 .unwrap();
         }
 
+        /// The owner types into the call (`text_input`).
+        async fn typed(&mut self, text: &str) {
+            use futures::SinkExt;
+            let frame = serde_json::json!({"type": "text_input", "text": text}).to_string();
+            self.client.send(tokio_tungstenite::tungstenite::Message::Text(frame.into())).await.unwrap();
+        }
+
         /// The model's output for tool call `id`: what it says.
         async fn output_of(&mut self, id: &str, secs: u64) -> String {
             match self.next(secs).await {
@@ -4972,6 +4993,37 @@ mod voice_prompt_tests {
         fn drop(&mut self) {
             futures::executor::block_on(self.0.harness.reload_providers(Vec::new()));
         }
+    }
+
+    /// A hand-off's spoken step holds the line like any reply: what the
+    /// owner types into the call waits until the step's response is over,
+    /// not only until its audio ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_spoken_step_holds_the_line_until_it_is_over() {
+        let nebo = crate::staffed_proof::session().await;
+        let state = nebo.state.clone();
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        state.harness.reload_providers(vec![std::sync::Arc::new(HeldHandOff { gate: gate.clone() })]).await;
+        let _models = Models(&state);
+        let (mut call, key, _) = call_on_the_post(&state).await;
+
+        call.calls("h1", "nebo", r#"{"task":"Tighten the launch deck."}"#).await;
+        // The step comes from the hand-off once it is out (a step before it
+        // is no news).
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        progress_on_call(&state.live_calls, &key, "Now tightening the deck.");
+        assert_eq!(call.said(15).await, "Now tightening the deck.");
+        call.typed("Also fix the title.").await;
+        call.quiet(800, "typed words were answered over a spoken step").await;
+        call.event(Ev::PlaybackStart).await;
+        call.event(Ev::PlaybackEnd).await;
+        call.quiet(500, "the line was free before the step's response was over").await;
+        call.done().await;
+        assert!(
+            matches!(call.next(5).await, Cmd::Text { text, respond: true } if text == "Also fix the title."),
+            "typed words were not answered once the line was free"
+        );
+        gate.add_permits(10);
     }
 
     /// The owner has the call read his post while a hand-off works: the
