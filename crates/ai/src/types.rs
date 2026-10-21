@@ -41,6 +41,10 @@ pub const PLAN_WARN_PERCENT: u64 = 80;
 /// shown (the app words the warning in the owner's language).
 pub const PLAN_WARNING: &str = "plan_usage_warning";
 
+/// The stop reason of the ControlNotice that ends a helper's turn on a
+/// decision only the owner can make ([`StreamEvent::owner_decision`]).
+pub const OWNER_DECISION: &str = "owner_decision";
+
 /// Rate limit metadata extracted from provider response headers.
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitMeta {
@@ -178,6 +182,23 @@ impl StreamEvent {
     /// The owner need a `terminal_tool_error` ControlNotice carries.
     pub fn owner_need(&self) -> Option<types::OwnerNeed> {
         if self.event_type != StreamEventType::ControlNotice {
+            return None;
+        }
+        self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
+    }
+
+    /// The ControlNotice that ends a helper's turn on a decision only the
+    /// owner can make: `text` is what the helper was told, `question` goes
+    /// back to the conversation that started it ([`StreamEvent::owner_question`]).
+    pub fn owner_decision(text: impl Into<String>, question: &types::OwnerQuestion) -> Self {
+        let mut ev = Self::control_notice(text, OWNER_DECISION);
+        ev.payload = serde_json::to_value(question).ok();
+        ev
+    }
+
+    /// The question an [`OWNER_DECISION`] ControlNotice carries.
+    pub fn owner_question(&self) -> Option<types::OwnerQuestion> {
+        if self.event_type != StreamEventType::ControlNotice || self.stop_reason.as_deref() != Some(OWNER_DECISION) {
             return None;
         }
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
@@ -768,6 +789,12 @@ pub struct ChatRequest {
     /// back so they execute as this run. Never serialized.
     #[serde(skip)]
     pub tool_credential: Option<String>,
+    /// The caller waits out a held balance itself: the chat runner, which
+    /// frees its concurrency slot first. The provider then answers
+    /// [`ProviderError::BalanceReserved`] at once; otherwise it waits it out
+    /// ([`crate::http::send`]). Never serialized.
+    #[serde(skip)]
+    pub caller_waits_for_balance: bool,
     /// The Nebo conversation this turn belongs to (the chat row's id), for a
     /// provider that keeps one remote conversation per Nebo chat (the linked
     /// provider). Empty for calls that are not a conversation's turn. Never
@@ -856,6 +883,7 @@ impl ChatRequest {
             cancel_token: None,
             trace,
             tool_credential: None,
+            caller_waits_for_balance: false,
             chat_id: String::new(),
             ask_channels: None,
             permission_mode: None,
@@ -963,6 +991,8 @@ pub trait ProfileTracker {
 /// route it could take. Final: the gateway already tried them all.
 pub const CONTENT_FILTERED: &str = "CONTENT_FILTERED";
 
+pub use ::types::balance::{BALANCE_BUSY, BALANCE_RESERVED, ReservedWaits, is_balance_reserved};
+
 /// Error from an AI provider.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ProviderError {
@@ -980,6 +1010,16 @@ pub enum ProviderError {
     /// sent one — the runner waits that long instead of its own backoff.
     #[error("rate limit exceeded")]
     RateLimit { retry_after_secs: Option<u64> },
+
+    /// Janus's [`BALANCE_RESERVED`]: running work holds the balance, which
+    /// covers this request; it was not served or charged. `retry_after_secs`
+    /// is its `Retry-After`. Waited out once, by the layer that owns the
+    /// request ([`ReservedWaits`]): the chat runner, or [`crate::http::send`]
+    /// for a caller with no runner. Not [`ProviderError::is_retryable`], so
+    /// no other retry layer sends it again; reaching a caller, the waits have
+    /// run out. Never another provider, never out of balance.
+    #[error("BALANCE_RESERVED: {}", BALANCE_BUSY)]
+    BalanceReserved { retry_after_secs: Option<u64> },
 
     #[error("authentication error: {0}")]
     Auth(String),
@@ -1173,6 +1213,7 @@ pub fn is_role_ordering_error(err: &ProviderError) -> bool {
 pub fn classify_error_reason(err: &ProviderError) -> &str {
     match err {
         ProviderError::RateLimit { .. } => "rate_limit",
+        ProviderError::BalanceReserved { .. } => "balance_reserved",
         ProviderError::Auth(_) => "auth",
         ProviderError::ContextOverflow => "context_overflow",
         ProviderError::Api { code, message, .. } => {

@@ -33,7 +33,7 @@
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
   import { botName } from '$lib/stores/botName';
-  import { NOT_SIGNED_IN } from '$lib/chat/runEnd';
+  import { BALANCE_RESERVED, NOT_SIGNED_IN } from '$lib/chat/runEnd';
   import { parseMarkdown } from '$lib/markdown';
   import FileText from 'lucide-svelte/icons/file-text';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
@@ -2240,6 +2240,13 @@
           <a class="btn btn-primary btn-xs shrink-0" href="/settings/account">{$t('chat.connect')}</a>
         </div>
 
+      {:else if msg.type === 'runError' && msg.reason === BALANCE_RESERVED}
+        <!-- Running work held the balance (it covers the turn): one calm
+             sentence, never out of balance, never an error. -->
+        <div class="chat-run-notice" role="note">
+          <span class="min-w-0">{$t('chat.balanceBusy')}</span>
+        </div>
+
       {:else if msg.type === 'runError'}
         <!-- Where a run stopped on an error: it stays in the thread. -->
         {@const link = trailingLink(msg.content)}
@@ -2446,7 +2453,7 @@
       <div class="helper-status">
         <span class="loading loading-dots loading-xs"></span>
         <span>{helpers.length === 1
-          ? $t('chat.helperWorking', { values: { what: (helpers[0].call ? callWords(helpers[0].call, $t) : helpers[0].activity) || helpers[0].description } })
+          ? $t('chat.helperWorking', { values: { what: (helpers[0].call ? callWords(helpers[0].call, $t) : helpers[0].activity) || helpers[0].title } })
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
       </div>
     {/if}

@@ -201,6 +201,10 @@ impl Housekeeper {
 pub struct CallState {
     pub transient_retries: usize,
     pub retryable_retries: usize,
+    /// The call's one budget for waiting out a balance held by running work
+    /// (`BALANCE_RESERVED`). Only the content reset starts it over, never
+    /// another retry.
+    pub reserved: ai::ReservedWaits,
     pub overflow_retries: usize,
     pub output_recovery_attempts: usize,
     pub output_escalated: bool,
@@ -299,6 +303,9 @@ pub(crate) enum CallOutcome {
     /// No AI can take the call: the bot is not signed in to NeboAI. The
     /// turn ends on [`not_signed_in`], the typed stop the apps word.
     NotSignedIn,
+    /// Running work held the balance past the call's waits. The turn ends on
+    /// [`balance_reserved`], the typed stop the apps word.
+    BalanceReserved,
 }
 
 /// Why a call is taken again.
@@ -431,6 +438,9 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     if provider.id() != selected_provider_id {
         chat_req.model = String::new();
     }
+    // A held balance is waited out here, with the slot freed, never inside
+    // the provider while this call holds it.
+    chat_req.caller_waits_for_balance = true;
 
     // A CLI or linked provider's tool calls come back over /agent/mcp
     // carrying this credential, and execute as this run until the call
@@ -484,6 +494,22 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             // provider): its answer is final, in its own words.
             if !provider.retryable() {
                 return CallOutcome::Failed(err_str);
+            }
+
+            // Running work holds the balance, which covers this call: the
+            // same request again after the wait Janus asked for, the slot
+            // already freed, from the call's one budget. Past it the turn
+            // ends on the typed `balance_reserved` stop, never another
+            // provider and never out of balance.
+            if let ProviderError::BalanceReserved { retry_after_secs } = &e {
+                let Some(wait) = st.reserved.next(retry_after_secs.map(Duration::from_secs)) else {
+                    return CallOutcome::BalanceReserved;
+                };
+                tokio::select! {
+                    _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
+                    _ = tokio::time::sleep(wait) => {}
+                }
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             if ai::is_context_overflow(&e) {
@@ -835,18 +861,16 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict
             | StreamEventType::TakenIn
-            | StreamEventType::Notice => {
+            | StreamEventType::Notice
+            | StreamEventType::SubagentStart
+            | StreamEventType::SubagentProgress
+            | StreamEventType::SubagentComplete => {
                 // Approval/ControlNotice: only sent by the runner, not
-                // received from a provider.
+                // received from a provider. Helpers report on their own rail
+                // (`delegation::HelperEvent`), never a provider's stream.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.
-                let _ = tx.send(event).await;
-            }
-            StreamEventType::SubagentStart
-            | StreamEventType::SubagentProgress
-            | StreamEventType::SubagentComplete => {
-                // Forwarded from sub-agent orchestrator via stream_tx; relay to parent.
                 let _ = tx.send(event).await;
             }
         }
@@ -878,6 +902,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         // Note: estimate_correction is NOT reset — the compaction that
         // recovered from overflow must stay in effect for the rest of the run.
         st.overflow_retries = 0;
+        st.reserved = ai::ReservedWaits::default();
     }
 
     // Report success or rate limit to concurrency controller
@@ -1057,6 +1082,19 @@ pub const NOT_SIGNED_IN_TEXT: &str = "Nebo needs to be signed in to NeboAI to an
 /// consumer reads the turn as failed, carrying the typed [`NOT_SIGNED_IN`].
 pub(crate) fn not_signed_in() -> StreamEvent {
     StreamEvent { stop_reason: Some(NOT_SIGNED_IN.to_string()), ..StreamEvent::error(NOT_SIGNED_IN_TEXT) }
+}
+
+/// The typed stop a turn ends on when running work held the owner's balance
+/// past the waits (Janus's `BALANCE_RESERVED`; the balance covers the work).
+/// It rides `stop_reason` on `chat_error` and the row it leaves; the apps
+/// show their own busy sentence for it, in the owner's language.
+pub const BALANCE_RESERVED: &str = "balance_reserved";
+
+/// The event a turn ends on when running work held the balance past the
+/// waits: an error carrying the typed [`BALANCE_RESERVED`], in words an app
+/// that does not know it shows as they are. Never out of balance.
+pub(crate) fn balance_reserved() -> StreamEvent {
+    StreamEvent { stop_reason: Some(BALANCE_RESERVED.to_string()), ..StreamEvent::error(ai::BALANCE_BUSY) }
 }
 
 /// What a reply without tool calls asks of the next step.
@@ -1525,7 +1563,11 @@ mod tests {
     /// One call to `provider` from state `st`, on a phone-app turn when
     /// `store_app`: what it returned, and the error text the owner was shown.
     async fn call_once(provider: impl Provider + 'static, st: &mut CallState, store_app: bool) -> (CallOutcome, Vec<String>) {
-        let rig = Rig::new();
+        call_on(&Rig::new(), provider, st, store_app).await
+    }
+
+    /// [`call_once`] on `rig`, so a test can look at its pools meanwhile.
+    async fn call_on(rig: &Rig, provider: impl Provider + 'static, st: &mut CallState, store_app: bool) -> (CallOutcome, Vec<String>) {
         let sessions = SessionManager::new(rig.store.clone());
         let providers: RwLock<Vec<Arc<dyn Provider>>> = RwLock::new(vec![Arc::new(provider)]);
         let token = CancellationToken::new();
@@ -1689,5 +1731,69 @@ mod tests {
             CallOutcome::Failed(text) => assert_eq!(text, could_not),
             _ => panic!("retries that ran out fail the call"),
         }
+    }
+
+    /// Janus refuses the first send with `BALANCE_RESERVED` (running work
+    /// holds the balance), then serves.
+    struct HeldOnce(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Provider for HeldOnce {
+        fn id(&self) -> &str {
+            "janus"
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            assert!(req.caller_waits_for_balance, "the runner waits, never the provider inside its slot");
+            if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Err(ProviderError::BalanceReserved { retry_after_secs: Some(1) });
+            }
+            Answers::Streams(StreamEvent::text("hello")).stream(req).await
+        }
+    }
+
+    /// A held balance is waited out by the runner with the call's slot free
+    /// for other calls, once, then the same request is taken again.
+    #[tokio::test]
+    async fn a_held_balance_is_waited_out_with_the_slot_free() {
+        let rig = Rig::new();
+        let mut st = CallState::default();
+        let all = rig.concurrency.effective_permits();
+        let probe = async {
+            // Inside the wait (at least the one second Janus asked for).
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let mut held = Vec::new();
+            for _ in 0..all {
+                let permit = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    rig.concurrency.acquire_llm_permit(crate::concurrency::Priority::Owner),
+                )
+                .await
+                .expect("every slot is free while the call waits");
+                held.push(permit);
+            }
+        };
+        let (call, ()) = tokio::join!(call_on(&rig, HeldOnce(Default::default()), &mut st, false), probe);
+        assert!(matches!(call.0, CallOutcome::Retry(RetryWhy::Transient)), "taken again after the wait");
+        assert_eq!(st.retryable_retries, 0, "not the generic retry: one path");
+        let (outcome, _) = call_on(&rig, HeldOnce(std::sync::atomic::AtomicUsize::new(1)), &mut st, false).await;
+        assert!(matches!(outcome, CallOutcome::Reply(_)), "served on the next send");
+    }
+
+    /// Still held after the call's waits: the turn ends on the typed
+    /// `balance_reserved` stop with the busy words, never "Could not
+    /// connect" and never out of balance.
+    #[tokio::test]
+    async fn a_balance_held_past_the_waits_ends_on_the_typed_stop() {
+        let mut st = CallState::default();
+        let held = ProviderError::BalanceReserved { retry_after_secs: Some(1) };
+        let mut outcome = CallOutcome::Exhausted;
+        for _ in 0..=types::balance::RESERVED_RETRIES {
+            outcome = call_once(Answers::Refuses(held.clone()), &mut st, false).await.0;
+        }
+        assert!(matches!(outcome, CallOutcome::BalanceReserved));
+        assert_eq!(st.retryable_retries, 0);
+        let event = balance_reserved();
+        assert_eq!(event.stop_reason.as_deref(), Some(BALANCE_RESERVED));
+        assert_eq!(event.error.as_deref(), Some(ai::BALANCE_BUSY));
     }
 }

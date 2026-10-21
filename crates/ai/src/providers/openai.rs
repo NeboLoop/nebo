@@ -894,12 +894,14 @@ impl Provider for OpenAIProvider {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let response = client
-            .post(&url)
-            .headers(headers)
-            .json(&body_val)
-            .send()
-            .await
+        // The chat runner waits out a held balance itself, its slot freed
+        // first; any other caller has it waited out here.
+        let mut waits = crate::ReservedWaits::default();
+        let response = crate::http::send(
+            || client.post(&url).headers(headers.clone()).json(&body_val),
+            (!req.caller_waits_for_balance).then_some(&mut waits),
+        )
+        .await
             .map_err(|e| ProviderError::Request(format!("{} (model: {} · {})", e, model, url)))?;
 
         if !response.status().is_success() {
@@ -1148,6 +1150,9 @@ fn map_http_error(
         (body.to_string(), String::new(), false)
     };
 
+    if crate::is_balance_reserved(status, body) {
+        return ProviderError::BalanceReserved { retry_after_secs };
+    }
     match status {
         // Janus quota denial (all spend pools empty) — terminal, not a transient
         // rate limit: retrying can never succeed until the user adds balance.
@@ -2137,6 +2142,130 @@ mod tests {
             ProviderError::Api { retryable, .. } => assert!(retryable),
             other => panic!("expected an API error, got {other:?}"),
         }
+    }
+
+    /// A gateway that answers each request in turn from `script` (status,
+    /// body, content type), the last answer repeating. Counts the requests.
+    async fn gateway(script: Vec<(u16, &'static str, &'static str)>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let (status, body, kind) = script[n.min(script.len() - 1)];
+                let mut buf = vec![0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {kind}\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), count)
+    }
+
+    const RESERVED: &str = r#"{"error":{"code":"BALANCE_RESERVED","message":"balance reserved by running work","retryable":true}}"#;
+
+    fn hello() -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message { role: "user".into(), content: "hi".into(), ..Default::default() }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        }
+    }
+
+    /// Running work held the balance; the same request is sent again after
+    /// the gateway's wait and the reply streams as usual.
+    #[tokio::test]
+    async fn a_reserved_balance_is_waited_out_then_the_reply_streams() {
+        let reply = "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let (url, count) = gateway(vec![
+            (429, RESERVED, "application/json"),
+            (429, RESERVED, "application/json"),
+            (200, reply, "text/event-stream"),
+        ])
+        .await;
+        let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), url);
+        provider.set_provider_id("janus");
+        let mut rx = provider.stream(&hello()).await.expect("served after the waits");
+        let mut text = String::new();
+        while let Some(ev) = rx.recv().await {
+            text.push_str(&ev.text);
+        }
+        assert_eq!(text, "hello");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// Still held after the waits: the busy words, final, and never the
+    /// out-of-balance refusal.
+    #[tokio::test]
+    async fn a_balance_held_past_the_waits_is_busy_not_unfunded() {
+        let (url, count) = gateway(vec![(429, RESERVED, "application/json")]).await;
+        let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), url);
+        provider.set_provider_id("janus");
+        let err = provider.stream(&hello()).await.err().expect("refused");
+        assert!(!err.is_retryable(), "the waits already ran; no other layer sends it again");
+        assert!(matches!(err, ProviderError::BalanceReserved { retry_after_secs: Some(0) }), "{err:?}");
+        assert!(err.to_string().contains(crate::BALANCE_BUSY), "{err}");
+        assert!(!err.to_string().contains("USAGE_LIMIT_EXCEEDED"), "{err}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 4, "the first send and three more");
+    }
+
+    /// The chat runner waits out a held balance itself, its slot freed
+    /// first: for its request the provider sends once and answers the
+    /// refusal with its wait, so nothing waits twice.
+    #[tokio::test]
+    async fn a_caller_that_waits_itself_gets_the_refusal_at_once() {
+        let (url, count) = gateway(vec![(429, RESERVED, "application/json")]).await;
+        let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), url);
+        provider.set_provider_id("janus");
+        let req = ChatRequest { caller_waits_for_balance: true, ..hello() };
+        let err = provider.stream(&req).await.err().expect("refused");
+        assert!(matches!(err, ProviderError::BalanceReserved { retry_after_secs: Some(0) }), "{err:?}");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "sent once");
+    }
+
+    /// The out-of-balance refusal is unchanged: final, in its own code.
+    #[test]
+    fn an_unfunded_429_stays_out_of_balance() {
+        let body = r#"{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"no balance","retryable":false}}"#;
+        match map_http_error(429, body, "nebo-1", "https://gateway.example.com/v1", Some(5)) {
+            ProviderError::Api { code, message, retryable } => {
+                assert_eq!(code, "USAGE_LIMIT_EXCEEDED");
+                assert_eq!(message, "USAGE_LIMIT_EXCEEDED: no balance");
+                assert!(!retryable);
+            }
+            other => panic!("expected the funding refusal, got {other:?}"),
+        }
+        assert!(matches!(
+            map_http_error(429, RESERVED, "nebo-1", "https://gateway.example.com/v1", Some(5)),
+            ProviderError::BalanceReserved { retry_after_secs: Some(5) }
+        ));
+    }
+
+    /// A request's most tokens reach Janus on the wire, so it holds that
+    /// much of the balance for the call and not its large default.
+    #[tokio::test]
+    async fn the_most_tokens_reach_the_gateway() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap();
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n";
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let mut provider = OpenAIProvider::with_base_url(String::new(), "m".into(), format!("http://{addr}"));
+        provider.set_provider_id("janus");
+        let req = ChatRequest { max_tokens: 256, ..hello() };
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        let sent = server.await.unwrap();
+        assert!(sent.contains(r#""max_completion_tokens":256"#), "{sent}");
     }
 }
 

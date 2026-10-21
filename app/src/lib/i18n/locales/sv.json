@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} in · {output} ut",
 		"tokenTooltip": "{total} total prompt · {overhead} system+verktyg · {cacheRead} cacheläsning",
 		"outOfBalance": "Din plan är förbrukad för den här månaden. Uppgradera din plan för att fortsätta.",
+		"balanceBusy": "Ditt saldo används av arbete som pågår. Försök igen om en stund.",
 		"viewPlans": "Visa planer",
 		"choosePlan": "Välj en plan",
 		"documents": "Dokument",

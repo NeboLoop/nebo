@@ -47,6 +47,8 @@ grep-searcher = "0.1"
 walkdir = "2"
 # Already in the build (typst); caps owner-facing text by grapheme.
 unicode-segmentation = "1"
+# Already in the build; compares sibling helpers' briefs in one Unicode form.
+unicode-normalization = "0.1"
 which = "7"
 urlencoding = "2"
 url = "2"

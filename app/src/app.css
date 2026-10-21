@@ -1375,7 +1375,10 @@
   @apply inline-flex shrink-0 items-center justify-center text-base-content/50;
 }
 .bg-row-title {
-  @apply min-w-0 truncate;
+  @apply min-w-0 line-clamp-2 break-words;
+}
+.bg-row-doing {
+  @apply min-w-0 truncate text-xs text-base-content/70;
 }
 .bg-row-employee {
   @apply text-base-content/50;
@@ -1402,6 +1405,9 @@
 }
 .bg-row-muted {
   @apply text-base-content/50;
+}
+.bg-row-brief {
+  @apply whitespace-pre-wrap text-base-content/80;
 }
 .bg-output {
   @apply max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-base-100 px-2 py-1.5 font-mono text-[11px] text-base-content/80;

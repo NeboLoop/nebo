@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} giriş · {output} çıkış",
 		"tokenTooltip": "{total} toplam istem · {overhead} sistem+araçlar · {cacheRead} önbellek okuma",
 		"outOfBalance": "Planınız bu ay için doldu. Devam etmek için planınızı yükseltin.",
+		"balanceBusy": "Bakiyeniz devam eden işler tarafından kullanılıyor. Birazdan tekrar deneyin.",
 		"viewPlans": "Planları görüntüle",
 		"choosePlan": "Plan seç",
 		"documents": "Belgeler",

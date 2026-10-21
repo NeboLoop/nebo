@@ -411,12 +411,12 @@ async fn working(state: &AppState, team: &db::Team, project: Option<&db::Project
                 "chatId": chat_of(&seat),
             }));
         }
-        for helper in state.helpers.list(Some(&seat)).into_iter().filter(|h| h.running) {
+        for helper in state.helpers.list(Some(&seat), false).into_iter().filter(|h| h.running) {
             working.push(serde_json::json!({
                 "kind": "helper",
                 "agentId": member_id,
                 "member": name,
-                "title": helper.description,
+                "title": helper.title,
                 "taskId": helper.task_id,
                 "call": helper.call,
                 "activity": helper.activity,
@@ -523,7 +523,7 @@ pub(crate) async fn stop(
     let roster = tools::team::member_roster(&state.store, team);
     if let Target::Helper { member, task_id } = target {
         let (seat, _) = crate::coworker::team_seat(member, team, project);
-        let Some(helper) = state.helpers.list(Some(&seat)).into_iter().find(|h| h.task_id == task_id && h.running) else {
+        let Some(helper) = state.helpers.list(Some(&seat), false).into_iter().find(|h| h.task_id == task_id && h.running) else {
             return Ok(Vec::new());
         };
         state.helpers.stop(&seat, task_id)?;

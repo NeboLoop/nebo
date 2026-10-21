@@ -96,6 +96,9 @@ pub struct EngineRun {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+    /// A helper's questions for the owner (JSON): open, answered and
+    /// already given to its parent. `None` for a run that never asked.
+    pub pending_questions: Option<String>,
 }
 
 /// Local changes for one employee over a window (heartbeat triage's flags).
@@ -185,7 +188,13 @@ pub struct EngineEffect {
     pub completed_at: Option<i64>,
 }
 
-const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at";
+/// Runs of one kind under a session-key prefix, as a range on
+/// `idx_engine_runs_session` (every key that starts with the prefix sorts
+/// between it and it followed by the last code point).
+const RUNS_UNDER: &str = "SELECT id, session_key, inputs FROM engine_runs
+     WHERE session_key >= ?2 AND session_key < ?2 || char(1114111) AND kind = ?1";
+
+const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at, pending_questions";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
     Ok(EngineRun {
@@ -208,6 +217,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
         created_at: r.get(16)?,
         started_at: r.get(17)?,
         ended_at: r.get(18)?,
+        pending_questions: r.get(19)?,
     })
 }
 
@@ -740,6 +750,26 @@ impl Store {
         Ok(())
     }
 
+    /// Put an ended run back in the queue to run again (a stopped helper a
+    /// message re-runs): queued, its old end time and error cleared, so
+    /// nothing reads it as ended.
+    pub fn engine_requeue_run(&self, id: &str) -> Result<bool, NeboError> {
+        let n = self
+            .conn()?
+            .execute("UPDATE engine_runs SET state = 'queued', ended_at = NULL, error = NULL WHERE id = ?1", params![id])
+            .db_err("engine_requeue_run")?;
+        Ok(n == 1)
+    }
+
+    /// A helper run's questions for the owner (JSON, see
+    /// [`EngineRun::pending_questions`]); `None` clears them.
+    pub fn engine_set_run_pending_questions(&self, id: &str, questions: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_runs SET pending_questions = ?2 WHERE id = ?1", params![id, questions])
+            .db_err("engine_set_run_pending_questions")?;
+        Ok(())
+    }
+
     /// Only the summary tag — the word a finer status keeps (`exited`,
     /// `denied`) — without touching the result.
     pub fn engine_set_run_result_tag(&self, id: &str, summary: &str) -> Result<(), NeboError> {
@@ -797,6 +827,31 @@ impl Store {
             .db_err("engine_queued_runs_of_kind")?
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_queued_runs_of_kind")?;
+        Ok(rows)
+    }
+
+    /// Set one number field of run `id`'s inputs, keeping the rest.
+    pub fn engine_set_run_input(&self, id: &str, field: &str, value: u64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET inputs = json_set(COALESCE(inputs, '{}'), '$.' || ?2, ?3) WHERE id = ?1",
+            params![id, field, value as i64],
+        )
+        .db_err("engine_set_run_input")?;
+        Ok(())
+    }
+
+    /// The id, session key and inputs of every run of one kind whose
+    /// session key starts with `prefix`, whatever its state: a seek on the
+    /// session index ([`RUNS_UNDER`]).
+    pub fn engine_run_inputs_under(&self, kind: &str, prefix: &str) -> Result<Vec<(String, String, Option<String>)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(RUNS_UNDER).db_err("engine_run_inputs_under")?;
+        let rows = stmt
+            .query_map(params![kind, prefix], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .db_err("engine_run_inputs_under")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_run_inputs_under")?;
         Ok(rows)
     }
 
@@ -1746,11 +1801,55 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run requeued to run again is queued with no end time or error.
+    #[test]
+    fn a_requeued_run_has_no_end() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "h-2", kind: "helper", session_key: "subagent:agent:a:web:h-2", agent_id: "a", lane: "subagent", ..Default::default() }).unwrap();
+        s.engine_set_run_state("h-2", "cancelled", 100, Some("stopped")).unwrap();
+        assert!(s.engine_requeue_run("h-2").unwrap());
+        let run = s.engine_get_run("h-2").unwrap().unwrap();
+        assert_eq!((run.state.as_str(), run.ended_at, run.error), ("queued", None, None));
+    }
+
+    /// A helper's questions live in their own column: none until it asks,
+    /// kept as written, cleared with `None`, and no other field moves.
+    #[test]
+    fn a_runs_pending_questions_round_trip() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "h-1", kind: "helper", session_key: "subagent:agent:a:web:h-1", agent_id: "a", lane: "subagent", ..Default::default() }).unwrap();
+        assert_eq!(s.engine_get_run("h-1").unwrap().unwrap().pending_questions, None);
+        s.engine_set_run_pending_questions("h-1", Some(r#"{"pending":[]}"#)).unwrap();
+        let run = s.engine_get_run("h-1").unwrap().unwrap();
+        assert_eq!(run.pending_questions.as_deref(), Some(r#"{"pending":[]}"#));
+        assert_eq!(run.definition, None, "the definition is the workflow's, untouched");
+        s.engine_set_run_pending_questions("h-1", None).unwrap();
+        assert_eq!(s.engine_get_run("h-1").unwrap().unwrap().pending_questions, None);
+    }
     use crate::Store;
 
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-engine-test-{}.db", uuid::Uuid::new_v4()));
         Store::new(&path.to_string_lossy()).expect("store")
+    }
+
+    /// Runs under a session-key prefix: every one that starts with it and
+    /// none other, read by a seek on the session index, never a scan.
+    #[test]
+    fn runs_under_a_prefix_seek_the_session_index() {
+        let store = store();
+        for (id, key) in [("h-1", "subagent:agent:a:web:h-1"), ("h-2", "subagent:agent:a:web:h-2"), ("h-3", "subagent:agent:a:webx:h-3"), ("h-4", "subagent:agent:b:web:h-4")] {
+            store
+                .engine_create_run(&NewRun { id, kind: "helper", session_key: key, agent_id: "a", lane: "subagent", inputs: Some("{\"number\":1}"), ..Default::default() })
+                .unwrap();
+        }
+        let under: Vec<String> = store.engine_run_inputs_under("helper", "subagent:agent:a:web:").unwrap().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(under, ["h-1", "h-2"]);
+        let conn = store.conn().unwrap();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {}", super::RUNS_UNDER)).unwrap();
+        let plan: Vec<String> = stmt.query_map(params!["helper", "subagent:agent:a:web:"], |row| row.get::<_, String>(3)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH engine_runs USING INDEX idx_engine_runs_session (session_key>? AND session_key<?)")), "{plan:#?}");
     }
 
     fn signal<'a>(key: &'a str, idem: &'a str) -> NewEvent<'a> {

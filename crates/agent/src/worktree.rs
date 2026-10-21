@@ -88,24 +88,53 @@ pub enum MergeOutcome {
     Failed { error: String, kept_at: PathBuf, branch: String },
 }
 
-async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let out = command::new::<Command>("git", command::Console::Hidden)
-        .args(args)
+/// The longest one git command may take before it is stopped.
+pub(crate) const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Environment a caller's git would otherwise pass down and that points git
+/// at another repository, index or object store.
+const GIT_REDIRECTS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// Run git in `cwd` and return its standard output as it printed it: the
+/// one way this crate runs git. Prompts are disabled, the caller's git
+/// redirects are cleared, and a command past [`GIT_TIMEOUT`] is stopped.
+pub(crate) async fn git_bytes(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let mut cmd = command::new::<Command>("git", command::Console::Hidden);
+    cmd.args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
         .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .map_err(|e| format!("git {}: {e}", args.first().copied().unwrap_or("")))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        .kill_on_drop(true);
+    for var in GIT_REDIRECTS {
+        cmd.env_remove(var);
+    }
+    let name = args.iter().find(|a| !a.starts_with('-') && !a.contains('=')).copied().unwrap_or("");
+    let out = match tokio::time::timeout(GIT_TIMEOUT, cmd.output()).await {
+        Ok(out) => out.map_err(|e| format!("git {name}: {e}"))?,
+        Err(_) => return Err(format!("git {name} took longer than {} minutes and was stopped", GIT_TIMEOUT.as_secs() / 60)),
+    };
     if out.status.success() {
-        Ok(stdout)
+        Ok(out.stdout)
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if stderr.is_empty() { stdout } else { stderr })
+        Err(if stderr.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { stderr })
     }
+}
+
+/// [`git_bytes`], its output as trimmed text.
+pub(crate) async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    git_bytes(cwd, args).await.map(|out| String::from_utf8_lossy(&out).trim().to_string())
 }
 
 /// The repository root for a directory, or why it is not one.
@@ -698,12 +727,16 @@ mod tests {
             }
             let old_path = std::env::var("PATH").unwrap_or_default();
             unsafe { std::env::set_var("PATH", format!("{}:{old_path}", bin.display())) };
+            // A caller's git redirect never reaches ours.
+            unsafe { std::env::set_var("GIT_INDEX_FILE", "/tmp/elsewhere.index") };
             let _ = git(home, &["status"]).await;
+            unsafe { std::env::remove_var("GIT_INDEX_FILE") };
             unsafe { std::env::set_var("PATH", old_path) };
             let env = std::fs::read_to_string(&dump).unwrap();
             assert!(env.contains("GIT_TERMINAL_PROMPT=0"), "{env}");
             assert!(env.contains("GIT_ASKPASS=\n"), "{env}");
             assert!(env.contains("GIT_SSH_COMMAND=ssh -o BatchMode=yes"), "{env}");
+            assert!(!env.contains("GIT_INDEX_FILE"), "{env}");
             assert!(!env.contains("tty"), "stdin is closed");
         }))
     }

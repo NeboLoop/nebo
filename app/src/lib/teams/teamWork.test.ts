@@ -24,7 +24,7 @@ describe('team work list', () => {
 		list = apply(list, 'tool_start', { session_id: seatKey('ann', THREAD), call: { kind: 'search', params: { query: 'agent platforms' } } });
 		list = apply(list, 'thinking', { session_id: seatKey('bo', THREAD) });
 		list = apply(list, 'tool_start', { session_id: 'agent:ann:web', call: { kind: 'read', params: { path: 'mail.txt' } } });
-		list = apply(list, 'subagent_start', { session_id: seatKey('ann', THREAD), task_id: 'h-1', description: 'research rival pricing' });
+		list = apply(list, 'subagent_start', { session_id: seatKey('ann', THREAD), task_id: 'h-1', title: 'research rival pricing' });
 		list = apply(list, 'subagent_progress', { session_id: seatKey('ann', THREAD), task_id: 'h-1', call: { kind: 'fetch', params: { url: 'acme.com/pricing' } } });
 		expect(list.length).toBe(3);
 		expect(list.map((e) => [e.kind, e.title, e.call?.kind ?? ''])).toEqual([
@@ -34,6 +34,14 @@ describe('team work list', () => {
 		]);
 		list = apply(list, 'subagent_progress', { session_id: seatKey('ann', THREAD), task_id: 'h-1', current_operation: 'Searching 4 angles' });
 		expect([list[2].call, list[2].activity]).toEqual([null, 'Searching 4 angles']);
+		// A sibling starting retitles it at once, in one event for all of
+		// them; a step carries the title as it stands.
+		list = apply(list, 'subagent_titles', { session_id: seatKey('ann', THREAD), titles: [{ task_id: 'h-1', title: 'research rival pricing — …in Ohio' }, { task_id: 'h-9', title: 'not listed here' }] });
+		expect(list.map((e) => e.title)).toEqual(['Ann', 'Bo', 'research rival pricing — …in Ohio']);
+		list = apply(list, 'subagent_titles', { session_id: seatKey('ann', 'team:other'), titles: [{ task_id: 'h-1', title: 'another thread' }] });
+		expect(list[2].title, 'another thread’s titles change nothing here').toBe('research rival pricing — …in Ohio');
+		list = apply(list, 'subagent_progress', { session_id: seatKey('ann', THREAD), task_id: 'h-1', title: 'research rival pricing', current_operation: 'Reading 4 sources' });
+		expect([list[2].title, list[2].activity]).toEqual(['research rival pricing', 'Reading 4 sources']);
 		expect(list[2].member).toBe('Ann');
 
 		list = apply(list, 'chat_complete', { session_id: seatKey('ann', THREAD) });
@@ -46,7 +54,7 @@ describe('team work list', () => {
 	it('takes the running snapshot as the truth for members and leaves helpers to their own events', () => {
 		let list: WorkEntry[] = [];
 		list = apply(list, 'team_activity', { teamId: TEAM, agentId: 'ann', state: 'started' });
-		list = apply(list, 'subagent_start', { session_id: seatKey('ann', THREAD), task_id: 'h-2', description: 'count the till' });
+		list = apply(list, 'subagent_start', { session_id: seatKey('ann', THREAD), task_id: 'h-2', title: 'count the till' });
 		list = apply(list, 'agent_progress', { runs: [{ sessionKey: seatKey('bo', THREAD), call: { kind: 'read', params: { path: 'ad.md' } } }, { sessionKey: 'agent:ann:web', call: { kind: 'read', params: { path: 'x' } } }] });
 		expect(list.map((e) => [e.kind, e.title, e.call?.params?.path ?? ''])).toEqual([
 			['helper', 'count the till', ''],
@@ -57,7 +65,7 @@ describe('team work list', () => {
 	it('stops only the row it is asked for', () => {
 		let list: WorkEntry[] = [];
 		list = apply(list, 'thinking', { session_id: seatKey('bo', THREAD) });
-		list = apply(list, 'subagent_start', { session_id: seatKey('ann', THREAD), task_id: 'h-3', description: 'read the reviews' });
+		list = apply(list, 'subagent_start', { session_id: seatKey('ann', THREAD), task_id: 'h-3', title: 'read the reviews' });
 		expect(stopBody(list[0])).toEqual({ agentId: 'bo' });
 		expect(stopBody(list[1])).toEqual({ agentId: 'ann', taskId: 'h-3' });
 	});

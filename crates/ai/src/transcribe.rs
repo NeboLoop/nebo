@@ -84,38 +84,50 @@ pub async fn transcribe(
         )));
     }
 
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string());
-    let form = reqwest::multipart::Form::new()
-        .text("model", endpoint.model.clone())
-        .text("response_format", "verbose_json")
-        .part("file", part);
+    // A form is sent once; a request sent again gets a fresh one.
+    let form = || {
+        let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_string());
+        reqwest::multipart::Form::new()
+            .text("model", endpoint.model.clone())
+            .text("response_format", "verbose_json")
+            .part("file", part)
+    };
 
     let url = format!("{}/audio/transcriptions", endpoint.base_url.trim_end_matches('/'));
-    let mut req = tls::http_client()
+    let client = tls::http_client()
         .user_agent(types::constants::USER_AGENT)
         .build()
-        .map_err(|e| ProviderError::Request(e.to_string()))?
-        .post(&url)
-        .bearer_auth(&endpoint.bearer)
-        .headers(trace.headers());
-    if let Some(bot_id) = &endpoint.bot_id {
-        req = req.header("X-Bot-ID", bot_id);
-    }
-    for (name, value) in endpoint.own_key.iter().flat_map(|k| k.headers()) {
-        req = req.header(name, value);
-    }
-    let response = req
-        .multipart(form)
-        .send()
-        .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
+    let mut waits = crate::ReservedWaits::default();
+    let response = crate::http::send(
+        || {
+            let mut req = client
+                .post(&url)
+                .bearer_auth(&endpoint.bearer)
+                .headers(trace.headers());
+            if let Some(bot_id) = &endpoint.bot_id {
+                req = req.header("X-Bot-ID", bot_id);
+            }
+            for (name, value) in endpoint.own_key.iter().flat_map(|k| k.headers()) {
+                req = req.header(name, value);
+            }
+            req.multipart(form())
+        },
+        Some(&mut waits),
+    )
+    .await
+    .map_err(|e| ProviderError::Request(e.to_string()))?;
 
     let status = response.status();
+    let retry_after = crate::http::retry_after_secs(response.headers());
     let body = response
         .text()
         .await
         .map_err(|e| ProviderError::Request(e.to_string()))?;
 
+    if crate::is_balance_reserved(status.as_u16(), &body) {
+        return Err(ProviderError::BalanceReserved { retry_after_secs: retry_after });
+    }
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => ProviderError::Auth(body),

@@ -2197,7 +2197,7 @@ fn steer_into(sessions: &agent::SessionManager, session: &str, event: &EngineEve
         &event.payload.chars().take(2_000).collect::<String>(),
     );
     let taint: Vec<types::provenance::ProvenanceClass> = serde_json::from_str(&event.provenance).unwrap_or_default();
-    match agent::harness::delegation::notify::append_row(sessions, session, &text, &taint) {
+    match agent::harness::delegation::notify::append_row(sessions, session, &text, &taint, false) {
         Ok(()) => true,
         Err(e) => {
             warn!(session, event = event.id, error = %e, "engine: case event not written into the live turn");

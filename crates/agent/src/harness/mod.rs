@@ -29,6 +29,7 @@ pub mod tool_surface;
 pub mod turn;
 pub mod turn_end;
 pub mod usage;
+pub mod verify;
 pub mod workflow_turn;
 
 use std::collections::{HashMap, HashSet};

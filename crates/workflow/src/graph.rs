@@ -1250,7 +1250,7 @@ async fn run_decide<'a>(
         None => Err("the typed-decision service (NeboAI) is not connected".to_string()),
         Some(client) => {
             let deadline = std::time::Duration::from_secs(crate::engine::DECISION_TIMEOUT_SECS);
-            match tokio::time::timeout(deadline, client.decide(&trace, &state, &questions)).await {
+            match tokio::time::timeout(deadline, client.decide(&trace, &state, &questions, Some(&mut ai::ReservedWaits::default()))).await {
                 Ok(Ok(d)) => Ok(d),
                 Ok(Err(e)) => Err(format!("decide call failed: {e}")),
                 Err(_) => Err("decide call timed out".to_string()),

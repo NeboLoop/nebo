@@ -410,6 +410,7 @@
 		"tokensInOut": "{input} נכנסים · {output} יוצאים",
 		"tokenTooltip": "{total} סה\"כ פרומפט · {overhead} מערכת+כלים · {cacheRead} קריאת מטמון",
 		"outOfBalance": "ניצלת את כל התוכנית שלך החודש. שדרג את התוכנית כדי להמשיך.",
+		"balanceBusy": "היתרה שלך תפוסה בעבודה שרצה כעת. נסה שוב בעוד רגע.",
 		"viewPlans": "הצג תוכניות",
 		"choosePlan": "בחר תוכנית",
 		"documents": "מסמכים",

@@ -165,6 +165,7 @@ pub(crate) mod tests {
             isolation: None,
             skills: Vec::new(),
             speed: None,
+            report_limit: None,
         }
     }
 

@@ -21,6 +21,11 @@ pub mod realtime;
 pub enum VoiceError {
     #[error("realtime voice error: {0}")]
     Realtime(String),
+    /// Janus refused the line because running work holds the balance
+    /// (`types::balance::BALANCE_RESERVED`), past the waits. Never out of
+    /// balance: the balance covers the call.
+    #[error("{}", types::balance::BALANCE_BUSY)]
+    BalanceReserved,
 }
 
 /// Most bias terms the recognizer takes, voice call or dictation.
