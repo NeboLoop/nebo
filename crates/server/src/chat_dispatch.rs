@@ -292,7 +292,7 @@ fn credits_after(known: Option<u64>, header: Option<u64>, active_pool: Option<&s
     }
 }
 
-fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str, stop_reason: Option<&str>) {
+pub(crate) fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str, stop_reason: Option<&str>) {
     if error.is_empty() {
         return;
     }
@@ -307,6 +307,68 @@ fn record_run_error(harness: &agent::Harness, session_key: &str, error: &str, st
     let metadata = metadata.to_string();
     if let Err(e) = sessions.append_message(&session_id, "system", error, None, None, Some(&metadata)) {
         warn!(error = %e, session_key, "could not keep the run's error in its conversation");
+    }
+}
+
+/// Tight coalesce window so text streams in small, token-smooth chunks
+/// (polished consumer-chat feel) rather than arriving a sentence at a time.
+/// Applies to both the local app and the loop/comm channel so they stream
+/// identically.
+const COALESCE_MS: u64 = 25;
+
+/// The ONE way a run's reply text reaches the clients as `chat_stream`: the
+/// pieces a model streams, coalesced into a frame every [`COALESCE_MS`], and
+/// a paragraph break where text resumes after a step. The chat pipeline and
+/// the voice bridge both stream through it, so a burst of tiny pieces is a
+/// few frames, never one per piece on every client's broadcast queue.
+pub(crate) struct ReplyStream {
+    buffer: String,
+    last_flush: tokio::time::Instant,
+    needs_separator: bool,
+    /// The last character of the reply so far, separators included.
+    last: Option<char>,
+}
+
+impl ReplyStream {
+    pub(crate) fn new() -> Self {
+        Self { buffer: String::new(), last_flush: tokio::time::Instant::now(), needs_separator: false, last: None }
+    }
+
+    /// A step finished: text that follows starts a new paragraph.
+    pub(crate) fn step_done(&mut self) {
+        self.needs_separator = true;
+    }
+
+    /// Joins a piece of reply text. Returns the separator put before it, if
+    /// any, for every other copy of the reply the caller keeps.
+    pub(crate) fn push(&mut self, piece: &str) -> Option<&'static str> {
+        let separator = (self.needs_separator
+            && self.last.is_some_and(|c| !c.is_whitespace())
+            && !piece.starts_with(|c: char| c.is_whitespace()))
+        .then_some("\n\n");
+        self.needs_separator = false;
+        if let Some(separator) = separator {
+            self.buffer.push_str(separator);
+            self.last = Some('\n');
+        }
+        self.buffer.push_str(piece);
+        if let Some(c) = piece.chars().last() {
+            self.last = Some(c);
+        }
+        separator
+    }
+
+    /// The coalesced text due now: everything buffered, once the window
+    /// since the last frame has passed.
+    pub(crate) fn due(&mut self) -> Option<String> {
+        if self.last_flush.elapsed().as_millis() as u64 >= COALESCE_MS { self.flush() } else { None }
+    }
+
+    /// Everything buffered, now: before a step, a verdict, a cancel or the
+    /// end of the run.
+    pub(crate) fn flush(&mut self) -> Option<String> {
+        self.last_flush = tokio::time::Instant::now();
+        (!self.buffer.is_empty()).then(|| std::mem::take(&mut self.buffer))
     }
 }
 
@@ -825,12 +887,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut run_error: Option<String> = None;
                 // Its typed stop reason, when it carried one.
                 let mut run_error_reason: Option<String> = None;
-                let mut text_buffer = String::new();
-                let mut last_flush = tokio::time::Instant::now();
-                // Tight coalesce window so text streams in small, token-smooth chunks
-                // (polished consumer-chat feel) rather than arriving a sentence at a time. Applies
-                // to both the local app and the loop/comm channel so they stream identically.
-                const COALESCE_MS: u64 = 25;
+                let mut reply_stream = ReplyStream::new();
 
                 // Comm streaming: send chunks to NeboAI as they arrive.
                 // Timer starts on first token, not loop init (LLM latency would
@@ -838,7 +895,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut comm_buffer = String::new();
                 let mut last_comm_flush: Option<tokio::time::Instant> = None;
                 let mut comm_streamed = false;
-                let mut needs_separator = false;
                 // File artifacts produced by tools during this run, collected from
                 // ToolResult events. Only populated for comm replies; attached to the
                 // final loop/DM reply so generated files (images, reports) reach the
@@ -883,11 +939,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     let event = tokio::select! {
                         _ = cancel_token.cancelled() => {
                             // Flush remaining buffer before cancellation
-                            if !text_buffer.is_empty() {
+                            if let Some(chunk) = reply_stream.flush() {
                                 hub.broadcast("chat_stream", ws_payload!(
-                                    "content": &text_buffer,
+                                    "content": &chunk,
                                 ));
-                                text_buffer.clear();
                             }
                             hub.broadcast("chat_cancelled", ws_payload!());
                             if let Some(ref cm) = comm_manager {
@@ -958,32 +1013,23 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 );
                                 continue;
                             }
-                            if needs_separator
-                                && !full_response.is_empty()
-                                && !full_response.ends_with(|c: char| c.is_whitespace())
-                                && !event.text.starts_with(|c: char| c.is_whitespace())
-                            {
-                                full_response.push_str("\n\n");
-                                text_buffer.push_str("\n\n");
+                            if let Some(separator) = reply_stream.push(&event.text) {
+                                full_response.push_str(separator);
                                 if comm_reply.is_some() {
-                                    comm_buffer.push_str("\n\n");
+                                    comm_buffer.push_str(separator);
                                 }
                                 if whole_turn {
-                                    comm_segment.push_str("\n\n");
+                                    comm_segment.push_str(separator);
                                 }
                             }
-                            needs_separator = false;
                             full_response.push_str(&event.text);
-                            text_buffer.push_str(&event.text);
-                            if last_flush.elapsed().as_millis() as u64 >= COALESCE_MS {
+                            if let Some(chunk) = reply_stream.due() {
                                 hub.broadcast(
                                     "chat_stream",
                                     ws_payload!(
-                                        "content": &text_buffer,
+                                        "content": &chunk,
                                     ),
                                 );
-                                text_buffer.clear();
-                                last_flush = tokio::time::Instant::now();
                             }
                             // Stream chunks to comm channel via provider.
                             // Skip orchestrator progress heartbeats — the loop
@@ -1047,15 +1093,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // Flush pending text (web + loop) before the tool event so the
                             // reply text shows BEFORE the tool runs, instead of sticking
                             // mid-word while a slow tool/delegation executes.
-                            if !text_buffer.is_empty() {
+                            if let Some(chunk) = reply_stream.flush() {
                                 hub.broadcast(
                                     "chat_stream",
                                     ws_payload!(
-                                        "content": &text_buffer,
+                                        "content": &chunk,
                                     ),
                                 );
-                                text_buffer.clear();
-                                last_flush = tokio::time::Instant::now();
                             }
                             if let Some(cfg) = &comm_reply {
                                 // Close the current prose segment: persist it as
@@ -1227,7 +1271,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     comm_file_artifacts.push(app_url);
                                 }
                             }
-                            needs_separator = true;
+                            reply_stream.step_done();
                         }
                         StreamEventType::Error => {
                             let error = event.error.unwrap_or_default();
@@ -1478,10 +1522,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // The segment's text reaches the clients before
                             // its verdict, and the verdict before the call
                             // that closed it.
-                            if !text_buffer.is_empty() {
-                                hub.broadcast("chat_stream", ws_payload!("content": &text_buffer,));
-                                text_buffer.clear();
-                                last_flush = tokio::time::Instant::now();
+                            if let Some(chunk) = reply_stream.flush() {
+                                hub.broadcast("chat_stream", ws_payload!("content": &chunk,));
                             }
                             hub.broadcast(
                                 "text_verdict",
@@ -1509,18 +1551,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "summary": &event.text,
                                 ),
                             );
-                            needs_separator = true;
+                            reply_stream.step_done();
                         }
                         StreamEventType::Done => {}
                     }
                 }
 
                 // Flush any remaining coalesced text
-                if !text_buffer.is_empty() {
+                if let Some(chunk) = reply_stream.flush() {
                     hub.broadcast(
                         "chat_stream",
                         ws_payload!(
-                            "content": &text_buffer,
+                            "content": &chunk,
                         ),
                     );
                 }

@@ -88,6 +88,31 @@ describe('a call in the open conversation', () => {
 		chat.destroy();
 	});
 
+	it('places a spoken reply where it was said, above the work it led into', async () => {
+		const chat = createChatController({ agentId: 'a', sessionKey: KEY });
+		await chat.loadHistory('c1');
+		const now = Math.floor(Date.now() / 1000);
+		emit('voice_message', { id: 'v1', chatId: 'c1', role: 'user', content: 'Book the flight.', createdAt: now - 10 });
+		// The hand-off's work streams in first...
+		run('tool_start', { tool_id: 't1', tool: 'web' });
+		run('tool_result', { tool_id: 't1' });
+		run('chat_stream', { content: 'Booked.' });
+		// ...and the words said before it are kept when the turn closes.
+		emit('voice_message', { id: 'v2', chatId: 'c1', role: 'assistant', content: 'On it, booking now.', createdAt: now - 5 });
+		run('chat_complete', { artifacts: [] });
+		expect(rows(chat.messages)).toEqual([
+			'owner: Morning.',
+			'owner: Book the flight.',
+			'reply: On it, booking now.',
+			'tool: t1:success',
+			'reply: Booked.'
+		]);
+		// The owner speaking now lands at the end.
+		emit('voice_message', { id: 'v3', chatId: 'c1', role: 'user', content: 'Thanks.', createdAt: Math.floor(Date.now() / 1000) + 1 });
+		expect(rows(chat.messages).at(-1)).toBe('owner: Thanks.');
+		chat.destroy();
+	});
+
 	it('puts a spoken reply the server kept in the thread as its own row', async () => {
 		const chat = createChatController({ agentId: 'a', sessionKey: KEY });
 		await chat.loadHistory('c1');

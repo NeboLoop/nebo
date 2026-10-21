@@ -82,6 +82,11 @@ function parseToolInput(input: string | Record<string, unknown> | undefined): Re
 }
 
 /** Parse raw API messages into ChatMessage[] for the controller. */
+/** A stored time (unix seconds, or ms) as epoch ms. */
+export function epochMs(ts: number): number {
+  return ts < 1e12 ? ts * 1000 : ts;
+}
+
 export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
   const result: ChatMessage[] = [];
   // Tool results live on the tool-role rows, keyed by tool_call_id; join them
@@ -139,6 +144,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         id: m.id,
         content: m.content,
         time: formatTime(m.createdAt),
+        at: epochMs(m.createdAt),
         ...(meta?.attachments?.length ? { attachments: meta.attachments } : {}),
         ...(teamPost ? { teamPost } : {}),
         ...(meta?.fromColleague ? { fromColleague: meta.fromColleague } : {}),
@@ -180,7 +186,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     let cur: AssistantMsg | null = open;
     let seq = 0;
     const newBubble = (content: string): AssistantMsg => {
-      const b: AssistantMsg = { type: 'assistant', id: `${m.id}-${seq++}`, content, time: formatTime(m.createdAt) };
+      const b: AssistantMsg = { type: 'assistant', id: `${m.id}-${seq++}`, content, time: formatTime(m.createdAt), at: epochMs(m.createdAt) };
       bubbles.push(b);
       result.push(b);
       return b;
@@ -228,7 +234,10 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       cur = newBubble(m.content);
     }
     // A bubble that absorbed a later row shows that row's time, as live does.
-    if (cur) cur.time = formatTime(m.createdAt);
+    if (cur) {
+      cur.time = formatTime(m.createdAt);
+      cur.at = epochMs(m.createdAt);
+    }
 
     // Persisted run artifacts (metadata.artifacts, written at chat_complete)
     // re-attach to the turn's LAST bubble so Work cards and inline media survive
