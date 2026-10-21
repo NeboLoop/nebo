@@ -63,6 +63,12 @@ pub struct Outlets {
     /// The note a turn of an employee reads about its own background work,
     /// for (employee id, the turn's session key); empty when none runs.
     pub background_note: Option<BackgroundNote>,
+    /// The helper registry: the verify loop's reviewers are helpers of the
+    /// turn whose code work they review. Without it no work is verified.
+    pub helpers: Option<Arc<delegation::Helpers>>,
+    /// Told the id of a verification whenever its record changes, so the
+    /// app's badge and run history follow it live.
+    pub verification_changed: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 /// Reads an employee's background note (see [`Outlets::background_note`]).
@@ -225,6 +231,16 @@ impl Harness {
 
     pub(crate) fn background_note(&self) -> Option<BackgroundNote> {
         self.outlets.get().and_then(|o| o.background_note.clone())
+    }
+
+    pub(crate) fn helpers(&self) -> Option<Arc<delegation::Helpers>> {
+        self.outlets.get().and_then(|o| o.helpers.clone())
+    }
+
+    pub(crate) fn verification_changed(&self, id: &str) {
+        if let Some(tell) = self.outlets.get().and_then(|o| o.verification_changed.clone()) {
+            tell(id);
+        }
     }
 
     pub fn sessions(&self) -> &SessionManager {

@@ -4398,5 +4398,109 @@
 		"fits": "Fits {level}",
 		"bandUpTo": "Up to {tokens} tokens",
 		"bandAbove": "Above {tokens} tokens"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verified",
+			"notVerified": "Not verified",
+			"checking": "Checking",
+			"waiting": "Waiting on you",
+			"openHint": "Shows what was checked"
+		},
+		"tip": {
+			"verified": "Checked by {reviewers, plural, one {# independent reviewer} other {# independent reviewers}} ({lenses}) over {rounds, plural, one {# round} other {# rounds}}.",
+			"checksPassed": "The project's own checks passed: {checks}.",
+			"noneOpen": "No blocking or major issues are open.",
+			"deferred": "Minor notes deferred with a reason: {count}.",
+			"landed": "It landed in your project.",
+			"landedAnyway": "It landed in your project at your choice.",
+			"notLanded": "It is waiting in its own copy, not in your project yet.",
+			"limit": "Review finds problems; it can't prove there are none.",
+			"checking": "Independent reviewers and the project's own checks are going over this code.",
+			"waiting": "The check is waiting for your answer.",
+			"notVerified": "It could not be verified.",
+			"open": "Still open after {rounds, plural, one {# round} other {# rounds}}: {blockers} blocking, {majors} major."
+		},
+		"round": {
+			"title": "Round {n}",
+			"kind": {
+				"catch_up": "Caught up with your project",
+				"land": "Landing",
+				"live": "Live check",
+				"other": "Step"
+			},
+			"time": "{seconds}s",
+			"lenses": "Reviewers: {lenses}",
+			"findings": "Found: {blockers} blocking, {majors} major, {minors} minor",
+			"fixed": "Fixed since the round before: {count}",
+			"held": "Checked and held",
+			"checks": "Checks:",
+			"noChecks": "No build or tests could run."
+		},
+		"rounds": {
+			"heading": "Code checks"
+		},
+		"total": "Reviewers' cost: {cost}",
+		"severity": {
+			"blocker": "Blocking",
+			"major": "Major",
+			"minor": "Minor",
+			"other": "Issue"
+		},
+		"lens": {
+			"correctness": "correctness",
+			"security": "security",
+			"billing": "billing",
+			"data": "data",
+			"performance": "performance",
+			"experience": "what people see",
+			"other": "another area"
+		},
+		"why": {
+			"needs_answer": "Needs your answer to a question it asked",
+			"unreadable": "Could not read what changed",
+			"spend_limit": "Reached this employee's spending limit for a run",
+			"review_incomplete": "A review could not finish",
+			"needs_decision": "Needs your decision: {items}",
+			"stopped_by_owner": "Stopped by you with {open, plural, one {# open issue} other {# open issues}}",
+			"stalled": "Stopped making progress with {open, plural, one {# open issue} other {# open issues}}",
+			"no_checks": "No tests or build could run",
+			"landed_unreviewed": "Landed without passing review, at your choice",
+			"edits_in_way": "Not landed yet: your edits are still in the way",
+			"kept_own_edits": "Not landed: you kept your own edits, and the change waits in its copy",
+			"live_failed": "The live check failed",
+			"live_unavailable": "Not checked live: the bot has no browser to open the app in",
+			"live_no_script": "Not checked live: the app's page didn't load the check script (its entry page isn't UTF-8 text, the app isn't one of your own, or the page went to another address)",
+			"live_ok": "The page reloaded and checked out",
+			"review_clean": "No blocking or major issues",
+			"review_blocking": "{count, plural, one {# blocking issue} other {# blocking issues}}",
+			"up_to_date": "Already up to date with your project",
+			"caught_up": "Caught up to {commit}",
+			"conflicts": "Your changes and this one meet in {files}",
+			"landed": "Landed as {commit}",
+			"nothing_to_land": "Nothing to land",
+			"owner_edits": "Your own edits in {files} are in the way",
+			"busy_no_branch": "Not landed yet: your project is on no branch",
+			"busy_branch": "Not landed yet: your project is on branch {now}, and the copy was made from {from}",
+			"busy_in_progress": "Not landed yet: a {op} is in progress in your project",
+			"hook_failed": "Your project's commit hooks refused it",
+			"retest_failed": "The checks failed after catching up with your project",
+			"not_attempted": "Not tried, because an earlier piece did not land",
+			"land_failed": "It could not land; nothing of yours changed",
+			"other": "See its history for what happened",
+			"step_limit": "The run reached its step limit before the checking finished",
+			"turn_ended": "The run ended before the checking finished",
+			"restarted": "Nebo restarted while it was being checked",
+			"unreviewed": "Not landed: the copy holds changes nobody reviewed ({files})",
+			"needs_review": "What would land differs from what was reviewed in {files}; it is reviewed again first",
+			"changed_after_review": "The copy changed after it was reviewed; it is reviewed again first",
+			"waiting_to_land": "Waiting for another landing on this project to finish"
+		},
+		"place": {
+			"app": "The change is in the app's pages; the app's history can undo it.",
+			"helper": "It is in its helper's copy until the conversation that started it lands it.",
+			"folder": "It was made in place, in the folder it was worked on.",
+			"nothing": "There was nothing to land."
+		}
 	}
 }

@@ -415,6 +415,10 @@ pub(crate) struct RoundContext<'a> {
     /// model reference it resolves for.
     pub housekeeper: &'a crate::harness::model_call::Housekeeper,
     pub chosen: &'a str,
+    /// The turn's code work: a call that changes a project works in its
+    /// copy (`verify::work::TurnWork::route`). `None` when the turn
+    /// doesn't verify.
+    pub verify: Option<&'a crate::harness::verify::engine::Verify>,
 }
 
 /// The run's state the round reads and updates: the called tools and the
@@ -1215,7 +1219,26 @@ async fn run_call(
     // Every gate below judges the call as it will run: the tool settles an
     // inferred action or resource here (after any hook rewrote the input).
     tc.input = tools.normalize_input(&tc.name, std::mem::take(&mut tc.input)).await;
-    let target = tools.target(&tc.name, &tc.input).await;
+    let mut target = tools.target(&tc.name, &tc.input).await;
+
+    // Code work happens in its own copy of the project, never in the
+    // owner's: the call is pointed there, and its first change to a project
+    // makes the copy. A copy that can't be made refuses the call.
+    let mut work_note: Option<String> = None;
+    if refusal.is_none()
+        && let Some(verify) = cx.verify
+    {
+        let changes = target.as_ref().is_some_and(|t| !t.read_only);
+        match verify.route(scope.sessions.store(), &mut tc.input, &mut ctx.cwd, changes).await {
+            Ok(routed) => {
+                if routed.rewrote {
+                    target = tools.target(&tc.name, &tc.input).await;
+                }
+                work_note = routed.started;
+            }
+            Err(e) => refusal = Some(format!("{e}. Nothing was changed: code work happens only in its own copy.")),
+        }
+    }
 
     // A helper's kind and depth, whatever shape the call arrives in.
     if refusal.is_none()
@@ -1317,6 +1340,15 @@ async fn run_call(
         scope.run_taint.lock().unwrap().extend(result.taint.iter().copied());
     }
     if let Some(note) = pre_hook_note {
+        result.content.push_str("\n\n");
+        result.content.push_str(&note);
+    }
+    if let Some(verify) = cx.verify
+        && let Some(note) = verify.after_call(scope.sessions.store()).await
+    {
+        work_note = Some(note);
+    }
+    if let Some(note) = work_note {
         result.content.push_str("\n\n");
         result.content.push_str(&note);
     }

@@ -302,11 +302,21 @@ pub async fn get_run(
     // shared with the work tool's chat receipt (`run_receipt`).
     let display = crate::run_display::for_run(&state.store, &run);
 
+    // Code work the run's steps did, verified: each with its rounds.
+    let verifications: Vec<crate::verification::VerificationView> = state
+        .store
+        .list_verifications(&db::VerificationQuery { workflow_run_id: Some(&run_id), ..Default::default() })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| crate::verification::view(&state.store, v))
+        .collect();
+
     Ok(Json(serde_json::json!({
         "run": run,
         "activities": activities,
         "taskItems": task_items_by_activity,
         "display": display,
+        "verifications": verifications,
     })))
 }
 

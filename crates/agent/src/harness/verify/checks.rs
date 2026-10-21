@@ -98,6 +98,86 @@ pub fn build_cache(root: &Path) -> PathBuf {
         .join(hash)
 }
 
+/// What one check did in a round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRun {
+    pub label: String,
+    pub command: String,
+    pub passed: bool,
+    /// The last lines of its output.
+    pub tail: String,
+    pub duration_ms: u64,
+}
+
+/// The most of a check's output a round keeps.
+pub const TAIL_CHARS: usize = 4_000;
+
+/// The end of `output`, at most [`TAIL_CHARS`], on a line boundary.
+pub fn tail(output: &str) -> String {
+    let output = output.trim_end();
+    if output.chars().count() <= TAIL_CHARS {
+        return output.to_string();
+    }
+    let start = output
+        .char_indices()
+        .rev()
+        .nth(TAIL_CHARS - 1)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let cut = &output[start..];
+    let cut = cut.find('\n').map(|i| &cut[i + 1..]).unwrap_or(cut);
+    format!("[… earlier output left out]\n{cut}")
+}
+
+/// The longest one check runs before it is stopped and counted failed.
+pub const CHECK_TIMEOUT_MS: u64 = 600_000;
+
+/// Run `checks` one after another through the one door every command
+/// takes (`run_command` in the registry, under the run's permissions in
+/// `ctx`), each in its folder with the project's build folder. A check the
+/// permission check refuses, or that outlasts [`CHECK_TIMEOUT_MS`], failed.
+pub async fn run(tools: &tools::Registry, ctx: &tools::ToolContext, checks: &[Check], build_dir: &Path) -> Vec<CheckRun> {
+    let mut out = Vec::with_capacity(checks.len());
+    for check in checks {
+        let started = std::time::Instant::now();
+        let mut ctx = ctx.clone();
+        ctx.cwd = Some(check.dir.to_string_lossy().into_owned());
+        // Nobody answers a question in the middle of a check.
+        ctx.cannot_wait = true;
+        let input = serde_json::json!({
+            "command": check.with_build_dir(build_dir),
+            "description": format!("Checking: {}", check.label),
+            "cwd": check.dir.to_string_lossy(),
+            "timeout": CHECK_TIMEOUT_MS,
+        });
+        let result = tools.execute(&ctx, "run_command", input).await;
+        let mut passed = !result.is_error;
+        let mut text = result.content.clone();
+        if let Some(id) = backgrounded(&text) {
+            let _ = tools.execute(&ctx, "stop_task", serde_json::json!({ "task_id": id })).await;
+            passed = false;
+            text = format!("It ran past {} minutes and was stopped.", CHECK_TIMEOUT_MS / 60_000);
+        }
+        out.push(CheckRun {
+            label: check.label.clone(),
+            command: check.command.clone(),
+            passed,
+            tail: tail(&text),
+            duration_ms: started.elapsed().as_millis() as u64,
+        });
+    }
+    out
+}
+
+/// The id of a command that outlasted its timeout and moved to the
+/// background (`run_command` says "…moved to the background with ID: bg-…").
+fn backgrounded(text: &str) -> Option<String> {
+    let at = text.find("moved to the background with ID: ")? + "moved to the background with ID: ".len();
+    let id: String = text[at..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    (!id.is_empty()).then_some(id)
+}
+
 impl Check {
     /// The environment prefix that gives the check its own build folder,
     /// `build_dir`, where the tool has one.
@@ -373,6 +453,25 @@ mod tests {
             ]
         );
         assert_eq!(checks[1].dir, root.join("app"));
+    }
+
+    #[test]
+    fn a_check_that_outlasts_its_time_is_found_by_its_background_id() {
+        assert_eq!(
+            backgrounded("Command exceeded its timeout (600s) and was moved to the background with ID: bg-12ab. It is still running"),
+            Some("bg-12ab".into())
+        );
+        assert_eq!(backgrounded("test result: ok"), None);
+    }
+
+    #[test]
+    fn a_long_output_keeps_its_end() {
+        let long: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let t = tail(&long);
+        assert!(t.starts_with("[… earlier output left out]\n"));
+        assert!(t.ends_with("line 1999"));
+        assert!(t.chars().count() <= TAIL_CHARS + 40);
+        assert_eq!(tail("ok\n"), "ok");
     }
 
     #[test]

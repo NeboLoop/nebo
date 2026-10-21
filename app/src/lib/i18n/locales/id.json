@@ -4398,5 +4398,109 @@
 		"fits": "Cocok untuk {level}",
 		"bandUpTo": "Hingga {tokens} token",
 		"bandAbove": "Di atas {tokens} token"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Terverifikasi",
+			"notVerified": "Belum terverifikasi",
+			"checking": "Sedang diperiksa",
+			"waiting": "Menunggu jawaban Anda",
+			"openHint": "Menampilkan apa yang diperiksa"
+		},
+		"tip": {
+			"verified": "Diperiksa oleh {reviewers, plural, other {# peninjau independen}} ({lenses}) dalam {rounds, plural, other {# putaran}}.",
+			"checksPassed": "Pemeriksaan proyek sendiri lulus: {checks}.",
+			"noneOpen": "Tidak ada masalah penghambat atau besar yang terbuka.",
+			"deferred": "Catatan kecil yang ditunda dengan alasan: {count}.",
+			"landed": "Sudah masuk ke proyek Anda.",
+			"landedAnyway": "Sudah masuk ke proyek Anda atas pilihan Anda.",
+			"notLanded": "Masih menunggu di salinannya sendiri, belum di proyek Anda.",
+			"limit": "Tinjauan menemukan masalah; tidak dapat membuktikan bahwa tidak ada masalah.",
+			"checking": "Peninjau independen dan pemeriksaan proyek sedang memeriksa kode ini.",
+			"waiting": "Pemeriksaan menunggu jawaban Anda.",
+			"notVerified": "Tidak dapat diverifikasi.",
+			"open": "Masih terbuka setelah {rounds, plural, other {# putaran}}: {blockers} penghambat, {majors} besar."
+		},
+		"round": {
+			"title": "Putaran {n}",
+			"kind": {
+				"catch_up": "Diperbarui dengan proyek Anda",
+				"land": "Penggabungan",
+				"live": "Pemeriksaan langsung",
+				"other": "Langkah"
+			},
+			"time": "{seconds} dtk",
+			"lenses": "Peninjau: {lenses}",
+			"findings": "Ditemukan: {blockers} penghambat, {majors} besar, {minors} kecil",
+			"fixed": "Diperbaiki sejak putaran sebelumnya: {count}",
+			"held": "Diperiksa dan aman",
+			"checks": "Pemeriksaan:",
+			"noChecks": "Tidak ada build atau pengujian yang bisa dijalankan."
+		},
+		"rounds": {
+			"heading": "Pemeriksaan kode"
+		},
+		"total": "Biaya peninjau: {cost}",
+		"severity": {
+			"blocker": "Penghambat",
+			"major": "Besar",
+			"minor": "Kecil",
+			"other": "Masalah"
+		},
+		"lens": {
+			"correctness": "ketepatan",
+			"security": "keamanan",
+			"billing": "penagihan",
+			"data": "data",
+			"performance": "kinerja",
+			"experience": "yang dilihat orang",
+			"other": "bidang lain"
+		},
+		"why": {
+			"needs_answer": "Perlu jawaban Anda atas sebuah pertanyaan",
+			"unreadable": "Tidak bisa membaca apa yang berubah",
+			"spend_limit": "Batas pengeluaran per jalankan karyawan ini sudah tercapai",
+			"review_incomplete": "Sebuah tinjauan tidak bisa selesai",
+			"needs_decision": "Perlu keputusan Anda: {items}",
+			"stopped_by_owner": "Dihentikan oleh Anda; masalah terbuka: {open, plural, other {#}}",
+			"stalled": "Berhenti membuat kemajuan; masalah terbuka: {open, plural, other {#}}",
+			"no_checks": "Tidak ada tes atau build yang bisa dijalankan",
+			"landed_unreviewed": "Dimasukkan tanpa lolos tinjauan, atas pilihan Anda",
+			"edits_in_way": "Belum dimasukkan: suntingan Anda masih menghalangi",
+			"kept_own_edits": "Tidak dimasukkan: Anda mempertahankan suntingan Anda sendiri, dan perubahan ini menunggu di salinannya",
+			"live_failed": "Pemeriksaan langsung gagal",
+			"live_unavailable": "Tidak diperiksa langsung: bot tidak punya browser untuk membuka aplikasi",
+			"live_no_script": "Tidak diperiksa langsung: halaman aplikasi tidak memuat skrip pemeriksaan (halaman masuknya bukan teks UTF-8, aplikasinya bukan milik Anda, atau halamannya pindah ke alamat lain)",
+			"live_ok": "Halaman dimuat ulang dan berfungsi",
+			"review_clean": "Tidak ada masalah yang memblokir atau besar",
+			"review_blocking": "Masalah yang memblokir: {count, plural, other {#}}",
+			"up_to_date": "Sudah sesuai dengan proyek Anda",
+			"caught_up": "Diperbarui hingga {commit}",
+			"conflicts": "Perubahan Anda dan yang ini bertemu di {files}",
+			"landed": "Dimasukkan sebagai {commit}",
+			"nothing_to_land": "Tidak ada yang perlu dimasukkan",
+			"owner_edits": "Suntingan Anda sendiri di {files} menghalangi",
+			"busy_no_branch": "Belum dimasukkan: proyek Anda tidak berada di branch mana pun",
+			"busy_branch": "Belum dimasukkan: proyek Anda ada di branch {now}, dan salinannya dibuat dari {from}",
+			"busy_in_progress": "Belum dimasukkan: sedang ada {op} di proyek Anda",
+			"hook_failed": "Commit hook proyek Anda menolaknya",
+			"retest_failed": "Pemeriksaan gagal setelah disesuaikan dengan proyek Anda",
+			"not_attempted": "Tidak dicoba, karena bagian sebelumnya tidak dimasukkan",
+			"land_failed": "Tidak bisa dimasukkan; tidak ada milik Anda yang berubah",
+			"other": "Lihat riwayatnya untuk tahu apa yang terjadi",
+			"step_limit": "Jalankan mencapai batas langkahnya sebelum pemeriksaan selesai",
+			"turn_ended": "Jalankan berakhir sebelum pemeriksaan selesai",
+			"restarted": "Nebo dimulai ulang saat sedang diperiksa",
+			"unreviewed": "Tidak dimasukkan: salinan berisi perubahan yang belum ditinjau siapa pun ({files})",
+			"needs_review": "Yang akan digabungkan berbeda dari yang ditinjau di {files}; perubahan ini ditinjau ulang dulu",
+			"changed_after_review": "Salinan berubah setelah ditinjau; perubahan ini ditinjau ulang dulu",
+			"waiting_to_land": "Menunggu penggabungan lain di proyek ini selesai"
+		},
+		"place": {
+			"app": "Perubahan ada di halaman aplikasi; riwayat aplikasi bisa membatalkannya.",
+			"helper": "Ada di salinan pembantunya sampai percakapan yang memulainya memasukkannya.",
+			"folder": "Dibuat di tempat, di folder yang dikerjakan.",
+			"nothing": "Tidak ada yang perlu dimasukkan."
+		}
 	}
 }

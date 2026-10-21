@@ -166,7 +166,7 @@ pub async fn agent_mcp_handler(
                         "This run has ended, so its tool access has too. Nothing was run.",
                     ),
                     Some(Some(grant)) => {
-                        let result = call_tool(&state.tools, Some(&grant), tool_use_id, name, arguments.clone()).await;
+                        let result = call_tool(&state.tools, &state.store, Some(&grant), tool_use_id, name, arguments.clone()).await;
                         if let (Some(token), Some(id)) = (credential, tool_use_id)
                             && let Some(handed) = owner_handed(&state.tools, name, &arguments, &result).await
                         {
@@ -174,7 +174,7 @@ pub async fn agent_mcp_handler(
                         }
                         result
                     }
-                    None => call_tool(&state.tools, None, None, name, arguments).await,
+                    None => call_tool(&state.tools, &state.store, None, None, name, arguments).await,
                 };
 
                 let content = serde_json::json!([{
@@ -210,10 +210,11 @@ pub async fn agent_mcp_handler(
 /// assistant's grant. Either way the registry's one permission check decides.
 async fn call_tool(
     tools: &tools::Registry,
+    store: &db::Store,
     run: Option<&agent::RunGrant>,
     tool_use_id: Option<&str>,
     name: &str,
-    arguments: serde_json::Value,
+    mut arguments: serde_json::Value,
 ) -> tools::ToolResult {
     let mut ctx = match run {
         Some(run) => run.ctx.clone(),
@@ -222,7 +223,30 @@ async fn call_tool(
     if let Some(id) = tool_use_id {
         ctx.tool_call_id = id.to_string();
     }
-    tools.execute(&ctx, name, arguments).await
+    // The run's code work: the call is pointed at the project's own copy,
+    // its first change to a project makes the copy, exactly as the runner's
+    // own call is routed. A copy that can't be made refuses the call.
+    let verify = run.and_then(|r| r.verify.as_ref());
+    let mut started = None;
+    if let Some(verify) = verify {
+        let changes = tools.target(name, &arguments).await.is_some_and(|t| !t.read_only);
+        match verify.route(store, &mut arguments, &mut ctx.cwd, changes).await {
+            Ok(routed) => started = routed.started,
+            Err(e) => {
+                return tools::ToolResult::error(format!("{e}. Nothing was changed: code work happens only in its own copy."));
+            }
+        }
+    }
+    let mut result = tools.execute(&ctx, name, arguments).await;
+    if let Some(verify) = verify
+        && let Some(note) = verify.after_call(store).await
+    {
+        started = Some(started.map_or(note.clone(), |s| format!("{s}\n\n{note}")));
+    }
+    if let Some(note) = started {
+        result.content = format!("{}\n\n{note}", result.content);
+    }
+    result
 }
 
 /// The CLI's own id for a `tools/call`, which it streams that call's result
@@ -601,28 +625,28 @@ mod tests {
 
     #[tokio::test]
     async fn a_capability_the_employee_lacks_is_refused() {
-        let (_d, _store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Deny)]).await;
-        let r = call_tool(&registry, None, None, "web", serde_json::json!({})).await;
+        let (_d, store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Deny)]).await;
+        let r = call_tool(&registry, &store, None, None, "web", serde_json::json!({})).await;
         assert!(r.is_error, "ran without the web capability: {}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
 
     #[tokio::test]
     async fn a_capability_the_employee_has_runs() {
-        let (_d, _store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, None, None, "web", serde_json::json!({})).await;
+        let (_d, store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Allow)]).await;
+        let r = call_tool(&registry, &store, None, None, "web", serde_json::json!({})).await;
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.content, "RAN");
     }
 
     #[tokio::test]
     async fn a_blocked_operation_is_refused() {
-        let (_d, _store, registry) = setup(
+        let (_d, store, registry) = setup(
             Probe { name: "payments_charge", operation: Some("payments.charge"), key: "payments_charge", capability: None },
             vec![company(RuleKey::Operation("payments.charge".into()), Effect::Deny)],
         )
         .await;
-        let r = call_tool(&registry, None, None, "payments_charge", serde_json::json!({})).await;
+        let r = call_tool(&registry, &store, None, None, "payments_charge", serde_json::json!({})).await;
         assert!(r.is_error, "a denied operation ran: {}", r.content);
         assert!(r.content.contains("turned off"), "{}", r.content);
     }
@@ -630,8 +654,8 @@ mod tests {
     // An outside client is an MCP client, whatever any run is doing.
     #[tokio::test]
     async fn an_outside_client_is_an_mcp_client() {
-        let (_d, _store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, None, None, "run_command", shell_call()).await;
+        let (_d, store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
+        let r = call_tool(&registry, &store, None, None, "run_command", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
     }
@@ -658,6 +682,7 @@ mod tests {
                 ..Default::default()
             },
             agent_id: "emp-1".into(),
+            verify: None,
         }
     }
 
@@ -668,7 +693,7 @@ mod tests {
     async fn a_cli_provider_run_calls_as_its_run() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Allow);
-        let r = call_tool(&registry, Some(&run), None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Some(&run), None, "run_command", shell_call()).await;
         assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -678,7 +703,7 @@ mod tests {
     async fn a_cli_provider_run_keeps_its_employees_rules() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Deny);
-        let r = call_tool(&registry, Some(&run), None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Some(&run), None, "run_command", shell_call()).await;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
@@ -689,9 +714,84 @@ mod tests {
     async fn a_cli_provider_runs_ask_parks_for_the_owner() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Ask);
-        let r = call_tool(&registry, Some(&run), None, "run_command", shell_call()).await;
+        let r = call_tool(&registry, &store, Some(&run), None, "run_command", shell_call()).await;
         assert_ne!(r.content, "RAN", "an asked call ran");
         let ask = r.parked_ask.as_deref().expect("the call parked");
         assert_eq!(store.get_permission_ask(ask).unwrap().map(|a| a.status).as_deref(), Some("open"));
+    }
+
+    /// Writes `content` to `path`.
+    struct FileWriter;
+    impl DynTool for FileWriter {
+        fn name(&self) -> &str {
+            "save_code"
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                match std::fs::write(input["path"].as_str().unwrap_or(""), input["content"].as_str().unwrap_or("")) {
+                    Ok(()) => ToolResult::ok("written"),
+                    Err(e) => ToolResult::error(e.to_string()),
+                }
+            })
+        }
+    }
+
+    /// A CLI model's write to a project over /agent/mcp goes where the
+    /// runner's own would: into the run's copy of the project, never the
+    /// owner's files, so it is verified like any other code work.
+    #[tokio::test]
+    async fn a_cli_runs_write_to_a_project_goes_to_its_own_copy() {
+        static HOME: std::sync::OnceLock<Option<tempfile::TempDir>> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            if std::env::var_os("NEBO_HOME").is_some() {
+                return None;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            // SAFETY: one-time initialization, and only when no root is set.
+            unsafe { std::env::set_var("NEBO_HOME", dir.path()) };
+            Some(dir)
+        });
+        let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
+        registry.register(Box::new(FileWriter)).await;
+        let project = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let mut cmd = command::new::<std::process::Command>("git", command::Console::Hidden);
+            assert!(cmd.args(args).current_dir(project.path()).status().unwrap().success());
+        };
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+            git(args);
+        }
+        std::fs::write(project.path().join("Makefile"), "test:\n\ttrue\n").unwrap();
+        std::fs::write(project.path().join("total.py"), "def total(a, b): return 0\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "base"]);
+        let builder = agent::harness::verify::engine::Builder {
+            agent_id: "emp-1".into(),
+            session_key: "agent:emp-1:web".into(),
+            spec: "Make total add".into(),
+            ..Default::default()
+        };
+        let mut run = cli_run(&store, Effect::Allow);
+        run.verify = Some(agent::harness::verify::engine::Verify::begin(&store, builder, None).await);
+        let file = project.path().join("total.py").to_string_lossy().into_owned();
+        let r = call_tool(&registry, &store, Some(&run), None, "save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("your own working copy"), "the model is told where it works: {}", r.content);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def total(a, b): return 0\n", "the owner's file is untouched");
+        let v = store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&v.work_dir).join("total.py")).unwrap(), "def total(a, b): return a + b\n");
     }
 }

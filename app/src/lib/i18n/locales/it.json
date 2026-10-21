@@ -4398,5 +4398,109 @@
 		"fits": "Adatto a {level}",
 		"bandUpTo": "Fino a {tokens} token",
 		"bandAbove": "Oltre {tokens} token"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verificato",
+			"notVerified": "Non verificato",
+			"checking": "Verifica in corso",
+			"waiting": "In attesa della tua risposta",
+			"openHint": "Mostra cosa è stato controllato"
+		},
+		"tip": {
+			"verified": "Controllato da {reviewers, plural, one {# revisore indipendente} other {# revisori indipendenti}} ({lenses}) in {rounds, plural, one {# turno} other {# turni}}.",
+			"checksPassed": "I controlli del progetto sono passati: {checks}.",
+			"noneOpen": "Nessun problema bloccante o importante aperto.",
+			"deferred": "Note minori rinviate con un motivo: {count}.",
+			"landed": "È arrivato nel tuo progetto.",
+			"landedAnyway": "È arrivato nel tuo progetto per tua scelta.",
+			"notLanded": "Aspetta nella sua copia, non ancora nel tuo progetto.",
+			"limit": "Una revisione trova problemi; non può dimostrare che non ce ne siano.",
+			"checking": "Revisori indipendenti e i controlli del progetto stanno esaminando questo codice.",
+			"waiting": "La verifica aspetta la tua risposta.",
+			"notVerified": "Non è stato possibile verificarlo.",
+			"open": "Ancora aperti dopo {rounds, plural, one {# turno} other {# turni}}: {blockers} bloccanti, {majors} importanti."
+		},
+		"round": {
+			"title": "Turno {n}",
+			"kind": {
+				"catch_up": "Allineato al tuo progetto",
+				"land": "Integrazione",
+				"live": "Controllo dal vivo",
+				"other": "Passaggio"
+			},
+			"time": "{seconds} s",
+			"lenses": "Revisori: {lenses}",
+			"findings": "Trovati: {blockers} bloccanti, {majors} importanti, {minors} minori",
+			"fixed": "Corretti dal turno precedente: {count}",
+			"held": "Controllato e valido",
+			"checks": "Controlli:",
+			"noChecks": "Non è stato possibile eseguire build o test."
+		},
+		"rounds": {
+			"heading": "Controlli del codice"
+		},
+		"total": "Costo dei revisori: {cost}",
+		"severity": {
+			"blocker": "Bloccante",
+			"major": "Importante",
+			"minor": "Minore",
+			"other": "Problema"
+		},
+		"lens": {
+			"correctness": "correttezza",
+			"security": "sicurezza",
+			"billing": "fatturazione",
+			"data": "dati",
+			"performance": "prestazioni",
+			"experience": "ciò che vedono le persone",
+			"other": "un'altra area"
+		},
+		"why": {
+			"needs_answer": "Serve la tua risposta a una domanda",
+			"unreadable": "Impossibile leggere cosa è cambiato",
+			"spend_limit": "Raggiunto il limite di spesa per esecuzione di questo dipendente",
+			"review_incomplete": "Una revisione non è riuscita a terminare",
+			"needs_decision": "Serve la tua decisione: {items}",
+			"stopped_by_owner": "Fermato da te; problemi aperti: {open, plural, other {#}}",
+			"stalled": "Non faceva più progressi; problemi aperti: {open, plural, other {#}}",
+			"no_checks": "Non è stato possibile eseguire test o build",
+			"landed_unreviewed": "Integrato senza superare la revisione, per tua scelta",
+			"edits_in_way": "Non ancora integrato: le tue modifiche sono ancora d'intralcio",
+			"kept_own_edits": "Non integrato: hai tenuto le tue modifiche, e la modifica attende nella sua copia",
+			"live_failed": "Il controllo dal vivo non è riuscito",
+			"live_unavailable": "Non controllato dal vivo: il bot non ha un browser in cui aprire l'app",
+			"live_no_script": "Non controllato dal vivo: la pagina dell'app non ha caricato lo script di controllo (la pagina d'ingresso non è testo UTF-8, l'app non è una delle tue o la pagina è andata a un altro indirizzo)",
+			"live_ok": "La pagina si è ricaricata e funziona",
+			"review_clean": "Nessun problema bloccante o grave",
+			"review_blocking": "Problemi bloccanti: {count, plural, other {#}}",
+			"up_to_date": "Già aggiornato con il tuo progetto",
+			"caught_up": "Aggiornato fino a {commit}",
+			"conflicts": "Le tue modifiche e questa si incontrano in {files}",
+			"landed": "Integrato come {commit}",
+			"nothing_to_land": "Niente da integrare",
+			"owner_edits": "Le tue modifiche in {files} sono d'intralcio",
+			"busy_no_branch": "Non ancora integrato: il tuo progetto non è su nessun branch",
+			"busy_branch": "Non ancora integrato: il tuo progetto è sul branch {now}, e la copia è stata fatta da {from}",
+			"busy_in_progress": "Non ancora integrato: nel tuo progetto è in corso un {op}",
+			"hook_failed": "Gli hook di commit del tuo progetto l'hanno rifiutato",
+			"retest_failed": "I controlli sono falliti dopo l'aggiornamento con il tuo progetto",
+			"not_attempted": "Non tentato, perché una parte precedente non è stata integrata",
+			"land_failed": "Non è stato possibile integrarlo; nulla di tuo è cambiato",
+			"other": "La sua cronologia mostra cosa è successo",
+			"step_limit": "L'esecuzione ha raggiunto il limite di passaggi prima della fine del controllo",
+			"turn_ended": "L'esecuzione è terminata prima della fine del controllo",
+			"restarted": "Nebo si è riavviato durante il controllo",
+			"unreviewed": "Non integrato: la copia contiene modifiche che nessuno ha revisionato ({files})",
+			"needs_review": "Ciò che verrebbe integrato differisce da ciò che è stato revisionato in {files}; prima viene revisionato di nuovo",
+			"changed_after_review": "La copia è cambiata dopo la revisione; prima viene revisionata di nuovo",
+			"waiting_to_land": "In attesa che finisca un'altra integrazione in questo progetto"
+		},
+		"place": {
+			"app": "La modifica è nelle pagine dell'app; la cronologia dell'app può annullarla.",
+			"helper": "È nella copia del suo aiutante finché la conversazione che l'ha avviato non la integra.",
+			"folder": "È stata fatta sul posto, nella cartella su cui si è lavorato.",
+			"nothing": "Non c'era niente da integrare."
+		}
 	}
 }

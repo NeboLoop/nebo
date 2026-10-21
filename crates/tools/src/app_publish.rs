@@ -1406,6 +1406,80 @@ const PAGE_IMAGES: &str = r#"(async ()=>{const T=window.__neboTimeout||setTimeou
 /// What the probe saw, and the answer the page itself came with.
 const PAGE_FAILURES: &str = r#"(()=>{const n=performance.getEntriesByType('navigation')[0];const s=n&&n.responseStatus||0;if(!window.__neboPageErrors)return JSON.stringify(['The page did not load'+(s?' (it answered '+s+')':'')+'.']);const e=window.__neboPageErrors.slice();if(s>=400)e.unshift('The page answered '+s+'.');return JSON.stringify(e);})()"#;
 
+/// Waits for the page's load event, 10 s at most: `complete`, or
+/// `timeout`.
+const PAGE_LOADED: &str = r#"new Promise(r=>{if(document.readyState==='complete')return r('complete');window.addEventListener('load',()=>r('complete'),{once:true});(window.__neboTimeout||setTimeout)(()=>r('timeout'),10000);})"#;
+
+/// Why a live load could not look at the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveLoadError {
+    /// The bot has no browser to open a view in.
+    NoBrowser(String),
+    /// A view could not be opened or read.
+    NotOpened(String),
+    /// The page loaded without the developer script that reports what it
+    /// does, so it can't be checked: why, in the owner's words.
+    NoScript(String),
+}
+
+/// Why a page can load without the developer script.
+pub const NO_SCRIPT: &str = "the app's page didn't load the check script: its entry page isn't UTF-8 text, the app isn't one of your own, or the page went to another address";
+
+/// Waits for every batch the developer script has on its way to land.
+const DEVTOOLS_FLUSHED: &str = r#"(async()=>{if(window.__neboDevtoolsFlush)await window.__neboDevtoolsFlush();return 'flushed';})()"#;
+
+/// The longest a live check waits after the load for the developer
+/// script's own look at the page (a page that drew nothing), which it
+/// takes 2.5 s after the load and says it has (`__neboLooked`).
+const LOOK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The answer the page itself came with, when it was an error (`0`: none
+/// was read).
+const PAGE_STATUS: &str = r#"(()=>{const n=performance.getEntriesByType('navigation')[0];return String(n&&n.responseStatus||0);})()"#;
+
+/// An app's page as it is served now, loaded fresh in the bot's own
+/// headless browser for a live check: what went wrong in this view's load
+/// alone, read after its load event, through the one capture path, the
+/// app's developer script ([`crate::app_console`]): its errors, failed
+/// requests, blocked loads and worker errors, tagged with this view's id so
+/// no other open view's lines count. A page without the developer script
+/// can't be checked, and fails.
+pub async fn live_load(browser: Option<&Arc<browser::Manager>>, app: &db::models::Agent) -> Result<Vec<String>, LiveLoadError> {
+    let executor = headless(browser, "open the app to check it live").map_err(LiveLoadError::NoBrowser)?;
+    let page = page_path(app, &json!({})).map_err(LiveLoadError::NotOpened)?;
+    let view_id = format!("live-{}", uuid::Uuid::new_v4().simple());
+    let tag = format!("window.__neboViewId={};", serde_json::to_string(&view_id).unwrap_or_default());
+    let mark = crate::app_console::mark();
+    let view = AppPage::open(&executor, app, &page, viewport(app, &json!({}), (390, 844)), &[&tag], Duration::from_secs(60))
+        .await
+        .map_err(LiveLoadError::NotOpened)?;
+    let checked = async {
+        if view.eval(PAGE_LOADED).await.map_err(LiveLoadError::NotOpened)? != "complete" {
+            return Ok(vec!["The page did not finish loading.".to_string()]);
+        }
+        if view.eval("String(!!window.__neboDevtools)").await.map_err(LiveLoadError::NotOpened)? != "true" {
+            return Err(LiveLoadError::NoScript(NO_SCRIPT.into()));
+        }
+        // What goes wrong after the load (the script's look at the page
+        // included), then every batch on its way, before anything is read.
+        let waited = std::time::Instant::now();
+        while view.eval("String(!!window.__neboLooked)").await.map_err(LiveLoadError::NotOpened)? != "true" {
+            if waited.elapsed() > LOOK_TIMEOUT {
+                return Ok(vec!["The page never finished its own check after it loaded.".to_string()]);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let status: u16 = view.eval(PAGE_STATUS).await.map_err(LiveLoadError::NotOpened)?.parse().unwrap_or(0);
+        view.eval(DEVTOOLS_FLUSHED).await.map_err(LiveLoadError::NotOpened)?;
+        Ok((status >= 400).then(|| format!("The page answered {status}.")).into_iter().collect())
+    }
+    .await;
+    view.close().await;
+    let mut failed = checked?;
+    failed.extend(crate::app_console::view_errors(&app.id, mark, &view_id));
+    Ok(failed)
+}
+
 /// An app's page open in the bot's own headless browser, for a pack tool
 /// (`app_screenshot`, `app_record`): one tab of its own, behind a pass that
 /// opens this app alone, laid out at the size it is drawn at before its

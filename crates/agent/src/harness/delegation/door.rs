@@ -54,7 +54,8 @@ impl HelperDoor {
         Ok(HelperSpec {
             description: req.description.clone(),
             prompt: req.prompt.clone(),
-            kind: HelperKind::parse(&req.agent_type).unwrap_or(HelperKind::General),
+            // A reviewer is the verify loop's own: a model never starts one.
+            kind: HelperKind::parse(&req.agent_type).filter(|k| HelperKind::ALL.contains(k)).unwrap_or(HelperKind::General),
             background,
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
@@ -172,6 +173,27 @@ fn finished(c: Completion) -> SpawnResult {
     }
 }
 
+impl HelperDoor {
+    /// What helper `task_id`'s change was reviewed as, when its work in its
+    /// copy was verified (its own turn's verify loop) and hasn't changed
+    /// since.
+    async fn verified(&self, caller: &str, task_id: &str) -> Option<crate::worktree::Reviewed> {
+        let key = super::helper_key(caller, task_id);
+        let Some(v) = self
+            .harness
+            .store
+            .list_verifications(&db::VerificationQuery { session_key: Some(&key), ..Default::default() })
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .filter(|v| v.state == "verified" && v.work_kind == "helper_copy")
+        else {
+            return None;
+        };
+        crate::harness::verify::work::reviewed(&self.harness.store, &v).await
+    }
+}
+
 impl SubAgentOrchestrator for HelperDoor {
     fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
         Box::pin(async move {
@@ -226,6 +248,60 @@ impl SubAgentOrchestrator for HelperDoor {
         })
     }
 
+    fn settle<'a>(&'a self, task_id: &'a str, land: bool, ctx: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
+        Box::pin(async move {
+            // Verified work lands like the verify loop's own: exactly what
+            // was reviewed, reviewed again when anything of it changed.
+            // Work that isn't verified lands only at the owner's word, as it
+            // is. The run's Stop ends a landing waiting for another.
+            let reviewed = if land { self.verified(&ctx.session_key, task_id).await } else { None };
+            let landing = crate::worktree::Landing { only: reviewed.clone(), stop: ctx.cancel_token.clone(), waiting: None };
+            if land && reviewed.is_none() {
+                // Work that isn't verified lands in the owner's files only at
+                // their own word, on a card; a run nobody watches holds it.
+                let question = format!(
+                    "Helper {task_id}'s changes are ready in its own copy and haven't been verified. Land them in your files?"
+                );
+                let widgets = serde_json::json!([{ "type": "options", "multiSelect": false, "options": ["Land them", "Keep them in the copy", "Discard them"] }]);
+                match ctx.ask_user(&question, widgets).await.as_deref() {
+                    Some("Land them") => {}
+                    Some("Discard them") => {
+                        return self
+                            .helpers
+                            .settle(&ctx.session_key, task_id, super::Decision::Discard, None, Default::default())
+                            .await
+                            .map(|text| format!("The owner chose to discard them. {text}"));
+                    }
+                    Some(_) => return Ok(format!("The owner kept helper {task_id}'s changes in its copy: nothing landed.")),
+                    None => {
+                        return Err(format!(
+                            "Nobody is here to say yes, and changes that aren't verified land in the owner's files only at \
+                             their word: helper {task_id}'s changes are held in its copy for them. Tell the owner they are ready."
+                        ));
+                    }
+                }
+            }
+            let decision = if land { super::Decision::Land } else { super::Decision::Discard };
+            // After catching up, the project's own checks run in the copy:
+            // what lands is what was checked.
+            let caller = ctx.session_key.clone();
+            let tools = self.harness.tools.clone();
+            let ctx = ctx.clone();
+            let retest = move |iso: &crate::worktree::Isolation| -> futures::future::BoxFuture<'static, Result<(), String>> {
+                let (tools, ctx, iso) = (tools.clone(), ctx.clone(), iso.clone());
+                Box::pin(async move {
+                    let changed = crate::worktree::changed_files(&iso).await;
+                    let checks = crate::harness::verify::checks::detect(iso.path(), &changed);
+                    let build = crate::harness::verify::checks::build_cache(iso.root());
+                    let runs = crate::harness::verify::checks::run(&tools, &ctx, &checks, &build).await;
+                    let failed: Vec<String> = runs.iter().filter(|r| !r.passed).map(|r| format!("{} failed:\n{}", r.label, r.tail)).collect();
+                    if failed.is_empty() { Ok(()) } else { Err(failed.join("\n\n")) }
+                })
+            };
+            self.helpers.settle(&caller, task_id, decision, Some(&retest), landing).await
+        })
+    }
+
     fn list_active(&self, caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
         let listed = self
             .helpers
@@ -256,7 +332,19 @@ impl SubAgentOrchestrator for HelperDoor {
             if !swept.is_empty() {
                 info!(count = swept.len(), "swept stale helper copies");
             }
-            self.helpers.recover();
+            // The verify loop's disk, now and daily: finished verifications'
+            // files, unused build folders, and builds over their cap.
+            let store = self.harness.store.clone();
+            tokio::spawn(async move {
+                loop {
+                    let removed = crate::harness::verify::work::sweep(&store, chrono::Utc::now().timestamp()).await;
+                    if removed > 0 {
+                        info!(removed, "reclaimed the verify loop's disk");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+                }
+            });
+            self.helpers.recover().await;
         })
     }
 }
@@ -308,6 +396,9 @@ mod tests {
         }
         fn list_active(&self, _: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
+        }
+        fn settle<'a>(&'a self, _: &'a str, _: bool, _: &'a tools::ToolContext) -> Fut<'a, Result<String, String>> {
+            Box::pin(async { Err("no".into()) })
         }
         fn recover(&self) -> Fut<'_, ()> {
             Box::pin(async {})

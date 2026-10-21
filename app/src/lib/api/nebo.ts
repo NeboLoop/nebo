@@ -2603,6 +2603,20 @@ export function userUpdateProfile(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List verifications"
+ */
+export function listVerifications(chat?: string, session?: string, run?: string, agent?: string, live?: boolean, limit?: number) {
+	return webapi.get<components.VerificationList>(`/api/v1/verifications`, { chat, session, run, agent, live, limit })
+}
+
+/**
+ * @description "Get verification"
+ */
+export function getVerification(id: string) {
+	return webapi.get<components.VerificationView>(`/api/v1/verifications/${id}`)
+}
+
+/**
  * @description "List work documents"
  */
 export function listWorkDocuments() {

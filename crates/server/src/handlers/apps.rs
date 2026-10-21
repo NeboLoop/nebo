@@ -1039,6 +1039,8 @@ struct DevlogEntry {
     source: String,
     #[serde(default)]
     time: i64,
+    #[serde(default)]
+    view: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1123,7 +1125,7 @@ fn keep_devlog(agent_id: &str, body: &[u8]) -> Result<usize, StatusCode> {
             .entries
             .iter()
             .take(DEVLOG_MAX_BATCH)
-            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time)),
+            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time, e.view.as_str())),
     ))
 }
 
@@ -1208,7 +1210,7 @@ fn keep_page_errors(agent_id: &str, body: &[u8]) {
             .take(DEVLOG_MAX_BATCH)
             .filter(|e| e.level == "error")
             .filter(|e| !held.iter().any(|h| h.time_ms == e.time && h.message == e.message))
-            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time)),
+            .map(|e| (e.level.as_str(), e.message.as_str(), e.source.as_str(), e.time, e.view.as_str())),
     );
 }
 
@@ -2542,9 +2544,12 @@ mod developer_mode_tests {
         let body = serde_json::json!({"entries": [
             {"level": "log", "message": "booted", "source": "console", "time": 1_700_000_000_000i64},
             {"level": "error", "message": "Uncaught TypeError: car is undefined (/main.js:12:5)", "source": "error", "time": 1_700_000_000_500i64},
-            {"level": "error", "message": "GET /track.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_001_000i64}
+            {"level": "error", "message": "GET /track.json \u{2192} 404 Not Found", "source": "network", "time": 1_700_000_001_000i64, "view": "live-7"}
         ]});
+        let mark = tools::app_console::mark();
         assert_eq!(keep_devlog(&id, body.to_string().as_bytes()), Ok(3));
+        // The view a line came from is kept with it.
+        assert_eq!(tools::app_console::view_errors(&id, mark, "live-7"), ["GET /track.json \u{2192} 404 Not Found"]);
         assert_eq!(keep_devlog(&id, b"not json"), Err(StatusCode::BAD_REQUEST));
         assert_eq!(tools::app_console::error_count(&id), 2);
 

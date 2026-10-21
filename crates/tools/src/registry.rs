@@ -530,6 +530,11 @@ impl Registry {
         }
     }
 
+    /// The bot's browser, when one is wired.
+    pub fn browser(&self) -> Option<Arc<browser::Manager>> {
+        self.browser_manager.read().unwrap().clone()
+    }
+
     /// Close the browser tab/page a session opened — the canonical cleanup for a
     /// finished sub-agent. No-op when no browser manager is wired or the session
     /// never opened anything. Routes to whichever backend served the calls.
@@ -3093,8 +3098,13 @@ pub(crate) mod tests {
     /// helper's question goes back in send_message's `answer`, the one
     /// thing that settles it (send_message 1,527, +186; delegate +11):
     /// 18,658. 2026-10-20: an answer names the question it settles
-    /// (send_message `question`, 1,646, +119): 18,777.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_777;
+    /// (send_message `question`, 1,646, +119): 18,777. The owner,
+    /// 2026-10-19: a helper that changes his files works in its own copy,
+    /// and its changes reach them only when the conversation that started it
+    /// lands them; send_message takes `changes` (land or discard), and
+    /// isolation is for any helper that changes his files, not only code:
+    /// 18,930.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 18_930;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

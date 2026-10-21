@@ -4398,5 +4398,109 @@
 		"fits": "Adapté à {level}",
 		"bandUpTo": "Jusqu'à {tokens} jetons",
 		"bandAbove": "Au-delà de {tokens} jetons"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Vérifié",
+			"notVerified": "Non vérifié",
+			"checking": "Vérification en cours",
+			"waiting": "En attente de votre réponse",
+			"openHint": "Montre ce qui a été vérifié"
+		},
+		"tip": {
+			"verified": "Vérifié par {reviewers, plural, one {# relecteur indépendant} other {# relecteurs indépendants}} ({lenses}) en {rounds, plural, one {# tour} other {# tours}}.",
+			"checksPassed": "Les tests du projet ont réussi : {checks}.",
+			"noneOpen": "Aucun problème bloquant ou majeur n'est ouvert.",
+			"deferred": "Remarques mineures reportées avec une raison : {count}.",
+			"landed": "C'est intégré à votre projet.",
+			"landedAnyway": "C'est intégré à votre projet, à votre demande.",
+			"notLanded": "Cela attend dans sa propre copie, pas encore dans votre projet.",
+			"limit": "Une relecture trouve des problèmes ; elle ne peut pas prouver qu'il n'y en a aucun.",
+			"checking": "Des relecteurs indépendants et les tests du projet examinent ce code.",
+			"waiting": "La vérification attend votre réponse.",
+			"notVerified": "Cela n'a pas pu être vérifié.",
+			"open": "Encore ouverts après {rounds, plural, one {# tour} other {# tours}} : {blockers} bloquants, {majors} majeurs."
+		},
+		"round": {
+			"title": "Tour {n}",
+			"kind": {
+				"catch_up": "Mis à jour avec votre projet",
+				"land": "Intégration",
+				"live": "Vérification en direct",
+				"other": "Étape"
+			},
+			"time": "{seconds} s",
+			"lenses": "Relecteurs : {lenses}",
+			"findings": "Trouvé : {blockers} bloquants, {majors} majeurs, {minors} mineurs",
+			"fixed": "Corrigé depuis le tour précédent : {count}",
+			"held": "Vérifié et valide",
+			"checks": "Tests :",
+			"noChecks": "Aucune compilation ni aucun test n'a pu s'exécuter."
+		},
+		"rounds": {
+			"heading": "Vérifications du code"
+		},
+		"total": "Coût des relecteurs : {cost}",
+		"severity": {
+			"blocker": "Bloquant",
+			"major": "Majeur",
+			"minor": "Mineur",
+			"other": "Problème"
+		},
+		"lens": {
+			"correctness": "exactitude",
+			"security": "sécurité",
+			"billing": "facturation",
+			"data": "données",
+			"performance": "performances",
+			"experience": "ce que les gens voient",
+			"other": "un autre domaine"
+		},
+		"why": {
+			"needs_answer": "A besoin de votre réponse à une question",
+			"unreadable": "Impossible de lire ce qui a changé",
+			"spend_limit": "La limite de dépense par exécution de cet employé est atteinte",
+			"review_incomplete": "Une revue n'a pas pu se terminer",
+			"needs_decision": "A besoin de votre décision : {items}",
+			"stopped_by_owner": "Arrêté par vous ; problèmes ouverts : {open, plural, other {#}}",
+			"stalled": "Ne progressait plus ; problèmes ouverts : {open, plural, other {#}}",
+			"no_checks": "Aucun test ni build n'a pu s'exécuter",
+			"landed_unreviewed": "Intégré sans avoir passé la revue, à votre demande",
+			"edits_in_way": "Pas encore intégré : vos modifications sont toujours sur le chemin",
+			"kept_own_edits": "Non intégré : vous avez gardé vos propres modifications, et le changement attend dans sa copie",
+			"live_failed": "La vérification en direct a échoué",
+			"live_unavailable": "Non vérifié en direct : le bot n'a pas de navigateur pour ouvrir l'app",
+			"live_no_script": "Non vérifié en direct : la page de l'app n'a pas chargé le script de vérification (sa page d'entrée n'est pas du texte UTF-8, l'app n'est pas l'une des vôtres, ou la page est allée à une autre adresse)",
+			"live_ok": "La page s'est rechargée et fonctionne",
+			"review_clean": "Aucun problème bloquant ou majeur",
+			"review_blocking": "Problèmes bloquants : {count, plural, other {#}}",
+			"up_to_date": "Déjà à jour avec votre projet",
+			"caught_up": "Mis à jour jusqu'à {commit}",
+			"conflicts": "Vos modifications et celle-ci se rejoignent dans {files}",
+			"landed": "Intégré en tant que {commit}",
+			"nothing_to_land": "Rien à intégrer",
+			"owner_edits": "Vos propres modifications dans {files} sont sur le chemin",
+			"busy_no_branch": "Pas encore intégré : votre projet n'est sur aucune branche",
+			"busy_branch": "Pas encore intégré : votre projet est sur la branche {now}, et la copie a été faite depuis {from}",
+			"busy_in_progress": "Pas encore intégré : un {op} est en cours dans votre projet",
+			"hook_failed": "Les hooks de commit de votre projet l'ont refusé",
+			"retest_failed": "Les vérifications ont échoué après la mise à jour avec votre projet",
+			"not_attempted": "Pas tenté, car une partie précédente n'a pas été intégrée",
+			"land_failed": "Impossible de l'intégrer ; rien de vos fichiers n'a changé",
+			"other": "Son historique montre ce qui s'est passé",
+			"step_limit": "L'exécution a atteint sa limite d'étapes avant la fin de la vérification",
+			"turn_ended": "L'exécution s'est terminée avant la fin de la vérification",
+			"restarted": "Nebo a redémarré pendant la vérification",
+			"unreviewed": "Non intégré : la copie contient des modifications que personne n'a revues ({files})",
+			"needs_review": "Ce qui serait intégré diffère de ce qui a été revu dans {files} ; il est d'abord revu à nouveau",
+			"changed_after_review": "La copie a changé après avoir été revue ; elle est d'abord revue à nouveau",
+			"waiting_to_land": "En attente de la fin d'une autre intégration dans ce projet"
+		},
+		"place": {
+			"app": "Le changement est dans les pages de l'app ; l'historique de l'app peut l'annuler.",
+			"helper": "Il est dans la copie de son assistant jusqu'à ce que la conversation qui l'a lancé l'intègre.",
+			"folder": "Il a été fait sur place, dans le dossier sur lequel on a travaillé.",
+			"nothing": "Il n'y avait rien à intégrer."
+		}
 	}
 }

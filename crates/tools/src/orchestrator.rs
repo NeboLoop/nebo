@@ -229,6 +229,19 @@ pub trait SubAgentOrchestrator: Send + Sync {
         parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 
+    /// Land (`land: true`) or discard the changes an isolated helper of
+    /// `ctx`'s conversation holds in its copy: the decision that lets its
+    /// work reach the owner's files, made by the conversation that started
+    /// it (or the owner through it). Landing catches the copy up with the
+    /// project, re-runs the project's checks there, and lands it as one
+    /// commit; the result says what happened and what is still needed.
+    fn settle<'a>(
+        &'a self,
+        task_id: &'a str,
+        land: bool,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+
     /// Everything `caller` started that is still in hand, at any depth:
     /// its helpers, theirs and their research runs, as (task_id,
     /// description, status); a nested one's description names the helper

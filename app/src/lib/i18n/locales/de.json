@@ -4398,5 +4398,109 @@
 		"fits": "Passt zu {level}",
 		"bandUpTo": "Bis {tokens} Tokens",
 		"bandAbove": "Über {tokens} Tokens"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Geprüft",
+			"notVerified": "Nicht geprüft",
+			"checking": "Wird geprüft",
+			"waiting": "Wartet auf Sie",
+			"openHint": "Zeigt, was geprüft wurde"
+		},
+		"tip": {
+			"verified": "Geprüft von {reviewers, plural, one {# unabhängigen Prüfer} other {# unabhängigen Prüfern}} ({lenses}) in {rounds, plural, one {# Runde} other {# Runden}}.",
+			"checksPassed": "Die eigenen Prüfungen des Projekts sind bestanden: {checks}.",
+			"noneOpen": "Keine blockierenden oder größeren Probleme offen.",
+			"deferred": "Kleinere Hinweise mit Begründung zurückgestellt: {count}.",
+			"landed": "Es ist in Ihrem Projekt angekommen.",
+			"landedAnyway": "Es ist auf Ihren Wunsch in Ihrem Projekt angekommen.",
+			"notLanded": "Es wartet in seiner eigenen Kopie, noch nicht in Ihrem Projekt.",
+			"limit": "Eine Prüfung findet Probleme; sie kann nicht beweisen, dass es keine gibt.",
+			"checking": "Unabhängige Prüfer und die eigenen Prüfungen des Projekts sehen sich diesen Code an.",
+			"waiting": "Die Prüfung wartet auf Ihre Antwort.",
+			"notVerified": "Es konnte nicht geprüft werden.",
+			"open": "Nach {rounds, plural, one {# Runde} other {# Runden}} noch offen: {blockers} blockierend, {majors} größer."
+		},
+		"round": {
+			"title": "Runde {n}",
+			"kind": {
+				"catch_up": "Mit Ihrem Projekt abgeglichen",
+				"land": "Übernahme",
+				"live": "Live-Prüfung",
+				"other": "Schritt"
+			},
+			"time": "{seconds} s",
+			"lenses": "Prüfer: {lenses}",
+			"findings": "Gefunden: {blockers} blockierend, {majors} größer, {minors} klein",
+			"fixed": "Seit der letzten Runde behoben: {count}",
+			"held": "Geprüft und in Ordnung",
+			"checks": "Prüfungen:",
+			"noChecks": "Kein Build und keine Tests konnten laufen."
+		},
+		"rounds": {
+			"heading": "Code-Prüfungen"
+		},
+		"total": "Kosten der Prüfer: {cost}",
+		"severity": {
+			"blocker": "Blockierend",
+			"major": "Größer",
+			"minor": "Klein",
+			"other": "Problem"
+		},
+		"lens": {
+			"correctness": "Korrektheit",
+			"security": "Sicherheit",
+			"billing": "Abrechnung",
+			"data": "Daten",
+			"performance": "Leistung",
+			"experience": "Darstellung",
+			"other": "ein anderer Bereich"
+		},
+		"why": {
+			"needs_answer": "Braucht Ihre Antwort auf eine Frage",
+			"unreadable": "Die Änderungen konnten nicht gelesen werden",
+			"spend_limit": "Das Ausgabenlimit dieses Mitarbeiters pro Lauf ist erreicht",
+			"review_incomplete": "Eine Prüfung konnte nicht abgeschlossen werden",
+			"needs_decision": "Braucht Ihre Entscheidung: {items}",
+			"stopped_by_owner": "Von dir gestoppt; offene Probleme: {open, plural, other {#}}",
+			"stalled": "Kein Fortschritt mehr; offene Probleme: {open, plural, other {#}}",
+			"no_checks": "Keine Tests oder Builds konnten laufen",
+			"landed_unreviewed": "Ohne bestandene Prüfung übernommen, auf Ihren Wunsch",
+			"edits_in_way": "Noch nicht übernommen: Ihre Änderungen stehen noch im Weg",
+			"kept_own_edits": "Nicht übernommen: Sie haben Ihre eigenen Änderungen behalten, die Änderung wartet in ihrer Kopie",
+			"live_failed": "Die Live-Prüfung ist fehlgeschlagen",
+			"live_unavailable": "Nicht live geprüft: Der Bot hat keinen Browser, um die App zu öffnen",
+			"live_no_script": "Nicht live geprüft: Die Seite der App hat das Prüfskript nicht geladen (ihre Startseite ist kein UTF-8-Text, die App ist nicht Ihre eigene oder die Seite ist zu einer anderen Adresse gewechselt)",
+			"live_ok": "Die Seite wurde neu geladen und ist in Ordnung",
+			"review_clean": "Keine blockierenden oder größeren Probleme",
+			"review_blocking": "Blockierende Probleme: {count, plural, other {#}}",
+			"up_to_date": "Bereits auf dem Stand Ihres Projekts",
+			"caught_up": "Auf den Stand von {commit} gebracht",
+			"conflicts": "Ihre Änderungen und diese treffen sich in {files}",
+			"landed": "Übernommen als {commit}",
+			"nothing_to_land": "Nichts zu übernehmen",
+			"owner_edits": "Ihre eigenen Änderungen in {files} stehen im Weg",
+			"busy_no_branch": "Noch nicht übernommen: Ihr Projekt ist auf keinem Branch",
+			"busy_branch": "Noch nicht übernommen: Ihr Projekt ist auf Branch {now}, die Kopie stammt von {from}",
+			"busy_in_progress": "Noch nicht übernommen: in Ihrem Projekt läuft gerade {op}",
+			"hook_failed": "Die Commit-Hooks Ihres Projekts haben es abgelehnt",
+			"retest_failed": "Die Prüfungen sind nach dem Abgleich mit Ihrem Projekt fehlgeschlagen",
+			"not_attempted": "Nicht versucht, weil ein früherer Teil nicht übernommen wurde",
+			"land_failed": "Es konnte nicht übernommen werden; an Ihren Dateien hat sich nichts geändert",
+			"other": "Was passiert ist, steht im Verlauf",
+			"step_limit": "Der Lauf hat sein Schrittlimit erreicht, bevor die Prüfung fertig war",
+			"turn_ended": "Der Lauf endete, bevor die Prüfung fertig war",
+			"restarted": "Nebo wurde während der Prüfung neu gestartet",
+			"unreviewed": "Nicht übernommen: die Kopie enthält Änderungen, die niemand geprüft hat ({files})",
+			"needs_review": "Was übernommen würde, weicht in {files} von dem ab, was geprüft wurde; es wird zuerst erneut geprüft",
+			"changed_after_review": "Die Kopie hat sich nach der Prüfung geändert; sie wird zuerst erneut geprüft",
+			"waiting_to_land": "Wartet, bis eine andere Übernahme in dieses Projekt abgeschlossen ist"
+		},
+		"place": {
+			"app": "Die Änderung ist in den Seiten der App; der Verlauf der App kann sie rückgängig machen.",
+			"helper": "Sie liegt in der Kopie ihres Helfers, bis das Gespräch, das ihn gestartet hat, sie übernimmt.",
+			"folder": "Sie wurde direkt im bearbeiteten Ordner vorgenommen.",
+			"nothing": "Es gab nichts zu übernehmen."
+		}
 	}
 }

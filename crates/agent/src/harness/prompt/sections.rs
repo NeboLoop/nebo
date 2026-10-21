@@ -46,6 +46,7 @@ first: your turn ends, and"
         HelperKind::General => "a general",
         HelperKind::Explore => "an explore",
         HelperKind::Plan => "a plan",
+        HelperKind::Review => "a review",
     };
     format!(
         "You are {name}, working as {kind} helper on one task for {parent}. {parent} started this run \

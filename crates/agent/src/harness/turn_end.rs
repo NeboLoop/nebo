@@ -292,25 +292,31 @@ pub struct EndChecks {
     /// A command the owner gave that no run_command call ran yet (chat
     /// turns; `owner_command`).
     pub unrun_command: Option<super::owner_command::CommandCheck>,
+    /// The turn's code work, verified before the turn may end
+    /// (`verify::engine`): owner chats, workflow activities and general
+    /// helpers.
+    pub verify: Option<super::verify::engine::VerifyCheck>,
 }
 
 /// The checks a turn of `mode` runs at its end: an unanswered save, an
 /// unrun command, then the agreed-goal check, for chat turns; the workflow contract for workflow
 /// turns; none for helpers and forks.
 pub fn registry(mode: &TurnMode, checks: EndChecks) -> Vec<Box<dyn EndCheck>> {
+    // Code work is verified before anything else may end the turn.
+    let verify = checks.verify.map(|v| Box::new(v) as Box<dyn EndCheck>);
     match mode {
         TurnMode::Chat => {
             let saves = checks.unsaved_memory.map(|c| Box::new(c) as Box<dyn EndCheck>);
             let command = checks.unrun_command.map(|c| Box::new(c) as Box<dyn EndCheck>);
             let goal = checks.goal.map(|g| Box::new(g) as Box<dyn EndCheck>);
-            saves.into_iter().chain(command).chain(goal).collect()
+            verify.into_iter().chain(saves).chain(command).chain(goal).collect()
         }
-        TurnMode::Workflow(_) => checks
-            .workflow_contract
-            .map(|c| Box::new(WorkflowContractCheck(c)) as Box<dyn EndCheck>)
+        TurnMode::Workflow(_) => verify
             .into_iter()
+            .chain(checks.workflow_contract.map(|c| Box::new(WorkflowContractCheck(c)) as Box<dyn EndCheck>))
             .collect(),
         TurnMode::Helper { answer: Some(schema), .. } => vec![Box::new(AnswerShapeCheck(schema.clone())) as Box<dyn EndCheck>],
+        TurnMode::Helper { kind: super::delegation::HelperKind::General, .. } => verify.into_iter().collect(),
         TurnMode::Helper { .. } | TurnMode::Fork(_) => Vec::new(),
     }
 }
