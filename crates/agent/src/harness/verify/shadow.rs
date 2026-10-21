@@ -837,14 +837,14 @@ mod tests {
     /// `.gitattributes` (an unpacked download) with CRLF text: what the
     /// review saw is what lands, never a false "needs review".
     #[test]
-    fn r5v_a_copy_with_gitattributes_and_crlf_lands_what_was_reviewed() {
+    fn a_copy_with_gitattributes_and_crlf_lands_what_was_reviewed() {
         crate::test_home::with_home(|_| {
             rt().block_on(async {
                 let folder = tempfile::tempdir().unwrap();
                 let shadows = tempfile::tempdir().unwrap();
                 std::fs::write(folder.path().join(".gitattributes"), "* text=auto\n").unwrap();
                 std::fs::write(folder.path().join("a.txt"), "a\n").unwrap();
-                let c = crate::worktree::create_copy(folder.path(), "sa-r5v3").unwrap();
+                let c = crate::worktree::create_copy(folder.path(), "sa-crlf").unwrap();
                 let shadow = Shadow::open(&shadows.path().join("s.git"), &c.path).await.unwrap();
                 std::fs::write(c.path.join("b.txt"), "x\r\ny\r\n").unwrap();
                 let snap = shadow.snapshot().await.unwrap();
@@ -861,7 +861,7 @@ mod tests {
     /// (git-crypt, a local git-lfs install): a snapshot records each path as
     /// a landing reads it.
     #[test]
-    fn r5v_a_repository_local_clean_filter_reads_alike() {
+    fn a_repository_local_clean_filter_reads_alike() {
         crate::test_home::with_home(|_| {
             rt().block_on(async {
                 let folder = tempfile::tempdir().unwrap();
@@ -920,9 +920,10 @@ mod tests {
     }
 
 
-    /// r7v: a review of a git worktree, NFD names, under the repo's own
-    /// precompose setting (true = macOS default, false = cloned/set off).
-    async fn r7v_nfd_in_repo(precompose: &str) -> String {
+    /// A review of a git worktree with decomposed (NFD) names, landed, under
+    /// the repository's own precompose setting (on: macOS's default; off:
+    /// cloned or set so): what it says happened.
+    async fn nfd_names_reviewed_and_landed_in_a_repository(precompose: &str) -> String {
         let r = tempfile::tempdir().unwrap();
         let shadows = tempfile::tempdir().unwrap();
         repo(r.path()).await;
@@ -933,7 +934,7 @@ mod tests {
         commit_all(r.path()).await;
         // The owner's own ignored NFD file, never to be deleted.
         std::fs::write(r.path().join("cafe\u{301}.log"), "secret\n").unwrap();
-        let iso = crate::worktree::create(r.path(), "sa-r7v-nfd").await.unwrap();
+        let iso = crate::worktree::create(r.path(), "sa-nfd").await.unwrap();
         let wt = iso.path().to_path_buf();
         let shadow = Shadow::open(&shadows.path().join("s.git"), &wt).await.unwrap();
         let base = shadow.snapshot().await.unwrap();
@@ -960,19 +961,17 @@ mod tests {
     }
 
     #[test]
-    fn r7v_nfd_names_in_a_repository_precompose_true() {
+    fn nfd_names_land_in_a_repository_with_precompose_on() {
         crate::test_home::with_home(|_| rt().block_on(async {
-            let got = r7v_nfd_in_repo("true").await;
-            eprintln!("R7V {got}");
+            let got = nfd_names_reviewed_and_landed_in_a_repository("true").await;
             assert!(got.contains("Merged") && got.contains("log_kept=true") && got.contains("new_landed=true") && got.contains("t1"), "{got}");
         }))
     }
 
     #[test]
-    fn r7v_nfd_names_in_a_repository_precompose_false() {
+    fn nfd_names_land_in_a_repository_with_precompose_off() {
         crate::test_home::with_home(|_| rt().block_on(async {
-            let got = r7v_nfd_in_repo("false").await;
-            eprintln!("R7V {got}");
+            let got = nfd_names_reviewed_and_landed_in_a_repository("false").await;
             assert!(got.contains("Merged") && got.contains("log_kept=true") && got.contains("new_landed=true") && got.contains("t1"), "{got}");
         }))
     }

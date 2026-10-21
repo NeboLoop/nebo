@@ -239,6 +239,9 @@
       try {
         lookAtPage();
       } catch (e) {}
+      // Whoever opened this view (the bot's live check) waits for this
+      // first look before it reads what the page reported.
+      window.__neboLooked = true;
     }, ms);
   }
   if (document.readyState === 'complete') lookSoon(2500);

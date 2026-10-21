@@ -42,9 +42,11 @@ struct Rings {
     apps: HashMap<String, VecDeque<Entry>>,
     /// Each named view's errors, `(seq, message)`, kept apart from the
     /// ring: a live check reads its view's errors whatever else was logged
-    /// meanwhile. The newest [`VIEWS_KEPT`] views, [`VIEW_ERRORS`] each.
+    /// meanwhile. Each app's newest [`VIEWS_KEPT`] views, [`VIEW_ERRORS`]
+    /// each.
     views: HashMap<String, Vec<(u64, String)>>,
-    view_order: VecDeque<String>,
+    /// Each app's views with errors kept, oldest first.
+    view_order: HashMap<String, VecDeque<String>>,
 }
 
 /// One app's view, as its kept errors are found.
@@ -52,7 +54,7 @@ fn view_key(app_id: &str, view: &str) -> String {
     format!("{app_id}\u{0}{view}")
 }
 
-/// Views whose errors are kept apart, oldest out first.
+/// Views per app whose errors are kept apart, oldest out first.
 const VIEWS_KEPT: usize = 32;
 /// Errors kept per view.
 const VIEW_ERRORS: usize = 50;
@@ -103,10 +105,10 @@ pub fn record<'a>(app_id: &str, entries: impl IntoIterator<Item = (&'a str, &'a 
     for e in added.iter().filter(|e| e.level == "error" && !e.view.is_empty()) {
         let key = view_key(app_id, &e.view);
         if !rings.views.contains_key(&key) {
-            rings.view_order.push_back(key.clone());
-            if rings.view_order.len() > VIEWS_KEPT
-                && let Some(old) = rings.view_order.pop_front()
-            {
+            let order = rings.view_order.entry(app_id.to_string()).or_default();
+            order.push_back(key.clone());
+            let gone = (order.len() > VIEWS_KEPT).then(|| order.pop_front()).flatten();
+            if let Some(old) = gone {
                 rings.views.remove(&old);
             }
         }
@@ -355,17 +357,34 @@ mod tests {
         assert!(render("Racer", &[], Some(7)).contains("nothing new since #7"));
     }
 
-    /// r7v: a live view's boot error, then per-frame logs (a game, its own
-    /// view plus the owner's views reloaded at the same time): the ring of
-    /// 500 drops the error before the check reads it.
+    /// A live view's boot error, then per-frame logs (a game, its own view
+    /// plus the owner's views reloaded at the same time): the error is still
+    /// there when the check reads it, though the ring of 500 dropped it.
     #[test]
-    fn r7v_a_live_views_error_survives_log_spam() {
+    fn a_live_views_error_survives_log_spam() {
         let id = app();
         let mark = mark();
         record(&id, [("error", "Uncaught TypeError: boot failed", "error", 1, "live-x")]);
         let frames: Vec<String> = (0..RING_CAPACITY).map(|i| format!("frame {i}")).collect();
         record(&id, frames.iter().map(|f| ("log", f.as_str(), "console", 2, "")));
         assert_eq!(view_errors(&id, mark, "live-x"), ["Uncaught TypeError: boot failed"]);
+    }
+
+
+    /// The errors of an app's newest 32 views are kept apart: a 33rd view's
+    /// first error puts the oldest view's away, never another's.
+    #[test]
+    fn the_oldest_views_errors_go_when_a_33rd_view_reports() {
+        let id = app();
+        let since = mark();
+        let views: Vec<String> = (0..=VIEWS_KEPT).map(|i| format!("live-evict-{i}")).collect();
+        for v in &views {
+            record(&id, [("error", "boom", "error", 1, v.as_str())]);
+        }
+        assert!(view_errors(&id, since, &views[0]).is_empty(), "the oldest view put away");
+        for v in &views[1..] {
+            assert_eq!(view_errors(&id, since, v), ["boom"], "{v}");
+        }
     }
 
 }

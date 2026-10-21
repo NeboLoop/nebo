@@ -317,19 +317,24 @@ impl GitProblem {
     }
 }
 
-/// Whether the `git` on PATH is the macOS stub that asks to install the
-/// command-line tools when they are missing.
-fn mac_git_stub() -> bool {
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&path).map(|d| d.join("git")).find(|g| g.is_file()).is_some_and(|g| g == Path::new("/usr/bin/git"))
+/// Where `program` runs from: itself when it names a path, else the first
+/// of it on PATH.
+fn resolve(program: &Path) -> Option<PathBuf> {
+    if program.components().count() > 1 {
+        return Some(program.to_path_buf());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|d| d.join(program)).find(|g| g.is_file())
 }
 
-/// This computer's git, checked for working on code: `None` when it is
-/// [`MIN_GIT`] or newer. On a Mac the command-line tools are looked for
+/// `program` (git) checked for working on code: `None` when it is
+/// [`MIN_GIT`] or newer. On a Mac, macOS's own `/usr/bin/git` is only a
+/// stub until the command-line tools are installed: they are looked for
 /// first (`xcode-select -p`), so the check never pops up macOS's install
-/// dialog.
-pub async fn git_problem() -> Option<GitProblem> {
-    if cfg!(target_os = "macos") && mac_git_stub() {
+/// dialog. Callers pass `Path::new("git")`, the git every copy runs.
+pub async fn git_problem(program: &Path) -> Option<GitProblem> {
+    let found = resolve(program)?;
+    if cfg!(target_os = "macos") && found == Path::new("/usr/bin/git") {
         let tools = command::new::<Command>("xcode-select", command::Console::Hidden)
             .arg("-p")
             .stdin(std::process::Stdio::null())
@@ -339,30 +344,50 @@ pub async fn git_problem() -> Option<GitProblem> {
             return Some(GitProblem::Missing);
         }
     }
-    let Ok(said) = git(&std::env::temp_dir(), &["--version"]).await else { return Some(GitProblem::Missing) };
+    let said = command::new::<Command>(&found, command::Console::Hidden)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let Some(said) = said else { return Some(GitProblem::Missing) };
     let version = said.split_whitespace().nth(2).unwrap_or_default().to_string();
     let mut parts = version.split('.').map(|n| n.parse::<u32>().unwrap_or(0));
     let have = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
     (have < MIN_GIT).then_some(GitProblem::TooOld(version))
 }
 
-/// The owner's one notice about git, when code work is attempted (an
-/// employee's own copy, a landing): said once in the Inbox while git is
-/// missing or too old, and put away once it is fixed. Whether git is ready.
-pub async fn git_notice(store: &db::Store) -> bool {
+/// The owner's notice about git (`program`, [`git_problem`]), when code
+/// work is attempted (an employee's own copy, a landing): in the Inbox while
+/// git is missing or too old, said again in new words when that changes and
+/// raised again when it breaks after it was fixed, and put away once git
+/// works. Whether git is ready.
+pub async fn git_notice(store: &db::Store, program: &Path) -> bool {
     const ID: &str = "git-needed";
-    match git_problem().await {
+    let user = store.ensure_local_user_id().unwrap_or_default();
+    let open = store.get_notification(ID, &user).ok().flatten().filter(|n| n.archived_at.is_none());
+    match git_problem(program).await {
         None => {
-            tools::owner_notify::settle(store, None, ID, "Git is ready", None);
+            if open.is_some()
+                && let Err(e) = store.archive_notification(ID, &user)
+            {
+                warn!(error = %e, "the git notice was not put away");
+            }
             true
         }
         Some(problem) => {
-            warn!(?problem, "git is missing or too old for code work");
             let (title, body) = problem.words();
+            // Already said, in these words: not again.
+            if open.is_some_and(|n| n.title == title) {
+                return false;
+            }
+            warn!(?problem, "git is missing or too old for code work");
             tools::owner_notify::emit(
                 store,
                 None,
-                &tools::owner_notify::OwnerNotification { id: ID, kind: "warning", title, body: Some(&body), ..Default::default() },
+                &tools::owner_notify::OwnerNotification { id: ID, kind: "warning", title, body: Some(&body), latest: true, ..Default::default() },
             );
             false
         }
@@ -3399,50 +3424,48 @@ mod tests {
     }
 
     #[test]
-    fn r4v_git_build_output_lands_unreviewed() {
+    fn unreviewed_build_output_never_lands_from_a_worktree() {
         with_home(|_| rt().block_on(async {
             let r = repo().await;
-            let wt = create_worktree(r.path(), "sa-r4v1").await.unwrap();
+            let wt = create_worktree(r.path(), "sa-unrev-build").await.unwrap();
             std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
             std::fs::create_dir_all(wt.path.join("dist")).unwrap();
             std::fs::write(wt.path.join("dist/app.js"), "never reviewed").unwrap();
             let landing = reviewed(&wt.path, &["b.txt"]).await;
             let mut isos = [Isolation::Git(wt)];
             let out = merge_all(&mut isos, "Add b", None, &landing).await;
-            eprintln!("R4V1 {:?}", out[0].1);
             assert!(matches!(&out[0].1, MergeOutcome::Unreviewed { files, .. } if files == &vec!["dist/app.js".to_string()]), "{:?}", out[0].1);
             assert!(!r.path().join("dist/app.js").exists(), "unreviewed build output landed on the owner's branch");
         }))
     }
 
     #[test]
-    fn r4v_copy_reviewed_file_under_a_build_folder_is_dropped() {
+    fn a_reviewed_file_under_a_build_folder_lands() {
         with_home(|_| rt().block_on(async {
             let f = folder();
             std::fs::create_dir_all(f.path().join("scripts/build")).unwrap();
             std::fs::write(f.path().join("scripts/build/run.sh"), "old\n").unwrap();
-            let c = create_copy(f.path(), "sa-r4v2").unwrap();
+            let c = create_copy(f.path(), "sa-build-folder").unwrap();
             std::fs::write(c.path.join("scripts/build/run.sh"), "new\n").unwrap();
             let landing = reviewed(&c.path, &["scripts/build/run.sh"]).await;
             let mut isos = [Isolation::Copy(c)];
             let out = merge_all(&mut isos, "m", None, &landing).await;
-            eprintln!("R4V2 {:?} copy_still_there={}", out[0].1, isos[0].path().exists());
+            assert!(matches!(&out[0].1, MergeOutcome::Merged { .. }), "{:?}", out[0].1);
             assert_eq!(std::fs::read_to_string(f.path().join("scripts/build/run.sh")).unwrap(), "new\n", "reviewed work silently dropped");
         }))
     }
 
     #[cfg(unix)]
     #[test]
-    fn r4v_a_hook_rewrite_lands_bytes_nobody_reviewed() {
+    fn a_hook_rewrite_goes_back_to_review() {
         with_home(|_| rt().block_on(async {
             let r = repo().await;
             hook(r.path(), "pre-commit", "echo injected >> b.txt\ngit add b.txt");
-            let wt = create_worktree(r.path(), "sa-r4v3").await.unwrap();
+            let wt = create_worktree(r.path(), "sa-hook-rewrite").await.unwrap();
             std::fs::write(wt.path.join("b.txt"), "reviewed\n").unwrap();
             let landing = reviewed(&wt.path, &["b.txt"]).await;
             let mut isos = [Isolation::Git(wt)];
             let out = merge_all(&mut isos, "Add b", None, &landing).await;
-            eprintln!("R4V3 {:?}", out[0].1);
             // The rewrite goes back to review; nothing of it lands.
             assert!(matches!(&out[0].1, MergeOutcome::NeedsReview { files, .. } if files == &vec!["b.txt".to_string()]), "{:?}", out[0].1);
             assert!(!std::fs::read_to_string(r.path().join("b.txt")).unwrap_or_default().contains("injected"));
@@ -3487,13 +3510,13 @@ mod tests {
     /// (a clean build) is not a change nobody reviewed; the folder is
     /// ignored whether or not it is there now.
     #[test]
-    fn r5v_a_removed_build_folder_is_not_unreviewed() {
+    fn a_removed_build_folder_is_not_unreviewed() {
         with_home(|_| rt().block_on(async {
             let f = folder();
             std::fs::write(f.path().join(".gitignore"), "dist/\n").unwrap();
             std::fs::create_dir_all(f.path().join("dist")).unwrap();
             std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
-            let c = create_copy(f.path(), "sa-r5v1").unwrap();
+            let c = create_copy(f.path(), "sa-removed-build").unwrap();
             std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
             std::fs::remove_dir_all(c.path.join("dist")).unwrap();
             let landing = reviewed(&c.path, &["b.txt"]).await;
@@ -3506,18 +3529,18 @@ mod tests {
     /// Review round 5: landing a copy as it is (the owner's word) never
     /// deletes the owner's ignored files because the copy no longer has them.
     #[test]
-    fn r5v_land_as_is_never_deletes_the_owners_ignored_files() {
+    fn landing_as_is_never_deletes_the_owners_ignored_files() {
         with_home(|_| rt().block_on(async {
             let f = folder();
             std::fs::write(f.path().join(".gitignore"), "dist/\n.env\n").unwrap();
             std::fs::create_dir_all(f.path().join("dist")).unwrap();
             std::fs::write(f.path().join("dist/app.js"), "built\n").unwrap();
-            let c = create_copy(f.path(), "sa-r5v2").unwrap();
+            let c = create_copy(f.path(), "sa-as-is").unwrap();
             std::fs::write(c.path.join("b.txt"), "b1\n").unwrap();
             std::fs::remove_dir_all(c.path.join("dist")).unwrap();
             let mut isos = [Isolation::Copy(c)];
             let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
-            eprintln!("R5V2 {:?}", out[0].1);
+            assert_eq!(landed_files(&out[0].1), vec!["b.txt".to_string()], "only the change, never the deletion of ignored files");
             assert!(f.path().join("dist/app.js").exists(), "the owner's ignored build output was deleted");
         }))
     }
@@ -3549,7 +3572,7 @@ mod tests {
     /// owner reads what to do: install when it is missing, update when old.
     #[test]
     fn this_computers_git_is_new_enough() {
-        rt().block_on(async { assert_eq!(git_problem().await, None) });
+        rt().block_on(async { assert_eq!(git_problem(Path::new("git")).await, None) });
         assert!(GitProblem::Missing.words().0.starts_with("Install git"));
         assert!(GitProblem::TooOld("2.20.1".into()).words().1.contains("git 2.20.1"));
         assert!(GitProblem::TooOld("2.20.1".into()).words().0.starts_with("Update git"));
@@ -3559,13 +3582,13 @@ mod tests {
     /// Review round 6: an ignored owner file whose name git quotes
     /// (a quote, a backslash, a tab, a newline) is never deleted by a landing.
     #[test]
-    fn r6v_a_landing_never_deletes_an_ignored_file_git_quotes() {
+    fn a_landing_never_deletes_an_ignored_file_git_quotes() {
         with_home(|_| rt().block_on(async {
             for name in ["a\"b.log", "back\\slash.log", "tab\there.log", "new\nline.log"] {
                 let f = folder();
                 std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
                 std::fs::write(f.path().join(name), "secret\n").unwrap();
-                let c = create_copy(f.path(), "sa-r6v-q").unwrap();
+                let c = create_copy(f.path(), "sa-quoted").unwrap();
                 std::fs::remove_file(c.path.join(name)).unwrap();
                 let mut isos = [Isolation::Copy(c)];
                 let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
@@ -3577,13 +3600,13 @@ mod tests {
     /// Review round 6: a non-ASCII ignored name, as macOS writes it
     /// (decomposed, NFD) and as most tools write it (NFC).
     #[test]
-    fn r6v_a_landing_never_deletes_an_ignored_non_ascii_file() {
+    fn a_landing_never_deletes_an_ignored_non_ascii_file() {
         with_home(|_| rt().block_on(async {
             for name in ["caf\u{e9}.log", "cafe\u{301}.log", "-dash.log", "with space.log"] {
                 let f = folder();
                 std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
                 std::fs::write(f.path().join(name), "secret\n").unwrap();
-                let c = create_copy(f.path(), "sa-r6v-u").unwrap();
+                let c = create_copy(f.path(), "sa-non-ascii").unwrap();
                 std::fs::remove_file(c.path.join(name)).unwrap();
                 let mut isos = [Isolation::Copy(c)];
                 let out = merge_all(&mut isos, "m", None, &Landing::default()).await;
@@ -3635,58 +3658,59 @@ mod tests {
     }
 
 
-    /// r7v: 50,000 paths on stdin while git writes as much on stdout.
+    /// 50,000 paths go to git on its input while it writes as many back,
+    /// and a big file is hashed from its bytes, with no deadlock.
     #[test]
-    fn r7v_ignored_paths_50k_no_deadlock() {
+    fn fifty_thousand_paths_and_a_big_file_cross_to_git_without_a_deadlock() {
         with_home(|_| rt().block_on(async {
             let f = folder();
             std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
             let paths: Vec<String> = (0..50_000).map(|i| format!("deep/dir/number/{i:06}-a-fairly-long-name-to-fill-pipes.log")).collect();
             let g = tempfile::tempdir().unwrap();
             git(g.path(), &["init", "-q", "--bare", "s.git"]).await.unwrap();
-            let t = std::time::Instant::now();
             let got = ignored_paths(f.path(), Some(&g.path().join("s.git")), &paths).await;
-            eprintln!("R7V folder 50k: {:?} in {:?}", got.as_ref().map(|v| v.len()), t.elapsed());
             assert_eq!(got.unwrap().len(), 50_000);
             let r = repo().await;
             std::fs::write(r.path().join(".gitignore"), "*.log\n").unwrap();
-            let t = std::time::Instant::now();
             let got = ignored_paths(r.path(), None, &paths).await;
-            eprintln!("R7V repo 50k: {:?} in {:?}", got.as_ref().map(|v| v.len()), t.elapsed());
             assert_eq!(got.unwrap().len(), 50_000);
-            // 2 MB through hash-object --stdin.
+            // 8 MB through hash-object --stdin.
             let big = vec![b'x'; 8 << 20];
             std::fs::write(r.path().join("big.bin"), &big).unwrap();
             let id = content_id(r.path(), "big.bin").await;
-            eprintln!("R7V big {id:?}");
             assert!(matches!(id, Ok(Some(_))));
         }))
     }
 
 
-    /// Review round 7: the owner hears about an old git once, when code
-    /// work is attempted, and the notice is put away once git is fixed.
+    /// Review round 7: the owner hears about git once, when code work is
+    /// attempted, in words that follow what is wrong (missing, then too
+    /// old); the notice is put away once git works, and raised again when
+    /// it breaks after that. The git checked is passed in: nothing of the
+    /// process (its PATH) changes under other tests.
     #[cfg(unix)]
     #[test]
-    fn an_old_git_is_said_once_and_cleared_once_fixed() {
+    fn the_git_notice_follows_what_is_wrong_and_comes_back_when_git_breaks_again() {
         with_home(|home| rt().block_on(async {
             let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
-            let bin = home.join("old-git");
-            std::fs::create_dir_all(&bin).unwrap();
-            std::fs::write(bin.join("git"), "#!/bin/sh\necho 'git version 2.20.1'\n").unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            unsafe { std::env::set_var("PATH", format!("{}:{old_path}", bin.display())) };
-            let ready = git_notice(&store).await;
-            unsafe { std::env::set_var("PATH", &old_path) };
-            assert!(!ready);
             let user = store.ensure_local_user_id().unwrap();
-            let n = store.get_notification("git-needed", &user).unwrap().expect("one notice");
-            assert!(n.title.starts_with("Update git") && n.answered_at.is_none(), "{n:?}");
-            assert!(git_notice(&store).await, "git is fixed");
-            let n = store.get_notification("git-needed", &user).unwrap().unwrap();
-            assert!(n.answered_at.is_some(), "put away once fixed");
+            let notice = || store.get_notification("git-needed", &user).unwrap();
+            let old = home.join("old-git");
+            std::fs::write(&old, "#!/bin/sh\necho 'git version 2.20.1'\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let missing = home.join("no-such-git");
+
+            assert!(!git_notice(&store, &missing).await);
+            assert!(notice().unwrap().title.starts_with("Install git"));
+            assert!(!git_notice(&store, &old).await);
+            let n = notice().unwrap();
+            assert!(n.title.starts_with("Update git") && n.body.as_deref().is_some_and(|b| b.contains("2.20.1")), "{n:?}");
+            assert!(git_notice(&store, Path::new("git")).await, "git works");
+            assert!(notice().unwrap().archived_at.is_some(), "put away once git works");
+            assert!(!git_notice(&store, &old).await);
+            let n = notice().unwrap();
+            assert!(n.archived_at.is_none() && n.read_at.is_none(), "raised again when git breaks: {n:?}");
         }))
     }
 
