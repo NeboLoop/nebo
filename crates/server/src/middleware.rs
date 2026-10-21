@@ -161,7 +161,7 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     // runs with an opaque origin and cannot reach the API or storage.
     let is_served_file = request.uri().path().starts_with("/files/")
         || request.uri().path().starts_with("/api/v1/files/");
-    let is_app_route = is_app_route(request.uri().path());
+    let app_route = app_route_rest(request.uri().path());
     let mut response = next.run(request).await;
 
     let is_html = response
@@ -180,7 +180,12 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| ["text/html", "image/svg+xml", "application/xhtml+xml", "text/xml", "application/xml"].iter().any(|t| v.starts_with(t)));
 
-    let csp = if is_app_route {
+    let csp = if app_route.is_some_and(|rest| rest.starts_with("files/")) {
+        // An owner's file an app page reads (`nebo.files`): a picture or a
+        // film it shows. Opened as a page (an HTML or SVG file), it runs in
+        // a sandbox, an origin of its own: never Nebo's, never the app's.
+        "sandbox; default-src 'none'; frame-ancestors 'none'"
+    } else if app_route.is_some() {
         // Whatever an app's routes answer (its page's files, its sidecar's
         // replies, its data) is the app's, never Nebo's: it goes out in the
         // app's sandbox, an origin of its own, whatever the handler or the
@@ -212,14 +217,15 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     response
 }
 
-/// One of an app's routes (`/apps/<id>/…`, as the `/api/v1` nest sees it,
-/// or whole).
-fn is_app_route(path: &str) -> bool {
+/// What follows the app's id on one of its routes (`/apps/<id>/<rest>`, as
+/// the `/api/v1` nest sees it, or whole); `None` off an app's routes.
+fn app_route_rest(path: &str) -> Option<&str> {
     path.strip_prefix("/api/v1")
         .unwrap_or(path)
         .strip_prefix("/apps/")
         .and_then(|rest| rest.split_once('/'))
-        .is_some_and(|(id, _)| !id.is_empty())
+        .filter(|(id, _)| !id.is_empty())
+        .map(|(_, rest)| rest)
 }
 
 /// Who may reach this server and how each caller proves itself, fixed when
@@ -787,6 +793,7 @@ mod boundary_tests {
             .route("/api/v1/plugins/{slug}/proxy/{*rest}", axum::routing::get(echo))
             .route("/api/v1/plugins/{slug}/toggle", axum::routing::post(echo))
             .route("/api/v1/apps/{id}/storage", axum::routing::get(echo))
+            .route("/api/v1/apps/{id}/files/{*path}", axum::routing::get(echo))
             .route("/apps/{id}/ui/{*path}", axum::routing::get(echo))
             .route("/agent/mcp", axum::routing::post(echo))
             .route("/v1/models", axum::routing::get(echo))
@@ -1139,12 +1146,26 @@ mod boundary_tests {
         let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await;
         assert_eq!((code, path.as_str()), (StatusCode::OK, "/apps/a1/ui/index.html"));
         assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/storage"), LOCAL, &[HOST])).await.0, StatusCode::OK);
-        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/agents"] {
+        // Its own file route (`nebo.files`), which checks the app's grant.
+        let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/files/Media/a.mp4"), LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/apps/a1/files/Media/a.mp4"));
+        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/apps/a2/files/Media/a.mp4", "/api/v1/agents"] {
             let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{pass}{other}"), LOCAL, &[HOST])).await;
             assert_eq!(code, StatusCode::UNAUTHORIZED, "{other}");
         }
         napp::page_pass::revoke(&pass);
         assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/files/Media/a.mp4"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn an_apps_routes_are_known_nested_or_whole() {
+        assert_eq!(app_route_rest("/apps/a1/files/Media/a.mp4"), Some("files/Media/a.mp4"));
+        assert_eq!(app_route_rest("/api/v1/apps/a1/files/Media/a.mp4"), Some("files/Media/a.mp4"));
+        assert_eq!(app_route_rest("/apps/a1/storage/files"), Some("storage/files"));
+        assert_eq!(app_route_rest("/apps//files/a"), None);
+        assert_eq!(app_route_rest("/files/a"), None);
+        assert_eq!(app_route_rest("/api/v1/agents"), None);
     }
 
     #[test]
