@@ -55,6 +55,13 @@ describe('ChatPane', () => {
 		expect(rule('.chat-scroller')).toContain('var(--chat-float');
 		expect(rule('.chat-scroll-button')).toContain('var(--chat-float');
 		expect(rule('.chat-floating::before')).toContain('pointer-events-none');
-		expect(rule('.chat-floating::before')).toContain('to-base-100');
+		expect(rule('.chat-floating::before')).toContain('--color-base-100');
+		// Glass where the browser blurs, solid where it can't.
+		expect(rule('.chat-floating')).toContain('bg-base-100');
+		const start = css.indexOf('@supports ((backdrop-filter');
+		const glass = css.slice(start, css.indexOf('}\n}', start));
+		expect(start).toBeGreaterThan(-1);
+		expect(glass).toContain('backdrop-filter: blur(18px)');
+		expect(glass).toContain('var(--color-base-100) 72%, transparent');
 	});
 });

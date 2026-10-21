@@ -804,11 +804,28 @@
 	@apply relative flex min-h-0 flex-1 flex-col;
 }
 .chat-floating {
+	/* Solid where the browser can't blur behind it. */
 	@apply absolute inset-x-0 bottom-0 z-10 bg-base-100;
 }
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+	/* Glass: the messages scrolling under the composer show dimly through. */
+	.chat-floating {
+		background-color: color-mix(in oklab, var(--color-base-100) 72%, transparent);
+		-webkit-backdrop-filter: blur(18px);
+		backdrop-filter: blur(18px);
+	}
+}
+/* A soft, tall fade: the last lines above the composer stay mostly
+   visible. It never takes a click. */
 .chat-floating::before {
 	content: '';
-	@apply pointer-events-none absolute inset-x-0 bottom-full h-6 bg-gradient-to-b from-transparent to-base-100;
+	@apply pointer-events-none absolute inset-x-0 bottom-full h-14;
+	background-image: linear-gradient(
+		to bottom,
+		transparent 0%,
+		color-mix(in oklab, var(--color-base-100) 12%, transparent) 55%,
+		color-mix(in oklab, var(--color-base-100) 72%, transparent) 100%
+	);
 }
 .chat-under-float {
 	padding-bottom: calc(1.5rem + var(--chat-float, 0px));
