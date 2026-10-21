@@ -533,7 +533,7 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
     let trace = ai::RequestTrace { agent_id: b.agent_id.clone(), ..ai::RequestTrace::new("heartbeat_triage") };
     let state = state(b);
     let questions = questions(b);
-    let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state, &questions)).await {
+    let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state, &questions, Some(&mut ai::ReservedWaits::default()))).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             debug!(site = "heartbeat_triage", binding = %b.key, error = %e, "triage call failed; running");

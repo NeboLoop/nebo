@@ -2150,6 +2150,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 let _ = cx.tx.send(model_call::not_signed_in()).await;
                 return TurnExit::ProviderFailed(model_call::NOT_SIGNED_IN_TEXT.into());
             }
+            CallOutcome::BalanceReserved => {
+                let _ = cx.tx.send(model_call::balance_reserved()).await;
+                return TurnExit::ProviderFailed(ai::BALANCE_BUSY.into());
+            }
         };
         let model_call::ModelReply {
             text,
@@ -2663,6 +2667,7 @@ fn build_request(
 ) -> ChatRequest {
     ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         // The conversation and the ask door, for a provider that keeps one
         // remote chat per Nebo chat and relays its runtime's own questions
         // (the linked provider).

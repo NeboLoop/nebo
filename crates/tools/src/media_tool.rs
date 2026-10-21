@@ -146,31 +146,44 @@ impl Media {
         self
     }
 
-    /// A Janus request with the one Janus auth: the bearer and `X-Bot-ID`.
-    fn request(&self, method: reqwest::Method, path: &str) -> (reqwest::RequestBuilder, bool) {
+    /// Send a Janus request with the one Janus auth (the bearer and
+    /// `X-Bot-ID`); `finish` adds the rest. Sent once: a balance held by
+    /// running work comes back as [`Unmade::Held`] for the registry to wait
+    /// out with the call's slot given back. The bool is whether the bearer
+    /// is a sign-in.
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        finish: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    ) -> (reqwest::Result<reqwest::Response>, bool) {
         let (bearer, signed_in) = crate::janus::bearer(self.store.as_deref(), &self.bot_id);
-        let req = self
-            .client
-            .request(method, format!("{}{path}", self.base_url))
-            .bearer_auth(bearer)
-            .header("X-Bot-ID", &self.bot_id);
-        (req, signed_in)
+        let url = format!("{}{path}", self.base_url);
+        let resp = ai::http::send(
+            || {
+                finish(
+                    self.client
+                        .request(method.clone(), &url)
+                        .bearer_auth(&bearer)
+                        .header("X-Bot-ID", &self.bot_id),
+                )
+            },
+            None,
+        )
+        .await;
+        (resp, signed_in)
     }
 
     /// Images for `body` (a `/v1/images/generations` request) and the model
     /// that made them.
-    pub async fn images(&self, body: &Value) -> Result<(Vec<Image>, String), String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/images/generations");
-        let resp = req
-            .json(body)
-            .timeout(Duration::from_secs(300))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to make the image: {e}"))?;
+    pub async fn images(&self, body: &Value) -> Result<(Vec<Image>, String), Unmade> {
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, "/v1/images/generations", |req| req.json(body).timeout(Duration::from_secs(300)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to make the image: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(failure("image", status.as_u16(), &text, signed_in));
+            return Err(refused("image", resp, signed_in).await);
         }
         let parsed: Value = resp
             .json()
@@ -205,7 +218,7 @@ impl Media {
             });
         }
         if out.is_empty() {
-            return Err("NeboAI answered with no image.".to_string());
+            return Err("NeboAI answered with no image.".to_string().into());
         }
         Ok((out, model))
     }
@@ -213,18 +226,14 @@ impl Media {
     /// The audio file for `body`, posted to `path` (`/v1/audio/speech`, or
     /// `/v1/audio/generations` for music and sound): Janus answers the
     /// file's bytes and their content type. `what` names it in errors.
-    pub async fn audio(&self, path: &str, what: &str, body: &Value) -> Result<(Vec<u8>, String), String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, path);
-        let resp = req
-            .json(body)
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to make the {what}: {e}"))?;
+    pub async fn audio(&self, path: &str, what: &str, body: &Value) -> Result<(Vec<u8>, String), Unmade> {
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, path, |req| req.json(body).timeout(Duration::from_secs(600)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to make the {what}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(failure(what, status.as_u16(), &text, signed_in));
+            return Err(refused(what, resp, signed_in).await);
         }
         let content_type = resp
             .headers()
@@ -237,7 +246,7 @@ impl Media {
             .await
             .map_err(|e| format!("The {what} from NeboAI stopped part way: {e}"))?;
         if bytes.is_empty() {
-            return Err("NeboAI answered with no audio.".to_string());
+            return Err("NeboAI answered with no audio.".to_string().into());
         }
         Ok((bytes.to_vec(), content_type))
     }
@@ -245,12 +254,10 @@ impl Media {
     /// The voices speech can use (`/v1/audio/voices`): each by the id
     /// `voice` takes, with its name and description.
     pub async fn voices(&self) -> Result<Vec<Value>, String> {
-        let (req, signed_in) = self.request(reqwest::Method::GET, "/v1/audio/voices");
-        let resp = req
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI for the voices: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::GET, "/v1/audio/voices", |req| req.timeout(Duration::from_secs(30)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI for the voices: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -266,45 +273,42 @@ impl Media {
     /// Transcribes an audio or video file (`/v1/audio/transcriptions`, the
     /// transcription speed, `verbose_json` with word timings): Janus's
     /// answer, words and speakers included when the audio has them.
-    pub async fn transcribe(&self, filename: &str, bytes: Vec<u8>, language: Option<&str>) -> Result<Value, String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/audio/transcriptions");
-        let mut form = reqwest::multipart::Form::new()
-            .text("model", TRANSCRIBE_MODEL)
-            .text("response_format", "verbose_json")
-            .text("timestamp_granularities[]", "word");
-        if let Some(lang) = language {
-            form = form.text("language", lang.to_string());
-        }
-        let form = form.part("file", reqwest::multipart::Part::bytes(bytes).file_name(filename.to_string()));
-        let resp = req
-            .multipart(form)
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to transcribe {filename}: {e}"))?;
+    pub async fn transcribe(&self, filename: &str, bytes: Vec<u8>, language: Option<&str>) -> Result<Value, Unmade> {
+        // A form is sent once; a request sent again gets a fresh one.
+        let form = || {
+            let mut form = reqwest::multipart::Form::new()
+                .text("model", TRANSCRIBE_MODEL)
+                .text("response_format", "verbose_json")
+                .text("timestamp_granularities[]", "word");
+            if let Some(lang) = language {
+                form = form.text("language", lang.to_string());
+            }
+            form.part("file", reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_string()))
+        };
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, "/v1/audio/transcriptions", |req| {
+                req.multipart(form()).timeout(Duration::from_secs(600))
+            })
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to transcribe {filename}: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(failure("transcript", status.as_u16(), &text, signed_in));
+            return Err(refused("transcript", resp, signed_in).await);
         }
         resp.json()
             .await
-            .map_err(|e| format!("NeboAI's transcript could not be read: {e}"))
+            .map_err(|e| format!("NeboAI's transcript could not be read: {e}").into())
     }
 
     /// Submits a video job for `body` (a `/v1/videos` request).
-    pub async fn submit_video(&self, body: &Value) -> Result<Video, String> {
-        let (req, signed_in) = self.request(reqwest::Method::POST, "/v1/videos");
-        let resp = req
-            .json(body)
-            .timeout(Duration::from_secs(120))
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach NeboAI to make the video: {e}"))?;
+    pub async fn submit_video(&self, body: &Value) -> Result<Video, Unmade> {
+        let (resp, signed_in) = self
+            .send(reqwest::Method::POST, "/v1/videos", |req| req.json(body).timeout(Duration::from_secs(120)))
+            .await;
+        let resp = resp.map_err(|e| format!("Could not reach NeboAI to make the video: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(failure("video", status.as_u16(), &text, signed_in));
+            return Err(refused("video", resp, signed_in).await);
         }
         let parsed: Value = resp
             .json()
@@ -317,7 +321,7 @@ impl Media {
             .ok_or("NeboAI answered the video request with no job id.")?
             .to_string();
         if parsed.get("status").and_then(Value::as_str) == Some("failed") {
-            return Err(job_failed(&parsed));
+            return Err(job_failed(&parsed).into());
         }
         Ok(Video {
             id,
@@ -347,8 +351,10 @@ impl Media {
             }
             tokio::time::sleep(wait).await;
             wait = self.polling.next(wait);
-            let (req, signed_in) = self.request(reqwest::Method::GET, &format!("/v1/videos/{id}"));
-            let resp = match req.timeout(Duration::from_secs(30)).send().await {
+            let (resp, signed_in) = self
+                .send(reqwest::Method::GET, &format!("/v1/videos/{id}"), |req| req.timeout(Duration::from_secs(30)))
+                .await;
+            let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(id, error = %e, "video poll got no answer; polling again");
@@ -379,13 +385,10 @@ impl Media {
     /// The file appears only once complete.
     pub async fn download_video(&self, id: &str, path: &Path) -> Result<u64, String> {
         use tokio::io::AsyncWriteExt;
-        let (req, signed_in) =
-            self.request(reqwest::Method::GET, &format!("/v1/videos/{id}/content"));
-        let mut resp = req
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await
-            .map_err(|e| format!("Could not download the video from NeboAI: {e}"))?;
+        let (resp, signed_in) = self
+            .send(reqwest::Method::GET, &format!("/v1/videos/{id}/content"), |req| req.timeout(Duration::from_secs(600)))
+            .await;
+        let mut resp = resp.map_err(|e| format!("Could not download the video from NeboAI: {e}"))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -432,6 +435,65 @@ fn part_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// What every part of one transcript shares: what it is of.
+struct PartJob<'a> {
+    total: usize,
+    filename: &'a str,
+    language: Option<&'a str>,
+}
+
+/// One part's answer: its transcript, or a balance held by running work
+/// (nothing served for it), with its wait and the words a part that stays
+/// held fails the transcript with.
+enum PartDone {
+    Made(audio::Transcript),
+    Held { held: types::balance::Held, words: String },
+}
+
+/// Why a paid media call came back with nothing made: running work holds the
+/// owner's balance (nothing was served or charged; the registry waits it
+/// out with the call's slot given back and calls again), or anything else,
+/// in words for the model.
+#[derive(Debug)]
+pub enum Unmade {
+    Held { held: types::balance::Held, words: String },
+    Said(String),
+}
+
+impl From<String> for Unmade {
+    fn from(e: String) -> Self {
+        Self::Said(e)
+    }
+}
+
+impl From<&str> for Unmade {
+    fn from(e: &str) -> Self {
+        Self::Said(e.to_string())
+    }
+}
+
+impl std::fmt::Display for Unmade {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held { words, .. } | Self::Said(words) => f.write_str(words),
+        }
+    }
+}
+
+/// What a paid call's refusal becomes: a held balance, typed with its wait,
+/// or [`failure`]'s words.
+async fn refused(kind: &str, resp: reqwest::Response, signed_in: bool) -> Unmade {
+    let status = resp.status().as_u16();
+    let retry_after = types::balance::retry_after(resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()));
+    let text = resp.text().await.unwrap_or_default();
+    let words = failure(kind, status, &text, signed_in);
+    if ai::is_balance_reserved(status, &text) {
+        Unmade::Held { held: types::balance::Held { retry_after }, words }
+    } else {
+        Unmade::Said(words)
+    }
+}
+
 /// The sentence a Janus refusal becomes. A 429 is the plan or balance not
 /// covering the work; the owner reads it, so it says what to do. Only a
 /// category, or NeboAI's own words about the request (`seconds must be
@@ -440,6 +502,13 @@ fn part_path(path: &Path) -> PathBuf {
 /// never sees those (owner rule 2026-10-05). Its words stay in the log.
 fn failure(kind: &str, status: u16, body: &str, signed_in: bool) -> String {
     let code = janus_code(body);
+    if ai::is_balance_reserved(status, body) {
+        return format!(
+            "{} Wait a minute and try the {kind} once more; if it is still busy, tell the owner that plainly. It is \
+             never about adding funds.",
+            ai::BALANCE_BUSY
+        );
+    }
     match status {
         429 if code == "provider_rate_limit" => format!(
             "NeboAI is busy making {kind}s right now. Wait a minute and try once more; if it is still busy, tell the \
@@ -1360,7 +1429,7 @@ impl GenerateMediaTool {
 
     /// Makes the images and answers the result text and every file, each
     /// of which the chat shows as a card.
-    async fn image(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+    async fn image(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), Unmade> {
         let into = str_of(input, "into");
         let (_, ext) = image_format(into, str_of(input, "output_format"));
         let refs = references(ctx, &target.base, input)?;
@@ -1383,7 +1452,7 @@ impl GenerateMediaTool {
             .collect::<Result<Vec<_>, _>>()?;
         let (images, model) = match self.media.images(&body).await {
             Ok(made) => made,
-            Err(e) if !refs.is_empty() => return Err(without_references(e)),
+            Err(e @ Unmade::Said(_)) if !refs.is_empty() => return Err(without_references(e.to_string()).into()),
             Err(e) => return Err(e),
         };
         // The model stays in the log: a result line can reach the owner,
@@ -1443,7 +1512,7 @@ impl GenerateMediaTool {
         }
         lines.push("To look at an image, use the vision helper on its path.".to_string());
         if written.is_empty() {
-            return Err("NeboAI answered with no image.".to_string());
+            return Err("NeboAI answered with no image.".to_string().into());
         }
         Ok((lines.join("\n"), written))
     }
@@ -1451,7 +1520,7 @@ impl GenerateMediaTool {
     /// Makes speech, music or a sound effect (`kind`) and answers the
     /// result text and its file, which the chat shows as a card with a
     /// player. The file is tagged AI-generated in its own metadata.
-    async fn audio_file(&self, target: &Target, input: &Value, kind: &str) -> Result<(String, Vec<PathBuf>), String> {
+    async fn audio_file(&self, target: &Target, input: &Value, kind: &str) -> Result<(String, Vec<PathBuf>), Unmade> {
         let asked = speech_format(str_of(input, "into"), str_of(input, "output_format"));
         let (path_on_janus, what, body, named_for) = match kind {
             "speech" => {
@@ -1558,7 +1627,7 @@ impl GenerateMediaTool {
     /// `TRANSCRIPT_PARALLEL` at a time and stitched into one transcript
     /// (`parts`). Each part is an ordinary transcription request, billed as
     /// one.
-    async fn transcript(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+    async fn transcript(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), Unmade> {
         let given = str_of(input, "file").ok_or("Give `file`: the audio or video file to transcribe.")?;
         let source = readable(ctx, &target.base, given)?;
         let filename = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1643,7 +1712,7 @@ impl GenerateMediaTool {
         filename: &str,
         size: u64,
         language: Option<&str>,
-    ) -> Result<(audio::Transcript, String), String> {
+    ) -> Result<(audio::Transcript, String), Unmade> {
         let _waiting = ctx.waiting.enter();
         let why = if ai::transcribe::SUPPORTED_AUDIO_EXTENSIONS
             .contains(&source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default().as_str())
@@ -1657,7 +1726,7 @@ impl GenerateMediaTool {
             return Err(format!(
                 "{why}: its sound is pulled out (and a long recording cut into parts) by the Nebo Media plugin, which is \
                  not installed. Install Nebo Media, then transcribe {filename} again."
-            ));
+            ).into());
         };
         let work = tempfile::Builder::new()
             .prefix("nebo-transcript-")
@@ -1689,17 +1758,50 @@ impl GenerateMediaTool {
             let said = String::from_utf8_lossy(&ran.stderr);
             let said = said.trim();
             if said.contains("--preset") || said.contains("--split") {
-                return Err(format!("{why}, and the installed Nebo Media is too old to cut it into parts: update Nebo Media, then transcribe {filename} again."));
+                return Err(format!("{why}, and the installed Nebo Media is too old to cut it into parts: update Nebo Media, then transcribe {filename} again.").into());
             }
-            return Err(format!("{why}, and Nebo Media could not pull its sound out: {}", said.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect::<String>()));
+            return Err(format!("{why}, and Nebo Media could not pull its sound out: {}", said.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect::<String>()).into());
         }
         let (duration, parts) = parts::parse(&stdout)?;
         let total = parts.len();
-        let each: Vec<audio::Transcript> = futures::stream::iter(parts.clone().into_iter().enumerate())
-            .map(|(k, part)| self.transcript_part(k, total, part, filename, language))
-            .buffered(TRANSCRIPT_PARALLEL)
-            .try_collect()
-            .await?;
+        // The parts go in rounds. A part refused because running work holds
+        // the balance is sent again in the next round; every part made is
+        // kept and never sent again. Between rounds, with no part running,
+        // the call waits once (giving its slot back), from the transcript's
+        // one budget.
+        let job = &PartJob { total, filename, language };
+        let mut made: Vec<Option<audio::Transcript>> = (0..total).map(|_| None).collect();
+        let mut pending: Vec<usize> = (0..total).collect();
+        let mut waits = ai::ReservedWaits::default();
+        while !pending.is_empty() {
+            let sending: Vec<(usize, parts::Part)> = pending.iter().map(|&k| (k, parts[k].clone())).collect();
+            let round: Vec<(usize, PartDone)> = futures::stream::iter(sending)
+                .map(|(k, part)| self.transcript_part(job, k, part))
+                .buffered(TRANSCRIPT_PARALLEL)
+                .try_collect()
+                .await?;
+            let mut held: Option<(types::balance::Held, String)> = None;
+            pending.clear();
+            for (k, done) in round {
+                match done {
+                    PartDone::Made(t) => made[k] = Some(t),
+                    PartDone::Held { held: h, words } => {
+                        pending.push(k);
+                        // The longest wait any held part asked for.
+                        if held.as_ref().is_none_or(|(o, _)| h.retry_after > o.retry_after) {
+                            held = Some((h, words));
+                        }
+                    }
+                }
+            }
+            let Some((h, words)) = held else { break };
+            let Some(wait) = waits.next(h.retry_after) else { return Err(words.into()) };
+            tracing::debug!(parts = pending.len(), total, wait_ms = wait.as_millis() as u64, "balance held by running work; these parts again after the wait");
+            if !ctx.wait_out(wait).await {
+                return Err(words.into());
+            }
+        }
+        let each: Vec<audio::Transcript> = made.into_iter().flatten().collect();
         let s = parts::stitch(&parts, each, duration);
         let mut how = if total == 1 {
             format!("{why}, so Nebo Media pulled its sound out as mono speech first.")
@@ -1730,36 +1832,38 @@ impl GenerateMediaTool {
         Ok((s.transcript, how))
     }
 
-    /// Part `k` (from 0) of `total`, transcribed with its voices' own
-    /// labels; a failed request is sent once more, and a second failure
-    /// fails the part.
-    async fn transcript_part(
-        &self,
-        k: usize,
-        total: usize,
-        part: parts::Part,
-        filename: &str,
-        language: Option<&str>,
-    ) -> Result<audio::Transcript, String> {
+    /// Part `k` (from 0) of `total`, with `k`, transcribed with its voices'
+    /// own labels. A balance held by running work comes back as
+    /// [`PartDone::Held`] for the transcript to send again after its wait;
+    /// any other failure is sent once more, and a second failure fails the
+    /// part.
+    async fn transcript_part(&self, job: &PartJob<'_>, k: usize, part: parts::Part) -> Result<(usize, PartDone), String> {
+        let PartJob { total, filename, language } = job;
+        let (total, filename, language) = (*total, *filename, *language);
         let clock = |s: f64| format!("{}:{:02}", (s / 60.0).floor() as u64, (s % 60.0).floor() as u64);
+        let failed = |e: &dyn std::fmt::Display, how: &str| {
+            format!(
+                "Part {} of {total} of {filename} ({}–{}) could not be transcribed{how}: {e}. Nothing was saved; transcribe \
+                 {filename} again.",
+                k + 1,
+                clock(part.keep),
+                clock(part.end)
+            )
+        };
         let bytes = std::fs::read(&part.file).map_err(|e| format!("Could not read part {} of {total}: {e}", k + 1))?;
         let name = part.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("part-{}.m4a", k + 1));
-        let raw = match self.media.transcribe(&name, bytes.clone(), language).await {
-            Ok(raw) => raw,
-            Err(first) => {
-                tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
-                self.media.transcribe(&name, bytes, language).await.map_err(|e| {
-                    format!(
-                        "Part {} of {total} of {filename} ({}–{}) could not be transcribed, twice: {e}. Nothing was saved; \
-                         transcribe {filename} again.",
-                        k + 1,
-                        clock(part.keep),
-                        clock(part.end)
-                    )
-                })?
+        let mut tried_again = false;
+        loop {
+            match self.media.transcribe(&name, bytes.clone(), language).await {
+                Ok(raw) => return Ok((k, PartDone::Made(audio::labelled(&raw)))),
+                Err(Unmade::Held { held, words }) => return Ok((k, PartDone::Held { held, words: failed(&words, "") })),
+                Err(Unmade::Said(e)) if tried_again => return Err(failed(&e, ", twice")),
+                Err(Unmade::Said(first)) => {
+                    tracing::warn!(part = k + 1, total, error = %first, "transcript part failed; trying it once more");
+                    tried_again = true;
+                }
             }
-        };
-        Ok(audio::labelled(&raw))
+        }
     }
 
     /// Makes the video and answers the result text and its file, which the
@@ -1769,7 +1873,7 @@ impl GenerateMediaTool {
     /// full wait (10 minutes, a swap 30) with no event at all, and a helper
     /// ended for silence at its own 10-minute bound was ended just as its
     /// clip landed, so the director made it again (audit 2026-10-07).
-    async fn video(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), String> {
+    async fn video(&self, ctx: &ToolContext, target: &Target, input: &Value) -> Result<(String, Vec<PathBuf>), Unmade> {
         let _waiting = ctx.waiting.enter();
         let replace = str_of(input, "mode") == Some("replace");
         // A swap with no prompt is named for its cast member.
@@ -1801,7 +1905,7 @@ impl GenerateMediaTool {
                             .submit_video(&swap_body(input, &video, &references, &attestation))
                             .await
                     }
-                    Err(e) => Err(e),
+                    Err(e) => Err(e.into()),
                 };
                 match submitted {
                     Ok(job) => {
@@ -1816,7 +1920,7 @@ impl GenerateMediaTool {
             }
             (None, None) => {
                 if str_of(input, "prompt").is_none() {
-                    return Err("Give a `prompt` for the video.".to_string());
+                    return Err("Give a `prompt` for the video.".to_string().into());
                 }
                 let frame = match str_of(input, "image") {
                     Some(img) => Some(first_frame(ctx, &target.base, img)?),
@@ -1832,7 +1936,7 @@ impl GenerateMediaTool {
                 }
                 match self.media.submit_video(&body).await {
                     Ok(job) => job,
-                    Err(e) if !refs.is_empty() => return Err(without_references(e)),
+                    Err(e @ Unmade::Said(_)) if !refs.is_empty() => return Err(without_references(e.to_string()).into()),
                     Err(e) => return Err(e),
                 }
             }
@@ -2324,7 +2428,7 @@ impl DynTool for GenerateMediaTool {
                         Err(e) => ToolResult::error(e),
                     };
                 }
-                _ => Err(unknown_kind()),
+                _ => Err(unknown_kind().into()),
             };
             match made {
                 // Every file is its own card: the first on `image_url`,
@@ -2332,7 +2436,11 @@ impl DynTool for GenerateMediaTool {
                 Ok((text, files)) => files.iter().fold(ToolResult::ok(text), |result, file| {
                     result.with_image_url(file.to_string_lossy())
                 }),
-                Err(e) => ToolResult::error(e),
+                // Nothing was made or charged: the registry waits out the
+                // held balance with the call's slot given back, then calls
+                // again; past its waits these words stand.
+                Err(Unmade::Held { held, words }) => ToolResult::error(words).with_held_balance(held),
+                Err(Unmade::Said(e)) => ToolResult::error(e),
             }
         })
     }
@@ -2554,6 +2662,19 @@ mod tests {
         );
     }
 
+    /// Running work holding the balance is busy, never the plan used up.
+    #[test]
+    fn a_reserved_balance_is_busy_not_the_plan() {
+        let said = failure(
+            "image",
+            429,
+            r#"{"error":{"code":"BALANCE_RESERVED","message":"reserved","retryable":true}}"#,
+            true,
+        );
+        assert!(said.starts_with(ai::BALANCE_BUSY), "{said}");
+        assert!(!said.contains("used up") && !said.contains("upgrade"), "{said}");
+    }
+
     #[test]
     fn a_429_says_the_plan_does_not_cover_it() {
         let said = failure(
@@ -2684,7 +2805,23 @@ mod tests {
         .await;
         let media = Media::new(janus.url.clone(), "bot-1".into(), None);
         let err = media.images(&json!({"prompt": "x"})).await.unwrap_err();
-        assert!(err.contains("does not cover"), "{err}");
+        assert!(err.to_string().contains("does not cover"), "{err}");
+    }
+
+    /// A paid call refused because running work holds the balance is sent
+    /// once and comes back typed with nothing made, so the registry waits it
+    /// out with the call's slot given back; the words are the busy sentence.
+    #[tokio::test]
+    async fn an_image_refused_for_a_held_balance_comes_back_typed() {
+        let janus = mock(Box::new(|_, _| {
+            (429, "application/json", br#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#.to_vec())
+        }))
+        .await;
+        let media = Media::new(janus.url.clone(), "bot-1".into(), None);
+        match media.images(&json!({"prompt": "x"})).await {
+            Err(Unmade::Held { words, .. }) => assert!(words.starts_with(ai::BALANCE_BUSY), "{words}"),
+            other => panic!("expected the held balance, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2821,12 +2958,12 @@ mod tests {
             .video(&ctx, &target, &json!({"kind": "video", "prompt": "Image 1 waves", "references": ["mara.png"]}))
             .await
             .unwrap_err();
-        assert!(video.starts_with("Reference images aren't available on NeboAI yet."), "{video}");
+        assert!(video.to_string().starts_with("Reference images aren't available on NeboAI yet."), "{video}");
         let image = tool
             .image(&ctx, &target, &json!({"prompt": "Image 1 on a porch", "references": ["mara.png"]}))
             .await
             .unwrap_err();
-        assert!(image.starts_with("Reference images aren't available on NeboAI yet."), "{image}");
+        assert!(image.to_string().starts_with("Reference images aren't available on NeboAI yet."), "{image}");
         {
             let seen = janus.seen.lock().unwrap();
             let body: Value = serde_json::from_str(&seen[0].1).unwrap();
@@ -2836,7 +2973,7 @@ mod tests {
         }
         // Without references the same refusal is passed on as it is.
         let plain = tool.image(&ctx, &target, &json!({"prompt": "a porch"})).await.unwrap_err();
-        assert!(!plain.contains("Reference images"), "{plain}");
+        assert!(!plain.to_string().contains("Reference images"), "{plain}");
     }
 
     #[test]
@@ -3406,6 +3543,100 @@ echo "Parts: {{\"duration\": 3000.0, \"cut_in_pauses\": 2, \"cut_without_pause\"
         for seg in t["segments"].as_array().unwrap() {
             assert!(seg.as_object().unwrap().keys().all(|k| ["text", "start", "end", "speaker"].contains(&k.as_str())), "{seg}");
         }
+    }
+
+    /// Part two of three is refused because running work holds the balance,
+    /// then served: that part alone waits it out and is sent again, the parts
+    /// already made are kept (each sent once), and the whole transcript
+    /// comes back.
+    #[tokio::test]
+    async fn a_held_part_waits_alone_and_the_transcript_comes_back_whole() {
+        let held_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = held_once.clone();
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(_)) if body.contains("part two") && !held.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                (429, "application/json", br#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#.to_vec())
+            }
+            ("/v1/audio/transcriptions", Some(a)) => (200, "application/json", a.as_bytes().to_vec()),
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (tool, _) = tool_with_app(&janus, tmp.path());
+        let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&tmp.path().join("args.txt"))));
+        let video = tmp.path().join("in/podcast.mov");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"a small video").unwrap();
+        // The call holds the pool's only slot.
+        let pool = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut ctx = ToolContext::default();
+        ctx.slot = Some(crate::ToolSlot::take(pool.clone()).await);
+        let result = tool.execute_dyn(&ctx, json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.held_balance.is_none(), "the transcript came back; nothing for the registry to wait out");
+        assert!(tmp.path().join("in/podcast.transcript.json").exists());
+        let seen = janus.seen.lock().unwrap().iter().map(|(_, b, _)| b.clone()).collect::<Vec<_>>();
+        let sent = |part: &str| seen.iter().filter(|b| b.contains(part)).count();
+        assert_eq!((sent("part one"), sent("part two"), sent("part three")), (1, 2, 1), "only the held part is sent again");
+        // The wait came between rounds, with no part running: part two went
+        // again only after every other part had been answered.
+        let again = seen.iter().rposition(|b| b.contains("part two")).unwrap();
+        assert!(seen[..again].iter().any(|b| b.contains("part one")) && seen[..again].iter().any(|b| b.contains("part three")));
+        assert!(ctx.slot.as_ref().unwrap().is_held(), "the call holds its slot again");
+        assert_eq!(pool.available_permits(), 0, "taken again once: never a second slot");
+    }
+
+    /// Eight transcript calls hold every slot of the pool, and every part of
+    /// every call is refused at once because running work holds the
+    /// balance. Each call waits once between its rounds and takes its own
+    /// slot back: nothing deadlocks, and every transcript comes back.
+    #[tokio::test]
+    async fn eight_calls_held_at_once_all_come_back() {
+        let refused = Arc::new(Mutex::new(std::collections::HashMap::<&'static str, usize>::new()));
+        let counts = refused.clone();
+        let janus = mock_reading(Box::new(move |path, _, body| match (path, part_answer(body)) {
+            ("/v1/audio/transcriptions", Some(a)) => {
+                let label = ["part one", "part two", "part three"].into_iter().find(|l| body.contains(l)).unwrap();
+                let mut c = counts.lock().unwrap();
+                let n = c.entry(label).or_default();
+                *n += 1;
+                // Every call's first send of each part.
+                if *n <= 8 {
+                    (429, "application/json", br#"{"error":{"code":"BALANCE_RESERVED","message":"reserved"}}"#.to_vec())
+                } else {
+                    (200, "application/json", a.as_bytes().to_vec())
+                }
+            }
+            _ => (404, "text/plain", b"no".to_vec()),
+        }))
+        .await;
+        let pool = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut calls = Vec::new();
+        for n in 0..8 {
+            let tmp = tempfile::tempdir().unwrap();
+            let (tool, _) = tool_with_app(&janus, tmp.path());
+            let tool = tool.with_plugin_store(plugins_with_media(tmp.path(), &three_part_plugin(&tmp.path().join("args.txt"))));
+            let video = tmp.path().join(format!("in/podcast-{n}.mov"));
+            std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+            std::fs::write(&video, b"a small video").unwrap();
+            let pool = pool.clone();
+            calls.push(tokio::spawn(async move {
+                let mut ctx = ToolContext::default();
+                ctx.slot = Some(crate::ToolSlot::take(pool).await);
+                let result = tool.execute_dyn(&ctx, json!({"kind": "transcript", "file": video.to_string_lossy()})).await;
+                drop(tmp);
+                result
+            }));
+        }
+        let all = tokio::time::timeout(std::time::Duration::from_secs(60), futures::future::join_all(calls))
+            .await
+            .expect("no call is stuck taking its slot back");
+        for result in all {
+            let result = result.unwrap();
+            assert!(!result.is_error, "{}", result.content);
+        }
+        assert_eq!(pool.available_permits(), 8, "every slot is back");
+        assert!(refused.lock().unwrap().values().all(|&n| n == 16), "each part refused once per call, then served");
     }
 
     /// A part that fails twice fails the whole transcript: nothing is saved.
