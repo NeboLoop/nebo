@@ -1245,8 +1245,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             hub.broadcast("chat_error", payload);
                             run_error = Some(error);
                         }
-                        // Kept on the stored reply by the harness; nothing to show.
-                        StreamEventType::ThinkingBlock => {}
+                        // Kept on the stored reply by the harness; nothing to
+                        // show. Helpers reach the owner's screen on their own
+                        // rail (`helper_event_to_hub`), never a turn's stream.
+                        StreamEventType::ThinkingBlock
+                        | StreamEventType::SubagentStart
+                        | StreamEventType::SubagentProgress
+                        | StreamEventType::SubagentComplete => {}
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
                                 // The same `usage` event also carries the current Janus
@@ -1468,33 +1473,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::Notice => {
                             hub.broadcast("chat_notice", ws_payload!("text": &event.text,));
-                        }
-                        StreamEventType::SubagentStart => {
-                            let mut payload = ws_payload!();
-                            if let Some(ref w) = event.widgets {
-                                for (k, v) in w.as_object().into_iter().flatten() {
-                                    payload[k] = v.clone();
-                                }
-                            }
-                            hub.broadcast("subagent_start", payload);
-                        }
-                        StreamEventType::SubagentProgress => {
-                            let mut payload = ws_payload!();
-                            if let Some(ref w) = event.widgets {
-                                for (k, v) in w.as_object().into_iter().flatten() {
-                                    payload[k] = v.clone();
-                                }
-                            }
-                            hub.broadcast("subagent_progress", payload);
-                        }
-                        StreamEventType::SubagentComplete => {
-                            let mut payload = ws_payload!();
-                            if let Some(ref w) = event.widgets {
-                                for (k, v) in w.as_object().into_iter().flatten() {
-                                    payload[k] = v.clone();
-                                }
-                            }
-                            hub.broadcast("subagent_complete", payload);
                         }
                         StreamEventType::TextVerdict => {
                             // The segment's text reaches the clients before
