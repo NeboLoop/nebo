@@ -116,6 +116,9 @@ pub struct ExtensionBridge {
     opened_tab_ids: Arc<Mutex<HashMap<String, HashSet<i64>>>>,
 }
 
+/// How long a command waits for room on one browser connection's queue.
+const COMMAND_SEND_WAIT: Duration = Duration::from_secs(2);
+
 /// How long stop waits for the extension to hand over what it still holds
 /// (a half-typed field, the last after-state).
 const TEACH_FLUSH_WAIT: Duration = Duration::from_secs(3);
@@ -351,8 +354,8 @@ impl ExtensionBridge {
             }
         };
 
-        if let (true, Ok(value), Some(key)) = (tool == "new_tab", &result, &tab_key) {
-            self.note_opened(key, value).await;
+        if let (true, Ok(value), Some(sid), Some(key)) = (tool == "new_tab", &result, session_id, &tab_key) {
+            self.note_opened(sid, key, value).await;
         }
 
         // Populate read_page cache on success (session-scoped)
@@ -480,8 +483,8 @@ impl ExtensionBridge {
                     })
                     .collect::<Vec<Result<serde_json::Value, String>>>();
                 for (action, result) in actions.iter().zip(&results) {
-                    if let (true, Ok(value), Some(key)) = (action.tool == "new_tab", result, &tab_key) {
-                        self.note_opened(key, value).await;
+                    if let (true, Ok(value), Some(sid), Some(key)) = (action.tool == "new_tab", result, session_id, &tab_key) {
+                        self.note_opened(sid, key, value).await;
                     }
                 }
 
@@ -548,9 +551,17 @@ impl ExtensionBridge {
     }
 
     /// Keep the id of a tab `new_tab` opened, under the run's key.
-    async fn note_opened(&self, key: &str, result: &serde_json::Value) {
-        if let Some(id) = result.get("tabId").and_then(|v| v.as_i64()) {
-            self.opened_tab_ids.lock().await.entry(key.to_string()).or_default().insert(id);
+    /// Only while `key` is still the session's run: a result that comes in
+    /// after the run ended or handed its tab to the owner registers nothing.
+    /// The check and the insert are under one lock, so `end_session`'s drop
+    /// of the run's ids always comes after.
+    async fn note_opened(&self, session_id: &str, key: &str, result: &serde_json::Value) {
+        let Some(id) = result.get("tabId").and_then(|v| v.as_i64()) else {
+            return;
+        };
+        let mut opened = self.opened_tab_ids.lock().await;
+        if self.tabs.current(session_id).await.as_deref() == Some(key) {
+            opened.entry(key.to_string()).or_default().insert(id);
         }
     }
 
@@ -666,9 +677,14 @@ impl ExtensionBridge {
         Some(result)
     }
 
+    /// Send `request` to every browser. A connection whose queue stays full
+    /// (a stuck relay) is skipped after [`COMMAND_SEND_WAIT`], so a run's
+    /// end, which closes its tabs through here, never waits on it for good.
     async fn broadcast(&self, request: ToolRequest) {
-        for conn in self.connections.lock().await.values() {
-            let _ = conn.tx.send(request.clone()).await;
+        for (id, conn) in self.connections.lock().await.iter() {
+            if tokio::time::timeout(COMMAND_SEND_WAIT, conn.tx.send(request.clone())).await.is_err() {
+                warn!(conn_id = id, command = %request.tool, "browser connection not taking commands; skipped");
+            }
         }
     }
 }
@@ -984,5 +1000,49 @@ mod close_tests {
         bridge.disconnect(conn).await;
         let (_conn, _rx) = bridge.connect("chrome".into()).await;
         assert!(refused(close(serde_json::json!({"tabId": 45}), "s4").await));
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+
+    /// A browser connection that stops reading never holds up a run's end:
+    /// the close is skipped on it after a short wait.
+    #[tokio::test]
+    async fn a_stuck_connection_never_holds_up_a_runs_end() {
+        let bridge = ExtensionBridge::new(None);
+        let (conn, mut rx) = bridge.connect("chrome".into()).await;
+        let b = bridge.clone();
+        let open = tokio::spawn(async move { b.execute("navigate", &serde_json::json!({"url": "https://a.test"}), Some("s1")).await });
+        let req = rx.recv().await.unwrap();
+        bridge.deliver_result(conn, req.id, Ok(serde_json::json!({}))).await;
+        open.await.unwrap().unwrap();
+        // The relay stops reading and its queue fills.
+        for _ in 0..64 {
+            bridge.connections.lock().await[&conn].tx.try_send(session_command("noop", "x")).unwrap();
+        }
+        let ended = tokio::time::timeout(Duration::from_secs(30), bridge.end_session("s1", false)).await;
+        assert_eq!(ended, Ok(true), "the run's end went on without the stuck browser");
+        drop(rx);
+    }
+
+    /// A new_tab whose result comes in after the run handed its tab to the
+    /// owner (or ended) registers nothing under that run's key.
+    #[tokio::test]
+    async fn a_late_new_tab_result_never_registers_under_a_handed_off_key() {
+        let bridge = ExtensionBridge::new(None);
+        let (conn, mut rx) = bridge.connect("chrome".into()).await;
+        let b = bridge.clone();
+        let open = tokio::spawn(async move { b.execute("new_tab", &serde_json::json!({"url": "https://a.test"}), Some("s1")).await });
+        let req = rx.recv().await.unwrap();
+        let key = req.session_id.clone().unwrap();
+        assert!(bridge.end_session("s1", true).await);
+        bridge.deliver_result(conn, req.id, Ok(serde_json::json!({"tabId": 42}))).await;
+        open.await.unwrap().unwrap();
+        assert!(!bridge.opened_tab_ids.lock().await.contains_key(&key), "nothing under the handed-off key");
+        // The session's next run may not close it by id either.
+        let refused = bridge.execute("close_tab", &serde_json::json!({"tabId": 42}), Some("s1")).await;
+        assert!(refused.is_err_and(|e| e.contains("never closes the owner's tabs")));
     }
 }
