@@ -199,11 +199,8 @@ pub struct JanusRequest {
 /// page to be shown (`device:motion`, `window.isolated`); a row the loader
 /// does not hold is read from the window stored with it.
 async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, napp::manifest::AppWindow)> {
-    let agents = state.agent_loader.list().await;
-    let fs_match = agents.iter().find(|a| {
-        a.id.as_deref() == Some(agent_id)
-            || a.agent_def.name.eq_ignore_ascii_case(agent_id)
-    });
+    let fs_match = loaded_app(state, agent_id).await;
+    let fs_match = fs_match.as_ref();
     let window = fs_match.and_then(|a| a.app_window());
     if let Some(p) = fs_match.and_then(|a| a.app_ui_path.clone()) {
         let window = window.unwrap_or_else(|| super::agents::stored_app_window(None));
@@ -217,6 +214,17 @@ async fn resolve_app_ui(state: &AppState, agent_id: &str) -> Option<(PathBuf, na
         }
     }
     None
+}
+
+/// The app `agent_id` (its id, or its name) as the loader holds its files:
+/// its `ui/`, its window and its manifest's permissions.
+async fn loaded_app(state: &AppState, agent_id: &str) -> Option<napp::LoadedAgent> {
+    state
+        .agent_loader
+        .list()
+        .await
+        .into_iter()
+        .find(|a| a.id.as_deref() == Some(agent_id) || a.agent_def.name.eq_ignore_ascii_case(agent_id))
 }
 
 /// The one folder an app's page is served from: its `ui/`. A recorded path
@@ -1902,6 +1910,76 @@ fn work_segment(name: &str, needs_ext: bool) -> Option<String> {
     ok.then(|| name.to_string())
 }
 
+/// GET/HEAD /apps/{agent_id}/files/{*path} — `nebo.files.url`: a file of the
+/// owner's workspace (`~/NeboAI`) inside a folder the app's manifest grants
+/// it (`filesystem:read:<folder>`), so a page shows the owner's pictures and
+/// plays his films. It is the app's own route, so its page reaches it
+/// wherever it is open (the desktop window, the browser, the tunnel, an
+/// app-view pass), by the rule every app route admits its caller
+/// (`validate_app_token`). Read only. A path no grant covers is 403 naming
+/// the permission; a file that is missing, hidden, or outside the granted
+/// folder once `..` and symlinks are resolved is 404, the same answer, so
+/// nothing learns what else is on the disk. The file streams with the files
+/// route's own range and type rules (`files::stream_file`).
+pub async fn serve_app_file(
+    State(state): State<AppState>,
+    Path((agent_id, path)): Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    if let Err(r) = validate_app_token(&state, &agent_id, request.headers()).await {
+        return r;
+    }
+    let permissions = loaded_app(&state, &agent_id).await.map(|a| a.app_permissions).unwrap_or_default();
+    let grants: Vec<&str> = permissions.iter().filter_map(|p| napp::manifest::file_read_folder(p)).collect();
+    let Some(grant) = covering_grant(&grants, &path) else {
+        let refusal = format!(
+            "{path} is in no folder this app may read: its manifest grants a folder with {}<folder>",
+            napp::manifest::FILESYSTEM_READ
+        );
+        return (StatusCode::FORBIDDEN, refusal).into_response();
+    };
+    let Ok(workspace) = config::workspace_dir() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match granted_file(&workspace, grant, &path).await {
+        Some(file) => super::files::stream_file(&file, super::files::content_type_for(&file), request).await,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The grant whose folder holds `rel` (a path inside the workspace), part by
+/// part: `Media/Projects` holds `Media/Projects/a/b.mp4`, never
+/// `Media/ProjectsOld/b.mp4`. A path with an empty, `.` or `..` part, or a
+/// `\` or NUL anywhere, is covered by nothing.
+fn covering_grant<'a>(grants: &[&'a str], rel: &str) -> Option<&'a str> {
+    if rel.contains(['\\', '\0']) {
+        return None;
+    }
+    let parts: Vec<&str> = rel.split('/').collect();
+    if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") {
+        return None;
+    }
+    grants.iter().copied().find(|grant| {
+        let folder: Vec<&str> = grant.split('/').collect();
+        parts.len() > folder.len() && parts[..folder.len()] == folder[..]
+    })
+}
+
+/// The file `rel` names under `grant`'s folder of `workspace`, resolved:
+/// `None` when it is missing or a folder, when a part below the granted
+/// folder is hidden (`.git`, `.env`: a hidden folder is served only when the
+/// grant names it), or when a symlink takes it, or the granted folder
+/// itself, out of the folder or the workspace (`files::within_files_root`).
+async fn granted_file(workspace: &StdPath, grant: &str, rel: &str) -> Option<PathBuf> {
+    let below = rel.strip_prefix(grant)?.strip_prefix('/')?;
+    if below.split('/').any(|p| p.starts_with('.')) {
+        return None;
+    }
+    let (folder, _) = super::files::within_files_root(workspace, &workspace.join(grant)).await?;
+    let (file, _) = super::files::within_files_root(&folder, &folder.join(below)).await?;
+    fs::metadata(&file).await.ok()?.is_file().then_some(file)
+}
+
 /// POST /apps/{agent_id}/share — `nebo.share`: an app's page hands the owner
 /// a file to share. The file goes into Work (`<files>/<app name>/<name>`,
 /// replaced when shared again), and the owner's open chat shows the one
@@ -2578,6 +2656,96 @@ mod developer_mode_tests {
         assert!(prompt.contains("Uncaught TypeError") && prompt.contains("/track.json"), "{prompt}");
         assert!(!prompt.contains("booted"), "only errors are sent");
         assert_eq!(devlog_send_prompt("Kart Racer", &[]), None);
+    }
+}
+
+#[cfg(test)]
+mod app_file_tests {
+    use super::*;
+
+    /// The owner's workspace: a granted folder with a film, its hidden
+    /// proxies and a folder, a sibling folder whose name starts the same, a
+    /// secret beside the folder, and one outside the workspace.
+    fn workspace() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("NeboAI");
+        let project = ws.join("Media/Projects/reel");
+        std::fs::create_dir_all(project.join(".proxies")).unwrap();
+        std::fs::create_dir_all(ws.join("Media/ProjectsOld")).unwrap();
+        std::fs::write(project.join("render.mp4"), b"film").unwrap();
+        std::fs::write(project.join(".proxies/render-proxy.mp4"), b"proxy").unwrap();
+        std::fs::write(project.join(".env"), b"KEY=1").unwrap();
+        std::fs::write(ws.join("Media/ProjectsOld/old.mp4"), b"old").unwrap();
+        std::fs::write(ws.join("Media/secret.txt"), b"secret").unwrap();
+        std::fs::write(tmp.path().join("outside.txt"), b"outside").unwrap();
+        (tmp, ws)
+    }
+
+    #[test]
+    fn a_grant_covers_its_folder_part_by_part() {
+        let grants = ["Media/Projects", "Docs"];
+        assert_eq!(covering_grant(&grants, "Media/Projects/reel/render.mp4"), Some("Media/Projects"));
+        assert_eq!(covering_grant(&grants, "Docs/a.pdf"), Some("Docs"));
+        for refused in [
+            // An ungranted folder, and one whose name only starts the same.
+            "Media/secret.txt",
+            "Media/ProjectsOld/old.mp4",
+            // The folder itself is not a file.
+            "Media/Projects",
+            // Climbing, absolute, and odd parts.
+            "Media/Projects/../secret.txt",
+            "Media/Projects/reel/../../../outside.txt",
+            "/Media/Projects/reel/render.mp4",
+            "Media/Projects//reel/render.mp4",
+            "Media/Projects/./reel/render.mp4",
+            "Media/Projects/reel\\..\\..\\secret.txt",
+            "Media/Projects/reel/render.mp4\0",
+        ] {
+            assert_eq!(covering_grant(&grants, refused), None, "{refused}");
+        }
+        assert_eq!(covering_grant(&[], "Media/Projects/reel/render.mp4"), None);
+    }
+
+    #[tokio::test]
+    async fn only_a_visible_file_inside_the_granted_folder_is_served() {
+        let (_tmp, ws) = workspace();
+        let got = granted_file(&ws, "Media/Projects", "Media/Projects/reel/render.mp4").await.unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"film");
+        for refused in [
+            // Hidden below the grant: proxies, secrets.
+            "Media/Projects/reel/.proxies/render-proxy.mp4",
+            "Media/Projects/reel/.env",
+            // A folder, and a file that isn't there.
+            "Media/Projects/reel",
+            "Media/Projects/reel/gone.mp4",
+        ] {
+            assert_eq!(granted_file(&ws, "Media/Projects", refused).await, None, "{refused}");
+        }
+        // A hidden folder the grant names itself is served.
+        let proxies = "Media/Projects/reel/.proxies";
+        let got = granted_file(&ws, proxies, "Media/Projects/reel/.proxies/render-proxy.mp4").await.unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"proxy");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_never_leads_out_of_the_granted_folder() {
+        let (tmp, ws) = workspace();
+        let project = ws.join("Media/Projects/reel");
+        // A file and a folder that point out of the granted folder.
+        std::os::unix::fs::symlink(ws.join("Media/secret.txt"), project.join("secret.mp4")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), project.join("up")).unwrap();
+        // A link inside the folder to a file inside it is fine.
+        std::os::unix::fs::symlink(project.join("render.mp4"), project.join("latest.mp4")).unwrap();
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/secret.mp4").await, None);
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/up/outside.txt").await, None);
+        assert_eq!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/up/outside.txt").await, None);
+        assert!(granted_file(&ws, "Media/Projects", "Media/Projects/reel/latest.mp4").await.is_some());
+        // The granted folder itself a link out of the workspace: nothing.
+        std::fs::create_dir_all(tmp.path().join("elsewhere")).unwrap();
+        std::fs::write(tmp.path().join("elsewhere/a.mp4"), b"a").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("elsewhere"), ws.join("Linked")).unwrap();
+        assert_eq!(granted_file(&ws, "Linked", "Linked/a.mp4").await, None);
     }
 }
 

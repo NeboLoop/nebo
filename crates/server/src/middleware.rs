@@ -161,6 +161,7 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     // runs with an opaque origin and cannot reach the API or storage.
     let is_served_file = request.uri().path().starts_with("/files/")
         || request.uri().path().starts_with("/api/v1/files/");
+    let is_app_file = is_app_file(request.uri().path());
     let mut response = next.run(request).await;
 
     let is_html = response
@@ -169,7 +170,12 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
 
-    let csp = if is_served_file {
+    let csp = if is_app_file {
+        // An owner's file an app page reads (`nebo.files`): a picture or a
+        // film it shows. Opened as a page (an HTML or SVG file), it runs in
+        // a sandbox, an origin of its own: never Nebo's, never the app's.
+        "sandbox; default-src 'none'; frame-ancestors 'none'"
+    } else if is_served_file {
         "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri:"
     } else if is_html {
         // 'self' so app UIs served over HTTP (browser popups, cloud bots via the
@@ -190,6 +196,16 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     );
     headers.insert("pragma", "no-cache".parse().unwrap());
     response
+}
+
+/// An app's file route (`/apps/<id>/files/…`, as the `/api/v1` nest sees
+/// it, or whole).
+fn is_app_file(path: &str) -> bool {
+    path.strip_prefix("/api/v1")
+        .unwrap_or(path)
+        .strip_prefix("/apps/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(id, rest)| !id.is_empty() && rest.starts_with("files/"))
 }
 
 /// Who may reach this server and how each caller proves itself, fixed when
@@ -694,6 +710,7 @@ mod boundary_tests {
             .route("/api/v1/plugins/{slug}/proxy/{*rest}", axum::routing::get(echo))
             .route("/api/v1/plugins/{slug}/toggle", axum::routing::post(echo))
             .route("/api/v1/apps/{id}/storage", axum::routing::get(echo))
+            .route("/api/v1/apps/{id}/files/{*path}", axum::routing::get(echo))
             .route("/apps/{id}/ui/{*path}", axum::routing::get(echo))
             .route("/agent/mcp", axum::routing::post(echo))
             .route("/v1/models", axum::routing::get(echo))
@@ -1007,12 +1024,25 @@ mod boundary_tests {
         let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await;
         assert_eq!((code, path.as_str()), (StatusCode::OK, "/apps/a1/ui/index.html"));
         assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/storage"), LOCAL, &[HOST])).await.0, StatusCode::OK);
-        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/agents"] {
+        // Its own file route (`nebo.files`), which checks the app's grant.
+        let (code, path) = send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/files/Media/a.mp4"), LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/apps/a1/files/Media/a.mp4"));
+        for other in ["/apps/a2/ui/index.html", "/api/v1/apps/a2/storage", "/api/v1/apps/a2/files/Media/a.mp4", "/api/v1/agents"] {
             let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{pass}{other}"), LOCAL, &[HOST])).await;
             assert_eq!(code, StatusCode::UNAUTHORIZED, "{other}");
         }
         napp::app_view::revoke(&pass);
         assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/apps/a1/ui/index.html"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(send(loopback_bind(), request("GET", &format!("/k/{pass}/api/v1/apps/a1/files/Media/a.mp4"), LOCAL, &[HOST])).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn an_apps_file_route_is_known_nested_or_whole() {
+        assert!(is_app_file("/apps/a1/files/Media/a.mp4"));
+        assert!(is_app_file("/api/v1/apps/a1/files/Media/a.mp4"));
+        assert!(!is_app_file("/apps/a1/storage/files"));
+        assert!(!is_app_file("/apps//files/a"));
+        assert!(!is_app_file("/files/a"));
     }
 
     #[test]

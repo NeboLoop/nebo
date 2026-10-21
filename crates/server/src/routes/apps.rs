@@ -74,6 +74,12 @@ pub fn routes(max_upload_bytes: usize) -> Router<AppState> {
             "/apps/{agent_id}/share",
             routing::post(apps::share_file).layer(super::files::upload_limit(max_upload_bytes)),
         )
+        // nebo.files: a file in a workspace folder the app's manifest
+        // grants (`filesystem:read:<folder>`), read only, with byte ranges.
+        .route(
+            "/apps/{agent_id}/files/{*path}",
+            routing::get(apps::serve_app_file),
+        )
         .route(
             "/apps/{agent_id}/identity",
             routing::get(apps::get_identity),

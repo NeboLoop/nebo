@@ -635,6 +635,22 @@ fn neboapp_bridge(agent_id: &str) -> String {
 
 // ────────────────────────────────────────────────────────────────────────
 
+/// The `Range` a `neboapp://` request sends on to the server: an open one
+/// (`bytes=N-`, what a media element asks first) cut to one
+/// [`NEBOAPP_RANGE_SLICE`]; the player asks again from where it ends.
+/// Anything else goes as it came.
+fn proxied_range(range: &str) -> String {
+    let open = range
+        .trim()
+        .strip_prefix("bytes=")
+        .and_then(|spec| spec.strip_suffix('-'))
+        .and_then(|start| start.trim().parse::<u64>().ok());
+    match open {
+        Some(start) => format!("bytes={start}-{}", start + NEBOAPP_RANGE_SLICE - 1),
+        None => range.to_string(),
+    }
+}
+
 /// Answer one `neboapp://` request: an app file from its `ui/` (a Range
 /// reads only its bytes), or the request proxied to the local server.
 /// Runs on its own thread (see the protocol registration): a big asset or
@@ -793,6 +809,14 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
         let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
             req.set("X-Nebo-Connection-Id", connection)
         } else { req };
+        // A media element's byte range goes on to the server (an app's own
+        // files, `nebo.files.url`), an open one cut to one slice the way an
+        // app file from `ui/` is: WebKit plays a video only from ranges, and
+        // the answer is held whole here before it goes back.
+        let req = match request.headers().get("range").and_then(|v| v.to_str().ok()) {
+            Some(range) => req.set("Range", &proxied_range(range)),
+            None => req,
+        };
         // The desktop shell is the owner's own client: its proxy
         // proves itself to the local API with the install key.
         let req = match config::read_install_key() {
@@ -833,14 +857,20 @@ fn neboapp_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> 
                     .header("Content-Type")
                     .unwrap_or("application/octet-stream")
                     .to_string();
+                let ranges: Vec<(&str, String)> = ["Content-Range", "Accept-Ranges"]
+                    .into_iter()
+                    .filter_map(|name| resp.header(name).map(|v| (name, v.to_string())))
+                    .collect();
                 let mut body = Vec::new();
                 let _ = resp.into_reader().read_to_end(&mut body);
-                return http::Response::builder()
+                let mut builder = http::Response::builder()
                     .status(status)
                     .header("Content-Type", ct)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(body)
-                    .unwrap();
+                    .header("Access-Control-Allow-Origin", "*");
+                for (name, value) in ranges {
+                    builder = builder.header(name, value);
+                }
+                return builder.body(body).unwrap();
             }
         }
     }
@@ -1437,6 +1467,22 @@ fn toggle_prompt_window(app: &tauri::AppHandle) {
             Err(e) => {
                 tracing::warn!("Failed to create prompt window: {e}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod neboapp_proxy_tests {
+    use super::*;
+
+    /// An open range goes on as one slice; a closed one, a suffix and
+    /// anything odd go as they came.
+    #[test]
+    fn an_open_range_goes_on_as_one_slice() {
+        assert_eq!(proxied_range("bytes=0-"), format!("bytes=0-{}", NEBOAPP_RANGE_SLICE - 1));
+        assert_eq!(proxied_range("bytes=100-"), format!("bytes=100-{}", 100 + NEBOAPP_RANGE_SLICE - 1));
+        for same in ["bytes=0-1", "bytes=10-99", "bytes=-500", "bytes=0-1,5-9", "items=0-"] {
+            assert_eq!(proxied_range(same), same);
         }
     }
 }
