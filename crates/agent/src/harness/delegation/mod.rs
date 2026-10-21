@@ -812,7 +812,7 @@ impl Helpers {
         let parent_seat = &turn.seat;
 
         let mut isolation = match spec.isolation {
-            Some(Isolation::Worktree) => Some(isolate(parent_seat, grant, &task_id, None).await?),
+            Some(Isolation::Worktree) => Some(isolate(&self.store, parent_seat, grant, &task_id, None).await?),
             None => None,
         };
         let mut brief = spec.prompt.clone();
@@ -1222,7 +1222,7 @@ impl Helpers {
                 },
                 None => {
                     let project = row_inputs(&self.store, &row).and_then(|v| v.get("project")?.as_str().map(std::path::PathBuf::from));
-                    Held { iso: isolate(&turn.seat, grant, task_id, project).await?, unfinished: None }
+                    Held { iso: isolate(&self.store, &turn.seat, grant, task_id, project).await?, unfinished: None }
                 }
             };
             // A landing or discard that began meanwhile owns the copy: it
@@ -1881,6 +1881,7 @@ impl Helpers {
                          if it asked one) and land them once it has finished, or discard them."
                     ));
                 }
+                crate::worktree::git_notice(&self.store).await;
                 let mut iso = crate::worktree::reattach(held.iso).await.map_err(|e| format!("Helper {task_id}'s changes can't be landed: {e}"))?;
                 let message = landing_message(&description);
                 let (_, outcome) = crate::worktree::land_one(&mut iso, &message, retest, &landing).await;
@@ -2247,11 +2248,14 @@ fn landing_message(description: &str) -> String {
 /// the one it was started on), or else of the parent's. A fenced parent may
 /// only isolate a project inside its fence: the copy is merged back there.
 async fn isolate(
+    store: &db::Store,
     parent: &SeatRequest,
     grant: Option<&Grant>,
     task_id: &str,
     project: Option<std::path::PathBuf>,
 ) -> Result<crate::worktree::Isolation, String> {
+    // Code work begins: the owner hears once if git can't do it.
+    crate::worktree::git_notice(store).await;
     let workspace = match (project, parent.cwd.as_deref()) {
         (Some(project), _) => project,
         (None, Some(cwd)) => std::path::PathBuf::from(cwd),

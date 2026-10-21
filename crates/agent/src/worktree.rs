@@ -285,20 +285,88 @@ pub(crate) async fn git_io(cwd: &Path, args: &[&str], input: Option<&[u8]>) -> R
 /// rely on.
 pub const MIN_GIT: (u32, u32) = (2, 31);
 
-/// Whether this computer's git is [`MIN_GIT`] or newer: `Err` says what to
-/// do. Checked once at startup.
-pub async fn check_git() -> Result<(), String> {
-    let said = git(&std::env::temp_dir(), &["--version"]).await.map_err(|e| format!("Nebo needs git to work on code, and it could not run: {e}"))?;
-    let version = said.split_whitespace().nth(2).unwrap_or_default();
+/// What is wrong with this computer's git for working on code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitProblem {
+    /// No git (on a Mac: no command-line tools, found without asking macOS
+    /// to install them).
+    Missing,
+    /// Older than [`MIN_GIT`]: the version it has.
+    TooOld(String),
+}
+
+impl GitProblem {
+    /// What the owner reads: what to do, in plain words.
+    pub fn words(&self) -> (&'static str, String) {
+        match self {
+            GitProblem::Missing => (
+                "Install git to let your employees work on code",
+                "Your employees use git to work on code in copies of their own and land it in your project, and this \
+                 computer doesn't have it. Install git (on a Mac: the command-line tools), then ask again."
+                    .into(),
+            ),
+            GitProblem::TooOld(have) => (
+                "Update git to let your employees work on code",
+                format!(
+                    "Your employees need git {}.{} or newer to work on code in copies of their own; this computer has git \
+                     {have}. Update git, then ask again.",
+                    MIN_GIT.0, MIN_GIT.1
+                ),
+            ),
+        }
+    }
+}
+
+/// Whether the `git` on PATH is the macOS stub that asks to install the
+/// command-line tools when they are missing.
+fn mac_git_stub() -> bool {
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).map(|d| d.join("git")).find(|g| g.is_file()).is_some_and(|g| g == Path::new("/usr/bin/git"))
+}
+
+/// This computer's git, checked for working on code: `None` when it is
+/// [`MIN_GIT`] or newer. On a Mac the command-line tools are looked for
+/// first (`xcode-select -p`), so the check never pops up macOS's install
+/// dialog.
+pub async fn git_problem() -> Option<GitProblem> {
+    if cfg!(target_os = "macos") && mac_git_stub() {
+        let tools = command::new::<Command>("xcode-select", command::Console::Hidden)
+            .arg("-p")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        if !tools.is_ok_and(|o| o.status.success()) {
+            return Some(GitProblem::Missing);
+        }
+    }
+    let Ok(said) = git(&std::env::temp_dir(), &["--version"]).await else { return Some(GitProblem::Missing) };
+    let version = said.split_whitespace().nth(2).unwrap_or_default().to_string();
     let mut parts = version.split('.').map(|n| n.parse::<u32>().unwrap_or(0));
     let have = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-    if have < MIN_GIT {
-        return Err(format!(
-            "Nebo needs git {}.{} or newer to work on code in its own copies; this computer has git {version}. Update git.",
-            MIN_GIT.0, MIN_GIT.1
-        ));
+    (have < MIN_GIT).then_some(GitProblem::TooOld(version))
+}
+
+/// The owner's one notice about git, when code work is attempted (an
+/// employee's own copy, a landing): said once in the Inbox while git is
+/// missing or too old, and put away once it is fixed. Whether git is ready.
+pub async fn git_notice(store: &db::Store) -> bool {
+    const ID: &str = "git-needed";
+    match git_problem().await {
+        None => {
+            tools::owner_notify::settle(store, None, ID, "Git is ready", None);
+            true
+        }
+        Some(problem) => {
+            warn!(?problem, "git is missing or too old for code work");
+            let (title, body) = problem.words();
+            tools::owner_notify::emit(
+                store,
+                None,
+                &tools::owner_notify::OwnerNotification { id: ID, kind: "warning", title, body: Some(&body), ..Default::default() },
+            );
+            false
+        }
     }
-    Ok(())
 }
 
 /// [`git_bytes`], its output as trimmed text.
@@ -1228,6 +1296,16 @@ async fn with_markers(dir: &Path, files: &[String]) -> Vec<String> {
     out
 }
 
+/// Land a worktree's one commit by fast-forwarding the owner's branch.
+///
+/// A file lands under the name git records for it. In a repository with
+/// `core.precomposeunicode` on (macOS's default), git records a name typed
+/// decomposed (as Finder writes it) composed, and its checkout writes the
+/// file under that composed name: a tracked file the change touches keeps
+/// its name, but not its original bytes. That is git's own checkout, the same
+/// one the owner's `git checkout` and `git pull` do, and the disk (APFS)
+/// treats the two spellings as one file; landing without git's checkout
+/// would be a second way to write the owner's tree, so it is not done.
 async fn land_git(wt: &Worktree, landing: &Landing) -> MergeOutcome {
     let failed = |error: String| MergeOutcome::Failed { error, kept_at: wt.path.clone(), branch: wt.branch.clone() };
     if rebasing(wt).await {
@@ -3467,10 +3545,14 @@ mod tests {
         }))
     }
 
-    /// Review round 5: the git Nebo needs is checked by version.
+    /// Review round 5: the git Nebo needs is checked by version, and the
+    /// owner reads what to do: install when it is missing, update when old.
     #[test]
     fn this_computers_git_is_new_enough() {
-        rt().block_on(async { check_git().await.unwrap() });
+        rt().block_on(async { assert_eq!(git_problem().await, None) });
+        assert!(GitProblem::Missing.words().0.starts_with("Install git"));
+        assert!(GitProblem::TooOld("2.20.1".into()).words().1.contains("git 2.20.1"));
+        assert!(GitProblem::TooOld("2.20.1".into()).words().0.starts_with("Update git"));
     }
 
 
@@ -3549,6 +3631,62 @@ mod tests {
             for n in names {
                 assert!(r.path().join(n).exists(), "{n:?}");
             }
+        }))
+    }
+
+
+    /// r7v: 50,000 paths on stdin while git writes as much on stdout.
+    #[test]
+    fn r7v_ignored_paths_50k_no_deadlock() {
+        with_home(|_| rt().block_on(async {
+            let f = folder();
+            std::fs::write(f.path().join(".gitignore"), "*.log\n").unwrap();
+            let paths: Vec<String> = (0..50_000).map(|i| format!("deep/dir/number/{i:06}-a-fairly-long-name-to-fill-pipes.log")).collect();
+            let g = tempfile::tempdir().unwrap();
+            git(g.path(), &["init", "-q", "--bare", "s.git"]).await.unwrap();
+            let t = std::time::Instant::now();
+            let got = ignored_paths(f.path(), Some(&g.path().join("s.git")), &paths).await;
+            eprintln!("R7V folder 50k: {:?} in {:?}", got.as_ref().map(|v| v.len()), t.elapsed());
+            assert_eq!(got.unwrap().len(), 50_000);
+            let r = repo().await;
+            std::fs::write(r.path().join(".gitignore"), "*.log\n").unwrap();
+            let t = std::time::Instant::now();
+            let got = ignored_paths(r.path(), None, &paths).await;
+            eprintln!("R7V repo 50k: {:?} in {:?}", got.as_ref().map(|v| v.len()), t.elapsed());
+            assert_eq!(got.unwrap().len(), 50_000);
+            // 2 MB through hash-object --stdin.
+            let big = vec![b'x'; 8 << 20];
+            std::fs::write(r.path().join("big.bin"), &big).unwrap();
+            let id = content_id(r.path(), "big.bin").await;
+            eprintln!("R7V big {id:?}");
+            assert!(matches!(id, Ok(Some(_))));
+        }))
+    }
+
+
+    /// Review round 7: the owner hears about an old git once, when code
+    /// work is attempted, and the notice is put away once git is fixed.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_git_is_said_once_and_cleared_once_fixed() {
+        with_home(|home| rt().block_on(async {
+            let store = db::Store::new(&home.join("t.db").to_string_lossy()).unwrap();
+            let bin = home.join("old-git");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("git"), "#!/bin/sh\necho 'git version 2.20.1'\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            unsafe { std::env::set_var("PATH", format!("{}:{old_path}", bin.display())) };
+            let ready = git_notice(&store).await;
+            unsafe { std::env::set_var("PATH", &old_path) };
+            assert!(!ready);
+            let user = store.ensure_local_user_id().unwrap();
+            let n = store.get_notification("git-needed", &user).unwrap().expect("one notice");
+            assert!(n.title.starts_with("Update git") && n.answered_at.is_none(), "{n:?}");
+            assert!(git_notice(&store).await, "git is fixed");
+            let n = store.get_notification("git-needed", &user).unwrap().unwrap();
+            assert!(n.answered_at.is_some(), "put away once fixed");
         }))
     }
 

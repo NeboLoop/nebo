@@ -306,6 +306,8 @@ impl TurnWork {
                 Folder::Copy(_) => continue,
                 Folder::Project(root) => {
                     let id = new_id();
+                    // Code work begins: the owner hears once if git can't do it.
+                    worktree::git_notice(who.store).await;
                     let iso = worktree::create(&root, &id).await.map_err(|e| {
                         format!("Could not make a working copy of {}: {e}", root.display())
                     })?;

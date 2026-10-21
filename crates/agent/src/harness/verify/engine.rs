@@ -1562,6 +1562,7 @@ impl VerifyCheck {
             Err(LiveLoadError::NotOpened(e)) => {
                 (tools::app_dev::live_problem(&work.work_dir, 0).or(Some("no view of the app could be opened")), "live_failed", json!(e))
             }
+            Err(LiveLoadError::NoScript(e)) => (Some(tools::app_publish::NO_SCRIPT), "live_no_script", json!(e)),
             Ok(failed) => (tools::app_dev::live_problem(&work.work_dir, failed.len()), "live_failed", json!(failed)),
         };
         let why = Why::new(if problem.is_none() { "live_ok" } else { why });

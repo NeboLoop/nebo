@@ -160,6 +160,13 @@ impl Shadow {
                 format!("{}\n", objects.display()),
             )
             .map_err(|e| format!("write alternates: {e}"))?;
+            // The snapshot names files as the repository itself does: its
+            // own `core.precomposeunicode` (off when unset), never the value
+            // `git init` writes on a Mac.
+            let own = git(work_tree, &["config", "--bool", "core.precomposeunicode"]).await.unwrap_or_else(|_| "false".into());
+            git(git_dir, &["--git-dir", &dir, "config", "core.precomposeunicode", own.trim()])
+                .await
+                .map_err(|e| format!("git config: {e}"))?;
         } else {
             // A folder that is no repository is read with its names exactly
             // as the disk holds them, as its copy and its landing read them.
@@ -910,6 +917,64 @@ mod tests {
                 }
             })
         })
+    }
+
+
+    /// r7v: a review of a git worktree, NFD names, under the repo's own
+    /// precompose setting (true = macOS default, false = cloned/set off).
+    async fn r7v_nfd_in_repo(precompose: &str) -> String {
+        let r = tempfile::tempdir().unwrap();
+        let shadows = tempfile::tempdir().unwrap();
+        repo(r.path()).await;
+        git(r.path(), &["config", "core.precomposeunicode", precompose]).await.unwrap();
+        std::fs::write(r.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(r.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(r.path().join("cafe\u{301}-tracked.txt"), "t0\n").unwrap();
+        commit_all(r.path()).await;
+        // The owner's own ignored NFD file, never to be deleted.
+        std::fs::write(r.path().join("cafe\u{301}.log"), "secret\n").unwrap();
+        let iso = crate::worktree::create(r.path(), "sa-r7v-nfd").await.unwrap();
+        let wt = iso.path().to_path_buf();
+        let shadow = Shadow::open(&shadows.path().join("s.git"), &wt).await.unwrap();
+        let base = shadow.snapshot().await.unwrap();
+        std::fs::write(wt.join("cafe\u{301}-new.txt"), "n\n").unwrap();
+        std::fs::write(wt.join("cafe\u{301}-tracked.txt"), "t1\n").unwrap();
+        std::fs::write(wt.join("cafe\u{301}-built.log"), "build\n").unwrap();
+        let snap = shadow.snapshot().await.unwrap();
+        let paths = shadow.diff(&base, &snap).await.unwrap().paths();
+        let seen = match shadow.contents(&snap, &paths).await {
+            Ok(s) => s,
+            Err(e) => return format!("contents: {e}; paths={paths:?}"),
+        };
+        let landing = crate::worktree::Landing { only: Some(seen), ..Default::default() };
+        let mut isos = [iso];
+        let out = crate::worktree::merge_all(&mut isos, "m", None, &landing).await;
+        let names: Vec<String> = std::fs::read_dir(r.path()).unwrap().map(|e| format!("{:?}", e.unwrap().file_name())).collect();
+        format!(
+            "precompose={precompose} paths={paths:?} outcome={:?} log_kept={} new_landed={} tracked={:?} dir={names:?}",
+            out[0].1,
+            r.path().join("cafe\u{301}.log").exists(),
+            r.path().join("cafe\u{301}-new.txt").exists(),
+            std::fs::read_to_string(r.path().join("cafe\u{301}-tracked.txt")).ok(),
+        )
+    }
+
+    #[test]
+    fn r7v_nfd_names_in_a_repository_precompose_true() {
+        crate::test_home::with_home(|_| rt().block_on(async {
+            let got = r7v_nfd_in_repo("true").await;
+            eprintln!("R7V {got}");
+            assert!(got.contains("Merged") && got.contains("log_kept=true") && got.contains("new_landed=true") && got.contains("t1"), "{got}");
+        }))
+    }
+
+    #[test]
+    fn r7v_nfd_names_in_a_repository_precompose_false() {
+        crate::test_home::with_home(|_| rt().block_on(async {
+            let got = r7v_nfd_in_repo("false").await;
+            eprintln!("R7V {got}");
+            assert!(got.contains("Merged") && got.contains("log_kept=true") && got.contains("new_landed=true") && got.contains("t1"), "{got}");
+        }))
     }
 
 }
