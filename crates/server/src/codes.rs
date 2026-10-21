@@ -3789,7 +3789,7 @@ mod in_flight_tests {
 
 /// Whether a stored row is the owner's own words: it carries
 /// [`db::OWNER_MARK`], which only the harness writes for his input.
-fn owner_wrote(metadata: Option<&str>) -> bool {
+pub(crate) fn owner_wrote(metadata: Option<&str>) -> bool {
     metadata
         .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
         .and_then(|m| m.get(db::OWNER_MARK).and_then(|v| v.as_bool()))
