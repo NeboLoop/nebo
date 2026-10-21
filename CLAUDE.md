@@ -235,6 +235,7 @@ Product plans in flight live in `nebo-prd/` of the private NeboLoop/docs repo
 - `intune-managed-app-prd-2026-10-21.md` - Nebo for Intune: Microsoft sign-in, a separate "for Intune" mobile app with the Intune App SDK, desktop MDM packages and managed settings
 - `financials-cost-coverage-prd-2026-10-21.md` - Every cost on Financials: every vendor that bills us, new cost feeds, bank rules, and a cost-against-billed alarm
 - `nebo-media-ad-pipeline-prd-2026-10-21.md` - Nebo Media pro parity, UGC and the ad pipeline: one cast with consent, owned voices, lip sync and talking heads, brief to delivery pack, disclosure
+- `nebo-media-studio-app-prd-2026-10-21.md` - Media Studio, the Nebo Media app you talk to: one chat per project, fast-scrubbing player with versions, pin and say, look-only timeline, cast panel, versions grid, export, and fast footage from the iPhone (proxy first, direct transfers with no inbound ports)
 
 ## Release
 
