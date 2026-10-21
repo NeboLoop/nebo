@@ -861,18 +861,16 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict
             | StreamEventType::TakenIn
-            | StreamEventType::Notice => {
+            | StreamEventType::Notice
+            | StreamEventType::SubagentStart
+            | StreamEventType::SubagentProgress
+            | StreamEventType::SubagentComplete => {
                 // Approval/ControlNotice: only sent by the runner, not
-                // received from a provider.
+                // received from a provider. Helpers report on their own rail
+                // (`delegation::HelperEvent`), never a provider's stream.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.
-                let _ = tx.send(event).await;
-            }
-            StreamEventType::SubagentStart
-            | StreamEventType::SubagentProgress
-            | StreamEventType::SubagentComplete => {
-                // Forwarded from sub-agent orchestrator via stream_tx; relay to parent.
                 let _ = tx.send(event).await;
             }
         }

@@ -181,7 +181,7 @@ impl SubAgentOrchestrator for HelperDoor {
     }
 
     fn start_work(&self, req: SpawnRequest, work: tools::orchestrator::Work) -> Fut<'_, Result<SpawnResult, String>> {
-        let started = self.helpers.start_work(&parent_turn(&req), &req.description, work);
+        let started = self.helpers.start_work(&parent_turn(&req), &req.description, &req.prompt, work);
         Box::pin(async move {
             let (task_id, output) = started?;
             Ok(SpawnResult { task_id, success: true, output, error: None, taint: Vec::new() })

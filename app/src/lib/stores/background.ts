@@ -6,7 +6,7 @@
 // `background_timer_created` names a timer just made. Nothing polls.
 
 import { writable } from 'svelte/store';
-import type { BackgroundAction, BackgroundTask, FinishedTask } from '$lib/api/neboComponents';
+import type { BackgroundAction, BackgroundOutputResponse, BackgroundTask, FinishedTask } from '$lib/api/neboComponents';
 
 /** Everything in the background now, as the server orders it. */
 export const backgroundTasks = writable<BackgroundTask[]>([]);
@@ -172,7 +172,7 @@ export async function actOn(id: string, action: BackgroundAction): Promise<void>
 }
 
 /** The end of piece `id`'s output, and whether it was cut. */
-export async function outputOf(id: string): Promise<{ output: string; truncated: boolean }> {
+export async function outputOf(id: string): Promise<BackgroundOutputResponse> {
   const { backgroundOutput } = await import('$lib/api/nebo');
   return backgroundOutput(encodeURIComponent(id));
 }

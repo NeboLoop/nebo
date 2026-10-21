@@ -274,6 +274,7 @@ export interface BackgroundListResponse {
 export interface BackgroundOutputResponse {
 	output: string
 	truncated: boolean
+	brief: string
 }
 
 export interface Backup {
