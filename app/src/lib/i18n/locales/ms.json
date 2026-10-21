@@ -4350,5 +4350,109 @@
 		"taskReorder": "Memesan semula 40 unit daripada Lumen",
 		"taskVideo": "Menyiarkan video hari Selasa",
 		"taskInvoices": "Menghantar 3 peringatan invois"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Disahkan",
+			"notVerified": "Belum disahkan",
+			"checking": "Sedang disemak",
+			"waiting": "Menunggu jawapan anda",
+			"openHint": "Menunjukkan apa yang disemak"
+		},
+		"tip": {
+			"verified": "Disemak oleh {reviewers, plural, other {# penyemak bebas}} ({lenses}) dalam {rounds, plural, other {# pusingan}}.",
+			"checksPassed": "Semakan projek sendiri lulus: {checks}.",
+			"noneOpen": "Tiada isu penghalang atau besar yang terbuka.",
+			"deferred": "Nota kecil yang ditangguhkan dengan sebab: {count}.",
+			"landed": "Sudah masuk ke projek anda.",
+			"landedAnyway": "Sudah masuk ke projek anda atas pilihan anda.",
+			"notLanded": "Masih menunggu dalam salinannya sendiri, belum dalam projek anda.",
+			"limit": "Semakan menemui masalah; ia tidak dapat membuktikan tiada masalah.",
+			"checking": "Penyemak bebas dan semakan projek sedang meneliti kod ini.",
+			"waiting": "Semakan menunggu jawapan anda.",
+			"notVerified": "Tidak dapat disahkan.",
+			"open": "Masih terbuka selepas {rounds, plural, other {# pusingan}}: {blockers} penghalang, {majors} besar."
+		},
+		"round": {
+			"title": "Pusingan {n}",
+			"kind": {
+				"catch_up": "Dikemas kini dengan projek anda",
+				"land": "Penggabungan",
+				"live": "Semakan langsung",
+				"other": "Langkah"
+			},
+			"time": "{seconds} saat",
+			"lenses": "Penyemak: {lenses}",
+			"findings": "Ditemui: {blockers} penghalang, {majors} besar, {minors} kecil",
+			"fixed": "Dibaiki sejak pusingan sebelumnya: {count}",
+			"held": "Disemak dan baik",
+			"checks": "Semakan:",
+			"noChecks": "Tiada binaan atau ujian yang dapat dijalankan."
+		},
+		"rounds": {
+			"heading": "Semakan kod"
+		},
+		"total": "Kos penyemak: {cost}",
+		"severity": {
+			"blocker": "Penghalang",
+			"major": "Besar",
+			"minor": "Kecil",
+			"other": "Isu"
+		},
+		"lens": {
+			"correctness": "ketepatan",
+			"security": "keselamatan",
+			"billing": "pengebilan",
+			"data": "data",
+			"performance": "prestasi",
+			"experience": "apa yang dilihat orang",
+			"other": "bidang lain"
+		},
+		"why": {
+			"needs_answer": "Perlukan jawapan anda kepada satu soalan",
+			"unreadable": "Tidak dapat membaca apa yang berubah",
+			"spend_limit": "Had perbelanjaan setiap larian pekerja ini telah dicapai",
+			"review_incomplete": "Satu semakan tidak dapat diselesaikan",
+			"needs_decision": "Perlukan keputusan anda: {items}",
+			"stopped_by_owner": "Dihentikan oleh anda; isu terbuka: {open, plural, other {#}}",
+			"stalled": "Berhenti membuat kemajuan; isu terbuka: {open, plural, other {#}}",
+			"no_checks": "Tiada ujian atau binaan dapat dijalankan",
+			"landed_unreviewed": "Dimasukkan tanpa lulus semakan, atas pilihan anda",
+			"edits_in_way": "Belum dimasukkan: suntingan anda masih menghalang",
+			"kept_own_edits": "Tidak dimasukkan: anda kekalkan suntingan anda sendiri, dan perubahan ini menunggu dalam salinannya",
+			"live_failed": "Semakan langsung gagal",
+			"live_unavailable": "Tidak disemak secara langsung: bot tiada pelayar untuk membuka aplikasi",
+			"live_no_script": "Tidak disemak secara langsung: halaman aplikasi tidak memuatkan skrip semakan (halaman masuknya bukan teks UTF-8, aplikasi itu bukan milik anda, atau halaman berpindah ke alamat lain)",
+			"live_ok": "Halaman dimuat semula dan berfungsi",
+			"review_clean": "Tiada isu yang menyekat atau besar",
+			"review_blocking": "Isu yang menyekat: {count, plural, other {#}}",
+			"up_to_date": "Sudah terkini dengan projek anda",
+			"caught_up": "Dikemas kini hingga {commit}",
+			"conflicts": "Perubahan anda dan yang ini bertemu di {files}",
+			"landed": "Dimasukkan sebagai {commit}",
+			"nothing_to_land": "Tiada apa untuk dimasukkan",
+			"owner_edits": "Suntingan anda sendiri dalam {files} menghalang",
+			"busy_no_branch": "Belum dimasukkan: projek anda tidak berada pada mana-mana cabang",
+			"busy_branch": "Belum dimasukkan: projek anda pada cabang {now}, dan salinan dibuat daripada {from}",
+			"busy_in_progress": "Belum dimasukkan: {op} sedang berjalan dalam projek anda",
+			"hook_failed": "Cangkuk commit projek anda menolaknya",
+			"retest_failed": "Semakan gagal selepas dikemas kini dengan projek anda",
+			"not_attempted": "Tidak dicuba, kerana bahagian sebelumnya tidak dimasukkan",
+			"land_failed": "Tidak dapat dimasukkan; tiada apa-apa milik anda berubah",
+			"other": "Lihat sejarahnya untuk apa yang berlaku",
+			"step_limit": "Larian mencapai had langkahnya sebelum semakan selesai",
+			"turn_ended": "Larian tamat sebelum semakan selesai",
+			"restarted": "Nebo dimulakan semula semasa sedang disemak",
+			"unreviewed": "Tidak dimasukkan: salinan mengandungi perubahan yang belum disemak sesiapa ({files})",
+			"needs_review": "Apa yang akan digabungkan berbeza daripada yang disemak dalam {files}; ia disemak semula dahulu",
+			"changed_after_review": "Salinan berubah selepas disemak; ia disemak semula dahulu",
+			"waiting_to_land": "Menunggu penggabungan lain dalam projek ini selesai"
+		},
+		"place": {
+			"app": "Perubahan ada dalam halaman aplikasi; sejarah aplikasi boleh membatalkannya.",
+			"helper": "Ia dalam salinan pembantunya sehingga perbualan yang memulakannya memasukkannya.",
+			"folder": "Ia dibuat di tempat, dalam folder yang diusahakan.",
+			"nothing": "Tiada apa untuk dimasukkan."
+		}
 	}
 }

@@ -4350,5 +4350,109 @@
 		"taskReorder": "Đã đặt lại 40 sản phẩm từ Lumen",
 		"taskVideo": "Đã đăng video thứ Ba",
 		"taskInvoices": "Đã gửi 3 lời nhắc hóa đơn"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Đã xác minh",
+			"notVerified": "Chưa xác minh",
+			"checking": "Đang kiểm tra",
+			"waiting": "Đang chờ bạn trả lời",
+			"openHint": "Cho biết những gì đã được kiểm tra"
+		},
+		"tip": {
+			"verified": "Được {reviewers, plural, other {# người đánh giá độc lập}} ({lenses}) kiểm tra qua {rounds, plural, other {# vòng}}.",
+			"checksPassed": "Các bài kiểm tra của chính dự án đã đạt: {checks}.",
+			"noneOpen": "Không còn vấn đề chặn hoặc nghiêm trọng nào mở.",
+			"deferred": "Ghi chú nhỏ được hoãn kèm lý do: {count}.",
+			"landed": "Đã vào dự án của bạn.",
+			"landedAnyway": "Đã vào dự án của bạn theo lựa chọn của bạn.",
+			"notLanded": "Đang chờ trong bản sao riêng, chưa vào dự án của bạn.",
+			"limit": "Đánh giá tìm ra vấn đề; không thể chứng minh là không có vấn đề nào.",
+			"checking": "Người đánh giá độc lập và các bài kiểm tra của dự án đang xem đoạn mã này.",
+			"waiting": "Việc kiểm tra đang chờ bạn trả lời.",
+			"notVerified": "Không thể xác minh.",
+			"open": "Vẫn còn mở sau {rounds, plural, other {# vòng}}: {blockers} chặn, {majors} nghiêm trọng."
+		},
+		"round": {
+			"title": "Vòng {n}",
+			"kind": {
+				"catch_up": "Đã cập nhật theo dự án của bạn",
+				"land": "Hợp nhất",
+				"live": "Kiểm tra trực tiếp",
+				"other": "Bước"
+			},
+			"time": "{seconds} giây",
+			"lenses": "Người đánh giá: {lenses}",
+			"findings": "Tìm thấy: {blockers} chặn, {majors} nghiêm trọng, {minors} nhỏ",
+			"fixed": "Đã sửa kể từ vòng trước: {count}",
+			"held": "Đã kiểm tra và ổn",
+			"checks": "Kiểm tra:",
+			"noChecks": "Không chạy được bản dựng hay bài kiểm tra nào."
+		},
+		"rounds": {
+			"heading": "Kiểm tra mã"
+		},
+		"total": "Chi phí người đánh giá: {cost}",
+		"severity": {
+			"blocker": "Chặn",
+			"major": "Nghiêm trọng",
+			"minor": "Nhỏ",
+			"other": "Vấn đề"
+		},
+		"lens": {
+			"correctness": "tính đúng",
+			"security": "bảo mật",
+			"billing": "thanh toán",
+			"data": "dữ liệu",
+			"performance": "hiệu năng",
+			"experience": "những gì mọi người thấy",
+			"other": "lĩnh vực khác"
+		},
+		"why": {
+			"needs_answer": "Cần câu trả lời của bạn cho một câu hỏi",
+			"unreadable": "Không đọc được những gì đã thay đổi",
+			"spend_limit": "Đã đạt giới hạn chi tiêu mỗi lần chạy của nhân viên này",
+			"review_incomplete": "Một lượt xem xét không thể hoàn tất",
+			"needs_decision": "Cần quyết định của bạn: {items}",
+			"stopped_by_owner": "Bạn đã dừng lại; vấn đề còn mở: {open, plural, other {#}}",
+			"stalled": "Không còn tiến triển; vấn đề còn mở: {open, plural, other {#}}",
+			"no_checks": "Không thể chạy kiểm thử hay bản dựng nào",
+			"landed_unreviewed": "Đã đưa vào mà chưa qua xem xét, theo lựa chọn của bạn",
+			"edits_in_way": "Chưa đưa vào: các chỉnh sửa của bạn vẫn đang cản trở",
+			"kept_own_edits": "Không đưa vào: bạn giữ chỉnh sửa của riêng mình, và thay đổi này chờ trong bản sao của nó",
+			"live_failed": "Kiểm tra trực tiếp thất bại",
+			"live_unavailable": "Chưa kiểm tra trực tiếp: bot không có trình duyệt để mở ứng dụng",
+			"live_no_script": "Chưa kiểm tra trực tiếp: trang của ứng dụng không tải tập lệnh kiểm tra (trang vào không phải văn bản UTF-8, ứng dụng không phải của bạn, hoặc trang đã chuyển sang địa chỉ khác)",
+			"live_ok": "Trang đã tải lại và hoạt động tốt",
+			"review_clean": "Không có vấn đề chặn hay nghiêm trọng",
+			"review_blocking": "Vấn đề chặn: {count, plural, other {#}}",
+			"up_to_date": "Đã cập nhật theo dự án của bạn",
+			"caught_up": "Đã cập nhật đến {commit}",
+			"conflicts": "Thay đổi của bạn và thay đổi này gặp nhau ở {files}",
+			"landed": "Đã đưa vào dưới dạng {commit}",
+			"nothing_to_land": "Không có gì để đưa vào",
+			"owner_edits": "Chỉnh sửa của chính bạn trong {files} đang cản trở",
+			"busy_no_branch": "Chưa đưa vào: dự án của bạn không ở nhánh nào",
+			"busy_branch": "Chưa đưa vào: dự án của bạn đang ở nhánh {now}, còn bản sao được tạo từ {from}",
+			"busy_in_progress": "Chưa đưa vào: một {op} đang diễn ra trong dự án của bạn",
+			"hook_failed": "Các hook commit của dự án đã từ chối",
+			"retest_failed": "Kiểm tra thất bại sau khi cập nhật theo dự án của bạn",
+			"not_attempted": "Chưa thử, vì một phần trước đó chưa được đưa vào",
+			"land_failed": "Không thể đưa vào; không có gì của bạn thay đổi",
+			"other": "Xem lịch sử để biết chuyện gì đã xảy ra",
+			"step_limit": "Lần chạy đã đạt giới hạn bước trước khi kiểm tra xong",
+			"turn_ended": "Lần chạy đã kết thúc trước khi kiểm tra xong",
+			"restarted": "Nebo đã khởi động lại trong lúc kiểm tra",
+			"unreviewed": "Chưa đưa vào: bản sao có thay đổi chưa ai xem xét ({files})",
+			"needs_review": "Nội dung sẽ được đưa vào khác với nội dung đã xem xét trong {files}; nó được xem xét lại trước",
+			"changed_after_review": "Bản sao đã thay đổi sau khi được xem xét; nó được xem xét lại trước",
+			"waiting_to_land": "Đang chờ một lần đưa vào khác trong dự án này hoàn tất"
+		},
+		"place": {
+			"app": "Thay đổi nằm trong các trang của ứng dụng; lịch sử ứng dụng có thể hoàn tác nó.",
+			"helper": "Nó nằm trong bản sao của trợ lý cho đến khi cuộc trò chuyện đã khởi động trợ lý đưa nó vào.",
+			"folder": "Nó được làm tại chỗ, trong thư mục đang được xử lý.",
+			"nothing": "Không có gì để đưa vào."
+		}
 	}
 }

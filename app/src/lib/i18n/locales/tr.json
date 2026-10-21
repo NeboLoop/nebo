@@ -4350,5 +4350,109 @@
 		"taskReorder": "Lumen'den 40 adet yeniden sipariş edildi",
 		"taskVideo": "Salı videosu yayınlandı",
 		"taskInvoices": "3 fatura hatırlatması gönderildi"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Doğrulandı",
+			"notVerified": "Doğrulanmadı",
+			"checking": "Kontrol ediliyor",
+			"waiting": "Yanıtınızı bekliyor",
+			"openHint": "Neyin kontrol edildiğini gösterir"
+		},
+		"tip": {
+			"verified": "{reviewers, plural, other {# bağımsız inceleyici}} ({lenses}) tarafından {rounds, plural, other {# turda}} kontrol edildi.",
+			"checksPassed": "Projenin kendi kontrolleri geçti: {checks}.",
+			"noneOpen": "Açık engelleyici ya da büyük sorun yok.",
+			"deferred": "Gerekçesiyle ertelenen küçük notlar: {count}.",
+			"landed": "Projenize eklendi.",
+			"landedAnyway": "Sizin tercihinizle projenize eklendi.",
+			"notLanded": "Kendi kopyasında bekliyor, henüz projenizde değil.",
+			"limit": "İnceleme sorun bulur; hiç sorun olmadığını kanıtlayamaz.",
+			"checking": "Bağımsız inceleyiciler ve projenin kendi kontrolleri bu kodu gözden geçiriyor.",
+			"waiting": "Kontrol yanıtınızı bekliyor.",
+			"notVerified": "Doğrulanamadı.",
+			"open": "{rounds, plural, other {# tur}} sonra hâlâ açık: {blockers} engelleyici, {majors} büyük."
+		},
+		"round": {
+			"title": "Tur {n}",
+			"kind": {
+				"catch_up": "Projenizle güncellendi",
+				"land": "Ekleme",
+				"live": "Canlı kontrol",
+				"other": "Adım"
+			},
+			"time": "{seconds} sn",
+			"lenses": "İnceleyiciler: {lenses}",
+			"findings": "Bulunan: {blockers} engelleyici, {majors} büyük, {minors} küçük",
+			"fixed": "Önceki turdan beri düzeltilen: {count}",
+			"held": "Kontrol edildi ve sağlam",
+			"checks": "Kontroller:",
+			"noChecks": "Hiçbir derleme ya da test çalıştırılamadı."
+		},
+		"rounds": {
+			"heading": "Kod kontrolleri"
+		},
+		"total": "İnceleyicilerin maliyeti: {cost}",
+		"severity": {
+			"blocker": "Engelleyici",
+			"major": "Büyük",
+			"minor": "Küçük",
+			"other": "Sorun"
+		},
+		"lens": {
+			"correctness": "doğruluk",
+			"security": "güvenlik",
+			"billing": "faturalama",
+			"data": "veri",
+			"performance": "performans",
+			"experience": "insanların gördüğü",
+			"other": "başka bir alan"
+		},
+		"why": {
+			"needs_answer": "Sorduğu bir soruya cevabınız gerekiyor",
+			"unreadable": "Neyin değiştiği okunamadı",
+			"spend_limit": "Bu çalışanın çalıştırma başına harcama limitine ulaşıldı",
+			"review_incomplete": "Bir inceleme tamamlanamadı",
+			"needs_decision": "Kararınız gerekiyor: {items}",
+			"stopped_by_owner": "Sizin tarafınızdan durduruldu; açık sorunlar: {open, plural, other {#}}",
+			"stalled": "İlerleme durdu; açık sorunlar: {open, plural, other {#}}",
+			"no_checks": "Hiçbir test veya derleme çalıştırılamadı",
+			"landed_unreviewed": "İncelemeyi geçmeden, sizin tercihinizle aktarıldı",
+			"edits_in_way": "Henüz aktarılmadı: düzenlemeleriniz hâlâ yolda",
+			"kept_own_edits": "Aktarılmadı: kendi düzenlemelerinizi tuttunuz, değişiklik kendi kopyasında bekliyor",
+			"live_failed": "Canlı kontrol başarısız oldu",
+			"live_unavailable": "Canlı kontrol edilmedi: botun uygulamayı açacak bir tarayıcısı yok",
+			"live_no_script": "Canlı kontrol edilmedi: uygulamanın sayfası kontrol betiğini yüklemedi (giriş sayfası UTF-8 metin değil, uygulama sizin değil ya da sayfa başka bir adrese gitti)",
+			"live_ok": "Sayfa yeniden yüklendi ve çalışıyor",
+			"review_clean": "Engelleyici veya büyük sorun yok",
+			"review_blocking": "Engelleyici sorunlar: {count, plural, other {#}}",
+			"up_to_date": "Projenizle zaten güncel",
+			"caught_up": "{commit} sürümüne güncellendi",
+			"conflicts": "Sizin değişiklikleriniz ve bu, {files} içinde buluşuyor",
+			"landed": "{commit} olarak aktarıldı",
+			"nothing_to_land": "Aktarılacak bir şey yok",
+			"owner_edits": "{files} içindeki kendi düzenlemeleriniz yolda",
+			"busy_no_branch": "Henüz aktarılmadı: projeniz hiçbir dalda değil",
+			"busy_branch": "Henüz aktarılmadı: projeniz {now} dalında, kopya ise {from} dalından yapıldı",
+			"busy_in_progress": "Henüz aktarılmadı: projenizde bir {op} sürüyor",
+			"hook_failed": "Projenizin commit kancaları bunu reddetti",
+			"retest_failed": "Projenizle güncellendikten sonra kontroller başarısız oldu",
+			"not_attempted": "Önceki bir parça aktarılmadığı için denenmedi",
+			"land_failed": "Aktarılamadı; sizinle ilgili hiçbir şey değişmedi",
+			"other": "Ne olduğunu geçmişinde görebilirsiniz",
+			"step_limit": "Çalıştırma, kontrol bitmeden adım sınırına ulaştı",
+			"turn_ended": "Çalıştırma, kontrol bitmeden sona erdi",
+			"restarted": "Nebo kontrol sırasında yeniden başladı",
+			"unreviewed": "Aktarılmadı: kopyada kimsenin incelemediği değişiklikler var ({files})",
+			"needs_review": "Aktarılacak olan, {files} içinde incelenenden farklı; önce yeniden incelenir",
+			"changed_after_review": "Kopya incelendikten sonra değişti; önce yeniden incelenir",
+			"waiting_to_land": "Bu projedeki başka bir aktarımın bitmesi bekleniyor"
+		},
+		"place": {
+			"app": "Değişiklik uygulamanın sayfalarında; uygulamanın geçmişi bunu geri alabilir.",
+			"helper": "Onu başlatan sohbet aktarana kadar yardımcısının kopyasında duruyor.",
+			"folder": "Üzerinde çalışılan klasörde, yerinde yapıldı.",
+			"nothing": "Aktarılacak bir şey yoktu."
+		}
 	}
 }

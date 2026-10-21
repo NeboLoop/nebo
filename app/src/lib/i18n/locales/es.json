@@ -4350,5 +4350,109 @@
 		"taskReorder": "Repuso 40 unidades de Lumen",
 		"taskVideo": "Publicó el vídeo del martes",
 		"taskInvoices": "Envió 3 recordatorios de factura"
+	},
+	"verify": {
+		"badge": {
+			"verified": "Verificado",
+			"notVerified": "Sin verificar",
+			"checking": "Revisando",
+			"waiting": "Esperando tu respuesta",
+			"openHint": "Muestra lo que se comprobó"
+		},
+		"tip": {
+			"verified": "Revisado por {reviewers, plural, one {# revisor independiente} other {# revisores independientes}} ({lenses}) en {rounds, plural, one {# ronda} other {# rondas}}.",
+			"checksPassed": "Las pruebas propias del proyecto pasaron: {checks}.",
+			"noneOpen": "No hay problemas bloqueantes ni importantes abiertos.",
+			"deferred": "Notas menores aplazadas con motivo: {count}.",
+			"landed": "Ya está en tu proyecto.",
+			"landedAnyway": "Ya está en tu proyecto, por decisión tuya.",
+			"notLanded": "Espera en su propia copia; aún no está en tu proyecto.",
+			"limit": "Una revisión encuentra problemas; no puede demostrar que no haya ninguno.",
+			"checking": "Revisores independientes y las pruebas del proyecto están revisando este código.",
+			"waiting": "La revisión espera tu respuesta.",
+			"notVerified": "No se pudo verificar.",
+			"open": "Abiertos tras {rounds, plural, one {# ronda} other {# rondas}}: {blockers} bloqueantes, {majors} importantes."
+		},
+		"round": {
+			"title": "Ronda {n}",
+			"kind": {
+				"catch_up": "Actualizado con tu proyecto",
+				"land": "Integración",
+				"live": "Comprobación en vivo",
+				"other": "Paso"
+			},
+			"time": "{seconds} s",
+			"lenses": "Revisores: {lenses}",
+			"findings": "Encontrado: {blockers} bloqueantes, {majors} importantes, {minors} menores",
+			"fixed": "Corregido desde la ronda anterior: {count}",
+			"held": "Comprobado y correcto",
+			"checks": "Pruebas:",
+			"noChecks": "No se pudo ejecutar ninguna compilación ni prueba."
+		},
+		"rounds": {
+			"heading": "Revisiones de código"
+		},
+		"total": "Costo de los revisores: {cost}",
+		"severity": {
+			"blocker": "Bloqueante",
+			"major": "Importante",
+			"minor": "Menor",
+			"other": "Problema"
+		},
+		"lens": {
+			"correctness": "corrección",
+			"security": "seguridad",
+			"billing": "facturación",
+			"data": "datos",
+			"performance": "rendimiento",
+			"experience": "lo que ven las personas",
+			"other": "otro ámbito"
+		},
+		"why": {
+			"needs_answer": "Necesita tu respuesta a una pregunta",
+			"unreadable": "No se pudo leer qué cambió",
+			"spend_limit": "Se alcanzó el límite de gasto por ejecución de este empleado",
+			"review_incomplete": "Una revisión no pudo terminar",
+			"needs_decision": "Necesita tu decisión: {items}",
+			"stopped_by_owner": "Detenido por ti; problemas abiertos: {open, plural, other {#}}",
+			"stalled": "Dejó de avanzar; problemas abiertos: {open, plural, other {#}}",
+			"no_checks": "No se pudieron ejecutar pruebas ni compilación",
+			"landed_unreviewed": "Integrado sin pasar la revisión, por decisión tuya",
+			"edits_in_way": "Aún no integrado: tus cambios siguen en medio",
+			"kept_own_edits": "No integrado: conservaste tus propios cambios, y este espera en su copia",
+			"live_failed": "La comprobación en vivo falló",
+			"live_unavailable": "No se comprobó en vivo: el bot no tiene un navegador para abrir la app",
+			"live_no_script": "No se comprobó en vivo: la página de la app no cargó el script de comprobación (su página de entrada no es texto UTF-8, la app no es una de las tuyas o la página fue a otra dirección)",
+			"live_ok": "La página se recargó y funciona bien",
+			"review_clean": "Sin problemas bloqueantes ni importantes",
+			"review_blocking": "Problemas bloqueantes: {count, plural, other {#}}",
+			"up_to_date": "Ya está al día con tu proyecto",
+			"caught_up": "Actualizado hasta {commit}",
+			"conflicts": "Tus cambios y este coinciden en {files}",
+			"landed": "Integrado como {commit}",
+			"nothing_to_land": "Nada que integrar",
+			"owner_edits": "Tus propios cambios en {files} están en medio",
+			"busy_no_branch": "Aún no integrado: tu proyecto no está en ninguna rama",
+			"busy_branch": "Aún no integrado: tu proyecto está en la rama {now} y la copia se hizo desde {from}",
+			"busy_in_progress": "Aún no integrado: hay un {op} en curso en tu proyecto",
+			"hook_failed": "Los hooks de commit de tu proyecto lo rechazaron",
+			"retest_failed": "Las comprobaciones fallaron tras ponerse al día con tu proyecto",
+			"not_attempted": "No se intentó porque una parte anterior no se integró",
+			"land_failed": "No se pudo integrar; no cambió nada tuyo",
+			"other": "Consulta su historial para ver qué pasó",
+			"step_limit": "La ejecución llegó a su límite de pasos antes de terminar la comprobación",
+			"turn_ended": "La ejecución terminó antes de acabar la comprobación",
+			"restarted": "Nebo se reinició mientras se comprobaba",
+			"unreviewed": "No integrado: la copia tiene cambios que nadie revisó ({files})",
+			"needs_review": "Lo que se incorporaría difiere de lo revisado en {files}; primero se revisa de nuevo",
+			"changed_after_review": "La copia cambió después de revisarse; primero se revisa de nuevo",
+			"waiting_to_land": "Esperando a que termine otra incorporación en este proyecto"
+		},
+		"place": {
+			"app": "El cambio está en las páginas de la app; el historial de la app puede deshacerlo.",
+			"helper": "Está en la copia de su ayudante hasta que la conversación que lo inició lo integre.",
+			"folder": "Se hizo en el mismo lugar, en la carpeta en la que se trabajó.",
+			"nothing": "No había nada que integrar."
+		}
 	}
 }
