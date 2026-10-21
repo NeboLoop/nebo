@@ -468,6 +468,11 @@ pub struct ToolContext {
     /// previewed (`result_shape`), never paged. A workflow never silently
     /// loses data. Not forgeable from tool input.
     pub whole_result: bool,
+    /// Engine-set ONLY (an app's plugin job, `handlers::app_plugins`): where
+    /// a plugin command sends each line it writes, as it writes it, for a
+    /// caller showing a long command's progress. The whole output still
+    /// comes back as the result. Not forgeable from tool input.
+    pub output_lines: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// Tokens the step's model has left for this round's results (its
     /// context threshold less the request just sent), set by the turn for
     /// every call it makes. A tool that pages its output sizes a page from

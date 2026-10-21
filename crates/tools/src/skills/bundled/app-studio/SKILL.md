@@ -139,7 +139,7 @@ create_employee(draft_id: "<the id it returned>")
   share or export the work, each `say` sent to its chat (link: sdk-more.md).
 - `permissions`: `storage:readwrite`, `subagent:<employee-id>`, `network:<host>`
   or `network:*` (the proxy fetch), `device:motion` (tilt),
-  `filesystem:read:<folder>` (sdk-more.md).
+  `filesystem:read:<folder>` (sdk-more.md), `plugin:<slug>`.
 
 The starter page, exactly:
 
@@ -310,7 +310,7 @@ the top level (`NeboAppSDK.identity` is `NeboAppSDK.nebo.identity`), but two
 are renamed there so they don't shadow the browser's: `nebo.fetch` is
 `NeboAppSDK.neboFetch`, `nebo.WebSocket` is `NeboAppSDK.NeboWebSocket`.
 The full top-level list is `nebo`, `identity`, `storage`, `agents`,
-`janus`, `decide`, `share`, `files`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
+`janus`, `decide`, `share`, `files`, `plugins`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`,
 `NeboSDK`, `NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`,
 `setBaseUrl`. The canonical address is `/sdk/nebo.global.js`; from
 `ui/index.html` it is loaded as `../../../sdk/nebo.global.js`.
@@ -328,9 +328,9 @@ The full top-level list is `nebo`, `identity`, `storage`, `agents`,
 | `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | A relative path goes to the app's sidecar API; `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
 | `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee; reconnects. `send`, `close`, `onopen/onmessage/onerror/onclose`. |
 
-Streaming (`agents.stream`, `janus.stream`), cards from the employee
-(`surfaces`), Nebo's chat inside the page (`chat.mount`) and pages served
-outside Nebo (`nebo.configure`): `references/sdk-more.md`.
+Plugins, streaming (`agents.stream`, `janus.stream`),
+cards (`surfaces`), Nebo's chat in the page (`chat.mount`) and
+`nebo.configure`: `references/sdk-more.md`.
 
 The SDK finds the app and the address prefix itself; a page never sets them.
 The starter page checks the wiring: `NeboAppSDK.nebo.identity.get()` prints

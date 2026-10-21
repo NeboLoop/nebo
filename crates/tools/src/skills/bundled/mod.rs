@@ -250,7 +250,7 @@ mod bundled_skill_tests {
         let bundle = std::fs::read_to_string(&bundle)
             .unwrap_or_else(|e| panic!("the served SDK bundle must be readable at {}: {e}", bundle.display()));
         for name in [
-            "nebo", "identity", "storage", "agents", "janus", "decide", "share", "files", "surfaces", "chat", "a2ui",
+            "nebo", "identity", "storage", "agents", "janus", "decide", "share", "files", "plugins", "surfaces", "chat", "a2ui",
             "neboFetch", "NeboWebSocket", "NeboSDK", "NeboSurfaces", "NeboA2UI", "getAppId",
             "getBaseUrl", "setAppId", "setBaseUrl",
         ] {
@@ -291,6 +291,11 @@ mod bundled_skill_tests {
         assert!(more.contains("filesystem:read:"), "the SDK reference names the grant");
         assert!(content.contains("`filesystem:read:<folder>`"), "the skill lists the grant with the permissions");
         assert!(bundle.contains("/files/"), "the bundle must address the app's file route");
+        // Plugins: the page runs a granted plugin through the app's own
+        // plugin route, the same runner as the employee's tool.
+        assert!(more.contains("`plugins.run(slug, command"), "the SDK reference names plugins.run");
+        assert!(content.contains("`plugin:<slug>`"), "the skill lists the grant with the permissions");
+        assert!(bundle.contains("/plugins/"), "the bundle must address the app's plugin route");
         // The two renamed at the top level, said as such.
         assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
         assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");

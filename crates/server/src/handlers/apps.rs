@@ -35,7 +35,7 @@ use db;
 /// Nothing else counts: not the owner's browser session (an app page runs in
 /// an origin of its own and never holds it), not a Referer a page can set,
 /// not the install key. Returns 401 for anything else.
-async fn validate_app_token(
+pub(crate) async fn validate_app_token(
     state: &AppState,
     agent_id: &str,
     headers: &axum::http::HeaderMap,

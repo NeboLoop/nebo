@@ -1,11 +1,12 @@
 # The rest of the SDK
 
-The calls SKILL.md's table leaves out: the owner's files, sharing a file, streaming, cards, the embedded chat, and pages served outside Nebo.
+The calls SKILL.md's table leaves out: the owner's files, sharing a file, running a plugin, streaming, cards, the embedded chat, and pages served outside Nebo.
 
 | Call | Does |
 |------|------|
 | `files.url(path): string` | The address of one of the owner's files, for an `<img>`, `<video>`, `<audio>` or `fetch()`. `path` is relative to his NeboAI folder (`Media/Projects/reel/render.mp4`) and must be inside a folder the manifest grants with `filesystem:read:<folder>` (see below). |
 | `share({name, content}): Promise<{artifact}>` | Hand the owner a file to share (a presentation, a report): it goes into his Work and Nebo opens its Share dialog on it, where he picks who can open the link, on the device the page is open on. Never build a share link yourself. |
+| `plugins.run(slug, command, args?, {timeout?, onProgress?}): Promise<{ok, output, files}>` | Run an installed plugin at once, with no employee turn in between: the command and flags its `plugin__<slug>` tool takes, run the same way. For a page that needs a plugin's work instantly (a scrub strip, a waveform, a thumbnail, a quick trim). The manifest grants it: `plugin:<slug>` for every command, `plugin:<slug>:<command>` for one; an app installed from the marketplace also needs the owner's OK. `onProgress(line)` runs it as a job and hands over each line the plugin writes. `ok: false` is the plugin's own failure; a refused call throws with the reason (403 not granted or not allowed, 404 not installed or turned off, 429 when the app already has 4 runs going). It runs as the app's own employee and never signs in or out of an account (`auth login`, `setup`, `logout` are refused; the owner connects accounts in the employee's settings). A sidecar makes the same call: `POST /api/v1/apps/<id>/plugins/<slug>/run` with `NEBO_APP_TOKEN`, `background: true` for a job read at `GET /api/v1/apps/<id>/plugins/jobs/<job>`. |
 | `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
 | `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Cards from the employee's `a2ui` tool. |

@@ -518,9 +518,11 @@ impl PluginRunner {
     /// input fields).
     fn gated_operation_for_command(&self, slug: &str, command: &str) -> Option<(String, String)> {
         let manifest = self.plugin_store.get_manifest(slug)?;
-        let command = command.trim();
+        // Read the way the runner reads it (`command_words`): quotes, extra
+        // spaces and a leading plugin name never hide the operation.
+        let words = command_words(slug, command)?;
         for (op, bound_cmd) in &manifest.interface_bindings {
-            if command_matches_binding(command, bound_cmd) && crate::interface_catalog::is_gated(op)
+            if command_matches_binding(&words, bound_cmd) && crate::interface_catalog::is_gated(op)
             {
                 return Some((op.clone(), bound_cmd.clone()));
             }
@@ -1209,12 +1211,9 @@ impl PluginRunner {
         // See `docs/publishers-guide/channel-plugins.md` for the contract.
         // Only a plugin that declares a channel has a bridge: another
         // plugin's `post` (Product Hunt's, 2026-10-17) is its own command.
-        let verb = pi
-            .command
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let verb = command_words(&pi.slug, &pi.command)
+            .and_then(|words| words.into_iter().next())
+            .unwrap_or_default();
         if matches!(verb.as_str(), "reply" | "post" | "upload" | "dm") && self.plugin_store.get_channel_def(&pi.slug).is_some() {
             return self.route_through_bridge(&verb, pi, ctx).await;
         }
@@ -1726,19 +1725,16 @@ impl PluginRunner {
             "executing plugin"
         );
 
-        // Split command string into args (subcommand + simple flags).
-        let mut args = if !pi.command.is_empty() {
-            match shlex::split(&pi.command) {
-                Some(a) => a,
-                None => {
-                    return Exec::NotReached(ToolResult::error(format!(
-                        "Could not parse command '{}' (unbalanced quotes). Put values with quotes/special characters in args: {{\"key\": \"value\"}} instead.",
-                        pi.command
-                    )));
-                }
+        // Split command string into args (subcommand + simple flags), a
+        // leading plugin name forgiven (`command_words`).
+        let mut args = match command_words(&pi.slug, &pi.command) {
+            Some(a) => a,
+            None => {
+                return Exec::NotReached(ToolResult::error(format!(
+                    "Could not parse command '{}' (unbalanced quotes). Put values with quotes/special characters in args: {{\"key\": \"value\"}} instead.",
+                    pi.command
+                )));
             }
-        } else {
-            Vec::new()
         };
 
         // A plugin is executed directly, never through a shell, so a shell
@@ -1756,13 +1752,6 @@ impl PluginRunner {
             )));
         }
 
-        // Forgive a leading plugin-name token. Models often prefix the plugin
-        // slug (e.g. `gws calendar events list`); the binary expects a service
-        // first (`calendar events list`), so a leading `gws` makes it see
-        // service "gws" → "Unknown service 'gws'". Drop it so both forms work.
-        if args.first().map(|a| a.eq_ignore_ascii_case(&pi.slug)) == Some(true) {
-            args.remove(0);
-        }
 
         // Agents must NEVER self-initiate an auth flow. `auth login`/`logout`/`setup`
         // are privileged, interactive, account-mutating actions that belong to the
@@ -2027,6 +2016,9 @@ impl PluginRunner {
         if let Some((env_name, config_dir)) = &profile_dir_injection {
             runtime = runtime.with_env(env_name.clone(), config_dir.clone());
         }
+        if let Some(lines) = &ctx.output_lines {
+            runtime = runtime.with_output(lines.clone());
+        }
 
         let started = std::time::SystemTime::now();
         let result = runtime
@@ -2094,7 +2086,12 @@ impl PluginRunner {
                 // (`step_data`), or returned whole to a step that parses it.
                 // The cut, footer included, stays within the tool's inline
                 // threshold, so a chat's cut output is never also saved.
-                if text.len() > crate::MAX_SUBPROCESS_OUTPUT && ctx.door != types::permissions::Door::Workflow {
+                // A program reading the result (`whole_result`: an app's
+                // call) gets it whole too.
+                if text.len() > crate::MAX_SUBPROCESS_OUTPUT
+                    && ctx.door != types::permissions::Door::Workflow
+                    && !ctx.whole_result
+                {
                     let total = text.len();
                     let footer = |kept: usize| {
                         format!(
@@ -2619,7 +2616,8 @@ fn take_client_key(input: &mut serde_json::Value) -> Option<String> {
 /// or a `help` arg) and no other flag, so it performs nothing.
 fn asks_only_for_help(call: &PluginCall) -> bool {
     let mut help = false;
-    for word in call.command.split_whitespace() {
+    let Some(words) = command_words(&call.slug, &call.command) else { return false };
+    for word in &words {
         if word == "--help" || word == "-h" {
             help = true;
         } else if word.starts_with('-') {
@@ -2635,20 +2633,33 @@ fn asks_only_for_help(call: &PluginCall) -> bool {
     help
 }
 
-fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
-    let bound_cmd = if bound_cmd.contains('{') {
-        let words: Vec<&str> = bound_cmd
+fn command_matches_binding(words: &[String], bound_cmd: &str) -> bool {
+    let bound: Vec<&str> = if bound_cmd.contains('{') {
+        bound_cmd
             .split_whitespace()
             .take_while(|w| !w.starts_with("--") && !w.contains('{'))
-            .collect();
-        words.join(" ")
+            .collect()
     } else {
-        bound_cmd.to_string()
+        bound_cmd.split_whitespace().collect()
     };
-    match command.strip_prefix(bound_cmd.as_str()) {
-        Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
-        None => false,
+    !bound.is_empty()
+        && words.len() >= bound.len()
+        && words.iter().zip(&bound).all(|(w, b)| w.eq_ignore_ascii_case(b))
+}
+
+/// The words a plugin command reaches its binary as: split the way a shell
+/// splits (quotes keep a value together; nothing ever runs through a
+/// shell), with a leading plugin name dropped. Models often prefix the slug
+/// (`gws calendar events list`) where the binary expects a service first
+/// (`calendar events list`), so both forms work. `None` for unbalanced
+/// quotes. The one reading of a command: the runner, the gated-operation
+/// match, and an app's `plugin:<slug>:<command>` grant all read it so.
+pub fn command_words(slug: &str, command: &str) -> Option<Vec<String>> {
+    let mut words = shlex::split(command)?;
+    if words.first().is_some_and(|w| w.eq_ignore_ascii_case(slug)) {
+        words.remove(0);
     }
+    Some(words)
 }
 
 /// Shape a port call from its binding: the plugin command to run and the input
@@ -2884,15 +2895,25 @@ mod tests {
         assert!(rows[0].read_at.is_none(), "a break after a reconnect is news again");
     }
 
+    fn w(command: &str) -> Vec<String> {
+        command_words("books", command).unwrap()
+    }
+
     #[test]
     fn exec_binding_match_requires_word_boundary() {
-        assert!(command_matches_binding("ingest", "ingest"));
-        assert!(command_matches_binding("ingest --limit 5", "ingest"));
-        assert!(command_matches_binding("documents list --limit 2", "documents list"));
+        assert!(command_matches_binding(&w("ingest"), "ingest"));
+        assert!(command_matches_binding(&w("ingest --limit 5"), "ingest"));
+        assert!(command_matches_binding(&w("documents list --limit 2"), "documents list"));
         // No boundary → not the bound command.
-        assert!(!command_matches_binding("ingestion-report", "ingest"));
-        assert!(!command_matches_binding("documents listing", "documents list"));
-        assert!(!command_matches_binding("search foo", "ingest"));
+        assert!(!command_matches_binding(&w("ingestion-report"), "ingest"));
+        assert!(!command_matches_binding(&w("documents listing"), "documents list"));
+        assert!(!command_matches_binding(&w("search foo"), "ingest"));
+        // Read as the runner reads it: extra spaces, quotes and a leading
+        // plugin name never hide the bound command.
+        assert!(command_matches_binding(&w("documents  list"), "documents list"));
+        assert!(command_matches_binding(&w("\"documents\" list"), "documents list"));
+        assert!(command_matches_binding(&w("books documents list"), "documents list"));
+        assert!(command_matches_binding(&w("Documents LIST"), "documents list"));
     }
 
     /// A gated template binding is still recognised through raw exec by its
@@ -2900,11 +2921,11 @@ mod tests {
     #[test]
     fn exec_binding_match_uses_a_templates_plain_prefix() {
         let t = "bill create --vendor-ref {vendorId} {lines[]:--line}";
-        assert!(command_matches_binding("bill create", t));
-        assert!(command_matches_binding("bill create --vendor-ref 7", t));
-        assert!(!command_matches_binding("bill created", t));
-        assert!(!command_matches_binding("bill", t));
-        assert!(command_matches_binding("invoice send 9", "invoice send {invoiceId}"));
+        assert!(command_matches_binding(&w("bill create"), t));
+        assert!(command_matches_binding(&w("bill create --vendor-ref 7"), t));
+        assert!(!command_matches_binding(&w("bill created"), t));
+        assert!(!command_matches_binding(&w("bill"), t));
+        assert!(command_matches_binding(&w("invoice send 9"), "invoice send {invoiceId}"));
     }
 
     fn argv(cmd: &str) -> Vec<String> {

@@ -40,10 +40,10 @@ describe("app consent", () => {
         .replace("{name}", "Media Studio")
         .replace("{target}", words.values.target),
     ).toBe("Media Studio wants to see the files in NeboAI › Media › Projects");
-    for (const kind of ["files", "web", "helper"])
+    for (const kind of ["files", "web", "helper", "plugin"])
       for (const target of ["x", ""])
         for (const asking of [true, false]) {
-          if (kind === "files" && target === "") continue;
+          if ((kind === "files" || kind === "plugin") && target === "") continue;
           const k = permissionWords(
             { ...files, kind, target },
             "A",
@@ -57,6 +57,17 @@ describe("app consent", () => {
     expect(permissionWords(anyWeb, "A", false).key).toBe(
       "appPermissions.canWebAny",
     );
+    const plugin = permissionWords(
+      { ...files, kind: "plugin", target: "Nebo Media" },
+      "Media Studio",
+      true,
+    );
+    expect(plugin.key).toBe("appPermissions.wantsPlugin");
+    expect(
+      (en.appPermissions as Record<string, string>).wantsPlugin
+        .replace("{name}", "Media Studio")
+        .replace("{target}", plugin.values.target),
+    ).toBe("Media Studio wants to use Nebo Media");
   });
 
   it("opens at once when nothing waits on the owner", async () => {

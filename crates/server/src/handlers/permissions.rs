@@ -504,10 +504,11 @@ pub struct ActivityRow {
 pub struct AppPermission {
     /// As the manifest asks for it (`filesystem:read:Media/Projects`).
     pub permission: String,
-    /// `files`, `web` or `helper`.
+    /// `files`, `web`, `helper` or `plugin`.
     pub kind: String,
     /// What it names, ready to show: `NeboAI › Media › Projects`, a
-    /// website's name, an employee's name. Empty when it names everything
+    /// website's name, an employee's name, a plugin's name (`Nebo Media`, or
+    /// `Nebo Media › strip` for one command). Empty when it names everything
     /// of its kind (`network:*`).
     pub target: String,
     /// `allowed`, `refused`, or `asking` (not answered yet).

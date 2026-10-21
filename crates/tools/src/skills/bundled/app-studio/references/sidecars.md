@@ -15,6 +15,7 @@ publisher account. Many needs are covered without one; check first.
 | AI: text, a judgment, a picture | `janus.complete`, `decide`, the employee's `generate_media` |
 | A file made for the owner | The employee makes it and hands it over with `share_file` |
 | Another employee's help | `agents.invoke` (needs `subagent:<id>`) |
+| A plugin's work at once (a thumbnail, a strip, a trim) | `plugins.run` on the page, with `plugin:<slug>` in the manifest (sdk-more.md) |
 
 ## When a sidecar is right
 
