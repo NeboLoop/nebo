@@ -1059,20 +1059,7 @@ pub(super) fn input_landed_after(h: &Harness, session_id: &str, heard_through: O
         .iter()
         .rev()
         .take_while(|m| heard_through != Some(m.id.as_str()))
-        .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || queued_row(m)))
-}
-
-
-/// A notification or a platform prompt (a goal kickoff) written into a
-/// running turn.
-fn queued_row(msg: &ChatMessage) -> bool {
-    super::delegation::notify::is_notification_row(msg)
-        || msg
-            .metadata
-            .as_deref()
-            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-            .and_then(|v| v.get("hiddenPrompt").and_then(|b| b.as_bool()))
-            == Some(true)
+        .any(conversation::wakes_a_turn)
 }
 
 /// The next turn on the same session and seat: its input is already in the
@@ -2163,6 +2150,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 let _ = cx.tx.send(model_call::not_signed_in()).await;
                 return TurnExit::ProviderFailed(model_call::NOT_SIGNED_IN_TEXT.into());
             }
+            CallOutcome::BalanceReserved => {
+                let _ = cx.tx.send(model_call::balance_reserved()).await;
+                return TurnExit::ProviderFailed(ai::BALANCE_BUSY.into());
+            }
         };
         let model_call::ModelReply {
             text,
@@ -2676,6 +2667,7 @@ fn build_request(
 ) -> ChatRequest {
     ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         // The conversation and the ask door, for a provider that keeps one
         // remote chat per Nebo chat and relays its runtime's own questions
         // (the linked provider).
@@ -5199,6 +5191,33 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async move { tools::ToolResult::ok(format!("found {}", input["q"].as_str().unwrap_or_default())) })
+        }
+    }
+
+    /// A notification written while the last step's reply is in flight
+    /// starts a follow-up turn that hears it; a quiet one (a stopped
+    /// helper's late report) is read with the conversation later and starts
+    /// none. Through the real turn path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_quiet_row_after_the_last_step_starts_no_follow_up() {
+        for quiet in [false, true] {
+            let model = Arc::new(Scripted::default());
+            let h = harness(&model).await;
+            let h2 = h.clone();
+            let hook: Hook = Box::pin(async move {
+                let _ = h2.sessions.get_or_create(KEY, "owner-1");
+                crate::harness::delegation::notify::append_row(&h2.sessions, KEY, "helper h-9 \"look\": stopped", &[], quiet).unwrap();
+            });
+            *model.script.lock().unwrap() =
+                VecDeque::from(vec![Step::During(Box::new(Step::Say("Done.")), hook), Step::Say("Heard it."), Step::Say("")]);
+            let events = run_turn(&h, owner("Plan it")).await;
+            assert_eq!(exit_of(&events), "text_response");
+            let calls = model.calls().len();
+            if quiet {
+                assert_eq!(calls, 1, "a quiet row starts no follow-up turn");
+            } else {
+                assert!(calls >= 2, "an unheard notification starts a follow-up turn: {calls}");
+            }
         }
     }
 

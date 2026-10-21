@@ -304,6 +304,7 @@ impl AuxReader {
         let crate::harness::model_call::Route { provider, model, .. } = self.housekeeper.route(&chosen).await?;
         let req = ai::ChatRequest {
             tool_credential: None,
+            caller_waits_for_balance: false,
             chat_id: String::new(),
             ask_channels: None,
             permission_mode: None,

@@ -138,7 +138,7 @@ async fn jev_round(cx: &JudgeCx, questions: &[Question]) -> Vec<Option<(Verdict,
         "last_user_message": ai::decide::clip(cx.last_message.trim(), USER_MESSAGE_CAP),
     });
     let asked: BTreeMap<&str, ai::Question> = ids.iter().map(|id| (id.as_str(), jev_question(id))).collect();
-    let decision = match tokio::time::timeout(JEV_DEADLINE, client.decide(&cx.trace, &state, &asked)).await {
+    let decision = match tokio::time::timeout(JEV_DEADLINE, client.decide(&cx.trace, &state, &asked, Some(&mut ai::ReservedWaits::default()))).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             debug!(site = "permission_judgement", error = %e, "Jev failed");

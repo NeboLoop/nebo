@@ -119,7 +119,7 @@ pub async fn decide(client: Option<&DecideClient>, message: &str, asks: Asks, ag
     }
     let state = serde_json::json!({ "message": ai::decide::clip(message.trim(), WORDS_CAP) });
     let trace = ai::RequestTrace { agent_id: agent_id.to_string(), ..ai::RequestTrace::new("opening_ask") };
-    match tokio::time::timeout(timeout, client.decide(&trace, &state, &questions)).await {
+    match tokio::time::timeout(timeout, client.decide(&trace, &state, &questions, Some(&mut ai::ReservedWaits::default()))).await {
         Ok(Ok(decision)) => Heard {
             save: if asks.save { memory_save::read(&decision, agent_id) } else { SaveAsk::NotAsked },
             command: if asks.command { owner_command::read(&decision, agent_id) } else { CommandAsk::NotNamed },

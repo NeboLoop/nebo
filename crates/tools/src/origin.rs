@@ -191,6 +191,47 @@ pub struct ChannelContext {
     pub thread_ts: Option<String>,
 }
 
+/// The slot a call holds from the bounded pool tool calls run in (the tool
+/// round's). It belongs to the call, which has one waiter at a time
+/// ([`ToolContext::wait_out`]): a call that has to wait (a held balance)
+/// gives it back for the wait, so the wait never keeps another call from
+/// running, and takes it again once, unless the run stops first.
+#[derive(Debug)]
+pub struct ToolSlot {
+    pool: std::sync::Arc<tokio::sync::Semaphore>,
+    held: std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+}
+
+impl ToolSlot {
+    /// A slot from `pool`, once one is free.
+    pub async fn take(pool: std::sync::Arc<tokio::sync::Semaphore>) -> std::sync::Arc<Self> {
+        let permit = pool.clone().acquire_owned().await.expect("tool pool closed");
+        std::sync::Arc::new(Self { pool, held: std::sync::Mutex::new(Some(permit)) })
+    }
+
+    /// Wait `wait` with the slot given back, then take it again: true when
+    /// both finished, false when `cancel` fired during either (the slot then
+    /// stays given back; the call ends).
+    pub async fn idle(&self, wait: std::time::Duration, cancel: &tokio_util::sync::CancellationToken) -> bool {
+        drop(self.held.lock().unwrap_or_else(|e| e.into_inner()).take());
+        tokio::select! {
+            _ = cancel.cancelled() => return false,
+            _ = tokio::time::sleep(wait) => {}
+        }
+        let permit = tokio::select! {
+            _ = cancel.cancelled() => return false,
+            permit = self.pool.clone().acquire_owned() => permit.expect("tool pool closed"),
+        };
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some(permit);
+        true
+    }
+
+    /// Whether the call holds its slot now.
+    pub fn is_held(&self) -> bool {
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+}
+
 /// How many of a run's calls are waiting on someone other than the run
 /// itself: the owner answering a question, or NeboAI rendering a video. A
 /// run that is waiting is not stalled, however long the answer takes; the
@@ -368,6 +409,10 @@ pub struct ToolContext {
     /// The run's count of calls waiting on the owner or on a render, shared
     /// by every call of the run and read by its dispatcher.
     pub waiting: std::sync::Arc<Waiting>,
+    /// The slot this call holds in the tool round's pool, when it runs in
+    /// one: given back while the call waits out a held balance
+    /// ([`crate::Registry::execute`]). `None` elsewhere.
+    pub slot: Option<std::sync::Arc<ToolSlot>>,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,
@@ -481,6 +526,21 @@ pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
 }
 
 impl ToolContext {
+    /// Wait `wait` with this call's slot in the tool pool given back, unless
+    /// the run stops first: true when it waited the whole time (and holds
+    /// its slot again). How a tool call waits out a balance held by running
+    /// work: one waiter per call, never while any part of the call is still
+    /// running, so the slot is given back and taken again once.
+    pub async fn wait_out(&self, wait: std::time::Duration) -> bool {
+        match &self.slot {
+            Some(slot) => slot.idle(wait, &self.cancel_token).await,
+            None => tokio::select! {
+                _ = self.cancel_token.cancelled() => false,
+                _ = tokio::time::sleep(wait) => true,
+            },
+        }
+    }
+
     /// Whether this turn came from the phone app as an app store ships it
     /// (`crate::store_app`): it is never handed a checkout link or a price.
     pub fn in_store_app(&self) -> bool {
@@ -613,6 +673,57 @@ impl ToolContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call's slot given back for a wait comes back once, and cannot be
+    /// lost: eight calls sharing a pool of two, each waiting three times,
+    /// all finish holding their slots, and the pool is whole after.
+    #[tokio::test]
+    async fn eight_calls_on_two_slots_wait_and_all_finish() {
+        let pool = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
+        let calls: Vec<_> = (0..8)
+            .map(|_| {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    let slot = ToolSlot::take(pool).await;
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    for _ in 0..3 {
+                        assert!(slot.idle(std::time::Duration::from_millis(20), &cancel).await);
+                        assert!(slot.is_held());
+                    }
+                })
+            })
+            .collect();
+        tokio::time::timeout(std::time::Duration::from_secs(10), futures::future::join_all(calls))
+            .await
+            .expect("no call is stuck taking its slot back");
+        assert_eq!(pool.available_permits(), 2);
+    }
+
+    /// A stop while the call waits to take its slot back ends the wait at
+    /// once, without the slot.
+    #[tokio::test]
+    async fn a_stop_while_taking_the_slot_back_returns_at_once() {
+        let pool = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let slot = ToolSlot::take(pool.clone()).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let idling = slot.idle(std::time::Duration::from_millis(50), &cancel);
+        let other = async {
+            // Another call takes the slot while this one waits, and keeps it.
+            let kept = pool.clone().acquire_owned().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            cancel.cancel();
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(kept);
+        };
+        let started = std::time::Instant::now();
+        let back = tokio::select! {
+            back = idling => back,
+            _ = other => panic!("the stop was not heard"),
+        };
+        assert!(!back, "stopped, not taken back");
+        assert!(!slot.is_held());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    }
 
     /// While a question waits on the owner the run counts as waiting, and
     /// stops the moment the answer arrives.

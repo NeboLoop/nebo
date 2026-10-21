@@ -671,11 +671,31 @@ fn pick_candidates<'a>(action: &str, snap: &'a Snapshot) -> Vec<&'a UIElement> {
         .collect()
 }
 
+/// Why `target` was not resolved: running work holds the balance (the
+/// registry waits it out and runs the action again), or the reason, for the
+/// model.
+enum Unpicked {
+    Held(types::balance::Held),
+    Why(String),
+}
+
+impl From<String> for Unpicked {
+    fn from(why: String) -> Self {
+        Self::Why(why)
+    }
+}
+
+impl From<&str> for Unpicked {
+    fn from(why: &str) -> Self {
+        Self::Why(why.to_string())
+    }
+}
+
 /// Resolve `target` ("the Save button") to one element of `snap`. A single
 /// element carrying exactly that label needs no model; otherwise Jev picks,
 /// accepted at confidence 0.7 or more. Every other outcome falls through to
 /// the model with the reason, and nothing moves.
-async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String, String), String> {
+async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String, String), Unpicked> {
     let candidates = pick_candidates(action, snap);
     if candidates.is_empty() {
         return Err("this screen has no labelled elements for that action (read by vision); pick a pixel from the image".into());
@@ -718,9 +738,18 @@ async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String
         }
         why
     };
-    let decision = client.decide(&trace, &state, &questions).await.map_err(|e| miss(format!("Jev did not answer ({e}); choose the ref yourself")))?;
+    // Sent once: a balance held by running work goes back typed, and the
+    // registry waits it out with the call's slots given back (nothing was
+    // touched, so the action runs again whole).
+    let decision = match client.decide(&trace, &state, &questions, None).await {
+        Ok(decision) => decision,
+        Err(ai::ProviderError::BalanceReserved { retry_after_secs }) => {
+            return Err(Unpicked::Held(types::balance::Held { retry_after: retry_after_secs.map(std::time::Duration::from_secs) }));
+        }
+        Err(e) => return Err(miss(format!("Jev did not answer ({e}); choose the ref yourself")).into()),
+    };
     let Some(ans) = decision.answer("element") else {
-        return Err(miss("Jev returned no choice; choose the ref yourself".into()));
+        return Err(miss("Jev returned no choice; choose the ref yourself".into()).into());
     };
     let picked = ans.picked().to_string();
     let conf = ans.confidence.unwrap_or(0.0);
@@ -728,7 +757,7 @@ async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String
     top.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
     let top = top.iter().take(3).map(|(k, p)| format!("{k} {:.0}%", *p * 100.0)).collect::<Vec<_>>().join(", ");
     if picked == "none" || picked.is_empty() || conf < 0.7 || !candidates.iter().any(|e| e.id == picked) {
-        return Err(miss(format!("Jev was not sure which element is \"{target}\" ({top}); choose the ref yourself")));
+        return Err(miss(format!("Jev was not sure which element is \"{target}\" ({top}); choose the ref yourself")).into());
     }
     Ok((picked.clone(), format!("Jev picked {picked} for \"{target}\" ({:.0}% sure)", conf * 100.0)))
 }
@@ -783,7 +812,16 @@ async fn handle_input(
                     pick_note = format!(" ({note})");
                     &picked_input
                 }
-                Err(why) => return ToolResult::error(format!("Not delivered (safe to retry): {why}. Nothing was touched.")),
+                Err(Unpicked::Held(held)) => {
+                    // Run again on the capture this attempt picked from,
+                    // never whatever capture is latest by then.
+                    let mut pinned = input.clone();
+                    pinned["snapshot_id"] = serde_json::json!(snap.id);
+                    return ToolResult::error(format!("Not delivered (safe to retry): {} Nothing was touched.", ai::BALANCE_BUSY))
+                        .with_held_balance(held)
+                        .with_rerun_input(pinned);
+                }
+                Err(Unpicked::Why(why)) => return ToolResult::error(format!("Not delivered (safe to retry): {why}. Nothing was touched.")),
             }
         }
         _ => input,
@@ -2672,7 +2710,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, need: None, question: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, question: None, held_balance: None, rerun_input: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, more_files: Vec::new(), http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -3218,6 +3256,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
     };
     let saved = persist_path.clone();
     ToolResult {
+        held_balance: None, rerun_input: None,
         payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h, "path": saved })),
         content,
         is_error: false,

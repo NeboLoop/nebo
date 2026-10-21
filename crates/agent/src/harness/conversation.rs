@@ -339,6 +339,27 @@ impl MidTurnFrom {
     }
 }
 
+/// Whether a stored row is input a turn must hear: a message that arrived
+/// while a turn ran, a notification, or a prompt written into a running
+/// turn (a goal kickoff). A quiet notification (a stopped helper's late
+/// report, `notify::append_row`) is read with the conversation but never
+/// asks for a turn of its own. The ONE test for "is there unheard input":
+/// a turn's follow-up (`turn::input_landed_after`) and a helper's next turn
+/// (`delegation::input_unheard`) both use it.
+pub(crate) fn wakes_a_turn(msg: &ChatMessage) -> bool {
+    use crate::harness::delegation::notify;
+    let hidden_prompt = || {
+        msg.metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get("hiddenPrompt").and_then(|b| b.as_bool()))
+            == Some(true)
+    };
+    msg.role == "user"
+        && !notify::is_quiet_row(msg)
+        && (arrived_mid_turn(msg).is_some() || notify::is_notification_row(msg) || hidden_prompt())
+}
+
 /// Who sent a message that arrived while a turn ran, if it is one (the mark
 /// `MidTurnFrom::metadata` writes).
 pub(crate) fn arrived_mid_turn(msg: &ChatMessage) -> Option<MidTurnFrom> {

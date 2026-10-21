@@ -133,6 +133,7 @@ async fn run_single_advisor(
 
     let req = ChatRequest {
         tool_credential: None,
+        caller_waits_for_balance: false,
         chat_id: String::new(),
         ask_channels: None,
         permission_mode: None,

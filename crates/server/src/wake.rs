@@ -170,7 +170,7 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
     let mut written = Vec::new();
     for w in &batch {
         let taint = serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
-        match notify::append_row(state.harness.sessions(), session_key, &row_text(&w.kind, &w.payload), &taint) {
+        match notify::append_row(state.harness.sessions(), session_key, &row_text(&w.kind, &w.payload), &taint, false) {
             Ok(()) => written.push(w.id),
             Err(e) => {
                 warn!(error = %e, session = %session_key, kind = %w.kind, "wake: row not written; it redelivers");

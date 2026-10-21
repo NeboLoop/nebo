@@ -129,6 +129,16 @@ impl SpawnRequest {
 /// path. (100,000 until 2026-10-20.)
 pub const REPORT_LIMIT: usize = 30_000;
 
+/// The owner's answer to a helper's open question, as `send_message`
+/// relays it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Answer {
+    /// The question's id from the helper's report; `None` answers its
+    /// newest open question.
+    pub question: Option<String>,
+    pub text: String,
+}
+
 /// Result from a helper.
 #[derive(Debug, Clone)]
 pub struct SpawnResult {
@@ -209,13 +219,13 @@ pub trait SubAgentOrchestrator: Send + Sync {
     /// the message as its next input, reporting the way it was started
     /// (`FollowUp::Continued`). `parent` is [`SpawnRequest::child_of`] the
     /// sender's run: a continued helper runs under the sender's limits.
-    /// `answer` is the owner's answer to the helper's pending question: it,
-    /// and only it, settles that question.
+    /// `answer` is the owner's answer to one of the helper's open questions:
+    /// it, and only it, settles that question.
     fn send(
         &self,
         task_id: &str,
         message: &str,
-        answer: Option<&str>,
+        answer: Option<Answer>,
         parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 

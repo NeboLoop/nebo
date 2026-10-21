@@ -570,7 +570,7 @@ pub(crate) async fn read_reply(
     let questions = BTreeMap::from([(REPLY, reply_question(w))]);
     let decision = match tokio::time::timeout(
         READ_TIMEOUT,
-        client.decide(&trace, &reply_state(w, words, conversation), &questions),
+        client.decide(&trace, &reply_state(w, words, conversation), &questions, Some(&mut ai::ReservedWaits::default())),
     )
     .await
     {
