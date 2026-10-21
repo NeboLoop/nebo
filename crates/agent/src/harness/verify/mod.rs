@@ -16,12 +16,14 @@
 //! - [`lenses`]: the review lenses a change gets, and whether it is small;
 //! - [`checks`]: the project's own build and tests;
 //! - [`rules`]: the rules every brief carries;
+//! - [`review`]: a round of independent reviewers, one per lens;
 //! - [`findings`]: what a reviewer reports, and when the loop has stalled.
 
 pub mod checks;
 pub mod findings;
 pub mod lenses;
 pub mod project;
+pub mod review;
 pub mod rules;
 pub mod shadow;
 

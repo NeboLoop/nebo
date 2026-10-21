@@ -695,6 +695,9 @@ fn lane_of(req: &TurnRequest) -> Option<types::packs::Lane> {
         (Door::Helper, _) if matches!(req.mode, TurnMode::Helper { kind: super::delegation::HelperKind::Explore, .. }) => {
             Some(Lane::Explore)
         }
+        // A reviewer works at the level the employee was given, as its own
+        // conversation does: the same model and level as the work it checks.
+        (Door::Helper, _) if matches!(req.mode, TurnMode::Helper { kind: super::delegation::HelperKind::Review, .. }) => None,
         (Door::Helper, _) => Some(Lane::Helpers),
         (_, tools::Origin::Comm) => Some(Lane::Communication),
         _ => None,

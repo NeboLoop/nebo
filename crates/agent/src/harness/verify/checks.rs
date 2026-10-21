@@ -456,6 +456,25 @@ mod tests {
     }
 
     #[test]
+    fn a_check_that_outlasts_its_time_is_found_by_its_background_id() {
+        assert_eq!(
+            backgrounded("Command exceeded its timeout (600s) and was moved to the background with ID: bg-12ab. It is still running"),
+            Some("bg-12ab".into())
+        );
+        assert_eq!(backgrounded("test result: ok"), None);
+    }
+
+    #[test]
+    fn a_long_output_keeps_its_end() {
+        let long: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let t = tail(&long);
+        assert!(t.starts_with("[… earlier output left out]\n"));
+        assert!(t.ends_with("line 1999"));
+        assert!(t.chars().count() <= TAIL_CHARS + 40);
+        assert_eq!(tail("ok\n"), "ok");
+    }
+
+    #[test]
     fn a_web_package_without_a_type_check_compiles_with_its_build() {
         let dir = tempfile::tempdir().unwrap();
         write(

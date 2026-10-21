@@ -54,7 +54,8 @@ impl HelperDoor {
         Ok(HelperSpec {
             description: req.description.clone(),
             prompt: req.prompt.clone(),
-            kind: HelperKind::parse(&req.agent_type).unwrap_or(HelperKind::General),
+            // A reviewer is the verify loop's own: a model never starts one.
+            kind: HelperKind::parse(&req.agent_type).filter(|k| HelperKind::ALL.contains(k)).unwrap_or(HelperKind::General),
             background,
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
