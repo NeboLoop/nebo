@@ -2389,7 +2389,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if reply_in_words && !text.trim().is_empty() {
             let intent = st.owner_intent.take().map_or(OwnerIntent::Undecided, |(_, intent)| intent);
             info!(session_id = sid, intent = intent.as_str(), "the owner's message ends the work: the turn ends on the answer");
-            st.owner_ended = Some(if pause_goal_for_the_owner(cx) { OwnerEnded::GoalPaused } else { OwnerEnded::Stopped });
+            st.owner_ended = Some(OwnerEnded { intent, goal_paused: pause_goal_for_the_owner(cx) });
             return TurnExit::Answered;
         }
         // The step that heard a message joining the work answered it in
@@ -3297,13 +3297,12 @@ async fn close_verifications(h: &Harness, verify: &super::verify::engine::Verify
     }
 }
 
-/// How the owner's own message ended a turn's work (`reply_in_words`).
+/// How the owner's own message ended a turn's work (`reply_in_words`):
+/// what he meant by it, and whether it paused the goal the work was for.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum OwnerEnded {
-    /// He typed a stop: the same as the Stop button.
-    Stopped,
-    /// His message paused the goal the work was for: the work waits on him.
-    GoalPaused,
+pub(crate) struct OwnerEnded {
+    pub intent: OwnerIntent,
+    pub goal_paused: bool,
 }
 
 /// How a turn's end leaves its verifications: the one mapping `finish`
@@ -3311,10 +3310,12 @@ pub(crate) enum OwnerEnded {
 fn closing(exit: &TurnExit, stalled: bool, owner_ended: Option<OwnerEnded>) -> super::verify::engine::Closed {
     use super::verify::engine::Closed;
     match exit {
-        // The owner's message ended the work: a typed stop is a stop; one
-        // that paused his goal leaves the work waiting on him.
-        TurnExit::Answered if owner_ended == Some(OwnerEnded::Stopped) => Closed::Stopped,
-        TurnExit::Answered if owner_ended == Some(OwnerEnded::GoalPaused) => Closed::Waiting,
+        // The owner's message ended the work. A stop he typed is the Stop
+        // button's stop, his goal paused or not. A message no reading could
+        // be had of that paused his goal leaves the work waiting on him;
+        // without a goal it is an answer that skipped its check.
+        TurnExit::Answered if owner_ended.is_some_and(|e| e.intent == OwnerIntent::Stop) => Closed::Stopped,
+        TurnExit::Answered if owner_ended.is_some_and(|e| e.goal_paused) => Closed::Waiting,
         TurnExit::Answered | TurnExit::Compacted => Closed::Unchecked,
         TurnExit::AwaitingApproval | TurnExit::TerminalTool { .. } | TurnExit::OwnerQuestion => Closed::Waiting,
         TurnExit::Cancelled if !stalled => Closed::Stopped,
@@ -6179,6 +6180,8 @@ mod tests {
     struct PartReader {
         runs: Arc<std::sync::atomic::AtomicUsize>,
         during_second: Option<Arc<Owner>>,
+        /// Each run changes the file it names: code work, verified.
+        changes: bool,
     }
 
     impl tools::registry::DynTool for PartReader {
@@ -6189,18 +6192,23 @@ mod tests {
             "reads the next part".into()
         }
         fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string", "description": "the file the part is in"}}})
         }
         fn read_only(&self, _input: &serde_json::Value) -> bool {
-            true
+            !self.changes
         }
         fn execute_dyn<'a>(
             &'a self,
-            _ctx: &'a tools::ToolContext,
-            _input: serde_json::Value,
+            ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
         ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
             Box::pin(async move {
                 let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if self.changes
+                    && let (Some(dir), Some(file)) = (ctx.cwd.as_deref(), input["path"].as_str())
+                {
+                    let _ = std::fs::write(std::path::Path::new(dir).join(file), format!("def total(a, b): return a + b  # {run}\n"));
+                }
                 if run == 2
                     && let Some(owner) = &self.during_second
                 {
@@ -6270,7 +6278,21 @@ mod tests {
         jev: Option<&'static str>,
         prepare: impl FnOnce(&Harness),
     ) -> Interrupted {
-        let req = owner("Read part one and follow it to the end, then summarize.");
+        interrupted_in(at, act, model, jev, prepare, None).await
+    }
+
+    /// [`interrupted_with`], working in `project` when one is given: each
+    /// read changes its file there, so the turn has code work to verify.
+    async fn interrupted_in(
+        at: At,
+        act: impl FnOnce(&TurnRequest) -> Act,
+        model: fn(&ChatRequest) -> Step,
+        jev: Option<&'static str>,
+        prepare: impl FnOnce(&Harness),
+        project: Option<&std::path::Path>,
+    ) -> Interrupted {
+        let mut req = owner("Read part one and follow it to the end, then summarize.");
+        req.seat.cwd = project.map(|p| p.to_string_lossy().into_owned());
         let owner_act = Arc::new(Owner { h: Default::default(), act: act(&req), done: Default::default() });
         let mut script: Vec<Step> = (0..12).map(|_| Step::Reacting(model)).collect();
         match at {
@@ -6284,6 +6306,7 @@ mod tests {
         let reader = PartReader {
             runs: runs.clone(),
             during_second: (at == At::DuringTools).then(|| owner_act.clone()),
+            changes: project.is_some(),
         };
         let mut h = harness_with(&model, vec![Box::new(reader)]).await;
         if let Some(intent) = jev {
@@ -6601,7 +6624,7 @@ mod tests {
         script[1] = Step::During(Box::new(Step::Reacting(answers_and_reads_on)), message.hook());
         script[3] = Step::During(Box::new(Step::Reacting(answers_and_reads_on)), stop.hook());
         let model = Scripted::new(script);
-        let reader = PartReader { runs: Default::default(), during_second: None };
+        let reader = PartReader { runs: Default::default(), during_second: None, changes: false };
         let h = harness_with(&model, vec![Box::new(reader)]).await.with_decide(jev_reading("aside").await);
         let _ = message.h.set(h.clone());
         let (outlets, mut asked) = asking_outlets(None);
@@ -6717,6 +6740,57 @@ mod tests {
         .await;
         assert_eq!(exit_of(&run.events), "text_response");
         assert_goal_paused_by_the_owner(&run, &watch);
+    }
+
+    /// [`reads_on`] working on code: each read changes `total.py` in the
+    /// project the turn works in.
+    fn edits_on(req: &ChatRequest) -> Step {
+        match reads_on(req) {
+            Step::Call("read", _) => Step::Call("read", serde_json::json!({"path": "total.py"})),
+            other => other,
+        }
+    }
+
+    /// The owner's message ends code work the way he meant it, end to end:
+    /// a stop he typed closes its verification as stopped, the same as the
+    /// Stop button, his goal paused or not; a message no reading could be
+    /// had of that paused his goal leaves it waiting on him; one that paused
+    /// none is an answer that skipped its check.
+    #[test]
+    fn the_owners_message_ends_code_work_as_he_meant_it() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                for (jev, goal, state, reason) in [
+                    (Some("stop"), true, "stopped", ""),
+                    (Some("stop"), false, "stopped", ""),
+                    (None, true, "paused", ""),
+                    (None, false, "not_verified", r#"{"code":"turn_ended"}"#),
+                ] {
+                    let (project, _file) = small_project(true).await;
+                    let watch = Arc::new(Watch(Mutex::new(Vec::new())));
+                    let (outlets, set_goal) = with_goal(&watch);
+                    let run = interrupted_in(
+                        At::DuringTools,
+                        |_| Act::Message(STOP_READING),
+                        edits_on,
+                        jev,
+                        |h| {
+                            let helpers = crate::harness::delegation::Helpers::new(h.store.clone(), Arc::new(h.sessions.clone()), Arc::new(h.clone()), None, None);
+                            h.bind(crate::harness::Outlets { helpers: Some(helpers), ..outlets });
+                            if goal {
+                                set_goal(h);
+                            }
+                        },
+                        Some(project.path()),
+                    )
+                    .await;
+                    assert_eq!(exit_of(&run.events), "text_response", "{jev:?} goal={goal}");
+                    let v = run.h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                    assert_eq!((v.state.as_str(), v.reason.as_str()), (state, reason), "{jev:?} goal={goal}: {v:?}");
+                }
+            })
+        })
     }
 
     /// A model with more momentum than [`reads_on`]: told it may not call
@@ -11487,11 +11561,13 @@ mod tests {
     #[test]
     fn the_owners_message_settles_its_verifications_as_he_meant() {
         use super::super::verify::engine::Closed;
-        assert_eq!(closing(&TurnExit::Answered, false, Some(OwnerEnded::Stopped)), Closed::Stopped);
+        let ended = |intent, goal_paused| Some(OwnerEnded { intent, goal_paused });
+        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Stop, true)), Closed::Stopped, "a stop, goal paused or not");
+        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Stop, false)), Closed::Stopped);
         assert_eq!(closing(&TurnExit::Cancelled, false, None), Closed::Stopped, "the same as the Stop button");
-        assert_eq!(closing(&TurnExit::Answered, false, Some(OwnerEnded::GoalPaused)), Closed::Waiting);
+        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Undecided, true)), Closed::Waiting);
+        assert_eq!(closing(&TurnExit::Answered, false, ended(OwnerIntent::Undecided, false)), Closed::Unchecked);
         assert_eq!(closing(&TurnExit::AwaitingApproval, false, None), Closed::Waiting, "like any wait on him");
-        // Without his message: an answer that skipped its check, as before.
         assert_eq!(closing(&TurnExit::Answered, false, None), Closed::Unchecked);
         assert_eq!(closing(&TurnExit::Compacted, false, None), Closed::Unchecked);
         assert_eq!(closing(&TurnExit::MaxSteps { steps: 3 }, false, None), Closed::Ended(super::super::verify::Why::new("step_limit")));
