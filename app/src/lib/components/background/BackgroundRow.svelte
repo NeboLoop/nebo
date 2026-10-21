@@ -1,8 +1,9 @@
 <!--
-  One piece of background work: what it is, who or what does it, how long it
-  has run (or when it fires next, or how it ended), "View transcript" when
-  its steps are kept in a chat, and the owner's actions on it. A click opens
-  the end of its output and what started it.
+  One piece of background work: what it is, what it is doing now while it
+  runs, who or what does it, how long it has run (or when it fires next, or
+  how it ended), "View transcript" when its steps are kept in a chat, and
+  the owner's actions on it. A click opens what it was asked, whole, the end
+  of its output and what started it.
 -->
 <script lang="ts">
   import { t } from 'svelte-i18n';
@@ -10,7 +11,7 @@
   import Terminal from 'lucide-svelte/icons/terminal';
   import Bot from 'lucide-svelte/icons/bot';
   import Square from 'lucide-svelte/icons/square';
-  import type { BackgroundAction, BackgroundTask, FinishedTask } from '$lib/api/neboComponents';
+  import type { BackgroundAction, BackgroundOutputResponse, BackgroundTask, FinishedTask } from '$lib/api/neboComponents';
   import { actOn, outputOf, shortClock, isRunning, kindLabel, waitsOnOwner } from '$lib/stores/background';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { callWords } from '$lib/chat/callLabel';
@@ -47,7 +48,7 @@
   let busy = $state<BackgroundAction | null>(null);
   let stopping = $state(false);
   let error = $state('');
-  let output = $state<{ output: string; truncated: boolean } | null>(null);
+  let output = $state<BackgroundOutputResponse | null>(null);
   let outputFailed = $state(false);
 
   /** What it is doing now: the call it makes, worded, or its own line. */
@@ -108,6 +109,7 @@
         <span class="bg-row-title">
           {#if showEmployee}<span class="bg-row-employee">{`${task.employee} · `}</span>{/if}{title}
         </span>
+        {#if !outcome && isRunning(task) && detail && detail !== title}<span class="bg-row-doing">{detail}</span>{/if}
         <span class="bg-row-sub">
           <span class="bg-row-kind">{kindLabel(task, $t)}</span>
           {#if meta}<span class="bg-row-meta {onYou ? 'bg-row-on-you' : ''} {outcome === 'failed' ? 'bg-row-failed' : ''}">{meta}</span>{/if}
@@ -132,6 +134,7 @@
   {/if}
   {#if open}
     <div class="bg-row-detail">
+      {#if output?.brief && output.brief !== title}<div class="bg-row-detail-line bg-row-brief">{output.brief}</div>{/if}
       {#if detail && detail !== title}<div class="bg-row-detail-line">{detail}</div>{/if}
       <div class="bg-row-detail-line bg-row-muted">
         {$t(`background.createdBy.${task.createdBy}`)}{#if task.turnsUsed != null && task.turnsCap != null} · {$t('background.turns', { values: { used: task.turnsUsed, cap: task.turnsCap } })}{/if}

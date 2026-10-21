@@ -6360,6 +6360,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "unicode-segmentation",
  "url",
  "urlencoding",

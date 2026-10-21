@@ -40,6 +40,9 @@ pub struct BackgroundOutputResponse {
     pub output: String,
     /// It had more before what is shown.
     pub truncated: bool,
+    /// What a helper was asked, whole, behind its card's title; empty for
+    /// other work.
+    pub brief: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,7 +77,7 @@ pub async fn background_output(
     Path(id): Path<String>,
 ) -> HandlerResult<BackgroundOutputResponse> {
     let tail = background::output(&state, &id).await.map_err(act_error)?;
-    Ok(Json(BackgroundOutputResponse { output: tail.output, truncated: tail.truncated }))
+    Ok(Json(BackgroundOutputResponse { output: tail.output, truncated: tail.truncated, brief: tail.brief }))
 }
 
 /// POST /api/v1/background/{id}/{action} — stop, cancel, approve, pause,
