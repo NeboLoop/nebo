@@ -191,6 +191,234 @@ pub fn cap(text: &str, max: usize) -> String {
     if graphemes.next().is_some() { format!("{kept}…") } else { kept }
 }
 
+/// [`cap`] for a title the owner reads: a cut ends at the last whole word
+/// that fits. Text with no space to cut at (one long word, a language
+/// written without spaces) is cut by grapheme.
+pub fn cap_words(text: &str, max: usize) -> String {
+    let capped = cap(text, max);
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Uncut (a text that ends in "…" of its own included).
+    if capped == one_line {
+        return capped;
+    }
+    let Some(kept) = capped.strip_suffix('…') else { return capped };
+    // A cut that already falls between two words keeps every word.
+    let whole = if kept.ends_with(' ') || one_line[kept.len()..].starts_with(' ') {
+        kept.trim_end()
+    } else {
+        match kept.rfind(' ') {
+            Some(end) => &kept[..end],
+            None => return capped,
+        }
+    };
+    format!("{}…", whole.trim_end_matches([',', ';', ':', '-', '–', '—']))
+}
+
+/// The longest a helper's title runs, in graphemes, its number included:
+/// two lines of a card.
+pub const TITLE_CAP: usize = 80;
+
+/// What a title body leaves for its number (" · 99").
+const NUMBER_ROOM: usize = 5;
+
+/// What makes two titles the same: their words, in one Unicode form, case
+/// aside.
+pub fn title_key(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    text.split_whitespace().collect::<Vec<_>>().join(" ").nfc().collect::<String>().to_lowercase()
+}
+
+/// `text` without the marks [`shown_titles`] adds at its end (" · 2",
+/// " · #4"), however many: a description that already reads like a marked
+/// title is taken as its plain words.
+pub fn unmarked(text: &str) -> &str {
+    let mut text = text.trim_end();
+    while let Some((head, mark)) = text.rsplit_once(" · ") {
+        let digits = mark.strip_prefix('#').unwrap_or(mark);
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
+        text = head.trim_end();
+    }
+    text
+}
+
+/// What makes two descriptions the same, for siblings told apart and for
+/// the numbers helpers are given: their [`title_key`], marks aside
+/// ([`unmarked`]).
+pub fn description_key(description: &str) -> String {
+    title_key(unmarked(description))
+}
+
+/// `base` within [`TITLE_CAP`], with ` · <mark>` after it when `mark` is
+/// not empty: the base is cut, never the mark.
+pub fn numbered(base: &str, mark: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let suffix = if mark.is_empty() { String::new() } else { format!(" · {mark}") };
+    let room = TITLE_CAP - suffix.chars().count();
+    let body = if base.graphemes(true).count() <= room {
+        base.to_string()
+    } else {
+        // Its "…" takes one of the room's graphemes.
+        cap_words(base, room - 1)
+    };
+    format!("{body}{suffix}")
+}
+
+/// What the owner's screen shows for running siblings, given each one's
+/// base title ([`sibling_titles`]), the number it was given as it started
+/// (one per description, never reused in its conversation; 0 when none
+/// could be given) and its place in the conversation's start order. A
+/// title is its base without any mark it already carries ([`unmarked`]);
+/// titles that would read the same show their numbers ("scan logs · 1",
+/// "scan logs · 3"), and any still alike their start place instead ("·
+/// #4"). That last mark is reached only when two different descriptions cut
+/// to the same words with the same number, or a number couldn't be given;
+/// it carries no words, so it reads the same in every language. No two
+/// titles ever read the same, and no number is ever changed.
+pub fn shown_titles(siblings: &[(&str, u32, u64)]) -> Vec<String> {
+    let alike = |titles: &[String]| {
+        let mut count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for t in titles {
+            *count.entry(title_key(t)).or_default() += 1;
+        }
+        titles.iter().map(|t| count[&title_key(t)] > 1).collect::<Vec<_>>()
+    };
+    let bases: Vec<&str> = siblings.iter().map(|(base, _, _)| unmarked(base)).collect();
+    let mut titles: Vec<String> = bases.iter().map(|base| numbered(base, "")).collect();
+    let clash = alike(&titles);
+    for (k, (_, number, _)) in siblings.iter().enumerate() {
+        if clash[k] && *number > 0 {
+            titles[k] = numbered(bases[k], &number.to_string());
+        }
+    }
+    // Checked against every title, the untouched ones too.
+    let clash = alike(&titles);
+    for (k, (_, _, seq)) in siblings.iter().enumerate() {
+        if clash[k] {
+            titles[k] = numbered(bases[k], &format!("#{}", seq + 1));
+        }
+    }
+    debug_assert!(!alike(&titles).contains(&true), "titles still alike: {titles:?}");
+    titles
+}
+
+/// One base title per helper started from one conversation, given as
+/// (description, brief): what the owner's screen calls each before
+/// [`shown_titles`] tells apart any that still read the same, in order. It is the helper's own description,
+/// unless a sibling's reads the same ([`title_key`]): eight research runs
+/// whose questions open alike all read "research: What concrete dated
+/// evidence…". Then it is told apart by the words of its brief, in one
+/// pass:
+/// - from the opening every such sibling shares when the word where it
+///   parts from the sibling most like it fits in the title from there,
+///   else from that word;
+/// - a brief another one opens with shows its own last words ("…rents fell
+///   in Phoenix"), never a cut that ends on a dangling word;
+/// - a description that is a cut of its brief (its first words after a
+///   `kind:`, or cut short with "…") gives way to those words, after its
+///   `kind:` ("research: …Nvidia revenue grew in Q3?"); any other is kept,
+///   and they follow it ("map rivals — …Ohio");
+/// - a word longer than the title is cut with "…".
+///
+/// Siblings asked the very same keep their description; their numbers tell
+/// them apart ([`shown_titles`]).
+pub fn sibling_titles(siblings: &[(&str, &str)]) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
+    let labels: Vec<String> = siblings.iter().map(|(d, _)| d.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
+    let mut sets: Vec<Vec<usize>> = Vec::new();
+    let mut set_of: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, label) in labels.iter().enumerate() {
+        let set = *set_of.entry(description_key(label)).or_insert_with(|| {
+            sets.push(Vec::new());
+            sets.len() - 1
+        });
+        sets[set].push(i);
+    }
+    let mut titles = labels.clone();
+    for members in sets.iter().filter(|m| m.len() > 1) {
+        let briefs: Vec<Vec<String>> = members
+            .iter()
+            .map(|&i| siblings[i].1.nfc().collect::<String>().split_whitespace().map(str::to_string).collect())
+            .collect();
+        let shared = |a: &[String], b: &[String]| a.iter().zip(b).take_while(|(x, y)| x == y).count();
+        // The opening all of them share, and how far each runs with the
+        // one most like it: next to it in word order.
+        let mut order: Vec<usize> = (0..members.len()).collect();
+        order.sort_by(|&x, &y| briefs[x].cmp(&briefs[y]));
+        let mut closest = vec![0; members.len()];
+        let mut twin = vec![false; members.len()];
+        let mut opening = usize::MAX;
+        for w in order.windows(2) {
+            let n = shared(&briefs[w[0]], &briefs[w[1]]);
+            closest[w[0]] = closest[w[0]].max(n);
+            closest[w[1]] = closest[w[1]].max(n);
+            opening = opening.min(n);
+            if briefs[w[0]] == briefs[w[1]] {
+                (twin[w[0]], twin[w[1]]) = (true, true);
+            }
+        }
+        for (k, &i) in members.iter().enumerate() {
+            if !twin[k] {
+                titles[i] = told_apart(&labels[i], &briefs[k], opening, closest[k]);
+            }
+        }
+    }
+    titles
+}
+
+/// The base title of a helper whose description `label` a sibling shares,
+/// from its brief's words `own` (in one Unicode form): `opening` is how
+/// many words every alike sibling's brief shares, `parts` how many it
+/// shares with the one most like it ([`sibling_titles`]).
+fn told_apart(label: &str, own: &[String], opening: usize, parts: usize) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    if own.is_empty() {
+        return label.to_string();
+    }
+    let (kind, cut) = match label.split_once(' ') {
+        Some((kind, cut)) if kind.len() > 1 && kind.ends_with(':') => (Some(kind), cut),
+        _ => (None, label),
+    };
+    // A cut of its brief: a `kind:` before its first words, or its first
+    // words cut short.
+    let is_cut = kind.is_some() || cut.ends_with('…');
+    let cut: String = cut.trim_end_matches('…').trim_end().nfc().collect();
+    let gives_way = is_cut && !cut.is_empty() && own.join(" ").starts_with(&cut);
+    // What the brief's words may run to, beside what leads them and the
+    // number's room.
+    let lead_room = match (gives_way, kind) {
+        (true, Some(kind)) => kind.chars().count() + 2,
+        (true, None) => 1,
+        (false, _) => label.chars().count() + 4,
+    };
+    let room = TITLE_CAP.saturating_sub(NUMBER_ROOM + lead_room).max(12);
+    let runs = |from: usize, to: usize| own[from..to].join(" ").chars().count();
+    let last = own.len();
+    let from = if parts >= last {
+        // Another brief opens with all of it: its end shows, from as early
+        // as still fits.
+        let mut from = last - 1;
+        let mut length = own[from].chars().count();
+        while from > 0 && length + 1 + own[from - 1].chars().count() <= room {
+            from -= 1;
+            length += 1 + own[from].chars().count();
+        }
+        from
+    } else if runs(opening, parts + 1) <= room {
+        opening
+    } else {
+        parts
+    };
+    let lead = if from > 0 { "…" } else { "" };
+    let tail = cap_words(&own[from..].join(" "), room);
+    match (gives_way, kind) {
+        (true, Some(kind)) => format!("{kind} {lead}{tail}"),
+        (true, None) => format!("{lead}{tail}"),
+        (false, _) => format!("{label} — {lead}{tail}"),
+    }
+}
+
 /// A call as the owner's thread names it: a `kind` every client words in
 /// the owner's language, and the call's own values (`params`: a path, a
 /// command, a query, a URL) shown verbatim. Derived from the call alone, so
@@ -346,7 +574,7 @@ pub fn call(tool_name: &str, input: &serde_json::Value) -> Call {
 
 #[cfg(test)]
 mod tests {
-    use super::{call, cap, sentence, service_name as humanize_slug, strap_verb};
+    use super::{call, cap, cap_words, description_key, numbered, sentence, shown_titles, sibling_titles, title_key, unmarked, DESCRIPTION_CAP, TITLE_CAP, service_name as humanize_slug, strap_verb};
     use serde_json::json;
 
     /// A click or a look at the screen names what it touched: the point or
@@ -560,5 +788,361 @@ mod tests {
         assert_eq!(cap("a\n  b", 10), "a b");
         assert_eq!(cap("👨‍👩‍👧‍👦👨‍👩‍👧‍👦", 1), "👨‍👩‍👧‍👦…");
         assert_eq!(cap("請求書を確認", 3), "請求書…");
+    }
+
+    /// A title is cut between words, never inside one.
+    #[test]
+    fn titles_are_cut_between_words() {
+        assert_eq!(cap_words("What concrete dated evidence exists between July 22, 2026 and now", 47), "What concrete dated evidence exists between…");
+        assert_eq!(cap_words("between July 22, 2026 and now", 13), "between July…", "a cut at a space keeps the word before it");
+        assert_eq!(cap_words("between July 22, 2026 and now", 12), "between July…");
+        assert_eq!(cap_words("between July 22, 2026 and now", 16), "between July 22…", "no comma before the ellipsis");
+        assert_eq!(cap_words("Phoenix rents 2026", 60), "Phoenix rents 2026");
+        assert_eq!(cap_words("請求書を確認", 3), "請求書…");
+        assert_eq!(cap_words("ends cut short…", 60), "ends cut short…", "a text's own ellipsis is no cut");
+    }
+
+    /// A research run started the way `deep_research` starts one.
+    fn research(question: &str) -> (String, String) {
+        (format!("research: {}", cap_words(question, DESCRIPTION_CAP)), question.to_string())
+    }
+
+    /// The titles of siblings started together, in order, as the helper
+    /// registry gives them: each numbered as it starts, the least number no
+    /// earlier one with its description has.
+    fn titles(siblings: &[(String, String)]) -> Vec<String> {
+        let bases = sibling_titles(&siblings.iter().map(|(d, b)| (d.as_str(), b.as_str())).collect::<Vec<_>>());
+        let mut used: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let numbers: Vec<u32> = siblings
+            .iter()
+            .map(|(d, _)| {
+                let n = used.entry(description_key(d)).or_default();
+                *n += 1;
+                *n
+            })
+            .collect();
+        let shown: Vec<(&str, u32, u64)> = bases.iter().zip(&numbers).enumerate().map(|(k, (b, n))| (b.as_str(), *n, k as u64)).collect();
+        shown_titles(&shown)
+    }
+
+    const OPENING: &str = "What concrete dated evidence exists between July 22, 2026 and October 1, 2026 th";
+
+    /// Eight research runs whose questions share their first 80 characters
+    /// each get a title of their own, from where the question parts from
+    /// the others, cut between words.
+    #[test]
+    fn eight_alike_research_runs_get_eight_titles() {
+        assert_eq!(OPENING.chars().count(), 80);
+        let subjects = [
+            "at Nvidia's data-center revenue kept growing?",
+            "at Apple shipped a foldable iPhone?",
+            "at mortgage rates fell below six percent?",
+            "at the Fed cut rates twice?",
+            "at EU AI Act enforcement began?",
+            "at Phoenix rents went down?",
+            "at remote work grew among lawyers?",
+            "at solar installs outpaced gas?",
+        ];
+        let runs: Vec<_> = subjects.iter().map(|s| research(&format!("{OPENING}{s}"))).collect();
+        assert!(runs.windows(2).all(|w| w[0].0 == w[1].0), "the descriptions alone are all alike");
+        let t = titles(&runs);
+        assert_eq!(t.iter().collect::<std::collections::HashSet<_>>().len(), 8, "{t:#?}");
+        assert_eq!(t[0], "research: …Nvidia's data-center revenue kept growing?");
+        assert!(t.iter().all(|t| t.chars().count() <= TITLE_CAP), "{t:#?}");
+    }
+
+    /// A lone run keeps its natural title, cut between words.
+    #[test]
+    fn a_lone_run_keeps_its_natural_title() {
+        let q = "What concrete dated evidence exists between July 22, 2026 and October 1, 2026 that rents fell?";
+        assert_eq!(titles(&[research(q)]), ["research: What concrete dated evidence exists between July 22, 2026…"]);
+    }
+
+    /// A third sibling never moves the others: each title starts after the
+    /// opening every alike sibling shares, so "Nvidia" stays in A's.
+    #[test]
+    fn a_third_sibling_never_drops_the_subject() {
+        let a = research(&format!("{OPENING}at Nvidia revenue grew in Q3?"));
+        let b = research(&format!("{OPENING}at Apple shipped a foldable?"));
+        let c = research(&format!("{OPENING}at Nvidia revenue fell in Q4?"));
+        let two = titles(&[a.clone(), b.clone()]);
+        let three = titles(&[a, b, c]);
+        assert_eq!(two[0], "research: …Nvidia revenue grew in Q3?");
+        assert_eq!(three[0], two[0], "A keeps its title as C starts");
+        assert_eq!(three[2], "research: …Nvidia revenue fell in Q4?");
+    }
+
+    /// When the sibling it was told apart from ends, a run reads as it did
+    /// alone again.
+    #[test]
+    fn a_title_reverts_when_its_sibling_ends() {
+        let a = research(&format!("{OPENING}at Nvidia revenue grew in Q3?"));
+        let b = research(&format!("{OPENING}at Apple shipped a foldable?"));
+        assert_ne!(titles(&[a.clone(), b])[0], a.0);
+        assert_eq!(titles(&[a.clone()])[0], a.0);
+    }
+
+    /// A description the model wrote is kept, and the part of the brief
+    /// that differs follows it.
+    #[test]
+    fn a_written_description_is_kept() {
+        let ohio = ("map rivals".to_string(), "List rivals in Ohio".to_string());
+        let iowa = ("map rivals".to_string(), "List rivals in Iowa".to_string());
+        assert_eq!(titles(&[ohio, iowa]), ["map rivals — …Ohio", "map rivals — …Iowa"]);
+        let apart = [("map rival 1".to_string(), "x".to_string()), ("map rival 2".to_string(), "x".to_string())];
+        assert_eq!(titles(&apart), ["map rival 1", "map rival 2"], "descriptions that differ are kept as they are");
+    }
+
+    /// `titles` that must finish within a few seconds: a title that never
+    /// settles fails the test rather than stalling the run.
+    fn titles_in_time(siblings: Vec<(String, String)>) -> Vec<String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(titles(&siblings));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("titles in time")
+    }
+
+    fn assert_distinct(t: &[String]) {
+        let set: std::collections::HashSet<_> = t.iter().collect();
+        assert_eq!(set.len(), t.len(), "{t:#?}");
+    }
+
+    /// Two questions that share 150 characters and a third that parts
+    /// early: the two read apart from the word they part at, and the third
+    /// keeps its subject.
+    #[test]
+    fn a_long_shared_opening_never_makes_two_titles_alike() {
+        let long = "at Nvidia's data-center revenue in the third fiscal quarter of the year grew faster than analysts expected according to filings from";
+        let a = research(&format!("{OPENING}{long} the company itself?"));
+        let b = research(&format!("{OPENING}{long} its largest customers?"));
+        let c = research(&format!("{OPENING}at Apple shipped a foldable?"));
+        assert!(format!("{OPENING}{long}").chars().count() > 150);
+        let t = titles_in_time(vec![a, b, c]);
+        assert_eq!(t[0], "research: …the company itself?");
+        assert_eq!(t[1], "research: …its largest customers?");
+        assert_eq!(t[2], "research: …Apple shipped a foldable?");
+    }
+
+    /// The reviewer's cases that once never settled: a word too long for
+    /// the room left beside alike siblings, under a written description and
+    /// under a research one.
+    #[test]
+    fn a_word_too_long_for_the_title_always_settles() {
+        let url = format!("https://example.com/{}", "q".repeat(65));
+        assert_eq!(url.chars().count(), 85);
+        let cases = [
+            vec![format!("Summarize {url}"), format!("Summarize the {url} risks"), format!("Summarize the {url}")],
+            vec![format!("Summarize the {url} risks"), format!("Summarize the {url} costs"), format!("Summarize the {url}")],
+            vec![format!("{url} risks"), format!("{url}"), format!("{url} costs and risks")],
+        ];
+        for briefs in cases {
+            for research_kind in [false, true] {
+                let set: Vec<(String, String)> = briefs.iter().map(|b| if research_kind { research(b) } else { ("read report".to_string(), b.clone()) }).collect();
+                let t = titles_in_time(set);
+                assert_distinct(&t);
+                assert!(t.iter().all(|t| t.chars().count() <= TITLE_CAP), "{t:#?}");
+            }
+        }
+    }
+
+    /// A single word of 70 or 90 characters, under both kinds of
+    /// description, is cut with "…" and the titles still differ.
+    #[test]
+    fn single_long_words_are_cut_and_told_apart() {
+        for len in [70, 90] {
+            let a = format!("{}a", "w".repeat(len - 1));
+            let b = format!("{}b", "w".repeat(len - 1));
+            for research_kind in [false, true] {
+                let set: Vec<(String, String)> = [&a, &b].iter().map(|q| if research_kind { research(q) } else { ("read words".to_string(), q.to_string()) }).collect();
+                let t = titles_in_time(set);
+                assert_distinct(&t);
+            }
+        }
+    }
+
+    /// Text in any script is cut on character boundaries; a question in two
+    /// Unicode forms is the same question.
+    #[test]
+    fn cjk_emoji_and_combining_characters_are_safe() {
+        let cjk = [("調べる".to_string(), "東京の家賃は下がったか".to_string()), ("調べる".to_string(), "大阪の家賃は下がったか".to_string())];
+        assert_distinct(&titles_in_time(cjk.to_vec()));
+        let emoji = [("plan".to_string(), "plan the 🎉👨‍👩‍👧‍👦 party".to_string()), ("plan".to_string(), "plan the 🎂👨‍👩‍👧‍👦 party".to_string())];
+        let t = titles_in_time(emoji.to_vec());
+        assert_distinct(&t);
+        assert_eq!(t[0], "plan — …🎉👨‍👩‍👧‍👦 party");
+        let composed = ("check café".to_string(), "Is the caf\u{e9} open".to_string());
+        let decomposed = ("check cafe\u{301}".to_string(), "Is the cafe\u{301} open".to_string());
+        let t = titles_in_time(vec![composed, decomposed]);
+        assert_eq!(t, ["check café · 1", "check cafe\u{301} · 2"], "one question in two forms; each keeps its own description");
+    }
+
+    /// Descriptions that differ only in case are alike; each title keeps
+    /// its own description's case.
+    #[test]
+    fn descriptions_alike_but_for_case_are_siblings() {
+        let t = titles_in_time(vec![("Map Rivals".to_string(), "List rivals in Ohio".to_string()), ("map rivals".to_string(), "List rivals in Iowa".to_string())]);
+        assert_eq!(t, ["Map Rivals — …Ohio", "map rivals — …Iowa"]);
+    }
+
+    /// A brief another one opens with shows its own last words, never a
+    /// dangling cut.
+    #[test]
+    fn a_brief_another_opens_with_shows_its_end() {
+        let t = titles_in_time(vec![
+            ("check rents".to_string(), "Find out whether rents fell in Phoenix".to_string()),
+            ("check rents".to_string(), "Find out whether rents fell in Phoenix and Tucson".to_string()),
+        ]);
+        assert_eq!(t, ["check rents — Find out whether rents fell in Phoenix", "check rents — …and Tucson"]);
+    }
+
+    /// Up to ten siblings with long random words, 2,000 times over, under
+    /// both kinds of description: every set settles in time and no two
+    /// titles in it match.
+    #[test]
+    fn titles_are_distinct_and_settle_for_any_siblings() {
+        let mut seed = 7u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let started = std::time::Instant::now();
+        for round in 0..2000 {
+            let vocab: Vec<String> = (0..6).map(|_| format!("{}{}", "x".repeat(1 + next() % 100), next() % 3)).collect();
+            let n = 2 + next() % 9;
+            let base: Vec<String> = (0..12).map(|_| vocab[next() % vocab.len()].clone()).collect();
+            let briefs: Vec<String> = (0..n)
+                .map(|_| {
+                    let mut q = base.clone();
+                    for _ in 0..next() % 3 {
+                        let at = next() % q.len();
+                        q[at] = vocab[next() % vocab.len()].clone();
+                    }
+                    q.truncate(1 + next() % 12);
+                    q.join(" ")
+                })
+                .collect();
+            let research_kind = round % 2 == 0;
+            let set: Vec<(String, String)> = briefs.iter().map(|b| if research_kind { research(b) } else { ("map rents".to_string(), b.clone()) }).collect();
+            assert_distinct(&titles_in_time(set));
+        }
+        // A generous ceiling for a loaded machine; a hang trips the
+        // per-set timeout first.
+        assert!(started.elapsed() < std::time::Duration::from_secs(120), "{:?}", started.elapsed());
+    }
+
+    /// Siblings asked the very same thing are numbered after the first:
+    /// no two titles ever match.
+    #[test]
+    fn identical_questions_are_numbered() {
+        let q = research(&format!("{OPENING}at rents fell?"));
+        assert_eq!(titles(&[q.clone(), q.clone(), q.clone()]), [format!("{} · 1", q.0), format!("{} · 2", q.0), format!("{} · 3", q.0)]);
+    }
+
+    /// Descriptions that differ only in case, asked the very same, are told
+    /// apart by their numbers.
+    #[test]
+    fn case_only_twins_are_numbered() {
+        let t = titles(&[("Map Rivals".to_string(), "List rivals in Ohio".to_string()), ("map rivals".to_string(), "List rivals in Ohio".to_string())]);
+        assert_eq!(t, ["Map Rivals · 1", "map rivals · 2"]);
+    }
+
+    /// The whole title, number included, stays within the cap: the base is
+    /// cut, never the number; a text that ends in "(2)" itself reads plainly.
+    #[test]
+    fn the_whole_title_stays_within_the_cap() {
+        let long = "w ".repeat(120);
+        for n in [1, 2, 9, 10, 123, 4567] {
+            let t = numbered(&long, &n.to_string());
+            assert!(t.chars().count() <= TITLE_CAP, "{n}: {t}");
+            assert!(t.ends_with(&format!(" · {n}")), "{t}");
+        }
+        let odd = [("check (2)".to_string(), "Check the rents (2)".to_string()), ("check (2)".to_string(), "Check the rents (2)".to_string())];
+        assert_eq!(titles(&odd), ["check (2) · 1", "check (2) · 2"]);
+        let odd = [("check".to_string(), "Check the rents (2)".to_string()), ("check".to_string(), "Check the rents (3)".to_string())];
+        assert_eq!(titles(&odd), ["check — …(2)", "check — …(3)"]);
+        let t = titles(&[research(&format!("{OPENING}{}", "at the rents fell ".repeat(10))), research(&format!("{OPENING}{}x", "at the rents fell ".repeat(10)))]);
+        assert!(t.iter().all(|t| t.chars().count() <= TITLE_CAP), "{t:#?}");
+    }
+
+    /// Numbering two thousand siblings asked the same is quick.
+    #[test]
+    fn numbering_many_twins_is_quick() {
+        let q = ("check".to_string(), "Check rents".to_string());
+        let started = std::time::Instant::now();
+        let t = titles(&vec![q; 2000]);
+        assert_eq!(t[1999], "check · 2000");
+        // A generous ceiling: a quadratic numbering took seconds here.
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    }
+
+    /// A description that already reads like a marked title is taken as its
+    /// plain words, so no mark added to another can read the same as it.
+    #[test]
+    fn descriptions_that_look_marked_never_collide() {
+        assert_eq!(unmarked("x · 1"), "x");
+        assert_eq!(unmarked("x · 2 · #3 "), "x");
+        assert_eq!(unmarked("x · v2"), "x · v2");
+        assert_eq!(unmarked("· 2"), "· 2");
+        let probe = ["x · 1", "x", "x", "x · #2"];
+        let shown = shown_titles(&probe.iter().enumerate().map(|(k, d)| (*d, 1 + (k as u32 == 2) as u32, k as u64)).collect::<Vec<_>>());
+        let keys: std::collections::HashSet<String> = shown.iter().map(|t| title_key(t)).collect();
+        assert_eq!(keys.len(), shown.len(), "{shown:#?}");
+        let t = titles(&probe.iter().map(|d| (d.to_string(), "Scan the logs".to_string())).collect::<Vec<_>>());
+        assert_eq!(t, ["x · 1", "x · 2", "x · 3", "x · 4"], "one description, four numbers");
+        assert_eq!(shown_titles(&[("x", 0, 0), ("x", 0, 1)]), ["x · #1", "x · #2"], "no number could be given");
+    }
+
+    /// Helpers start, end and resume in any order under one conversation,
+    /// numbered the way the registry numbers them (as each first starts,
+    /// the least number its description never had, kept for good): at
+    /// every step the running ones' titles all differ, and no helper's
+    /// number ever changes.
+    #[test]
+    fn titles_stay_distinct_through_starts_ends_and_resumes() {
+        let mut seed = 11u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let descriptions = ["scan logs", "Scan Logs", "scan logs · 1", "scan logs · #2", "scan logs · 2 · #3", "research: rents", "research: What concrete dated evidence exists…"];
+        let long = "x ".repeat(60);
+        let briefs = ["p", "q", "What concrete dated evidence exists for rents", "What concrete dated evidence exists for wages", long.as_str()];
+        for round in 0..300 {
+            // (description, brief, number, seq, running)
+            let mut helpers: Vec<(String, String, u32, u64, bool)> = Vec::new();
+            let mut given: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            let mut numbers_seen: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+            for step in 0..40 {
+                match next() % 3 {
+                    0 => {
+                        let d = descriptions[next() % descriptions.len()].to_string();
+                        let b = briefs[next() % briefs.len()].to_string();
+                        let n = given.entry(description_key(&d)).or_default();
+                        *n += 1;
+                        let seq = helpers.len() as u64;
+                        helpers.push((d, b, *n, seq, true));
+                    }
+                    1 if !helpers.is_empty() => {
+                        let k = next() % helpers.len();
+                        helpers[k].4 = false;
+                    }
+                    _ if !helpers.is_empty() => {
+                        let k = next() % helpers.len();
+                        helpers[k].4 = true;
+                    }
+                    _ => {}
+                }
+                let running: Vec<usize> = (0..helpers.len()).filter(|&k| helpers[k].4).collect();
+                let bases = sibling_titles(&running.iter().map(|&k| (helpers[k].0.as_str(), helpers[k].1.as_str())).collect::<Vec<_>>());
+                let shown = shown_titles(&running.iter().zip(&bases).map(|(&k, b)| (b.as_str(), helpers[k].2, helpers[k].3)).collect::<Vec<_>>());
+                let keys: std::collections::HashSet<String> = shown.iter().map(|t| title_key(t)).collect();
+                assert_eq!(keys.len(), shown.len(), "round {round} step {step}: {shown:#?}");
+                assert!(shown.iter().all(|t| t.chars().count() <= TITLE_CAP), "{shown:#?}");
+                for &k in &running {
+                    assert_eq!(*numbers_seen.entry(k).or_insert(helpers[k].2), helpers[k].2);
+                }
+            }
+        }
     }
 }

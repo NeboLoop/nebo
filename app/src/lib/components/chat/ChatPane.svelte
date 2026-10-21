@@ -2449,7 +2449,7 @@
       <div class="helper-status">
         <span class="loading loading-dots loading-xs"></span>
         <span>{helpers.length === 1
-          ? $t('chat.helperWorking', { values: { what: (helpers[0].call ? callWords(helpers[0].call, $t) : helpers[0].activity) || helpers[0].description } })
+          ? $t('chat.helperWorking', { values: { what: (helpers[0].call ? callWords(helpers[0].call, $t) : helpers[0].activity) || helpers[0].title } })
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
       </div>
     {/if}
