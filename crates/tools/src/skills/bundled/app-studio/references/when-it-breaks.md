@@ -13,6 +13,9 @@ One loop for every fix:
 |---|---|---|
 | Blank page; console: `Failed to load /assets/index-....js`, or a module "MIME type text/html" error | A path starts with `/`; it left `ui/` and got Nebo's own page | Make it relative. Vite: `base: './'`, rebuild |
 | Works in the desktop window, blank in the mobile app | Same: the desktop window serves `ui/` at its root, the mobile app serves it under `/t/<bot>/apps/<id>/ui/` | Same |
+| Data loads in the desktop window but not in the screenshot or the mobile app; console: `Unexpected token '<'`, `is not valid JSON`, 401, or 404 on `/api/v1/...` | The page builds a Nebo address itself (`fetch('/api/v1/...')` or `fetch('api/v1/...')`): an absolute one misses the prefix, a relative one gets the page's own HTML | Use the SDK call for it (`storage`, `agents`, `janus`, `decide`, `share`, `identity`, `nebo.fetch`). Never a hand-built address |
+| A call to `/api/v1/files`, another app or any other Nebo API is refused | A page reaches only its own app's routes | Do it in the employee, and have the page ask it with `agents.invoke` |
+| `nebo.fetch('<path>')` answers 404 "has no program to run on this computer", or 503 | The app has no sidecar, or it can't start here | `references/sidecars.md`; the reason is in the answer's `error` and in `sidecar.log` |
 | `NeboAppSDK is not defined`, `Cannot destructure property 'nebo' of null`, `Failed to load /sdk/nebo.global.js` | The SDK tag is absolute, missing, or after your module | `<script src="../../../sdk/nebo.global.js"></script>` before your scripts. Never add a fallback |
 | `nebo is not defined` | There is no bare `nebo` global | `const { nebo } = window.NeboAppSDK;` |
 | `Failed to load /src/main.jsx`, or the page shows the build's source | The source entry is being served: `index.html` in the app folder or in `ui/` points at `src/` | Entry source lives in `src/index.html`; serve only built `ui/index.html`; rebuild |

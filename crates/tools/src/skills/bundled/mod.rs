@@ -343,6 +343,44 @@ mod bundled_skill_tests {
         );
     }
 
+    /// A page has three addresses, each with its own prefix, so it makes
+    /// every call to Nebo through the SDK and reaches only its own app; the
+    /// app's own employee holds the app tools, and another employee hands it
+    /// the work. Live 2026-10-21: an employee built a complex app for hours
+    /// on hand-made `/api/v1/...` addresses that worked only in the desktop
+    /// window, and asked the owner for the install key.
+    #[test]
+    fn app_studio_teaches_where_a_page_runs_and_who_does_what() {
+        let (_, content) = BUNDLED_SKILLS.iter().find(|(k, _)| *k == "app-studio").expect("registered");
+        for address in ["neboapp://<id>/", "/t/<bot>/apps/<id>/ui/", "/k/<pass>/apps/<id>/ui/"] {
+            assert!(content.contains(address), "the skill names the address {address}");
+        }
+        assert!(content.contains("Never write an `/api/v1/...` or `api/v1/...` address yourself"));
+        assert!(content.contains("A page reaches only its own app"));
+        assert!(content.contains("assign_task(to:"), "another employee hands the app's work to its employee");
+        assert!(content.contains("install key"), "nobody asks the owner for the install key");
+    }
+
+    /// The sidecar the skill teaches is the one Nebo launches: every
+    /// variable `napp::sandbox::sanitize_env` sets is named, the per-launch
+    /// token too, and never the SDKs' old `NEBO_APP_DATA`, which Nebo no
+    /// longer sets.
+    #[test]
+    fn app_studio_names_the_sidecar_environment_nebo_sets() {
+        let (_, _, sidecars) = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|(k, path, _)| *k == "app-studio" && *path == "references/sidecars.md")
+            .expect("the sidecar reference ships");
+        let env = napp::sandbox::sanitize_env("app-1", "App", "1.0.0", "/app", "/app/app-1.sock", "/data", 27895);
+        for (key, _) in env.iter().filter(|(k, _)| k.starts_with("NEBO_")) {
+            assert!(sidecars.contains(&format!("`{key}`")), "sidecars.md names `{key}`");
+        }
+        assert!(sidecars.contains("`NEBO_APP_TOKEN`"), "the per-launch token");
+        assert!(sidecars.contains("NEBO_DATA_DIR"), "where a sidecar writes");
+        assert!(!sidecars.contains("`NEBO_APP_DATA`"), "an old name Nebo no longer sets");
+        assert!(sidecars.contains("trim_start_matches('/')"), "a tool's path keeps its slash; a page's does not");
+    }
+
     /// Every reference the skill points to ships with it, and its gate takes
     /// the `execute` tool's arguments.
     #[test]
