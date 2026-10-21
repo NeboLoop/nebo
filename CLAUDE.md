@@ -232,6 +232,8 @@ Product plans in flight live in `nebo-prd/` of the private NeboLoop/docs repo
 - `nebo-media-finishing-prd-2026-10-20.md` — Nebo Media: audio matching and voice finishing, speed and storage, effects, color, and the ranked "what else" list (Creator team appendix, later)
 - `meetings-plugin-prd-2026-10-20.md` — Meetings plugin: an employee joins Google Meet, Zoom and Teams (dial-in first), plus conference calls
 - `verified-loops-and-gates.md` — the Verified code loop
+- `intune-managed-app-prd-2026-10-21.md` - Nebo for Intune: Microsoft sign-in, a separate "for Intune" mobile app with the Intune App SDK, desktop MDM packages and managed settings
+- `financials-cost-coverage-prd-2026-10-21.md` - Every cost on Financials: every vendor that bills us, new cost feeds, bank rules, and a cost-against-billed alarm
 
 ## Release
 
