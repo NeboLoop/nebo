@@ -80,6 +80,14 @@ impl TestApp {
     /// Put (or put back) the program, stamped now — as a rebuild would be.
     pub fn install_binary(&self) {
         let path = self.binary_path();
+        // Windows can't delete or overwrite a program that is running, but it
+        // can rename it: move the running one aside first, as a rebuild of a
+        // running program there has to.
+        #[cfg(windows)]
+        if path.exists() {
+            let aside = path.with_extension(format!("old-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::rename(&path, aside).expect("move the running test sidecar aside");
+        }
         let _ = std::fs::remove_file(&path);
         std::fs::copy(binary(), &path).expect("install the test sidecar");
         // A copy can keep the source's mtime (clonefile on macOS); a rebuild does not.
