@@ -701,6 +701,14 @@ const resp = await nebo.fetch('/documents?project_id=abc&format=pdf');
 
 Your sidecar receives every proxied request as a gRPC `HandleRequest` call. The `HttpRequest` message contains `method`, `path`, `query`, `headers`, and `body`. You route them however you want.
 
+Don't rely on `Authorization` or cookies from your page: credentials the browser sends never reach your sidecar. Put what your sidecar needs in a header of your own or in the body. Nebo removes these before it calls your sidecar:
+
+- `cookie`, `authorization`, `proxy-authorization`
+- `x-nebo-tunnel-auth`, `x-nebo-app-view`, `x-nebo-run-credential`
+- any `x-nebo-connected-*` header the page sends. The ones your sidecar does see, Nebo adds itself: `x-nebo-connected-profiles` holds the owner's connected account for each plugin in your `requires.plugins`, and `x-nebo-connected-neboai` the owner's NeboAI sign-in, for a first-party app that declares `requires.neboai`.
+
+To call Nebo, your sidecar sends its own `NEBO_APP_TOKEN` as `Authorization: Bearer <token>` to `NEBO_API_URL`.
+
 **Typical pattern** — split path segments and match:
 
 ```rust
