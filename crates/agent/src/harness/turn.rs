@@ -11344,6 +11344,39 @@ mod tests {
         })
     }
 
+    /// A round whose reviewers' copy could not be made ends unreviewed, and
+    /// its record names each reviewer as failed, never "no issues".
+    #[test]
+    fn a_round_nobody_could_review_records_each_reviewer_failed() {
+        crate::test_home::with_home(|_| {
+            let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            rt.block_on(async {
+                let (project, file) = small_project(true).await;
+                // The reviewers' folder can't be made: a file sits where it goes.
+                let reviewers = config::copies_dir().unwrap().join("verify");
+                let _ = std::fs::remove_dir_all(&reviewers);
+                std::fs::write(&reviewers, "").unwrap();
+                let model = Scripted::new(vec![
+                    Step::Call("save_code", serde_json::json!({"path": file, "content": "def total(a, b): return a + b\n"})),
+                    Step::Say("Done."),
+                    Step::Say("It could not be reviewed, so it isn't verified."),
+                ]);
+                let h = verifying_harness(&model).await;
+                run_turn(&h, owner("Make total() add a and b")).await;
+                std::fs::remove_file(&reviewers).unwrap();
+                let v = h.store.list_verifications(&db::VerificationQuery::default()).unwrap().remove(0);
+                assert_eq!((v.state.as_str(), v.reason.as_str()), ("not_verified", r#"{"code":"review_incomplete"}"#), "{v:?}");
+                assert!(v.landed_ref.is_empty());
+                assert_eq!(std::fs::read_to_string(project.path().join("total.py")).unwrap(), "def total(a, b): return 0\n", "nothing landed");
+                let rounds = h.store.verification_rounds(&v.id).unwrap();
+                assert_eq!(rounds[0].kind, "review");
+                assert_eq!(rounds[0].lenses, serde_json::json!(["correctness"]));
+                assert_eq!(rounds[0].detail["reviewers"], serde_json::json!({ "correctness": "failed" }));
+                assert!(!model.calls().iter().any(|c| c.messages.iter().any(|m| m.content.contains("You are an independent reviewer"))), "no reviewer ran");
+            })
+        })
+    }
+
     /// Review 2026-10-20 B3: work reported once is never reported again: a
     /// turn with no code after a turn whose work was not verified costs
     /// exactly one model call.

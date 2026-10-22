@@ -60,9 +60,9 @@ fn phase(v: &db::Verification, rounds: &[db::VerificationRound]) -> &'static str
 /// name, any other folder by its own.
 fn project(store: &db::Store, v: &db::Verification) -> String {
     if v.work_kind == "app_pages"
-        && let Ok(Some(name)) = store.app_name_by_ui_path(&v.project_root)
+        && let Ok(Some(app)) = store.app_served_from(&v.project_root)
     {
-        return name;
+        return app.name;
     }
     std::path::Path::new(&v.project_root)
         .file_name()
@@ -138,12 +138,6 @@ fn check_views(round: &db::VerificationRound) -> Vec<CheckView> {
 fn reviewer_views(round: &db::VerificationRound) -> Vec<ReviewerView> {
     let findings: Vec<&serde_json::Value> = round.findings.as_array().into_iter().flatten().collect();
     let failed: Vec<&str> = round.detail["failedReviewers"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).collect();
-    // A round that could not be reviewed at all (its reviewers' copy could
-    // not be made) names no reviewer that failed: every one of them did.
-    let none_reviewed = round.finished_at.is_some()
-        && round.detail["reviewers"].is_null()
-        && failed.is_empty()
-        && Why::read(&round.outcome).is_some_and(|w| w.code == "review_incomplete");
     round
         .lenses
         .as_array()
@@ -155,7 +149,6 @@ fn reviewer_views(round: &db::VerificationRound) -> Vec<ReviewerView> {
             let state = match round.detail["reviewers"][lens].as_str() {
                 Some(state) => state,
                 None if round.finished_at.is_none() => "waiting",
-                None if none_reviewed => "failed",
                 None if failed.iter().any(|f| f.starts_with(&format!("{lens}:"))) => "failed",
                 None if found > 0 => "found",
                 None => "clean",
@@ -512,7 +505,8 @@ mod tests {
     }
 
     /// A round that could not be reviewed at all (its reviewers' copy could
-    /// not be made) shows each reviewer as failed, never "no issues".
+    /// not be made) shows each reviewer as failed, as the engine records
+    /// them, never "no issues".
     #[test]
     fn a_round_nobody_could_review_shows_each_reviewer_failed() {
         let s = store();
@@ -523,6 +517,7 @@ mod tests {
             kind: "review".into(),
             lenses: serde_json::json!(["correctness", "security"]),
             outcome: r#"{"code":"review_incomplete"}"#.into(),
+            detail: serde_json::json!({ "reviewers": { "correctness": "failed", "security": "failed" } }),
             started_at: 2,
             finished_at: Some(3),
             ..Default::default()
@@ -546,7 +541,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(view(&s, s.get_verification("v-app").unwrap().unwrap()).badge.project, "Media Studio");
-        assert_eq!(s.app_name_by_ui_path("/elsewhere").unwrap(), None);
     }
 }
-
