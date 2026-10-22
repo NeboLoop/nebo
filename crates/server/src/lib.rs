@@ -1937,13 +1937,6 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // scan / skill load below so resumed plugins are picked up.
     plugin_store.reconcile_orphaned_staging().await;
 
-    // The owner's Nebo Media projects into the Media Studio folder, before
-    // any plugin or app reads them there (once Nebo Media reads them there).
-    {
-        let (store, plugins) = (store.clone(), plugin_store.clone());
-        let _ = tokio::task::spawn_blocking(move || migration::move_media_projects(&store, &plugins)).await;
-    }
-
     // Every installed plugin runs with the owner's stored settings (API keys,
     // tokens, …): the same load a plugin that arrives later gets.
     {
@@ -2502,6 +2495,13 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 Ok(Err(e)) => warn!(error = %e, "workspace move failed; it is tried again at the next start"),
                 Err(e) => warn!(error = %e, "workspace move task failed; it is tried again at the next start"),
             }
+        }
+        // The owner's Nebo Media projects into the Media Studio folder (once
+        // the Nebo Media here reads them there), after the workspace move and
+        // before the first look.
+        {
+            let (store, plugins) = (store.clone(), plugin_store.clone());
+            let _ = tokio::task::spawn_blocking(move || migration::move_media_projects(&store, &plugins)).await;
         }
         let store = store.clone();
         tokio::task::spawn_blocking(move || match tools::workspace_history::look(&store, &workspace, &files, None) {

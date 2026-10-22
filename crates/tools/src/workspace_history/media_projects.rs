@@ -65,6 +65,10 @@ pub fn move_media_projects(store: &db::Store, workspace: &Path, studio: &Path, h
         let os: OsString = entry.file_name();
         match os.into_string() {
             Ok(n) if n == ".DS_Store" || n == JOURNAL => {}
+            // The plan's own write, cut short.
+            Ok(n) if n.starts_with('.') && n.ends_with(REWRITING) => {
+                let _ = std::fs::remove_file(old.join(&n));
+            }
             Ok(n) => names.push(n),
             // A name that is not text can't be planned or rewritten: it
             // stays, and says so at every start.
@@ -94,7 +98,7 @@ pub fn move_media_projects(store: &db::Store, workspace: &Path, studio: &Path, h
         }
         plan.push((name.clone(), target));
     }
-    if let Err(e) = serde_json::to_vec(&plan).map_err(std::io::Error::other).and_then(|b| std::fs::write(&journal, b)) {
+    if let Err(e) = serde_json::to_vec(&plan).map_err(std::io::Error::other).and_then(|b| write_whole(&journal, &b, None)) {
         tracing::warn!(error = %e, "the media projects move could not be written down; nothing is moved");
         done.left.extend(names);
         return done;
@@ -161,6 +165,27 @@ fn move_entry(from: &Path, to: &Path) -> bool {
         return made.is_ok() && std::fs::remove_file(from).is_ok();
     }
     std::fs::rename(from, to).is_ok()
+}
+
+/// Replace `path` whole: written beside it (`.<name>.moving`), synced, given
+/// `perms`, then renamed over it, so a crash leaves the old file or the new
+/// one, never half of either.
+fn write_whole(path: &Path, bytes: &[u8], perms: Option<std::fs::Permissions>) -> std::io::Result<()> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let part: PathBuf = path.with_file_name(format!(".{name}{REWRITING}"));
+    let written = (|| {
+        let mut f = std::fs::File::create(&part)?;
+        std::io::Write::write_all(&mut f, bytes)?;
+        f.sync_all()?;
+        if let Some(perms) = perms {
+            std::fs::set_permissions(&part, perms)?;
+        }
+        std::fs::rename(&part, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
 }
 
 /// `p` with its `.` and `..` parts worked out by name alone.
@@ -247,17 +272,8 @@ fn rewrite_paths(dir: &Path, rewrites: &[(String, String)]) {
         if new == text {
             continue;
         }
-        let part: PathBuf = dir.join(format!(".{name}{REWRITING}"));
-        let written = (|| -> std::io::Result<()> {
-            let perms = std::fs::metadata(&path)?.permissions();
-            let mut f = std::fs::File::create(&part)?;
-            std::io::Write::write_all(&mut f, new.as_bytes())?;
-            f.sync_all()?;
-            std::fs::set_permissions(&part, perms)?;
-            std::fs::rename(&part, &path)
-        })();
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&part);
+        let perms = std::fs::metadata(&path).map(|m| m.permissions()).ok();
+        if let Err(e) = write_whole(&path, new.as_bytes(), perms) {
             tracing::warn!(error = %e, file = %path.display(), "a media project's paths could not be rewritten");
         }
     }
