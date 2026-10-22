@@ -2651,11 +2651,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         // The row must know its directory: the settings page writes
                         // agent.json back through napp_path, and a NULL here made
                         // every such save a silent no-op for an agent discovered on
-                        // disk.
-                        let _ = store.set_agent_napp_path(
+                        // disk. It is also where it came from: a row with no folder
+                        // counts as made here (`app_dev::is_own_app`), so a row
+                        // whose folder can't be recorded is not kept.
+                        if let Err(e) = store.set_agent_napp_path(
                             &agent_id,
                             &loaded.source_path.to_string_lossy(),
-                        );
+                        ) {
+                            warn!(agent = %agent_id, error = %e, "could not record an employee's folder; not added");
+                            let _ = store.delete_agent(&agent_id);
+                            continue;
+                        }
                         // The primary agent ("Nebo") is exposed to the loop by
                         // default. Set it once at row creation — the migration
                         // only covers installs that predate this row, so fresh
@@ -4060,23 +4066,23 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
     })
 }
 
-/// Point a row whose recorded folder is gone at the folder that holds its
-/// manifest. A rename once moved or re-made folders under the new name and
-/// left `napp_path` on one that no longer existed; the folder whose manifest
-/// `id` is the row's id is the employee. A row with no folder recorded (the
-/// primary employee) and one whose folder exists are left alone. Its
-/// `app_ui_path` follows from the same folder (`set_agent_app_fields`).
+/// Point a row whose recorded folder is gone, or that has none recorded, at
+/// the folder that holds its manifest. A rename once moved or re-made
+/// folders under the new name and left `napp_path` on one that no longer
+/// existed; the folder whose manifest `id` is the row's id is the employee.
+/// A row with no folder counts as made here (`app_dev::is_own_app`), so one
+/// whose manifest is in a folder gets it. A row whose folder exists, and one
+/// no folder holds the manifest of (the primary employee), are left alone.
+/// Its `app_ui_path` follows from the same folder (`set_agent_app_fields`).
 fn repair_napp_path(
     store: &db::Store,
     row: &db::models::Agent,
     manifest_id: Option<&str>,
     folder: &std::path::Path,
 ) -> bool {
-    let Some(recorded) = row.napp_path.as_deref().map(str::trim).filter(|p| !p.is_empty()) else {
-        return false;
-    };
+    let recorded = row.napp_path.as_deref().map(str::trim).unwrap_or("");
     if manifest_id != Some(row.id.as_str())
-        || std::path::Path::new(recorded).exists()
+        || (!recorded.is_empty() && std::path::Path::new(recorded).exists())
         || !folder.exists()
         || std::path::Path::new(recorded) == folder
     {
@@ -4195,11 +4201,16 @@ async fn handle_agent_fs_events(
                     ) {
                         Ok(_) => {
                             // Same reason as the boot path: without napp_path the
-                            // settings page cannot write this agent's agent.json.
-                            let _ = state.store.set_agent_napp_path(
+                            // settings page cannot write this agent's agent.json,
+                            // and the row would count as made here.
+                            if let Err(e) = state.store.set_agent_napp_path(
                                 &agent_id,
                                 &loaded.source_path.to_string_lossy(),
-                            );
+                            ) {
+                                warn!(agent = %agent_id, error = %e, "could not record an employee's folder; not added");
+                                let _ = state.store.delete_agent(&agent_id);
+                                continue;
+                            }
                             // A seat hired after the packs exist reads them now (R15).
                             {
                                 let packs = state.packs.read().await.clone();
@@ -4839,6 +4850,16 @@ mod napp_path_repair_tests {
         std::fs::create_dir_all(&other).unwrap();
         assert!(!repair_napp_path(&store, &row(), Some("emp-1"), &other), "a folder that exists stays");
         assert_eq!(row().napp_path.as_deref(), Some(actual.to_str().unwrap()));
+
+        // A row with none recorded gets the folder holding its manifest: an
+        // installed app is never taken for one made here.
+        let installed = tmp.path().join("nebo/agents/bought");
+        std::fs::create_dir_all(&installed).unwrap();
+        store.create_agent("emp-2", Some("installed"), "Bought", "", "", "{}", None, None).unwrap();
+        let bought = || store.get_agent("emp-2").unwrap().unwrap();
+        assert!(!repair_napp_path(&store, &bought(), Some("emp-1"), &installed));
+        assert!(repair_napp_path(&store, &bought(), Some("emp-2"), &installed));
+        assert_eq!(bought().napp_path.as_deref(), Some(installed.to_str().unwrap()));
     }
 }
 

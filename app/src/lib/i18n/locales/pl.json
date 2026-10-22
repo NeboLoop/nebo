@@ -4545,6 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} chce zrobić więcej",
 		"intro": "Zgódź się tylko, jeśli ufasz tej aplikacji. Możesz to później zmienić w jej ustawieniach.",
+		"origin": "Ta aplikacja pochodzi z marketplace. Zrobił ją ktoś spoza twojej firmy.",
 		"wantsFiles": "{name} chce zobaczyć pliki w {target}",
 		"wantsWeb": "{name} chce rozmawiać z {target}",
 		"wantsWebAny": "{name} chce rozmawiać z dowolną stroną",

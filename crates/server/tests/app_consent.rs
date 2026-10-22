@@ -17,10 +17,14 @@ const MINE: &str = "app-mine";
 const ASKS: [&str; 4] = ["storage:readwrite", "filesystem:read:Media", "network:example.com", "subagent:emp-1"];
 
 fn install(home: &std::path::Path, id: &str, name: &str) {
+    install_asking(home, id, name, &ASKS);
+}
+
+fn install_asking(home: &std::path::Path, id: &str, name: &str, asks: &[&str]) {
     let dir = home.join("user/agents").join(name);
     std::fs::create_dir_all(dir.join("ui")).unwrap();
     std::fs::write(dir.join("AGENT.md"), format!("---\nname: {name}\n---\n# {name}")).unwrap();
-    let manifest = json!({ "id": id, "name": name, "version": "1.0.0", "type": "app", "permissions": ASKS });
+    let manifest = json!({ "id": id, "name": name, "version": "1.0.0", "type": "app", "permissions": asks });
     std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
     std::fs::write(dir.join("ui/index.html"), "<html><head></head><body>x</body></html>").unwrap();
 }
@@ -33,6 +37,7 @@ async fn an_installed_app_does_only_what_the_owner_allowed() {
     let home = config::data_dir().unwrap();
     install(&home, BOUGHT, "Bought");
     install(&home, MINE, "Mine");
+    install_asking(&home, "app-local", "Local", &["network:127.0.0.1", "network:localhost"]);
     let workspace = config::workspace_dir().unwrap();
     std::fs::create_dir_all(workspace.join("Media")).unwrap();
     std::fs::write(workspace.join("Media/a.png"), b"png").unwrap();
@@ -74,6 +79,20 @@ async fn an_installed_app_does_only_what_the_owner_allowed() {
         .await
         .unwrap();
     assert_eq!(undeclared.status(), StatusCode::FORBIDDEN, "even his own app holds only what it asks for");
+    // A domain it holds still never reaches this computer or its network,
+    // whatever the grant names.
+    let local = napp::page_pass::grant(napp::page_pass::Scope::App("app-local".into()), std::time::Duration::from_secs(60));
+    for url in [format!("http://127.0.0.1:{}/health", server.port), format!("http://localhost:{}/health", server.port)] {
+        let r = http
+            .post(format!("{base}/k/{local}/api/v1/apps/app-local/http/proxy"))
+            .json(&json!({ "url": url, "method": "GET" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_GATEWAY, "{url}");
+        assert!(r.text().await.unwrap().contains("local or private"), "{url}");
+    }
+    napp::page_pass::revoke(&local);
 
     // His own app holds what it asks for.
     assert_eq!(http.get(file(&mine, MINE)).send().await.unwrap().status(), StatusCode::OK);

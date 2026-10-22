@@ -4545,6 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} daha fazlasını yapmak istiyor",
 		"intro": "Bu uygulamaya güveniyorsan evet de. Sonra uygulamanın ayarlarından değiştirebilirsin.",
+		"origin": "Bu uygulama pazar yerinden geldi. Şirketinin dışından biri yaptı.",
 		"wantsFiles": "{name}, {target} içindeki dosyaları görmek istiyor",
 		"wantsWeb": "{name}, {target} ile konuşmak istiyor",
 		"wantsWebAny": "{name} her web sitesiyle konuşmak istiyor",

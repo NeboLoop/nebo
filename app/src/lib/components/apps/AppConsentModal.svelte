@@ -40,7 +40,10 @@
   <div class="modal modal-open" role="dialog" aria-modal="true" aria-labelledby="app-consent-title">
     <div class="modal-box max-w-md">
       <h3 id="app-consent-title" class="text-base font-semibold">{$t('appPermissions.title', { values: { name: ask.name } })}</h3>
-      <p class="text-sm text-base-content/70 mt-2">{$t('appPermissions.intro')}</p>
+      <!-- Where it came from, in Nebo's words: the app picks its own name,
+           so a name alone never says who made it. -->
+      <p class="text-sm font-medium mt-2">{$t('appPermissions.origin')}</p>
+      <p class="text-sm text-base-content/70 mt-1">{$t('appPermissions.intro')}</p>
       <ul class="divide-y divide-base-content/10 mt-3">
         {#each left as p (p.permission)}
           {@const words = permissionWords(p, ask.name, true)}

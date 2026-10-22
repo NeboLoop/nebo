@@ -4545,6 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} muốn làm thêm",
 		"intro": "Chỉ đồng ý nếu bạn tin ứng dụng này. Bạn có thể đổi ý sau trong phần cài đặt của ứng dụng.",
+		"origin": "Ứng dụng này đến từ marketplace. Một người ngoài công ty bạn đã tạo ra nó.",
 		"wantsFiles": "{name} muốn xem các tệp trong {target}",
 		"wantsWeb": "{name} muốn trò chuyện với {target}",
 		"wantsWebAny": "{name} muốn trò chuyện với bất kỳ trang web nào",

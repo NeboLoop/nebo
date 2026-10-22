@@ -72,25 +72,6 @@ async fn validate_app_token(
     Ok(())
 }
 
-/// Check that the app holds `network:{domain}` for the target URL
-/// (`app_grants`): refused when it does not, however it runs.
-async fn check_network_permission(
-    state: &AppState,
-    agent_id: &str,
-    url: &str,
-) -> Result<(), Response> {
-    let domain = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(String::from));
-    let domain = match domain {
-        Some(d) => d,
-        None => {
-            return Err((StatusCode::BAD_REQUEST, "invalid URL").into_response());
-        }
-    };
-    holds(state, agent_id, &format!("network:{domain}")).await
-}
-
 /// Check that the app holds `subagent:{target}` to invoke another agent
 /// (`app_grants`): refused when it does not, however it runs.
 async fn check_subagent_permission(
@@ -1807,54 +1788,52 @@ pub async fn http_proxy(
         None => return (StatusCode::BAD_REQUEST, "missing url field").into_response(),
     };
 
-    // Enforce network: permission from manifest
-    if let Err(r) = check_network_permission(&state, &agent_id, &url).await {
-        return r;
+    // The app's `network:` grants (`app_grants`), asked of the address and
+    // of every redirect, through the one checked fetch the web tool uses
+    // (`tools::web_tool::fetch_checked`): never this computer, the network
+    // it is on, or a cloud's metadata address, whatever a name resolves to.
+    let granted = crate::app_grants::granted(&state, &agent_id).await;
+    let allowed = |u: &url::Url| {
+        let host = u.host_str().unwrap_or_default();
+        if napp::manifest::permission_covers(&granted, &format!("network:{host}")) {
+            Ok(())
+        } else {
+            Err(format!("app lacks permission: network:{host}"))
+        }
+    };
+    if let Err(e) = url::Url::parse(&url).map_err(|e| e.to_string()).and_then(|u| allowed(&u)) {
+        return (StatusCode::FORBIDDEN, e).into_response();
     }
 
-    let method = body
-        .get("method")
-        .and_then(|v| v.as_str())
-        .unwrap_or("GET")
-        .to_uppercase();
-
-    let headers: Vec<(String, String)> = body
-        .get("headers")
-        .and_then(|h| h.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
-
-    let client = match tls::http_client().build() {
-        Ok(client) => client,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
-    };
-    let mut req = match method.as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "PATCH" => client.patch(&url),
+    let method = match body.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        "PATCH" => reqwest::Method::PATCH,
         _ => return (StatusCode::BAD_REQUEST, "unsupported method").into_response(),
     };
 
-    for (k, v) in &headers {
-        req = req.header(k.as_str(), v.as_str());
+    let mut req_headers = reqwest::header::HeaderMap::new();
+    for (k, v) in body.get("headers").and_then(|h| h.as_object()).into_iter().flatten() {
+        if let (Ok(name), Ok(value)) = (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v.as_str().unwrap_or("")),
+        ) {
+            req_headers.insert(name, value);
+        }
     }
-
     // Add identifying header
-    req = req.header("X-Nebo-App", &agent_id);
-
-    if let Some(b) = req_body {
-        req = req.body(b);
+    if let Ok(v) = reqwest::header::HeaderValue::from_str(&agent_id) {
+        req_headers.insert("x-nebo-app", v);
     }
+    let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
 
-    match req.send().await {
+    let client = match tls::http_client().redirect(reqwest::redirect::Policy::none()).build() {
+        Ok(client) => client,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
+    };
+    match tools::web_tool::fetch_checked(&client, method, &url, req_headers, req_body, allowed).await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let resp_headers: Vec<(String, String)> = resp

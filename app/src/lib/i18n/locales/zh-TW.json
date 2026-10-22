@@ -4545,6 +4545,7 @@
 	"appPermissions": {
 		"title": "{name} 想做更多事",
 		"intro": "只有信任這個應用程式時才允許。之後可以在應用程式設定中更改。",
+		"origin": "這個應用程式來自市集，由你公司以外的人製作。",
 		"wantsFiles": "{name} 想查看 {target} 中的檔案",
 		"wantsWeb": "{name} 想與 {target} 通訊",
 		"wantsWebAny": "{name} 想與任何網站通訊",

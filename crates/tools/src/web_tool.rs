@@ -314,85 +314,6 @@ impl WebCore {
         }
     }
 
-    /// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
-    /// redirects are followed manually (limit 5, matching the previous auto
-    /// policy) so a public URL can't redirect into a private address unchecked.
-    async fn fetch_checked(
-        &self,
-        method: reqwest::Method,
-        url: &str,
-        mut headers: reqwest::header::HeaderMap,
-        mut body: Option<String>,
-    ) -> Result<reqwest::Response, String> {
-        let mut method = method;
-        let mut current = check_url_allowed(url).await?;
-
-        // Initial request + up to 5 redirect follows.
-        for _ in 0..=5 {
-            let mut req = self
-                .bare_client
-                .request(method.clone(), current.clone())
-                .headers(headers.clone());
-            if let Some(ref b) = body {
-                req = req.body(b.clone());
-            }
-            let resp = req.send().await.map_err(|e| {
-                format!(
-                    "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
-                    current, e
-                )
-            })?;
-
-            if !resp.status().is_redirection() {
-                return Ok(resp);
-            }
-            // Redirect without a usable Location — return it as-is, like reqwest does.
-            let Some(location) = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-            else {
-                return Ok(resp);
-            };
-            let Some((next_method, next_url, drop_body)) =
-                next_hop(resp.status(), &method, resp.url(), &location)
-            else {
-                return Ok(resp);
-            };
-            let next = check_url_allowed(next_url.as_str()).await?;
-
-            // Mirror reqwest's redirect hygiene: credentials never cross hosts,
-            // and body-describing headers go away with the body.
-            let cross_host = next.host_str() != current.host_str()
-                || next.port_or_known_default() != current.port_or_known_default();
-            if cross_host {
-                for h in [
-                    reqwest::header::AUTHORIZATION,
-                    reqwest::header::COOKIE,
-                    reqwest::header::PROXY_AUTHORIZATION,
-                    reqwest::header::WWW_AUTHENTICATE,
-                ] {
-                    headers.remove(&h);
-                }
-            }
-            if drop_body {
-                body = None;
-                for h in [
-                    reqwest::header::CONTENT_TYPE,
-                    reqwest::header::CONTENT_LENGTH,
-                    reqwest::header::CONTENT_ENCODING,
-                    reqwest::header::TRANSFER_ENCODING,
-                ] {
-                    headers.remove(&h);
-                }
-            }
-            method = next_method;
-            current = next;
-        }
-        Err(format!("Too many redirects for {} (limit 5)", url))
-    }
-
     /// One HTTP request to a model-supplied URL. HTML comes back as its
     /// visible text; any other body as-is, windowed by `offset` past 50 KB.
     /// `whole`: a program reads the answer (`ToolContext::whole_result`), so
@@ -418,7 +339,7 @@ impl WebCore {
 
         let body = input.get("body").and_then(|v| v.as_str()).map(String::from);
 
-        match self.fetch_checked(method, url, headers, body).await {
+        match fetch_checked(&self.bare_client, method, url, headers, body, |_| Ok(())).await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 let content_type = resp
@@ -3119,6 +3040,90 @@ fn private_url_error(url: &str) -> String {
         "Cannot fetch {}: it points to a local or private network address, which this tool never fetches. A server you started on this computer answers run_command(command: \"curl -s http://localhost:<port>/...\"); Nebo's own server answers no command.",
         url
     )
+}
+
+/// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
+/// redirects are followed manually (limit 5, matching the previous auto
+/// policy) so a public URL can't redirect into a private address unchecked.
+/// `client` must not follow redirects itself. `hop_allowed` is the
+/// caller's own rule on top, asked of every hop (an app's `network:`
+/// grant: a redirect never leaves the domains it was allowed).
+pub async fn fetch_checked(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    mut headers: reqwest::header::HeaderMap,
+    mut body: Option<String>,
+    hop_allowed: impl Fn(&url::Url) -> Result<(), String>,
+) -> Result<reqwest::Response, String> {
+    let mut method = method;
+    let mut current = check_url_allowed(url).await?;
+    hop_allowed(&current)?;
+
+    // Initial request + up to 5 redirect follows.
+    for _ in 0..=5 {
+        let mut req = client
+            .request(method.clone(), current.clone())
+            .headers(headers.clone());
+        if let Some(ref b) = body {
+            req = req.body(b.clone());
+        }
+        let resp = req.send().await.map_err(|e| {
+            format!(
+                "HTTP request failed for {}: {}. Check that the URL is correct and the server is reachable.",
+                current, e
+            )
+        })?;
+
+        if !resp.status().is_redirection() {
+            return Ok(resp);
+        }
+        // Redirect without a usable Location — return it as-is, like reqwest does.
+        let Some(location) = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+        else {
+            return Ok(resp);
+        };
+        let Some((next_method, next_url, drop_body)) =
+            next_hop(resp.status(), &method, resp.url(), &location)
+        else {
+            return Ok(resp);
+        };
+        let next = check_url_allowed(next_url.as_str()).await?;
+        hop_allowed(&next)?;
+
+        // Mirror reqwest's redirect hygiene: credentials never cross hosts,
+        // and body-describing headers go away with the body.
+        let cross_host = next.host_str() != current.host_str()
+            || next.port_or_known_default() != current.port_or_known_default();
+        if cross_host {
+            for h in [
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::COOKIE,
+                reqwest::header::PROXY_AUTHORIZATION,
+                reqwest::header::WWW_AUTHENTICATE,
+            ] {
+                headers.remove(&h);
+            }
+        }
+        if drop_body {
+            body = None;
+            for h in [
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::CONTENT_LENGTH,
+                reqwest::header::CONTENT_ENCODING,
+                reqwest::header::TRANSFER_ENCODING,
+            ] {
+                headers.remove(&h);
+            }
+        }
+        method = next_method;
+        current = next;
+    }
+    Err(format!("Too many redirects for {} (limit 5)", url))
 }
 
 /// Canonical SSRF guard for model-supplied URLs: parse, require http/https,
