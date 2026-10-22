@@ -120,6 +120,151 @@ pub fn workspace_dir() -> Result<PathBuf, NeboError> {
     Ok(ws)
 }
 
+/// The folders of the owner's workspace, one per kind of work:
+///
+/// ```text
+/// ~/NeboAI/
+///   Design Studio/<project>/   websites, decks, cards, mailers
+///   Media Studio/<project>/    videos (Nebo Media's projects)
+///   Apps/<app>/                source for apps the owner builds
+///   Code/<project>/            code an employee builds outside a studio
+///   Documents/                 files employees make for the owner
+///   Downloads/                 files employees save for the owner
+/// ```
+///
+/// These are defaults: a folder the owner names is used as he names it.
+/// Everything that builds one of these paths asks [`workspace_folder`];
+/// plugins and apps receive them as [`workspace_folders_env`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceFolder {
+    DesignStudio,
+    MediaStudio,
+    Apps,
+    Code,
+    Documents,
+    Downloads,
+}
+
+impl WorkspaceFolder {
+    pub const ALL: [WorkspaceFolder; 6] = [
+        WorkspaceFolder::DesignStudio,
+        WorkspaceFolder::MediaStudio,
+        WorkspaceFolder::Apps,
+        WorkspaceFolder::Code,
+        WorkspaceFolder::Documents,
+        WorkspaceFolder::Downloads,
+    ];
+
+    /// The folder's name in the workspace, as the owner sees it.
+    pub fn name(self) -> &'static str {
+        match self {
+            WorkspaceFolder::DesignStudio => "Design Studio",
+            WorkspaceFolder::MediaStudio => "Media Studio",
+            WorkspaceFolder::Apps => "Apps",
+            WorkspaceFolder::Code => "Code",
+            WorkspaceFolder::Documents => "Documents",
+            WorkspaceFolder::Downloads => "Downloads",
+        }
+    }
+
+    /// The variable a plugin or an app reads the folder's full path from.
+    pub fn env_var(self) -> &'static str {
+        match self {
+            WorkspaceFolder::DesignStudio => "NEBO_DESIGN_STUDIO_DIR",
+            WorkspaceFolder::MediaStudio => "NEBO_MEDIA_STUDIO_DIR",
+            WorkspaceFolder::Apps => "NEBO_APPS_DIR",
+            WorkspaceFolder::Code => "NEBO_CODE_DIR",
+            WorkspaceFolder::Documents => "NEBO_DOCUMENTS_DIR",
+            WorkspaceFolder::Downloads => "NEBO_DOWNLOADS_DIR",
+        }
+    }
+
+    /// What it holds, one folder per what: `<project>/`, `<app>/`, or
+    /// nothing for a folder that holds files.
+    pub fn per(self) -> &'static str {
+        match self {
+            WorkspaceFolder::DesignStudio | WorkspaceFolder::MediaStudio | WorkspaceFolder::Code => "<project>/",
+            WorkspaceFolder::Apps => "<app>/",
+            WorkspaceFolder::Documents | WorkspaceFolder::Downloads => "",
+        }
+    }
+
+    /// What goes in it, as an employee is told.
+    pub fn holds(self) -> &'static str {
+        match self {
+            WorkspaceFolder::DesignStudio => "websites, decks, cards and mailers",
+            WorkspaceFolder::MediaStudio => "videos and their media",
+            WorkspaceFolder::Apps => "source for apps the owner builds",
+            WorkspaceFolder::Code => "code built outside a studio",
+            WorkspaceFolder::Documents => "files made for the owner",
+            WorkspaceFolder::Downloads => "files saved for the owner",
+        }
+    }
+}
+
+/// One folder of the owner's workspace ([`WorkspaceFolder`]): the ONE place
+/// its path is decided. Not made here; whoever writes into it makes it.
+pub fn workspace_folder(folder: WorkspaceFolder) -> Result<PathBuf, NeboError> {
+    Ok(workspace_dir()?.join(folder.name()))
+}
+
+/// Every workspace folder as the environment a plugin or an app is started
+/// with (`NEBO_MEDIA_STUDIO_DIR=/Users/a/NeboAI/Media Studio`, …), so none
+/// of them builds a path by hand. Empty when there is no workspace.
+pub fn workspace_folders_env() -> Vec<(String, String)> {
+    WorkspaceFolder::ALL
+        .into_iter()
+        .filter_map(|f| Some((f.env_var().to_string(), workspace_folder(f).ok()?.to_string_lossy().into_owned())))
+        .collect()
+}
+
+#[cfg(test)]
+mod workspace_folder_tests {
+    use super::*;
+
+    /// Each folder sits directly in the workspace under the name the owner
+    /// approved, spaces kept.
+    #[test]
+    fn each_folder_is_named_in_the_workspace() {
+        let ws = workspace_dir().unwrap();
+        let named: Vec<(&str, PathBuf)> =
+            WorkspaceFolder::ALL.into_iter().map(|f| (f.name(), workspace_folder(f).unwrap())).collect();
+        assert_eq!(
+            named,
+            vec![
+                ("Design Studio", ws.join("Design Studio")),
+                ("Media Studio", ws.join("Media Studio")),
+                ("Apps", ws.join("Apps")),
+                ("Code", ws.join("Code")),
+                ("Documents", ws.join("Documents")),
+                ("Downloads", ws.join("Downloads")),
+            ]
+        );
+    }
+
+    /// The environment names every folder once, each by its own variable and
+    /// with the helper's path.
+    #[test]
+    fn the_environment_carries_every_folder() {
+        let env = workspace_folders_env();
+        let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "NEBO_DESIGN_STUDIO_DIR",
+                "NEBO_MEDIA_STUDIO_DIR",
+                "NEBO_APPS_DIR",
+                "NEBO_CODE_DIR",
+                "NEBO_DOCUMENTS_DIR",
+                "NEBO_DOWNLOADS_DIR"
+            ]
+        );
+        for (f, (_, v)) in WorkspaceFolder::ALL.into_iter().zip(&env) {
+            assert_eq!(PathBuf::from(v), workspace_folder(f).unwrap());
+        }
+    }
+}
+
 /// Industry, franchise, and company packs installed on this Nebo:
 /// `<data_dir>/packs/<slug>/` with `INDUSTRY.md`, `FRANCHISE.md`, or
 /// `COMPANY.md` and the typed folders beside it.

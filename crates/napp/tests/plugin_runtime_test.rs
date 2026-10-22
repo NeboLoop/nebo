@@ -329,6 +329,24 @@ async fn nebo_chromium_reaches_the_plugin() {
     assert_eq!(env.get("NEBO_CHROMIUM"), Some(&want));
 }
 
+/// A plugin is started knowing every workspace folder, each the path
+/// Nebo's one helper decides (Nebo Media writes its projects to
+/// `NEBO_MEDIA_STUDIO_DIR`).
+#[tokio::test]
+async fn the_workspace_folders_reach_the_plugin() {
+    let binary = fake_plugin_binary();
+    let (_tmp, store) = setup_plugin_store("mediaplugin", &binary);
+    let resolved = store.resolve("mediaplugin", "*").unwrap();
+    let runtime = PluginRuntime::new("mediaplugin", resolved, store);
+    let output = runtime.command("echo-env").output().await.unwrap();
+    assert!(output.status.success());
+    let env: HashMap<String, String> = serde_json::from_slice(&output.stdout).unwrap();
+    for folder in config::WorkspaceFolder::ALL {
+        let want = config::workspace_folder(folder).unwrap();
+        assert_eq!(env.get(folder.env_var()).map(std::path::PathBuf::from), Some(want), "{}", folder.env_var());
+    }
+}
+
 #[tokio::test]
 async fn auth_env_injection() {
     let binary = fake_plugin_binary();

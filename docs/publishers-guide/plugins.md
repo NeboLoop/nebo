@@ -253,6 +253,8 @@ When a script runs, plugin binaries are injected as environment variables using 
 
 Additionally, `NEBO_DATA_DIR` is set to `<NEBO_HOME>/appdata/plugins/<slug>/` — the persistent data directory for this plugin, and the process's working directory. Use it for caches, databases, and any state that should survive plugin upgrades. (It is the one canonical name across plugins, apps, and skills.)
 
+The `NEBO_*_STUDIO_DIR`, `NEBO_APPS_DIR`, `NEBO_CODE_DIR`, `NEBO_DOCUMENTS_DIR` and `NEBO_DOWNLOADS_DIR` variables are the owner's workspace folders, full paths decided by Nebo (`~/NeboAI/...` on a computer; inside Nebo's own files on a cloud bot). A plugin that writes the owner's work reads the folder from its variable and never builds the path itself; it makes the folder when it is missing. A folder the owner names in the request still wins.
+
 `NEBO_CHROMIUM` is the full path of the Chromium-family browser Nebo draws with (Chrome, Chromium, Edge or Brave), for a plugin that renders web pages (Nebo Media's HTML motion templates). It is absent when the machine has none. A plugin uses it and never searches for a browser itself; start it headless with a throwaway profile.
 
 ### Python Example
@@ -967,6 +969,12 @@ The runtime starts from the user's environment, strips dangerous loader/shell va
 | `{DEP_SLUG}_BIN` | `FFMPEG_BIN=<NEBO_HOME>/nebo/plugins/ffmpeg/2.0.0/ffmpeg` | Binary path for each declared dependency plugin |
 | `PATH` | augmented path | System `PATH` with installed plugin directories prepended |
 | `NEBO_CHROMIUM` | `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` | The Chromium-family browser Nebo draws with, for plugins that render web pages; absent when there is none. A `NEBO_CHROMIUM` in Nebo's own environment wins |
+| `NEBO_DESIGN_STUDIO_DIR` | `~/NeboAI/Design Studio` | The owner's Design Studio folder: one folder per project (websites, decks, cards, mailers) |
+| `NEBO_MEDIA_STUDIO_DIR` | `~/NeboAI/Media Studio` | The owner's Media Studio folder: one folder per video project (Nebo Media's projects) |
+| `NEBO_APPS_DIR` | `~/NeboAI/Apps` | Source for apps the owner builds, one folder per app |
+| `NEBO_CODE_DIR` | `~/NeboAI/Code` | Code projects an employee builds outside a studio, one folder per project |
+| `NEBO_DOCUMENTS_DIR` | `~/NeboAI/Documents` | Files employees make for the owner |
+| `NEBO_DOWNLOADS_DIR` | `~/NeboAI/Downloads` | Files employees save for the owner |
 | auth env | `GOOGLE_CLIENT_ID=…` | Resolved auth env vars from the manifest's `auth.env` |
 | `HOME` | user home | Preserved for credential lookups (when enabled) |
 

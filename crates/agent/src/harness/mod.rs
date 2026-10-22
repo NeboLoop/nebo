@@ -265,7 +265,8 @@ impl Harness {
     ) -> Vec<(String, String)> {
         let email = prompt::inputs::email_address(&self.store, agent_id);
         let location = prompt::inputs::office_location(&self.store);
-        prompt::sections::environment_fields(cwd, channel, watching, email.as_deref(), location.as_deref())
+        let workspace = config::workspace_dir().ok().map(|w| w.to_string_lossy().into_owned());
+        prompt::sections::environment_fields(cwd, workspace.as_deref(), channel, watching, email.as_deref(), location.as_deref())
     }
 
     /// The owner's phone position `agent_id` may be told now: only while the

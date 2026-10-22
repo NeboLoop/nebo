@@ -694,7 +694,7 @@ impl FileTool {
                 // run picks a path outside the app's working dir). Hard-fail, but
                 // tell the model exactly where it CAN write so it can retry itself.
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    let suggested = config::workspace_dir()
+                    let suggested = config::workspace_folder(config::WorkspaceFolder::Documents)
                         .map(|d| d.to_string_lossy().into_owned())
                         .unwrap_or_else(|_| "the app data directory".to_string());
                     return ToolResult::error(format!(

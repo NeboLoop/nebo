@@ -1900,6 +1900,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // before any sidecar starts (one-time).
     migration::migrate_app_data_per_app(&data_dir, &store);
 
+    // The owner's Nebo Media projects into the Media Studio folder, before
+    // any plugin or app reads them there.
+    migration::move_media_projects();
+
     // Stored shapes that name tools move onto the current tool set once,
     // before anything loads an employee, a skill or a workflow.
     stored_tool_names::upgrade(&store, &data_dir)?;

@@ -41,6 +41,9 @@ pub fn sanitize_env(
     // it survives updates. Single canonical name across apps, plugins, skills.
     env.push(("NEBO_DATA_DIR".into(), data_dir.into()));
     env.push(("NEBO_API_URL".into(), format!("http://127.0.0.1:{api_port}")));
+    // The owner's workspace folders (`NEBO_MEDIA_STUDIO_DIR`, …): an app reads
+    // them, never builds them.
+    env.extend(config::workspace_folders_env());
 
     // Allowlisted system vars
     for var in ALLOWED_SYSTEM_VARS {
@@ -132,6 +135,18 @@ mod tests {
         assert!(keys.contains(&"NEBO_API_URL"));
         assert!(!keys.contains(&"ANTHROPIC_API_KEY"));
         assert!(!keys.contains(&"JWT_SECRET"));
+    }
+
+    /// An app is started knowing every workspace folder, each the path
+    /// Nebo's one helper decides (Media Studio's sidecar reads its projects
+    /// from `NEBO_MEDIA_STUDIO_DIR`).
+    #[test]
+    fn the_workspace_folders_reach_the_app() {
+        let env = sanitize_env("x", "X", "1", "/x", "/x.sock", "/x/data", 27895);
+        for folder in config::WorkspaceFolder::ALL {
+            let got = env.iter().find(|(k, _)| k == folder.env_var()).map(|(_, v)| std::path::PathBuf::from(v));
+            assert_eq!(got, Some(config::workspace_folder(folder).unwrap()), "{}", folder.env_var());
+        }
     }
 
     #[test]
