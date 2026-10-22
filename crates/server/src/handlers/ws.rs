@@ -234,9 +234,10 @@ pub async fn app_ws_handler(
 /// app's own reaches it: an event that names the app (`appId`: its data
 /// changed, a reload), one of its surfaces (`agent:<id>:<view>`, an A2UI
 /// message or an action's status), and the turns of its own conversations
-/// (`session_id` of `agent:<id>:app[:<ctx>]` or `app:<id>:…`). Nothing
-/// else: never the owner's other conversations, his approvals, his roster,
-/// another app's data or cards.
+/// (`session_id` of `agent:<id>:app[:<ctx>]` or `app:<id>:…`), their words
+/// alone ([`APP_CONVERSATION_EVENTS`]). Nothing else: never the owner's
+/// other conversations, his approvals, his roster, another app's data or
+/// cards, a tool's call or result.
 pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
     let p = &event.payload;
     let field = |k: &str| p.get(k).and_then(|v| v.as_str());
@@ -247,7 +248,22 @@ pub(crate) fn reaches_app(agent_id: &str, event: &HubEvent) -> bool {
         return is_app_surface(agent_id, surface);
     }
     field("session_id").or_else(|| field("session_key")).is_some_and(|key| is_app_session(agent_id, key))
+        && APP_CONVERSATION_EVENTS.contains(&event.event_type.as_str())
 }
+
+/// What of its own conversations' turns reaches an app's page: the words
+/// and how the turn ends. Never a tool call, a tool's result, thinking or an
+/// approval request (they carry what the employee read with its tools).
+const APP_CONVERSATION_EVENTS: &[&str] = &[
+    "chat_ack",
+    "chat_user_message",
+    "chat_stream",
+    "chat_complete",
+    "chat_error",
+    "chat_cancelled",
+    "chat_taken_in",
+    "chat_created",
+];
 
 /// Whether `surface` is one of app `agent_id`'s own surfaces
 /// (`agent:<id>:<view>`).
@@ -3184,6 +3200,10 @@ mod app_event_tests {
             let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
             assert!(reaches_app("crm", &turn), "{key}");
             assert!(!reaches_app("notes", &turn), "{key}");
+        }
+        for kind in ["tool_start", "tool_result", "thinking", "approval_request"] {
+            let own = ev(kind, serde_json::json!({ "session_id": "agent:crm:app", "input": "secret" }));
+            assert!(!reaches_app("crm", &own), "never its own turn's {kind}");
         }
         for key in ["agent:crm:web", "agent:crm:thread:t1", "agent:crm:apple", "agent:crmx:app", "default"] {
             let turn = ev("chat_stream", serde_json::json!({ "session_id": key, "content": "hi" }));
