@@ -89,8 +89,8 @@ pub fn move_media_projects(store: &db::Store, workspace: &Path, studio: &Path, h
     // A link this move already made there (cut short before the old one
     // went) is its own, not a taken name.
     let ours = |from: &str, to: &str| {
-        std::fs::read_link(studio.join(to)).is_ok()
-            && std::fs::canonicalize(studio.join(to)).ok().is_some_and(|t| std::fs::canonicalize(old.join(from)).ok() == Some(t))
+        let (from, to) = (old.join(from), studio.join(to));
+        linked_target(&from).is_some_and(|t| std::fs::read_link(&to).ok() == Some(t))
     };
     plan.retain(|(from, to)| !(names.contains(from) && taken(&studio.join(to)) && !ours(from, to)));
     let unplanned: Vec<String> = names.iter().filter(|n| !plan.iter().any(|(f, _)| f == *n)).cloned().collect();
@@ -153,17 +153,11 @@ pub fn move_media_projects(store: &db::Store, workspace: &Path, studio: &Path, h
 /// folder shallower, so it is made again at the new place pointing where it
 /// pointed, then the old link goes; everything else is one rename.
 fn move_entry(from: &Path, to: &Path) -> bool {
-    if let Ok(target) = std::fs::read_link(from)
-        && target.is_relative()
-    {
+    if let Some(points) = linked_target(from) {
         // Made already by a move cut short: only the old link is left to go.
-        if std::fs::read_link(to).is_ok() && std::fs::canonicalize(to).ok().is_some_and(|t| std::fs::canonicalize(from).ok() == Some(t)) {
+        if std::fs::read_link(to).ok().as_ref() == Some(&points) {
             return std::fs::remove_file(from).is_ok();
         }
-        let Some(parent) = from.parent() else { return false };
-        // Where it points, as a full path that needs nothing of the old
-        // folder (which goes): resolved, or spelled out when it dangles.
-        let points = std::fs::canonicalize(from).unwrap_or_else(|_| lexical(&parent.join(&target)));
         #[cfg(unix)]
         let made = std::os::unix::fs::symlink(&points, to);
         #[cfg(windows)]
@@ -175,6 +169,15 @@ fn move_entry(from: &Path, to: &Path) -> bool {
         return made.is_ok() && std::fs::remove_file(from).is_ok();
     }
     std::fs::rename(from, to).is_ok()
+}
+
+/// Where a link with a relative target points, as the full path its moved
+/// copy is made with (needing nothing of the old folder, which goes):
+/// resolved, or spelled out when it dangles. None for anything else.
+fn linked_target(from: &Path) -> Option<PathBuf> {
+    let target = std::fs::read_link(from).ok().filter(|t| t.is_relative())?;
+    let parent = from.parent()?;
+    Some(std::fs::canonicalize(from).unwrap_or_else(|_| lexical(&parent.join(&target))))
 }
 
 /// Replace `path` whole: written beside it (`.<name>.moving`), synced, given
@@ -503,6 +506,16 @@ mod tests {
         assert_eq!(done.moved, vec![("shoot".into(), "shoot".into())]);
         assert_eq!(fs::read_dir(&h.studio).unwrap().count(), 1, "no shoot-2");
         assert!(!h.old.exists());
+
+        // The same with a link whose target is gone.
+        let h = Home::new();
+        fs::create_dir_all(&h.old).unwrap();
+        fs::create_dir_all(&h.studio).unwrap();
+        std::os::unix::fs::symlink("../../../Gone/shoot", h.old.join("shoot")).unwrap();
+        fs::write(h.old.join(JOURNAL), serde_json::to_vec(&vec![("shoot", "shoot")]).unwrap()).unwrap();
+        std::os::unix::fs::symlink(h.home.join("Gone/shoot"), h.studio.join("shoot")).unwrap();
+        assert_eq!(h.run().moved, vec![("shoot".into(), "shoot".into())]);
+        assert_eq!(fs::read_dir(&h.studio).unwrap().count(), 1, "no shoot-2 for a dangling link either");
     }
 
     /// No old folder: nothing is made, nothing moved.

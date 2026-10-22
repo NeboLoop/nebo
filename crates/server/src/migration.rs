@@ -1063,6 +1063,22 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// writing new work back into the old folder.
 const MEDIA_STUDIO_READER: semver::Version = semver::Version::new(0, 6, 1);
 
+/// Whether the media move may run now: the Nebo Media that would run here
+/// (the copy `PluginStore::resolve` picks) reads the Media Studio folder, or
+/// none is on disk; and the workspace move out of the file store (`files`)
+/// is done, or there is none (`workspace` is the store).
+fn media_move_ready(plugins: &napp::plugin::PluginStore, root: &Path, workspace: &Path, files: &Path) -> bool {
+    let slug = tools::media_tool::MEDIA_PLUGIN;
+    if plugins.package_on_disk(slug) {
+        let version = plugins.resolved_version(slug);
+        if !version.as_ref().is_some_and(|v| *v >= MEDIA_STUDIO_READER) {
+            debug!(?version, "Nebo Media does not read the Media Studio folder yet; its projects stay until it updates");
+            return false;
+        }
+    }
+    workspace == files || root.join(WORKSPACE_MOVED_MARK).exists()
+}
+
 /// Written in the Nebo root once the owner's work has been copied out of the
 /// file store into his workspace (`tools::workspace_history::move_workspace`).
 pub const WORKSPACE_MOVED_MARK: &str = ".workspace-moved";
@@ -1078,22 +1094,13 @@ pub const WORKSPACE_MOVED_MARK: &str = ".workspace-moved";
 /// Called at startup and whenever Nebo Media is installed or updated; once
 /// the old folder is gone it does nothing.
 pub fn move_media_projects(store: &db::Store, plugins: &napp::plugin::PluginStore) {
-    let slug = tools::media_tool::MEDIA_PLUGIN;
-    let installed = plugins.plugins_dir().join(slug).exists() || plugins.user_plugins_dir().join(slug).exists();
-    if installed {
-        let version = plugins.get_manifest(slug).and_then(|m| semver::Version::parse(&m.version).ok());
-        if !version.as_ref().is_some_and(|v| *v >= MEDIA_STUDIO_READER) {
-            debug!(?version, "Nebo Media does not read the Media Studio folder yet; its projects stay until it updates");
-            return;
-        }
-    }
     let studio = config::WorkspaceFolder::MediaStudio;
     let (Ok(dir), Ok(workspace), Ok(files), Ok(to)) =
         (config::data_dir(), config::workspace_dir(), config::files_dir(), config::workspace_folder(studio))
     else {
         return;
     };
-    if workspace != files && !dir.join(WORKSPACE_MOVED_MARK).exists() {
+    if !media_move_ready(plugins, &dir, &workspace, &files) {
         return;
     }
     let done = tools::workspace_history::move_media_projects(store, &workspace, &to, dirs::home_dir().as_deref());
@@ -1395,5 +1402,90 @@ mod tests {
 
         assert_eq!(text(&home.join("appdata/agents").join(id).join("token.json")), "secret");
         assert_eq!(text(&old.join("token.json")), "secret", "the plugin keeps its file");
+    }
+}
+
+#[cfg(test)]
+mod media_move_ready_tests {
+    use super::*;
+    use std::fs;
+
+    /// A Nebo root with plugin folders and a workspace outside its file store.
+    struct Root {
+        _tmp: tempfile::TempDir,
+        root: std::path::PathBuf,
+        plugins: napp::plugin::PluginStore,
+    }
+
+    impl Root {
+        fn new() -> Root {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let plugins = napp::plugin::PluginStore::new(root.join("nebo/plugins"), root.join("user/plugins"), None);
+            Root { _tmp: tmp, root, plugins }
+        }
+
+        /// A Nebo Media copy at `version` in the marketplace (`nebo`) or the
+        /// owner's own (`user`) plugins folder.
+        fn media(&self, side: &str, version: &str) {
+            let dir = self.root.join(side).join("plugins/nebo-media").join(version);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("nebo-media"), "binary").unwrap();
+        }
+
+        fn ready(&self) -> bool {
+            media_move_ready(&self.plugins, &self.root, &self.root.join("NeboAI"), &self.root.join("files"))
+        }
+
+        fn workspace_moved(&self) {
+            fs::write(self.root.join(WORKSPACE_MOVED_MARK), "x").unwrap();
+        }
+    }
+
+    /// It waits for the workspace move out of the file store; with no Nebo
+    /// Media on disk it then runs.
+    #[test]
+    fn it_waits_for_the_workspace_move() {
+        let r = Root::new();
+        assert!(!r.ready(), "the workspace move isn't done");
+        r.workspace_moved();
+        assert!(r.ready(), "done, and no Nebo Media on disk");
+        let store_is_workspace = media_move_ready(&r.plugins, &r.root, &r.root.join("files"), &r.root.join("files"));
+        assert!(store_is_workspace);
+    }
+
+    /// Only a Nebo Media that reads the Media Studio folder lets it run.
+    #[test]
+    fn it_waits_for_a_nebo_media_that_reads_the_media_studio_folder() {
+        let r = Root::new();
+        r.workspace_moved();
+        r.media("nebo", "0.6.0");
+        assert!(!r.ready(), "0.6.0 still reads Media/Projects");
+        r.media("nebo", "0.6.1");
+        assert!(r.ready());
+    }
+
+    /// The copy that runs decides: the owner's own older copy holds it even
+    /// with a newer marketplace copy beside it, and a folder that isn't a
+    /// version is skipped as the resolver skips it.
+    #[test]
+    fn the_copy_that_runs_decides() {
+        let r = Root::new();
+        r.workspace_moved();
+        r.media("nebo", "0.6.1");
+        r.media("user", "0.5.9");
+        fs::create_dir_all(r.root.join("user/plugins/nebo-media/0.7.0.staging")).unwrap();
+        assert!(!r.ready(), "the owner's 0.5.9 is what runs");
+    }
+
+    /// A Nebo Media on disk whose version can't be resolved (only a
+    /// quarantined copy) holds it.
+    #[test]
+    fn an_unresolvable_nebo_media_holds_it() {
+        let r = Root::new();
+        r.workspace_moved();
+        r.media("nebo", "0.6.1");
+        fs::write(r.root.join("nebo/plugins/nebo-media/0.6.1/.quarantined"), "").unwrap();
+        assert!(!r.ready());
     }
 }

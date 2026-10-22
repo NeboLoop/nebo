@@ -1334,9 +1334,19 @@ impl PluginStore {
     /// Scans `<dir>/<slug>/` for version directories, matches the
     /// semver range, and returns the binary path if found.
     pub fn resolve(&self, slug: &str, version_range: &str) -> Option<PathBuf> {
+        self.resolve_versioned(slug, version_range).map(|(_, path)| path)
+    }
+
+    /// The version of the copy [`resolve`](Self::resolve) runs: the same
+    /// lookup, by the same rules. None when no copy would run.
+    pub fn resolved_version(&self, slug: &str) -> Option<semver::Version> {
+        self.resolve_versioned(slug, "*").map(|(version, _)| version)
+    }
+
+    fn resolve_versioned(&self, slug: &str, version_range: &str) -> Option<(semver::Version, PathBuf)> {
         // User dir takes priority
-        if let Some(path) = self.resolve_in_dir(&self.user_dir, slug, version_range) {
-            return Some(path);
+        if let Some(found) = self.resolve_in_dir(&self.user_dir, slug, version_range) {
+            return Some(found);
         }
         self.resolve_in_dir(&self.installed_dir, slug, version_range)
     }
@@ -1364,7 +1374,7 @@ impl PluginStore {
     }
 
     /// Resolve a plugin binary within a single root directory.
-    fn resolve_in_dir(&self, root: &Path, slug: &str, version_range: &str) -> Option<PathBuf> {
+    fn resolve_in_dir(&self, root: &Path, slug: &str, version_range: &str) -> Option<(semver::Version, PathBuf)> {
         let slug_dir = root.join(slug);
         if !slug_dir.exists() {
             return None;
@@ -1386,7 +1396,7 @@ impl PluginStore {
                 self.try_load_flat_plugin(&slug_dir, &flat_manifest)
             {
                 if req.as_ref().map_or(true, |r| r.matches(&version)) {
-                    return Some(binary_path);
+                    return Some((version, binary_path));
                 }
             }
         }
@@ -1440,7 +1450,7 @@ impl PluginStore {
             }
         }
 
-        best.map(|(_, path)| path)
+        best
     }
 
     /// Ensure a plugin is installed, downloading from NeboAI if missing.
@@ -1857,7 +1867,7 @@ impl PluginStore {
             "install",
             &format!("installed v{}", effective_version),
         );
-        if let Some(own) = self.resolve_in_dir(&self.user_dir, slug, "*") {
+        if let Some((_, own)) = self.resolve_in_dir(&self.user_dir, slug, "*") {
             info!(plugin = slug, path = %own.display(), "the owner's own plugin of this name keeps precedence over the marketplace copy");
             self.record_diagnostic(
                 slug,
@@ -2514,7 +2524,7 @@ impl PluginStore {
     /// when it is whole on disk. The owner's own plugin of that slug (the
     /// user folder) is never it.
     pub fn marketplace_copy(&self, slug: &str, version: &str) -> Option<PathBuf> {
-        self.resolve_in_dir(&self.installed_dir, slug, &format!("={version}"))
+        self.resolve_in_dir(&self.installed_dir, slug, &format!("={version}")).map(|(_, path)| path)
     }
 
     /// Whether any version of `slug` is on disk, in either root: a whole one,
