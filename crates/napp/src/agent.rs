@@ -614,6 +614,10 @@ pub struct AgentActivity {
     /// Mirrors `Activity::min_iterations`.
     #[serde(default)]
     pub min_iterations: u32,
+    /// Mirrors `Activity::level`: the intelligence level this activity's
+    /// steps run at on the employee's pack. Absent: the pack's workflow lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<types::packs::Effort>,
 }
 
 /// A declared branch on a branching activity (condition/loop).
@@ -1746,5 +1750,19 @@ mod activity_field_parity_tests {
         assert_eq!(act["tools"], serde_json::json!(["odoo", "os"]));
         assert_eq!(act["requires_tools"], serde_json::json!(["message"]));
         assert_eq!(act["min_iterations"], serde_json::json!(2));
+    }
+
+    /// A declared level reaches the engine; an absent one stays absent, so
+    /// the step keeps the pack's workflow lane.
+    #[test]
+    fn test_level_survives_round_trip() {
+        let json = r#"{"workflows":{"wf":{"trigger":{"type":"manual"},"activities":[
+            {"id":"a","intent":"decide","level":"high"},
+            {"id":"b","intent":"list"}]}}}"#;
+        let config: AgentConfig = serde_json::from_str(json).expect("parse");
+        let def = config.workflows.get("wf").expect("binding").to_workflow_json("wf");
+        let v: serde_json::Value = serde_json::from_str(&def).expect("json");
+        assert_eq!(v["activities"][0]["level"], serde_json::json!("high"));
+        assert!(v["activities"][1].get("level").is_none());
     }
 }

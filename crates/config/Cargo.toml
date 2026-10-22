@@ -18,5 +18,8 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 which = "7"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
