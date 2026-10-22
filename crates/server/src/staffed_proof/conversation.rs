@@ -4112,6 +4112,16 @@ async fn an_apps_own_files_never_ride_its_replies_as_cards() {
         "the edit ran: {}",
         tool_results(&rig, &thread)
     );
+    // The turn's files ride the report its checking ends with: the app's
+    // pages are checked live (a browser load) before it does.
+    rig.until(90, "its checking finishes", || {
+        nebo.store()
+            .list_verifications(&db::VerificationQuery::default())
+            .unwrap_or_default()
+            .iter()
+            .all(|v| !matches!(v.state.as_str(), "running" | "paused"))
+    })
+    .await;
     let chat_id = thread.rsplit(':').next().unwrap().to_string();
     let cards = |rows: Vec<db::models::ChatMessage>| -> Vec<String> {
         rows.into_iter()

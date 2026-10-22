@@ -228,10 +228,15 @@ async fn call_tool(
     // own call is routed. A copy that can't be made refuses the call.
     let verify = run.and_then(|r| r.verify.as_ref());
     let mut started = None;
+    // What the call's routing watched for a deploy, judged once it ran.
+    let mut watched = Default::default();
     if let Some(verify) = verify {
         let changes = tools.target(name, &arguments).await.is_some_and(|t| !t.read_only);
         match verify.route(store, name, &mut arguments, &mut ctx.cwd, changes).await {
-            Ok(routed) => started = routed.started,
+            Ok(routed) => {
+                started = routed.started;
+                watched = routed.watched;
+            }
             Err(e) => {
                 return tools::ToolResult::error(format!("{e}. Nothing was changed: code work happens only in its own copy."));
             }
@@ -239,7 +244,7 @@ async fn call_tool(
     }
     let mut result = tools.execute(&ctx, name, arguments).await;
     if let Some(verify) = verify
-        && let Some(note) = verify.after_call(store).await
+        && let Some(note) = verify.after_call(store, watched).await
     {
         started = Some(started.map_or(note.clone(), |s| format!("{s}\n\n{note}")));
     }

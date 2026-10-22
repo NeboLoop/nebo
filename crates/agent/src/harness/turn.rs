@@ -11138,7 +11138,12 @@ mod tests {
                 assert_eq!(rounds[0].checks[1]["command"], r#"app_reload(app: "ops", check: true)"#);
                 let checked = calls.lock().unwrap().clone();
                 assert_eq!(checked, [serde_json::json!({"app": "ops", "check": true})]);
-                let heard = model.calls().iter().any(|c| c.messages.iter().any(|m| m.content.contains("deployed into the pages of Scoreboard")));
+                let heard = model.calls().iter().any(|c| {
+                    c.messages.iter().any(|m| {
+                        let said = |t: &str| t.contains("deployed into the pages of Scoreboard");
+                        said(&m.content) || m.tool_results.as_ref().is_some_and(|r| said(&r.to_string()))
+                    })
+                });
                 assert!(heard, "the builder heard its deploy is checked live");
             })
         })

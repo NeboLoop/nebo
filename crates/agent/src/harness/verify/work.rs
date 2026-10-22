@@ -187,12 +187,10 @@ pub struct TurnWork {
     deploys: Arc<std::sync::Mutex<Deploys>>,
 }
 
-/// Deploys into apps' pages: the pages being watched, and the ones a deploy
-/// changed.
+/// Deploys into apps' pages: the pages being watched across a linked
+/// coding agent's turn, and the ones a deploy changed.
 #[derive(Default)]
 struct Deploys {
-    /// The pages as they were before the command running now.
-    call: Vec<(PathBuf, u64)>,
     /// The pages as they were when a linked coding agent's turn began (its
     /// own commands are never Nebo's calls).
     turn: Vec<(PathBuf, u64)>,
@@ -262,7 +260,15 @@ pub struct Routed {
     /// Work started by this call: the note the builder reads beside the
     /// call's result.
     pub started: Option<String>,
+    /// A command's apps' pages as they were before it ran: handed back to
+    /// [`TurnWork::after_call`] once it has, so each call is judged by its
+    /// own (calls of one step run side by side).
+    pub watched: Watched,
 }
+
+/// Apps' pages as they were before one command ran ([`Routed::watched`]).
+#[derive(Debug, Default)]
+pub struct Watched(Vec<(PathBuf, u64)>);
 
 impl TurnWork {
     pub async fn snapshot(&self) -> Vec<Work> {
@@ -383,8 +389,7 @@ impl TurnWork {
         let mut routed = Routed::default();
         let app_pages = app_pages_of(who.store, who.agent_id);
         if changes && input.get("command").is_some_and(|c| c.is_string()) {
-            let watched = watch(app_pages.clone()).await;
-            self.deploys.lock().unwrap_or_else(|p| p.into_inner()).call = watched;
+            routed.watched = Watched(watch(app_pages.clone()).await);
         }
         if tool == tools::app_dev::APP_RELOAD
             && let Some(dir) = reloaded_pages(who, input)
@@ -500,13 +505,13 @@ impl TurnWork {
         }
     }
 
-    /// After a call ran: an app's pages a command wrote are a deploy (the
+    /// After a call ran: an app's pages a command wrote while it ran
+    /// (`watched`, from its [`Routed`]) are a deploy (the
     /// builder hears that their live check joins its checks), and a new app
     /// it made starts its pages' work, from nothing (every page is the
     /// change).
-    pub async fn after_call(&self, who: &Starting<'_>) -> Option<String> {
-        let watched = std::mem::take(&mut self.deploys.lock().unwrap_or_else(|p| p.into_inner()).call);
-        let deployed = written(watched).await;
+    pub async fn after_call(&self, who: &Starting<'_>, watched: Watched) -> Option<String> {
+        let deployed = written(watched.0).await;
         let mut notes: Vec<String> = Vec::new();
         if !deployed.is_empty() {
             let works = self.works.lock().await;
@@ -1150,15 +1155,15 @@ mod tests {
 
                 let work = TurnWork::default();
                 let mut idle = json!({"command": "echo hi"});
-                work.route("shell", &mut idle, &mut None, true, &who).await.unwrap();
-                assert_eq!(work.after_call(&who).await, None, "nothing written: no deploy");
+                let routed = work.route("shell", &mut idle, &mut None, true, &who).await.unwrap();
+                assert_eq!(work.after_call(&who, routed.watched).await, None, "nothing written: no deploy");
                 assert!(work.deployed_pages().await.is_empty());
 
                 let mut deploy = json!({"command": "pnpm build && cp -r dist/* ../ui/"});
-                work.route("shell", &mut deploy, &mut None, true, &who).await.unwrap();
+                let routed = work.route("shell", &mut deploy, &mut None, true, &who).await.unwrap();
                 std::fs::write(ui.join("index.html"), "<h1>Two, a longer page</h1>").unwrap();
                 std::fs::write(ui.join("app.js"), "console.log(1)").unwrap();
-                let note = work.after_call(&who).await.expect("the builder hears of the deploy");
+                let note = work.after_call(&who, routed.watched).await.expect("the builder hears of the deploy");
                 assert!(note.contains("deployed into the pages of Scoreboard") && note.contains(r#"app_reload(app: "dev", check: true)"#), "{note}");
                 assert_eq!(work.deployed_pages().await, vec![ui.clone()]);
 

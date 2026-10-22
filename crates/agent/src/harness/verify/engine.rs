@@ -183,9 +183,10 @@ impl Verify {
             .await
     }
 
-    /// After a call ran (`TurnWork::after_call`).
-    pub async fn after_call(&self, store: &db::Store) -> Option<String> {
-        self.work.after_call(&self.builder.starting(store)).await
+    /// After a call ran, with what its routing watched
+    /// (`TurnWork::after_call`).
+    pub async fn after_call(&self, store: &db::Store, watched: super::work::Watched) -> Option<String> {
+        self.work.after_call(&self.builder.starting(store), watched).await
     }
 
     /// The turn ended before its checking did (the owner's Stop, the step
